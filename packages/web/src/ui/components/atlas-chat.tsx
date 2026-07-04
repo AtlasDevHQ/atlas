@@ -12,6 +12,7 @@ import { UserMenu } from "./user-menu";
 import { useAtlasTransport } from "../hooks/use-atlas-transport";
 import { useConversations, transformMessages } from "../hooks/use-conversations";
 import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
+import { ChatComposer } from "./chat/chat-composer";
 import { ErrorBanner } from "./chat/error-banner";
 import { ContextWarningBanner } from "./chat/context-warning-banner";
 import { ResumeBanner } from "./chat/resume-banner";
@@ -44,7 +45,7 @@ import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { usePasswordStatus } from "@/ui/hooks/use-password-status";
-import { Star, TableProperties, BookOpen, Send, Pin, Square } from "lucide-react";
+import { Star, TableProperties, BookOpen, Pin } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import { ConversationMemoryControl } from "./conversation-memory-control";
 import { PromptLibrary } from "./chat/prompt-library";
@@ -52,7 +53,6 @@ import { StarterPromptList } from "./chat/starter-prompt-list";
 import type { StarterPrompt } from "@useatlas/types/starter-prompt";
 import { useContextWarnings } from "../hooks/use-context-warnings";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { parseSuggestions } from "../lib/helpers";
 import { ErrorBoundary } from "./error-boundary";
@@ -1274,51 +1274,14 @@ export function AtlasChat({
                     empty state above, so the two never disagree (composer hidden
                     ⇔ override shown). */}
                 {!(showDataSetupGate && messages.length === 0) && (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    handleSend(input);
-                  }}
-                  className="flex flex-none gap-2 border-t border-zinc-100 pt-4 dark:border-zinc-800"
-                >
-                  <Input
+                  <ChatComposer
                     value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    placeholder="Ask a question about your data..."
-                    className="min-w-0 flex-1 py-3 text-base sm:text-sm"
-                    // #3068 — also disabled while a conversation's history loads
-                    // (deep link / sidebar open) so a send can't race the load.
-                    disabled={isLoading || loadingConversation}
-                    aria-label="Chat message"
+                    onValueChange={setInput}
+                    onSend={handleSend}
+                    streaming={isLoading}
+                    loadingConversation={loadingConversation}
+                    onStop={stopTurn}
                   />
-                  {/* #4294 — while a turn streams, the send slot becomes a Stop
-                      control: aborts the client stream (composer unlocks
-                      immediately) and best-effort cancels generation server-side.
-                      `type="button"` so it can never submit the form. */}
-                  {isLoading ? (
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="outline"
-                      onClick={stopTurn}
-                      aria-label="Stop"
-                      className="size-10 shrink-0"
-                    >
-                      <Square className="size-3.5" fill="currentColor" />
-                    </Button>
-                  ) : (
-                    <Button
-                      type="submit"
-                      size="icon"
-                      disabled={loadingConversation}
-                      aria-disabled={!input.trim() ? true : undefined}
-                      aria-label="Send"
-                      className="size-10 shrink-0"
-                    >
-                      <Send className="size-4" />
-                    </Button>
-                  )}
-                </form>
                 )}
               </>
             )}

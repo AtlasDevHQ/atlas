@@ -16,7 +16,7 @@ test.describe("Stop button @llm", () => {
   });
 
   test("stopping an in-flight turn unlocks the composer and the next send succeeds", async ({ page }) => {
-    const input = page.locator('input[placeholder="Ask a question about your data..."]');
+    const input = page.locator('textarea[placeholder="Ask a question about your data..."]');
 
     await input.fill("how many companies are there?");
     await page.getByRole("button", { name: "Send" }).click();

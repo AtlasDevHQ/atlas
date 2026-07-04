@@ -23,7 +23,7 @@ async function assertNoAxeViolations(page: Page) {
 test.describe("Accessibility", () => {
   test("chat page has zero critical/serious axe violations", async ({ page }) => {
     await page.goto("/");
-    await page.locator('input[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
+    await page.locator('textarea[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
     await assertNoAxeViolations(page);
   });
 

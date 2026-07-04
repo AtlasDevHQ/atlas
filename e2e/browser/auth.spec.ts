@@ -14,7 +14,7 @@ async function login(page: import("@playwright/test").Page, email: string, passw
 }
 
 async function waitForChatUI(page: import("@playwright/test").Page) {
-  await page.locator('input[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
+  await page.locator('textarea[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
 
   // Dismiss password change dialog if it appears (shouldn't after setup, but just in case)
   const changeDialog = page.locator("text=Change your password");
@@ -44,7 +44,7 @@ test.describe("Auth Flows", () => {
     await waitForChatUI(page);
 
     await expect(
-      page.locator('input[placeholder="Ask a question about your data..."]'),
+      page.locator('textarea[placeholder="Ask a question about your data..."]'),
     ).toBeVisible();
   });
 
@@ -83,7 +83,7 @@ test.describe("Auth Flows", () => {
     await waitForChatUI(page);
 
     await expect(
-      page.locator('input[placeholder="Ask a question about your data..."]'),
+      page.locator('textarea[placeholder="Ask a question about your data..."]'),
     ).toBeVisible();
   });
 

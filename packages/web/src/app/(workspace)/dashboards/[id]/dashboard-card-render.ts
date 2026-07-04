@@ -19,6 +19,14 @@ export interface CardRenderContext {
   apiUrl: string;
   dashboardId: string;
   isCrossOrigin: boolean;
+  /**
+   * #4315 — when `"draft"`, render the caller's DRAFT card SQL (the private
+   * working copy being edited) instead of the published definition. Omitted /
+   * `"published"` renders the published SQL. The server falls back to
+   * published when no draft exists, so this is safe to pass whenever the
+   * canvas is showing the draft view.
+   */
+  view?: "draft" | "published";
 }
 
 export type CardRenderEntry =
@@ -41,7 +49,8 @@ export async function renderDashboardCard(
   ctx: CardRenderContext,
 ): Promise<CardRenderEntry> {
   try {
-    const res = await fetch(`${ctx.apiUrl}/api/v1/dashboards/${ctx.dashboardId}/cards/${card.id}/render`, {
+    const viewSuffix = ctx.view === "draft" ? "?view=draft" : "";
+    const res = await fetch(`${ctx.apiUrl}/api/v1/dashboards/${ctx.dashboardId}/cards/${card.id}/render${viewSuffix}`, {
       method: "POST",
       credentials: ctx.isCrossOrigin ? "include" : "same-origin",
       headers: { "Content-Type": "application/json" },

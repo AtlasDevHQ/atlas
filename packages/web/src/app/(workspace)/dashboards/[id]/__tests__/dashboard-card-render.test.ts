@@ -87,6 +87,30 @@ describe("renderDashboardCard", () => {
     });
   });
 
+  test("appends ?view=draft when the context requests the draft view (#4315)", async () => {
+    const calls: Array<{ url: string }> = [];
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      calls.push({ url: String(url) });
+      return okResponse({ columns: [], rows: [] });
+    }) as unknown as typeof fetch;
+
+    await renderDashboardCard(baseCard, { region: "us" }, { ...CTX, view: "draft" });
+    expect(calls[0].url).toBe(
+      "https://api.test/api/v1/dashboards/dash-1/cards/card-1/render?view=draft",
+    );
+  });
+
+  test("omits the view param when published (default) — runs the published SQL", async () => {
+    const calls: Array<{ url: string }> = [];
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      calls.push({ url: String(url) });
+      return okResponse({ columns: [], rows: [] });
+    }) as unknown as typeof fetch;
+
+    await renderDashboardCard(baseCard, { region: "us" }, { ...CTX, view: "published" });
+    expect(calls[0].url).toBe("https://api.test/api/v1/dashboards/dash-1/cards/card-1/render");
+  });
+
   test("maps a non-OK response to ok:false with the backend message (never throws)", async () => {
     globalThis.fetch = mock(async () =>
       errResponse(409, { error: "approval_required", message: "Approval required." }),

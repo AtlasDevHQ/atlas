@@ -141,8 +141,29 @@ export type RenderCardRequestWire = z.infer<typeof renderCardRequestSchema>;
  */
 export const renderCardQuerySchema = z.object({
   format: z.enum(["json", "csv"]).optional(),
+  /**
+   * Draft-aware execution (#4315, ADR-0029). `view=draft` runs the card's
+   * DRAFT SQL/config (the caller's private working copy) instead of the
+   * published definition, so the parameter bar / CSV export reflect the
+   * edits being made rather than the last-published query. Omitted/`published`
+   * runs the published definition. Viewers with no draft always fall back to
+   * published — never a leak of another user's draft.
+   */
+  view: z.enum(["published", "draft"]).optional(),
 });
 export type RenderCardQueryWire = z.infer<typeof renderCardQuerySchema>;
+
+/**
+ * Single-card refresh query. `view=draft` (#4315) runs the DRAFT SQL and
+ * returns the freshly-run rows WITHOUT persisting them to the published
+ * card cache — the draft's query is un-published, so writing its results
+ * into the shared cache would violate the draft-first invariant. Omitted/
+ * `published` keeps the legacy behavior (run published SQL, persist cache).
+ */
+export const refreshCardQuerySchema = z.object({
+  view: z.enum(["published", "draft"]).optional(),
+});
+export type RefreshCardQueryWire = z.infer<typeof refreshCardQuerySchema>;
 
 // ---------------------------------------------------------------------------
 // Text / section cards (#3138 — text blocks slice)

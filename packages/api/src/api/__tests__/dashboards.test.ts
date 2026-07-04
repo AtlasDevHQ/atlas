@@ -222,6 +222,27 @@ mock.module("@atlas/api/lib/dashboards", () => ({
   rowToCard: realDashboards.rowToCard,
 }));
 
+// #4315 — versioning mock. Keep everything REAL except the two DB-touching
+// seams the direct-manipulation + draft-aware-execution routes call
+// (`applyEditToDraft`, `loadDraft`). `isDashboardDraftsEnabled` stays real so
+// the env flag drives routing: the legacy suite runs flag-OFF (published
+// path, these spies never fire), the draft-first suite runs flag-ON.
+const realVersioning = await import("@atlas/api/lib/dashboard-versioning");
+type ApplyEditResult = import("@atlas/api/lib/dashboard-versioning").ApplyEditToDraftResult;
+type DraftRowT = import("@atlas/api/lib/dashboard-versioning").DraftRow;
+const mockApplyEditToDraft = mock(
+  (..._args: unknown[]): Promise<ApplyEditResult> =>
+    Promise.resolve({ ok: false, reason: "no_db" }),
+);
+const mockLoadDraft = mock(
+  (..._args: unknown[]): Promise<DraftRowT | null> => Promise.resolve(null),
+);
+mock.module("@atlas/api/lib/dashboard-versioning", () => ({
+  ...realVersioning,
+  applyEditToDraft: mockApplyEditToDraft,
+  loadDraft: mockLoadDraft,
+}));
+
 // #2368 — bound-chat-context mocks for the new sessions endpoints.
 // Real module exports must stay surface-complete (CLAUDE.md "Mock all
 // exports — partial mocks cause SyntaxError"); copy the unmocked ones
@@ -438,9 +459,17 @@ const { _resetDashboardRateLimit } = await import("../routes/dashboards");
 
 describe("dashboard routes", () => {
   const origDatabaseUrl = process.env.DATABASE_URL;
+  const origDraftsFlag = process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
 
   beforeEach(() => {
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    // #4315 — these cases assert the LEGACY direct-published CRUD path
+    // (addCard/updateCard/removeCard/updateDashboard call the published
+    // helpers). With drafts ON those direct-manipulation ops route to the
+    // caller's draft instead; that behavior is covered in
+    // `dashboards-drafts-routing.test.ts`. Opt out of the draft path here so
+    // this file keeps exercising the CRUD-forwarding + validation contract.
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
     capturedLogs.length = 0;
     mockAuthenticateRequest.mockReset();
     mockAuthenticateRequest.mockResolvedValue({
@@ -475,6 +504,10 @@ describe("dashboard routes", () => {
     mockRefreshCard.mockResolvedValue({ ok: true });
     mockGetCard.mockReset();
     mockGetCard.mockResolvedValue({ ok: true, data: mockCardData });
+    mockApplyEditToDraft.mockReset();
+    mockApplyEditToDraft.mockResolvedValue({ ok: false, reason: "no_db" });
+    mockLoadDraft.mockReset();
+    mockLoadDraft.mockResolvedValue(null);
     mockShareDashboard.mockReset();
     mockShareDashboard.mockResolvedValue({ ok: true, data: { token: "share-token-123", expiresAt: null, shareMode: "public" } });
     mockUnshareDashboard.mockReset();
@@ -502,6 +535,8 @@ describe("dashboard routes", () => {
   afterEach(() => {
     if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
     else delete process.env.DATABASE_URL;
+    if (origDraftsFlag === undefined) delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
+    else process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = origDraftsFlag;
   });
 
   // -------------------------------------------------------------------------
@@ -2761,5 +2796,415 @@ describe("dashboard routes", () => {
       expect(response.status).toBe(422);
       expect(mockExportDashboard).not.toHaveBeenCalled();
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // #4315 — draft-first editing spine. With drafts ON + a real user, every
+  // direct-manipulation edit routes to the caller's DRAFT; nothing but publish
+  // writes the published tables. Draft-aware execution runs the draft's SQL.
+  // -------------------------------------------------------------------------
+  describe("draft-first routing (#4315)", () => {
+    const DASH_WITH_CARD = {
+      ...mockDashboardData,
+      cards: [mockCardData],
+    };
+    const draftView = {
+      ...mockDashboardData,
+      lastRefreshAt: null,
+      nextRefreshAt: null,
+      cards: [],
+    };
+
+    beforeEach(() => {
+      // The parent beforeEach forces the flag OFF; opt back IN for this suite.
+      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "true";
+      mockGetDashboard.mockResolvedValue({ ok: true, data: DASH_WITH_CARD });
+      mockApplyEditToDraft.mockResolvedValue({
+        ok: true,
+        snapshot: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [],
+        },
+        // Test fixture: `mockDashboardData` carries `cardCount` (a list-view
+        // field) and the route only echoes the view back, so cast at the
+        // boundary rather than reconstruct the full wire type.
+        view: draftView as unknown as Extract<ApplyEditResult, { ok: true }>["view"],
+      });
+    });
+
+    it("PATCH /:id routes a rename to the draft, never the published table", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Renamed" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; title?: string },
+      ];
+      expect(change).toMatchObject({ kind: "updateMeta", title: "Renamed" });
+      // The published title was NOT touched.
+      expect(mockUpdateDashboard).not.toHaveBeenCalled();
+    });
+
+    it("POST /:id/cards stages the new card into the draft (published addCard not called)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "New card",
+            sql: "SELECT 1",
+            chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+          }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; card?: { title: string; sql: string } },
+      ];
+      expect(change.kind).toBe("addCard");
+      expect(change.card).toMatchObject({ title: "New card", sql: "SELECT 1" });
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    it("PATCH /:id/cards/:cardId updates the draft card (published updateCard not called)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Edited" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; cardId: string; updates: { title?: string } },
+      ];
+      expect(change).toMatchObject({ kind: "updateCard", cardId: VALID_CARD_ID });
+      expect(change.updates).toMatchObject({ title: "Edited" });
+      expect(mockUpdateCard).not.toHaveBeenCalled();
+    });
+
+    it("DELETE /:id/cards/:cardId removes from the draft (published removeCard not called)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(204);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; cardId: string },
+      ];
+      expect(change).toMatchObject({ kind: "removeCard", cardId: VALID_CARD_ID });
+      expect(mockRemoveCard).not.toHaveBeenCalled();
+    });
+
+    it("returns 503 and never publishes when the draft store is unavailable", async () => {
+      mockApplyEditToDraft.mockResolvedValueOnce({ ok: false, reason: "no_db" });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "New card",
+            sql: "SELECT 1",
+            chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+          }),
+        }),
+      );
+      expect(response.status).toBe(503);
+      // Critically: it did NOT silently fall back to writing published.
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    it("render?view=draft executes the DRAFT card's SQL, not the published SQL", async () => {
+      mockLoadDraft.mockResolvedValue({
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [
+            {
+              id: VALID_CARD_ID,
+              position: 0,
+              title: "Total Revenue",
+              sql: "SELECT draft_only_sql",
+              chartConfig: null,
+              connectionGroupId: null,
+              layout: null,
+            },
+          ],
+        },
+        baseline: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [],
+        },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?view=draft`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parameters: {} }),
+          },
+        ),
+      );
+      expect(response.status).toBe(200);
+      expect(mockRunUserQueryPipeline).toHaveBeenCalled();
+      const runArg = mockRunUserQueryPipeline.mock.calls[0][0];
+      expect(runArg.sql).toBe("SELECT draft_only_sql");
+    });
+
+    it("refresh?view=draft runs the draft SQL and does NOT persist to the published cache", async () => {
+      mockLoadDraft.mockResolvedValue({
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [
+            {
+              id: VALID_CARD_ID,
+              position: 0,
+              title: "Total Revenue",
+              sql: "SELECT draft_refresh_sql",
+              chartConfig: null,
+              connectionGroupId: null,
+              layout: null,
+            },
+          ],
+        },
+        baseline: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [],
+        },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/refresh?view=draft`,
+          { method: "POST" },
+        ),
+      );
+      expect(response.status).toBe(200);
+      const runArg = mockRunUserQueryPipeline.mock.calls[0][0];
+      expect(runArg.sql).toBe("SELECT draft_refresh_sql");
+      // The invariant: a draft refresh never writes the published card cache.
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+      // The freshly-run rows are overlaid on the draft card, in-memory.
+      const body = (await response.json()) as {
+        id: string;
+        cachedColumns: string[];
+        cachedRows: Record<string, unknown>[];
+        cachedAt: string | null;
+      };
+      expect(body.id).toBe(VALID_CARD_ID);
+      expect(body.cachedColumns).toEqual(["month", "total"]);
+      expect(body.cachedRows).toEqual([{ month: "Jan", total: 1000 }]);
+      expect(typeof body.cachedAt).toBe("string");
+    });
+
+    it("render?view=draft 404s when the card was removed in the draft (never runs published)", async () => {
+      // A draft exists, but its snapshot no longer contains VALID_CARD_ID.
+      mockLoadDraft.mockResolvedValue({
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        baseline: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?view=draft`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parameters: {} }),
+          },
+        ),
+      );
+      expect(response.status).toBe(404);
+      // Critically: it did NOT silently run the published card under the draft view.
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+    });
+
+    it("refresh?view=draft 404s when the card was removed in the draft", async () => {
+      mockLoadDraft.mockResolvedValue({
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        baseline: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/refresh?view=draft`,
+          { method: "POST" },
+        ),
+      );
+      expect(response.status).toBe(404);
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+    });
+
+    it("CSV export with view=draft streams the DRAFT card's data", async () => {
+      mockLoadDraft.mockResolvedValue({
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [
+            {
+              id: VALID_CARD_ID,
+              position: 0,
+              title: "Total Revenue",
+              sql: "SELECT draft_csv_sql",
+              chartConfig: null,
+              connectionGroupId: null,
+              layout: null,
+            },
+          ],
+        },
+        baseline: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?format=csv&view=draft`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parameters: {} }),
+          },
+        ),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toContain("text/csv");
+      // The CSV ran the DRAFT SQL, not the published SQL.
+      const runArg = mockRunUserQueryPipeline.mock.calls[0][0];
+      expect(runArg.sql).toBe("SELECT draft_csv_sql");
+    });
+
+    it("PATCH /:id with ONLY parameters writes the live row (never the draft)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: [{ key: "region", type: "text", label: "Region" }] }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      // Parameters are operational metadata (ADR-0029) — they stay on the live
+      // row and NEVER route to the draft snapshot.
+      expect(mockUpdateDashboard).toHaveBeenCalledTimes(1);
+      expect(mockApplyEditToDraft).not.toHaveBeenCalled();
+    });
+
+    it("PATCH /:id with {title, parameters} splits: title→draft, parameters→live row", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "Renamed",
+            parameters: [{ key: "region", type: "text", label: "Region" }],
+          }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      // parameters → live row
+      expect(mockUpdateDashboard).toHaveBeenCalledTimes(1);
+      const [, , updates] = mockUpdateDashboard.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { parameters?: unknown; title?: string },
+      ];
+      expect(updates).toHaveProperty("parameters");
+      expect(updates).not.toHaveProperty("title");
+      // title → draft
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; title?: string },
+      ];
+      expect(change).toMatchObject({ kind: "updateMeta", title: "Renamed" });
+    });
+
+    it("maps applyEditToDraft unknown_card → 404 and save_failed → 500", async () => {
+      mockApplyEditToDraft.mockResolvedValueOnce({ ok: false, reason: "unknown_card", cardId: VALID_CARD_ID });
+      const r404 = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Edited" }),
+        }),
+      );
+      expect(r404.status).toBe(404);
+
+      mockApplyEditToDraft.mockResolvedValueOnce({ ok: false, reason: "save_failed" });
+      const r500 = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Edited" }),
+        }),
+      );
+      expect(r500.status).toBe(500);
+    });
+
+    it("maps applyEditToDraft load_failed → 500 (transient, distinct from no_db 503)", async () => {
+      mockApplyEditToDraft.mockResolvedValueOnce({ ok: false, reason: "load_failed" });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "New card",
+            sql: "SELECT 1",
+            chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+          }),
+        }),
+      );
+      expect(response.status).toBe(500);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
   });
 });

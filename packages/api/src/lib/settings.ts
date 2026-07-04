@@ -1363,6 +1363,23 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // Dashboards — max simultaneous headless renders (screenshot + PDF/PNG
+  // export share one Chromium). Hot-reloadable: `getRenderConcurrency()` reads
+  // per acquire. Excess requests queue rather than spawning unbounded browser
+  // contexts. Clamped to [1, 16].
+  {
+    key: "ATLAS_DASHBOARD_RENDER_CONCURRENCY",
+    section: "Dashboards",
+    label: "Headless Render Concurrency",
+    description:
+      "Max simultaneous dashboard screenshot/export renders on the shared headless Chromium; excess requests queue (default 3, clamped to 1–16).",
+    type: "number",
+    default: "3",
+    envVar: "ATLAS_DASHBOARD_RENDER_CONCURRENCY",
+    scope: "platform",
+    saasVisible: false,
+  },
+
   // Observability — plugin-health probe cache TTL. Hot-reloadable:
   // `getPluginHealthCacheTtlMs()` reads per health probe. (OTEL exporter
   // endpoint/headers are intentionally NOT here — see the block header above.)

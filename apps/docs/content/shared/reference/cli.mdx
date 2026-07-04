@@ -180,7 +180,7 @@ The commands in this group act on a **workspace** through a running Atlas API �
 - **Ambient `atlas login` session (recommended).** Run [`atlas login`](#login) once; the OAuth device flow stores a session in `~/.atlas/credentials` and every later `atlas` command (and any agent running in that logged-in shell) reuses it automatically — the `gh auth login` / `railway login` model. No key to provision.
 - **Workspace API key (unattended CI).** Mint a workspace-scoped key on the `/admin/api-keys` page and pass it via the `ATLAS_API_KEY` environment variable or `--api-key <key>` (the flag overrides the env var). Honored by the REST-backed commands — [`query`](#query), `sql`, `metric run`, `explore`, and `datasource`. A key is pinned to one workspace, so the `--workspace` override does not apply to it. Commands that need an interactive session (`switch`, `entities`) still require `atlas login`.
 
-Set `ATLAS_API_URL` (default `http://localhost:3001`) to target a non-local API. See [API Key Management](/guides/api-keys) for the full credential model — ambient login vs. workspace key, scope, and RLS-claim bounds — and [Environment Variables](/reference/environment-variables#workspace-cli-credentials) for `ATLAS_API_URL` / `ATLAS_API_KEY` / `ATLAS_DATASOURCE_SECRET`.
+Set `ATLAS_API_URL` (default `http://localhost:3001`) to target a non-local API. See <AudienceLink saas="/guides/api-keys">API Key Management</AudienceLink> for the full credential model — ambient login vs. workspace key, scope, and RLS-claim bounds — and [Environment Variables](/reference/environment-variables#workspace-cli-credentials) for `ATLAS_API_URL` / `ATLAS_API_KEY` / `ATLAS_DATASOURCE_SECRET`.
 
 ## login
 
@@ -357,7 +357,7 @@ bun run atlas -- datasource <command> [id] [options]
 | `--new-group <name>` | (`create`) Create a new inline environment/group. Mutually exclusive with `--group` |
 
 <Callout type="warn" title="Every datasource command requires the workspace admin role">
-The admin-connection routes are admin-gated end to end, so every `datasource` subcommand — including read-only `list` / `get` / `test` — requires the workspace `admin` or `owner` role. A non-admin member is denied with an actionable message. (A workspace API key reaches this surface by design, so CI can provision and profile connections — see [API Key Management](/guides/api-keys#scope-data-plane--the-datasource-cli-not-console-admin).)
+The admin-connection routes are admin-gated end to end, so every `datasource` subcommand — including read-only `list` / `get` / `test` — requires the workspace `admin` or `owner` role. A non-admin member is denied with an actionable message. (A workspace API key reaches this surface by design, so CI can provision and profile connections — see <AudienceLink saas="/guides/api-keys#scope-data-plane--the-datasource-cli-not-console-admin">API Key Management</AudienceLink>.)
 </Callout>
 
 ### datasource list
@@ -398,7 +398,7 @@ ATLAS_DATASOURCE_SECRET="postgres://user:pass@host:5432/db" bun run atlas -- dat
 ```
 
 <Callout title="Secret capture — stdin / env var, never a flag">
-The connection URL is captured by exactly one of two paths, in priority order: (1) the `ATLAS_DATASOURCE_SECRET` environment variable (the headless-agent path — read at request time, never lands in argv), or (2) a masked stdin prompt (the interactive path — keystrokes don't echo and don't enter shell history). With **no TTY and no env var** (a CI runner), `create` fails closed and defers datasource creation to the dashboard or the [Atlas MCP](/guides/mcp); a set-but-empty `ATLAS_DATASOURCE_SECRET` is treated as a misconfiguration and fails loudly rather than silently prompting.
+The connection URL is captured by exactly one of two paths, in priority order: (1) the `ATLAS_DATASOURCE_SECRET` environment variable (the headless-agent path — read at request time, never lands in argv), or (2) a masked stdin prompt (the interactive path — keystrokes don't echo and don't enter shell history). With **no TTY and no env var** (a CI runner), `create` fails closed and defers datasource creation to the dashboard or the <AudienceLink saas="/guides/mcp">Atlas MCP</AudienceLink>; a set-but-empty `ATLAS_DATASOURCE_SECRET` is treated as a misconfiguration and fails loudly rather than silently prompting.
 </Callout>
 
 The new datasource lands as a **draft** — run [`atlas datasource publish`](#datasource-publish) (or publish it in the Atlas console), or it stays developer-mode-only. The command suggests `atlas datasource test <id>` to verify connectivity.
@@ -426,7 +426,7 @@ bun run atlas -- datasource publish
 bun run atlas -- datasource publish <id>
 ```
 
-The MCP equivalent is the [`publish_datasources`](/guides/mcp#publish_datasources) tool. Drafts created by the CLI/MCP are already queryable in developer mode before publishing; `publish` is what exposes them on the published `/chat` surface.
+The MCP equivalent is the <AudienceLink saas="/guides/mcp#publish_datasources">`publish_datasources`</AudienceLink> tool. Drafts created by the CLI/MCP are already queryable in developer mode before publishing; `publish` is what exposes them on the published `/chat` surface.
 
 ### datasource archive
 
@@ -948,7 +948,7 @@ atlas improve --min-confidence 0.7
 atlas improve --entities orders,users,products
 ```
 
-See the [Semantic Expert guide](/guides/semantic-expert) for full documentation.
+See the <AudienceLink saas="/guides/semantic-expert">Semantic Expert guide</AudienceLink> for full documentation.
 
 ## benchmark
 
@@ -970,7 +970,7 @@ bun run atlas -- benchmark [options]
 
 ## export
 
-Export workspace data to a portable migration bundle (JSON). Reads from the internal database. Used as the first step in a self-hosted → SaaS migration workflow. See [Migration guide](/guides/migration) for the full workflow.
+Export workspace data to a portable migration bundle (JSON). Reads from the internal database. Used as the first step in a self-hosted → SaaS migration workflow. See <AudienceLink saas="/guides/migration">Migration guide</AudienceLink> for the full workflow.
 
 > **Operator-only.** `export` is direct-DB tooling and ships in the [`atlas-operator`](#operator-subcommands) binary, not the published `atlas` CLI.
 
@@ -1234,9 +1234,9 @@ ATLAS_TEARDOWN_OK=1 bun run atlas-operator -- ops teardown-verify-accounts \
 
 ## See Also
 
-- [API Key Management](/guides/api-keys) — The credential model behind the [workspace commands](#workspace-commands): ambient `atlas login` reuse vs. a workspace API key for unattended CI
-- [Schema Evolution](/deployment/schema-evolution) — Detecting database drift with `atlas diff` and updating entity YAMLs
-- [MCP Server](/guides/mcp) — Using `atlas mcp` with Claude Desktop and Cursor
+- <AudienceLink saas="/guides/api-keys">API Key Management</AudienceLink> — The credential model behind the [workspace commands](#workspace-commands): ambient `atlas login` reuse vs. a workspace API key for unattended CI
+- <AudienceLink saas="/deployment/schema-evolution">Schema Evolution</AudienceLink> — Detecting database drift with `atlas diff` and updating entity YAMLs
+- <AudienceLink saas="/guides/mcp">MCP Server</AudienceLink> — Using `atlas mcp` with Claude Desktop and Cursor
 - [Environment Variables](/reference/environment-variables) — Variables that affect CLI behavior (`ATLAS_DATASOURCE_URL`, `ATLAS_SCHEMA`, etc.)
 - [Configuration](/reference/config) — Declarative config file that the CLI reads and validates
-- [Troubleshooting](/guides/troubleshooting) — Diagnostic steps when CLI commands fail
+- <AudienceLink saas="/guides/troubleshooting">Troubleshooting</AudienceLink> — Diagnostic steps when CLI commands fail

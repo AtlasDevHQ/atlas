@@ -36,12 +36,12 @@ Retrying these will not help — the request or configuration must be changed.
 
 | Code | HTTP Status | Description | Common Cause | Fix |
 |------|-------------|-------------|--------------|-----|
-| `auth_error` | 401 | Authentication failed | Invalid API key or revoked token | Check your API key or sign in again. See [Authentication](/self-hosted/deployment/authentication) |
+| `auth_error` | 401 | Authentication failed | Invalid API key or revoked token | Check your API key or sign in again. See <AudienceLink selfHosted="/self-hosted/deployment/authentication">Authentication</AudienceLink> |
 | `session_expired` | 401 | Session expired | Session token has expired or been revoked | Sign in again to get a new session |
 | `forbidden` | 403 | Access denied | User lacks the required role (e.g., admin endpoints require `admin` role) | Request the appropriate role from your Atlas administrator |
 | `forbidden_role` | 403 | Admin role required | Non-admin user tried to access an admin endpoint | Sign in with an admin account or request the admin role |
 | `org_not_found` | 400 | No active organization | Request requires an active organization but none is selected | Select an organization in the org switcher and try again |
-| `configuration_error` | 400 | Atlas is not fully configured | Missing environment variables, invalid config file, or startup diagnostics failed | Run `atlas doctor` to identify the issue. See [Troubleshooting](/guides/troubleshooting) |
+| `configuration_error` | 400 | Atlas is not fully configured | Missing environment variables, invalid config file, or startup diagnostics failed | Run `atlas doctor` to identify the issue. See <AudienceLink saas="/guides/troubleshooting">Troubleshooting</AudienceLink> |
 | `no_datasource` | 400 | No datasource configured | `ATLAS_DATASOURCE_URL` is not set | Set `ATLAS_DATASOURCE_URL` in your environment. See [Environment Variables](/reference/environment-variables) |
 | `invalid_request` | 400 | Invalid request | Malformed JSON body or missing required fields | Check the request body format. See [API Reference](/reference/api) |
 | `validation_error` | 422 | Request validation failed | Request body doesn't match the expected schema (wrong types, missing fields) | Check the `details` field for specific field errors |
@@ -61,7 +61,7 @@ These codes are returned by billing enforcement and workspace status middleware.
 | `subscription_required` | 403 | Subscription required | The workspace subscription has ended (past-due/canceled) | Resubscribe from the billing page to continue using Atlas | No |
 | `billing_check_failed` | 503 | Billing check failed | Failed to fetch plan data from internal DB | Retry — transient infrastructure issue | Yes |
 | `workspace_check_failed` | 503 | Workspace check failed | Failed to verify workspace status | Retry — transient infrastructure issue | Yes |
-| `workspace_throttled` | 429 | Workspace throttled | Workspace triggered abuse detection thresholds | Wait for the throttle delay to pass and retry. See [Abuse Prevention](/platform-ops/abuse-prevention) | Yes |
+| `workspace_throttled` | 429 | Workspace throttled | Workspace triggered abuse detection thresholds | Wait for the throttle delay to pass and retry. See <AudienceLink saas="/platform-ops/abuse-prevention">Abuse Prevention</AudienceLink> | Yes |
 | `workspace_suspended` | 403 | Workspace suspended | Admin suspended the workspace | Contact your workspace administrator | No |
 | `workspace_deleted` | 404 | Workspace deleted | Workspace has been permanently deleted | Create a new workspace | No |
 
@@ -75,9 +75,9 @@ The `ChatErrorCode` catalog above is scoped to the chat-stream endpoint — the 
 
 | Code | HTTP Status | Trigger | Fix | Retryable |
 |------|-------------|---------|-----|-----------|
-| `demo_readonly` | 403 | Write against the `__demo__` connection while in published mode | Switch to developer mode to manage demo content. See [Developer Mode](/guides/developer-mode) | No |
-| `workspace_migrating` | 409 | Write attempted while the workspace's data is being moved to a new region | Transient — retry once the migration completes (typically minutes). See [Data Residency](/platform-ops/data-residency) | Yes |
-| `misdirected_request` | 421 | Request reached a regional API that doesn't hold this workspace's data | Use the `correctApiUrl` field in the response body to retarget. The SDK can be initialized with the correct regional URL once and cached. See [Regional API routing](/platform-ops/data-residency#misrouting-detection) | No |
+| `demo_readonly` | 403 | Write against the `__demo__` connection while in published mode | Switch to developer mode to manage demo content. See <AudienceLink saas="/guides/developer-mode">Developer Mode</AudienceLink> | No |
+| `workspace_migrating` | 409 | Write attempted while the workspace's data is being moved to a new region | Transient — retry once the migration completes (typically minutes). See <AudienceLink saas="/platform-ops/data-residency">Data Residency</AudienceLink> | Yes |
+| `misdirected_request` | 421 | Request reached a regional API that doesn't hold this workspace's data | Use the `correctApiUrl` field in the response body to retarget. The SDK can be initialized with the correct regional URL once and cached. See <AudienceLink saas="/platform-ops/data-residency#misrouting-detection">Regional API routing</AudienceLink> | No |
 
 ### Starter-prompt favorites
 
@@ -157,11 +157,11 @@ The scheduler runs proactive prompts and report deliveries on workspace cron sch
 
 | Code | `_tag` | HTTP Status | Trigger | Fix | Retryable |
 |------|--------|-------------|---------|-----|-----------|
-| `conflict` | `UnsafeRegionMigrationResetError` | 409 | Operator attempted to reset a region migration that had already passed Phase 3 (cutover). Re-running Phase 1 on a workspace that already moved would re-export stale data and corrupt the destination. `migrationId`, `workspaceId`, `targetRegion`, and `sourceRegion` are on the error instance and structured logs (correlate via `requestId`), not in the response body | Follow the data-residency manual-intervention runbook in [Data Residency](/platform-ops/data-residency). The code path is closed by design; this is not retryable | No |
+| `conflict` | `UnsafeRegionMigrationResetError` | 409 | Operator attempted to reset a region migration that had already passed Phase 3 (cutover). Re-running Phase 1 on a workspace that already moved would re-export stale data and corrupt the destination. `migrationId`, `workspaceId`, `targetRegion`, and `sourceRegion` are on the error instance and structured logs (correlate via `requestId`), not in the response body | Follow the data-residency manual-intervention runbook in <AudienceLink saas="/platform-ops/data-residency">Data Residency</AudienceLink>. The code path is closed by design; this is not retryable | No |
 
 ### Self-serve trial claim-gating (#3651)
 
-A workspace provisioned over MCP by `start_trial` starts **unclaimed (metered)**: setup and client-paid MCP querying work immediately, but Atlas-token Q&A (the web `/api/v1/query` endpoint, chat platforms, and the scheduler) is withheld until the owner claims the account by verifying their email on the web. These codes are surfaced inline by `/api/v1/query` (they are plain `Error` subclasses, not `mapTaggedError` tags). See [Self-Serve Signup](/guides/signup#claiming-a-self-serve-mcp-trial).
+A workspace provisioned over MCP by `start_trial` starts **unclaimed (metered)**: setup and client-paid MCP querying work immediately, but Atlas-token Q&A (the web `/api/v1/query` endpoint, chat platforms, and the scheduler) is withheld until the owner claims the account by verifying their email on the web. These codes are surfaced inline by `/api/v1/query` (they are plain `Error` subclasses, not `mapTaggedError` tags). See <AudienceLink saas="/guides/signup#claiming-a-self-serve-mcp-trial">Self-Serve Signup</AudienceLink>.
 
 | Code | Class | HTTP Status | Trigger | Fix | Retryable |
 |------|-------|-------------|---------|-----|-----------|
@@ -170,11 +170,11 @@ A workspace provisioned over MCP by `start_trial` starts **unclaimed (metered)**
 
 ### Self-serve trial signup over MCP (`start_trial`)
 
-The anonymous onboarding tool [`start_trial`](/guides/mcp#start_trial) (#3649/#3654) provisions a trial workspace before any actor or bearer exists. Because it runs outside the MCP dispatch gate, its failures are returned as the structured MCP tool-error envelope (`{ code, message, hint?, request_id?, retry_after? }`, an `isError: true` tool result parsed by `parseAtlasMcpToolError`) — **not** the HTTP `{ error, message, requestId }` shape. The `code` is always one of the closed [`AtlasMcpToolErrorCode`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/types/src/mcp.ts) catalog; `start_trial` emits the four below.
+The anonymous onboarding tool <AudienceLink saas="/guides/mcp#start_trial">`start_trial`</AudienceLink> (#3649/#3654) provisions a trial workspace before any actor or bearer exists. Because it runs outside the MCP dispatch gate, its failures are returned as the structured MCP tool-error envelope (`{ code, message, hint?, request_id?, retry_after? }`, an `isError: true` tool result parsed by `parseAtlasMcpToolError`) — **not** the HTTP `{ error, message, requestId }` shape. The `code` is always one of the closed [`AtlasMcpToolErrorCode`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/types/src/mcp.ts) catalog; `start_trial` emits the four below.
 
 | Code | Trigger | `hint` / extras | Agent recovery |
 |------|---------|-----------------|----------------|
-| `validation_failed` | Missing/malformed email or workspace name, a missing Turnstile token, a declined elicitation, an already-registered email, **or a business-email denial** (freemium/disposable address — the shared [business-email policy](/guides/signup#business-email-only-signup)). The business-email case carries a "use your work email" `hint` so it's distinguishable from a malformed-email rejection | `hint` on the business-email and already-registered cases | Permanent — fix the input. For the business-email hint, retry with a work email; for "already registered", sign in on the web instead |
+| `validation_failed` | Missing/malformed email or workspace name, a missing Turnstile token, a declined elicitation, an already-registered email, **or a business-email denial** (freemium/disposable address — the shared <AudienceLink saas="/guides/signup#business-email-only-signup">business-email policy</AudienceLink>). The business-email case carries a "use your work email" `hint` so it's distinguishable from a malformed-email rejection | `hint` on the business-email and already-registered cases | Permanent — fix the input. For the business-email hint, retry with a work email; for "already registered", sign in on the web instead |
 | `rate_limited` | Per-IP / per-email creation-attempt limit tripped (#3654) | `retry_after` (seconds) | Wait `retry_after` seconds, then retry. Self-serve signups are throttled per IP and per email |
 | `forbidden` | Cloudflare Turnstile `siteverify` failed (bot-check), or the tool was reached off-SaaS (where it isn't registered) | — | Refresh the Turnstile challenge and retry. Never leaks the secret, the token, or Cloudflare error codes |
 | `internal_error` | Account created but the workspace/grace-window couldn't be provisioned (`org_failed` / `trial_not_assigned`), or an unexpected failure | `request_id` | Retry once; if it persists, quote `request_id` to support. The orphaned account may need an operator to reap it |
@@ -460,9 +460,9 @@ try {
 
 ## See Also
 
-- [Troubleshooting](/guides/troubleshooting) — Startup errors, connection issues, and diagnostic codes
+- <AudienceLink saas="/guides/troubleshooting">Troubleshooting</AudienceLink> — Startup errors, connection issues, and diagnostic codes
 - [SDK Reference](/reference/sdk#error-handling) — Full SDK API with error handling examples
 - [React Hooks Reference](/reference/react) — `ChatErrorInfo` and client-side error parsing in `useAtlasChat`
-- [Rate Limiting & Retry](/guides/rate-limiting) — Rate limit configuration, 429 handling, and backoff patterns
+- <AudienceLink saas="/guides/rate-limiting">Rate Limiting & Retry</AudienceLink> — Rate limit configuration, 429 handling, and backoff patterns
 - [Environment Variables](/reference/environment-variables) — Configuration that affects error behavior
 - [API Overview](/reference/api#error-responses) — HTTP error response format

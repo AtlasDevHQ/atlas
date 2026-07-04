@@ -1135,7 +1135,7 @@ When a conversation runs against a multi-member connection group, the `executeSQ
 | `ExecuteSqlResult` | Discriminated union of success/failure — `success: true` carries `columns`, `rows`, `truncated`, `envContributions`; `success: false` carries `error` plus the partial `envContributions` that did execute |
 | `ConversationRoutingMode` | `"auto"` / `"pin"` / `"all"` — the persisted routing mode for the conversation. Embedders that render the env/member picker should branch on this to show the right active state |
 
-See the [Cross-Environment Scope](/deployment/multi-datasource#cross-environment-scope-routing) guide for the partial-failure rendering pattern and the conversation-routing semantics.
+See the <AudienceLink saas="/deployment/multi-datasource#cross-environment-scope-routing">Cross-Environment Scope</AudienceLink> guide for the partial-failure rendering pattern and the conversation-routing semantics.
 
 ### Starter-prompt types
 
@@ -1151,7 +1151,7 @@ interface FavoriteStarterPrompt {
 }
 ```
 
-The `AtlasChat` widget also accepts a [`starterPrompts` prop](#atlaschat-props) that overrides the adaptive empty-state list. For script-tag embeds, the same list can be supplied via the `data-starter-prompts` JSON attribute — see [Embedding the Widget](/guides/embedding-widget) for details.
+The `AtlasChat` widget also accepts a [`starterPrompts` prop](#atlaschat-props) that overrides the adaptive empty-state list. For script-tag embeds, the same list can be supplied via the `data-starter-prompts` JSON attribute — see <AudienceLink saas="/guides/embedding-widget">Embedding the Widget</AudienceLink> for details.
 
 ---
 
@@ -1316,9 +1316,9 @@ The `AtlasChat` component uses the same hooks internally — you can start with 
 
 ## See Also
 
-- [Embedding Widget](/guides/embedding-widget) — Script-tag widget embedding (no React required)
+- <AudienceLink saas="/guides/embedding-widget">Embedding Widget</AudienceLink> — Script-tag widget embedding (no React required)
 - [SDK Reference](/reference/sdk) — Typed TypeScript client for server-side and headless usage
 - [MCP onboarding (SDK)](/sdk/mcp) — Full embedded-onboarding walkthrough that the [`useMcpConnect`](#usemcpconnect) hook wraps
 - [Error Codes](/reference/error-codes) — Full catalog of `ChatErrorCode` and `ClientErrorCode` values
-- [Authentication](/self-hosted/deployment/authentication) — Auth mode setup (affects `useAtlasAuth` behavior)
-- [Choosing an Integration](/guides/choosing-an-integration) — Compare widget, hooks, SDK, and REST API
+- <AudienceLink selfHosted="/self-hosted/deployment/authentication">Authentication</AudienceLink> — Auth mode setup (affects `useAtlasAuth` behavior)
+- <AudienceLink saas="/guides/choosing-an-integration">Choosing an Integration</AudienceLink> — Compare widget, hooks, SDK, and REST API

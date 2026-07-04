@@ -14,7 +14,7 @@ Tool bridging and resource registration are handled internally by `@atlas/mcp` -
 </Callout>
 
 <Callout type="info">
-For one-command setup against Claude Desktop / Cursor / Continue, prefer `bunx @useatlas/mcp init --local` — see the [MCP guide](/guides/mcp). This page documents using `@useatlas/mcp` as an Atlas plugin inside an existing project.
+For one-command setup against Claude Desktop / Cursor / Continue, prefer `bunx @useatlas/mcp init --local` — see the <AudienceLink saas="/guides/mcp">MCP guide</AudienceLink>. This page documents using `@useatlas/mcp` as an Atlas plugin inside an existing project.
 </Callout>
 
 ## Installation
@@ -23,7 +23,7 @@ For one-command setup against Claude Desktop / Cursor / Continue, prefer `bunx @
 bun add @useatlas/mcp @modelcontextprotocol/sdk
 ```
 
-When loaded inside an Atlas project (monorepo dev or a `create-atlas-agent` scaffold), the `@atlas/mcp` server runtime is resolved via dynamic import — you don't need to depend on it directly. Standalone `bunx @useatlas/mcp serve` outside an Atlas project is intentionally not supported; the zero-config path for connecting any MCP client to Atlas is `bunx @useatlas/mcp init --hosted` against Atlas SaaS (see the [hosted endpoint reference](/guides/mcp#hosted-protocol-reference)).
+When loaded inside an Atlas project (monorepo dev or a `create-atlas-agent` scaffold), the `@atlas/mcp` server runtime is resolved via dynamic import — you don't need to depend on it directly. Standalone `bunx @useatlas/mcp serve` outside an Atlas project is intentionally not supported; the zero-config path for connecting any MCP client to Atlas is `bunx @useatlas/mcp init --hosted` against Atlas SaaS (see the <AudienceLink saas="/guides/mcp#hosted-protocol-reference">hosted endpoint reference</AudienceLink>).
 
 ## Configuration
 
@@ -81,7 +81,7 @@ Add Atlas as an MCP server in your Claude Desktop configuration:
 }
 ```
 
-See the [MCP guide](/guides/mcp) for full setup instructions.
+See the <AudienceLink saas="/guides/mcp">MCP guide</AudienceLink> for full setup instructions.
 
 ## Troubleshooting
 

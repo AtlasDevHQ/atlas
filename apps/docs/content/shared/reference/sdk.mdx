@@ -485,7 +485,7 @@ const { runs } = await atlas.scheduledTasks.listRuns(task.id, { limit: 10 });
 await atlas.scheduledTasks.delete(task.id);
 ```
 
-See [Scheduled Tasks](/guides/scheduled-tasks) for full configuration details.
+See <AudienceLink saas="/guides/scheduled-tasks">Scheduled Tasks</AudienceLink> for full configuration details.
 
 ---
 
@@ -641,7 +641,7 @@ const { plugins } = await atlas.admin.plugins();
 const pluginHealth = await atlas.admin.pluginHealth("clickhouse");
 ```
 
-See [Admin Console](/guides/admin-console) for details on each endpoint.
+See <AudienceLink saas="/guides/admin-console">Admin Console</AudienceLink> for details on each endpoint.
 
 ---
 
@@ -678,13 +678,13 @@ interface RollbackActionResponse {
 }
 ```
 
-See [Actions Framework](/guides/actions#rollback) for the full rollback lifecycle and error cases.
+See <AudienceLink saas="/guides/actions#rollback">Actions Framework</AudienceLink> for the full rollback lifecycle and error cases.
 
 ---
 
 ## Error Handling
 
-All API errors are thrown as `AtlasError` instances. See [Error Codes](/reference/error-codes) for the full catalog of every error code, HTTP status, retry guidance, and a complete retry-with-backoff example. See [Rate Limiting & Retry](/guides/rate-limiting) for backoff patterns and handling 429 responses.
+All API errors are thrown as `AtlasError` instances. See [Error Codes](/reference/error-codes) for the full catalog of every error code, HTTP status, retry guidance, and a complete retry-with-backoff example. See <AudienceLink saas="/guides/rate-limiting">Rate Limiting & Retry</AudienceLink> for backoff patterns and handling 429 responses.
 
 ```typescript
 import { AtlasError } from "@useatlas/sdk";
@@ -1053,7 +1053,7 @@ try {
 
 ## Cross-Environment Querying
 
-The cross-environment scope ([multi-datasource routing guide](/deployment/multi-datasource#cross-environment-scope-routing)) lets a single conversation route SQL across multiple group members (`us-int` + `eu` + `apac`) and merge the results. Wire-level, every `executeSQL` tool call now carries a `envContributions: ConnectionContribution[]` array — a 1-element array for single-env executions, one entry per group member for fanouts:
+The cross-environment scope (<AudienceLink saas="/deployment/multi-datasource#cross-environment-scope-routing">multi-datasource routing guide</AudienceLink>) lets a single conversation route SQL across multiple group members (`us-int` + `eu` + `apac`) and merge the results. Wire-level, every `executeSQL` tool call now carries a `envContributions: ConnectionContribution[]` array — a 1-element array for single-env executions, one entry per group member for fanouts:
 
 ```typescript
 import type {
@@ -1079,7 +1079,7 @@ function renderResult(result: ExecuteSqlSuccessResult) {
 }
 ```
 
-`ExecuteSqlResult` is a discriminated union — `success: true` carries `columns`, `rows`, `truncated`, and `envContributions`; `success: false` carries `error` and the partial `envContributions` that did execute (so partial failures stay observable). See the [Multi-Datasource Routing guide](/deployment/multi-datasource#cross-environment-scope-routing) for the partial-failure rendering pattern.
+`ExecuteSqlResult` is a discriminated union — `success: true` carries `columns`, `rows`, `truncated`, and `envContributions`; `success: false` carries `error` and the partial `envContributions` that did execute (so partial failures stay observable). See the <AudienceLink saas="/deployment/multi-datasource#cross-environment-scope-routing">Multi-Datasource Routing guide</AudienceLink> for the partial-failure rendering pattern.
 
 ---
 
@@ -1115,5 +1115,5 @@ This is useful when building custom UIs that load persisted conversations from t
 - [API Overview](/reference/api) — HTTP endpoints the SDK wraps
 - [Error Codes](/reference/error-codes) — Full catalog of every error code, retryable classification, and fix guidance
 - [React Hooks Reference](/reference/react) — React hooks that use the same API (for browser UIs)
-- [Rate Limiting & Retry](/guides/rate-limiting) — Server-side rate limit configuration and client-side retry patterns
-- [Embedding Widget](/guides/embedding-widget) — Drop-in chat widget (alternative to building a custom UI with the SDK)
+- <AudienceLink saas="/guides/rate-limiting">Rate Limiting & Retry</AudienceLink> — Server-side rate limit configuration and client-side retry patterns
+- <AudienceLink saas="/guides/embedding-widget">Embedding Widget</AudienceLink> — Drop-in chat widget (alternative to building a custom UI with the SDK)

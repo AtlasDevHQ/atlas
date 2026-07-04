@@ -8,7 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 The Knowledge Base is Atlas's fourth integration pillar (alongside datasources, chat platforms, and action targets, shipped in `v0.0.40`): a place to host the knowledge that informs data answers but isn't schema — business rules, runbooks, product definitions, deprecation notices. You upload it as plain markdown, review it, publish it, and the agent reads it alongside your semantic layer when answering questions.
 
 <Callout title="Prerequisites">
-On [app.useatlas.dev](https://app.useatlas.dev) there is nothing to set up — the Knowledge Base is available to every workspace admin out of the box. Self-hosted deployments need the internal database (`DATABASE_URL`) and [managed auth](/deployment/authentication#managed-auth): collections are organization-scoped, so the no-auth dev mode (`ATLAS_AUTH_MODE=none`) cannot reach them.
+On [app.useatlas.dev](https://app.useatlas.dev) there is nothing to set up — the Knowledge Base is available to every workspace admin out of the box. Self-hosted deployments need the internal database (`DATABASE_URL`) and managed auth: collections are organization-scoped, so the no-auth dev mode (`ATLAS_AUTH_MODE=none`) cannot reach them.
 </Callout>
 
 ---

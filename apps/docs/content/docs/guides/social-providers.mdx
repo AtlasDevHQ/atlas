@@ -13,7 +13,7 @@ import { Steps, Step } from "fumadocs-ui/components/steps";
 Atlas's managed auth (Better Auth) supports social login — no plugin required. Adding social providers requires a small configuration change to the `betterAuth()` call in `packages/api/src/lib/auth/server.ts`. This guide walks through setting up each provider.
 
 <Callout title="Prerequisites">
-- [Managed auth](/deployment/authentication#managed-auth) enabled (`BETTER_AUTH_SECRET` + `DATABASE_URL`)
+- Managed auth enabled (`BETTER_AUTH_SECRET` + `DATABASE_URL`)
 - `BETTER_AUTH_URL` set to your API's public URL (e.g. `https://api.example.com`)
 - OAuth credentials from the provider you want to enable
 </Callout>
@@ -373,7 +373,7 @@ BETTER_AUTH_TRUSTED_ORIGINS=https://app.example.com
 BETTER_AUTH_URL=https://api.example.com
 ```
 
-See [Cross-origin deployment](/deployment/authentication#cross-origin-deployment) for details.
+See Cross-origin deployment for details.
 
 ### Account linking
 
@@ -385,7 +385,7 @@ When a user signs in with a social provider using the same verified email as an 
 
 ## Related
 
-- [Authentication](/deployment/authentication) — full auth mode reference including managed auth setup
+- Authentication — full auth mode reference including managed auth setup
 - [Admin Console](/guides/admin-console) — manage users and roles
 - [Row-Level Security](/security/row-level-security) — tenant isolation with JWT claims
 - [Troubleshooting](/guides/troubleshooting#auth-issues) — general auth troubleshooting

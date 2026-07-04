@@ -320,7 +320,7 @@ Each branch of a UNION gets its own RLS conditions independently.
 
 ### "RLS is enabled but no authenticated user is available"
 
-Authentication is required. Check that your auth mode provides user context. See [Authentication](/deployment/authentication).
+Authentication is required. Check that your auth mode provides user context.
 
 ### "RLS policy requires claim X but it is missing"
 
@@ -395,7 +395,7 @@ When RLS is enabled, you will only see data that belongs to your organization or
 
 ## See Also
 
-- [Authentication](/deployment/authentication) — Auth mode setup (RLS requires an auth mode that provides user claims)
+- Authentication — Auth mode setup (RLS requires an auth mode that provides user claims)
 - [Configuration](/reference/config#rls-row-level-security) — Declarative RLS policies in `atlas.config.ts`
 - [Environment Variables](/reference/environment-variables#row-level-security) — Env var shorthand for a single RLS policy
 - [SQL Validation Pipeline](/security/sql-validation) — How RLS injection fits into the 7-layer validation pipeline

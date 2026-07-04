@@ -502,6 +502,10 @@ export async function addCard(opts: {
   title: string;
   sql: string;
   chartConfig?: DashboardChartConfig | null;
+  /** #3138 / #4318 — markdown body of a text / section card. NULL/omitted for a
+   *  chart card; the card kind is DERIVED from this column's presence in
+   *  `rowToCard`. A text card stores sql = '' and content = markdown. */
+  content?: string | null;
   /** Event annotations (#3209) — dated markers on a time-series card. Defaults
    *  to none (empty array) when omitted; never null (the column is NOT NULL). */
   annotations?: DashboardCardAnnotation[];
@@ -521,8 +525,8 @@ export async function addCard(opts: {
     const nextPos = (posRows[0]?.next_pos as number) ?? 0;
 
     const rows = await internalQuery<Record<string, unknown>>(
-      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, annotations, cached_columns, cached_rows, cached_at, connection_group_id, layout)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, content, annotations, cached_columns, cached_rows, cached_at, connection_group_id, layout)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING *`,
       [
         opts.dashboardId,
@@ -530,6 +534,9 @@ export async function addCard(opts: {
         opts.title,
         opts.sql,
         opts.chartConfig ? JSON.stringify(opts.chartConfig) : null,
+        // 0117 — NULL for a chart card; markdown for a text card. `rowToCard`
+        // derives the kind from this column's presence (#3138 / #4318).
+        opts.content ?? null,
         // 0121 — the column is NOT NULL DEFAULT '[]'; pass the explicit array
         // (or '[]' when absent) so a card always persists a defined value.
         JSON.stringify(opts.annotations ?? []),
@@ -557,6 +564,10 @@ export async function updateCard(
   dashboardId: string,
   updates: {
     title?: string;
+    /** #4318 — replace the card's SQL in place (REST card-SQL edit parity).
+     *  Omitted leaves the query unchanged; the new query is validated at
+     *  render/refresh time through the full pipeline, not on store. */
+    sql?: string;
     chartConfig?: DashboardChartConfig | null;
     /** Event annotations (#3209). `null` / omitted leaves them unchanged; an
      *  explicit array (including `[]`) replaces the card's markers. */
@@ -574,6 +585,10 @@ export async function updateCard(
   if (updates.title !== undefined) {
     setClauses.push(`title = $${paramIdx++}`);
     params.push(updates.title);
+  }
+  if (updates.sql !== undefined) {
+    setClauses.push(`sql = $${paramIdx++}`);
+    params.push(updates.sql);
   }
   if (updates.chartConfig !== undefined) {
     setClauses.push(`chart_config = $${paramIdx++}`);

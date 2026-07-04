@@ -13,6 +13,7 @@ import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { z } from "zod";
 import { createLogger, hashShareToken } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { isConnectionVisibleInMode } from "@atlas/api/lib/db/connection";
 import { verifyGroupBelongsToOrg } from "@atlas/api/lib/conversations";
 import {
   listSessionsForDashboard,
@@ -64,7 +65,7 @@ import {
   listStagedChangesForUser,
 } from "@atlas/api/lib/stage-tracker";
 import { SHARE_MODES } from "@useatlas/types/share";
-import { dashboardParametersSchema, renderCardRequestSchema, renderCardQuerySchema, refreshCardQuerySchema, dashboardChartConfigSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
+import { dashboardParametersSchema, renderCardRequestSchema, renderCardQuerySchema, refreshCardQuerySchema, dashboardChartConfigSchema, dashboardCardAnnotationsSchema, dashboardCardKindSchema, dashboardTextCardContentSchema } from "@useatlas/schemas";
 import {
   resolveDashboardParameterValues,
   extractPlaceholderNames,
@@ -109,23 +110,72 @@ const UpdateDashboardSchema = z.object({
   parameters: dashboardParametersSchema.optional(),
 });
 
-const AddCardSchema = z.object({
-  title: z.string().min(1).max(200),
-  sql: z.string().min(1),
-  chartConfig: ChartConfigSchema.nullable().optional(),
-  /** Event annotations (#3209) — dated markers rendered as vertical reference
-   *  lines on a line / area card. Omitted → the card has none. */
-  annotations: dashboardCardAnnotationsSchema.optional(),
-  cachedColumns: z.array(z.string()).nullable().optional(),
-  cachedRows: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-  /** Group-scoped execution target (1.4.4). Resolved to a physical
-   * connection at view time via the group's primary member. */
-  connectionGroupId: z.string().nullable().optional(),
-  layout: CardLayoutSchema.nullable().optional(),
-});
+const AddCardSchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    // #4318 — `kind` defaults to "chart" so every existing caller (which omits
+    // it) keeps working unchanged. A "text" / section card carries `content`
+    // (markdown) and NO `sql`; a "chart" card carries `sql` and no `content`.
+    // This widens the REST input surface to the parity the draft / bound-editor
+    // path already has (text cards + a card kind) — the routing itself stays
+    // draft-first via `applyEditToDraft`.
+    kind: dashboardCardKindSchema.optional(),
+    // Optional at the object level; the kind-specific requirement is enforced in
+    // the `.superRefine` below (chart → sql required; text → sql forbidden).
+    sql: z.string().min(1).optional(),
+    /** Markdown body of a text / section card (#3138). Required for a text
+     *  card, rejected on a chart card (enforced in `.superRefine`). */
+    content: dashboardTextCardContentSchema.optional(),
+    chartConfig: ChartConfigSchema.nullable().optional(),
+    /** Event annotations (#3209) — dated markers rendered as vertical reference
+     *  lines on a line / area card. Omitted → the card has none. */
+    annotations: dashboardCardAnnotationsSchema.optional(),
+    cachedColumns: z.array(z.string()).nullable().optional(),
+    cachedRows: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+    /** Group-scoped execution target (1.4.4). Resolved to a physical
+     * connection at view time via the group's primary member. */
+    connectionGroupId: z.string().nullable().optional(),
+    layout: CardLayoutSchema.nullable().optional(),
+  })
+  .superRefine((v, ctx) => {
+    const kind = v.kind ?? "chart";
+    if (kind === "text") {
+      // A text card renders its markdown; it never touches the SQL pipeline.
+      if (v.content === undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "A text card requires `content`.", path: ["content"] });
+      }
+      if (v.sql !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "A text card cannot carry `sql`.", path: ["sql"] });
+      }
+      if (v.chartConfig != null) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "A text card cannot carry `chartConfig`.", path: ["chartConfig"] });
+      }
+    } else {
+      if (v.sql === undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "A chart card requires `sql`.", path: ["sql"] });
+      }
+      if (v.content !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "`content` is only valid on a text card.", path: ["content"] });
+      }
+    }
+  });
 
 const UpdateCardSchema = z.object({
   title: z.string().min(1).max(200).optional(),
+  // #4318 — card-SQL edits are reachable through the REST route, matching the
+  // draft / bound-editor `editSql` capability (which the input surface omitted).
+  // Omitted → the card's query is unchanged; a chart card's SQL is replaced in
+  // place. The new query runs through the full validation/execution pipeline at
+  // render/refresh time (as the draft path does), not at store time. Text-card
+  // content edits are intentionally NOT here: the draft/bound surface has no
+  // "edit markdown in place" op either (remove + re-add), so mirroring it keeps
+  // parity and avoids the `content`-presence kind-flip hazard on a chart card.
+  // The update path carries no `kind`, so a `sql` edit on a TEXT card is NOT
+  // rejected here — it persists a dead, non-empty `sql` the card ignores (kind
+  // stays "text" because `rowToCard` derives kind from content-presence, which
+  // wins). Inert, not a discriminant corruption; the bound editor rejects it for
+  // cleanliness, but the REST seam has no kind context without an extra read.
+  sql: z.string().min(1).optional(),
   chartConfig: ChartConfigSchema.nullable().optional(),
   /** Replace the card's event annotations (#3209). Omitted → unchanged; an
    *  explicit array (including `[]` to clear) replaces them. */
@@ -765,7 +815,10 @@ const renderCardRoute = createRoute({
       cardId: z.string().openapi({ param: { name: "cardId", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
     }),
     query: renderCardQuerySchema,
-    body: { content: { "application/json": { schema: renderCardRequestSchema } } },
+    // #4318 — the body is OPTIONAL: a body-less `POST …/render` falls back to
+    // every parameter's server-resolved default (same as the `export` route,
+    // `required: false`). Marking it required would 500 an empty POST.
+    body: { content: { "application/json": { schema: renderCardRequestSchema } }, required: false },
   },
   responses: {
     200: {
@@ -1833,7 +1886,7 @@ authed.openapi(
       // #3207 — a KPI card requesting an automatic prior-period comparison must
       // filter by both window params, declared as `date`. Reject up front so a
       // misconfigured card can't persist a delta the render path can't produce.
-      const addAutoErr = validateAutoComparison(parsed.sql, parsed.chartConfig?.kpi, dash.data.parameters);
+      const addAutoErr = validateAutoComparison(parsed.sql ?? "", parsed.chartConfig?.kpi, dash.data.parameters);
       if (addAutoErr) {
         return c.json({ error: "invalid_request", message: addAutoErr, requestId }, 400);
       }
@@ -1863,14 +1916,21 @@ authed.openapi(
       // it into the draft snapshot. `cachedColumns`/`cachedRows` are a
       // published-cache concept and are intentionally dropped on the draft
       // path — a draft card's data comes from a draft-aware render.
+      // #4318 — a text / section card carries markdown `content`, no SQL. A
+      // chart card carries `sql`, no content. The schema's `.superRefine`
+      // guarantees the kind-specific fields are present, so `sql ?? ""` and the
+      // kind-gated content are always well-formed here.
+      const kind = parsed.kind ?? "chart";
       const uid = user?.id;
       if (shouldRouteToDraft(uid)) {
         const draftCard: DashboardSnapshotCard = {
           id: randomUUID(),
           position: 0,
           title: parsed.title,
-          sql: parsed.sql,
+          // A text card stores sql = '' and content = markdown (#3138).
+          sql: parsed.sql ?? "",
           chartConfig: parsed.chartConfig ?? null,
+          content: kind === "text" ? parsed.content ?? null : null,
           annotations: parsed.annotations ?? [],
           connectionGroupId: parsed.connectionGroupId ?? null,
           layout: parsed.layout ?? null,
@@ -1889,8 +1949,9 @@ authed.openapi(
       const result = yield* Effect.promise(() => addCard({
         dashboardId: id,
         title: parsed.title,
-        sql: parsed.sql,
+        sql: parsed.sql ?? "",
         chartConfig: parsed.chartConfig ?? null,
+        content: kind === "text" ? parsed.content ?? null : null,
         annotations: parsed.annotations ?? [],
         cachedColumns: parsed.cachedColumns ?? null,
         cachedRows: parsed.cachedRows ?? null,
@@ -1938,10 +1999,12 @@ authed.openapi(
       const uid = user?.id;
       const routeDraft = shouldRouteToDraft(uid);
 
-      // #3207 — if this update turns on autoComparison, validate it against the
-      // card's EXISTING sql (updateCard never changes the query) + the
-      // dashboard's params. Source the SQL from the DRAFT when routing to a
-      // draft (the card may only exist in the draft), else the published row.
+      // #3207 / #4318 — if this update turns on autoComparison, validate it
+      // against the sql the card WILL have after the edit + the dashboard's
+      // params. That's `parsed.sql` when this same PATCH rewrites the query
+      // (#4318 made SQL edits reachable here), otherwise the card's existing
+      // sql. Source the existing sql from the DRAFT when routing to a draft
+      // (the card may only exist in the draft), else the published row.
       if (parsed.chartConfig?.kpi?.autoComparison) {
         let existingSql: string | undefined;
         if (routeDraft) {
@@ -1953,9 +2016,10 @@ authed.openapi(
           const existing = yield* Effect.promise(() => getCard(cardId, id));
           if (existing.ok) existingSql = existing.data.sql;
         }
-        if (existingSql !== undefined) {
+        const effectiveSql = parsed.sql ?? existingSql;
+        if (effectiveSql !== undefined) {
           const updateAutoErr = validateAutoComparison(
-            existingSql,
+            effectiveSql,
             parsed.chartConfig.kpi,
             dash.data.parameters,
           );
@@ -2046,8 +2110,34 @@ authed.openapi(removeCardRoute, async (c) => {
 
 authed.openapi(previewCardRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
+    const { requestId, atlasMode } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
     const { sql, connectionId } = c.req.valid("json");
+
+    // #4318 — verify a client-supplied `connectionId` belongs to the caller's
+    // org BEFORE executing. This is the one card-execution surface that took
+    // `connectionId` on trust; `addCard` already gates `connectionGroupId` via
+    // `verifyGroupBelongsToOrg`. Fail CLOSED: an out-of-org (or unverifiable)
+    // connection 403s rather than running against another tenant's datasource.
+    // `isConnectionVisibleInMode` fails closed on a DB error and returns true
+    // for a self-hosted deploy with no internal DB, so single-tenant self-host
+    // is unaffected. Only checked when an org context is present — a self-hosted
+    // caller with no org can't cross a tenant boundary that doesn't exist.
+    if (connectionId && orgId) {
+      const visible = yield* Effect.promise(() =>
+        isConnectionVisibleInMode(orgId, connectionId, atlasMode),
+      );
+      if (!visible) {
+        return c.json(
+          {
+            error: "connection_forbidden",
+            message: "The requested connection is not available in this workspace.",
+            requestId,
+          },
+          403,
+        );
+      }
+    }
 
     const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
     const outcome = yield* Effect.promise(() =>
@@ -2219,7 +2309,10 @@ authed.openapi(renderCardRoute, async (c) => {
     }
     const { format, view } = c.req.valid("query");
     const asCsv = format === "csv";
-    const { parameters: suppliedParameters } = c.req.valid("json");
+    // #4318 — a body-less render is valid: fall back to `{}` (→ every parameter
+    // resolves to its default) rather than throwing on `undefined`. Mirrors the
+    // `export` route's `?? {}`.
+    const { parameters: suppliedParameters } = c.req.valid("json") ?? {};
 
     const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
     if (!dash.ok) {

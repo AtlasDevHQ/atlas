@@ -199,6 +199,11 @@ export type DraftChange =
       cardId: string;
       updates: {
         title?: string;
+        /** #4318 — replace the card's SQL in place (the REST update surface's
+         *  parity with the bound-editor `editSql` op). Undefined leaves the
+         *  query unchanged. The new query is validated at render/refresh time
+         *  through the full SQL pipeline, not on store — same as `editSql`. */
+        sql?: string;
         chartConfig?: DashboardChartConfig | null;
         /** #3209 — replace the card's event markers. Undefined leaves them
          *  unchanged (the draft card keeps its current annotations). */
@@ -245,6 +250,9 @@ export function applyChangeToDraft(
           ? {
               ...c,
               ...(change.updates.title !== undefined && { title: change.updates.title }),
+              // #4318 — a card-SQL edit replaces the query in place, matching
+              // the `editSql` change the stage tracker dispatches.
+              ...(change.updates.sql !== undefined && { sql: change.updates.sql }),
               ...(change.updates.chartConfig !== undefined && { chartConfig: change.updates.chartConfig }),
               ...(change.updates.annotations !== undefined && { annotations: change.updates.annotations }),
               ...(change.updates.layout !== undefined && { layout: change.updates.layout }),

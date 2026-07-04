@@ -62,6 +62,7 @@ import type {
 } from "@useatlas/chat";
 import type { ApprovalRequestOrigin } from "@useatlas/types";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { answerStyleForPresentationMode } from "@atlas/api/lib/answer-styles";
 import { BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
 import { ClaimRequiredError, ClaimCheckFailedError } from "@atlas/api/lib/billing/claim-gate";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -1394,8 +1395,9 @@ interface RunAgentArgs {
  * Shared agent-loop invocation + result mapping. Slack, Telegram, and
  * Discord all funnel through here once their per-platform tenant
  * resolution + actor
- * binding is done. The presentation-mode default ("conversational") is
- * load-bearing for #2705; every chat-plugin path produces the
+ * binding is done. The bridge's legacy presentation-mode signal resolves
+ * through the answer-style registry (#4299) with a "conversational"
+ * fallback — load-bearing for #2705: every chat-plugin path produces the
  * conversational shape unless the bridge explicitly opts out.
  */
 async function runAgentAndMap(args: RunAgentArgs): Promise<ChatQueryResult> {
@@ -1450,13 +1452,13 @@ async function runAgentAndMap(args: RunAgentArgs): Promise<ChatQueryResult> {
       actor,
       agentOrigin,
       ...(conversationId ? { conversationId } : {}),
-      // #2705 — propagate the bridge's presentation-mode signal so the
-      // chat path produces the conversational shape. Default to
-      // "conversational" because every call through this entrypoint
-      // originates from the chat plugin's bridge (Slack/Telegram/etc.);
-      // if the bridge predates #2705, we still want the chat-platform
-      // shape rather than the web view.
-      presentationMode: presentationMode ?? "conversational",
+      // #2705/#4299 — the chat-plugin boundary still speaks the legacy
+      // presentation-mode signal; resolve it through the answer-style
+      // registry here. The "conversational" fallback is load-bearing:
+      // every call through this entrypoint originates from the chat
+      // plugin's bridge (Slack/Telegram/etc.), so an absent signal must
+      // still produce the chat-platform shape rather than the web voice.
+      answerStyle: answerStyleForPresentationMode(presentationMode, "conversational"),
     });
   } catch (err) {
     // #3419 — a billing-enforcement block from the seam in

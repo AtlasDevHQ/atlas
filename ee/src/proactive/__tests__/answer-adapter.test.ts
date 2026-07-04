@@ -42,6 +42,8 @@ interface ObservedRunAgentCall {
   agentOrigin?: string;
   requestId?: string;
   hasCustomToolRegistry: boolean;
+  /** #4299 — the answer style the adapter resolved for this run. */
+  answerStyle?: string;
 }
 const observedRunAgentCalls: ObservedRunAgentCall[] = [];
 
@@ -69,6 +71,7 @@ mock.module("@atlas/api/lib/agent", () => ({
   runAgent: async (params: {
     messages: { parts: { text: string }[] }[];
     tools?: unknown;
+    answerStyle?: string;
   }) => {
     // Capture observed context inside the mocked runAgent so the test
     // can assert which identity the adapter bound to RequestContext.
@@ -92,6 +95,7 @@ mock.module("@atlas/api/lib/agent", () => ({
       // unlinked-asker path. The unlinked path test asserts truthy;
       // linked path tests assert falsy.
       hasCustomToolRegistry: params.tools !== undefined,
+      ...(params.answerStyle !== undefined ? { answerStyle: params.answerStyle } : {}),
     });
 
     if (nextRunAgentError) throw nextRunAgentError;
@@ -229,6 +233,44 @@ describe("createProactiveAnswerAdapter — linked path", () => {
     // Linked askers get the default ToolRegistry — no `tools` arg
     // passed through to runAgent.
     expect(observedRunAgentCalls[0].hasCustomToolRegistry).toBe(false);
+    // #4299 — no presentationMode on the context: the adapter resolves the
+    // analyst fallback (successor of the retired addendum-free "developer"
+    // posture for hosts predating #2705).
+    expect(observedRunAgentCalls[0].answerStyle).toBe("analyst");
+
+    await runtime.dispose();
+  });
+
+  it("passes the listener's conversational presentation mode through as the conversational style (#4299)", async () => {
+    nextRunAgentResult = {
+      text: Promise.resolve("Conversational answer"),
+      steps: Promise.resolve([]),
+      totalUsage: Promise.resolve({ inputTokens: 1, outputTokens: 1 }),
+    };
+
+    const runtime = buildRuntime();
+    const linkedActor = createAtlasUser(
+      "user-linked",
+      "managed",
+      "linked@example.com",
+      { role: "admin", activeOrganizationId: "org-linked" },
+    );
+
+    const adapter = createProactiveAnswerAdapter(runtime, {
+      resolveOrgForUser: async () => "org-linked",
+      resolveActor: async () => linkedActor,
+    });
+
+    await adapter("how many customers?", {
+      threadId: "T-1",
+      asker: slackAsker,
+      atlasUserId: assertAtlasUserId("user-linked"),
+      workspaceId: assertWorkspaceId("org-linked"),
+      presentationMode: "conversational",
+    });
+
+    expect(observedRunAgentCalls).toHaveLength(1);
+    expect(observedRunAgentCalls[0].answerStyle).toBe("conversational");
 
     await runtime.dispose();
   });

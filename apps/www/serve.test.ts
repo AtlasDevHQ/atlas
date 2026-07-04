@@ -25,7 +25,7 @@ let handleRequest: (req: Request) => Promise<Response>;
 let fixtureDir: string;
 let prevOutDir: string | undefined;
 
-const AUTH_MD_BODY = "# Connecting an agent to Atlas\n";
+const AUTH_MD_BODY = "# auth.md\n";
 
 beforeAll(async () => {
   fixtureDir = mkdtempSync(join(tmpdir(), "www-serve-"));
@@ -66,7 +66,7 @@ describe("apex agent discovery — /auth.md", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
     expect(res.headers.get("access-control-allow-origin")).toBe("*");
-    expect(await res.text()).toContain("Connecting an agent to Atlas");
+    expect(await res.text()).toContain("# auth.md");
   });
 
   it("answers the OPTIONS preflight it advertises with 204 + CORS", async () => {

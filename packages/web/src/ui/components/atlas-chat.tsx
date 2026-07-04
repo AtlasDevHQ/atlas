@@ -22,6 +22,7 @@ import { useStopHandler } from "../hooks/use-stop-handler";
 import { ApiKeyBar } from "./chat/api-key-bar";
 import { TypingIndicator } from "./chat/typing-indicator";
 import { ToolPart } from "./chat/tool-part";
+import { FinishedTurn } from "./chat/finished-turn";
 import { Markdown } from "./chat/markdown";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { SuggestionChips } from "./chat/suggestion-chips";
@@ -1135,6 +1136,14 @@ export function AtlasChat({
                       m.role === "assistant" &&
                       msgIndex === messages.length - 1;
 
+                    // #4298 — only the actively-streaming turn keeps the live
+                    // part-by-part renderer; every completed turn renders
+                    // answer-first (receipt → answer → promoted artifact) via
+                    // the turn partitioner. Earlier messages are completed by
+                    // definition; the last one is completed once the stream
+                    // settles.
+                    const isStreamingTurn = isLastAssistant && isLoading;
+
                     // Skip rendering assistant messages with no visible content
                     // (happens when stream errors before producing any text).
                     // A message with attached context warnings is still
@@ -1160,27 +1169,31 @@ export function AtlasChat({
                         {hasWarnings && warningBucket && (
                           <ContextWarningBanner warnings={warningBucket.warnings} />
                         )}
-                        {m.parts?.map((part, i) => {
-                          if (part.type === "text" && part.text.trim()) {
-                            const displayText = parseSuggestions(part.text).text;
-                            if (!displayText.trim()) return null;
-                            return (
-                              <div key={i} className="max-w-[90%]">
-                                <div className="rounded-xl bg-zinc-100 px-4 py-3 text-sm text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">
-                                  <Markdown content={displayText} />
+                        {isStreamingTurn ? (
+                          m.parts?.map((part, i) => {
+                            if (part.type === "text" && part.text.trim()) {
+                              const displayText = parseSuggestions(part.text).text;
+                              if (!displayText.trim()) return null;
+                              return (
+                                <div key={i} className="max-w-[90%]">
+                                  <div className="rounded-xl bg-zinc-100 px-4 py-3 text-sm text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">
+                                    <Markdown content={displayText} />
+                                  </div>
                                 </div>
-                              </div>
-                            );
-                          }
-                          if (isToolUIPart(part)) {
-                            return (
-                              <div key={i} className="max-w-[95%]">
-                                <ToolPart part={part} pythonProgress={pythonProgress} />
-                              </div>
-                            );
-                          }
-                          return null;
-                        })}
+                              );
+                            }
+                            if (isToolUIPart(part)) {
+                              return (
+                                <div key={i} className="max-w-[95%]">
+                                  <ToolPart part={part} pythonProgress={pythonProgress} />
+                                </div>
+                              );
+                            }
+                            return null;
+                          })
+                        ) : (
+                          <FinishedTurn parts={m.parts} pythonProgress={pythonProgress} />
+                        )}
                         {/* Show inline error when the last assistant message is empty (stream failed before producing content) */}
                         {isLastAssistant && !hasVisibleParts && !isLoading && error && (
                           <div className="max-w-[90%]">

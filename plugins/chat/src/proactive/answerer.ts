@@ -191,9 +191,11 @@ export type ProactiveExecuteQuery = (
      * listener always passes `"conversational"` because the Slack
      * audience is non-analyst team members reading a thread — the
      * agent should produce a 1-2 sentence prose answer rather than the
-     * web-chat developer view. Hosts whose `executeQueryProactive`
-     * predates #2705 ignore the field and serve the developer-mode
-     * body, which is the backward-compatible default.
+     * analyst-grade web view. The Atlas host resolves this legacy
+     * signal through its answer-style registry (#4299): absent (a
+     * host predating #2705) or `"developer"` now yields the analyst
+     * voice — the addendum-free "developer" body no longer exists as
+     * a servable shape.
      */
     presentationMode?: "developer" | "conversational";
   }>,

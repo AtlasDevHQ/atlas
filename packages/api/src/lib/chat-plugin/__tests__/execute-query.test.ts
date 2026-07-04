@@ -32,6 +32,7 @@ interface CapturedAgentCall {
     agentOrigin?: string;
     conversationId?: string;
     priorMessages?: Array<{ role: string; content: string }>;
+    answerStyle?: string;
   };
 }
 const capturedAgentCalls: CapturedAgentCall[] = [];
@@ -45,6 +46,7 @@ const mockExecuteAgentQuery: Mock<
       agentOrigin?: string;
       conversationId?: string;
       priorMessages?: Array<{ role: string; content: string }>;
+      answerStyle?: string;
     },
   ) => Promise<{
     answer: string;
@@ -243,6 +245,49 @@ describe("chat-plugin executeQuery host helper", () => {
     });
 
     expect(capturedAgentCalls[0]!.options?.agentOrigin).toBe("slack");
+  });
+
+  it("resolves answerStyle='conversational' when the bridge sends no presentation mode (#4299)", async () => {
+    // The load-bearing chat-platform default: every call through this
+    // entrypoint originates from a chat bridge, so an absent signal must
+    // still produce the conversational voice — never the web analyst voice.
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await runExecuteQuery("test question", {
+      threadId: "slack:C123-1234.5678",
+      adapter: { name: "slack" },
+      rawMessage: {
+        team_id: "T0ABC",
+        user: "U0XYZ",
+        channel: "C123",
+        ts: "1234.5678",
+      },
+    });
+
+    expect(capturedAgentCalls[0]!.options?.answerStyle).toBe("conversational");
+  });
+
+  it("maps the bridge's explicit presentation-mode signal through the registry (#4299)", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    const base = {
+      threadId: "slack:C123-1234.5678",
+      adapter: { name: "slack" as const },
+      rawMessage: {
+        team_id: "T0ABC",
+        user: "U0XYZ",
+        channel: "C123",
+        ts: "1234.5678",
+      },
+    };
+
+    await runExecuteQuery("q1", { ...base, presentationMode: "conversational" });
+    expect(capturedAgentCalls[0]!.options?.answerStyle).toBe("conversational");
+
+    // A bridge explicitly opting out of conversational gets the analyst
+    // successor of the retired addendum-free "developer" view.
+    await runExecuteQuery("q2", { ...base, presentationMode: "developer" });
+    expect(capturedAgentCalls[1]!.options?.answerStyle).toBe("analyst");
   });
 
   it("rate-limit key for thread follow-up is team-wide `slack:<teamId>` — matches slack.ts:491", async () => {

@@ -54,20 +54,22 @@ export type ChatMessage = { role: "user" | "assistant"; content: string };
 /**
  * Presentation mode for the Atlas agent's response (#2705).
  *
- * - `"developer"` (default for the web chat surface): analyst-grade
- *   output — full markdown, SQL code blocks, tables, glossary
- *   disambiguation, entity links.
+ * - `"developer"`: analyst-grade output — full markdown, SQL code
+ *   blocks, tables. Since #4299 the Atlas host resolves this legacy
+ *   arm through its answer-style registry to the `analyst` voice —
+ *   the answer-first successor of the original developer body.
  * - `"conversational"`: 1-2 sentence prose answers for Slack
  *   @mentions and proactive replies, where the audience is a
  *   non-analyst team member skimming a thread. Suppresses SQL,
  *   markdown tables, and glossary lectures by default; the chat
  *   plugin pairs this with progressive-disclosure buttons that
- *   surface the developer-mode view on demand.
+ *   surface the SQL and full result tables on demand.
  *
  * Threaded through `executeQuery` / `executeQueryStream` and
  * `executeQueryProactive` so the host can adjust the system prompt
- * accordingly. Backward-compatible: when the host's callback ignores
- * the field, behavior matches pre-#2705 ("developer" mode).
+ * accordingly. When the signal is absent, the host picks the surface
+ * fallback (the Atlas host: conversational at the chat-plugin
+ * entrypoint, analyst on the proactive adapter — #4299).
  */
 export type PresentationMode = "developer" | "conversational";
 
@@ -145,9 +147,9 @@ export interface ChatExecuteQueryContext {
    * Presentation mode for the agent's response (#2705). Set by the
    * bridge to `"conversational"` for @mention and proactive paths —
    * the Slack audience is non-analyst team members skimming a
-   * thread. Hosts whose `executeQuery` callback predates #2705
-   * ignore the field and serve the developer-mode body, which is the
-   * backward-compatible default.
+   * thread. The Atlas host resolves this legacy signal through its
+   * answer-style registry (#4299); when the field is absent, the
+   * chat-plugin entrypoint falls back to the conversational voice.
    */
   presentationMode?: PresentationMode;
 }

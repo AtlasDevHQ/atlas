@@ -104,6 +104,17 @@ export async function renderDashboardCard(
 }
 
 /**
+ * A card the render batch will actually POST for — a SQL-backed chart / kpi /
+ * table card, not a `text` section block (which has no SQL). Shared so the
+ * page's "flip to loading" set and this batch's render set are derived from the
+ * SAME predicate and can't drift (a divergence would strand a card on the
+ * loading spinner with no phase entry). (#4321)
+ */
+export function isRenderableCard(card: Pick<DashboardCard, "kind">): boolean {
+  return card.kind !== "text";
+}
+
+/**
  * Render every CHART card in one batch (text cards skipped). The override map is
  * bound identically across cards. Resolves once all renders settle — each entry
  * carries its own ok/err so partial failures are reported per card, not as a
@@ -114,6 +125,6 @@ export function renderDashboardCards(
   overrides: ParameterValues,
   ctx: CardRenderContext,
 ): Promise<CardRenderEntry[]> {
-  const chartCards = cards.filter((c) => c.kind !== "text");
+  const chartCards = cards.filter(isRenderableCard);
   return Promise.all(chartCards.map((card) => renderDashboardCard(card, overrides, ctx)));
 }

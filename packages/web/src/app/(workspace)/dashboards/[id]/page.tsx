@@ -40,7 +40,7 @@ import {
   normalizeDrilldownValue,
 } from "./search-params";
 import { activeFilters, incompatibleCardIds } from "./cross-filter";
-import { renderDashboardCard, renderDashboardCards } from "./dashboard-card-render";
+import { renderDashboardCard, renderDashboardCards, isRenderableCard } from "./dashboard-card-render";
 import { foldRenderEntries, mergeOverlays, phaseTag, type TileOverlay } from "./tile-phases";
 import type { TileRenderPhase } from "@/ui/components/dashboards/tile-status";
 import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banner";
@@ -761,7 +761,7 @@ export default function DashboardViewPage() {
     // #4321 — mark every chart card `loading` up front. A card still shows its
     // prior data (dimmed) while its render is in flight; a card with no data yet
     // shows the loading placeholder. This is the per-tile loading state.
-    const chartCardIds = dashboard.cards.filter((c) => c.kind !== "text").map((c) => c.id);
+    const chartCardIds = dashboard.cards.filter(isRenderableCard).map((c) => c.id);
     setRenderPhases((prev) => {
       const next = { ...prev };
       for (const cid of chartCardIds) next[cid] = "loading";
@@ -836,24 +836,35 @@ export default function DashboardViewPage() {
     const seq = paramReqSeq.current;
     const currentOverrides = parseOverrides(dparamsRaw);
     setRenderPhases((prev) => ({ ...prev, [cardId]: "loading" }));
-    const entry = await renderDashboardCard(card, currentOverrides, {
-      apiUrl,
-      dashboardId: id,
-      isCrossOrigin,
-      view: editing ? "draft" : "published",
-    });
-    if (seq !== paramReqSeq.current) return;
-    if (entry.ok) {
-      const renderedAt = new Date().toISOString();
-      setParamResults((prev) => ({
-        ...prev,
-        [cardId]: { columns: entry.columns, rows: entry.rows, renderedAt },
-      }));
-      setRenderPhases((prev) => ({ ...prev, [cardId]: "ok" }));
-      if (entry.comparison !== undefined) {
-        setComparisons((prev) => ({ ...prev, [cardId]: entry.comparison ?? null }));
+    try {
+      const entry = await renderDashboardCard(card, currentOverrides, {
+        apiUrl,
+        dashboardId: id,
+        isCrossOrigin,
+        view: editing ? "draft" : "published",
+      });
+      if (seq !== paramReqSeq.current) return;
+      if (entry.ok) {
+        const renderedAt = new Date().toISOString();
+        setParamResults((prev) => ({
+          ...prev,
+          [cardId]: { columns: entry.columns, rows: entry.rows, renderedAt },
+        }));
+        setRenderPhases((prev) => ({ ...prev, [cardId]: "ok" }));
+        if (entry.comparison !== undefined) {
+          setComparisons((prev) => ({ ...prev, [cardId]: entry.comparison ?? null }));
+        }
+      } else {
+        setRenderPhases((prev) => ({ ...prev, [cardId]: "error" }));
       }
-    } else {
+    } catch (err) {
+      // Symmetric with the batch route: `renderDashboardCard` is contractually
+      // no-throw, but if a future refactor lets one escape, flip THIS tile
+      // `loading → error` (→ stale/errored + retry) rather than stranding it on
+      // the spinner forever — there's no guaranteed superseding event here.
+      if (seq !== paramReqSeq.current) return;
+      const message = err instanceof Error ? err.message : String(err);
+      console.debug("[dashboard] tile retry failed", { dashboardId: id, cardId, error: message });
       setRenderPhases((prev) => ({ ...prev, [cardId]: "error" }));
     }
   }

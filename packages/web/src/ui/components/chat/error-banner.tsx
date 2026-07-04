@@ -6,26 +6,28 @@ import { parseChatError, type AuthMode, type ClientErrorCode } from "../../lib/t
 import { WifiOff, ServerCrash, ShieldAlert, Clock, AlertTriangle, MessageSquarePlus, X } from "lucide-react";
 
 /**
- * A failed chat-surface action (send / load / pin / unpin / resume) described
- * for `ActionErrorBanner`. Unlike the chat-stream `ErrorBanner` below — which
- * parses a wire `Error` via `parseChatError` — these failures originate from
- * explicit fetch call sites that already know the user-facing title, any
- * server-provided detail/request id, and how to re-run the action (#4297).
+ * A failure (or standing error condition) on the chat surface, described for
+ * `ActionErrorBanner` — failed actions (send / load / pin / unpin / resume) as
+ * well as standing conditions like the transport health warning or the
+ * conversation-list fetch error. Unlike the chat-stream `ErrorBanner` below —
+ * which parses a wire `Error` via `parseChatError` — these come from call
+ * sites that already know the user-facing title, any server-provided
+ * detail/request id, and — when retryable — how to re-run the action (#4297).
  */
 export interface ChatActionFailure {
-  title: string;
-  detail?: string;
-  requestId?: string;
+  readonly title: string;
+  readonly detail?: string;
+  readonly requestId?: string;
   /** Re-runs the failed action. Omit when the action isn't retryable. */
-  retry?: () => void;
+  readonly retry?: () => void;
 }
 
 /**
  * Structured error surface for failed chat actions — the same visual grade as
  * `ErrorBanner` (icon, title, detail, request id, retry) but fed by a
- * `ChatActionFailure` instead of a chat-stream `Error`. Failures rendered here
- * are persistent: they never auto-dismiss, and clear only when retried,
- * superseded by a newer action, or explicitly dismissed via `onDismiss`.
+ * `ChatActionFailure` instead of a chat-stream `Error`. The component never
+ * auto-dismisses; callers keep it mounted until the failure is retried,
+ * superseded, resolved, or dismissed via `onDismiss` (#4297).
  */
 export function ActionErrorBanner({
   failure,

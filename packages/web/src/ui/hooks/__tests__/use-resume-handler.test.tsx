@@ -95,4 +95,28 @@ describe("useResumeHandler (#3749)", () => {
     });
     expect(opts.regenerate).not.toHaveBeenCalled();
   });
+
+  // #4297 — onStart is the caller's supersede seam for its failure banner: it
+  // must fire exactly when a resume actually begins, and NEVER on a guarded
+  // no-op call (otherwise a click could erase the banner without retrying).
+  test("onStart fires when a resume actually begins", async () => {
+    const onStart = mock(() => {});
+    const opts = makeOpts({ onStart });
+    const { result } = renderHook(() => useResumeHandler(opts));
+    await act(async () => {
+      result.current.resume();
+    });
+    expect(onStart).toHaveBeenCalledTimes(1);
+  });
+
+  test("onStart does NOT fire on a guarded no-op call (isLoading)", async () => {
+    const onStart = mock(() => {});
+    const opts = makeOpts({ onStart, isLoading: true });
+    const { result } = renderHook(() => useResumeHandler(opts));
+    await act(async () => {
+      result.current.resume();
+    });
+    expect(onStart).not.toHaveBeenCalled();
+    expect(opts.regenerate).not.toHaveBeenCalled();
+  });
 });

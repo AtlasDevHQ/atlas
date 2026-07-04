@@ -18,7 +18,14 @@ export interface UseResumeHandlerOptions {
   isLoading: boolean;
   /** Drop any unattached warning frames before the resumed stream starts. */
   resetPendingWarnings: () => void;
-  /** Surface a transient failure message to the user. */
+  /**
+   * #4297 — fires when a resume attempt actually begins, i.e. AFTER the
+   * re-entrancy guard passes. Callers clear their resume-failure surface here
+   * rather than before calling `resume()`, so a guarded no-op call can never
+   * erase a failure banner without a retry actually happening.
+   */
+  onStart?: () => void;
+  /** Surface the failure to the user (rendered persistently — see #4297). */
   onError: (message: string) => void;
 }
 
@@ -36,7 +43,8 @@ export interface UseResumeHandlerReturn {
  *
  *   1. re-entrancy guard — ignore while already resuming or a stream is live, so
  *      a double-click can't fork the turn or double-charge the step budget;
- *   2. optimistic clear of the banner + set the in-flight flag;
+ *   2. set the in-flight flag, fire `onStart` (the caller's failure-banner
+ *      supersede seam — #4297), and optimistically clear the run-status banner;
  *   3. `regenerate({ body: { [ATLAS_RESUME_MARKER]: true } })` — NOT `sendMessage`,
  *      so no phantom user message is appended; the marker routes it to the resume
  *      endpoint via the transport;
@@ -51,6 +59,7 @@ export function useResumeHandler(opts: UseResumeHandlerOptions): UseResumeHandle
     refetchRunStatus,
     isLoading,
     resetPendingWarnings,
+    onStart,
     onError,
   } = opts;
   const [resuming, setResuming] = useState(false);
@@ -58,6 +67,7 @@ export function useResumeHandler(opts: UseResumeHandlerOptions): UseResumeHandle
   const resume = useCallback(() => {
     if (resuming || isLoading) return;
     setResuming(true);
+    onStart?.();
     clearRunStatus();
     resetPendingWarnings();
     regenerate({ body: { [ATLAS_RESUME_MARKER]: true } })
@@ -79,6 +89,7 @@ export function useResumeHandler(opts: UseResumeHandlerOptions): UseResumeHandle
     clearRunStatus,
     resetPendingWarnings,
     refetchRunStatus,
+    onStart,
     onError,
   ]);
 

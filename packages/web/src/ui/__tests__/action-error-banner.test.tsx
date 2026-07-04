@@ -29,7 +29,8 @@ describe("ActionErrorBanner", () => {
     const { container } = render(
       <ActionErrorBanner failure={{ title: "Message failed to send" }} />,
     );
-    expect(container.textContent).not.toContain("Request ID");
+    // With no detail, requestId, retry, or dismiss, the title is the ONLY text.
+    expect(container.textContent?.trim()).toBe("Message failed to send");
   });
 
   test("retry button invokes the failure's retry and renders only when provided", () => {

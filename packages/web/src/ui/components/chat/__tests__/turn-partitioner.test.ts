@@ -363,6 +363,28 @@ describe("summarizeActivity", () => {
     expect(summarizeActivity(activity)).toBe("2 Python runs · 1 more step");
   });
 
+  test("action envelope resolved to failed counts as failed", () => {
+    // Post-approval execution failure (SMTP down, upstream 5xx): the envelope
+    // completes at output-available with status "failed" and no `success`
+    // field — the count (and the working feed's marker) must not read clean.
+    const failed = toolWithOutput({
+      status: "failed",
+      actionId: "a1",
+      error: "SMTP connection refused",
+    });
+    const { activity } = partitionTurn([failed, text("The send failed.")]);
+    expect(summarizeActivity(activity)).toBe("1 more step · 1 failed");
+  });
+
+  test("executed, denied, and timed-out action envelopes do not count as failed", () => {
+    // Denial and timeout are user decisions / lifecycle outcomes, not failures.
+    const executed = toolWithOutput({ status: "executed", actionId: "a1", result: { ok: true } });
+    const denied = toolWithOutput({ status: "denied", actionId: "a2" });
+    const timedOut = toolWithOutput({ status: "timed_out", actionId: "a3" });
+    const { activity } = partitionTurn([executed, denied, timedOut, text("Done.")]);
+    expect(summarizeActivity(activity)).toBe("3 more steps");
+  });
+
   test("narration-only activity falls back to a generic label", () => {
     // A single promoted query with leading narration leaves only text in the receipt.
     const { activity } = partitionTurn([text("Checking..."), sql({}), text("Answer.")]);

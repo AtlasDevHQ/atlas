@@ -271,6 +271,21 @@ Auto-refresh uses the scheduler tick engine. The next refresh time is computed f
 Auto-refresh requires `ATLAS_SCHEDULER_ENABLED=true`. See [Scheduled Tasks](/guides/scheduled-tasks) for setup.
 </Callout>
 
+### Tile status
+
+Each tile carries its **own** status, so you can trust a board tile by tile rather than reading a single page-level banner:
+
+| Status | Meaning |
+|--------|---------|
+| **Loading** | The card is fetching. |
+| **Fresh** | Cached data reflects the current definition and active parameters. |
+| **Stale** | Cached data is older than the current definition/params (e.g. right after a publish, before the async refresh lands). Shown as a **color-shifting age caption** (muted → amber → red) plus a subtle body dim and a one-click **retry** — a board with one stale tile reads as one amber caption, never an alarming banner. |
+| **Errored** | The query failed. Visually distinct from *empty*. |
+| **Empty** | The query succeeded but returned zero rows — distinct from *errored*, so "no matching rows" never reads as "broken." |
+| **Not filtered** | A cross-filter doesn't apply to this card (its SQL doesn't bind the parameter); the tile is marked rather than silently left unchanged. |
+
+A tile that fails a parameter or cross-filter update stays labeled with its data's age (e.g. *"as of 2:04pm"*) and offers retry — it never silently substitutes the old unfiltered result for the failed new one.
+
 ---
 
 ## Exporting
@@ -321,6 +336,12 @@ Click the **Share** button to generate a public link. Options:
 
 Shared dashboards display at `/shared/dashboard/[token]` with read-only access to cached data. Viewers cannot modify cards or trigger refreshes.
 
+<Callout type="info" title="A shared link is a data-only snapshot">
+The public/shared endpoint serves a **minimal, data-only snapshot** — per-card title, chart config, annotations, cached rows, and layout. It **never** carries the card `sql`, connection/owner/org identifiers, refresh schedule, or parameter definitions; those are stripped at the DTO type layer, not redacted after the fact, so a field can't leak by omission. Instead of interactive controls, the snapshot carries a **frozen, display-only parameter summary** (each parameter's label + resolved value, e.g. *"Date: Jun 1–Jul 1 · Region: All"*) so a viewer knows the frame the numbers were computed in.
+</Callout>
+
+**Org-scoped** shares open end to end for a logged-in teammate — the shared page forwards the viewer's own session, so "requires login" sharing works rather than 403-ing everyone. An invalid share request fails closed with `400` and never silently downgrades the share to public, and editing a share's expiry or visibility keeps the same link (token rotation is explicit and warns that prior links die). Share views are rate-limited on the real viewer identity, not the web server's IP.
+
 To revoke access, open the share dialog and click **Revoke**.
 
 ---
@@ -329,9 +350,19 @@ To revoke access, open the share dialog and click **Revoke**.
 
 Dashboards have a built-in chat-bound editor. From a dashboard page, open the chat drawer to talk to Atlas about the cards you can see — the conversation is scoped to that dashboard and the agent gets a `boundDashboardId` context so its `executeSQL` / `createCard` / `updateCardSql` / `removeCard` tools target this dashboard automatically. Use it to ask "why is this card flat?", iterate on a SQL definition, or stage a new card without leaving the dashboard.
 
+### Viewing vs. editing
+
+A dashboard opens **read-only** — you can't nudge a live board by accident. Entering edit is an explicit act: click **Edit** (or open the bound chat editor, which counts as entering edit) to fork/load your draft, activate the drag/resize/rename handles, and reveal a persistent **"Editing your draft · Publish · Discard"** bar. While you're editing, the **canvas renders your draft** — every card shows the version you're working on (including in-progress SQL edits), never a stale published copy. On mobile, layout editing is desktop-only: the Edit affordance is hidden with a one-line explanation rather than shown-and-inert, so the phone is a clean viewing surface. A fullscreen tile is a real focus-trapped dialog, and drilldown is reachable by keyboard.
+
 ### Per-user drafts
 
-Edits from the bound chat (and from direct admin actions when the flag is on) go into your **personal draft** of the dashboard — never directly to the published copy your teammates see. The draft is exact-three-way merged against the persisted baseline on publish, so a teammate publishing a non-overlapping change while you draft does **not** stomp your work; an overlapping change surfaces a "baseline changed" banner with a one-click rebase.
+**Every** edit — direct manipulation (drag, resize, rename, delete, schedule) and bound-chat/agent edits alike — lands in your **personal draft** of the dashboard, never directly on the published copy your teammates see. (Drafts are the model, not a toggle: the old `ATLAS_DASHBOARD_DRAFTS_ENABLED` flag was retired in favor of unconditional drafts.) The draft is exact-three-way merged against the persisted baseline on publish, so a teammate publishing a non-overlapping change while you draft does **not** stomp your work; an overlapping change surfaces a "baseline changed" banner with a one-click rebase. Draft cards are executable — parameter render, single-card refresh, and CSV export run the **draft's** SQL, so you can validate a change before publishing it.
+
+<Callout type="info" title="Private until first publish">
+A brand-new dashboard is **visible only to its creator until its first publish**. It joins your organization's dashboard list the moment you publish it the first time — so a half-built or abandoned never-published dashboard never clutters a teammate's list.
+</Callout>
+
+Publish returns as soon as the new definitions are promoted and then **asynchronously** refreshes every card whose SQL changed; those cards render **stale** (labeled with their data's age) until the refresh lands — you never see a new title over old numbers presented as current.
 
 The draft badge in the dashboard header shows your pending change count. Click **Publish** to promote the draft via `POST /api/v1/dashboards/:id/draft/publish`; the diff modal previews every staged change before you confirm. Discard with **Discard draft** to revert to the published view.
 
@@ -367,5 +398,19 @@ All dashboard operations are available via the REST API:
 | `POST /api/v1/dashboards/:id/cards/:cardId/render` | Render a card with supplied parameter values (ephemeral) |
 | `POST /api/v1/dashboards/:id/refresh` | Refresh all cards |
 | `POST /api/v1/dashboards/:id/suggest` | Get AI card suggestions |
+| `POST /api/v1/dashboards/:id/render` | Render the whole board with supplied parameter values (ephemeral; body-less returns defaults) |
+| `POST /api/v1/dashboards/:id/preview-card` | Preview a card's SQL before saving (org-verifies the connection) |
+| `POST /api/v1/dashboards/:id/export` | Export the whole dashboard to PDF or PNG |
+| `POST /api/v1/dashboards/:id/screenshot` | Render a headless screenshot of the board |
+| `GET /api/v1/dashboards/:id/draft` | Get your per-user draft overlay |
+| `GET /api/v1/dashboards/:id/draft/status` | Draft pending-change count + baseline state |
+| `POST /api/v1/dashboards/:id/draft/publish` | Publish the draft (three-way merge; 409 on stale baseline) |
+| `POST /api/v1/dashboards/:id/draft/discard` | Discard the draft, revert to published |
+| `POST /api/v1/dashboards/:id/draft/rebase` | Rebase the draft onto a changed baseline |
+| `POST /api/v1/dashboards/:id/stage` | Stage a destructive change for confirm (`stage_required` flow) |
 | `POST /api/v1/dashboards/:id/share` | Generate share link |
 | `DELETE /api/v1/dashboards/:id/share` | Revoke share link |
+
+<Callout type="info">
+This table is a curated summary; the full, always-current endpoint list (request/response schemas included) is the auto-generated [API reference](/api-reference).
+</Callout>

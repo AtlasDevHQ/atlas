@@ -26,7 +26,7 @@ import { useResumeHandler } from "../hooks/use-resume-handler";
 import { useStopHandler } from "../hooks/use-stop-handler";
 import { ApiKeyBar } from "./chat/api-key-bar";
 import { AgentTurn } from "./chat/agent-turn";
-import { WorkingActivity } from "./chat/working-activity";
+import { WorkingActivity, showPreStreamActivity } from "./chat/working-activity";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { SuggestionChips } from "./chat/suggestion-chips";
 import {
@@ -69,8 +69,10 @@ import { useUiStore } from "@/lib/stores/ui-store";
 import { chatSearchParams, resolveConversationUrlAction } from "./search-params";
 import type { TurnPart } from "./chat/turn-partitioner";
 
-/* Stable empty parts for the pre-stream working feed (#4300) — hoisted so the
-   standalone container doesn't re-key its children on every render. */
+/* Stable empty parts for the pre-stream working feed (#4300) — a hoisted
+   constant keeps the prop reference identical across renders, so React
+   Compiler memoization of the container holds (empty parts render no keyed
+   children; keying was never at stake). */
 const NO_PARTS: readonly TurnPart[] = [];
 
 /* Static SVG icons — hoisted to avoid recreation on every render */
@@ -1411,7 +1413,7 @@ export function AtlasChat({
                       streaming turn's feed then takes over — same component,
                       same position, so it reads as one element ticking. No
                       message-count gate: the very first send shows it too. */}
-                  {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
+                  {showPreStreamActivity(isLoading, messages[messages.length - 1]?.role) && (
                     <WorkingActivity parts={NO_PARTS} />
                   )}
                 </div>

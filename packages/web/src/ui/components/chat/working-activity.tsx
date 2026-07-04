@@ -20,7 +20,8 @@ import type { PythonProgressData } from "./python-result-card";
  * back to their wire name rather than hiding the step.
  */
 function stepLabel(part: ToolTurnPart): { active: string; done: string } {
-  switch (getToolName(part)) {
+  const name = getToolName(part);
+  switch (name) {
     case "explore":
       return { active: "Reading semantic layer", done: "Read semantic layer" };
     case "executeSQL":
@@ -37,11 +38,24 @@ function stepLabel(part: ToolTurnPart): { active: string; done: string } {
     // confirmation envelope that renders at full card weight instead).
     case "executeRestOperation":
       return { active: "Calling REST datasource", done: "Called REST datasource" };
-    default: {
-      const name = getToolName(part);
+    default:
       return { active: `Running ${name}`, done: `Finished ${name}` };
-    }
   }
+}
+
+/**
+ * True when the transcript should render the standalone pre-stream feed: a
+ * turn is in flight but its assistant message hasn't mounted yet (#4300 — the
+ * working phase begins at send, not at first stream part). Deliberately no
+ * message-count gate, so the very first send of a fresh conversation shows it
+ * too; once the assistant message mounts (even with zero parts), the
+ * streaming turn's own feed takes over at the same visual position.
+ */
+export function showPreStreamActivity(
+  isLoading: boolean,
+  lastMessageRole: string | undefined,
+): boolean {
+  return isLoading && lastMessageRole !== "assistant";
 }
 
 /** A tool part whose execution has settled (result or error arrived). */

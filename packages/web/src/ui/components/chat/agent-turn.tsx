@@ -26,9 +26,12 @@ import type { PreviousExecution } from "../notebook/types";
  *   most one promoted answer-bearing artifact.
  *
  * The transcript renders every assistant message through this one component
- * (the streaming flag flips on the last turn) so receipt and result-card
- * state survive the stream settling — a receipt expanded mid-stream stays
- * expanded. The suggestion chips and Save/Share row stay with the caller
+ * (the streaming flag flips on the last turn) so the receipt's open state and
+ * the state of cards that stay inside it survive the stream settling — a
+ * receipt expanded mid-stream stays expanded. (The promoted artifact's card
+ * remounts when it leaves the receipt at stream end, so its own toggles reset
+ * — the artifact is deliberately not rendered mid-stream anyway.) The
+ * suggestion chips and Save/Share row stay with the caller
  * (they belong to the transcript row, not the turn's parts). Consumed by
  * both the chat transcript and the notebook cell output (#4301) — the shared
  * seam that keeps the two surfaces from drifting in formatting.
@@ -44,7 +47,9 @@ export function AgentTurn({
   /**
    * Notebook rerun-comparison metadata (#4301). Deliberately bound to the
    * promoted artifact's SQL card only — the snapshot describes the cell's
-   * result, not the intermediate queries inside the receipt.
+   * result, not the intermediate queries inside the receipt. Notebook-only:
+   * the artifact isn't rendered while `streaming`, so combining the two
+   * props is a harmless no-op, not a supported state.
    */
   previousExecution?: PreviousExecution;
   /** True while this turn's stream is still open (#4300 live rendering). */

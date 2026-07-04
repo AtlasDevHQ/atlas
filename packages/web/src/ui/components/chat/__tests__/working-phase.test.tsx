@@ -28,7 +28,7 @@ mock.module("@/ui/components/chat/markdown", () => ({
 
 import { render, cleanup, fireEvent } from "@testing-library/react";
 
-const { WorkingActivity } = await import("../working-activity");
+const { WorkingActivity, showPreStreamActivity } = await import("../working-activity");
 const { AgentTurn } = await import("../agent-turn");
 
 afterEach(cleanup);
@@ -120,6 +120,32 @@ describe("WorkingActivity", () => {
     // The approval is a card; the explore stays a compact line.
     expect(getAllByTestId("tool-part-stub")).toHaveLength(1);
     expect(queryAllByTestId("activity-step")).toHaveLength(1);
+  });
+
+  test("an action envelope resolved to failed carries the failure marker, not a clean checkmark", () => {
+    // Post-approval execution failure ({ status: "failed" } at
+    // output-available, no `success` field) — the compact line is the ONLY
+    // rendering of this step in the feed, so the marker must fire.
+    const failedAction = {
+      type: "tool-sendEmail",
+      toolCallId: `call-${nextCallId++}`,
+      state: "output-available",
+      input: {},
+      output: { status: "failed", actionId: "a1", error: "SMTP connection refused" },
+    } as TurnPart;
+    const { getByTestId } = render(<WorkingActivity parts={[failedAction]} />);
+    expect(getByTestId("activity-step").textContent).toContain("failed");
+  });
+
+  test("unknown tools fall back to their wire name rather than vanishing", () => {
+    const plugin = {
+      type: "tool-somePluginAction",
+      toolCallId: `call-${nextCallId++}`,
+      state: "input-available",
+      input: {},
+    } as TurnPart;
+    const { getByTestId } = render(<WorkingActivity parts={[plugin]} />);
+    expect(getByTestId("activity-step").textContent).toContain("Running somePluginAction…");
   });
 
   test("narration renders as a muted feed line, suggestions stripped", () => {
@@ -214,10 +240,65 @@ describe("AgentTurn (streaming)", () => {
     expect(getByRole("button").getAttribute("aria-expanded")).toBe("true");
   });
 
+  test("no parts yet (assistant message just mounted): the feed renders, not a null receipt", () => {
+    const empty = render(<AgentTurn parts={[]} streaming />);
+    expect(empty.getByTestId("working-activity")).not.toBeNull();
+    expect(empty.getByTestId("activity-working").textContent).toContain("Working…");
+    empty.unmount();
+    const undef = render(<AgentTurn parts={undefined} streaming />);
+    expect(undef.getByTestId("working-activity")).not.toBeNull();
+  });
+
+  test("narration reclassified by a later step reopens the feed; the receipt remounts fresh on the next settle", () => {
+    // v1 heuristic churn (documented in the AgentTurn comment): text streams
+    // (settle), then another tool call arrives and partitionTurn reclassifies
+    // the text as narration — the turn reverts to the working feed, and a
+    // user-opened receipt is deliberately discarded (it remounts collapsed at
+    // the next settle; there is no receipt while the feed is live).
+    const settled = [explore(), sql(), text("Narration that looks like an answer.")];
+    const { rerender, getByRole, getByTestId, queryByTestId } = render(
+      <AgentTurn parts={settled} streaming />,
+    );
+    fireEvent.click(getByRole("button"));
+    expect(getByRole("button").getAttribute("aria-expanded")).toBe("true");
+
+    const reopened = [...settled, explore("input-available")];
+    rerender(<AgentTurn parts={reopened} streaming />);
+    expect(getByTestId("working-activity")).not.toBeNull();
+    expect(queryByTestId("turn-receipt")).toBeNull();
+
+    rerender(<AgentTurn parts={[...reopened, text("The real answer.")]} streaming />);
+    expect(getByRole("button").getAttribute("aria-expanded")).toBe("false");
+  });
+
   test("pending interactive card mid-stream surfaces during the working phase", () => {
     const { getAllByTestId } = render(
       <AgentTurn parts={[explore(), pendingApproval()]} streaming />,
     );
     expect(getAllByTestId("tool-part-stub")).toHaveLength(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  showPreStreamActivity — the transcript's pre-stream gate           */
+/* ------------------------------------------------------------------ */
+
+describe("showPreStreamActivity", () => {
+  test("first send of a fresh conversation (no messages at all) shows the feed", () => {
+    // The old typing-dots gate (messages.length > 0) hid exactly this case.
+    expect(showPreStreamActivity(true, undefined)).toBe(true);
+  });
+
+  test("turn in flight, last message is the user's: feed shows until the assistant mounts", () => {
+    expect(showPreStreamActivity(true, "user")).toBe(true);
+  });
+
+  test("assistant message mounted: the streaming turn owns the feed, standalone hides", () => {
+    expect(showPreStreamActivity(true, "assistant")).toBe(false);
+  });
+
+  test("idle transcript never shows the feed", () => {
+    expect(showPreStreamActivity(false, "user")).toBe(false);
+    expect(showPreStreamActivity(false, undefined)).toBe(false);
   });
 });

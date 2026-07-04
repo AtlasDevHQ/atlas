@@ -29,10 +29,16 @@ test.describe("Working phase @llm", () => {
     // While the turn is in flight, nothing expands: no promoted artifact, no
     // chart. Sample until the composer unlocks (turn complete) — an expansion
     // mid-flight is the exact regression this slice removes. The loop is
-    // bounded by the test timeout.
+    // bounded by the test timeout. Counts are captured first and re-checked
+    // against the composer state, so a stream that finishes between the
+    // enabled-probe and the sample (promotion + unlock land in one commit)
+    // can't fail the assertion spuriously.
     while (!(await input.isEnabled())) {
-      expect(await page.locator(".recharts-wrapper").count()).toBe(0);
-      expect(await page.getByTestId("answer-artifact").count()).toBe(0);
+      const charts = await page.locator(".recharts-wrapper").count();
+      const artifacts = await page.getByTestId("answer-artifact").count();
+      if (await input.isEnabled()) break; // finished mid-sample — counts are post-promotion
+      expect(charts).toBe(0);
+      expect(artifacts).toBe(0);
       await page.waitForTimeout(500);
     }
 

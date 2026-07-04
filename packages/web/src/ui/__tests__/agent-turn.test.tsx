@@ -18,7 +18,7 @@ afterEach(cleanup);
 import { AgentTurn } from "@/ui/components/chat/agent-turn";
 import type { TurnPart } from "@/ui/components/chat/turn-partitioner";
 
-test("finished turn renders receipt, answer, and real SQL result card", () => {
+test("finished agent turn renders receipt, answer, and real SQL result card", () => {
   const parts = [
     { type: "text", text: "Let me check the schema." },
     {

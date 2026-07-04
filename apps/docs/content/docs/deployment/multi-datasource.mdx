@@ -280,6 +280,21 @@ The `executeSQL` tool exposes a `scope` parameter (`auto` / `pin` / `all`) that 
 
 OTel traces tag each agent step with `atlas.routing_mode` for cross-environment analytics; see [Observability](/platform-ops/observability).
 
+### Source-catalog descriptions
+
+Before the agent picks a datasource it reads a compact **Source catalog** — one entry per SQL connection group plus one per REST datasource — that summarizes what each source contains. A good description is what lets the agent route "how many EU orders today?" to the right group instead of guessing. Each SQL group's description is generated automatically from that group's entities when you save the [semantic-layer wizard](/guides/semantic-layer-wizard), and is **operator-refinable** — a workspace admin can override it to sharpen the agent's source selection.
+
+Edit descriptions from **Admin → Connections** (the same surface that manages [connection groups](/semantic-layer/multi-env#connection-groups)). A manual edit stamps the row `source: manual` and is **never clobbered by a later re-profile**; clearing it (saving a blank value) deletes the override outright — the catalog entry then falls back to the entity-name summary until the next re-profile regenerates the auto seed.
+
+The API is org-scoped and requires the `admin:connections` permission:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/connection-groups` | List the workspace's group descriptions with provenance (`auto` vs `manual`) |
+| `PATCH` | `/api/v1/admin/connection-groups/{groupId}` | Set the manual description (non-blank body) or clear it (blank body, reverting to the auto seed) |
+
+Descriptions are capped at 2000 characters. This catalog is the ADR-0022 §4 source-routing signal — it drives which datasource the agent targets, so keep each one a crisp statement of what that environment holds (`"EU production replica — orders, customers, refunds"`), not a schema dump.
+
 ### Per-conversation REST datasource scope
 
 REST/OpenAPI datasources (see [OpenAPI datasources](/plugins/datasources/openapi-generic)) carry their own per-conversation scope axis, controlled from the same chat-header picker and **independent of SQL routing mode**:

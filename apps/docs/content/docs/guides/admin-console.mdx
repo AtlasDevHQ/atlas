@@ -425,6 +425,24 @@ All status changes record the reviewer and timestamp. Approve/reject use optimis
 
 ---
 
+## Query Suggestions
+
+<Callout type="info">
+Requires an internal database (`DATABASE_URL`). Suggestions are auto-generated from query frequency — there's nothing to author by hand.
+</Callout>
+
+Query suggestions are the **contextual "questions you can ask"** Atlas surfaces to end users for a given table. They're distinct from [Learned Patterns](#learned-patterns): a learned pattern is a SQL template the agent reuses, while a suggestion is a user-facing prompt, **score-ranked** by how often the underlying query is run and how often the suggestion is clicked. They're stored in `query_suggestions` and served to the chat/table UI by the user-facing endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/suggestions?table=<name>` | Suggestions for one or more tables (repeat `table` to combine), ordered by score |
+| `GET` | `/api/v1/suggestions/popular` | Top suggestions across all tables |
+| `POST` | `/api/v1/suggestions/{id}/click` | Track engagement (fire-and-forget, always `204`) — feeds the click-weighted score |
+
+Admins prune noise from the same data via `GET /suggestions` (filter by `table` / `min_frequency`) and `DELETE /suggestions/{id}` under the admin API (see [Admin API Endpoints](#api-endpoints)). Non-admin reads only see published suggestions; admin/dev-mode reads overlay drafts.
+
+---
+
 ## Prompt Library
 
 **Route:** `/admin/prompts`

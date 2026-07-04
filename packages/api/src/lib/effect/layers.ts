@@ -3220,9 +3220,9 @@ export function makeSchedulerLive(
           // interrupts them automatically (no `setInterval` handle to clear).
 
           // Stop the knowledge bundle sync scheduler (#4211) — still a
-          // `setInterval` + `unref()` scheduler (not yet folded onto
-          // `registerPeriodicFiber` like the #4195 trio above), so its timer
-          // must be cleared explicitly here.
+          // self-rescheduling `setTimeout` + `unref()` scheduler (not yet
+          // folded onto `registerPeriodicFiber` like the #4195 trio above),
+          // so its pending timer must be cleared explicitly here.
           yield* Effect.tryPromise({
             try: async () => {
               const { stopKnowledgeBundleSyncScheduler } = await import(

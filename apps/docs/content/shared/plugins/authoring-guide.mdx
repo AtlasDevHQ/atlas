@@ -533,6 +533,18 @@ Most sandbox plugins need the same two pieces of infrastructure, so `@useatlas/p
 
 - **`collectSemanticFiles(localDir, sandboxDir, logger?)`** — recursively walks the local semantic tree and returns `{ path, content: Uint8Array }[]` ready to upload into the sandbox (the content is a Node `Buffer` at runtime; the type is the portable `Uint8Array`). It carries a **symlink-escape guard**: a symlink whose real target resolves outside the semantic root is skipped (and logged), never uploaded — and symlink cycles are broken so a self-referential tree terminates. This is a security property — single-sourcing it means a fix lands once for every sandbox backend. SDKs that want string content (e.g. E2B's `files.write`) decode via `Buffer.from(f.content).toString("utf-8")` at the call site.
 - **`runHealthCheckWithTimeout(fn, { timeoutMs, cleanup, logger })`** — wraps a `healthCheck()` probe in the `Promise.race` timeout, attaches a measured `latencyMs`, and runs `cleanup` in every failing branch (timeout or throw). The optional `logger.warn` fires on each failing branch (timeout, probe throw, cleanup throw). The probe owns its happy-path teardown; `cleanup` is the safety net that reaps a sandbox reference the probe captured but could not release (it must be idempotent/guarded). `await using` is intentionally not used — the timeout can win while the SDK is still mid-create with no `AbortSignal`, so an explicit guarded cleanup fires immediately.
+- **`measuredHealthCheck(fn)`** — the latency bracket `runHealthCheckWithTimeout` composes, usable on its own for **any** plugin's `healthCheck()` (not just sandboxes). `fn` returns a `PluginHealthResult` *without* `latencyMs` (stamped here, measured probe-start to settle); a throw or rejection becomes `{ healthy: false, message }` with the message narrowed via `err instanceof Error ? err.message : String(err)`. It adds no timeout or cleanup — reach for it when you want the measure-and-narrow boilerplate gone but don't need the `Promise.race`/cleanup ceremony:
+
+  ```typescript
+  import { measuredHealthCheck } from "@useatlas/plugin-sdk";
+
+  async healthCheck(): Promise<PluginHealthResult> {
+    return measuredHealthCheck(async () => {
+      await conn.query("SELECT 1", 5000);
+      return { healthy: true };
+    });
+  }
+  ```
 
 ```typescript
 import { collectSemanticFiles, runHealthCheckWithTimeout } from "@useatlas/plugin-sdk";
@@ -813,6 +825,40 @@ Tables are automatically prefixed with `plugin_{pluginId}_` to avoid collisions 
 ## Datasource Plugin Properties
 
 Beyond the basics shown in [step 4](#4-plugin-object), datasource plugins support several additional properties.
+
+### `createDatasourcePlugin` — the assembly factory
+
+For a SQL (or SQL-shaped) datasource, prefer **`createDatasourcePlugin`** over hand-assembling the plugin object. It is the datasource-specific sibling of [`createPlugin`](#createplugin-vs-defineplugin): it absorbs the boilerplate every url-shaped datasource (ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch, Salesforce) used to repeat —
+
+- the **static-vs-adapter-only mode branch** — a fully-specified config wires a boot connection; a bare `plugin({})` registers as an adapter, exposing only `createFromConfig` for per-workspace datasources;
+- the **`createFromConfig` wrapper** — strict-parse the decrypted per-(workspace, install) config → `buildConnection` → `attachIntrospection` (per-workspace connections, ADR-0013; introspection bound to the built connection, ADR-0017);
+- the standard `initialize()` mode log line, the adapter-only + [`measuredHealthCheck`](#shared-sandbox-helpers) static health probe, and optional static-connection caching with close-guarded teardown.
+
+You supply only the per-dialect substance: a **lenient `configSchema`** (every field optional so `plugin({})` parses as adapter-only) paired with a **strict `connectionConfigSchema`**, a `buildConnection`, an `attachIntrospection`, and — only where your dialect diverges — a mode predicate, static-connection builder, health probe, hooks, or `initialize` extras.
+
+```typescript
+import { createDatasourcePlugin } from "@useatlas/plugin-sdk";
+
+export const mydbPlugin = createDatasourcePlugin({
+  id: "mydb-datasource",
+  name: "MyDB DataSource",
+  dbType: "mydb",
+  parserDialect: "PostgresQL",
+  forbiddenPatterns: MYDB_FORBIDDEN_PATTERNS,
+  dialect: "This datasource uses MyDB SQL dialect.",
+  configSchema: MyDBConfigSchema,               // lenient — {} parses (adapter-only)
+  connectionConfigSchema: MyDBConnectionSchema, // strict — url required
+  describeStaticTarget: (c) => extractHost(c.url!),
+  buildConnection: (parsed, rt) => createMyDBConnection({ url: parsed.url, logger: rt.logger }),
+  attachIntrospection: (built, { parsed }) => ({
+    ...built,
+    listObjects: (o) => listMyDBObjects({ url: parsed.url, schema: o?.schema }),
+    profile: (o) => profileMyDB({ url: parsed.url, ...o }),
+  }),
+});
+```
+
+The factory it returns is called with config for the schema-validated `atlas.config.ts` path (`mydbPlugin({ url })`), or `.build(config)` to assemble from an already-validated config (tests / custom wiring). The `connection`-level knobs below (`entities`, `dialect`, `connection.validate`) are the same fields this factory fills in and a hand-rolled plugin sets directly.
 
 ### `entities`
 

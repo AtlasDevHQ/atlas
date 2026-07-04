@@ -311,6 +311,10 @@ Click **Disconnect** and confirm. WhatsApp messaging stops working until you rec
 
 Configure email delivery for digests and notifications. Email supports multiple providers: **SMTP**, **SendGrid**, **Postmark**, and **Amazon SES**.
 
+<Callout type="info" title="Resend baseline vs. workspace override">
+The same per-workspace email configuration is also managed from the dedicated **Admin → Email Provider** page (`/api/v1/admin/email-provider` — `GET` / `PUT` / `DELETE`, plus `POST /test` to send a test message). On the hosted SaaS platform that page shows Atlas's **Resend baseline** as a locked default row — the shared "Atlas owns delivery" identity that applies until you configure your own provider. Anything you set installs a per-workspace **override** that supersedes the baseline; removing it reverts delivery to the baseline (self-hosted) or platform default. Both surfaces write the same per-org `email_installations` record, so configure it in whichever place you prefer.
+</Callout>
+
 Email uses the **form-based install model** (`POST /api/v1/integrations/email/install-form`) — there is no operator-side App Registration. The catalog entry declares the provider-specific fields and the install handler validates + persists them. Secret fields (passwords, API keys) are encrypted at rest via the same `encryptSecretFields` path the other form-based integrations use.
 
 ### Setup

@@ -91,6 +91,10 @@ export type {
   Message,
   ConversationWithMessages,
   ChatErrorCode,
+  // Client-side error classification. Re-exported (from @useatlas/types via
+  // ./lib/types) so consumers can name the `ChatErrorInfo.clientCode` field's
+  // type from the same barrel that exports ChatErrorInfo / ChatErrorCode.
+  ClientErrorCode,
   ChatErrorInfo,
 } from "./lib/types";
 export { AUTH_MODES, parseChatError } from "./lib/types";

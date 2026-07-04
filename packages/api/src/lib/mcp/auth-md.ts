@@ -106,9 +106,10 @@ export function buildAuthMd(opts: BuildAuthMdOptions): string {
     .map((s) => `- \`${s.name}\` — ${s.grants}`)
     .join("\n");
 
-  return `# Connecting an agent to Atlas
+  return `# auth.md
 
-This document is for autonomous agents (and the humans integrating them).
+**Connecting an agent to Atlas.** This document is for autonomous agents (and
+the humans integrating them).
 It describes how to register with Atlas and connect an MCP client, from a
 cold start with no account, workspace, or credentials. Every flow named
 here already exists; this file introduces no new authentication mechanism —

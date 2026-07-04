@@ -48,6 +48,12 @@ describe("apex-discovery generator", () => {
       "https://api.useatlas.dev",
     ]);
     expect(API_PROTECTED_RESOURCE.bearer_methods_supported).toEqual(["header"]);
+    // scopes_supported is what an agent-readiness scanner (and the MCP auth
+    // spec) look for; it mirrors the sibling MCP protected-resource metadata.
+    expect(API_PROTECTED_RESOURCE.scopes_supported).toEqual([
+      "mcp:read",
+      "mcp:write",
+    ]);
     expect(API_PROTECTED_RESOURCE.resource_policy_uri).toBe(
       "https://www.useatlas.dev/privacy",
     );

@@ -63,6 +63,7 @@ interface ProtectedResourceMetadata {
   readonly resource: string;
   readonly authorization_servers: readonly string[];
   readonly bearer_methods_supported: readonly string[];
+  readonly scopes_supported: readonly string[];
   readonly resource_documentation: string;
   readonly resource_name: string;
   readonly resource_policy_uri: string;
@@ -84,6 +85,14 @@ export const API_PROTECTED_RESOURCE = {
   resource: "https://api.useatlas.dev",
   authorization_servers: ["https://api.useatlas.dev"],
   bearer_methods_supported: ["header"],
+  // The scopes an agent requests when obtaining an access token for this
+  // resource. RFC 9728 §2 lists `scopes_supported` as OPTIONAL, but agent
+  // readiness scanners (and the MCP authorization spec) expect it, and the
+  // sibling per-workspace MCP protected-resource metadata advertises the same
+  // `mcp:*` set (well-known.ts). These are the data-access scopes the Atlas
+  // authorization server issues; the OIDC sign-in scopes (openid/profile/email)
+  // are advertised by the auth-server metadata, not the resource.
+  scopes_supported: ["mcp:read", "mcp:write"],
   resource_documentation: "https://docs.useatlas.dev/api-reference",
   resource_name: "Atlas API",
   resource_policy_uri: "https://www.useatlas.dev/privacy",

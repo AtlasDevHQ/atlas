@@ -48,7 +48,7 @@ const HOSTS: ResolvedHosts = {
 const ADVERTISED_SCOPES = ["mcp:read", "mcp:write"] as const;
 
 const FAITHFUL_DOC = [
-  "# Connecting an agent to Atlas",
+  "# auth.md",
   "- Authorization server (issuer): `https://api.useatlas.dev/api/auth`",
   "- MCP resource server: `https://mcp.useatlas.dev/mcp`",
   "Metadata: `https://api.useatlas.dev/.well-known/oauth-authorization-server/api/auth`",

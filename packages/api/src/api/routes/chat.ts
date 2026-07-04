@@ -34,6 +34,11 @@ import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
 import { prepareResume, finishResume } from "@atlas/api/lib/durable-resume";
 import { loadLatestRunStatus } from "@atlas/api/lib/durable-session";
 import {
+  abortRun,
+  registerAbortableRun,
+  unregisterAbortableRun,
+} from "@atlas/api/lib/run-abort";
+import {
   createConversation,
   verifyGroupBelongsToOrg,
   addMessage,
@@ -607,6 +612,38 @@ const chatRunStatusRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: ErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Conversation not found", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #4294 — explicit stop. The client's Stop button aborts its own fetch AND
+// posts here so generation stops server-side (token spend ends now, not at the
+// step cap). Run-scoped (not conversation-scoped) so it works on deployments
+// without an internal DB; identity is enforced against the in-process abort
+// registry, which recorded who started the run.
+// ---------------------------------------------------------------------------
+
+const chatStopRoute = createRoute({
+  method: "post",
+  path: "/runs/{runId}/stop",
+  tags: ["Chat"],
+  summary: "Stop an in-flight agent turn",
+  description:
+    "Aborts the identified in-flight agent run server-side. The run must have been started by the same user/org identity on this instance; anything else — finished, unknown, another tenant's, or streaming on a different instance — returns 404. " +
+    "A stopped turn ends cleanly: completed steps stay persisted, no Resume affordance is offered, and the conversation accepts the next message immediately. Idempotent in effect — stopping an already-settled run is a 404 the client treats as 'already finished'.",
+  request: {
+    params: z.object({ runId: z.string().uuid() }),
+  },
+  responses: {
+    200: {
+      description: "The run was aborted.",
+      content: { "application/json": { schema: z.object({ stopped: z.literal(true) }) } },
+    },
+    400: { description: "Invalid run id", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "No stoppable run with this id for this caller", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -1517,6 +1554,21 @@ chat.openapi(chatRoute, async (c) => {
             });
           }
 
+          // #4294 — mint this turn's run id HERE (rather than letting runAgent
+          // do it) so an AbortController can be registered against it before
+          // generation starts. The client reads the id from `x-run-id` and may
+          // POST /chat/runs/:runId/stop; the registry aborts generation
+          // server-side. Explicit stop ONLY — the request's own disconnect
+          // signal is deliberately never wired in (a tab close must leave the
+          // run to finish/checkpoint per ADR-0020).
+          const turnRunId = crypto.randomUUID();
+          const turnAbort = new AbortController();
+          registerAbortableRun(turnRunId, {
+            controller: turnAbort,
+            userId: authResult.user?.id ?? null,
+            orgId: authResult.user?.activeOrganizationId ?? null,
+          });
+
           // Call runAgent first so errors (provider auth, config, etc.) are
           // caught by the outer try-catch and returned as proper JSON errors.
           // The agent stream is then merged into a UIMessageStream that supports
@@ -1589,7 +1641,19 @@ chat.openapi(chatRoute, async (c) => {
                 ...(boundDashboardForAgent && {
                   boundDashboardContext: { cardSummary: boundDashboardForAgent.cardSummary },
                 }),
+                // #4294 — the pre-minted id + its stop signal (see above).
+                runId: turnRunId,
+                abortSignal: turnAbort.signal,
               }),
+          );
+
+          // #4294 — the run stops being abortable once generation settles
+          // (resolve, reject, or abort — `steps` settles on all three). The
+          // both-arm `then` keeps a rejection from surfacing as unhandled;
+          // the real failure is logged by the stream/persistence paths.
+          void Promise.resolve(agentResult.steps).then(
+            () => unregisterAbortableRun(turnRunId),
+            () => unregisterAbortableRun(turnRunId),
           );
   
           // Register stream writer so Python tool can send progress events.
@@ -2023,6 +2087,16 @@ chat.openapi(chatResumeRoute, async (c) => {
           // the F-77 conversation step cap: the reservation above charged the row
           // by the worst-case step budget; the actual resumed step delta is
           // settled (and the unused portion refunded) on stream finish below.
+          // #4294 — a resumed turn is stoppable too. The resumed run keeps its
+          // original run id (the durable row), so register the controller under
+          // `handle.runId` — the same id the client re-captures from `x-run-id`.
+          const resumeAbort = new AbortController();
+          registerAbortableRun(handle.runId, {
+            controller: resumeAbort,
+            userId: authResult.user?.id ?? null,
+            orgId: authResult.user?.activeOrganizationId ?? null,
+          });
+
           const agentResult = await runAgent({
             messages: [],
             ...(toolRegistry && { tools: toolRegistry }),
@@ -2032,7 +2106,14 @@ chat.openapi(chatResumeRoute, async (c) => {
               transcript: handle.transcript,
               priorStepIndex: handle.priorStepIndex,
             },
+            abortSignal: resumeAbort.signal,
           });
+
+          // #4294 — same settle-cleanup contract as the chat route.
+          void Promise.resolve(agentResult.steps).then(
+            () => unregisterAbortableRun(handle.runId),
+            () => unregisterAbortableRun(handle.runId),
+          );
 
           const stream = createUIMessageStream({
             execute: ({ writer }) => {
@@ -2182,6 +2263,48 @@ chat.openapi(chatRunStatusRoute, async (c) => {
     const latest = yield* Effect.promise(() => loadLatestRunStatus(conversationId));
     return c.json(latest, 200);
   }), { label: "chat-run-status" });
+});
+
+chat.openapi(chatStopRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const req = c.req.raw;
+    const { requestId } = yield* RequestContext;
+
+    // Auth — same dispatch as the run-status probe: cheap mutation, ErrorSchema
+    // bodies, no streaming envelope.
+    const authAttempt = yield* Effect.tryPromise({
+      try: () => authenticateRequest(req),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (authAttempt._tag === "Left") {
+      log.error({ err: authAttempt.left, requestId }, "Auth dispatch failed (stop)");
+      return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
+    }
+    const authResult: AuthResult = authAttempt.right;
+    if (!authResult.authenticated) {
+      return c.json(
+        { error: "auth_error", message: authResult.error ?? "Authentication required", requestId },
+        authResult.status as 401 | 403 | 500,
+      );
+    }
+
+    const runId = c.req.param("runId");
+    // Identity must match the registering request; a mismatch (or an unknown /
+    // already-settled / other-instance run) is uniformly `not_found`, so a run
+    // id never confirms existence across a tenancy boundary.
+    const outcome = abortRun(runId, {
+      userId: authResult.user?.id ?? null,
+      orgId: authResult.user?.activeOrganizationId ?? null,
+    });
+    if (outcome === "not_found") {
+      return c.json(
+        { error: "not_found", message: "No stoppable run with this id — it may have already finished.", requestId },
+        404,
+      );
+    }
+    log.info({ runId, requestId }, "agent run stopped via /stop");
+    return c.json({ stopped: true as const }, 200);
+  }), { label: "chat-stop" });
 });
 
 export { chat };

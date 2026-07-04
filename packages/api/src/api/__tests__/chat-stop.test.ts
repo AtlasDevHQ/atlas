@@ -145,6 +145,7 @@ mock.module("@atlas/api/lib/billing/agent-gate", () => ({
 import {
   registerAbortableRun,
   __clearAbortableRunsForTest,
+  __abortableRunCountForTest,
 } from "@atlas/api/lib/run-abort";
 
 const { app } = await import("../index");
@@ -174,11 +175,22 @@ function stopRequest(runId: string = RUN_ID): Request {
 
 describe("POST /api/v1/chat/runs/:runId/stop (#4294)", () => {
   beforeEach(() => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
     __clearAbortableRunsForTest();
     mockAuthenticateRequest.mockReset();
     mockAuthenticateRequest.mockResolvedValue(MANAGED_USER);
     mockCheckRateLimit.mockReset();
     mockCheckRateLimit.mockReturnValue({ allowed: true });
+    mockRunAgent.mockReset();
+    mockRunAgent.mockResolvedValue({
+      runId: "run-abc",
+      toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+      steps: Promise.resolve([]),
+      text: Promise.resolve("answer"),
+    });
+    mockPrepareResume.mockReset();
+    mockPrepareResume.mockResolvedValue({ status: "none" as const });
   });
 
   it("stops a run registered to the caller's identity — 200 and the controller fires", async () => {
@@ -231,5 +243,123 @@ describe("POST /api/v1/chat/runs/:runId/stop (#4294)", () => {
     // (same for every chat route's `.uuid()` params).
     expect(res.status).toBe(422);
     expect(controller.signal.aborted).toBe(false);
+  });
+
+  it("returns 403 when auth resolves forbidden and aborts nothing", async () => {
+    const controller = new AbortController();
+    registerAbortableRun(RUN_ID, { controller, userId: "u-1", orgId: "org-1" });
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: false as const,
+      status: 403,
+      error: "forbidden",
+    } as AuthResult);
+
+    const res = await app.fetch(stopRequest());
+    expect(res.status).toBe(403);
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Integration glue: the chat/resume routes' register → x-run-id → stop chain.
+  // ---------------------------------------------------------------------------
+
+  function chatRequest(): Request {
+    return new Request("http://localhost/api/v1/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "hello" }] }],
+      }),
+    });
+  }
+
+  function echoRunAgent(steps: Promise<unknown[]>) {
+    const captured: { signal?: AbortSignal } = {};
+    mockRunAgent.mockImplementationOnce(((opts: { runId?: string; abortSignal?: AbortSignal }) => {
+      captured.signal = opts.abortSignal;
+      return Promise.resolve({
+        // Echo the caller-supplied id — exactly what the real runAgent does
+        // with `callerRunId`; the x-run-id header must name the REGISTERED id.
+        runId: opts.runId ?? "missing-caller-run-id",
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        steps,
+        text: Promise.resolve(""),
+      });
+    }) as never);
+    return captured;
+  }
+
+  it("chat turn: x-run-id names the registered run and stopping it fires the agent's abort signal (#4294)", async () => {
+    let resolveSteps!: (v: unknown[]) => void;
+    const steps = new Promise<unknown[]>((r) => { resolveSteps = r; });
+    const captured = echoRunAgent(steps);
+
+    const res = await app.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    const runId = res.headers.get("x-run-id");
+    expect(runId).toBeTruthy();
+    expect(captured.signal).toBeDefined();
+    expect(captured.signal!.aborted).toBe(false);
+
+    // Stop it — same identity as the chat caller.
+    const stopRes = await app.fetch(stopRequest(runId!));
+    expect(stopRes.status).toBe(200);
+    expect(captured.signal!.aborted).toBe(true);
+
+    resolveSteps([]);
+  });
+
+  it("chat turn: a settled run unregisters and is no longer stoppable", async () => {
+    let resolveSteps!: (v: unknown[]) => void;
+    const steps = new Promise<unknown[]>((r) => { resolveSteps = r; });
+    echoRunAgent(steps);
+
+    const res = await app.fetch(chatRequest());
+    expect(res.status).toBe(200);
+    const runId = res.headers.get("x-run-id");
+
+    resolveSteps([]);
+    // Let the both-arm settle-cleanup `then` run.
+    await new Promise((r) => setTimeout(r, 0));
+
+    const stopRes = await app.fetch(stopRequest(runId!));
+    expect(stopRes.status).toBe(404);
+  });
+
+  it("chat turn: a runAgent setup throw never leaks a registry entry", async () => {
+    mockRunAgent.mockRejectedValueOnce(new Error("provider auth failed") as never);
+
+    const res = await app.fetch(chatRequest());
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(__abortableRunCountForTest()).toBe(0);
+  });
+
+  it("resumed turn: stoppable under its original durable run id (#4294)", async () => {
+    const RESUME_RUN_ID = "33333333-3333-4333-8333-333333333333";
+    const CONV_ID = "11111111-1111-4111-8111-111111111111";
+    mockPrepareResume.mockResolvedValueOnce({
+      status: "resumable" as const,
+      handle: {
+        runId: RESUME_RUN_ID,
+        transcript: [{ role: "user" as const, content: "hi" }],
+        priorStepIndex: 1,
+        leaseOwner: "lease-1",
+      },
+    } as never);
+    // Steps held open: the resumed run is mid-flight when the stop lands.
+    const captured = echoRunAgent(new Promise<unknown[]>(() => {}));
+
+    const res = await app.fetch(
+      new Request(`http://localhost/api/v1/chat/${CONV_ID}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-run-id")).toBe(RESUME_RUN_ID);
+
+    const stopRes = await app.fetch(stopRequest(RESUME_RUN_ID));
+    expect(stopRes.status).toBe(200);
+    expect(captured.signal!.aborted).toBe(true);
   });
 });

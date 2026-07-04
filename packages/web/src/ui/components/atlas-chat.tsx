@@ -193,10 +193,11 @@ export function AtlasChat({
   // (empty) client messages. While the load is pending this stays null so a
   // quick send starts a fresh conversation instead of corrupting the target.
   const boundConversationIdRef = useRef<string | null>(null);
-  // #3749 — the latest durable run id captured from the `x-run-id` response
-  // header (set on a fresh turn and on a resume). Captured for future
-  // correlation/telemetry; the resume endpoint loads the latest non-terminal run
-  // by conversation id, so this value is not used to target a resume.
+  // #3749 / #4294 — the latest durable run id captured from the `x-run-id`
+  // response header (set on a fresh turn and on a resume). Targets the explicit
+  // stop endpoint (`useStopHandler`); cleared on each send so it always means
+  // "the active turn". The resume endpoint loads the latest non-terminal run by
+  // conversation id, so this value is NOT used to target a resume.
   const runIdRef = useRef<string | null>(null);
   const [transientWarning, setTransientWarning] = useState("");
   const [loadingConversation, setLoadingConversation] = useState(false);
@@ -276,10 +277,10 @@ export function AtlasChat({
     // #3895 — forward the Group reach on every turn (always, even null) so a
     // widen back to All sources nulls the row instead of inheriting stale Focus.
     getGroupReach: () => scopeRef.current.groupReach,
-    // #3749 — onRunId: capture the active run id for correlation/telemetry only
-    // (not used to target a resume). getResumeConversationId: a resume targets the
-    // bound CONVERSATION (not the run id); the affordance only shows once a
-    // conversation is mounted, so it's non-null whenever resume fires.
+    // #3749 / #4294 — onRunId: capture the active run id; it targets the
+    // explicit stop endpoint (not a resume — a resume targets the bound
+    // CONVERSATION, and the affordance only shows once a conversation is
+    // mounted, so getResumeConversationId is non-null whenever resume fires).
     onRunId: (id) => {
       runIdRef.current = id;
     },
@@ -692,6 +693,10 @@ export function AtlasChat({
     // Drop any unattached warnings from a stalled earlier turn so they
     // cannot end up keyed onto the upcoming assistant message.
     warningCtl.resetPending();
+    // #4294 — clear the previous turn's run id so a Stop in the pre-header
+    // sliver of THIS turn is a client-only stop, never a POST against the
+    // prior (already settled) run.
+    runIdRef.current = null;
     sendMessage({ text: saved }).catch((err: unknown) => {
       console.error("Failed to send message:", err instanceof Error ? err.message : String(err));
       setInput(saved);

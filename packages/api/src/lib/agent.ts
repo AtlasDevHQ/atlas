@@ -1073,12 +1073,14 @@ export async function runAgent({
   runId?: string;
   /**
    * #4294 — cooperative cancellation for the user-facing Stop control. When the
-   * signal fires, `streamText` stops generating (no further model calls or tool
-   * executions) and `onAbort` writes the run's terminal checkpoint, so a stopped
-   * turn ends the durable row rather than leaving a resumable interruption.
-   * This is only ever an EXPLICIT stop (the chat route's abort registry) — the
-   * routes deliberately never pass the request's own disconnect signal here,
-   * or a tab close would kill runs ADR-0020 lets finish server-side.
+   * signal fires, `streamText` stops generating — no further model calls or new
+   * tool executions (an in-flight tool call runs to completion unless it honors
+   * the signal itself) — and `onAbort` writes the run's terminal checkpoint, so
+   * a stopped turn ends the durable row rather than leaving a resumable
+   * interruption. This is only ever an EXPLICIT stop (the chat route's abort
+   * registry) — the routes deliberately never pass the request's own disconnect
+   * signal here, or a tab close would kill runs that ADR-0020 lets finish
+   * server-side.
    */
   abortSignal?: AbortSignal;
 }) {
@@ -1853,18 +1855,30 @@ export async function runAgent({
       // On Vercel, maxDuration caps the serverless function at 300s (Pro plan).
       timeout: { totalMs: 180_000, stepMs: 30_000, chunkMs: 5_000 },
 
-      // #4294 — explicit user stop. `onFinish` does NOT run on an abort, so this
-      // is the terminal seam for a stopped turn. A deliberate stop is a CLEAN
-      // end, not an interruption: record `done` (idempotent via
-      // `terminalWritten`) with the transcript as of the last completed step,
-      // so the run-status probe offers no Resume for a turn the user killed and
-      // the next send is never blocked. Completed steps stay persisted; the
-      // in-flight step's partial output is intentionally dropped (it was never
-      // checkpointed).
+      // #4294 — explicit user stop. `onAbort` fires BEFORE any `onFinish` and is
+      // the authoritative terminal seam for a stopped turn. (In ai@6.0.208
+      // `onFinish` can STILL run after an abort when ≥1 step completed — the
+      // SDK's own docs claim otherwise — so the terminal write and `endSpan`
+      // rely on their idempotency guards, and `onFinish`'s token-usage persist
+      // intentionally still records the spend of a stopped turn.) A deliberate
+      // stop is a CLEAN end, not an interruption: record `done` with the
+      // transcript as of the last completed step, so the run-status probe
+      // offers no Resume for a turn the user killed and the next send is never
+      // blocked. The in-flight step's partial output is intentionally dropped
+      // (it was never checkpointed). Terminal write FIRST, span mutation after
+      // and guarded — same fail-soft ordering as onError: a span throw must
+      // never cost the checkpoint.
       onAbort: () => {
         log.info({ runId, stepIndex: observedSteps }, "agent turn stopped by user");
-        span.setAttributes({ "atlas.finish_reason": "aborted" });
         writeTerminal(AGENT_RUN_STATUS.DONE, observedSteps, currentTranscript());
+        try {
+          span.setAttributes({ "atlas.finish_reason": "aborted" });
+        } catch (err) {
+          log.warn(
+            { err: err instanceof Error ? err.message : String(err), runId },
+            "Failed to set abort span attributes",
+          );
+        }
         endSpan(SpanStatusCode.OK);
       },
 

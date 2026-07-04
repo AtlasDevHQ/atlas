@@ -203,7 +203,7 @@ The semantic layer (entity YAMLs, glossary, metrics) describes the schema of a *
 
 ## Chat turn presentation
 
-How one agent turn is presented in the chat transcript. A turn has two faces: the **activity** (everything the agent did on the way) and the **answer** (what the turn exists to deliver). Presentation is answer-first: the answer is the visually dominant element; activity is live while the agent works, then settles into a collapsed receipt.
+How one agent turn is presented in the chat transcript. A turn has two faces: the **activity** (everything the agent did on the way) and the **answer** (what the turn exists to deliver). Presentation is answer-first: the answer is the visually dominant element; activity is live while the agent works, then settles into a collapsed receipt. **Target-state vocabulary** — pinned by PRD #4292 (answer-first chat turn presentation); the receipt/promotion mechanics land with #4298/#4300, so present-tense descriptions here are the design contract, not yet shipped behavior.
 
 - **Answer**:
   The final user-facing text of an agent turn — the thing the user asked for. Streams as the dominant element once the working phase ends.

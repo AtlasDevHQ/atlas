@@ -25,13 +25,21 @@ import { createLogger } from "./logger";
 
 const log = createLogger("run-abort");
 
-export interface AbortableRunEntry {
+interface AbortableRunEntry {
   readonly controller: AbortController;
   readonly userId: string | null;
   readonly orgId: string | null;
   readonly registeredAt: number;
 }
 
+/**
+ * Who may stop a run. `(null, null)` is a real, matchable identity — it arises
+ * ONLY from auth-mode `"none"` (single-tenant, `AuthResult.user` undefined), so
+ * anonymous-stops-anonymous is confined to deployments with no tenancy at all.
+ * If a future auth mode ever authenticates without a user in a multi-tenant
+ * context, revisit this shape (a discriminated `anonymous | user` union) before
+ * wiring it here.
+ */
 export interface RunAbortIdentity {
   readonly userId: string | null;
   readonly orgId: string | null;
@@ -52,7 +60,15 @@ function pruneStale(now: number): void {
   for (const [runId, entry] of activeRuns) {
     if (now - entry.registeredAt > STALE_ENTRY_MS) {
       activeRuns.delete(runId);
-      log.warn({ runId }, "Pruned stale abortable-run entry — run never unregistered");
+      log.warn(
+        {
+          runId,
+          ageMs: now - entry.registeredAt,
+          userId: entry.userId,
+          orgId: entry.orgId,
+        },
+        "Pruned stale abortable-run entry — run never unregistered",
+      );
     }
   }
 }
@@ -60,7 +76,9 @@ function pruneStale(now: number): void {
 /**
  * Register a run as abortable for its streaming lifetime. Call immediately
  * before the agent loop starts; pair with {@link unregisterAbortableRun} on
- * every settle path (stream finish, stream error, steps settlement).
+ * every exit — the routes hook it on both arms of the agent's `steps`
+ * settlement AND on the runAgent-throw path. {@link pruneStale} backstops a
+ * stream torn down before its settlement could flush.
  */
 export function registerAbortableRun(
   runId: string,
@@ -88,10 +106,17 @@ export function unregisterAbortableRun(runId: string): void {
  * `not_found`, which callers treat as "already finished".
  */
 export function abortRun(runId: string, caller: RunAbortIdentity): AbortRunResult {
+  // Sweep here too, so a quiet instance (no new registrations) still prunes.
+  pruneStale(Date.now());
   const entry = activeRuns.get(runId);
   if (!entry) return "not_found";
   if (entry.userId !== caller.userId || entry.orgId !== caller.orgId) {
-    log.warn({ runId }, "Stop request identity mismatch — treated as not found");
+    // Security-relevant: someone posted a stop against a run they don't own.
+    // Log the caller identity (server-side only — nothing is echoed to them).
+    log.warn(
+      { runId, callerUserId: caller.userId, callerOrgId: caller.orgId },
+      "Stop request identity mismatch — treated as not found",
+    );
     return "not_found";
   }
   activeRuns.delete(runId);
@@ -102,4 +127,9 @@ export function abortRun(runId: string, caller: RunAbortIdentity): AbortRunResul
 /** Test-only: reset the registry between cases. */
 export function __clearAbortableRunsForTest(): void {
   activeRuns.clear();
+}
+
+/** Test-only: live entry count, for asserting the register/unregister pairing. */
+export function __abortableRunCountForTest(): number {
+  return activeRuns.size;
 }

@@ -4,7 +4,7 @@
  * uniform `not_found` on mismatch/unknown/settled (no cross-tenant existence
  * leak), idempotent unregister, and one-shot abort.
  */
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, setSystemTime } from "bun:test";
 import {
   registerAbortableRun,
   unregisterAbortableRun,
@@ -17,6 +17,10 @@ const OWNER = { userId: "u-1", orgId: "org-1" };
 describe("run-abort registry (#4294)", () => {
   beforeEach(() => {
     __clearAbortableRunsForTest();
+  });
+
+  afterEach(() => {
+    setSystemTime(); // restore real clock
   });
 
   test("aborts a registered run for the matching identity and fires the controller", () => {
@@ -57,6 +61,27 @@ describe("run-abort registry (#4294)", () => {
 
     expect(abortRun("run-1", OWNER)).toBe("not_found");
     expect(abortRun("run-1", { userId: null, orgId: null })).toBe("aborted");
+  });
+
+  test("entries older than the stale horizon are pruned lazily on register AND on abort", () => {
+    const stale = new AbortController();
+    registerAbortableRun("run-stale", { controller: stale, ...OWNER });
+
+    // Jump past the 15-minute horizon; the next registry touch sweeps.
+    setSystemTime(new Date(Date.now() + 16 * 60 * 1000));
+    registerAbortableRun("run-fresh", { controller: new AbortController(), ...OWNER });
+
+    expect(abortRun("run-stale", OWNER)).toBe("not_found");
+    expect(stale.signal.aborted).toBe(false); // pruned, never aborted
+    expect(abortRun("run-fresh", OWNER)).toBe("aborted");
+
+    // The abort-side sweep too: a quiet instance (no new registrations)
+    // still prunes when a stop request arrives.
+    __clearAbortableRunsForTest();
+    setSystemTime(); // back to real time
+    registerAbortableRun("run-stale-2", { controller: new AbortController(), ...OWNER });
+    setSystemTime(new Date(Date.now() + 16 * 60 * 1000));
+    expect(abortRun("run-stale-2", OWNER)).toBe("not_found");
   });
 
   test("unregister is idempotent and makes the run unstoppable (settled)", () => {

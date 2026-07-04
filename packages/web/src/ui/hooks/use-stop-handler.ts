@@ -11,7 +11,9 @@ export interface UseStopHandlerOptions {
   stop: () => void;
   /**
    * The active turn's run id (captured from the `x-run-id` response header),
-   * or `null` before the header arrives. Read lazily at click time.
+   * or `null` before any header has arrived. Read lazily at click time. The
+   * chat clears its ref on each send, so in the pre-header sliver of a new
+   * turn this is `null` (client-only stop) rather than the previous turn's id.
    */
   getRunId: () => string | null;
   apiUrl: string;
@@ -32,9 +34,11 @@ export interface UseStopHandlerReturn {
  *      network for their own cancel;
  *   2. fire-and-forget `POST /chat/runs/:runId/stop` so generation stops
  *      server-side too (token spend ends at the abort, not the step cap).
- *      A 404 is normal — the run may have finished in the race, or be
- *      streaming on another instance — so every failure here is a silent
- *      no-op: the user-visible outcome (stream stopped) already happened.
+ *      A 404 is the expected race (run already finished, or streaming on
+ *      another instance) and stays at debug; any OTHER failure gets a
+ *      console.warn — a persistent 401/500 means tokens burn on every stop
+ *      and should not wear the benign-race label. Nothing is surfaced to the
+ *      user either way: the visible outcome (stream stopped) already happened.
  *   3. no run id yet (stopped in the pre-header sliver) ⇒ client-only stop.
  */
 export function useStopHandler(opts: UseStopHandlerOptions): UseStopHandlerReturn {
@@ -61,10 +65,14 @@ export function useStopHandler(opts: UseStopHandlerOptions): UseStopHandlerRetur
       getCredentials: () => getCredentialsRef.current(),
     });
     api
-      .post(`/api/v1/chat/runs/${runId}/stop`)
+      .raw("POST", `/api/v1/chat/runs/${runId}/stop`)
+      .then((res) => {
+        if (res.ok || res.status === 404) return; // 404 = expected race: already finished / other instance
+        console.warn(`Server-side stop failed: HTTP ${res.status} — generation may run to its budget`);
+      })
       .catch((err: unknown) => {
-        // Expected on races (run already finished) and multi-instance routing;
-        // the client-side stop already delivered the user-visible outcome.
+        // Network-level failure; the client-side stop already delivered the
+        // user-visible outcome.
         console.debug(
           "Server-side stop skipped:",
           err instanceof Error ? err.message : String(err),

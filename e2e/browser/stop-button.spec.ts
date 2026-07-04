@@ -41,5 +41,12 @@ test.describe("Stop button @llm", () => {
     await page.getByRole("button", { name: "Send" }).click();
     await expect(input).toBeDisabled({ timeout: 10_000 });
     await expect(input).toBeEnabled({ timeout: 180_000 });
+
+    // Re-assert after the full second turn: no late-rendering error surface
+    // from the earlier stop (a single-shot check right after unlock could pass
+    // spuriously if a banner rendered a beat later).
+    await expect(
+      page.getByText("The response stream was interrupted before producing content"),
+    ).not.toBeVisible();
   });
 });

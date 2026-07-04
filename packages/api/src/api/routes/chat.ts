@@ -638,12 +638,15 @@ const chatStopRoute = createRoute({
   responses: {
     200: {
       description: "The run was aborted.",
+      // Inline by intent: single-consumer, body-ignored (the web hook is
+      // fire-and-forget). Promote to @useatlas/schemas + @useatlas/types the
+      // moment the SDK/react packages expose stop or a client reads the body.
       content: { "application/json": { schema: z.object({ stopped: z.literal(true) }) } },
     },
-    400: { description: "Invalid run id", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: ErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "No stoppable run with this id for this caller", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Malformed run id (router-wide validation hook)", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -1644,13 +1647,23 @@ chat.openapi(chatRoute, async (c) => {
                 // #4294 — the pre-minted id + its stop signal (see above).
                 runId: turnRunId,
                 abortSignal: turnAbort.signal,
+              }).catch((err: unknown) => {
+                // #4294 — registration pairs with unregister on EVERY exit; a
+                // runAgent setup throw (provider auth, config — the outer
+                // try-catch's job) would otherwise leak the entry until the
+                // stale prune, turn the prune warn into noise, and let a stop
+                // of the dead id report a misleading success.
+                unregisterAbortableRun(turnRunId);
+                throw err;
               }),
           );
 
           // #4294 — the run stops being abortable once generation settles
-          // (resolve, reject, or abort — `steps` settles on all three). The
-          // both-arm `then` keeps a rejection from surfacing as unhandled;
-          // the real failure is logged by the stream/persistence paths.
+          // (resolve, reject, or abort — `steps` settles on all three in the
+          // consumed case; the registry's stale prune backstops a stream torn
+          // down before flush). The both-arm `then` keeps a rejection from
+          // surfacing as unhandled; the real failure is logged by the
+          // stream/persistence paths.
           void Promise.resolve(agentResult.steps).then(
             () => unregisterAbortableRun(turnRunId),
             () => unregisterAbortableRun(turnRunId),
@@ -2107,6 +2120,12 @@ chat.openapi(chatResumeRoute, async (c) => {
               priorStepIndex: handle.priorStepIndex,
             },
             abortSignal: resumeAbort.signal,
+          }).catch((err: unknown) => {
+            // #4294 — same pairing as the chat route: a runAgent setup throw
+            // must not leak the registration (the catch below also releases
+            // the resume lease via finishResume).
+            unregisterAbortableRun(handle.runId);
+            throw err;
           });
 
           // #4294 — same settle-cleanup contract as the chat route.
@@ -2288,7 +2307,7 @@ chat.openapi(chatStopRoute, async (c) => {
       );
     }
 
-    const runId = c.req.param("runId");
+    const { runId } = c.req.valid("param");
     // Identity must match the registering request; a mismatch (or an unknown /
     // already-settled / other-instance run) is uniformly `not_found`, so a run
     // id never confirms existence across a tenancy boundary.

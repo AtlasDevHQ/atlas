@@ -7,8 +7,10 @@
  * dedup) is pinned here too.
  *
  * The partition/receipt policy matrix (defaultOpen, pending interactive
- * cards, suggestion stripping) lives in chat/__tests__/turn-receipt.test.tsx
- * and ui/__tests__/finished-turn.test.tsx — not re-tested here.
+ * cards, suggestion stripping) lives in
+ * ui/components/chat/__tests__/turn-receipt.test.tsx and
+ * ui/__tests__/finished-turn.test.tsx (both relative to src/) — not
+ * re-tested here.
  */
 
 import { expect, test, afterEach } from "bun:test";
@@ -129,6 +131,26 @@ test("running cell still folds repeated identical SQL failures (Tried N times ba
   expect(occurrences).toBe(1);
 });
 
+test("error-status cell takes the finished path: receipt with a failure count, no live-path fold", () => {
+  const { container, getByTestId, queryByTestId } = render(
+    <NotebookCellOutput
+      assistantMessage={makeMessage([failedQuery("c1"), failedQuery("c2")])}
+      status="error"
+      collapsed={false}
+    />,
+  );
+  // The receipt's summary counts the retries; the live-path badge is gone.
+  const receipt = getByTestId("turn-receipt");
+  expect(receipt.textContent).toContain("2 queries · 2 failed");
+  expect(container.textContent).not.toContain("Tried 2 times");
+  expect(queryByTestId("turn-answer")).toBeNull();
+  // No answer and no artifact → the receipt starts expanded (shared policy),
+  // so the failed cards are visible without a click — both of them: the
+  // finished path accepts the un-folded stacking (see notebook-cell-output).
+  const occurrences = container.textContent!.split("column does not exist").length - 1;
+  expect(occurrences).toBe(2);
+});
+
 test("collapsed cell renders the truncated text preview, not the turn components", () => {
   const { container, queryByTestId } = render(
     <NotebookCellOutput
@@ -145,6 +167,8 @@ test("running with no message yet shows the typing indicator; idle with no messa
   const running = render(
     <NotebookCellOutput assistantMessage={null} status="running" collapsed={false} />,
   );
+  // The animated dots are the indicator's only stable hook — no text/testid.
+  expect(running.container.querySelector(".animate-typing-dot")).not.toBeNull();
   expect(running.container.querySelector('[data-slot="assistant-turn"]')).toBeNull();
   running.unmount();
 

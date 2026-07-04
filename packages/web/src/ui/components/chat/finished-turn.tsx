@@ -25,7 +25,11 @@ export function FinishedTurn({
 }: {
   parts: readonly TurnPart[] | undefined;
   pythonProgress?: Map<string, PythonProgressData[]>;
-  /** Notebook rerun-comparison metadata, forwarded to SQL result cards (#4301). */
+  /**
+   * Notebook rerun-comparison metadata (#4301). Deliberately bound to the
+   * promoted artifact's SQL card only — the snapshot describes the cell's
+   * result, not the intermediate queries inside the receipt.
+   */
   previousExecution?: PreviousExecution;
 }) {
   const { activity, answer, answerBearingArtifact } = partitionTurn(parts);
@@ -40,7 +44,6 @@ export function FinishedTurn({
       <TurnReceipt
         activity={activity}
         pythonProgress={pythonProgress}
-        previousExecution={previousExecution}
         // Start expanded when collapsing would hide the turn's substance:
         // (a) no answer and no artifact — the activity IS the turn (e.g. an
         // interrupted stream); (b) the activity holds an interactive card

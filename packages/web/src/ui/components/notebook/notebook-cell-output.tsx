@@ -61,7 +61,10 @@ export function NotebookCellOutput({ assistantMessage, status, collapsed, previo
 
   // Live path: while the agent retries the same SQL verbatim, fold identical
   // failures instead of stacking red blocks. Finished cells don't need this —
-  // failures settle into the receipt, whose summary counts them.
+  // failures settle into the receipt, whose summary counts them. (An
+  // all-failure turn starts with the receipt expanded, so the retries do
+  // stack there — accepted: the "N failed" count labels the repetition, and
+  // matching the chat surface exactly is the point of #4301.)
   const { failureRuns, skipFailureIndex } = computeSqlFailureDedup(assistantMessage.parts);
 
   return (

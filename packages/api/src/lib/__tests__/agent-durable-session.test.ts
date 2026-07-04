@@ -190,12 +190,24 @@ function interruptAfterFirstStepModel(
 ): InstanceType<typeof MockLanguageModelV3> {
   let call = 0;
   return new MockLanguageModelV3({
-    doStream: async () => {
+    doStream: async ({ abortSignal }) => {
       call++;
       if (call === 1) {
         return { stream: convertArrayToReadableStream(sqlStep("s0")) };
       }
-      await gate;
+      // Honor the abort signal like a real provider fetch does (#4294): a
+      // blocked call rejects with AbortError when the caller stops the turn.
+      // Callers that pass no signal (the interruption test) block on the gate
+      // alone, exactly as before.
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => reject(new DOMException("aborted", "AbortError"));
+        if (abortSignal?.aborted) return onAbort();
+        abortSignal?.addEventListener("abort", onAbort, { once: true });
+        void gate.then(() => {
+          abortSignal?.removeEventListener("abort", onAbort);
+          resolve();
+        });
+      });
       return { stream: convertArrayToReadableStream(FINAL_TEXT_STEP) };
     },
   });
@@ -343,6 +355,51 @@ describe("agent_runs checkpoint write path (#3745 terminal, #3746 per-step)", ()
     // Release the blocked step so the run winds down (no leaked promise).
     release();
     await consumed;
+  });
+
+  it("#4294 — an explicit stop writes a clean 'done' terminal at the last completed step", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = () => r();
+    });
+    mockModel = interruptAfterFirstStepModel(gate);
+    const ac = new AbortController();
+    const result = await runAgent({
+      messages: userMessages("hi"),
+      conversationId: "conv-1",
+      runId: "run-4294",
+      abortSignal: ac.signal,
+    });
+    // Consume in the background — onAbort runs at stream flush, which requires
+    // active consumption. An abort may surface as a rejection here; the durable
+    // terminal is written from onAbort regardless (that's what this asserts).
+    const consumed = Promise.resolve(result.consumeStream?.()).catch(() => {});
+
+    // Step 1 checkpointed while the model blocks on step 2.
+    await waitFor(() => runningWrites().length >= 1);
+    expect(terminalWrites()).toHaveLength(0);
+
+    // The user clicks Stop.
+    ac.abort();
+    await waitFor(() => terminalWrites().length >= 1);
+    const terminals = terminalWrites();
+    expect(terminals).toHaveLength(1);
+    // A deliberate stop is a CLEAN end: 'done' (never 'failed', never left
+    // 'running') so the run-status probe offers no Resume for a killed turn.
+    expect(statusOf(terminals[0]!)).toBe("done");
+    // Terminal lands at the last COMPLETED step; the in-flight step's partial
+    // output was never checkpointed and stays dropped.
+    expect(stepIndexOf(terminals[0]!)).toBe(1);
+    // The route pre-mints the run id (that's what `x-run-id` advertises and the
+    // stop registry keys on) — every durable write must target that row.
+    expect(new Set(agentRunWrites().map(runIdOf))).toEqual(new Set(["run-4294"]));
+
+    // Wind the blocked step down; no leaked promise.
+    release();
+    await consumed;
+    // Idempotency: on ai@6.0.208 `onFinish` can still fire after an abort once
+    // ≥1 step completed — the `terminalWritten` guard must keep it to ONE row.
+    expect(terminalWrites()).toHaveLength(1);
   });
 
   it("writes a 'failed' terminal row when the turn throws before any step", async () => {

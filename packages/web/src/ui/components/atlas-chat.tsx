@@ -17,6 +17,7 @@ import { ContextWarningBanner } from "./chat/context-warning-banner";
 import { ResumeBanner } from "./chat/resume-banner";
 import { useRunStatus } from "../hooks/use-run-status";
 import { useResumeHandler } from "../hooks/use-resume-handler";
+import { useStopHandler } from "../hooks/use-stop-handler";
 import { ApiKeyBar } from "./chat/api-key-bar";
 import { TypingIndicator } from "./chat/typing-indicator";
 import { ToolPart } from "./chat/tool-part";
@@ -43,7 +44,7 @@ import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { usePasswordStatus } from "@/ui/hooks/use-password-status";
-import { Star, TableProperties, BookOpen, Send, Pin } from "lucide-react";
+import { Star, TableProperties, BookOpen, Send, Pin, Square } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import { ConversationMemoryControl } from "./conversation-memory-control";
 import { PromptLibrary } from "./chat/prompt-library";
@@ -192,10 +193,11 @@ export function AtlasChat({
   // (empty) client messages. While the load is pending this stays null so a
   // quick send starts a fresh conversation instead of corrupting the target.
   const boundConversationIdRef = useRef<string | null>(null);
-  // #3749 — the latest durable run id captured from the `x-run-id` response
-  // header (set on a fresh turn and on a resume). Captured for future
-  // correlation/telemetry; the resume endpoint loads the latest non-terminal run
-  // by conversation id, so this value is not used to target a resume.
+  // #3749 / #4294 — the latest durable run id captured from the `x-run-id`
+  // response header (set on a fresh turn and on a resume). Targets the explicit
+  // stop endpoint (`useStopHandler`); cleared on each send so it always means
+  // "the active turn". The resume endpoint loads the latest non-terminal run by
+  // conversation id, so this value is NOT used to target a resume.
   const runIdRef = useRef<string | null>(null);
   const [transientWarning, setTransientWarning] = useState("");
   const [loadingConversation, setLoadingConversation] = useState(false);
@@ -275,10 +277,10 @@ export function AtlasChat({
     // #3895 — forward the Group reach on every turn (always, even null) so a
     // widen back to All sources nulls the row instead of inheriting stale Focus.
     getGroupReach: () => scopeRef.current.groupReach,
-    // #3749 — onRunId: capture the active run id for correlation/telemetry only
-    // (not used to target a resume). getResumeConversationId: a resume targets the
-    // bound CONVERSATION (not the run id); the affordance only shows once a
-    // conversation is mounted, so it's non-null whenever resume fires.
+    // #3749 / #4294 — onRunId: capture the active run id; it targets the
+    // explicit stop endpoint (not a resume — a resume targets the bound
+    // CONVERSATION, and the affordance only shows once a conversation is
+    // mounted, so getResumeConversationId is non-null whenever resume fires).
     onRunId: (id) => {
       runIdRef.current = id;
     },
@@ -431,7 +433,7 @@ export function AtlasChat({
   // { type: `data-${string}`; id?: string; data: unknown } — our callback matches.
   // The cast is needed because the default UIMessage generic doesn't declare our custom
   // data part type at compile time.
-  const { messages, setMessages, sendMessage, regenerate, status, error } = useChat({
+  const { messages, setMessages, sendMessage, regenerate, status, error, stop } = useChat({
     transport,
     onData: onData as never,
   });
@@ -485,6 +487,18 @@ export function AtlasChat({
       setTimeout(() => setTransientWarning(""), 5000);
     },
   });
+  // #4294 — the Stop control's orchestration lives in `useStopHandler`
+  // (unit-tested): client abort first (composer unlocks immediately), then a
+  // fire-and-forget server-side stop against the run id captured from the
+  // `x-run-id` header so generation stops consuming tokens too.
+  const { stopTurn } = useStopHandler({
+    stop,
+    getRunId: () => runIdRef.current,
+    apiUrl,
+    getHeaders,
+    getCredentials,
+  });
+
   // Point the auto-resume seam at the freshly-built handler (see the ref above).
   // In an effect, not during render: a render the React scheduler discards must
   // not leave the ref pointing at a stale `handleResume` (the same concurrent-
@@ -679,6 +693,10 @@ export function AtlasChat({
     // Drop any unattached warnings from a stalled earlier turn so they
     // cannot end up keyed onto the upcoming assistant message.
     warningCtl.resetPending();
+    // #4294 — clear the previous turn's run id so a Stop in the pre-header
+    // sliver of THIS turn is a client-only stop, never a POST against the
+    // prior (already settled) run.
+    runIdRef.current = null;
     sendMessage({ text: saved }).catch((err: unknown) => {
       console.error("Failed to send message:", err instanceof Error ? err.message : String(err));
       setInput(saved);
@@ -1273,16 +1291,33 @@ export function AtlasChat({
                     disabled={isLoading || loadingConversation}
                     aria-label="Chat message"
                   />
-                  <Button
-                    type="submit"
-                    size="icon"
-                    disabled={isLoading || loadingConversation}
-                    aria-disabled={!isLoading && !input.trim() ? true : undefined}
-                    aria-label="Send"
-                    className="size-10 shrink-0"
-                  >
-                    <Send className="size-4" />
-                  </Button>
+                  {/* #4294 — while a turn streams, the send slot becomes a Stop
+                      control: aborts the client stream (composer unlocks
+                      immediately) and best-effort cancels generation server-side.
+                      `type="button"` so it can never submit the form. */}
+                  {isLoading ? (
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="outline"
+                      onClick={stopTurn}
+                      aria-label="Stop"
+                      className="size-10 shrink-0"
+                    >
+                      <Square className="size-3.5" fill="currentColor" />
+                    </Button>
+                  ) : (
+                    <Button
+                      type="submit"
+                      size="icon"
+                      disabled={loadingConversation}
+                      aria-disabled={!input.trim() ? true : undefined}
+                      aria-label="Send"
+                      className="size-10 shrink-0"
+                    >
+                      <Send className="size-4" />
+                    </Button>
+                  )}
                 </form>
                 )}
               </>

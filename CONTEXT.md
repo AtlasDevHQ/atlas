@@ -201,6 +201,38 @@ The semantic layer (entity YAMLs, glossary, metrics) describes the schema of a *
 
 - "source" / `connection:` / `--source` — historically the entity-group scope wore three different names: the YAML `connection:` field, the CLI `--source` flag, and the admin/API `source` (computed as the group id, defaulting to `"default"`). All three denote the **Connection group**. Canonical surface term: **group**; the aliases are deprecated and being unified.
 
+## Chat turn presentation
+
+How one agent turn is presented in the chat transcript. A turn has two faces: the **activity** (everything the agent did on the way) and the **answer** (what the turn exists to deliver). Presentation is answer-first: the answer is the visually dominant element; activity is live while the agent works, then settles into a collapsed receipt. **Target-state vocabulary** — pinned by PRD #4292 (answer-first chat turn presentation); the receipt/promotion mechanics land with #4298/#4300, so present-tense descriptions here are the design contract, not yet shipped behavior.
+
+- **Answer**:
+  The final user-facing text of an agent turn — the thing the user asked for. Streams as the dominant element once the working phase ends.
+  _Avoid_: "response" (the whole turn, activity included), "final message".
+
+- **Activity**:
+  Everything the agent did on the way to the answer — semantic-layer reads, SQL/REST executions, and narration. Rendered live during the working phase as a compact per-step feed; never interleaved at full weight with the answer.
+  _Avoid_: "thinking" (model reasoning is a distinct, never-surfaced stream), "steps" (AI-SDK wire concept), "tool calls" (implementation term).
+
+- **Working phase**:
+  The interval between the user's send and the first answer token, during which the activity feed is live and ticking. Begins immediately on send (no dead air) and ends when the answer starts streaming.
+
+- **Receipt**:
+  The collapsed one-line summary the activity settles into once the answer begins (e.g. "Explored schema · 2 queries"). Expands on demand to the full activity — the work is inspectable, not ambient.
+  _Avoid_: "thinking layer", "collapsed section".
+
+- **Narration**:
+  The agent's inter-step commentary ("the region column looks unpopulated, checking..."). Part of the activity, never part of the answer.
+  _Avoid_: conflating with the answer — both are text on the wire; presentation must separate them.
+
+- **Answer-bearing artifact**:
+  A result table or chart that the answer itself presents — promoted out of the receipt to sit with the answer. At most one per turn by default; all other query results stay in the receipt.
+  _Avoid_: "the last query's result" (answer-bearing is a semantic property, not a positional one).
+
+### Anti-confusions
+
+- The **receipt** is not a "reasoning" or "thinking" display — model reasoning tokens are never surfaced in the transcript. The receipt contains activity (real executions and narration), not chain-of-thought.
+- Answer-first presentation serves the **evaluating trial admin** too: their trust need is met by activity being *inspectable* (one click), not *ambient*. There is no persona toggle.
+
 ## MCP & agent governance
 
 The MCP server runs the same agent tools as the chat app, so the same governance (RBAC, approval rules, audit) must apply. These terms pin *who* is acting and *through what channel*.

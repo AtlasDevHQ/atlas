@@ -3,13 +3,17 @@
  * component boundary:
  *   - Enter sends the current value (and never inserts a newline)
  *   - Shift+Enter does NOT send — the default newline insertion is left alone
- *   - Enter mid-IME-composition commits the composition instead of sending
- *   - streaming ⇒ textarea locked, send slot becomes a Stop control
+ *   - Enter mid-IME-composition never sends (left to the IME to commit)
+ *   - streaming ⇒ textarea locked, send slot becomes a Stop control, and no
+ *     path (Enter, form submit) reaches onSend
  *   - loadingConversation ⇒ textarea and Send both locked
- *   - empty value ⇒ Enter still prevents the default (no leading newline);
- *     the empty-send no-op guard itself lives in the caller (`handleSend`)
- * Auto-grow is height-measurement driven and is covered by the browser test
- * (e2e/browser/composer-multiline.spec.ts), not here — happy-dom has no layout.
+ *   - empty value ⇒ Enter still prevents the default (no leading newline) and
+ *     onSend is never called (`handleSend` re-applies the same guard for the
+ *     chip / starter-prompt / retry paths that bypass the composer)
+ * Auto-grow *measurement* is layout-driven and is covered by the browser test
+ * (e2e/browser/composer-multiline.spec.ts) — happy-dom has no layout — but the
+ * effect's mechanism (style.height written on `value` changes, including
+ * programmatic fills) is pinned here.
  */
 import { describe, expect, test, afterEach, mock } from "bun:test";
 import { render, cleanup, fireEvent } from "@testing-library/react";
@@ -55,19 +59,25 @@ describe("ChatComposer (#4295)", () => {
     expect(notPrevented).toBe(true);
   });
 
-  test("Enter during IME composition commits the composition, not a send", () => {
+  test("Enter during IME composition does not send and leaves the default alone", () => {
     const { textarea, props } = renderComposer();
     const notPrevented = fireEvent.keyDown(textarea, { key: "Enter", isComposing: true });
     expect(props.onSend).not.toHaveBeenCalled();
     expect(notPrevented).toBe(true);
   });
 
-  test("Enter on an empty composer still prevents default (no leading newline)", () => {
+  test("Enter on an empty composer prevents default (no leading newline) and does not send", () => {
     const { textarea, props } = renderComposer({ value: "" });
     const notPrevented = fireEvent.keyDown(textarea, { key: "Enter" });
     expect(notPrevented).toBe(false);
-    // The composer delegates; the trim/no-op guard is handleSend's.
-    expect(props.onSend).toHaveBeenCalledWith("");
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+
+  test("whitespace-only value never reaches onSend (Enter or Send click)", () => {
+    const { textarea, getByLabelText, props } = renderComposer({ value: "   \n  " });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    fireEvent.click(getByLabelText("Send"));
+    expect(props.onSend).not.toHaveBeenCalled();
   });
 
   test("typing forwards the new value through onValueChange", () => {
@@ -101,6 +111,17 @@ describe("ChatComposer (#4295)", () => {
     expect(props.onStop).toHaveBeenCalledTimes(1);
   });
 
+  test("streaming: neither Enter nor a form submit reaches onSend", () => {
+    const { textarea, container, props } = renderComposer({ streaming: true });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    // A real browser can't submit here (Stop is type="button"), but the
+    // component holds its own invariant for any future submit trigger.
+    const form = container.querySelector("form");
+    expect(form).not.toBeNull();
+    fireEvent.submit(form as HTMLFormElement);
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+
   test("loadingConversation: textarea and Send are both locked (#3068)", () => {
     const { textarea, getByLabelText, props } = renderComposer({
       loadingConversation: true,
@@ -115,5 +136,17 @@ describe("ChatComposer (#4295)", () => {
     const { textarea } = renderComposer();
     expect(textarea.className).toContain("text-base");
     expect(textarea.className).toContain("sm:text-sm");
+  });
+
+  test("auto-grow effect re-writes style.height when `value` changes programmatically", () => {
+    // happy-dom has no layout (scrollHeight is 0), so the browser spec owns
+    // the measured growth; this pins the mechanism — the [value]-keyed effect
+    // writes an explicit height for ANY value change (prefill, restore), not
+    // just user typing.
+    const { textarea, props, rerender } = renderComposer({ value: "one line" });
+    expect(textarea.style.height).not.toBe("");
+    textarea.style.height = ""; // clear what mount wrote
+    rerender(<ChatComposer {...props} value={"one line\ntwo lines"} />);
+    expect(textarea.style.height).toBe(`${textarea.scrollHeight}px`);
   });
 });

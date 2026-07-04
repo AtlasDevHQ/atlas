@@ -10,8 +10,9 @@
  *
  * The six SAFE-op tools (`getDashboardState`, `getCardDetail`, `addCard`,
  * `updateCard`, `updateLayout`, `updateDashboardMeta`) commit immediately
- * (to the user's draft when `ATLAS_DASHBOARD_DRAFTS_ENABLED=true`, else
- * straight to published). The two NEW destructive tools (`removeCard` and
+ * to the caller's private draft (unconditional as of #4324; a mutating tool
+ * with no userId is rejected — an unattributable edit never touches
+ * published). The two NEW destructive tools (`removeCard` and
  * `updateCardSql`, added in #2365) do NOT mutate. They write a row to
  * `dashboard_stage_changes` and return a `stage_required` envelope; the
  * UI surfaces inline Accept / Discard affordances that hit the
@@ -27,9 +28,6 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
 import { validateAutoComparison } from "@atlas/api/lib/dashboard-parameters";
 import {
-  addCard,
-  updateCard,
-  updateDashboard,
   getCard,
   getDashboard,
   CardLayoutSchema,
@@ -41,7 +39,6 @@ import {
   invalidateDashboardScreenshot,
 } from "@atlas/api/lib/dashboard-screenshot";
 import {
-  isDashboardDraftsEnabled,
   forkOrLoadDraft,
   saveDraft,
   applyChangeToDraft,
@@ -62,11 +59,11 @@ export interface BoundDashboardToolContext {
   /**
    * Bound editor's user id. Two consumers:
    *
-   *   1. Drafts foundation (#2364). When `ATLAS_DASHBOARD_DRAFTS_ENABLED=true`
-   *      AND a userId is present, mutating tools route through the user's
-   *      draft (forking from published on first touch). When unset OR the
-   *      flag is off, mutations fall through to the legacy direct-published
-   *      path — preserves #2363 behavior for anonymous + flag-off cases.
+   *   1. Drafts foundation (#2364, unconditional as of #4324). When a userId
+   *      is present, mutating tools route through the user's draft (forking
+   *      from published on first touch). When unset, a mutating tool is
+   *      REJECTED — an unattributable bound edit must never write to the
+   *      published dashboard (the closed ADR-0029 privacy hole, #4315).
    *   2. Screenshot tool (#2367). Used as part of the screenshot cache key
    *      so user A's draft view can never leak to user B. The tool refuses
    *      to render when userId is null.
@@ -94,37 +91,24 @@ export interface BoundDashboardToolContext {
 }
 
 /**
- * Apply a change to the user's draft snapshot when the drafts flag is on.
- * Returns:
- *   - `{ routed: true, ok: true }`  → draft updated, the legacy path
- *     should NOT run.
- *   - `{ routed: true, ok: false, error }` → the drafts path OWNS this op but
- *     failed OR refused; surface the error and skip the legacy path so we
- *     don't double-write. #4315: the no-userId case now lands here (a
- *     REJECTION) — an unattributable bound edit must never fall through to a
- *     direct-published write (the closed ADR-0029 privacy hole).
- *   - `{ routed: false }` → flag OFF only; caller runs the legacy
- *     direct-published mutation.
+ * Apply a mutating change to the caller's draft snapshot. Drafts are
+ * UNCONDITIONAL (#4324) — every mutating bound-editor tool routes here; there
+ * is no legacy direct-published path left. Returns:
+ *   - `{ ok: true }`  → draft updated.
+ *   - `{ ok: false, error }` → the op failed OR was refused; surface the error.
+ *     #4315: the no-userId case is a REJECTION — an unattributable bound edit
+ *     must never write to the published dashboard (the closed ADR-0029 privacy
+ *     hole).
  */
 async function maybeApplyToDraft(
   ctx: BoundDashboardToolContext,
   change: import("@atlas/api/lib/dashboard-versioning").DraftChange,
-): Promise<
-  | { routed: true; ok: true }
-  | { routed: true; ok: false; error: string }
-  | { routed: false }
-> {
-  if (!isDashboardDraftsEnabled()) return { routed: false };
-  // #4315 — close the anonymous-bound bypass. Previously a bound edit with
-  // no userId fell through to the legacy direct-published path, so an
-  // anonymous edit went STRAIGHT LIVE to the org — the privacy hole ADR-0029
-  // calls out. With drafts on, an edit that can't be attributed to a user
-  // can't land in a private draft either, so we REJECT rather than write to
-  // published. `routed: true` here means "the draft path owns this op and it
-  // failed" — the caller must NOT fall through to the published write.
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  // #4315 — close the anonymous-bound bypass. An edit that can't be attributed
+  // to a user can't land in a private draft, so we REJECT rather than write to
+  // published (there is no direct-published fall-through anymore, #4324).
   if (!ctx.userId) {
     return {
-      routed: true,
       ok: false,
       error:
         "This edit can't be saved: dashboard edits land in your private draft, which requires a signed-in user. Sign in and retry — edits never write to the published dashboard.",
@@ -137,12 +121,11 @@ async function maybeApplyToDraft(
     viewerId: ctx.userId ?? undefined,
   });
   if (!published.ok) {
-    return { routed: true, ok: false, error: `Could not read dashboard: ${published.reason}` };
+    return { ok: false, error: `Could not read dashboard: ${published.reason}` };
   }
   const draftRow = await forkOrLoadDraft(ctx.userId, published.data);
   if (!draftRow) {
     return {
-      routed: true,
       ok: false,
       error: "Could not load or create a draft for this dashboard. Internal DB unavailable.",
     };
@@ -150,16 +133,15 @@ async function maybeApplyToDraft(
   const applied = applyChangeToDraft(draftRow.snapshot, change);
   if (!applied.ok) {
     return {
-      routed: true,
       ok: false,
       error: `Could not apply change to draft: ${applied.reason} (cardId=${applied.cardId})`,
     };
   }
   const saved = await saveDraft(ctx.userId, ctx.dashboardId, applied.snapshot);
   if (!saved) {
-    return { routed: true, ok: false, error: "Could not persist draft update." };
+    return { ok: false, error: "Could not persist draft update." };
   }
-  return { routed: true, ok: true };
+  return { ok: true };
 }
 
 /**
@@ -181,11 +163,11 @@ export function createBoundDashboardTools(
       if (!dash.ok) {
         return { kind: "err" as const, error: `Could not read dashboard: ${dash.reason}` };
       }
-      // Draft view overlay when the flag is on AND a draft exists for
-      // this user — the agent's mental model of "what cards exist" has
-      // to match what the user sees in the chat-bound editor pane.
+      // Draft view overlay when a draft exists for this user — the agent's
+      // mental model of "what cards exist" has to match what the user sees in
+      // the chat-bound editor pane.
       let view = dash.data;
-      if (isDashboardDraftsEnabled() && ctx.userId) {
+      if (ctx.userId) {
         const draftRow = await forkOrLoadDraft(ctx.userId, dash.data);
         if (draftRow) {
           view = materializeDraftView(dash.data, draftRow.snapshot);
@@ -210,8 +192,8 @@ export function createBoundDashboardTools(
       cardId: z.string().min(1).describe("Card id (from the compact summary)"),
     }),
     execute: async ({ cardId }) => {
-      // Draft view overlay (same as getDashboardState): when drafts are on and
-      // the user has a draft, a card's CURRENT state lives in the draft
+      // Draft view overlay (same as getDashboardState): when the user has a
+      // draft, a card's CURRENT state lives in the draft
       // snapshot, not the published row. This matters most for `annotations` —
       // it's REPLACE-ALL on updateCard, so returning the published markers here
       // would let the agent fetch a stale set and drop staged ones when it
@@ -221,7 +203,7 @@ export function createBoundDashboardTools(
         return { kind: "err" as const, error: `Could not read dashboard: ${dash.reason}` };
       }
       let card: DashboardCard | undefined;
-      if (isDashboardDraftsEnabled() && ctx.userId) {
+      if (ctx.userId) {
         const draftRow = await forkOrLoadDraft(ctx.userId, dash.data);
         if (draftRow) {
           card = materializeDraftView(dash.data, draftRow.snapshot).cards.find((c) => c.id === cardId);
@@ -321,41 +303,17 @@ export function createBoundDashboardTools(
           connectionGroupId: ctx.connectionGroupId ?? null,
           layout: layout ?? null,
         };
-        const routed = await maybeApplyToDraft(ctx, { kind: "addCard", card: draftCard });
-        if (routed.routed) {
-          if (!routed.ok) return { kind: "err" as const, error: routed.error };
-          // #2367 — user's draft view shifted, drop cached screenshots.
-          invalidateDashboardScreenshot(dashboardId);
-          return {
-            kind: "ok" as const,
-            card: {
-              id: draftCard.id,
-              title: draftCard.title,
-              chartType: draftCard.chartConfig?.type ?? "table",
-              position: draftCard.position,
-            },
-          };
-        }
-        const result = await addCard({
-          dashboardId,
-          title,
-          sql,
-          chartConfig,
-          ...(annotations && { annotations }),
-          ...(layout && { layout }),
-        });
-        if (!result.ok) {
-          return { kind: "err" as const, error: `Could not add card: ${result.reason}` };
-        }
-        // #2367 — published baseline shifted, drop cached screenshots.
+        const applied = await maybeApplyToDraft(ctx, { kind: "addCard", card: draftCard });
+        if (!applied.ok) return { kind: "err" as const, error: applied.error };
+        // #2367 — user's draft view shifted, drop cached screenshots.
         invalidateDashboardScreenshot(dashboardId);
         return {
           kind: "ok" as const,
           card: {
-            id: result.data.id,
-            title: result.data.title,
-            chartType: result.data.chartConfig?.type ?? "table",
-            position: result.data.position,
+            id: draftCard.id,
+            title: draftCard.title,
+            chartType: draftCard.chartConfig?.type ?? "table",
+            position: draftCard.position,
           },
         };
       } catch (err) {
@@ -433,23 +391,13 @@ export function createBoundDashboardTools(
           }
         }
 
-        const routed = await maybeApplyToDraft(ctx, {
+        const applied = await maybeApplyToDraft(ctx, {
           kind: "updateCard",
           cardId,
           updates,
         });
-        if (routed.routed) {
-          if (!routed.ok) return { kind: "err" as const, error: routed.error };
-          // #2367 — user's draft view shifted, drop cached screenshots.
-          invalidateDashboardScreenshot(dashboardId);
-          return { kind: "ok" as const, cardId, updated: Object.keys(updates) };
-        }
-
-        const result = await updateCard(cardId, dashboardId, updates);
-        if (!result.ok) {
-          return { kind: "err" as const, error: `Could not update card ${cardId}: ${result.reason}` };
-        }
-        // #2367 — published baseline shifted, drop cached screenshots.
+        if (!applied.ok) return { kind: "err" as const, error: applied.error };
+        // #2367 — user's draft view shifted, drop cached screenshots.
         invalidateDashboardScreenshot(dashboardId);
         return { kind: "ok" as const, cardId, updated: Object.keys(updates) };
       } catch (err) {
@@ -493,51 +441,31 @@ export function createBoundDashboardTools(
         parsed.push({ cardId, layout: v.data });
       }
 
-      const routed = await maybeApplyToDraft(ctx, {
+      const applied = await maybeApplyToDraft(ctx, {
         kind: "updateLayout",
         layouts: parsed,
       });
-      if (routed.routed) {
-        if (!routed.ok) {
-          const errResults = [
+      if (!applied.ok) {
+        const errResults = [
+          ...malformed.map((m) => ({ cardId: m.cardId, ok: false as const, reason: m.reason })),
+          { cardId: "(draft)", ok: false as const, reason: applied.error },
+        ];
+        return { kind: "partial" as const, results: errResults, failedCount: errResults.length };
+      }
+      const okResults = parsed.map((p) => ({ cardId: p.cardId, ok: true as const }));
+      // #2367 — any draft placement shifted the view, drop cached screenshots.
+      if (parsed.length > 0) invalidateDashboardScreenshot(dashboardId);
+      if (malformed.length > 0) {
+        return {
+          kind: "partial" as const,
+          results: [
+            ...okResults,
             ...malformed.map((m) => ({ cardId: m.cardId, ok: false as const, reason: m.reason })),
-            { cardId: "(draft)", ok: false as const, reason: routed.error },
-          ];
-          return { kind: "partial" as const, results: errResults, failedCount: errResults.length };
-        }
-        const okResults = parsed.map((p) => ({ cardId: p.cardId, ok: true as const }));
-        // #2367 — any draft placement shifted the view, drop cached screenshots.
-        if (parsed.length > 0) invalidateDashboardScreenshot(dashboardId);
-        if (malformed.length > 0) {
-          return {
-            kind: "partial" as const,
-            results: [
-              ...okResults,
-              ...malformed.map((m) => ({ cardId: m.cardId, ok: false as const, reason: m.reason })),
-            ],
-            failedCount: malformed.length,
-          };
-        }
-        return { kind: "ok" as const, results: okResults };
+          ],
+          failedCount: malformed.length,
+        };
       }
-
-      // Legacy path — per-row updateCard.
-      const results: { cardId: string; ok: boolean; reason?: string }[] = malformed.map((m) => ({
-        cardId: m.cardId,
-        ok: false,
-        reason: m.reason,
-      }));
-      for (const placement of parsed) {
-        const r = await updateCard(placement.cardId, dashboardId, { layout: placement.layout });
-        results.push(r.ok ? { cardId: placement.cardId, ok: true } : { cardId: placement.cardId, ok: false, reason: r.reason });
-      }
-      const failed = results.filter((r) => !r.ok);
-      // #2367 — any successful placement shifts the published baseline.
-      if (results.some((r) => r.ok)) invalidateDashboardScreenshot(dashboardId);
-      if (failed.length > 0) {
-        return { kind: "partial" as const, results, failedCount: failed.length };
-      }
-      return { kind: "ok" as const, results };
+      return { kind: "ok" as const, results: okResults };
     },
   });
 
@@ -556,23 +484,13 @@ export function createBoundDashboardTools(
         return { kind: "err" as const, error: "No fields supplied — pass title or description." };
       }
 
-      const routed = await maybeApplyToDraft(ctx, {
+      const applied = await maybeApplyToDraft(ctx, {
         kind: "updateMeta",
         ...(updates.title !== undefined && { title: updates.title }),
         ...(updates.description !== undefined && { description: updates.description }),
       });
-      if (routed.routed) {
-        if (!routed.ok) return { kind: "err" as const, error: routed.error };
-        // #2367 — user's draft view shifted, drop cached screenshots.
-        invalidateDashboardScreenshot(dashboardId);
-        return { kind: "ok" as const, updated: Object.keys(updates) };
-      }
-
-      const result = await updateDashboard(dashboardId, { orgId: orgId ?? undefined }, updates);
-      if (!result.ok) {
-        return { kind: "err" as const, error: `Could not update dashboard: ${result.reason}` };
-      }
-      // #2367 — title/description change is visible, drop cached screenshots.
+      if (!applied.ok) return { kind: "err" as const, error: applied.error };
+      // #2367 — user's draft view shifted, drop cached screenshots.
       invalidateDashboardScreenshot(dashboardId);
       return { kind: "ok" as const, updated: Object.keys(updates) };
     },
@@ -650,8 +568,8 @@ export function createBoundDashboardTools(
   // -------------------------------------------------------------------------
 
   /**
-   * Read the current card by id, preferring the draft view when drafts
-   * are enabled + a userId is present. Used by the destructive tools to
+   * Read the current card by id, preferring the draft view when a userId
+   * is present. Used by the destructive tools to
    * snapshot `currentTitle` / `currentSql` into the stage payload so the
    * UI diff overlay doesn't drift if the card mutates between stage and
    * accept.
@@ -660,7 +578,7 @@ export function createBoundDashboardTools(
     | { ok: true; title: string; sql: string; kind: DashboardCardKind }
     | { ok: false; error: string }
   > {
-    if (isDashboardDraftsEnabled() && ctx.userId) {
+    if (ctx.userId) {
       const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
       if (!dash.ok) {
         return { ok: false, error: `Could not read dashboard: ${dash.reason}` };

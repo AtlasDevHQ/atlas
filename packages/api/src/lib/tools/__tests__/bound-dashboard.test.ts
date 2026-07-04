@@ -148,7 +148,6 @@ async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
 
 describe("createBoundDashboardTools", () => {
   const origDbUrl = process.env.DATABASE_URL;
-  const origDraftsFlag = process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
 
   beforeEach(() => {
     queryCalls = [];
@@ -158,24 +157,79 @@ describe("createBoundDashboardTools", () => {
     screenshotMock.mockClear();
     invalidateScreenshotMock.mockClear();
     delete process.env.DATABASE_URL;
-    // #4315 — this file asserts the LEGACY direct-published tool wiring
-    // (addCard → lib.addCard, updateDashboardMeta → UPDATE dashboards).
-    // With drafts ON those ops route to the caller's draft, and an anonymous
-    // (userId-less) `ctx` is now REJECTED rather than silently written to
-    // published (the closed privacy hole). Force the flag OFF so these cases
-    // keep exercising the direct-published path; the drafts-ON behavior lives
-    // in `bound-dashboard-drafts.test.ts`.
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
     _resetPool(null);
   });
 
   afterEach(() => {
     if (origDbUrl) process.env.DATABASE_URL = origDbUrl;
     else delete process.env.DATABASE_URL;
-    if (origDraftsFlag === undefined) delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
-    else process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = origDraftsFlag;
     _resetPool(null);
   });
+
+  // Drafts are UNCONDITIONAL (#4324). The shared `ctx` below is ANONYMOUS (no
+  // userId) — the multi-user hosted case — so every MUTATING tool rejects the
+  // edit rather than writing to published (the closed ADR-0029 privacy hole,
+  // #4315). Read tools (getDashboardState / getCardDetail) fall back to the
+  // published view when there's no userId, so they behave unchanged here. The
+  // draft-write happy paths (with a userId) live in `bound-dashboard-drafts.
+  // test.ts`; the draft-path invalidation + text-card cases below use
+  // `ctxWithUser` + a seeded draft row.
+
+  // A draft record loadDraft maps, pre-seeded so `forkOrLoadDraft` returns it
+  // without an INSERT (existing-draft path = one SELECT). `cards` carries the
+  // card whose id the draft-path tests below mutate.
+  function draftRecord(cards: Record<string, unknown>[]) {
+    const snap = { dashboardId: "dash-1", title: "Demo", description: null, cards };
+    return {
+      user_id: "user-1",
+      dashboard_id: "dash-1",
+      draft: snap,
+      baseline: snap,
+      published_baseline_at: "2026-05-17T00:00:00.000Z",
+      created_at: "2026-05-17T00:00:00.000Z",
+      updated_at: "2026-05-17T00:00:00.000Z",
+    };
+  }
+  const chartSnapshotCard = {
+    id: "card-1",
+    position: 0,
+    title: "Signups",
+    sql: "SELECT 1",
+    chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+    connectionGroupId: null,
+    layout: null,
+    annotations: [],
+  };
+  const textSnapshotCard = {
+    id: "card-1",
+    position: 0,
+    title: "Top of funnel",
+    sql: "",
+    content: "## Top of funnel",
+    chartConfig: null,
+    connectionGroupId: null,
+    layout: null,
+    annotations: [],
+  };
+  // The query sequence a mutating tool issues on the existing-draft path:
+  // getDashboard (dashboard + cards) → forkOrLoadDraft.loadDraft → saveDraft.
+  function draftWriteResults(snapshotCards: Record<string, unknown>[]) {
+    return [
+      { rows: [dashboardRow] },
+      { rows: [cardRow] },
+      { rows: [draftRecord(snapshotCards)] },
+      { rows: [{ user_id: "user-1" }] },
+    ];
+  }
+  // readCurrentCard's draft-branch sequence (no saveDraft — it only reads):
+  // getDashboard (dashboard + cards) → forkOrLoadDraft.loadDraft.
+  function draftReadResults(snapshotCards: Record<string, unknown>[]) {
+    return [
+      { rows: [dashboardRow] },
+      { rows: [cardRow] },
+      { rows: [draftRecord(snapshotCards)] },
+    ];
+  }
 
   // -------------------------------------------------------------------
   // Factory shape
@@ -244,41 +298,22 @@ describe("createBoundDashboardTools", () => {
   // addCard
   // -------------------------------------------------------------------
 
-  it("addCard validates SQL then inserts via lib/dashboards.addCard", async () => {
+  it("addCard rejects an anonymous (no-userId) edit and never writes published (#4315)", async () => {
     enableInternalDB();
-    // addCard issues two queries: MAX(position) + INSERT RETURNING *
-    setResults(
-      { rows: [{ next_pos: 1 }] },
-      {
-        rows: [
-          {
-            ...cardRow,
-            id: "card-2",
-            position: 1,
-            title: "Weekly signups",
-            sql: "SELECT COUNT(*) FROM users",
-            chart_config: { type: "line", categoryColumn: "week", valueColumns: ["count"] },
-          },
-        ],
-      },
-    );
     const tools = createBoundDashboardTools(ctx);
-    const result = await runTool<{
-      kind: "ok";
-      card: { id: string; title: string; chartType: string; position: number };
-    }>(tools.addCard, {
+    const result = await runTool<{ kind: string; error?: string }>(tools.addCard, {
       title: "Weekly signups",
       sql: "SELECT COUNT(*) FROM users",
       chartConfig: { type: "line", categoryColumn: "week", valueColumns: ["count"] },
     });
+    // SQL still validated up front, but the edit can't be attributed to a user
+    // → drafts have no home for it → rejected, nothing persisted.
     expect(validateSQLMock).toHaveBeenCalledTimes(1);
-    expect(result.kind).toBe("ok");
-    expect(result.card).toMatchObject({
-      id: "card-2",
-      title: "Weekly signups",
-      chartType: "line",
-      position: 1,
-    });
+    expect(result.kind).toBe("err");
+    expect(result.error).toMatch(/sign in/i);
+    const sqls = queryCalls.map((c) => c.sql).join("\n");
+    expect(sqls).not.toContain("INSERT INTO dashboard_cards");
+    expect(sqls).not.toContain("dashboard_user_drafts");
   });
 
   it("addCard refuses invalid SQL without persisting", async () => {
@@ -328,50 +363,30 @@ describe("createBoundDashboardTools", () => {
     expect(queryCalls).toHaveLength(0);
   });
 
-  it("updateCard persists supplied fields", async () => {
+  it("updateCard rejects an anonymous (no-userId) edit and never writes published (#4315)", async () => {
     enableInternalDB();
-    setResults({ rows: [{ id: "card-1" }] });
     const tools = createBoundDashboardTools(ctx);
-    const result = await runTool<{ kind: "ok"; cardId: string; updated: string[] }>(
+    const result = await runTool<{ kind: string; error?: string }>(
       tools.updateCard,
       { cardId: "card-1", title: "Renamed" },
     );
-    expect(result.kind).toBe("ok");
-    expect(result.updated).toEqual(["title"]);
-    expect(queryCalls[0].sql).toMatch(/UPDATE dashboard_cards/);
-  });
-
-  // #3209 — the bound-chat edit path can author event annotations.
-  it("updateCard persists supplied event annotations", async () => {
-    enableInternalDB();
-    setResults({ rows: [{ id: "card-1" }] });
-    const tools = createBoundDashboardTools(ctx);
-    const annotations = [{ x: "2026-01-15", label: "Launch" }];
-    const result = await runTool<{ kind: "ok"; cardId: string; updated: string[] }>(
-      tools.updateCard,
-      { cardId: "card-1", annotations },
-    );
-    expect(result.kind).toBe("ok");
-    expect(result.updated).toContain("annotations");
-    // The SET clause is emitted, so the markers actually reach the column.
-    expect(queryCalls[0].sql).toMatch(/annotations =/);
+    expect(result.kind).toBe("err");
+    expect(result.error).toMatch(/sign in/i);
+    const sqls = queryCalls.map((c) => c.sql).join("\n");
+    expect(sqls).not.toContain("UPDATE dashboard_cards");
+    expect(sqls).not.toContain("dashboard_user_drafts");
   });
 
   // -------------------------------------------------------------------
   // updateLayout
   // -------------------------------------------------------------------
 
-  it("updateLayout applies per-card placements and reports partial failures", async () => {
+  it("updateLayout rejects an anonymous (no-userId) edit and never writes published (#4315)", async () => {
     enableInternalDB();
-    // Two updateCard calls — first succeeds, second card "card-9" misses
-    setResults(
-      { rows: [{ id: "card-1" }] }, // first updateCard succeeds
-      { rows: [] }, // second updateCard misses (not_found)
-    );
     const tools = createBoundDashboardTools(ctx);
     const result = await runTool<{
       kind: "ok" | "partial";
-      results: { cardId: string; ok: boolean }[];
+      results: { cardId: string; ok: boolean; reason?: string }[];
       failedCount?: number;
     }>(tools.updateLayout, {
       layouts: [
@@ -379,10 +394,13 @@ describe("createBoundDashboardTools", () => {
         { cardId: "card-9", x: 12, y: 0, w: 12, h: 8 },
       ],
     });
+    // Both placements are well-formed, so the whole batch is owned by the draft
+    // path — which rejects the anonymous edit. Nothing is written.
     expect(result.kind).toBe("partial");
-    expect(result.results[0]).toEqual({ cardId: "card-1", ok: true });
-    expect(result.results[1].ok).toBe(false);
-    expect(result.failedCount).toBe(1);
+    expect(result.results.some((r) => !r.ok && /sign in/i.test(r.reason ?? ""))).toBe(true);
+    const sqls = queryCalls.map((c) => c.sql).join("\n");
+    expect(sqls).not.toContain("UPDATE dashboard_cards");
+    expect(sqls).not.toContain("dashboard_user_drafts");
   });
 
   it("updateLayout rejects out-of-bounds placements without hitting the DB", async () => {
@@ -406,17 +424,18 @@ describe("createBoundDashboardTools", () => {
   // updateDashboardMeta
   // -------------------------------------------------------------------
 
-  it("updateDashboardMeta persists supplied fields", async () => {
+  it("updateDashboardMeta rejects an anonymous (no-userId) edit and never writes published (#4315)", async () => {
     enableInternalDB();
-    setResults({ rows: [{ id: "dash-1" }] }); // UPDATE dashboards
     const tools = createBoundDashboardTools(ctx);
-    const result = await runTool<{ kind: "ok"; updated: string[] }>(
+    const result = await runTool<{ kind: string; error?: string }>(
       tools.updateDashboardMeta,
       { title: "New title" },
     );
-    expect(result.kind).toBe("ok");
-    expect(result.updated).toEqual(["title"]);
-    expect(queryCalls[0].sql).toMatch(/UPDATE dashboards/);
+    expect(result.kind).toBe("err");
+    expect(result.error).toMatch(/sign in/i);
+    const sqls = queryCalls.map((c) => c.sql).join("\n");
+    expect(sqls).not.toContain("UPDATE dashboards");
+    expect(sqls).not.toContain("dashboard_user_drafts");
   });
 
   it("updateDashboardMeta refuses when no fields supplied", async () => {
@@ -489,30 +508,13 @@ describe("createBoundDashboardTools", () => {
       expect(result.error).toMatch(/render dashboard screenshot/i);
     });
 
+    // Cache-invalidation on the draft-write path (drafts are unconditional,
+    // #4324). `ctxWithUser` has a userId, so each mutating tool forks/loads the
+    // caller's draft and — after the draft write lands — drops the cached
+    // screenshot. `draftWriteResults` seeds the existing-draft query sequence.
     it("addCard invalidates the screenshot cache on success", async () => {
-      // The cache-invalidation tests use the legacy direct-publish path
-      // (mock fixtures hit `addCard` / `updateCard` / etc. on lib/dashboards
-      // without setting up the draft-table query results). Post-#2521 the
-      // drafts flag defaults to ON, which would route through the draft
-      // path and miss the mocked queries. Opt out explicitly per test so
-      // the invalidation assertion stays focused on the cache hook, not
-      // the routing path. The invalidation hook fires after EITHER write
-      // path lands; testing draft routing is the #2364 suite's job.
-      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
       enableInternalDB();
-      setResults(
-        { rows: [{ next_pos: 1 }] },
-        {
-          rows: [
-            {
-              ...cardRow,
-              id: "card-99",
-              position: 1,
-              title: "From-tool card",
-            },
-          ],
-        },
-      );
+      setResults(...draftWriteResults([])); // fork empty draft, addCard appends
       const tools = createBoundDashboardTools(ctxWithUser);
       const result = await runTool<{ kind: "ok" }>(tools.addCard, {
         title: "From-tool card",
@@ -524,18 +526,16 @@ describe("createBoundDashboardTools", () => {
     });
 
     it("updateCard invalidates the screenshot cache on success", async () => {
-      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
       enableInternalDB();
-      setResults({ rows: [{ id: "card-1" }] });
+      setResults(...draftWriteResults([chartSnapshotCard]));
       const tools = createBoundDashboardTools(ctxWithUser);
       await runTool(tools.updateCard, { cardId: "card-1", title: "Renamed" });
       expect(invalidateScreenshotMock).toHaveBeenCalledWith("dash-1");
     });
 
     it("updateLayout invalidates the screenshot cache when any placement succeeds", async () => {
-      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
       enableInternalDB();
-      setResults({ rows: [{ id: "card-1" }] });
+      setResults(...draftWriteResults([chartSnapshotCard]));
       const tools = createBoundDashboardTools(ctxWithUser);
       await runTool(tools.updateLayout, {
         layouts: [{ cardId: "card-1", x: 0, y: 0, w: 12, h: 8 }],
@@ -544,9 +544,8 @@ describe("createBoundDashboardTools", () => {
     });
 
     it("updateDashboardMeta invalidates the screenshot cache on success", async () => {
-      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
       enableInternalDB();
-      setResults({ rows: [{ id: "dash-1" }] });
+      setResults(...draftWriteResults([]));
       const tools = createBoundDashboardTools(ctxWithUser);
       await runTool(tools.updateDashboardMeta, { title: "New title" });
       expect(invalidateScreenshotMock).toHaveBeenCalledWith("dash-1");
@@ -555,12 +554,11 @@ describe("createBoundDashboardTools", () => {
     // #3138 — a text / section-block card has no SQL or chart. The bound editor
     // tools must reject those edits rather than mutate the draft into a state
     // publish would silently discard (text-card equality ignores sql/chart).
-    const textCardRow = { ...cardRow, sql: "", content: "## Top of funnel" };
-
+    // The current card is read from the caller's draft (`readCurrentCard`'s
+    // draft branch), so the seeded draft carries the text card.
     it("updateCardSql rejects a text / section card", async () => {
-      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
       enableInternalDB();
-      setResults({ rows: [textCardRow] }); // readCurrentCard → getCard → text
+      setResults(...draftReadResults([textSnapshotCard]));
       const tools = createBoundDashboardTools(ctxWithUser);
       const result = await runTool<{ kind: string; error?: string }>(tools.updateCardSql, {
         cardId: "card-1",
@@ -571,9 +569,8 @@ describe("createBoundDashboardTools", () => {
     });
 
     it("updateCard rejects a chartConfig change on a text / section card", async () => {
-      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
       enableInternalDB();
-      setResults({ rows: [textCardRow] }); // readCurrentCard → getCard → text
+      setResults(...draftReadResults([textSnapshotCard]));
       const tools = createBoundDashboardTools(ctxWithUser);
       const result = await runTool<{ kind: string; error?: string }>(tools.updateCard, {
         cardId: "card-1",
@@ -584,9 +581,8 @@ describe("createBoundDashboardTools", () => {
     });
 
     it("updateCard still allows renaming a text card (title-only)", async () => {
-      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
       enableInternalDB();
-      setResults({ rows: [{ id: "card-1" }] }); // UPDATE … RETURNING (no kind check for title)
+      setResults(...draftWriteResults([textSnapshotCard]));
       const tools = createBoundDashboardTools(ctxWithUser);
       const result = await runTool<{ kind: string }>(tools.updateCard, {
         cardId: "card-1",

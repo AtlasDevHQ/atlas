@@ -34,8 +34,7 @@
  *  3. **No HTTP / Hono / Effect concepts.** Pure module — the route layer
  *     wires it into `/api/v1/dashboards/[id]/draft` and the bound editor
  *     tools (`packages/api/src/lib/tools/bound-dashboard.ts`) route
- *     mutations through `applyChangeToDraft` + `saveDraft` when the
- *     `ATLAS_DASHBOARD_DRAFTS_ENABLED` flag is on.
+ *     mutations through `applyChangeToDraft` + `saveDraft`.
  *  4. `DraftChange` extended with `removeCard` + `editSql` variants
  *     in #2365 so the stage-tracker can replay accepted destructive
  *     ops through the same `applyChangeToDraft` path.
@@ -43,12 +42,14 @@
  *     editor sees their draft state without touching the published
  *     dashboard row that other viewers see.
  *
- * Feature-flag note: `ATLAS_DASHBOARD_DRAFTS_ENABLED` defaults to TRUE
- * as of #2521. `isDashboardDraftsEnabled()` is the single gate; the
- * bound editor tools check it before routing through this module.
- * Setting the env to `"false"` (exact match) opts back into the
- * legacy direct-published path for operators who want to disable the
- * draft surface entirely.
+ * Drafts are UNCONDITIONAL (#4324). The `ATLAS_DASHBOARD_DRAFTS_ENABLED`
+ * feature flag and its legacy direct-published off-path were removed once
+ * draft-first became the model: an authenticated bound edit always lands in
+ * the caller's private draft, and an unattributable (no-userId) edit is
+ * REJECTED rather than written straight to published (the closed ADR-0029
+ * privacy hole). The only remaining direct-published write is the DEFENSIVE
+ * `!userId` fall-through in the CRUD routes' `shouldRouteToDraft` — an
+ * `auth: none` single-operator self-host with no teammate to leak to.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -59,6 +60,7 @@ import {
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
 import { rowToCard, loadDashboardUpdatedAtPrecise } from "@atlas/api/lib/dashboards";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 // #4325 — the publish diff SSOT. The client publish-diff and this server merge
 // consume the SAME card-equality (full `chartConfig` + `position`), so the diff
 // the user reviews is exactly the change we merge. Do NOT re-inline a private
@@ -74,27 +76,6 @@ import type {
 } from "@atlas/api/lib/dashboard-types";
 
 const log = createLogger("dashboard-versioning");
-
-// ---------------------------------------------------------------------------
-// Feature flag
-// ---------------------------------------------------------------------------
-
-/**
- * Whether the per-user-draft routing is active. Defaults to TRUE.
- * Setting `ATLAS_DASHBOARD_DRAFTS_ENABLED=false` (exact string match)
- * opts back into the legacy direct-published path for operators who
- * want to disable the draft surface entirely.
- *
- * The strict-string match is deliberate: "0" / "no" / "off" do NOT
- * disable, so a typo in an opt-out env var fails closed (drafts stay
- * on) rather than silently reverting to the legacy path.
- *
- * Read per-call rather than cached at import time so test setups can
- * toggle the flag between cases without a module reset.
- */
-export function isDashboardDraftsEnabled(): boolean {
-  return process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED !== "false";
-}
 
 // ---------------------------------------------------------------------------
 // Snapshot shape
@@ -886,6 +867,86 @@ export async function discardDraft(userId: string, dashboardId: string): Promise
   } catch (err) {
     log.error({ err: errorMessage(err), userId, dashboardId }, "discardDraft failed");
     return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Abandoned-draft cleanup (#4324)
+// ---------------------------------------------------------------------------
+
+/**
+ * Settings key + default for the abandoned-draft retention window (days).
+ *
+ * A `dashboard_user_drafts` row is created when an editor first touches a
+ * dashboard in the bound editor and is normally cleared on publish/discard
+ * (both DELETE the row). A row that is neither published nor discarded lingers
+ * until its dashboard is deleted (ON DELETE CASCADE) — so a user who forks a
+ * draft and walks away leaves the row forever. This sweep deletes drafts whose
+ * `updated_at` (bumped on every save) is older than the window, bounding the
+ * table's growth.
+ *
+ * SaaS-first (CLAUDE.md): this knob lives in the settings registry
+ * (`getDashboardDraftRetentionDays` reads it hot-reloadably, platform tier),
+ * NOT a boot env var — an operator can retune it from Admin → Settings with no
+ * redeploy. The whole dashboard elevation added ZERO new boot env vars.
+ */
+export const DASHBOARD_DRAFT_RETENTION_DAYS_SETTING = "ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS";
+export const DEFAULT_DASHBOARD_DRAFT_RETENTION_DAYS = 30;
+
+/**
+ * Resolve the abandoned-draft retention window (days) from the settings
+ * registry. The sweep is operator-global (it deletes across every workspace's
+ * drafts), so this reads the platform/env/default tier — no orgId. A value
+ * `<= 0`, or an unparseable value, disables the sweep (operator opt-out); the
+ * caller treats a non-positive return as "skip".
+ */
+export function getDashboardDraftRetentionDays(): number {
+  const raw = getSettingAuto(DASHBOARD_DRAFT_RETENTION_DAYS_SETTING);
+  if (raw == null || raw === "") return DEFAULT_DASHBOARD_DRAFT_RETENTION_DAYS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    log.warn(
+      { value: raw },
+      "Invalid ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS — skipping abandoned-draft cleanup",
+    );
+    return 0;
+  }
+  return parsed;
+}
+
+/**
+ * Delete abandoned `dashboard_user_drafts` rows whose last edit is older than
+ * the retention window, so the table can't grow unbounded (#4324). Returns the
+ * number of rows deleted. Fail-soft: a DB error logs and yields 0 so the
+ * enclosing scheduler tick still reports its other outcomes. A non-positive
+ * window disables the sweep.
+ */
+export async function cleanupAbandonedDrafts(): Promise<number> {
+  if (!hasInternalDB()) return 0;
+  // Floor BEFORE the disable gate: a fractional window in (0, 1) must disable
+  // the sweep, NOT delete every draft. `make_interval(days => 0)` is a zero
+  // interval, so `updated_at < now()` matches every row — flooring 0.5 → 0
+  // first, then gating on `<= 0`, keeps the integer-day domain the thing that's
+  // actually checked (any window < 1 day disables rather than nukes).
+  const retentionDays = Math.floor(getDashboardDraftRetentionDays());
+  if (retentionDays <= 0) return 0;
+  try {
+    const rows = await internalQuery<{ user_id: string }>(
+      `DELETE FROM dashboard_user_drafts
+        WHERE updated_at < now() - make_interval(days => $1::int)
+        RETURNING user_id`,
+      [retentionDays],
+    );
+    if (rows.length > 0) {
+      log.info(
+        { count: rows.length, retentionDays },
+        "Swept abandoned dashboard drafts",
+      );
+    }
+    return rows.length;
+  } catch (err) {
+    log.error({ err: errorMessage(err) }, "cleanupAbandonedDrafts failed");
+    return 0;
   }
 }
 

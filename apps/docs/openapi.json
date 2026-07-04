@@ -5931,7 +5931,7 @@
           "Dashboards"
         ],
         "summary": "Get dashboard with cards",
-        "description": "Returns a dashboard with all its cards. Requires admin role. Pass `?view=draft` to overlay the caller's per-user draft (#2364) when `ATLAS_DASHBOARD_DRAFTS_ENABLED=true`; the published view is returned otherwise.",
+        "description": "Returns a dashboard with all its cards. Requires admin role. Pass `?view=draft` to overlay the caller's per-user draft (#2364) when one exists; the published view is returned otherwise.",
         "parameters": [
           {
             "schema": {
@@ -5949,10 +5949,10 @@
                 "published",
                 "draft"
               ],
-              "description": "`draft` overlays the current user's draft (flag-gated); `published` (default) returns the live published dashboard."
+              "description": "`draft` overlays the current user's draft when one exists; `published` (default) returns the live published dashboard."
             },
             "required": false,
-            "description": "`draft` overlays the current user's draft (flag-gated); `published` (default) returns the live published dashboard.",
+            "description": "`draft` overlays the current user's draft when one exists; `published` (default) returns the live published dashboard.",
             "name": "view",
             "in": "query"
           }
@@ -6462,7 +6462,7 @@
           "Drafts"
         ],
         "summary": "Get (or fork) the caller's draft for a dashboard",
-        "description": "Returns the current user's draft for this dashboard, forking from published on first call. Requires admin role + `ATLAS_DASHBOARD_DRAFTS_ENABLED=true` (returns 503 when the feature flag is off).",
+        "description": "Returns the current user's draft for this dashboard, forking from published on first call. Requires admin role.",
         "parameters": [
           {
             "schema": {
@@ -6582,31 +6582,6 @@
                 }
               }
             }
-          },
-          "503": {
-            "description": "Drafts feature flag disabled",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
           }
         },
         "operationId": "getDashboardsByIdDraft"
@@ -6619,7 +6594,7 @@
           "Drafts"
         ],
         "summary": "Check whether the caller has an active draft for this dashboard",
-        "description": "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, 200 with `{ hasDraft: false }` when not, and 503 when drafts are disabled. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner.",
+        "description": "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, or 200 with `{ hasDraft: false }` when not. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner.",
         "parameters": [
           {
             "schema": {
@@ -6717,31 +6692,6 @@
           },
           "500": {
             "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Drafts feature flag disabled",
             "content": {
               "application/json": {
                 "schema": {
@@ -6921,31 +6871,6 @@
                 }
               }
             }
-          },
-          "503": {
-            "description": "Drafts feature flag disabled",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
           }
         },
         "operationId": "postDashboardsByIdDraftPublish"
@@ -7023,31 +6948,6 @@
           },
           "500": {
             "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Drafts feature flag disabled",
             "content": {
               "application/json": {
                 "schema": {
@@ -7205,31 +7105,6 @@
           },
           "500": {
             "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Drafts feature flag disabled",
             "content": {
               "application/json": {
                 "schema": {

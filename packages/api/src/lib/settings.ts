@@ -1429,6 +1429,25 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // Dashboards — retention window before an abandoned per-user DRAFT row is
+  // swept (#4324). A `dashboard_user_drafts` row un-touched (not saved) for
+  // longer than this many days is deleted by the scheduler sweep, so the table
+  // can't grow unbounded from forked-then-abandoned drafts. `0` (or less)
+  // disables the sweep. Hot-reloadable: `getDashboardDraftRetentionDays()`
+  // (lib/dashboard-versioning.ts) reads it per tick — no redeploy to retune.
+  {
+    key: "ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS",
+    section: "Dashboards",
+    label: "Abandoned Draft Retention (days)",
+    description:
+      "Days an un-touched per-user dashboard draft may sit before the scheduler deletes it (published/discarded drafts are removed immediately). 0 disables cleanup (default 30).",
+    type: "number",
+    default: "30",
+    envVar: "ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS",
+    scope: "platform",
+    saasVisible: false,
+  },
+
   // Observability — plugin-health probe cache TTL. Hot-reloadable:
   // `getPluginHealthCacheTtlMs()` reads per health probe. (OTEL exporter
   // endpoint/headers are intentionally NOT here — see the block header above.)

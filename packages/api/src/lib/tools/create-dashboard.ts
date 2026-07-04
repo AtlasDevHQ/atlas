@@ -29,12 +29,11 @@
  *    dashboard has zero cards and the user's draft has the staged
  *    set. The #2521 Publish UI promotes them later.
  *
- * Why drafts-first regardless of the flag: the chat-as-dashboard-editor
- * PRD (#2362) calls out that newly proposed cards should NEVER be
- * visible to other org members until the user explicitly publishes.
- * The `ATLAS_DASHBOARD_DRAFTS_ENABLED` gate controls whether the bound
- * editor tools route through drafts — `createDashboard` is the on-ramp
- * to that flow, so it always uses the drafts table when available.
+ * Why drafts-first: the chat-as-dashboard-editor PRD (#2362) calls out
+ * that newly proposed cards should NEVER be visible to other org members
+ * until the user explicitly publishes. Drafts are unconditional (#4324) —
+ * `createDashboard` is the on-ramp to that flow, so it always uses the
+ * drafts table when available.
  * When the internal DB is offline or the user is anonymous, the tool
  * returns a sanitized err rather than silently falling through to a
  * direct INSERT (CLAUDE.md "Prefer errors over silent fallbacks").

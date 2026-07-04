@@ -217,8 +217,11 @@ function tickEffect(
     // Dashboard auto-refresh — runs after task executions
     const dashRefresh = yield* refreshDueDashboardsEffect(semaphore);
 
-    // Abandoned never-published shell cleanup (#4320) — throttled to hourly.
-    const shellsCleaned = yield* cleanupAbandonedDashboardsEffect();
+    // Abandoned-draft + never-published shell cleanup (#4324, #4320) — one
+    // hourly-throttled sweep. Drafts are swept FIRST so a shell whose only
+    // lingering draft we just removed becomes collectable by the shell sweep
+    // in the SAME tick (the shell sweep skips shells that still have a draft).
+    const abandoned = yield* cleanupAbandonedEffect();
 
     return {
       tasksFound: dueTasks.length,
@@ -226,28 +229,50 @@ function tickEffect(
       tasksCompleted,
       tasksFailed,
       ...(dashRefresh.total > 0 ? { dashboardsRefreshed: dashRefresh.refreshed, dashboardsFailed: dashRefresh.failed } : {}),
-      ...(shellsCleaned > 0 ? { dashboardShellsCleaned: shellsCleaned } : {}),
+      ...(abandoned.drafts > 0 ? { dashboardDraftsCleaned: abandoned.drafts } : {}),
+      ...(abandoned.shells > 0 ? { dashboardShellsCleaned: abandoned.shells } : {}),
     };
   });
 }
 
-// Abandoned-shell cleanup runs at most once an hour, not every tick — the
-// window (default 72h) makes sub-hourly sweeps pure waste. Module-level so the
-// throttle survives across ticks on the same process.
+// Abandoned-shell + abandoned-draft cleanup run at most once an hour, not every
+// tick — the retention windows (shells default 72h, drafts default 30d) make
+// sub-hourly sweeps pure waste. Module-level so the throttle survives across
+// ticks on the same process. One clock drives both sweeps so they fire on the
+// same hourly boundary.
 const ABANDON_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 let lastAbandonSweepAt = 0;
 
 /**
- * Soft-delete abandoned never-published dashboard shells (#4320), throttled to
- * hourly. Non-fatal: a sweep failure logs and yields 0 so the tick still
- * reports task/refresh outcomes.
+ * Abandoned-work cleanup (#4324, #4320), throttled to hourly. Sweeps abandoned
+ * dashboard drafts first, then never-published shells (draft-first ordering
+ * lets a shell freed by the draft sweep be collected in the same tick). Each
+ * sweep is independently fail-soft — a failure in one logs and yields 0 without
+ * aborting the other or the enclosing tick.
  */
-function cleanupAbandonedDashboardsEffect(): Effect.Effect<number> {
+function cleanupAbandonedEffect(): Effect.Effect<{ drafts: number; shells: number }> {
   return Effect.gen(function* () {
     const now = Date.now();
-    if (now - lastAbandonSweepAt < ABANDON_SWEEP_INTERVAL_MS) return 0;
+    if (now - lastAbandonSweepAt < ABANDON_SWEEP_INTERVAL_MS) return { drafts: 0, shells: 0 };
     lastAbandonSweepAt = now;
-    return yield* Effect.tryPromise({
+
+    const drafts = yield* Effect.tryPromise({
+      try: async () => {
+        const { cleanupAbandonedDrafts } = await import("@atlas/api/lib/dashboard-versioning");
+        return cleanupAbandonedDrafts();
+      },
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(
+      Effect.catchAll((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Abandoned-draft cleanup sweep failed",
+        );
+        return Effect.succeed(0);
+      }),
+    );
+
+    const shells = yield* Effect.tryPromise({
       try: async () => {
         const { cleanupAbandonedDashboards } = await import("@atlas/api/lib/dashboards");
         return cleanupAbandonedDashboards();
@@ -262,6 +287,8 @@ function cleanupAbandonedDashboardsEffect(): Effect.Effect<number> {
         return Effect.succeed(0);
       }),
     );
+
+    return { drafts, shells };
   });
 }
 

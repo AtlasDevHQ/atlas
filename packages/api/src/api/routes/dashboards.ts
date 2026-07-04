@@ -48,7 +48,6 @@ import {
 import { CHART_TYPES } from "@atlas/api/lib/dashboard-types";
 import type { DashboardCard, DashboardWithCards } from "@atlas/api/lib/dashboard-types";
 import {
-  isDashboardDraftsEnabled,
   forkOrLoadDraft,
   loadDraft,
   discardDraft,
@@ -406,13 +405,13 @@ const getDashboardRoute = createRoute({
   tags: ["Dashboards"],
   summary: "Get dashboard with cards",
   description:
-    "Returns a dashboard with all its cards. Requires admin role. Pass `?view=draft` to overlay the caller's per-user draft (#2364) when `ATLAS_DASHBOARD_DRAFTS_ENABLED=true`; the published view is returned otherwise.",
+    "Returns a dashboard with all its cards. Requires admin role. Pass `?view=draft` to overlay the caller's per-user draft (#2364) when one exists; the published view is returned otherwise.",
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
     query: z.object({
       view: z.enum(["published", "draft"]).optional().openapi({
         param: { name: "view", in: "query" },
-        description: "`draft` overlays the current user's draft (flag-gated); `published` (default) returns the live published dashboard.",
+        description: "`draft` overlays the current user's draft when one exists; `published` (default) returns the live published dashboard.",
       }),
     }),
   },
@@ -436,7 +435,7 @@ const getDraftRoute = createRoute({
   tags: ["Dashboards", "Drafts"],
   summary: "Get (or fork) the caller's draft for a dashboard",
   description:
-    "Returns the current user's draft for this dashboard, forking from published on first call. Requires admin role + `ATLAS_DASHBOARD_DRAFTS_ENABLED=true` (returns 503 when the feature flag is off).",
+    "Returns the current user's draft for this dashboard, forking from published on first call. Requires admin role.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     200: { description: "Draft snapshot + materialized DashboardWithCards", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -444,7 +443,6 @@ const getDraftRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -462,7 +460,7 @@ const getDraftStatusRoute = createRoute({
   tags: ["Dashboards", "Drafts"],
   summary: "Check whether the caller has an active draft for this dashboard",
   description:
-    "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, 200 with `{ hasDraft: false }` when not, and 503 when drafts are disabled. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner.",
+    "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, or 200 with `{ hasDraft: false }` when not. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     200: { description: "Draft presence + baseline timestamps", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -470,7 +468,6 @@ const getDraftStatusRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -490,7 +487,6 @@ const publishDraftRoute = createRoute({
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard or draft not found", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Stale baseline or merge conflict", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -507,7 +503,6 @@ const discardDraftRoute = createRoute({
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -527,7 +522,6 @@ const rebaseDraftRoute = createRoute({
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard or draft not found", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Rebase conflict", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -1074,24 +1068,28 @@ authed.use(requireOrgContext());
 
 /**
  * True when this caller's direct-manipulation edits must route to their
- * per-user draft instead of the published tables. Requires drafts-on AND a
- * real user id.
+ * per-user draft instead of the published tables. Requires a real user id.
  *
- * The `!userId` fall-through to the legacy direct-published write is
- * DEFENSIVE, not a deliberate open hole: every direct-manipulation route here
- * is behind `authed` + `requireOrgContext()`, so a caller normally always has
- * a `user.id`. The only way to reach it with no user is a single-operator
+ * The `!userId` fall-through to the direct-published write is DEFENSIVE, not a
+ * deliberate open hole: every direct-manipulation route here is behind
+ * `authed` + `requireOrgContext()`, so a caller normally always has a
+ * `user.id`. The only way to reach it with no user is a single-operator
  * `auth: none` self-host — where there is exactly one operator and no teammate
  * to leak a live edit to, so writing published directly is safe. This is
  * intentionally ASYMMETRIC with the bound-tool path (`bound-dashboard.ts`
  * `maybeApplyToDraft`), which *rejects* the no-user case: the bound editor can
  * run in a hosted/multi-user context without a userId, so an unattributable
- * bound edit going live IS the ADR-0029 privacy hole. A flag-off caller (or a
- * deploy with no internal DB) also keeps the legacy path — there's no draft
- * store to hold the edit.
+ * bound edit going live IS the ADR-0029 privacy hole.
+ *
+ * Drafts themselves are UNCONDITIONAL (#4324): the retired
+ * `ATLAS_DASHBOARD_DRAFTS_ENABLED` gate no longer factors in — the only reason
+ * a CRUD write skips the draft store is a genuinely absent `userId`. (When a
+ * userId IS present but the internal DB is absent, the edit does NOT fall
+ * through to a direct write — `applyEditToDraft` returns `no_db` → 503; there
+ * are no dashboards to edit on a no-internal-DB deploy anyway.)
  */
 function shouldRouteToDraft(userId: string | null | undefined): userId is string {
-  return isDashboardDraftsEnabled() && typeof userId === "string" && userId.length > 0;
+  return typeof userId === "string" && userId.length > 0;
 }
 
 /** Map an `applyEditToDraft` failure to an HTTP body + status. */
@@ -1154,7 +1152,7 @@ type DraftExecResolution =
   // the last-published definition the caller separately loaded).
   | { kind: "override"; card: DashboardCard }
   // No draft override applies — run the published card the caller already
-  // loaded (view=published, flag off, anonymous, or no draft exists).
+  // loaded (view=published, anonymous, or no draft exists).
   | { kind: "published" }
   // The caller asked for the draft view and HAS a draft, but the card id isn't
   // in it (removed in the draft) → the route 404s rather than silently running
@@ -1268,12 +1266,11 @@ authed.openapi(getDashboardRoute, async (c) => {
       return c.json(fail.body, fail.status);
     }
 
-    // #2364 — `?view=draft` overlays the caller's draft when the flag
-    // is on AND a draft exists. Viewers (no user, anonymous shares)
-    // always see the published row even when ?view=draft is passed —
-    // PRD user story 11 ("viewers see published").
+    // #2364 — `?view=draft` overlays the caller's draft when one exists.
+    // Viewers (no user, anonymous shares) always see the published row even
+    // when ?view=draft is passed — PRD user story 11 ("viewers see published").
     const view = c.req.valid("query").view;
-    if (view === "draft" && isDashboardDraftsEnabled() && user?.id) {
+    if (view === "draft" && user?.id) {
       const draft = yield* Effect.promise(() => loadDraft(user.id, id));
       if (draft) {
         return c.json(materializeDraftView(result.data, draft.snapshot), 200);
@@ -1287,17 +1284,6 @@ authed.openapi(getDashboardRoute, async (c) => {
 // Draft routes (#2364) — per-user dashboard drafts
 // ---------------------------------------------------------------------------
 
-function draftsFlagOffResponse() {
-  return {
-    body: {
-      error: "feature_disabled",
-      message:
-        "Per-user dashboard drafts are not enabled. Set ATLAS_DASHBOARD_DRAFTS_ENABLED=true on the API to enable.",
-    },
-    status: 503 as const,
-  };
-}
-
 authed.openapi(getDraftRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
@@ -1305,10 +1291,6 @@ authed.openapi(getDraftRoute, async (c) => {
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
-    }
-    if (!isDashboardDraftsEnabled()) {
-      const fail = draftsFlagOffResponse();
-      return c.json(fail.body, fail.status);
     }
     if (!user?.id) {
       return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
@@ -1354,10 +1336,6 @@ authed.openapi(getDraftStatusRoute, async (c) => {
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
-    if (!isDashboardDraftsEnabled()) {
-      const fail = draftsFlagOffResponse();
-      return c.json(fail.body, fail.status);
-    }
     if (!user?.id) {
       return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
     }
@@ -1396,10 +1374,6 @@ authed.openapi(publishDraftRoute, async (c) => {
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
-    }
-    if (!isDashboardDraftsEnabled()) {
-      const fail = draftsFlagOffResponse();
-      return c.json(fail.body, fail.status);
     }
     if (!user?.id) {
       return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
@@ -1495,10 +1469,6 @@ authed.openapi(discardDraftRoute, async (c) => {
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format.", requestId }, 400);
     }
-    if (!isDashboardDraftsEnabled()) {
-      const fail = draftsFlagOffResponse();
-      return c.json(fail.body, fail.status);
-    }
     if (!user?.id) {
       return c.json({ error: "auth_required", message: "Drafts require an authenticated user.", requestId }, 401);
     }
@@ -1528,10 +1498,6 @@ authed.openapi(rebaseDraftRoute, async (c) => {
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
-    }
-    if (!isDashboardDraftsEnabled()) {
-      const fail = draftsFlagOffResponse();
-      return c.json(fail.body, fail.status);
     }
     if (!user?.id) {
       return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
@@ -1825,9 +1791,9 @@ authed.openapi(
       }
 
       // Title / description ARE draft content (#4315). Route them to the
-      // caller's private draft when drafts are on — nothing but publish may
-      // write the published title/description. Anonymous / flag-off callers
-      // fall through to the legacy direct-published write.
+      // caller's private draft — nothing but publish may write the published
+      // title/description. An anonymous (no-userId) caller falls through to the
+      // defensive direct-published write (drafts are unconditional, #4324).
       const metaUpdates: { title?: string; description?: string | null } = {};
       if (parsed.title !== undefined) metaUpdates.title = parsed.title;
       if (parsed.description !== undefined) metaUpdates.description = parsed.description;

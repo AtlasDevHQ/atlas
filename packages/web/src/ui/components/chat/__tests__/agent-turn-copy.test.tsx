@@ -116,6 +116,26 @@ describe("AgentTurn copy affordance", () => {
     });
   });
 
+  test("mixed answer parts: an all-suggestions part contributes nothing to the copy", async () => {
+    const { container } = render(
+      <AgentTurn
+        parts={[
+          text("Real answer."),
+          text("<suggestions>\nOnly chips\n</suggestions>"),
+        ]}
+      />,
+    );
+
+    const button = copyButton(container);
+    expect(button).not.toBeNull();
+    fireEvent.click(button!);
+
+    await waitFor(() => {
+      // No trailing blank-line join from the empty stripped part.
+      expect(writeTextMock).toHaveBeenCalledWith("Real answer.");
+    });
+  });
+
   test("exactly one copy button per turn even with multiple answer parts", () => {
     const { container } = render(
       <AgentTurn parts={[text("One."), text("Two.")]} />,

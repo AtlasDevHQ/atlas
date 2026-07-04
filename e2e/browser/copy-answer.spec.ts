@@ -21,15 +21,25 @@ test.describe("Copy answer @llm", () => {
 
     // The finished answer is on screen; the copy button starts hover-hidden
     // on desktop. Playwright's toBeVisible() ignores opacity, so pin the
-    // reveal via computed style: 0 before hover, 1 after (toHaveCSS retries,
-    // letting the transition settle).
+    // reveal via computed style on the button's parent — AgentTurn's reveal
+    // wrapper carries the opacity classes; CopyButton renders the bare
+    // button. 0 before hover, 1 after (toHaveCSS retries, letting the
+    // transition settle).
     const answer = page.getByTestId("turn-answer").last();
     await expect(answer).toBeVisible({ timeout: 10_000 });
 
     const copyButton = page.getByRole("button", { name: "Copy answer" });
-    await expect(copyButton.locator("..")).toHaveCSS("opacity", "0");
+    const copyWrapper = copyButton.locator("..");
+    await expect(copyWrapper).toHaveCSS("opacity", "0");
+
+    // Keyboard path: focusing the button reveals it too (group-focus-within).
+    await copyButton.focus();
+    await expect(copyWrapper).toHaveCSS("opacity", "1");
+    await copyButton.blur();
+    await expect(copyWrapper).toHaveCSS("opacity", "0");
+
     await answer.hover();
-    await expect(copyButton.locator("..")).toHaveCSS("opacity", "1");
+    await expect(copyWrapper).toHaveCSS("opacity", "1");
     await copyButton.click();
 
     // The existing CopyButton feedback confirms the write went through.
@@ -53,5 +63,11 @@ test.describe("Copy answer @llm", () => {
     const words = clipboard.split(/\s+/).filter((w) => /^[a-zA-Z]{5,}$/.test(w));
     expect(words.length).toBeGreaterThan(0);
     expect(words.some((w) => rendered.includes(w))).toBe(true);
+
+    // Below the md: breakpoint the button is always visible — no hover needed
+    // (the mouse is parked away first so a lingering hover can't fake this).
+    await page.mouse.move(0, 0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(copyWrapper).toHaveCSS("opacity", "1");
   });
 });

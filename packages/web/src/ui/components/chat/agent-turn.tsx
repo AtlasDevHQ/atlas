@@ -64,8 +64,9 @@ export function AgentTurn({
   );
 
   // What the copy affordance writes (#4296): the answer's markdown SOURCE with
-  // the <suggestions> block stripped — the same text the Markdown blocks below
-  // render, joined across parts, not the rendered DOM text.
+  // the <suggestions> block stripped — the same source text the Markdown
+  // blocks below render (trimmed per part), joined across parts, not the
+  // rendered DOM text.
   const answerCopyText = answer
     .map(({ part }) => parseSuggestions(part.text).text.trim())
     .filter(Boolean)

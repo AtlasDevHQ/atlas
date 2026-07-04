@@ -6,6 +6,10 @@
   "bearer_methods_supported": [
     "header"
   ],
+  "scopes_supported": [
+    "mcp:read",
+    "mcp:write"
+  ],
   "resource_documentation": "https://docs.useatlas.dev/api-reference",
   "resource_name": "Atlas API",
   "resource_policy_uri": "https://www.useatlas.dev/privacy",

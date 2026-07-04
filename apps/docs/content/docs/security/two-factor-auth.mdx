@@ -78,7 +78,8 @@ Once enrolled, every subsequent sign-in prompts for a fresh TOTP code
 before the session is authorized. If you lose access to your
 authenticator, use a backup code (each one is single-use). If you
 exhaust all backup codes, contact a `platform_admin` to reset your
-account.
+account — the admin-mediated recovery flow is documented under
+[Passkeys → What happens if you're locked out](./passkeys#what-happens-if-youre-locked-out).
 
 ### Regenerating Backup Codes
 
@@ -145,7 +146,37 @@ admin-role members only — admin/owner accounts are the API-gated, highest-valu
 logins (see [Scope](#scope)). It is backed by
 `GET /api/v1/admin/security/metrics` and requires the internal database, so it
 is unavailable in datasource-only deployments. Cross-workspace operators get a
-fleet-wide roll-up of the same enrollment metrics at `/platform/security`.
+fleet-wide roll-up of the same enrollment metrics at `/platform/security` — see
+the next section.
+
+### Platform-operator fleet view
+
+On a multi-tenant deployment (app.useatlas.dev, or a self-hosted operator running
+many workspaces), a `platform_admin` sees the same adoption buckets summed across
+**every** workspace, plus a per-workspace breakdown, at **`/platform/security`**.
+It answers product questions like *"75% of workspaces have at least one passkey
+enrolled — promote it to non-admin users."*
+
+The page is backed by `GET /api/v1/platform/admin/security/metrics`, which returns
+two payloads:
+
+- **`aggregate`** — one set of buckets (admin count, MFA-enrolled, two-factor-only,
+  passkey-only, both-factors, no-factors, active trust devices, active
+  trust-device users) summed across every **active** workspace. Same shape as the
+  workspace endpoint, so the platform dashboard reuses the workspace traffic-light
+  tile. A user who is admin in *N* workspaces contributes *N* to the counts — the
+  unit of analysis is "an admin in a workspace", which is what drives nudge
+  decisions.
+- **`workspaces`** — one row per workspace with the same per-workspace buckets,
+  capped at 1000 rows (a region past that needs pagination, not a wall of rows).
+
+Suspended and soft-deleted workspaces are excluded — they aren't taking new
+logins, so their counters would be misleading noise. Trust-device grants are
+counted against the verification rows directly, so a single "trust this device"
+cookie held by a user who is admin in three workspaces counts **once** in the
+aggregate (it still shows in each of the three per-workspace rows). Like the
+workspace twin, this endpoint requires `platform_admin` + MFA and the internal
+database.
 
 ## Operator Reference
 

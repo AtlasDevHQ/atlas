@@ -269,6 +269,35 @@ compliance queries can split recovery from off-boarding.
 Workspace admins can only reset users in their own org. Cross-org
 resets require a platform admin and emit the same audit row.
 
+### Off-boarding: revoke all authentication
+
+MFA reset is *recovery* — it lets the same person back in. **Off-boarding**
+is the opposite: when a contractor rolls off or an account is compromised
+you want to close *every* way that account can authenticate, and you do
+**not** want re-enrollment. The user detail page's **Danger zone** card
+exposes this as **Revoke all authentication**, the sibling of Reset MFA.
+
+1. Workspace admin (or platform admin, cross-org) opens
+   **Admin → Users → \<user\>** and clicks **Revoke all authentication**.
+2. A preview (`GET /api/v1/admin/users/{id}/revoke-auth/preview`) shows the
+   per-class counts — sessions, trusted devices, passkeys, OAuth
+   access/refresh tokens — that the action would delete, so the admin sees
+   the blast radius before confirming.
+3. On confirm (`POST /api/v1/admin/users/{id}/revoke-auth`), the API deletes,
+   **atomically in one transaction**: every active session, every
+   trusted-device cookie (and its adjacent verification rows), every passkey,
+   and every OAuth access and refresh token. Either all classes are revoked or
+   the whole thing rolls back — there is no half-revoked state where sessions
+   are gone but a passkey still admits on the next SSO redirect.
+
+Unlike MFA reset, this **does** tear down sessions and OAuth grants — that is
+the point. Nothing about the identity itself is destroyed, so a re-hired user
+can enroll fresh credentials later. The audit row carries the per-class
+counts, the actor, the target email, and an optional reason; the action type
+is `user.auth_revoke`, distinct from `user.mfa_reset`, so compliance queries
+can split off-boarding from recovery. Probing a user in another workspace
+returns the same `404` as a missing user (no cross-org existence leak).
+
 ### What we don't ship — and why
 
 Atlas deliberately does **not** offer the following recovery

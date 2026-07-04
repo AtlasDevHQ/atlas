@@ -849,10 +849,38 @@ The single endpoint accepts:
 
 The MCP SDK handles dispatch automatically — clients pointed at the URL above just work.
 
+### Agent region discovery
+
+The brand apex `useatlas.dev` is the first host an agent (or an agent-readiness scanner) resolves. It can't run the per-request OAuth machinery — that lives on the regional `api.*` hosts — so it serves a **static mirror** of the canonical (US-region) agent-discovery surface, generated from the same source the live API advertises so the copies can't drift:
+
+| Path (on `useatlas.dev`) | What it is |
+|--------------------------|------------|
+| `/.well-known/atlas-regions.json` | Machine-readable region directory (below) |
+| `/auth.md` | Static mirror of the US-region [`auth.md`](#authentication) onboarding document |
+| `/.well-known/oauth-protected-resource` | RFC 9728 metadata describing the REST API as a bearer-protected resource |
+| `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server` | **302 redirects** to the live Better-Auth-generated docs on `api.useatlas.dev` (these are dynamic and never frozen) |
+
+An agent that has only the brand name and needs to pick a residency region reads **`useatlas.dev/.well-known/atlas-regions.json`** — the agent-facing analogue of the browser signup/login region picker. Atlas residency makes the *host* the region (ADR-0024), so the agent resolves its region here, then follows that host's own `/auth.md` + `.well-known` documents (which advertise the regional MCP endpoint):
+
+```json
+{
+  "default": "us",
+  "regions": [
+    { "id": "us",   "label": "United States", "api": "https://api.useatlas.dev",      "mcp": "https://mcp.useatlas.dev/mcp",      "authMd": "https://api.useatlas.dev/auth.md" },
+    { "id": "eu",   "label": "Europe",        "api": "https://api-eu.useatlas.dev",   "mcp": "https://mcp-eu.useatlas.dev/mcp",   "authMd": "https://api-eu.useatlas.dev/auth.md" },
+    { "id": "apac", "label": "Asia Pacific",  "api": "https://api-apac.useatlas.dev", "mcp": "https://mcp-apac.useatlas.dev/mcp", "authMd": "https://api-apac.useatlas.dev/auth.md" }
+  ]
+}
+```
+
+Each entry gives the region's API/OAuth-issuer host, its MCP resource host, and its own region-correct `auth.md`. The directory is derived from the same `residency.regions` config the signup picker consumes, and a CI drift gate regenerates it, so it can never disagree with the regions the platform actually offers.
+
 ### Authentication
 
 <Callout type="info" title="One file, human- and machine-readable">
 Atlas hosts the whole agent-registration story — the OAuth 2.1 + DCR + PKCE flow, the discovery documents, the scopes, and the `start_trial` self-serve path — as a single document at [`mcp.useatlas.dev/auth.md`](https://mcp.useatlas.dev/auth.md). It's the canonical end-to-end description of how an agent registers with Atlas: an integrator can read it, and an `auth.md`-aware agent can fetch it at that conventional path to self-navigate the flow. The sections below restate the same flow in context; the hosted file is the source of truth.
+
+The same document is reachable at three conventional locations, all rendered from one source: the MCP brand host [`mcp.useatlas.dev/auth.md`](https://mcp.useatlas.dev/auth.md), each regional API host (`api.useatlas.dev/auth.md`, `api-eu.useatlas.dev/auth.md`, …), and — for an agent that starts from the bare brand — a static mirror at the [apex `useatlas.dev/auth.md`](https://useatlas.dev/auth.md) (see [Agent region discovery](#agent-region-discovery) above). The apex copy is byte-for-byte the US-region file and is regenerated + drift-checked in CI, so it never advertises a stale scope or host.
 </Callout>
 
 Atlas's authorization server lives at `/api/auth`. Three discovery documents drive the OAuth flow:

@@ -130,9 +130,12 @@ test.describe("Dashboard — per-tile status (#4321) @llm", () => {
     const staleTile = page.locator('[data-tile-status]').filter({ hasText: "Stale tile" });
     const errTile = page.locator('[data-tile-status]').filter({ hasText: "Errored tile" });
 
-    // 1) The healthy tile renders fresh with the NEW filtered rows.
+    // 1) The healthy tile renders fresh with the NEW filtered rows, and its age
+    //    caption resets to "just now" (muted) — the fresh render's `renderedAt`
+    //    is fed to the tile, so it does not show a stale red "N days ago".
     await expect(okTile).toHaveAttribute("data-tile-status", "fresh", { timeout: 10_000 });
     await expect(okTile).toContainText("Enterprise");
+    await expect(okTile.getByTestId("tile-age-caption")).toHaveAttribute("data-caption-tone", "muted");
 
     // 2) The failed-with-cache tile is STALE: it keeps its OLD data (never
     //    blanked, never silently swapped to the healthy tile's window) and is
@@ -155,5 +158,12 @@ test.describe("Dashboard — per-tile status (#4321) @llm", () => {
     await staleTile.getByTestId("tile-retry").click();
     await expect(staleTile).toHaveAttribute("data-tile-status", "fresh", { timeout: 10_000 });
     await expect(staleTile).toContainText("Enterprise");
+
+    // 6) Retry the ERRORED tile (its own placeholder retry, a distinct button /
+    //    code path): the mock now succeeds → it flips from errored to fresh.
+    state.failing.delete("card-err");
+    await errTile.getByTestId("tile-state-errored-retry").click();
+    await expect(errTile).toHaveAttribute("data-tile-status", "fresh", { timeout: 10_000 });
+    await expect(errTile).toContainText("Enterprise");
   });
 });

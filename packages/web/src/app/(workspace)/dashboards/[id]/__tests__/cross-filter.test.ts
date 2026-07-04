@@ -158,6 +158,30 @@ describe("cardBoundPlaceholders (#4321 — sql + comparisonSql)", () => {
   test("a card with no comparisonSql binds only its primary sql placeholders", () => {
     expect([...cardBoundPlaceholders(chartCard("a", "WHERE region = :region"))]).toEqual(["region"]);
   });
+
+  test("an autoComparison KPI binds via its primary sql (comparison re-runs the same sql)", () => {
+    // autoComparison shifts the card's OWN sql window, so the bound set is the
+    // primary scan — a param the primary sql binds makes the card affected.
+    const card: DashboardCard = {
+      ...chartCard("kpi", "SELECT SUM(amount) FROM orders WHERE created_at >= :date_from"),
+      chartConfig: { type: "kpi", categoryColumn: "label", valueColumns: ["total"], kpi: { autoComparison: true } },
+    };
+    expect([...cardBoundPlaceholders(card)]).toEqual(["date_from"]);
+    expect(isCardAffectedByFilters(card, ["date_from"])).toBe(true);
+  });
+});
+
+describe("incompatibleCardIds (#4321 — comparisonSql-only binding)", () => {
+  test("a KPI card binding the filter only in comparisonSql is NOT marked incompatible", () => {
+    const kpi = kpiComparisonOnlyCard(
+      "kpi",
+      "SELECT 'Revenue' AS label, SUM(amount) AS total FROM orders",
+      "SELECT SUM(amount) AS total FROM orders WHERE created_at >= :date_from",
+    );
+    const plain = chartCard("plain", "SELECT count(*) FROM t");
+    // Only 'plain' (binds nothing) is incompatible; the comparison-only KPI is not.
+    expect(incompatibleCardIds([kpi, plain], ["date_from"])).toEqual(new Set(["plain"]));
+  });
 });
 
 describe("incompatibleCardIds", () => {

@@ -1,6 +1,6 @@
 /**
- * Fold a card-render batch into per-tile phases (#4321 — the tile is the unit
- * of trust).
+ * Fold a card-render batch into per-tile phases + overlays (#4321 — the tile is
+ * the unit of trust).
  *
  * The render batch (`renderDashboardCards`) returns one ok/err entry per chart
  * card. The OLD page folded only the successes into an overlay map, so a card
@@ -8,21 +8,34 @@
  * reverted it to its persisted (unfiltered) snapshot — a board silently mixing
  * two windows.
  *
- * This fold is the fix: EVERY entry produces an explicit phase — a success
- * becomes an `ok` overlay, a failure becomes an `error` phase. A failed tile is
- * therefore never dropped; the grid keeps its older data but the tile labels it
- * stale (with its age) and offers a retry, instead of masquerading the old
- * number as the current filtered one.
+ * This module is the fix, split into two pure steps:
+ *   1. `foldRenderEntries` — EVERY entry becomes an explicit phase (`ok` overlay
+ *      or `error`), so a failed tile is never dropped.
+ *   2. `mergeOverlays` — merges the batch's `ok` overlays over the prior ones
+ *      while a failed (`error`) tile KEEPS its prior overlay, labeled-stale,
+ *      instead of masquerading the old unfiltered number as the current one.
  *
- * Pure + framework-free so the anti-silent-revert guarantee is unit-testable
+ * Both are framework-free so the anti-silent-revert guarantee is unit-testable
  * without mounting the page.
  */
 import type { CardRenderEntry } from "./dashboard-card-render";
 import type { KpiComparisonResult } from "@/ui/lib/types";
+import type { TileRenderPhase } from "@/ui/components/dashboards/tile-status";
 
-/** The render phase of a single tile after a batch (or a single-tile retry). */
+/** A tile's ephemeral, per-viewer rendered rows + the time they were rendered
+ *  (so the age caption resets to "just now" for a fresh parameter render). */
+export interface TileOverlay {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  renderedAt: string;
+}
+
+/**
+ * The render phase of a single tile after a batch. `foldRenderEntries` only ever
+ * emits `ok` / `error` (a batch entry is one or the other); the `loading` phase
+ * lives in {@link TileRenderPhase}, set on the page BEFORE a batch resolves.
+ */
 export type TilePhase =
-  | { phase: "loading" }
   | { phase: "ok"; columns: string[]; rows: Record<string, unknown>[]; renderedAt: string }
   | { phase: "error"; message: string };
 
@@ -32,8 +45,6 @@ export interface FoldedRender {
   phases: Record<string, TilePhase>;
   /** cardId → KPI comparison block (or null), for the cards that carried one. */
   comparisons: Record<string, KpiComparisonResult | null>;
-  /** Ids of the cards whose render failed — the tiles that stay labeled-stale. */
-  failedCardIds: string[];
 }
 
 /**
@@ -44,7 +55,6 @@ export interface FoldedRender {
 export function foldRenderEntries(entries: CardRenderEntry[], renderedAt: string): FoldedRender {
   const phases: Record<string, TilePhase> = {};
   const comparisons: Record<string, KpiComparisonResult | null> = {};
-  const failedCardIds: string[] = [];
 
   for (const entry of entries) {
     if (entry.ok) {
@@ -64,9 +74,40 @@ export function foldRenderEntries(entries: CardRenderEntry[], renderedAt: string
       // (`entry.error` is already a plain string reason from the render helper.)
       const message = entry.error;
       phases[entry.cardId] = { phase: "error", message };
-      failedCardIds.push(entry.cardId);
     }
   }
 
-  return { phases, comparisons, failedCardIds };
+  return { phases, comparisons };
+}
+
+/**
+ * Merge a batch's `ok` overlays over the prior overlay map. A card that
+ * SUCCEEDED refreshes its overlay (+ timestamp); a card that FAILED (`error`
+ * phase) KEEPS its prior overlay untouched, so its retained data stays visible
+ * and labeled-stale rather than reverting to the persisted unfiltered snapshot.
+ *
+ * This is the load-bearing anti-silent-revert step: after `filter A` succeeds
+ * (overlay A) and `filter B` then fails for the tile, the tile must keep showing
+ * window A labeled-stale — NOT silently fall back to the unfiltered cache.
+ */
+export function mergeOverlays(
+  prev: Record<string, TileOverlay>,
+  phases: Record<string, TilePhase>,
+): Record<string, TileOverlay> {
+  const next = { ...prev };
+  for (const [cardId, phase] of Object.entries(phases)) {
+    if (phase.phase === "ok") {
+      next[cardId] = { columns: phase.columns, rows: phase.rows, renderedAt: phase.renderedAt };
+    }
+    // `error`: intentionally leave `next[cardId]` as-is — the retained overlay
+    // stays labeled-stale. Dropping it here would reintroduce the silent revert.
+  }
+  return next;
+}
+
+/** The tile-render phase discriminant a folded phase contributes to the page's
+ *  `renderPhases` map. Kept as a helper so the coupling `TilePhase["phase"]` ⊆
+ *  {@link TileRenderPhase} is explicit rather than incidental. */
+export function phaseTag(phase: TilePhase): TileRenderPhase {
+  return phase.phase;
 }

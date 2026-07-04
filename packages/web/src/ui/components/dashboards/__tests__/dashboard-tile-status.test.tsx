@@ -143,6 +143,21 @@ describe("DashboardTile — per-tile status (#4321)", () => {
     expect(onRetry.mock.calls[0][0]).toBe("card-table");
   });
 
+  test("an errored tile shows exactly ONE retry (placeholder only, no duplicate footer retry)", () => {
+    render(
+      <DashboardTile
+        {...baseProps}
+        card={tableCard({ cachedColumns: null, cachedRows: null, cachedAt: null })}
+        renderPhase="error"
+        onRetry={noop}
+      />,
+    );
+    // The errored placeholder owns the retry; the footer `tile-retry` (stale
+    // only) must not also render, or the tile would show two retry buttons.
+    expect(screen.getByTestId("tile-state-errored-retry")).toBeTruthy();
+    expect(screen.queryByTestId("tile-retry")).toBeNull();
+  });
+
   test("loading over existing data keeps the data (dimmed), not a blank overlay", () => {
     render(<DashboardTile {...baseProps} card={tableCard()} renderPhase="loading" />);
     expect(statusAttr()).toBe("loading");

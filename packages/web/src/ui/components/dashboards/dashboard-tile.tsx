@@ -186,8 +186,9 @@ interface DashboardTileProps {
   /**
    * #4321 — one-click retry for a `stale` / `errored` tile: re-runs THIS card's
    * render with the current parameters. Distinct from `onRefresh` (which
-   * re-executes and persists the card cache) — retry is the ephemeral,
-   * parameter-aware re-render. Undefined → the retry affordance is hidden.
+   * re-executes and persists the card cache when not editing) — retry is the
+   * ephemeral, parameter-aware re-render. Undefined → the retry affordance is
+   * hidden.
    */
   onRetry?: (cardId: string) => void;
   onFullscreen: (cardId: string) => void;
@@ -275,7 +276,12 @@ function ChartTile({
   // viewer reads it as "not the current filtered result".
   const showData = hasData && (statusShowsData(status) || status === "loading");
   const dimBody = incompatible || status === "stale" || status === "loading";
+  // `canRetry` gates the errored PLACEHOLDER's retry (its body is the error
+  // state); the footer retry is for `stale` only — a stale tile shows its data
+  // body, so its retry lives in the footer. Split so an errored tile never
+  // renders two retry buttons (placeholder + footer).
   const canRetry = statusCanRetry(status) && !!onRetry;
+  const footerRetry = status === "stale" && !!onRetry;
 
   // #3212 — click-to-drilldown. A card that declares `chartConfig.drilldown`
   // forwards the clicked category value to its target parameter. Disabled while
@@ -543,7 +549,7 @@ function ChartTile({
 
       <div className="flex shrink-0 items-center justify-between gap-2 border-t border-zinc-100 px-3 py-1.5 text-[11px] dark:border-zinc-800/80">
         {/* #4321 — the color-shifting age caption: muted → amber → red as the
-            shown data ages, plus a `Stale` / `Error` label so a board with one
+            shown data ages, plus a `Stale` / `Failed` label so a board with one
             stale tile reads as one amber caption. */}
         <span
           className={cn("inline-flex items-center gap-1 tabular-nums", TONE_TEXT[captionTone])}
@@ -556,7 +562,7 @@ function ChartTile({
           {status !== "errored" && timeAgo(card.cachedAt)}
         </span>
         <span className="flex items-center gap-2">
-          {canRetry && (
+          {footerRetry && (
             <Button
               variant="ghost"
               size="sm"

@@ -41,7 +41,7 @@ import {
 } from "./search-params";
 import { activeFilters, incompatibleCardIds } from "./cross-filter";
 import { renderDashboardCard, renderDashboardCards } from "./dashboard-card-render";
-import { foldRenderEntries } from "./tile-phases";
+import { foldRenderEntries, mergeOverlays, phaseTag, type TileOverlay } from "./tile-phases";
 import type { TileRenderPhase } from "@/ui/components/dashboards/tile-status";
 import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banner";
 import { PublishDiffModal } from "@/ui/components/dashboards/publish-diff-modal";
@@ -196,17 +196,15 @@ export default function DashboardViewPage() {
   // age caption to "just now" (#4321) — a fresh parameter render is not as old
   // as the persisted snapshot it replaced. Empty override map → show the cached
   // snapshot (rendered server-side with the parameters' defaults).
-  const [paramResults, setParamResults] = useState<
-    Record<string, { columns: string[]; rows: Record<string, unknown>[]; renderedAt: string }>
-  >({});
+  const [paramResults, setParamResults] = useState<Record<string, TileOverlay>>({});
   // #4321 — per-card render phase (loading / ok / error) for the current
   // parameter / cross-filter batch (or a single-tile retry). This is what makes
   // a FAILED update visible ON the tile: a failed card is recorded as `error`
-  // (tile stays labeled-stale) rather than silently dropped back to its cached
-  // unfiltered number. A successful `ok` card keeps its overlay in `paramResults`;
-  // an `error` card leaves its prior overlay untouched so the retained data stays
-  // labeled-stale. There is no page-level failure banner — the tile is the unit
-  // of trust.
+  // rather than silently dropped back to its cached unfiltered number. The tile
+  // then reads as `stale` when it has retained data (`error` leaves its prior
+  // overlay in `paramResults` untouched) or `errored` when it had none — the
+  // resolution lives in `resolveTileStatus`. There is no page-level failure
+  // banner — the tile is the unit of trust.
   const [renderPhases, setRenderPhases] = useState<Record<string, TileRenderPhase>>({});
   const [paramLoading, setParamLoading] = useState(false);
   // #3211 — flips true once the first parameter batch (fired by the parameter
@@ -789,24 +787,30 @@ export default function DashboardViewPage() {
       const renderedAt = new Date().toISOString();
       const { phases, comparisons: nextComparisons } = foldRenderEntries(entries, renderedAt);
       // `ok` cards refresh their overlay + timestamp; `error` cards keep whatever
-      // overlay they had (their data stays visible, now labeled-stale).
-      setParamResults((prev) => {
-        const next = { ...prev };
-        for (const [cardId, phase] of Object.entries(phases)) {
-          if (phase.phase === "ok") {
-            next[cardId] = { columns: phase.columns, rows: phase.rows, renderedAt: phase.renderedAt };
-          }
-        }
-        return next;
-      });
+      // overlay they had (their data stays visible, now labeled-stale). The
+      // retention rule is `mergeOverlays` — a single pure, unit-tested step.
+      setParamResults((prev) => mergeOverlays(prev, phases));
       setRenderPhases((prev) => {
         const next = { ...prev };
-        for (const [cardId, phase] of Object.entries(phases)) next[cardId] = phase.phase;
+        for (const [cardId, phase] of Object.entries(phases)) next[cardId] = phaseTag(phase);
         return next;
       });
       // Guarded by the shared comparison counter, not paramReqSeq — a newer
       // default-period fetch must win over this batch's deltas.
       if (cSeq === comparisonReqSeq.current) setComparisons(nextComparisons);
+    } catch (err) {
+      // `renderDashboardCards` maps every per-card failure to an `ok:false` entry,
+      // so `Promise.all` shouldn't reject — but if a future refactor lets one
+      // throw escape, flip the in-flight tiles to `error` (→ stale/errored +
+      // retry) rather than stranding the board on the loading placeholder forever.
+      if (seq !== paramReqSeq.current) return;
+      const message = err instanceof Error ? err.message : String(err);
+      console.debug("[dashboard] parameter render batch failed", { dashboardId: id, error: message });
+      setRenderPhases((prev) => {
+        const next = { ...prev };
+        for (const cid of chartCardIds) if (next[cid] === "loading") next[cid] = "error";
+        return next;
+      });
     } finally {
       if (seq === paramReqSeq.current) {
         setParamLoading(false);
@@ -818,12 +822,18 @@ export default function DashboardViewPage() {
   // #4321 — retry ONE tile's parameter-bound render (the stale / errored tile's
   // one-click retry). Re-renders just this card with the CURRENT override map;
   // on success it overlays fresh rows and flips the tile to `ok`, on failure it
-  // stays `error` (labeled-stale). Distinct from `onRefresh`, which re-executes
-  // and PERSISTS the card cache — retry is the ephemeral parameter-aware path.
+  // reads as stale (retained data) or errored (no prior data). Distinct from
+  // `onRefresh`, which re-executes AND persists the card cache (published mode) —
+  // retry is the ephemeral, parameter-aware path.
   async function handleRetryCard(cardId: string) {
     if (!dashboard) return;
     const card = dashboard.cards.find((c) => c.id === cardId);
     if (!card || card.kind === "text") return;
+    // Share the batch sequence guard: if a newer parameter change / clear lands
+    // while this retry is in flight, discard the retry's result rather than
+    // overlaying a superseded window — a silent retry would otherwise reintroduce
+    // the "board mixing two windows" trust failure this issue exists to kill.
+    const seq = paramReqSeq.current;
     const currentOverrides = parseOverrides(dparamsRaw);
     setRenderPhases((prev) => ({ ...prev, [cardId]: "loading" }));
     const entry = await renderDashboardCard(card, currentOverrides, {
@@ -832,6 +842,7 @@ export default function DashboardViewPage() {
       isCrossOrigin,
       view: editing ? "draft" : "published",
     });
+    if (seq !== paramReqSeq.current) return;
     if (entry.ok) {
       const renderedAt = new Date().toISOString();
       setParamResults((prev) => ({

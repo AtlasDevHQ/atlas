@@ -269,10 +269,23 @@ How a dashboard is edited and made visible to a team. **Target-state vocabulary*
   The dashboard-scoped chat drawer through which the agent builds and edits a dashboard. Its edits land in the caller's **draft**; the **canvas** — cards materializing and updating live — is the turn's **answer-bearing artifact**, so the drawer shows conversation + a collapsed **receipt** (per *Chat turn presentation*), not inline card previews.
   _Avoid_: "bound chat" for the surface (say bound editor); rendering the build as full-weight inline tool cards (that is the divergent pre-convergence renderer being retired).
 
+- **Tile**:
+  The rendered presentation of a single **card** on the **canvas**, and the **unit of trust**: a tile carries its own status — loading, fresh, **stale**, errored, empty, not-filtered — surfaced *on the tile*, rather than deferring failures to a page-level banner.
+  _Avoid_: using "tile" for the persisted unit (that is a **card**); collapsing *errored* (the query failed), *empty* (the query returned zero rows), and *never-run* (no cached data yet) into one "No cached data" state — they are three distinct tile states.
+
+- **Stale (tile)**:
+  A tile whose displayed data predates the current **card** definition (its SQL/config) or the active parameter/filter values — a first-class, *visible-but-quiet* state (a small badge/dim, not a banner). A tile that fails to update stays labeled with its data's age and offers retry; it never silently substitutes old data for a failed new render.
+  _Avoid_: "cached" as a synonym (all tile data is cached — staleness is *cache older than the current definition/params*, not the mere fact of caching).
+
+- **Shared view**:
+  The read-only, **data-only snapshot presentation** of a **published** dashboard reached through a share token. Exposes title/description + per-card title/kind/chart-config/annotations/cached data/layout — and *nothing else*. Never the raw SQL, connection/owner/org identifiers, refresh cron, or parameter definitions. Uniform across **public** (no-auth) and **org** (authenticated-teammate) share modes.
+  _Avoid_: treating the shared view as a live or inspectable dashboard (query inspection happens in-app, where auth gates it); "public dashboard" (the *dashboard* isn't public — a *token* grants snapshot access).
+
 ### Anti-confusions
 
 - The **draft** is a per-user *working copy*, not a content-mode visibility tier. Two editors have two independent drafts of the same published dashboard; publish merges, never overwrites (except last-writer-wins on title/description).
-- **Publish** is not **refresh**. Publish promotes *definitions* (SQL, layout, config); refresh re-executes a card's SQL to update its *cached data*. A publish that changes SQL must trigger a refresh or the shared view shows new definitions over stale data.
+- **Publish** is not **refresh**. Publish promotes *definitions* (SQL, layout, config); refresh re-executes a card's SQL to update its *cached data*. A publish that changes SQL must trigger a refresh or the **shared view** shows new definitions over stale data.
+- The **shared view** is data-only by construction, not by redaction-after-the-fact — the public projection is built from a minimal DTO, so a field can't leak by being forgotten. Raw SQL never reaches the wire on this surface.
 
 ## MCP & agent governance
 

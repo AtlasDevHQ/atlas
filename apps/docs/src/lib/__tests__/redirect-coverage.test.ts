@@ -51,7 +51,17 @@ const CADDYFILE = join(DOCS_ROOT, "../../deploy/docs/Caddyfile");
 // — a new file here that is neither allow-listed nor mapped fails the
 // completeness test, forcing either a redirect entry or an explicit born-here
 // acknowledgement.
-const BORN_UNDER_SELF_HOSTED = new Set(["index.mdx"]);
+const BORN_UNDER_SELF_HOSTED = new Set([
+  "index.mdx",
+  // #4282 — self-hosted operator sections extracted from three of the six saas
+  // pages the slice split (the rung-4 extractions; the other three used the
+  // `<WhenSelfHosted>` conditional and produced no file). Born here (the on-prem
+  // content had no pre-split /self-hosted URL of its own — it lived inline on a
+  // SaaS page), so they need no redirect.
+  "guides/self-hosted-billing.mdx",
+  "guides/self-serve-signup.mdx",
+  "deployment/load-testing.mdx",
+]);
 
 // Normalize a Caddyfile line so `redir <from> <to> 308` matches regardless of
 // the file's tab indentation / internal spacing.

@@ -105,7 +105,7 @@ interactive session — a key cannot mint another key.
 
 ### RLS claims are bounded to the minter
 
-When the workspace uses [row-level security](/deployment/row-level-security), a key can
+When the workspace uses [row-level security](/security/row-level-security), a key can
 carry RLS claim values so queries are filtered. Those claims are **bounded to the minting
 admin's own claims**: you can only embed a claim key/value you already hold (the
 claims-axis mirror of the role ceiling — a key never grants reach the minter lacks).

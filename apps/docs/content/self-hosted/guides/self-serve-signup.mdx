@@ -1,0 +1,79 @@
+---
+title: Self-Serve Signup (Self-Hosted)
+description: Enable the browser-based signup wizard on your own deployment — managed auth, social login, and datasource setup.
+icon: UserPlus
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas ships a self-serve signup flow that walks new users through account
+creation, workspace setup, and database connection — all from the browser. The
+[user-facing walkthrough](/guides/signup) covers what the wizard does; this page
+covers the operator setup that turns it on for a self-hosted deployment.
+
+<Callout title="Prerequisites">
+- [Managed auth](/self-hosted/deployment/authentication#managed-auth) enabled (`ATLAS_AUTH_MODE=managed`)
+- Internal database configured (`DATABASE_URL`)
+- At least one LLM provider configured (`ATLAS_PROVIDER` + API key)
+</Callout>
+
+<Callout type="info">
+The business-email gate, multi-region residency step, and MCP-trial claim flow described in the [main signup guide](/guides/signup) are SaaS-only — a self-hosted signup is a five-step flow (email → create account → name workspace → connect database → done), and operators control who may sign up.
+</Callout>
+
+---
+
+## Configuration
+
+Point Atlas at managed auth and (optionally) a pre-configured datasource in
+`atlas.config.ts`:
+
+```typescript
+// atlas.config.ts
+export default defineConfig({
+  auth: "managed",
+  datasources: {
+    default: { url: process.env.ATLAS_DATASOURCE_URL! },
+  },
+});
+```
+
+For most self-serve deployments, the datasource URL comes from the onboarding
+flow rather than a static config file. The `atlas.config.ts` datasource is
+primarily used for self-hosted deployments with pre-configured connections.
+
+---
+
+## Enabling Social Login
+
+Social OAuth buttons appear automatically when the corresponding environment
+variables are set. Each provider requires both a client ID and client secret:
+
+| Provider | Environment Variables |
+|----------|----------------------|
+| Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| GitHub | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` |
+| Microsoft | `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` |
+
+```bash
+# .env — enable Google and GitHub OAuth
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+GITHUB_CLIENT_ID=your-github-client-id
+GITHUB_CLIENT_SECRET=your-github-client-secret
+```
+
+The signup page checks which providers are available via
+`GET /api/v1/onboarding/social-providers` and renders OAuth buttons accordingly.
+If no social providers are configured, only email/password signup is shown.
+
+See [Social Providers](/guides/social-providers) for detailed OAuth setup
+instructions per provider.
+
+---
+
+## See Also
+
+- [Self-Serve Signup](/guides/signup) — The user-facing wizard walkthrough and API endpoints
+- [Authentication](/self-hosted/deployment/authentication) — Managed-auth mode setup and configuration
+- [Social Providers](/guides/social-providers) — Detailed OAuth setup per provider

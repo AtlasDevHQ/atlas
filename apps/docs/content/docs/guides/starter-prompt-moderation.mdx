@@ -115,7 +115,7 @@ The admin UI is a thin layer over four endpoints. Each requires a workspace admi
 
 Every mutation writes `status = 'draft'` when called from developer mode and `'published'` otherwise. Draft starter prompts land in `draftCounts.starterPrompts` on `GET /api/v1/mode` and promote atomically via `POST /api/v1/admin/publish`.
 
-See the [API reference](/api-reference/admin-starter-prompts) for full request/response schemas.
+See the [API reference](/api-reference/admin-starter-prompts/getAdminStarterPromptsQueue) for full request/response schemas.
 
 ---
 

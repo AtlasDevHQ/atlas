@@ -91,3 +91,90 @@ export function stripInactiveAudienceBlocks(
   }
   return out;
 }
+
+/**
+ * Normalize a markdown heading's inline formatting to the plain text that
+ * fumadocs' table-of-contents `title` carries — strip inline code backticks,
+ * bold/italic markers, and `[text](url)` link syntax (keeping the link text),
+ * then collapse whitespace. So `` ## `atlas init` with orgs `` and the ToC
+ * title node `[<code>atlas init</code>, " with orgs"]` both reduce to
+ * `atlas init with orgs` and compare equal.
+ */
+export function normalizeHeadingText(raw: string): string {
+  return raw
+    .replace(/`+/g, "") // inline-code backticks
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // [text](url) -> text
+    .replace(/[*_]{1,3}/g, "") // bold / italic markers
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * The normalized heading titles that SURVIVE the audience strip — i.e. the
+ * headings that actually render on `audience`'s mount. A heading authored inside
+ * an inactive `<WhenSaaS>` / `<WhenSelfHosted>` block is removed by
+ * `stripInactiveAudienceBlocks`, so it is absent from this set.
+ *
+ * Used to audience-filter fumadocs' `page.data.toc`, which is compiled from ALL
+ * headings in the raw MDX (the runtime audience conditional is invisible to it),
+ * so without filtering a self-hosted section's heading would appear in the SaaS
+ * mount's table of contents — and link to an anchor that no longer renders.
+ */
+export function survivingHeadingTitles(
+  markdown: string,
+  audience: Audience,
+): Set<string> {
+  const scoped = stripInactiveAudienceBlocks(markdown, audience);
+  const titles = new Set<string>();
+  // ATX headings only (fumadocs emits ATX in processed markdown). Skip fenced
+  // code blocks so a `# comment` inside ```bash isn't mistaken for a heading.
+  const withoutFences = scoped.replace(/```[\s\S]*?```/g, "");
+  for (const m of withoutFences.matchAll(/^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/gm)) {
+    titles.add(normalizeHeadingText(m[1]));
+  }
+  return titles;
+}
+
+/** A fumadocs ToC item's `title` is a ReactNode; flatten it to plain text
+ * structurally (no React import) — handles a string, a number, an array of
+ * children, and an element-like `{ props: { children } }`. This is the in-memory
+ * React-element form fumadocs stores in `toc[].title` (what a SERVER component
+ * sees), e.g. for a heading with inline code the array
+ * `[{ props: { children: "atlas init" } }, " with orgs"]`. It does NOT parse the
+ * flight-serialized tuple form (`["$","code",…]`) — those are consumed by React's
+ * flight reader, never by this build-time code. */
+export function tocTitleToText(node: unknown): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(tocTitleToText).join("");
+  if (typeof node === "object") {
+    const obj = node as { props?: { children?: unknown }; children?: unknown };
+    if (obj.props && typeof obj.props === "object" && "children" in obj.props)
+      return tocTitleToText(obj.props.children);
+    if ("children" in obj) return tocTitleToText(obj.children);
+  }
+  return "";
+}
+
+/**
+ * Filter fumadocs' `page.data.toc` down to the headings that render on
+ * `audience`'s mount, so a `<WhenSelfHosted>`-wrapped section's heading never
+ * appears in the SaaS mount's table of contents (nor links to a dead anchor).
+ *
+ * Generic over the ToC item shape (only reads `title`), so it needs no fumadocs
+ * type import and stays unit-testable. Assumes heading texts are unique on a
+ * page (github-slugger disambiguates the anchors, but the ToC title is what we
+ * match on); a duplicate would over-keep, never over-remove — fail-safe toward
+ * showing a heading, not hiding a real one.
+ */
+export function filterTocByAudience<T extends { readonly title: unknown }>(
+  toc: readonly T[],
+  markdown: string,
+  audience: Audience,
+): T[] {
+  const surviving = survivingHeadingTitles(markdown, audience);
+  return toc.filter((item) =>
+    surviving.has(normalizeHeadingText(tocTitleToText(item.title))),
+  );
+}

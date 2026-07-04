@@ -11,10 +11,8 @@ Atlas includes a self-serve signup flow that walks new users through account cre
 On [app.useatlas.dev](https://app.useatlas.dev), signup is available immediately at [app.useatlas.dev/signup](https://app.useatlas.dev/signup). Social login (Google, GitHub, Microsoft) is pre-configured. Skip to [How It Works](#how-it-works) for the user experience.
 </Callout>
 
-<Callout title="Self-hosted prerequisites">
-- [Managed auth](/deployment/authentication#managed-auth) enabled (`ATLAS_AUTH_MODE=managed`)
-- Internal database configured (`DATABASE_URL`)
-- At least one LLM provider configured (`ATLAS_PROVIDER` + API key)
+<Callout>
+Running Atlas yourself? See [Self-Serve Signup (Self-Hosted)](/self-hosted/guides/self-serve-signup) for the managed-auth, social-login, and datasource setup that powers this wizard on your own deployment.
 </Callout>
 
 ---
@@ -103,34 +101,6 @@ Earlier builds saved the region with a `POST /api/v1/onboarding/assign-region` c
 
 ---
 
-## Enabling Social Login
-
-<Callout type="info" title="SaaS">
-On [app.useatlas.dev](https://app.useatlas.dev), Google, GitHub, and Microsoft login are pre-configured. This section is for self-hosted operators only.
-</Callout>
-
-Social OAuth buttons appear automatically when the corresponding environment variables are set. Each provider requires both a client ID and client secret:
-
-| Provider | Environment Variables |
-|----------|----------------------|
-| Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
-| GitHub | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` |
-| Microsoft | `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` |
-
-```bash
-# .env — enable Google and GitHub OAuth
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-GITHUB_CLIENT_ID=your-github-client-id
-GITHUB_CLIENT_SECRET=your-github-client-secret
-```
-
-The signup page checks which providers are available via `GET /api/v1/onboarding/social-providers` and renders OAuth buttons accordingly. If no social providers are configured, only email/password signup is shown.
-
-See [Social Providers](/guides/social-providers) for detailed OAuth setup instructions per provider.
-
----
-
 ## Database Connection
 
 In the connect step (step 5 with the region step, step 4 without it), the user pastes a database URL (`postgresql://` or `mysql://`). The wizard:
@@ -208,26 +178,6 @@ Response (201):
 
 ---
 
-## Configuration (Self-Hosted)
-
-<Callout type="info" title="SaaS">
-On [app.useatlas.dev](https://app.useatlas.dev), auth and datasource configuration is handled automatically during signup. This section is for self-hosted operators only.
-</Callout>
-
-```typescript
-// atlas.config.ts
-export default defineConfig({
-  auth: "managed",
-  datasources: {
-    default: { url: process.env.ATLAS_DATASOURCE_URL! },
-  },
-});
-```
-
-For most self-serve deployments, the datasource URL comes from the onboarding flow rather than a static config file. The `atlas.config.ts` is primarily used for self-hosted deployments with pre-configured connections.
-
----
-
 ## Claiming a Self-Serve (MCP) Trial
 
 <Callout type="info" title="SaaS only">
@@ -280,7 +230,7 @@ Signup creates your first workspace. If you later need another one — a separat
 
 ## See Also
 
-- [Authentication](/deployment/authentication) — Auth mode setup and configuration
+- [Self-Serve Signup (Self-Hosted)](/self-hosted/guides/self-serve-signup) — Managed-auth, social-login, and datasource setup for your own deployment
 - [Multi-Region Login](/guides/multi-region-login) — How returning users are routed back to their workspace's region
 - [Social Providers](/guides/social-providers) — Detailed OAuth setup per provider
 - [Admin Console](/guides/admin-console) — Manage connections and users after signup

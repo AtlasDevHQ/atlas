@@ -136,9 +136,11 @@ export interface ExecuteAgentQueryOptions {
    * reply renders as 1-2 sentences of prose with the SQL and tables
    * surfaced via progressive-disclosure buttons (#2705).
    *
-   * Optional, defaulting to `"analyst"` (the answer-first analyst voice)
-   * so the synchronous JSON `/api/v1/query` route, MCP, and any other
-   * non-chat caller get the analyst-grade body.
+   * Optional. When absent, `runAgent` resolves the workspace default
+   * answer style (#4303, the `ATLAS_DEFAULT_ANSWER_STYLE` setting), else
+   * `"analyst"` (the answer-first analyst voice) — so the synchronous JSON
+   * `/api/v1/query` route, MCP, and any other non-chat caller get the
+   * workspace's house voice, defaulting to the analyst-grade body.
    */
   answerStyle?: AnswerStyle;
 }

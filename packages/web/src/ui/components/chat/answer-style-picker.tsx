@@ -43,7 +43,13 @@ export type { AnswerStyle };
  * `effectiveMode` mirroring `resolveRoutingMode` (the frontend is a pure
  * HTTP client and cannot import api-internal constants). Drift is a UX bug
  * (mislabeled trigger), not a correctness bug: the server resolves the
- * actual default at prompt assembly.
+ * actual default at prompt assembly. Known limitation of the same class: a
+ * workspace admin can set a workspace default answer style (#4303, the
+ * `ATLAS_DEFAULT_ANSWER_STYLE` setting) that the server applies to
+ * no-explicit-choice conversations — this trigger still labels those with
+ * the static web default because the workspace default isn't threaded to
+ * the client. An explicit pick (which is what this picker emits) always
+ * beats the workspace default, so the menu's semantics are unaffected.
  */
 export const DEFAULT_WEB_ANSWER_STYLE: AnswerStyle = "analyst";
 

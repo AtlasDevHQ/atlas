@@ -8,7 +8,7 @@
  * - trailing text parts are the answer;
  * - the last successful executeSQL result is promoted as the answer-bearing
  *   artifact (and excluded from the activity the receipt renders);
- * - reasoning parts are never surfaced in either bucket.
+ * - reasoning parts are never surfaced in any bucket.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -328,9 +328,27 @@ describe("summarizeActivity", () => {
     expect(summarizeActivity(activity)).toBe("Explored schema · 2 queries");
   });
 
-  test("singular query", () => {
+  test("failed query carries a failure marker so a collapsed receipt never reads clean", () => {
     const { activity } = partitionTurn([sql({ success: false }), text("Failed.")]);
+    expect(summarizeActivity(activity)).toBe("1 query · 1 failed");
+  });
+
+  test("singular successful query in the receipt has no failure marker", () => {
+    // Two successes: the last is promoted out, one stays in the receipt.
+    const { activity } = partitionTurn([sql({}), sql({}), text("Answer.")]);
     expect(summarizeActivity(activity)).toBe("1 query");
+  });
+
+  test("output-error tool parts count as failed", () => {
+    const errored = {
+      type: "tool-executeSQL",
+      toolCallId: "call-err",
+      state: "output-error",
+      input: { sql: "SELECT boom" },
+      errorText: "connection reset",
+    } as TurnPart;
+    const { activity } = partitionTurn([explore(), errored, text("It broke.")]);
+    expect(summarizeActivity(activity)).toBe("Explored schema · 1 query · 1 failed");
   });
 
   test("python runs and unknown tools are counted", () => {

@@ -167,10 +167,30 @@ export function activityAwaitsUser(
 }
 
 /**
+ * A tool execution that ended in failure: the AI SDK's `output-error` state,
+ * or a completed result envelope reporting `success: false` (the executeSQL /
+ * executePython family). Action envelopes have their own resolved-failure
+ * states rendered by their cards; the receipt marker covers the common
+ * query-failure case.
+ */
+function isFailedToolPart(part: ToolTurnPart): boolean {
+  if (part.state === "output-error") return true;
+  if (part.state !== "output-available") return false;
+  const output = part.output;
+  return (
+    output != null &&
+    typeof output === "object" &&
+    (output as { success?: unknown }).success === false
+  );
+}
+
+/**
  * The receipt's one-line summary of what stayed in it, e.g.
  * "Explored schema · 2 queries". Counts describe the receipt's own contents —
  * the promoted artifact is visible next to the answer, not re-counted here.
- * Returns "" for empty activity (the receipt doesn't render then).
+ * Failed executions append a "· N failed" marker so a collapsed receipt never
+ * reads identically to a clean run. Returns "" for empty activity (the
+ * receipt doesn't render then).
  */
 export function summarizeActivity(
   activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[],
@@ -181,8 +201,10 @@ export function summarizeActivity(
   let queries = 0;
   let pythonRuns = 0;
   let otherSteps = 0;
+  let failed = 0;
   for (const { part } of activity) {
     if (!isToolUIPart(part)) continue;
+    if (isFailedToolPart(part)) failed++;
     switch (getToolName(part)) {
       case "explore":
         explores++;
@@ -207,6 +229,7 @@ export function summarizeActivity(
   if (otherSteps > 0) {
     segments.push(otherSteps === 1 ? "1 more step" : `${otherSteps} more steps`);
   }
+  if (failed > 0) segments.push(`${failed} failed`);
 
   // Narration-only receipts (the lone query was promoted) still need a label.
   return segments.length > 0 ? segments.join(" · ") : "Working notes";

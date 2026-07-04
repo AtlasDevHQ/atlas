@@ -39,7 +39,7 @@ afterEach(cleanup);
 let nextCallId = 0;
 
 function text(t: string): TurnPart {
-  return { type: "text", text: t } as TurnPart;
+  return { type: "text", text: t };
 }
 
 function sql(success = true): TurnPart {

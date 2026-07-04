@@ -401,14 +401,25 @@ export function _setRenderConcurrency(n: number | null): void {
   renderConcurrencyOverride = n;
 }
 
-/** Effective cap: test override > platform DB override > env > default. */
-function getRenderConcurrency(): number {
-  if (renderConcurrencyOverride !== null) return renderConcurrencyOverride;
-  const raw = getSettingAuto("ATLAS_DASHBOARD_RENDER_CONCURRENCY");
-  if (!raw) return RENDER_CONCURRENCY_DEFAULT;
+/**
+ * Clamp a raw setting value to a valid concurrency cap. Pure + exported so the
+ * boundary behaviour is unit-testable without the settings registry:
+ *   - unset / empty / non-numeric → default (3)
+ *   - below the floor (incl. 0 / negative) → 1  (a 0 cap would deadlock all renders)
+ *   - above the ceiling → 16
+ *   - fractional → truncated
+ */
+export function clampRenderConcurrency(raw: string | number | null | undefined): number {
+  if (raw === null || raw === undefined || raw === "") return RENDER_CONCURRENCY_DEFAULT;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return RENDER_CONCURRENCY_DEFAULT;
   return Math.min(RENDER_CONCURRENCY_MAX, Math.max(RENDER_CONCURRENCY_MIN, Math.trunc(parsed)));
+}
+
+/** Effective cap: test override > platform DB override > env > default. */
+function getRenderConcurrency(): number {
+  if (renderConcurrencyOverride !== null) return renderConcurrencyOverride;
+  return clampRenderConcurrency(getSettingAuto("ATLAS_DASHBOARD_RENDER_CONCURRENCY"));
 }
 
 /**

@@ -17,9 +17,12 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import {
   screenshotDashboard,
+  exportDashboard,
+  clampRenderConcurrency,
   _resetScreenshotCache,
   _resetScreenshotBrowserState,
   _setRenderFn,
+  _setExportRenderFn,
   _setRenderConcurrency,
   _setBrowserLauncher,
   _acquireScreenshotBrowser,
@@ -65,6 +68,13 @@ mock.module("@atlas/api/lib/dashboards", () => ({
   setRefreshSchedule: undefined as never,
   CardLayoutSchema: { safeParse: () => ({ success: false }) },
   resolveCardConnectionId: undefined as never,
+  rowToCard: undefined as never,
+  loadGroupSnapshot: undefined as never,
+  buildSharedParameterSummary: undefined as never,
+  projectSharedDashboardView: undefined as never,
+  getDashboardsDueForRefresh: undefined as never,
+  lockDashboardForRefresh: undefined as never,
+  refreshDashboardCards: undefined as never,
   NoGroupMembersError: class {},
 }));
 
@@ -180,6 +190,117 @@ describe("dashboard render concurrency cap (#4319)", () => {
     expect(results.every((r) => r.ok)).toBe(true);
     expect(peak).toBe(1);
   });
+
+  it("releases the permit when a render FAILS, so the semaphore never starves", async () => {
+    // Regression guard for the exact deadlock class #4319 exists to kill: if
+    // `RenderSemaphore.run` ever released only on success, every failed render
+    // would leak a permit and — because screenshot/export swallow errors into
+    // `{ ok: false }` — silently starve ALL renders until an API restart.
+    _setRenderConcurrency(1);
+
+    // First render rejects. screenshotDashboard maps the throw to ok:false.
+    _setRenderFn(async () => {
+      throw new Error("nav timeout");
+    });
+    const failed = await screenshotDashboard({
+      dashboardId: "dash-1",
+      userId: "user-fail",
+      orgId: "org-1",
+    });
+    expect(failed.ok).toBe(false);
+    // The permit was returned despite the failure.
+    expect(_renderInFlight()).toBe(0);
+
+    // A subsequent render is admitted and completes — no starvation.
+    _setRenderFn(async () => PNG);
+    const next = await screenshotDashboard({
+      dashboardId: "dash-1",
+      userId: "user-ok",
+      orgId: "org-1",
+    });
+    expect(next.ok).toBe(true);
+    expect(_renderInFlight()).toBe(0);
+  });
+
+  it("exports share the same semaphore and acquire the permit BEFORE the render timeout starts", async () => {
+    // The export path deliberately wraps `withTimeout(fn(...))` INSIDE
+    // `renderSemaphore.run(...)`, so time spent queueing for a permit is not
+    // charged against the render budget. Park a screenshot render to hold the
+    // sole permit, fire an export behind it with a tiny timeout, and prove the
+    // export neither starts nor times out while queued.
+    _setRenderConcurrency(1);
+
+    let exportStarted = false;
+    const screenshotGate: Array<() => void> = [];
+    _setRenderFn(async () => {
+      await new Promise<void>((resolve) => screenshotGate.push(resolve));
+      return PNG;
+    });
+    _setExportRenderFn(async () => {
+      exportStarted = true;
+      return { bytes: PNG, contentType: "image/png", partial: false };
+    });
+
+    // Hold the permit with a screenshot render.
+    const shot = screenshotDashboard({ dashboardId: "dash-1", userId: "holder", orgId: "org-1" });
+    await waitFor(() => screenshotGate.length === 1);
+    expect(_renderInFlight()).toBe(1);
+
+    // Fire the export with a 30ms render budget. If the budget were counted
+    // during the queue wait, this would time out; instead it must simply wait.
+    const exp = exportDashboard({
+      dashboardId: "dash-1",
+      userId: "exporter",
+      orgId: "org-1",
+      format: "png",
+      timeoutMs: 30,
+    });
+
+    // Stay queued well past its own render budget without starting or failing.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(exportStarted).toBe(false);
+
+    // Release the screenshot → the export is admitted, its clock starts fresh.
+    screenshotGate.shift()?.();
+    const shotResult = await shot;
+    const expResult = await exp;
+    expect(shotResult.ok).toBe(true);
+    expect(exportStarted).toBe(true);
+    expect(expResult.ok).toBe(true); // did not time out — budget started after admission
+    expect(_renderInFlight()).toBe(0);
+
+    _setExportRenderFn(null);
+  });
+});
+
+describe("clampRenderConcurrency boundaries (#4319)", () => {
+  it("falls back to the default (3) for unset / empty / non-numeric input", () => {
+    expect(clampRenderConcurrency(null)).toBe(3);
+    expect(clampRenderConcurrency(undefined)).toBe(3);
+    expect(clampRenderConcurrency("")).toBe(3);
+    expect(clampRenderConcurrency("abc")).toBe(3);
+    expect(clampRenderConcurrency(Number.NaN)).toBe(3);
+  });
+
+  it("clamps to the floor of 1 for zero / negative (a 0 cap would deadlock)", () => {
+    expect(clampRenderConcurrency("0")).toBe(1);
+    expect(clampRenderConcurrency(0)).toBe(1);
+    expect(clampRenderConcurrency("-5")).toBe(1);
+    expect(clampRenderConcurrency(-5)).toBe(1);
+  });
+
+  it("clamps to the ceiling of 16 for oversized input", () => {
+    expect(clampRenderConcurrency("17")).toBe(16);
+    expect(clampRenderConcurrency(1000)).toBe(16);
+  });
+
+  it("truncates fractional values and passes valid ones through", () => {
+    expect(clampRenderConcurrency("3.9")).toBe(3);
+    expect(clampRenderConcurrency(4.2)).toBe(4);
+    expect(clampRenderConcurrency("1")).toBe(1);
+    expect(clampRenderConcurrency("16")).toBe(16);
+    expect(clampRenderConcurrency(8)).toBe(8);
+  });
 });
 
 describe("dashboard headless browser liveness + relaunch (#4319)", () => {
@@ -269,6 +390,35 @@ describe("dashboard headless browser liveness + relaunch (#4319)", () => {
     // A throw while closing the dead handle must not block the relaunch.
     expect(launches).toBe(2);
     expect(relaunched).toBeDefined();
+  });
+
+  it("treats a browser whose isConnected() THROWS as dead and relaunches", async () => {
+    // A crashed browser's transport can make isConnected() throw rather than
+    // return false; that must still be read as dead, not propagated.
+    let launches = 0;
+    let transportGone = false;
+    _setBrowserLauncher(async () => {
+      launches += 1;
+      const thisLaunch = launches;
+      return {
+        isConnected: () => {
+          if (thisLaunch === 1 && transportGone) throw new Error("transport closed");
+          return true;
+        },
+        close: async () => {},
+        newContext: async () => {
+          throw new Error("unused");
+        },
+      } satisfies LaunchedBrowser;
+    });
+
+    const first = await _acquireScreenshotBrowser();
+    expect(launches).toBe(1);
+
+    transportGone = true; // first browser's isConnected() now throws
+    const relaunched = await _acquireScreenshotBrowser();
+    expect(launches).toBe(2); // a throwing liveness probe forced a relaunch
+    expect(relaunched).not.toBe(first);
   });
 
   it("single-flights concurrent acquires into one launch", async () => {

@@ -1267,8 +1267,10 @@ chat.openapi(chatRoute, async (c) => {
             // #4302 — persist the answer style when the body explicitly set
             // one this turn AND it differs from the stored value, so the
             // choice restores on reopen. Compared against the row to avoid
-            // burning an UPDATE on every turn (the transport re-sends the
-            // selection each turn once the picker was touched).
+            // burning an UPDATE on every turn: the transport re-sends the
+            // style whenever its state holds one — touched this session OR
+            // restored from the row on reopen — so the reopen path is the
+            // main beneficiary of this skip-UPDATE gate.
             if (
               parsed.data.answerStyle !== undefined &&
               parsed.data.answerStyle !== existing.data.answerStyle

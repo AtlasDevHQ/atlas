@@ -920,7 +920,8 @@ describe("POST /api/v1/chat", () => {
   // #4302 — the acceptance criterion's "subsequent turns" half at the route
   // seam: a conversation pinned to `executive` keeps voicing executive on a
   // follow-up turn whose body omits the field (the transport only sends the
-  // style once the picker was touched). The prompt-assembly half — runAgent
+  // style once its state holds one — picked or restored). The prompt-assembly
+  // half — runAgent
   // with `executive` building the executive addendum — is pinned by the
   // mock-LLM test in lib/__tests__/agent-answer-style-prompt-shape.test.ts.
   it("inherits the stored answer style on a follow-up turn that omits it (#4302)", async () => {
@@ -992,8 +993,43 @@ describe("POST /api/v1/chat", () => {
     expect((runCalls[0]![0] as { answerStyle?: string }).answerStyle).toBe("plain-english");
   });
 
-  // #4302 — re-sending the stored style (the transport re-sends the selection
-  // every turn once the picker was touched) must NOT burn an UPDATE.
+  // #4302 — the most common real-world transition: an existing conversation
+  // with NO explicit choice (NULL row) gets its first explicit pick — the
+  // UPDATE must fire (null !== "executive") so the pick survives reopen.
+  it("persists the first explicit pick on a previously-default conversation (#4302)", async () => {
+    const convId = "f6a7b8c9-d0e1-4c53-af40-617283940516";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+        groupReach: null,
+        answerStyle: null,
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "first pick" }] }],
+        conversationId: convId,
+        answerStyle: "executive",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockUpdateConversationAnswerStyle).toHaveBeenCalledTimes(1);
+    const updateCalls = mockUpdateConversationAnswerStyle.mock.calls as unknown as unknown[][];
+    expect(updateCalls[0]![1]).toBe("executive");
+  });
+
+  // #4302 — re-sending the stored style (the transport re-sends it every turn
+  // once its state holds one — picked this session or restored on reopen)
+  // must NOT burn an UPDATE. This is the common reopened-conversation turn.
   it("skips the UPDATE when the body's answerStyle equals the stored value (#4302)", async () => {
     const convId = "e5f6a7b8-c9d0-4b42-9e3f-506172839405";
     mockGetConversationChat.mockResolvedValueOnce({

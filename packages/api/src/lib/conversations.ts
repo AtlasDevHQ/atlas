@@ -1028,6 +1028,9 @@ export async function forkConversation(opts: {
         // #3895 — inherit the source's Group reach (All / Focus → group) so the
         // fork/notebook keeps the same cross-group scope after branching.
         (source.group_reach as string) ?? null,
+        // #4302 — inherit the source's pinned answer style so the fork keeps
+        // the same voice after branching (NULL = still tracking the default).
+        (source.answer_style as string) ?? null,
         orgId,
       ],
     );
@@ -1201,6 +1204,9 @@ export async function convertToNotebook(opts: {
         // #3895 — inherit the source's Group reach (All / Focus → group) so the
         // fork/notebook keeps the same cross-group scope after branching.
         (source.group_reach as string) ?? null,
+        // #4302 — inherit the source's pinned answer style so the notebook
+        // keeps the same voice after branching (NULL = tracking the default).
+        (source.answer_style as string) ?? null,
         orgId,
       ],
     );

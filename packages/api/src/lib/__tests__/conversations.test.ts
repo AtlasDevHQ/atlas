@@ -381,6 +381,10 @@ describe("conversations module", () => {
 
       setResults({ rows: [{ ...baseRow, answer_style: "executive" }] }, emptyMessages);
       let result = await getConversation("c1", "u1");
+      // Pin the column into the SELECT list too — dropping it there would
+      // silently read every restore-on-reopen as null while this mapping
+      // test (which feeds rows directly) stayed green.
+      expect(queryCalls[0].sql).toContain("answer_style");
       expect(result.ok && result.data.answerStyle).toBe("executive");
 
       setResults({ rows: [{ ...baseRow, answer_style: null }] }, emptyMessages);
@@ -466,6 +470,10 @@ describe("conversations module", () => {
       expect(result.total).toBe(1);
       expect(result.conversations).toHaveLength(1);
       expect(result.conversations[0].id).toBe("c1");
+      // #4302 — pin the column into the list SELECT (same rationale as the
+      // getConversation mapping test: dropping it from the SQL would read
+      // every row's style as null while row-fed mapping tests stayed green).
+      expect(queryCalls[1].sql).toContain("answer_style");
     });
 
     it("returns empty when no DB", async () => {
@@ -1708,6 +1716,93 @@ describe("conversations module", () => {
       expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id");
       expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
       expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
+    });
+
+    // #4302 — happy-path INSERT contract for fork/convert. These pin the FULL
+    // params array against the column list (a placeholder/params arity drift —
+    // e.g. adding a column to the SQL without adding its value — throws
+    // "bind message supplies N parameters" on real Postgres but is invisible
+    // to this mock harness without the explicit arity + array assertions).
+    const FORK_SOURCE_ROW = {
+      id: "src-c1",
+      title: "Q3 revenue",
+      surface: "web",
+      connection_id: "us-int",
+      connection_group_id: "g_prod",
+      routing_mode: "auto",
+      rest_excluded_datasource_ids: ["ds-1"],
+      rest_focus_datasource_id: null,
+      group_reach: "g_prod",
+      answer_style: "executive",
+      org_id: "org-B",
+    };
+
+    it("forkConversation inherits every scope column — including the pinned answer style (#4302)", async () => {
+      enableInternalDB();
+      setResults(
+        { rows: [FORK_SOURCE_ROW] }, // source lookup
+        { rows: [{ created_at: "2024-01-01T00:00:00Z" }] }, // fork-point message
+        { rows: [] }, // no assistant follow-up
+        { rows: [{ id: "fork-1" }] }, // conversations INSERT
+        { rows: [{ id: "m-copy-1" }] }, // message bulk copy
+      );
+
+      const result = await forkConversation({
+        sourceId: "src-c1",
+        forkPointMessageId: "m1",
+        userId: "u1",
+        orgId: "org-B",
+      });
+      expect(result).toEqual({ ok: true, data: { id: "fork-1", messageCount: 1 } });
+      const insert = queryCalls[3];
+      expect(insert.sql).toContain("INSERT INTO conversations");
+      // Placeholder count must equal bound-param count (the drift class above).
+      expect(insert.sql.match(/\$\d+/g)?.length).toBe(insert.params?.length);
+      expect(insert.params).toEqual([
+        "u1",
+        "Q3 revenue (fork)",
+        "web",
+        "us-int",
+        "g_prod",
+        "auto",
+        ["ds-1"],
+        null,
+        "g_prod",
+        "executive",
+        "org-B",
+      ]);
+    });
+
+    it("convertToNotebook inherits every scope column — including the pinned answer style (#4302)", async () => {
+      enableInternalDB();
+      setResults(
+        { rows: [FORK_SOURCE_ROW] }, // source lookup
+        { rows: [{ id: "nb-1" }] }, // conversations INSERT
+        { rows: [{ id: "m-copy-1" }] }, // message bulk copy
+      );
+
+      const result = await convertToNotebook({
+        sourceId: "src-c1",
+        userId: "u1",
+        orgId: "org-B",
+      });
+      expect(result).toEqual({ ok: true, data: { id: "nb-1", messageCount: 1 } });
+      const insert = queryCalls[1];
+      expect(insert.sql).toContain("INSERT INTO conversations");
+      expect(insert.sql.match(/\$\d+/g)?.length).toBe(insert.params?.length);
+      expect(insert.params).toEqual([
+        "u1",
+        "Q3 revenue (notebook)",
+        "notebook",
+        "us-int",
+        "g_prod",
+        "auto",
+        ["ds-1"],
+        null,
+        "g_prod",
+        "executive",
+        "org-B",
+      ]);
     });
 
     it("org_id IS NULL branch allows access to legacy rows (self-hosted back-compat)", async () => {

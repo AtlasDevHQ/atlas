@@ -36,6 +36,7 @@ import {
 } from "./chat/env-picker";
 import {
   AnswerStylePicker,
+  isKnownAnswerStyle,
   type AnswerStyle,
 } from "./chat/answer-style-picker";
 import {
@@ -778,7 +779,19 @@ export function AtlasChat({
       restoreConversationScope(data, envGroupsQuery.groups);
       // #4302 — restore the conversation's persisted answer style alongside
       // its scope (null = no explicit choice → the picker shows the default).
-      setAnswerStyle(data.answerStyle ?? null);
+      // Guarded like the server's own read seam (rowToConversation): the GET
+      // is a typed cast, not runtime validation, so a version-skewed API
+      // sending a style this bundle doesn't know must degrade to the default
+      // — knowingly, with a breadcrumb — rather than crash the header render
+      // or echo the unknown value back and 400 every subsequent turn.
+      const restoredStyle = data.answerStyle ?? null;
+      const knownStyle = isKnownAnswerStyle(restoredStyle) ? restoredStyle : null;
+      if (restoredStyle !== null && knownStyle === null) {
+        console.debug(
+          `Unknown answerStyle "${String(restoredStyle)}" on conversation ${id} — showing the default`,
+        );
+      }
+      setAnswerStyle(knownStyle);
       setMobileSidebarOpen(false);
       // Loaded turns predate this session — no warning frames replay over
       // the wire, so any prior in-memory bucket is stale relative to the
@@ -956,8 +969,8 @@ export function AtlasChat({
                 unconditionally now: the answer-style picker applies to every
                 workspace (every conversation has a voice), so even a legacy
                 1×1 whose env-picker hides itself no longer collapses the row
-                (the PRD's open question, resolved). `showEnvPicker` gates
-                only the env-picker itself below. */}
+                (the PRD's open question, resolved). The env-picker below
+                self-gates via `shouldRenderEnvPicker` internally. */}
             <header className="mb-4 flex-none border-b border-zinc-100 pb-3 dark:border-zinc-800">
               <div className="flex items-center justify-between gap-2">
                 {!embedded && (

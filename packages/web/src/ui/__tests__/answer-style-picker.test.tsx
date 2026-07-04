@@ -65,6 +65,7 @@ import { render, cleanup, fireEvent } from "@testing-library/react";
 import {
   AnswerStylePicker,
   answerStyleLabel,
+  isKnownAnswerStyle,
   DEFAULT_WEB_ANSWER_STYLE,
   type AnswerStyle,
 } from "../components/chat/answer-style-picker";
@@ -88,6 +89,23 @@ describe("answerStyleLabel (#4302)", () => {
     // A Slack-originated conversation opened in the web must still read
     // sensibly on the trigger, even though the menu never offers this.
     expect(answerStyleLabel("conversational")).toBe("Conversational");
+  });
+});
+
+describe("isKnownAnswerStyle (#4302)", () => {
+  test("accepts every persistable style and rejects everything else", () => {
+    for (const style of ["plain-english", "analyst", "executive", "conversational"]) {
+      expect(isKnownAnswerStyle(style)).toBe(true);
+    }
+    // The version-skew ingress case: a style this bundle doesn't know must be
+    // rejected so restore-on-open degrades to the default instead of
+    // committing a value that crashes the display lookup and is echoed back
+    // on every turn.
+    expect(isKnownAnswerStyle("sarcastic")).toBe(false);
+    expect(isKnownAnswerStyle("")).toBe(false);
+    expect(isKnownAnswerStyle(null)).toBe(false);
+    expect(isKnownAnswerStyle(undefined)).toBe(false);
+    expect(isKnownAnswerStyle(42)).toBe(false);
   });
 });
 

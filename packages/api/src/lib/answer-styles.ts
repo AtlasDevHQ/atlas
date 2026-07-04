@@ -41,7 +41,7 @@ const log = createLogger("answer-styles");
  * HTTP boundary since #4302); this array remains the canonical runtime
  * vocabulary — validation (`isAnswerStyle`, the chat route's `z.enum`)
  * derives from it. The `satisfies` clause forbids an entry outside the wire
- * union; the `_EveryWireStyleRegistered` assertion below forbids a wire
+ * union; the `_everyWireStyleRegistered` assertion below forbids a wire
  * union member missing here — so registry and wire type cannot drift in
  * either direction.
  */

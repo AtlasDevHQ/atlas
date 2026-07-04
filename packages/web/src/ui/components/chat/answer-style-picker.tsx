@@ -87,9 +87,37 @@ const STYLE_DISPLAY: Record<AnswerStyle, { label: string; icon: LucideIcon }> = 
   conversational: { label: "Conversational", icon: MessagesSquare },
 };
 
-/** The trigger label for a conversation's stored style (null = the default). */
+/**
+ * Web-side ingress guard for the wire value — the client mirror of the
+ * server's `isAnswerStyle` (`rowToConversation` reads unknown DB strings as
+ * null). The conversation GET is a typed cast, not runtime validation, so a
+ * version-skewed API (newer server, older bundle / pinned embed) can hand
+ * this bundle a style it doesn't know; callers degrade it to null ("track
+ * the default") instead of committing it to state, where it would crash the
+ * `STYLE_DISPLAY` lookup and be echoed back on every subsequent turn.
+ */
+export function isKnownAnswerStyle(value: unknown): value is AnswerStyle {
+  return typeof value === "string" && value in STYLE_DISPLAY;
+}
+
+/**
+ * Tolerant `STYLE_DISPLAY` lookup — defense-in-depth behind
+ * {@link isKnownAnswerStyle}: even if an out-of-union string reaches a
+ * render (a future call site that skips the ingress guard), the picker
+ * shows the default's display rather than throwing a TypeError mid-render.
+ */
+function styleDisplay(style: AnswerStyle): { label: string; icon: LucideIcon } {
+  return STYLE_DISPLAY[style] ?? STYLE_DISPLAY[DEFAULT_WEB_ANSWER_STYLE];
+}
+
+/**
+ * The label shown for a conversation's stored style (null = the default).
+ * The trigger computes label+icon from the same `styleDisplay` table, so
+ * this can't drift from what the trigger renders; exported for host
+ * surfaces and tests.
+ */
 export function answerStyleLabel(value: AnswerStyle | null): string {
-  return STYLE_DISPLAY[value ?? DEFAULT_WEB_ANSWER_STYLE].label;
+  return styleDisplay(value ?? DEFAULT_WEB_ANSWER_STYLE).label;
 }
 
 export interface AnswerStylePickerProps {
@@ -104,7 +132,7 @@ export interface AnswerStylePickerProps {
 
 export function AnswerStylePicker({ value, onChange }: AnswerStylePickerProps) {
   const effective = value ?? DEFAULT_WEB_ANSWER_STYLE;
-  const display = STYLE_DISPLAY[effective];
+  const display = styleDisplay(effective);
   const TriggerIcon = display.icon;
 
   return (

@@ -89,6 +89,7 @@ import { ModelRouter } from "./effect/services";
 import { runEnterprise } from "./effect/enterprise-layer";
 import { BOUND_AGENT_PROMPT_GUIDANCE } from "./bound-chat-context";
 import {
+  ANSWER_STYLE_NAMES,
   DEFAULT_ANSWER_STYLE,
   isAnswerStyle,
   resolveAnswerStyleAddendum,
@@ -129,7 +130,13 @@ export function getAgentMaxSteps(orgId?: string): number {
   return n;
 }
 
-let lastWarnedAnswerStyleDefault: string | undefined;
+// Once-per-(workspace, value) warn dedupe. Keyed per org — not a single
+// process-global slot like `lastWarnedMaxSteps` — because this is a
+// workspace-scoped setting in a multi-tenant process: org B's stale token
+// must still leave a breadcrumb after org A warned for the same value.
+// Bounded in practice: entries come from admin/env config, so cardinality is
+// (misconfigured workspaces × distinct bad tokens), effectively tiny.
+const warnedAnswerStyleDefaults = new Set<string>();
 
 /**
  * #4303 (PRD #4292) — the workspace default answer style ("house voice"),
@@ -138,15 +145,17 @@ let lastWarnedAnswerStyleDefault: string | undefined;
  * middle tier of the answer-style precedence chain:
  *
  *   explicit `answerStyle` (per-conversation pick #4302, or a chat-platform
- *   surface's explicit "conversational") > THIS workspace default > surface
- *   default (`DEFAULT_ANSWER_STYLE`, applied by `buildSystemParam`).
+ *   surface's explicit style) > THIS workspace default > surface default
+ *   (`DEFAULT_ANSWER_STYLE`, applied by `buildSystemParam`).
  *
  * `runAgent` consults it only when the caller passed no style, so
- * chat-platform surfaces — which always pass one (`executeQuery` maps
- * `presentationMode` explicitly) — are structurally unaffected. Returns
- * `undefined` when unset, cleared, empty, or unrecognized: fail-soft to the
- * surface default (a stale DB/env token must never crash a turn), with a
- * once-per-value warn breadcrumb (same shape as `getAgentMaxSteps`).
+ * chat-platform surfaces — whose entrypoints both map `presentationMode` to
+ * an explicit style every turn (`executeQuery` in core, the proactive
+ * answer adapter in /ee) — are structurally unaffected. Returns `undefined`
+ * when unset, cleared, or empty (legal silent states), and for an
+ * unrecognized token — the one case that warns, once per (workspace, value):
+ * fail-soft to the surface default, because a stale DB/env token must never
+ * crash a turn.
  *
  * `orgId` threads the workspace tier; when omitted it falls back to the
  * request context's active organization (#3406 shape).
@@ -160,12 +169,13 @@ export function resolveWorkspaceDefaultAnswerStyle(
   // voice configured; the surface default applies.
   if (!raw) return undefined;
   if (!isAnswerStyle(raw)) {
-    if (raw !== lastWarnedAnswerStyleDefault) {
+    const dedupeKey = `${effectiveOrgId ?? "platform"}:${raw}`;
+    if (!warnedAnswerStyleDefaults.has(dedupeKey)) {
       log.warn(
-        { value: raw },
-        "Unrecognized ATLAS_DEFAULT_ANSWER_STYLE value — using the surface default answer style",
+        { value: raw, orgId: effectiveOrgId ?? null },
+        `Unrecognized ATLAS_DEFAULT_ANSWER_STYLE value — using the surface default answer style (valid: ${ANSWER_STYLE_NAMES.join(", ")})`,
       );
-      lastWarnedAnswerStyleDefault = raw;
+      warnedAnswerStyleDefaults.add(dedupeKey);
     }
     return undefined;
   }
@@ -1061,7 +1071,8 @@ export async function runAgent({
    *   #2705 binary. The chat plugin pairs this with progressive-disclosure
    *   buttons that surface the SQL and full result tables on demand.
    * - `"plain-english"` / `"executive"`: selectable voices for the
-   *   per-conversation picker (#4302); no surface auto-selects them yet.
+   *   per-conversation picker (#4302); no surface auto-selects them,
+   *   though a workspace default (#4303, below) can.
    *
    * #4303 — when ABSENT, the workspace default answer style (the
    * `ATLAS_DEFAULT_ANSWER_STYLE` setting, resolved per turn via

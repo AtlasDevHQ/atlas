@@ -727,6 +727,9 @@ describe("settings module", () => {
       expect(def).toBeDefined();
       expect(def!.scope).toBe("workspace");
       expect(def!.type).toBe("select");
+      // Pins the env-tier spelling for self-hosted deployments (the registry
+      // requires an envVar; nothing requires the var to be set).
+      expect(def!.envVar).toBe("ATLAS_DEFAULT_ANSWER_STYLE");
       // Hot-reloadable: the agent loop reads it per turn through the settings
       // cache — a restart hint would contradict the no-redeploy contract.
       expect(def!.requiresRestart).toBeFalsy();

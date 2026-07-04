@@ -353,9 +353,9 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // explicit answer style is chosen (web conversations without a #4302
     // per-conversation pick; SDK / MCP / /api/v1/query calls that send no
     // style). Chat-platform surfaces (Slack @mention, proactive) always pass
-    // their own explicit conversational voice per turn, so this default
-    // structurally never reaches them — the surface-scoping decision the
-    // description documents. Resolution seam:
+    // an explicit style per turn (conversational in practice), so this
+    // default structurally never reaches them — the surface-scoping decision
+    // the description documents. Resolution seam:
     // `resolveWorkspaceDefaultAnswerStyle` (lib/agent.ts).
     //
     // Options derive from the answer-style registry minus `conversational`:
@@ -368,7 +368,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Agent",
     label: "Default Answer Style",
     description:
-      "Workspace default answer style (the house voice) for surfaces that don't explicitly choose one — web chat conversations without a per-conversation pick, and SDK/MCP/query API calls that send no style. A per-conversation pick always wins. Chat platforms (Slack mentions, proactive chat) keep their conversational voice and are not affected. Reset to fall back to the built-in default (analyst).",
+      "Workspace default answer style (the house voice) for surfaces that don't explicitly choose one — web chat conversations without a per-conversation pick, and SDK/MCP/query API calls that send no style. A per-conversation pick always wins. Chat platforms (Slack mentions, proactive chat) choose their own voice per turn and are not affected. Reset to fall back to the built-in default (analyst).",
     type: "select",
     options: ANSWER_STYLE_NAMES.filter((s) => s !== "conversational"),
     envVar: "ATLAS_DEFAULT_ANSWER_STYLE",

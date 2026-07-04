@@ -29,7 +29,7 @@
  * boundary on the chat request + conversation record. The workspace default
  * ("house voice", #4303) builds on it too, from the OTHER side: the
  * `ATLAS_DEFAULT_ANSWER_STYLE` settings-registry entry derives its admin
- * options from {@link ANSWER_STYLE_NAMES}, and
+ * options from {@link ANSWER_STYLE_NAMES} (minus `conversational`), and
  * `resolveWorkspaceDefaultAnswerStyle` (lib/agent.ts) validates the stored
  * value with {@link isAnswerStyle} — precedence: explicit style > workspace
  * default > surface default.

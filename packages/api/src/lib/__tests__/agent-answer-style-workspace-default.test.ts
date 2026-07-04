@@ -11,9 +11,10 @@
  * Two seams are pinned here:
  *
  *   1. `resolveWorkspaceDefaultAnswerStyle` — the settings-tier resolution
- *      (workspace override > platform override > env > unset), the
- *      empty/invalid-value fail-soft, and the request-context orgId fallback
- *      (same shape as `getAgentMaxSteps`, #3406).
+ *      (workspace override > platform override > env var > unset, each tier
+ *      exercised below), the empty/invalid-value fail-soft, and the
+ *      request-context orgId fallback (same shape as `getAgentMaxSteps`,
+ *      #3406).
  *   2. `runAgent` — the real agent loop, spying-mock-model harness (borrowed
  *      from agent-answer-style-prompt-shape.test.ts): a turn with no explicit
  *      style renders the workspace default's addendum; an explicit style
@@ -149,6 +150,17 @@ describe("resolveWorkspaceDefaultAnswerStyle (#4303)", () => {
     expect(resolveWorkspaceDefaultAnswerStyle()).toBe("executive");
   });
 
+  it("falls back to the env tier when no DB override exists — and a DB override beats it", async () => {
+    // The env tier exists mechanically for every registry entry (this key is
+    // registry-managed, not env-first: nothing requires the var to be set),
+    // and this pins the registry entry's `envVar` spelling for self-hosted
+    // deployments that do use it.
+    process.env[KEY] = "plain-english";
+    expect(resolveWorkspaceDefaultAnswerStyle(ORG)).toBe("plain-english");
+    await setSetting(KEY, "executive", "test", ORG);
+    expect(resolveWorkspaceDefaultAnswerStyle(ORG)).toBe("executive");
+  });
+
   it("resolves the active org from the request context when no orgId is passed (#3406 shape)", async () => {
     await setSetting(KEY, "executive", "test", ORG);
     const inRequest = withRequestContext(
@@ -280,9 +292,10 @@ describe("runAgent — workspace default answer style precedence (#4303)", () =>
   });
 
   it("the chat-platform surface's explicit conversational voice is unaffected by the workspace default", async () => {
-    // Slack/proactive always pass an explicit style (executeQuery.ts maps
-    // presentationMode → answerStyle), so the workspace default can never
-    // reach a chat-platform turn — the no-Slack-regression half of #4303.
+    // Both chat-platform entrypoints map presentationMode → an explicit
+    // answerStyle every turn (executeQuery.ts in core, the proactive answer
+    // adapter in /ee), so the workspace default can never reach a
+    // chat-platform turn — the no-Slack-regression half of #4303.
     await setSetting(KEY, "executive", "test");
     const prompt = await runTurn("conversational");
     expect(prompt).toContain("## Presentation mode — conversational");

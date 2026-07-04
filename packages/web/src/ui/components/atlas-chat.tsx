@@ -13,7 +13,7 @@ import { useAtlasTransport } from "../hooks/use-atlas-transport";
 import { useConversations, transformMessages } from "../hooks/use-conversations";
 import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
 import { ChatComposer } from "./chat/chat-composer";
-import { ErrorBanner } from "./chat/error-banner";
+import { ErrorBanner, ActionErrorBanner, type ChatActionFailure } from "./chat/error-banner";
 import { ContextWarningBanner } from "./chat/context-warning-banner";
 import { ResumeBanner } from "./chat/resume-banner";
 import { useRunStatus } from "../hooks/use-run-status";
@@ -200,7 +200,26 @@ export function AtlasChat({
   // "the active turn". The resume endpoint loads the latest non-terminal run by
   // conversation id, so this value is NOT used to target a resume.
   const runIdRef = useRef<string | null>(null);
-  const [transientWarning, setTransientWarning] = useState("");
+  // #4297 — real failures (send / load / pin / unpin / resume) surface as a
+  // persistent structured banner (`ActionErrorBanner`): visible until retried,
+  // superseded by a newer action, or explicitly dismissed. Genuinely
+  // informational transients (pin success / already-pinned) stay on the quiet
+  // auto-dismissing notice line — successes may whisper; failures must not.
+  const [actionFailure, setActionFailure] = useState<ChatActionFailure | null>(null);
+  const [transientNotice, setTransientNotice] = useState("");
+  // One dismissal timer at a time: a new notice supersedes the old one's
+  // timeout so a stale timer can't clip a fresh notice early.
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showTransientNotice = useCallback((message: string, ms: number) => {
+    setTransientNotice(message);
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = setTimeout(() => setTransientNotice(""), ms);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    };
+  }, []);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
   const setMobileSidebarOpen = useUiStore((s) => s.setMobileSidebarOpen);
@@ -456,7 +475,11 @@ export function AtlasChat({
   // `useRunStatus` fires this stable wrapper, which dispatches to the latest
   // `handleResume` (kept current by the effect below it).
   const handleResumeRef = useRef<() => void>(() => {});
-  const handleParkedResolved = useCallback(() => handleResumeRef.current(), []);
+  const handleParkedResolved = useCallback(() => {
+    // #4297 — a fresh (auto-)resume supersedes any earlier failure banner.
+    setActionFailure(null);
+    handleResumeRef.current();
+  }, []);
 
   // #3749 — durable run status for the open conversation. Fetched once its
   // history has committed (not mid-load) so the affordance reflects the mounted
@@ -484,8 +507,16 @@ export function AtlasChat({
     isLoading,
     resetPendingWarnings: warningCtl.resetPending,
     onError: (message) => {
-      setTransientWarning(message);
-      setTimeout(() => setTransientWarning(""), 5000);
+      // #4297 — a failed resume is a real failure: persistent banner, not a
+      // fading whisper. Retry through the ref — this callback is constructed
+      // before `handleResume` exists (same seam as `handleParkedResolved`).
+      setActionFailure({
+        title: message,
+        retry: () => {
+          setActionFailure(null);
+          handleResumeRef.current();
+        },
+      });
     },
   });
   // #4294 — the Stop control's orchestration lives in `useStopHandler`
@@ -582,6 +613,8 @@ export function AtlasChat({
 
   async function handlePin(text: string) {
     if (!text.trim()) return;
+    // A fresh attempt supersedes any earlier failure banner (#4297).
+    setActionFailure(null);
     setPinningText(text);
     try {
       const res = await fetch(`${apiUrl}/api/v1/starter-prompts/favorites`, {
@@ -602,14 +635,18 @@ export function AtlasChat({
           // the authoritative list.
           console.warn("pin duplicate:", body.requestId);
           await queryClient.invalidateQueries({ queryKey: starterPromptsQueryKey });
-          setTransientWarning("Already pinned — it'll show up in a new chat.");
-          setTimeout(() => setTransientWarning(""), 4000);
+          showTransientNotice("Already pinned — it'll show up in a new chat.", 4000);
           return;
         }
-        const msg = body.message ?? "Failed to pin starter prompt.";
-        console.warn("pin failed:", res.status, res.statusText, body.requestId, msg);
-        setTransientWarning(msg);
-        setTimeout(() => setTransientWarning(""), 5000);
+        console.warn("pin failed:", res.status, res.statusText, body.requestId, body.message);
+        setActionFailure({
+          title: "Couldn't pin starter prompt",
+          detail: body.message,
+          requestId: body.requestId,
+          retry: () => {
+            void handlePin(text);
+          },
+        });
         return;
       }
       const body = (await res.json()) as {
@@ -630,13 +667,16 @@ export function AtlasChat({
           ...base.filter((p) => !(p.provenance === "favorite" && p.text === body.favorite.text)),
         ];
       });
-      setTransientWarning("Pinned as starter prompt.");
-      setTimeout(() => setTransientWarning(""), 3000);
+      showTransientNotice("Pinned as starter prompt.", 3000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("pin request failed:", msg);
-      setTransientWarning("Failed to pin starter prompt.");
-      setTimeout(() => setTransientWarning(""), 5000);
+      setActionFailure({
+        title: "Couldn't pin starter prompt",
+        retry: () => {
+          void handlePin(text);
+        },
+      });
     } finally {
       setPinningText(null);
     }
@@ -649,6 +689,8 @@ export function AtlasChat({
     const raw = favoriteId.startsWith("favorite:")
       ? favoriteId.slice("favorite:".length)
       : favoriteId;
+    // A fresh attempt supersedes any earlier failure banner (#4297).
+    setActionFailure(null);
     try {
       const res = await fetch(
         `${apiUrl}/api/v1/starter-prompts/favorites/${encodeURIComponent(raw)}`,
@@ -667,8 +709,13 @@ export function AtlasChat({
           res.statusText,
           body.requestId ?? "(no requestId — non-JSON body)",
         );
-        setTransientWarning("Failed to unpin starter prompt.");
-        setTimeout(() => setTransientWarning(""), 5000);
+        setActionFailure({
+          title: "Couldn't unpin starter prompt",
+          requestId: body.requestId,
+          retry: () => {
+            void handleUnpin(favoriteId);
+          },
+        });
         return;
       }
       queryClient.setQueryData<StarterPrompt[]>(starterPromptsQueryKey, (prev) =>
@@ -677,8 +724,12 @@ export function AtlasChat({
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("unpin request failed:", msg);
-      setTransientWarning("Failed to unpin starter prompt.");
-      setTimeout(() => setTransientWarning(""), 5000);
+      setActionFailure({
+        title: "Couldn't unpin starter prompt",
+        retry: () => {
+          void handleUnpin(favoriteId);
+        },
+      });
     }
   }
 
@@ -689,6 +740,8 @@ export function AtlasChat({
     // conversation or be clobbered when the in-flight load commits. The composer
     // is disabled too; this also guards the chip / starter-prompt send paths.
     if (loadingConversation) return;
+    // A fresh attempt supersedes any earlier failure banner (#4297).
+    setActionFailure(null);
     const saved = text;
     setInput("");
     // Drop any unattached warnings from a stalled earlier turn so they
@@ -701,8 +754,11 @@ export function AtlasChat({
     sendMessage({ text: saved }).catch((err: unknown) => {
       console.error("Failed to send message:", err instanceof Error ? err.message : String(err));
       setInput(saved);
-      setTransientWarning("Failed to send message. Please try again.");
-      setTimeout(() => setTransientWarning(""), 5000);
+      setActionFailure({
+        title: "Message failed to send",
+        detail: "Your message was put back in the composer.",
+        retry: () => handleSend(saved),
+      });
     });
   }
 
@@ -729,6 +785,8 @@ export function AtlasChat({
     // in-flight load settles (`loadingConversation` is one of its deps), and the
     // stale check below stops that in-flight load from committing over this one.
     if (loadingConversation) return;
+    // A fresh attempt supersedes any earlier failure banner (#4297).
+    setActionFailure(null);
     // Mark bound for the open effect's dedup once we actually begin loading: a
     // redundant dispatch is then a no-op, and a load that fails below isn't
     // retried on every render.
@@ -778,8 +836,14 @@ export function AtlasChat({
       warningCtl.reset();
     } catch (err: unknown) {
       console.warn("Failed to load conversation:", err instanceof Error ? err.message : String(err));
-      setTransientWarning("Failed to load conversation. Please try again.");
-      setTimeout(() => setTransientWarning(""), 5000);
+      setActionFailure({
+        title: "Couldn't load the conversation",
+        // Retry through the ref so a later attempt uses the freshest handler
+        // (this closure would otherwise pin the env groups it saw at failure).
+        retry: () => {
+          void handleSelectConversationRef.current(id);
+        },
+      });
       // #3068 — the open failed and never committed. Reset the dedup ref to the
       // still-mounted conversation so the failed id isn't treated as loaded. If
       // no newer navigation superseded this attempt, roll the URL + requested id
@@ -1033,8 +1097,35 @@ export function AtlasChat({
             </header>
             )}
 
-            {(healthWarning || transientWarning || convos.fetchError) && (
-              <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">{healthWarning || transientWarning || convos.fetchError}</p>
+            {/* #4297 — the quiet line is for informational transients ONLY
+                (pin success / already-pinned). Failures render as structured
+                banners and never auto-dismiss unseen. */}
+            {transientNotice && (
+              <p role="status" className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
+                {transientNotice}
+              </p>
+            )}
+            {healthWarning && (
+              <ActionErrorBanner
+                failure={{ title: "Connection problem", detail: healthWarning }}
+              />
+            )}
+            {convos.fetchError && (
+              <ActionErrorBanner
+                failure={{
+                  title: "Couldn't load conversation history",
+                  detail: convos.fetchError,
+                  retry: () => {
+                    convos.fetchList().catch((err: unknown) => {
+                      // The failure re-surfaces via `convos.fetchError`; log for correlation.
+                      console.warn(
+                        "Conversation list refetch failed:",
+                        err instanceof Error ? err.message : String(err),
+                      );
+                    });
+                  },
+                }}
+              />
             )}
 
             {isManaged && !isSignedIn ? (
@@ -1067,13 +1158,19 @@ export function AtlasChat({
                     ) : showDevChatEmpty ? (
                       <DeveloperChatEmptyState />
                     ) : (
-                    <div className="flex h-full flex-col items-center justify-center gap-6">
+                    <div
+                      className="flex h-full flex-col items-center justify-center gap-6"
+                      data-testid="chat-empty-state"
+                    >
+                      {/* #4297 — one value proposition across the surface: this
+                          heading and the standalone header tagline share the
+                          brand phrasing (www hero / metadata) verbatim. */}
                       <div className="text-center">
                         <p className="text-lg font-medium text-zinc-500 dark:text-zinc-400">
-                          What would you like to know?
+                          Ask your data anything
                         </p>
                         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-500">
-                          Ask a question about your data to get started
+                          Start with a question about your data
                         </p>
                       </div>
                       <StarterPromptList
@@ -1250,6 +1347,18 @@ export function AtlasChat({
                 </ErrorBoundary>
                 </ScrollArea>
 
+                {/* #4297 — failed action (send / load / pin / unpin / resume).
+                    Composer-adjacent so it sits where the user is looking
+                    after acting; persistent until retried, superseded, or
+                    dismissed. Distinct from the chat-stream ErrorBanner below,
+                    which owns mid-stream wire errors. */}
+                {actionFailure && (
+                  <ActionErrorBanner
+                    failure={actionFailure}
+                    onDismiss={() => setActionFailure(null)}
+                  />
+                )}
+
                 {error && (
                   <ErrorBanner
                     error={error}
@@ -1276,7 +1385,11 @@ export function AtlasChat({
                 {!error && !loadingConversation && (
                   <ResumeBanner
                     runStatus={runStatusCtl.runStatus}
-                    onResume={handleResume}
+                    onResume={() => {
+                      // #4297 — a fresh attempt supersedes the failure banner.
+                      setActionFailure(null);
+                      handleResume();
+                    }}
                     resuming={resuming}
                   />
                 )}

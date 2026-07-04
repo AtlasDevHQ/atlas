@@ -28,8 +28,11 @@ test.describe("Conversations @llm", () => {
     // Click "+ New"
     await startNewChat(page);
 
-    // Starter prompts should be visible again (empty state)
-    await expect(page.locator("text=What would you like to know?")).toBeVisible({ timeout: 5_000 });
+    // The empty state should be visible again. Keyed by testid, not copy —
+    // the empty-state heading shares the "Ask your data anything" phrasing
+    // with the standalone header tagline (#4297), so a text locator would
+    // match both and trip Playwright strict mode.
+    await expect(page.getByTestId("chat-empty-state")).toBeVisible({ timeout: 5_000 });
   });
 
   test("clicking a previous conversation reloads its messages", async ({ page }) => {

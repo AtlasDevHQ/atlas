@@ -3,7 +3,76 @@
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { parseChatError, type AuthMode, type ClientErrorCode } from "../../lib/types";
-import { WifiOff, ServerCrash, ShieldAlert, Clock, AlertTriangle, MessageSquarePlus } from "lucide-react";
+import { WifiOff, ServerCrash, ShieldAlert, Clock, AlertTriangle, MessageSquarePlus, X } from "lucide-react";
+
+/**
+ * A failed chat-surface action (send / load / pin / unpin / resume) described
+ * for `ActionErrorBanner`. Unlike the chat-stream `ErrorBanner` below — which
+ * parses a wire `Error` via `parseChatError` — these failures originate from
+ * explicit fetch call sites that already know the user-facing title, any
+ * server-provided detail/request id, and how to re-run the action (#4297).
+ */
+export interface ChatActionFailure {
+  title: string;
+  detail?: string;
+  requestId?: string;
+  /** Re-runs the failed action. Omit when the action isn't retryable. */
+  retry?: () => void;
+}
+
+/**
+ * Structured error surface for failed chat actions — the same visual grade as
+ * `ErrorBanner` (icon, title, detail, request id, retry) but fed by a
+ * `ChatActionFailure` instead of a chat-stream `Error`. Failures rendered here
+ * are persistent: they never auto-dismiss, and clear only when retried,
+ * superseded by a newer action, or explicitly dismissed via `onDismiss`.
+ */
+export function ActionErrorBanner({
+  failure,
+  onDismiss,
+}: {
+  failure: ChatActionFailure;
+  /** Renders a dismiss affordance. Omit for standing conditions (e.g. a health warning) that should stay visible. */
+  onDismiss?: () => void;
+}) {
+  return (
+    <div
+      className="mb-2 rounded-lg border border-red-300 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400 px-4 py-3 text-sm"
+      role="alert"
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="size-4 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">{failure.title}</p>
+          {failure.detail && <p className="mt-1 text-xs opacity-80">{failure.detail}</p>}
+          {failure.requestId && (
+            <p className="mt-1 text-xs opacity-60">Request ID: {failure.requestId}</p>
+          )}
+          {failure.retry && (
+            <Button
+              variant="link"
+              size="sm"
+              onClick={failure.retry}
+              className="mt-2 h-auto p-0 text-xs font-medium text-red-700 dark:text-red-400"
+            >
+              Try again
+            </Button>
+          )}
+        </div>
+        {onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Dismiss"
+            className="-m-1 rounded-md p-1 text-red-700/70 hover:bg-red-100 hover:text-red-700 dark:text-red-400/70 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+          >
+            <X className="size-4" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /** Icon for each client error code */
 function ErrorIcon({ clientCode }: { clientCode?: ClientErrorCode }) {

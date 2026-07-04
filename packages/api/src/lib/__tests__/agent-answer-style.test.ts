@@ -76,6 +76,29 @@ describe("answer-style registry (#4299)", () => {
     }
   });
 
+  it("the conversational addendum is pinned verbatim — the #4299 byte-identity rider (no Slack regression)", () => {
+    // Full-string pin, not markers: the marker tests above catch a missing
+    // heading or phrase, but an edit to an UNPINNED line (the closing-CTA
+    // formatting rule, the "bare numbers" phrasing) would pass them all
+    // while changing the live Slack voice — and the retired #2705 constant
+    // this addendum was byte-compared against is deleted, so that check
+    // can't be re-run. Editing this string is legal, but must be a
+    // deliberate chat-platform voice change made HERE, eyes open.
+    expect(resolveAnswerStyleAddendum("conversational")).toBe(
+      `## Presentation mode — conversational
+
+You are answering inside a chat platform (Slack/Teams/etc.) where the audience is a non-analyst teammate skimming a thread. Override the standard formatting guidance with the following rules:
+
+- Keep the answer to **1-2 sentences of plain English prose**. No headings, no bullet lists, no preamble.
+- **Do NOT include SQL** in the response body. The chat surface attaches a "Show SQL" button that surfaces the query on demand.
+- **Do NOT use markdown tables.** Express small comparisons as prose ("3 in the US, 1 in EU, 1 in APAC"); use bare numbers, not formatted tables. For larger result sets, summarize the top line in prose and let the "Show details" button surface the breakdown.
+- **Skip the glossary lecture.** Assume the reader already knows what a customer / order / MRR is. Don't define terms.
+- Cite figures inline in the prose, with units. ("Revenue grew to $1.2M in March, up 14% from February.")
+- End with a single short line offering the analyst view: "Want the SQL or full breakdown? Tap the button below." Do NOT use markdown formatting on this closing line.
+`,
+    );
+  });
+
   it("isAnswerStyle accepts every registered name and rejects everything else", () => {
     for (const style of ANSWER_STYLE_NAMES) {
       expect(isAnswerStyle(style)).toBe(true);

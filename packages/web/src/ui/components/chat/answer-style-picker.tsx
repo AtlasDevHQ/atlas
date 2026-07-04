@@ -65,7 +65,7 @@ interface AnswerStyleOption {
  * `conversational` is deliberately absent — it stays auto-selected by
  * chat-platform surfaces (Slack) and is not a web choice.
  */
-const ANSWER_STYLE_OPTIONS: readonly AnswerStyleOption[] = [
+const ANSWER_STYLE_OPTIONS = [
   {
     value: "plain-english",
     label: "Plain English",
@@ -84,7 +84,30 @@ const ANSWER_STYLE_OPTIONS: readonly AnswerStyleOption[] = [
     subtitle: "Headline, key drivers, provenance",
     icon: Briefcase,
   },
-];
+] as const satisfies readonly AnswerStyleOption[];
+
+/**
+ * The styles this surface deliberately does NOT offer. A type-level mirror
+ * of the API's `NON_HOUSE_VOICE_STYLES` (lib/answer-styles.ts) — the same
+ * acceptable web↔api duplication class as `DEFAULT_WEB_ANSWER_STYLE` (the
+ * frontend is a pure HTTP client and cannot import api-internal constants).
+ */
+type NonOfferedAnswerStyle = "conversational";
+
+// Compile-time coverage tripwire (the picker-side twin of the registry's
+// `_everyWireStyleRegistered`): the hand-listed menu above is opt-in, so
+// without this, a style added to the wire union would silently never be
+// offered here while the API's workspace-default options (filter-out)
+// auto-offer it. If `@useatlas/types` adds a style, this stops compiling
+// until it is either added to `ANSWER_STYLE_OPTIONS` or explicitly declared
+// `NonOfferedAnswerStyle` — an offered/not-offered decision, never drift.
+const _everyStyleOfferedOrDeclaredNonOffered: Exclude<
+  AnswerStyle,
+  (typeof ANSWER_STYLE_OPTIONS)[number]["value"] | NonOfferedAnswerStyle
+> extends never
+  ? true
+  : never = true;
+void _everyStyleOfferedOrDeclaredNonOffered;
 
 /** Display metadata for every persistable style — including the non-offered
  * `conversational` (persistable via API/SDK callers; chat platforms apply it

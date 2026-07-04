@@ -35,10 +35,11 @@ export interface UseStopHandlerReturn {
  *   2. fire-and-forget `POST /chat/runs/:runId/stop` so generation stops
  *      server-side too (token spend ends at the abort, not the step cap).
  *      A 404 is the expected race (run already finished, or streaming on
- *      another instance) and is tolerated silently; any OTHER HTTP failure
- *      gets a console.warn — a persistent 401/500 means tokens burn on every
- *      stop and should not wear the benign-race label. Nothing is surfaced to
- *      the user either way: the visible outcome (stream stopped) already
+ *      another instance) and is tolerated silently; any OTHER failure — HTTP
+ *      or network-level — gets a console.warn, because both have the same
+ *      consequence: a persistent failure means tokens burn on every stop and
+ *      should not wear the benign-race label. Nothing is surfaced to the
+ *      user either way: the visible outcome (stream stopped) already
  *      happened.
  *   3. no run id yet (stopped in the pre-header sliver) ⇒ client-only stop.
  */
@@ -72,10 +73,11 @@ export function useStopHandler(opts: UseStopHandlerOptions): UseStopHandlerRetur
         console.warn(`Server-side stop failed: HTTP ${res.status} — generation may run to its budget`);
       })
       .catch((err: unknown) => {
-        // Network-level failure; the client-side stop already delivered the
-        // user-visible outcome.
-        console.debug(
-          "Server-side stop skipped:",
+        // Network-level failure — same token-burn consequence as a non-404
+        // HTTP failure, so the same severity. The client-side stop already
+        // delivered the user-visible outcome.
+        console.warn(
+          "Server-side stop failed (network) — generation may run to its budget:",
           err instanceof Error ? err.message : String(err),
         );
       });

@@ -15,7 +15,8 @@ import {
 import type { PythonProgressData } from "./python-result-card";
 
 /**
- * The collapsed receipt a finished turn's activity settles into (#4298):
+ * The collapsed receipt a turn's activity settles into (#4298) — rendered
+ * once the answer starts streaming (mid-stream, #4300) and after finish:
  * one muted summary line ("Explored schema · 2 queries") that expands on
  * click to the full activity — tool cards with today's affordances (Show
  * SQL, result views) plus the agent's narration at sub-answer weight.

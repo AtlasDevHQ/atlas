@@ -409,11 +409,13 @@ export const ChatRequestSchema = z.object({
    * `lib/answer-styles.ts`. Sent by the chat header's style picker; the
    * route persists it onto the conversation row AND feeds it into prompt
    * assembly for this turn. Omitted turns inherit the conversation's stored
-   * value; a stored NULL (or a brand-new conversation) resolves to the
-   * surface default (`analyst`) at prompt assembly. The Zod enum derives
-   * from `ANSWER_STYLE_NAMES` — the registry is the single source of truth
-   * for acceptable values; there's no DB-layer CHECK constraint (see
-   * migration 0165, same rationale as `routingMode`/0077).
+   * value; a stored NULL (or a brand-new conversation) resolves to the live
+   * default at prompt assembly — the workspace default
+   * (`ATLAS_DEFAULT_ANSWER_STYLE`, #4303) when set, else the surface
+   * default (`analyst`). The Zod enum derives from `ANSWER_STYLE_NAMES` —
+   * the registry is the single source of truth for acceptable values;
+   * there's no DB-layer CHECK constraint (see migration 0166, same
+   * rationale as `routingMode`/0077).
    */
   answerStyle: z.enum(ANSWER_STYLE_NAMES).optional(),
   /**
@@ -1283,22 +1285,40 @@ chat.openapi(chatRoute, async (c) => {
             ) {
               // Fire-and-forget, same contract as routing-mode / REST scope /
               // Group reach above: the runtime honours the body's style for
-              // this turn even if the persist fails; the helper logs its own
-              // failures.
+              // this turn even if the persist fails. The helper never rejects
+              // (it catches internally and returns a CrudResult), so inspect
+              // the RESOLUTION: an `ok: false` that isn't the logged `error`
+              // arm — `not_found` (conversation deleted mid-turn, or an
+              // ownership-scope miss) — would otherwise be silent at both
+              // layers, and a style pin that didn't stick reverts the voice
+              // on reopen with zero breadcrumb.
               updateConversationAnswerStyle(
                 conversationId,
                 parsed.data.answerStyle,
                 authResult.user?.id,
                 authResult.user?.activeOrganizationId,
-              ).catch((err: unknown) => {
-                log.warn(
-                  {
-                    err: err instanceof Error ? err.message : String(err),
-                    conversationId,
-                  },
-                  "updateConversationAnswerStyle rejected",
-                );
-              });
+              ).then(
+                (result) => {
+                  if (!result.ok) {
+                    log.warn(
+                      { conversationId, reason: result.reason },
+                      "answer-style persist did not apply — the conversation will revert to its stored voice on reopen",
+                    );
+                  }
+                },
+                (err: unknown) => {
+                  // Contract breach only: the helper catches internally, so a
+                  // rejection means that changed — log it rather than letting a
+                  // fire-and-forget path emit an unhandled rejection.
+                  log.warn(
+                    {
+                      err: err instanceof Error ? err.message : String(err),
+                      conversationId,
+                    },
+                    "updateConversationAnswerStyle rejected",
+                  );
+                },
+              );
             }
             // F-77 — aggregate per-conversation step ceiling. The per-request
             // caps (stepCountIs(25), 180s wall-clock) bound a single agent
@@ -1423,7 +1443,8 @@ chat.openapi(chatRoute, async (c) => {
                 groupReach: effectiveGroupReach ?? null,
                 // #4302 — persist the answer style the user picked at
                 // creation. Undefined ⇒ NULL (no explicit choice — the row
-                // keeps tracking the surface default at prompt assembly).
+                // keeps tracking the live default at prompt assembly: the
+                // workspace default #4303 when set, else the surface default).
                 answerStyle: effectiveAnswerStyle ?? null,
                 orgId: authResult.user?.activeOrganizationId,
               });

@@ -104,17 +104,29 @@ describe("useStopHandler (#4294)", () => {
     }
   });
 
-  test("a network failure never blocks or throws — the client stop already delivered the outcome", async () => {
+  test("a network failure never blocks or throws — and logs a console.warn (same token-burn consequence as an HTTP failure)", async () => {
     const fetchMock = mock(() => Promise.reject(new Error("offline")));
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    const opts = makeOpts();
-    const { result } = renderHook(() => useStopHandler(opts));
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const opts = makeOpts();
+      const { result } = renderHook(() => useStopHandler(opts));
 
-    act(() => {
-      result.current.stopTurn();
-    });
+      act(() => {
+        result.current.stopTurn();
+      });
 
-    expect(opts.stop).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(opts.stop).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(
+          warnSpy.mock.calls.some((c) =>
+            String(c[0]).includes("Server-side stop failed (network)"),
+          ),
+        ).toBe(true),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

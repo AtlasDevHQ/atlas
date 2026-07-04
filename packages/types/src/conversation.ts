@@ -128,12 +128,13 @@ export interface Conversation {
    * Per-conversation answer style (#4302, PRD #4292) — the editorial voice
    * of the agent's answers in this conversation. Genuinely nullable: the
    * column is plain nullable `text` and `null` is the meaningful "no
-   * explicit choice" state, resolved to the surface default at prompt
-   * assembly (`analyst` for web; chat-platform surfaces pass
-   * `conversational` explicitly). The header picker persists an explicit
-   * value; `null` rows keep tracking the default. Optional so pre-#4302
-   * fixtures / SDK consumers can omit it; the runtime treats missing the
-   * same as `null`.
+   * explicit choice" state, resolved at prompt assembly to the live default
+   * — the workspace default (`ATLAS_DEFAULT_ANSWER_STYLE`, #4303) when the
+   * admin set one, else the surface default (`analyst` for web;
+   * chat-platform surfaces pass `conversational` explicitly). The header
+   * picker persists an explicit value; `null` rows keep tracking the
+   * default. Optional so pre-#4302 fixtures / SDK consumers can omit it;
+   * the runtime treats missing the same as `null`.
    */
   answerStyle?: AnswerStyle | null;
   starred: boolean;

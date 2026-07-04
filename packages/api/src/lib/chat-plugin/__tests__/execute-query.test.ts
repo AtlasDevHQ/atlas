@@ -145,7 +145,12 @@ const mockGetConversation: Mock<(id: string) => Promise<unknown>> = mock(() =>
 );
 const mockGenerateTitle: Mock<(q: string) => string> = mock((q) => q.slice(0, 80));
 
+// Spread the real exports and override only what these tests exercise (per
+// CLAUDE.md "mock all exports" — a partial factory breaks with "Export named
+// X not found" the moment executeQuery.ts imports another export).
+const realConversations = await import("@atlas/api/lib/conversations");
 mock.module("@atlas/api/lib/conversations", () => ({
+  ...realConversations,
   createConversation: mockCreateConversation,
   addMessage: mockAddMessage,
   getConversation: mockGetConversation,

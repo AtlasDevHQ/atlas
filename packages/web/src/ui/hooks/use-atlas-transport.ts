@@ -100,10 +100,11 @@ export interface ChatRoutingInputs {
   /**
    * #4302 — per-conversation answer style. Omitted when `null` (no explicit
    * choice — the server inherits the row's stored style, or applies the
-   * surface default for a NULL row), like `routingMode`. The getter returns
-   * a style once its state holds one — picked this session or restored from
-   * the row on reopen — so every turn re-sends it; only a genuine change
-   * burns an UPDATE server-side (the route's skip-UPDATE gate).
+   * live default for a NULL row: workspace default #4303, else surface
+   * default), like `routingMode`. The getter returns a style once its state
+   * holds one — picked this session or restored from the row on reopen — so
+   * every turn re-sends it; only a genuine change burns an UPDATE
+   * server-side (the route's skip-UPDATE gate).
    */
   answerStyle?: AnswerStyle | null;
 }
@@ -213,7 +214,8 @@ export interface UseAtlasTransportOptions {
   /**
    * #4302 — the conversation's answer style from the header picker (`null` =
    * no explicit choice). Omitted from the body when null so the server
-   * inherits the row's stored style (or applies the surface default).
+   * inherits the row's stored style (or applies the live default: workspace
+   * default #4303, else surface default).
    */
   getAnswerStyle?: () => AnswerStyle | null;
 }

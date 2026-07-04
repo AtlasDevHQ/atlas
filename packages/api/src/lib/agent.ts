@@ -89,11 +89,12 @@ import { ModelRouter } from "./effect/services";
 import { runEnterprise } from "./effect/enterprise-layer";
 import { BOUND_AGENT_PROMPT_GUIDANCE } from "./bound-chat-context";
 import {
-  ANSWER_STYLE_NAMES,
   DEFAULT_ANSWER_STYLE,
-  isAnswerStyle,
+  isWorkspaceDefaultAnswerStyle,
   resolveAnswerStyleAddendum,
+  WORKSPACE_DEFAULT_STYLE_OPTIONS,
   type AnswerStyle,
+  type WorkspaceDefaultAnswerStyle,
 } from "./answer-styles";
 
 const log = createLogger("agent");
@@ -152,28 +153,33 @@ const warnedAnswerStyleDefaults = new Set<string>();
  * chat-platform surfaces — whose entrypoints both map `presentationMode` to
  * an explicit style every turn (`executeQuery` in core, the proactive
  * answer adapter in /ee) — are structurally unaffected. Returns `undefined`
- * when unset, cleared, or empty (legal silent states), and for an
- * unrecognized token — the one case that warns, once per (workspace, value):
- * fail-soft to the surface default, because a stale DB/env token must never
- * crash a turn.
+ * when unset, cleared, or empty (legal silent states), and for a token that
+ * isn't an offered house voice — the one case that warns, once per
+ * (workspace, value): fail-soft to the surface default, because a stale
+ * DB/env token must never crash a turn. Non-offered registry styles
+ * (`conversational` — see `NON_HOUSE_VOICE_STYLES`) take the same
+ * warn-and-fall-back path as unknown tokens: the admin select can't store
+ * them, but the env-var ingress bypasses that write validation, and the
+ * Slack-tuned addendum must never become the house voice for analyst-grade
+ * surfaces.
  *
  * `orgId` threads the workspace tier; when omitted it falls back to the
  * request context's active organization (#3406 shape).
  */
 export function resolveWorkspaceDefaultAnswerStyle(
   orgId?: string,
-): AnswerStyle | undefined {
+): WorkspaceDefaultAnswerStyle | undefined {
   const effectiveOrgId = orgId ?? getRequestContext()?.user?.activeOrganizationId;
   const raw = getSetting("ATLAS_DEFAULT_ANSWER_STYLE", effectiveOrgId)?.trim();
   // Unset or empty (the admin select stores "" as a legal value) — no house
   // voice configured; the surface default applies.
   if (!raw) return undefined;
-  if (!isAnswerStyle(raw)) {
+  if (!isWorkspaceDefaultAnswerStyle(raw)) {
     const dedupeKey = `${effectiveOrgId ?? "platform"}:${raw}`;
     if (!warnedAnswerStyleDefaults.has(dedupeKey)) {
       log.warn(
         { value: raw, orgId: effectiveOrgId ?? null },
-        `Unrecognized ATLAS_DEFAULT_ANSWER_STYLE value — using the surface default answer style (valid: ${ANSWER_STYLE_NAMES.join(", ")})`,
+        `ATLAS_DEFAULT_ANSWER_STYLE value is not an offered house voice — using the surface default answer style (valid: ${WORKSPACE_DEFAULT_STYLE_OPTIONS.join(", ")})`,
       );
       warnedAnswerStyleDefaults.add(dedupeKey);
     }

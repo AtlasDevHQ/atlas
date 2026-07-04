@@ -163,8 +163,11 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
     // default — the workspace default #4303 when set, else the surface
     // default, DEFAULT_ANSWER_STYLE for web). The guard keeps an unknown DB
     // string (a style retired from the registry, a manual edit) from leaking
-    // into the typed union — it reads as null, i.e. "track the default".
-    answerStyle: isAnswerStyle(r.answer_style) ? r.answer_style : null,
+    // into the typed union — it reads as null, i.e. "track the default",
+    // with a breadcrumb (mirroring the web ingress guard's console.debug):
+    // if a style is ever retired, every conversation pinned to it silently
+    // reverting to the default voice must be diagnosable from logs.
+    answerStyle: readAnswerStyleColumn(r),
     starred: r.starred === true,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
@@ -172,6 +175,34 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
       ? (r.notebook_state as Conversation["notebookState"])
       : null,
   };
+}
+
+// Once-per-value breadcrumb dedupe for unknown persisted answer styles —
+// rowToConversation runs per list row, so a retired style must not log per
+// row. Module-private (NOT exported: a new export here breaks every partial
+// mock of this module). Bounded: values come from the DB column, which only
+// ever held registry names.
+const loggedUnknownAnswerStyles = new Set<string>();
+
+/**
+ * Read the `answer_style` column: NULL stays null (the legal "track the
+ * default" state, no log); an unknown string (a style retired from the
+ * registry, a manual edit) degrades to null WITH a breadcrumb — the server
+ * twin of the web ingress guard's console.debug (`isKnownAnswerStyle`).
+ */
+function readAnswerStyleColumn(r: Record<string, unknown>): AnswerStyle | null {
+  const raw = r.answer_style;
+  if (raw == null) return null;
+  if (isAnswerStyle(raw)) return raw;
+  const key = String(raw);
+  if (!loggedUnknownAnswerStyles.has(key)) {
+    log.debug(
+      { answerStyle: key },
+      "Unknown persisted answer_style — reading as null (track the default)",
+    );
+    loggedUnknownAnswerStyles.add(key);
+  }
+  return null;
 }
 
 /** Type guard — keeps an unknown DB string from leaking into a typed union. */
@@ -442,7 +473,10 @@ export async function updateConversationAnswerStyle(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "updateConversationAnswerStyle failed");
+    log.error(
+      { err: errorMessage(err), conversationId: id },
+      "updateConversationAnswerStyle failed",
+    );
     return { ok: false, reason: "error" };
   }
 }

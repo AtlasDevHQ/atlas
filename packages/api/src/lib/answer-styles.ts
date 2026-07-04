@@ -28,11 +28,13 @@
  * `@useatlas/types` (lifted by #4302) because the style crosses the HTTP
  * boundary on the chat request + conversation record. The workspace default
  * ("house voice", #4303) builds on it too, from the OTHER side: the
- * `ATLAS_DEFAULT_ANSWER_STYLE` settings-registry entry derives its admin
- * options from {@link ANSWER_STYLE_NAMES} (minus `conversational`), and
- * `resolveWorkspaceDefaultAnswerStyle` (lib/agent.ts) validates the stored
- * value with {@link isAnswerStyle} — precedence: explicit style > workspace
- * default > surface default.
+ * `ATLAS_DEFAULT_ANSWER_STYLE` settings-registry entry offers
+ * {@link WORKSPACE_DEFAULT_STYLE_OPTIONS} (the registry minus
+ * {@link NON_HOUSE_VOICE_STYLES}), and `resolveWorkspaceDefaultAnswerStyle`
+ * (lib/agent.ts) validates the stored value with
+ * {@link isWorkspaceDefaultAnswerStyle} at every ingress (admin write AND
+ * env var) — precedence: explicit style > workspace default > surface
+ * default.
  */
 
 import type { AnswerStyle } from "@useatlas/types/conversation";
@@ -94,6 +96,51 @@ export function isAnswerStyle(value: unknown): value is AnswerStyle {
     (ANSWER_STYLE_NAMES as readonly string[]).includes(value)
   );
 }
+
+/**
+ * Styles never offered as the workspace default ("house voice", #4303):
+ * `conversational` is a chat-platform voice — its addendum references Slack
+ * affordances ("Show SQL" / "Tap the button below") that don't exist on
+ * analyst-grade surfaces. This constant is the single statement of that
+ * curation: the settings knob's admin `options` and the resolution-side
+ * guard ({@link isWorkspaceDefaultAnswerStyle}, used by
+ * `resolveWorkspaceDefaultAnswerStyle` in lib/agent.ts) both derive from it,
+ * so the env-var ingress (`ATLAS_DEFAULT_ANSWER_STYLE` set as an env var,
+ * which bypasses the admin write validation) cannot install a non-offered
+ * voice either.
+ */
+export const NON_HOUSE_VOICE_STYLES = [
+  "conversational",
+] as const satisfies readonly AnswerStyle[];
+
+/** An answer style legal as the workspace default ("house voice", #4303). */
+export type WorkspaceDefaultAnswerStyle = Exclude<
+  AnswerStyle,
+  (typeof NON_HOUSE_VOICE_STYLES)[number]
+>;
+
+/**
+ * Guard for the workspace-default ingress points (admin select write, env
+ * var read): a registered style that is also offered as a house voice.
+ */
+export function isWorkspaceDefaultAnswerStyle(
+  value: unknown,
+): value is WorkspaceDefaultAnswerStyle {
+  return (
+    isAnswerStyle(value) &&
+    !(NON_HOUSE_VOICE_STYLES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The styles offered as a workspace default, in registry order — the
+ * `ATLAS_DEFAULT_ANSWER_STYLE` setting's `options` list. Derived (not
+ * hand-listed) so a future registry style is house-voice-eligible by
+ * default; opting one out is an explicit {@link NON_HOUSE_VOICE_STYLES}
+ * entry, never a second list to keep in sync.
+ */
+export const WORKSPACE_DEFAULT_STYLE_OPTIONS: readonly WorkspaceDefaultAnswerStyle[] =
+  ANSWER_STYLE_NAMES.filter(isWorkspaceDefaultAnswerStyle);
 
 const PLAIN_ENGLISH_ADDENDUM = `## Answer style — plain English
 
@@ -172,10 +219,10 @@ const ANSWER_STYLE_ADDENDA: Record<AnswerStyle, string> = {
  * pin that a built system param contains its style's addendum and no other.
  *
  * Fails loud on an out-of-vocabulary value: the type makes that unreachable
- * for in-repo callers, but the style will start crossing validated wire
- * boundaries with #4302, and a route that forgets the {@link isAnswerStyle}
- * guard must surface as an error — never as the literal text "undefined"
- * silently appended to the system prompt.
+ * for in-repo callers, but the style crosses validated wire boundaries
+ * (#4302), and a route that forgets the {@link isAnswerStyle} guard must
+ * surface as an error — never as the literal text "undefined" silently
+ * appended to the system prompt.
  */
 export function resolveAnswerStyleAddendum(style: AnswerStyle): string {
   const addendum = ANSWER_STYLE_ADDENDA[style];

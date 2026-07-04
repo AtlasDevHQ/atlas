@@ -6,6 +6,7 @@ import { parseSuggestions } from "../../lib/helpers";
 import { activityAwaitsUser, partitionTurn, type TurnPart } from "./turn-partitioner";
 import { TurnReceipt } from "./turn-receipt";
 import type { PythonProgressData } from "./python-result-card";
+import type { PreviousExecution } from "../notebook/types";
 
 /**
  * Answer-first rendering of a completed assistant turn (#4298): the activity
@@ -13,14 +14,19 @@ import type { PythonProgressData } from "./python-result-card";
  * most one promoted answer-bearing artifact sits with it. Streaming turns keep
  * the live part-by-part renderer — this component is for finished turns only.
  * The suggestion chips and Save/Share row stay with the caller (they belong to
- * the transcript row, not the turn's parts).
+ * the transcript row, not the turn's parts). Consumed by both the chat
+ * transcript and the notebook cell output (#4301) — the shared seam that keeps
+ * the two surfaces from drifting in formatting.
  */
 export function FinishedTurn({
   parts,
   pythonProgress,
+  previousExecution,
 }: {
   parts: readonly TurnPart[] | undefined;
   pythonProgress?: Map<string, PythonProgressData[]>;
+  /** Notebook rerun-comparison metadata, forwarded to SQL result cards (#4301). */
+  previousExecution?: PreviousExecution;
 }) {
   const { activity, answer, answerBearingArtifact } = partitionTurn(parts);
 
@@ -34,6 +40,7 @@ export function FinishedTurn({
       <TurnReceipt
         activity={activity}
         pythonProgress={pythonProgress}
+        previousExecution={previousExecution}
         // Start expanded when collapsing would hide the turn's substance:
         // (a) no answer and no artifact — the activity IS the turn (e.g. an
         // interrupted stream); (b) the activity holds an interactive card
@@ -59,7 +66,11 @@ export function FinishedTurn({
       })}
       {answerBearingArtifact && (
         <div className="max-w-[95%]" data-testid="answer-artifact">
-          <ToolPart part={answerBearingArtifact.part} pythonProgress={pythonProgress} />
+          <ToolPart
+            part={answerBearingArtifact.part}
+            pythonProgress={pythonProgress}
+            previousExecution={previousExecution}
+          />
         </div>
       )}
     </>

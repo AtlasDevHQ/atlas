@@ -13,6 +13,7 @@ import {
   type ToolTurnPart,
 } from "./turn-partitioner";
 import type { PythonProgressData } from "./python-result-card";
+import type { PreviousExecution } from "../notebook/types";
 
 /**
  * The collapsed receipt a finished turn's activity settles into (#4298):
@@ -27,10 +28,13 @@ import type { PythonProgressData } from "./python-result-card";
 export function TurnReceipt({
   activity,
   pythonProgress,
+  previousExecution,
   defaultOpen = false,
 }: {
   activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[];
   pythonProgress?: Map<string, PythonProgressData[]>;
+  /** Notebook rerun-comparison metadata, forwarded to SQL result cards (#4301). */
+  previousExecution?: PreviousExecution;
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -65,7 +69,14 @@ export function TurnReceipt({
                 </div>
               );
             }
-            return <ToolPart key={index} part={part} pythonProgress={pythonProgress} />;
+            return (
+              <ToolPart
+                key={index}
+                part={part}
+                pythonProgress={pythonProgress}
+                previousExecution={previousExecution}
+              />
+            );
           })}
         </div>
       )}

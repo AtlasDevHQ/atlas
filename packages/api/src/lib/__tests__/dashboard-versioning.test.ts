@@ -24,6 +24,7 @@ import {
   loadDraft,
   forkOrLoadDraft,
   saveDraft,
+  applyEditToDraft,
   discardDraft,
   publishDraft,
   rebaseDraft,
@@ -941,6 +942,78 @@ describe("dashboard-versioning DB helpers", () => {
       setResults({ rows: [] });
       const ok = await saveDraft("u1", "dash-1", snapshot([]));
       expect(ok).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // applyEditToDraft — the single seam every direct-manipulation REST route
+  // funnels through (#4315). Exercises the real fork→apply→save wiring + all
+  // four failure returns (the route tests mock this function out).
+  // -------------------------------------------------------------------------
+
+  describe("applyEditToDraft", () => {
+    it("happy path: forks/loads, applies the change, saves, returns the draft view", async () => {
+      enableInternalDB();
+      const published = dashboardWithCards([card("c1")]);
+      const snap = snapshot([card("c1")]);
+      // forkOrLoadDraft loads the existing row (1 query), then saveDraft UPDATE.
+      setResults({ rows: [draftRow({ draft: snap })] }, { rows: [{ user_id: "u1" }] });
+      const result = await applyEditToDraft("u1", published, {
+        kind: "updateMeta",
+        title: "Renamed in draft",
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.snapshot.title).toBe("Renamed in draft");
+        expect(result.view.title).toBe("Renamed in draft");
+      }
+      // The persisted UPDATE targeted the draft table, never a published one.
+      const sqls = queryCalls.map((q) => q.sql).join("\n");
+      expect(sqls).toContain("UPDATE dashboard_user_drafts");
+      expect(sqls).not.toContain("dashboard_cards");
+    });
+
+    it("returns no_db when the internal DB is not configured", async () => {
+      // DB intentionally NOT enabled.
+      const result = await applyEditToDraft("u1", dashboardWithCards([card("c1")]), {
+        kind: "updateMeta",
+        title: "x",
+      });
+      expect(result).toEqual({ ok: false, reason: "no_db" });
+    });
+
+    it("returns load_failed (not no_db) when the DB is configured but the load throws", async () => {
+      enableInternalDB();
+      queryThrow = new Error("connection reset by peer");
+      const result = await applyEditToDraft("u1", dashboardWithCards([card("c1")]), {
+        kind: "updateMeta",
+        title: "x",
+      });
+      expect(result).toEqual({ ok: false, reason: "load_failed" });
+    });
+
+    it("returns unknown_card when the change targets a card absent from the draft", async () => {
+      enableInternalDB();
+      const snap = snapshot([card("c1")]);
+      setResults({ rows: [draftRow({ draft: snap })] });
+      const result = await applyEditToDraft("u1", dashboardWithCards([card("c1")]), {
+        kind: "updateCard",
+        cardId: "does-not-exist",
+        updates: { title: "nope" },
+      });
+      expect(result).toEqual({ ok: false, reason: "unknown_card", cardId: "does-not-exist" });
+    });
+
+    it("returns save_failed when the persist UPDATE matches no row", async () => {
+      enableInternalDB();
+      const snap = snapshot([card("c1")]);
+      // load returns the row; saveDraft UPDATE returns no rows → false.
+      setResults({ rows: [draftRow({ draft: snap })] }, { rows: [] });
+      const result = await applyEditToDraft("u1", dashboardWithCards([card("c1")]), {
+        kind: "updateMeta",
+        title: "x",
+      });
+      expect(result).toEqual({ ok: false, reason: "save_failed" });
     });
   });
 

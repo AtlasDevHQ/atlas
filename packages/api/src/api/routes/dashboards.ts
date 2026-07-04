@@ -6,6 +6,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { randomUUID } from "node:crypto";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
@@ -43,6 +44,7 @@ import {
   type SharedDashboardFailReason,
 } from "@atlas/api/lib/dashboards";
 import { CHART_TYPES } from "@atlas/api/lib/dashboard-types";
+import type { DashboardCard, DashboardWithCards } from "@atlas/api/lib/dashboard-types";
 import {
   isDashboardDraftsEnabled,
   forkOrLoadDraft,
@@ -51,6 +53,9 @@ import {
   publishDraft,
   rebaseDraft,
   materializeDraftView,
+  applyEditToDraft,
+  type DashboardSnapshotCard,
+  type ApplyEditToDraftResult,
 } from "@atlas/api/lib/dashboard-versioning";
 import {
   stageChange,
@@ -59,7 +64,7 @@ import {
   listStagedChangesForUser,
 } from "@atlas/api/lib/stage-tracker";
 import { SHARE_MODES } from "@useatlas/types/share";
-import { dashboardParametersSchema, renderCardRequestSchema, renderCardQuerySchema, dashboardChartConfigSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
+import { dashboardParametersSchema, renderCardRequestSchema, renderCardQuerySchema, refreshCardQuerySchema, dashboardChartConfigSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
 import {
   resolveDashboardParameterValues,
   extractPlaceholderNames,
@@ -596,6 +601,7 @@ const updateDashboardRoute = createRoute({
     404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -634,6 +640,7 @@ const addCardRoute = createRoute({
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -659,6 +666,7 @@ const updateCardRoute = createRoute({
     404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -681,6 +689,7 @@ const removeCardRoute = createRoute({
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -721,6 +730,7 @@ const refreshCardRoute = createRoute({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
       cardId: z.string().openapi({ param: { name: "cardId", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
     }),
+    query: refreshCardQuerySchema,
   },
   responses: {
     200: { description: "Card refreshed with new data", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -984,6 +994,133 @@ const getSharedDashboardRoute = createRoute({
 
 const authed = createAdminRouter();
 authed.use(requireOrgContext());
+
+// ---------------------------------------------------------------------------
+// Draft-first routing (#4315, ADR-0029)
+//
+// Direct manipulation (rename, add/update/remove card, layout) must land in
+// the caller's per-user DRAFT, never the published tables — publish is the
+// only promotion path. These helpers centralize "does this caller draft?"
+// and the failure→HTTP mapping so every direct-manipulation handler enforces
+// the invariant identically.
+// ---------------------------------------------------------------------------
+
+/**
+ * True when this caller's direct-manipulation edits must route to their
+ * per-user draft instead of the published tables. Requires drafts-on AND a
+ * real user id.
+ *
+ * The `!userId` fall-through to the legacy direct-published write is
+ * DEFENSIVE, not a deliberate open hole: every direct-manipulation route here
+ * is behind `authed` + `requireOrgContext()`, so a caller normally always has
+ * a `user.id`. The only way to reach it with no user is a single-operator
+ * `auth: none` self-host — where there is exactly one operator and no teammate
+ * to leak a live edit to, so writing published directly is safe. This is
+ * intentionally ASYMMETRIC with the bound-tool path (`bound-dashboard.ts`
+ * `maybeApplyToDraft`), which *rejects* the no-user case: the bound editor can
+ * run in a hosted/multi-user context without a userId, so an unattributable
+ * bound edit going live IS the ADR-0029 privacy hole. A flag-off caller (or a
+ * deploy with no internal DB) also keeps the legacy path — there's no draft
+ * store to hold the edit.
+ */
+function shouldRouteToDraft(userId: string | null | undefined): userId is string {
+  return isDashboardDraftsEnabled() && typeof userId === "string" && userId.length > 0;
+}
+
+/** Map an `applyEditToDraft` failure to an HTTP body + status. */
+function draftEditFailResponse(
+  result: Extract<ApplyEditToDraftResult, { ok: false }>,
+  requestId: string,
+): { body: { error: string; message: string; requestId: string }; status: 404 | 500 | 503 } {
+  switch (result.reason) {
+    case "no_db":
+      return {
+        body: {
+          error: "drafts_unavailable",
+          message:
+            "Dashboard edits are saved to your private draft, which needs the internal database. It is not configured on this deployment.",
+          requestId,
+        },
+        status: 503,
+      };
+    case "load_failed":
+      return {
+        body: {
+          error: "internal_error",
+          message: "Could not load your draft (a transient database error). Please retry.",
+          requestId,
+        },
+        status: 500,
+      };
+    case "unknown_card":
+      return {
+        body: {
+          error: "not_found",
+          message: `Card ${result.cardId} was not found in your draft — it may have been removed. Reload and retry.`,
+          requestId,
+        },
+        status: 404,
+      };
+    case "save_failed":
+      return {
+        body: {
+          error: "internal_error",
+          message: "Could not save your draft. Please retry.",
+          requestId,
+        },
+        status: 500,
+      };
+  }
+}
+
+/**
+ * The outcome of resolving which card a draft-aware execution (render /
+ * single-card refresh / CSV export) should run (#4315, ADR-0029). A tagged
+ * union rather than a `DashboardCard | null | sentinel`, so a caller can't
+ * accidentally run the "card was removed in the draft" case as a card (a bare
+ * `if (card)` would treat a string sentinel as truthy) and the render/refresh
+ * `isDraftExec` branch doesn't depend on an implicit null-vs-string ordering.
+ */
+type DraftExecResolution =
+  // The caller is viewing their draft and the card exists there — run this
+  // (its SQL / chartConfig / connectionGroupId are the in-progress edits, not
+  // the last-published definition the caller separately loaded).
+  | { kind: "override"; card: DashboardCard }
+  // No draft override applies — run the published card the caller already
+  // loaded (view=published, flag off, anonymous, or no draft exists).
+  | { kind: "published" }
+  // The caller asked for the draft view and HAS a draft, but the card id isn't
+  // in it (removed in the draft) → the route 404s rather than silently running
+  // the published card under a draft view.
+  | { kind: "not_in_draft" };
+
+/**
+ * Resolve the card a draft-aware execution should run. Reuses
+ * `shouldRouteToDraft` so "is this a drafting caller" has one definition
+ * across the edit and exec paths.
+ */
+async function resolveDraftExecCard(
+  userId: string | null | undefined,
+  view: "published" | "draft" | undefined,
+  published: DashboardWithCards,
+  cardId: string,
+): Promise<DraftExecResolution> {
+  if (view !== "draft" || !shouldRouteToDraft(userId)) return { kind: "published" };
+  // Note: `loadDraft` returns null for BOTH "no draft" and "load threw" (it
+  // logs + swallows). Both resolve to `{ kind: "published" }` here, so the
+  // caller runs the PUBLISHED card exactly as a plain published-view request
+  // would (the render path stays read-only; the refresh path still persists the
+  // published cache — the same write any published refresh does, never a draft
+  // write). The draft-first invariant is safe either way, but a transient
+  // draft-load error will quietly fall back to published under the draft view
+  // rather than surfacing to the user.
+  const draft = await loadDraft(userId, published.id);
+  if (!draft) return { kind: "published" };
+  const card = materializeDraftView(published, draft.snapshot).cards.find(
+    (cd) => cd.id === cardId,
+  );
+  return card ? { kind: "override", card } : { kind: "not_in_draft" };
+}
 
 // Outer app for the authenticated admin routes
 const dashboards = new OpenAPIHono({ defaultHook: validationHook });
@@ -1512,7 +1649,7 @@ authed.openapi(
   async (c) => {
     return runEffect(c, Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId } = yield* AuthContext;
+      const { orgId, user } = yield* AuthContext;
       const { id } = c.req.valid("param");
       if (!UUID_RE.test(id)) {
         return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
@@ -1574,17 +1711,55 @@ authed.openapi(
         }
       }
 
-      // Apply remaining updates (title, description)
-      const { refreshSchedule: _, ...otherUpdates } = parsed;
-      if (Object.keys(otherUpdates).length > 0) {
-        const result = yield* Effect.promise(() => updateDashboard(id, { orgId }, otherUpdates));
+      // Parameters are dashboard-level operational metadata — NOT part of the
+      // per-user draft snapshot (which owns title/description/cards). ADR-0029
+      // keeps share/refresh/parameter metadata on the live row, so apply a
+      // parameter replacement directly (it is workspace-shared config, not a
+      // private content edit).
+      if (parsed.parameters !== undefined) {
+        const result = yield* Effect.promise(() =>
+          updateDashboard(id, { orgId }, { parameters: parsed.parameters }),
+        );
         if (!result.ok) {
           const fail = crudFailResponse(result.reason, requestId);
           return c.json(fail.body, fail.status);
         }
       }
 
-      // Return updated dashboard
+      // Title / description ARE draft content (#4315). Route them to the
+      // caller's private draft when drafts are on — nothing but publish may
+      // write the published title/description. Anonymous / flag-off callers
+      // fall through to the legacy direct-published write.
+      const metaUpdates: { title?: string; description?: string | null } = {};
+      if (parsed.title !== undefined) metaUpdates.title = parsed.title;
+      if (parsed.description !== undefined) metaUpdates.description = parsed.description;
+
+      if (Object.keys(metaUpdates).length > 0) {
+        const uid = user?.id;
+        if (shouldRouteToDraft(uid)) {
+          const published = yield* Effect.promise(() => getDashboard(id, { orgId }));
+          if (!published.ok) {
+            const fail = crudFailResponse(published.reason, requestId);
+            return c.json(fail.body, fail.status);
+          }
+          const edit = yield* Effect.promise(() =>
+            applyEditToDraft(uid, published.data, { kind: "updateMeta", ...metaUpdates }),
+          );
+          if (!edit.ok) {
+            const fail = draftEditFailResponse(edit, requestId);
+            return c.json(fail.body, fail.status);
+          }
+          return c.json(edit.view, 200);
+        }
+        const result = yield* Effect.promise(() => updateDashboard(id, { orgId }, metaUpdates));
+        if (!result.ok) {
+          const fail = crudFailResponse(result.reason, requestId);
+          return c.json(fail.body, fail.status);
+        }
+      }
+
+      // Return updated dashboard (published view — reflects the
+      // parameters/schedule writes above; a draft meta edit returned earlier).
       const updated = yield* Effect.promise(() => getDashboard(id, { orgId }));
       if (!updated.ok) return c.body(null, 204);
       return c.json(updated.data, 200);
@@ -1628,7 +1803,7 @@ authed.openapi(
   async (c) => {
     return runEffect(c, Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId } = yield* AuthContext;
+      const { orgId, user } = yield* AuthContext;
       const { id } = c.req.valid("param");
       if (!UUID_RE.test(id)) {
         return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
@@ -1669,6 +1844,35 @@ authed.openapi(
           );
         }
       }
+      // #4315 — a new card lands in the caller's private draft, not the
+      // published tables. Mint the card id here (as the bound editor does) so
+      // subsequent draft edits/layout in the same session resolve, and stage
+      // it into the draft snapshot. `cachedColumns`/`cachedRows` are a
+      // published-cache concept and are intentionally dropped on the draft
+      // path — a draft card's data comes from a draft-aware render.
+      const uid = user?.id;
+      if (shouldRouteToDraft(uid)) {
+        const draftCard: DashboardSnapshotCard = {
+          id: randomUUID(),
+          position: 0,
+          title: parsed.title,
+          sql: parsed.sql,
+          chartConfig: parsed.chartConfig ?? null,
+          annotations: parsed.annotations ?? [],
+          connectionGroupId: parsed.connectionGroupId ?? null,
+          layout: parsed.layout ?? null,
+        };
+        const edit = yield* Effect.promise(() =>
+          applyEditToDraft(uid, dash.data, { kind: "addCard", card: draftCard }),
+        );
+        if (!edit.ok) {
+          const fail = draftEditFailResponse(edit, requestId);
+          return c.json(fail.body, fail.status);
+        }
+        const created = edit.view.cards.find((cd) => cd.id === draftCard.id);
+        return c.json(created ?? edit.view, 201);
+      }
+
       const result = yield* Effect.promise(() => addCard({
         dashboardId: id,
         title: parsed.title,
@@ -1704,7 +1908,7 @@ authed.openapi(
   async (c) => {
     return runEffect(c, Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId } = yield* AuthContext;
+      const { orgId, user } = yield* AuthContext;
       const { id, cardId } = c.req.valid("param");
       if (!UUID_RE.test(id) || !UUID_RE.test(cardId)) {
         return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
@@ -1718,15 +1922,27 @@ authed.openapi(
       }
 
       const parsed = c.req.valid("json");
+      const uid = user?.id;
+      const routeDraft = shouldRouteToDraft(uid);
+
       // #3207 — if this update turns on autoComparison, validate it against the
       // card's EXISTING sql (updateCard never changes the query) + the
-      // dashboard's params, the same as the add path. getCard is only needed
-      // when the flag is actually being set.
+      // dashboard's params. Source the SQL from the DRAFT when routing to a
+      // draft (the card may only exist in the draft), else the published row.
       if (parsed.chartConfig?.kpi?.autoComparison) {
-        const existing = yield* Effect.promise(() => getCard(cardId, id));
-        if (existing.ok) {
+        let existingSql: string | undefined;
+        if (routeDraft) {
+          const draft = yield* Effect.promise(() => loadDraft(uid, id));
+          existingSql =
+            draft?.snapshot.cards.find((cd) => cd.id === cardId)?.sql ??
+            dash.data.cards.find((cd) => cd.id === cardId)?.sql;
+        } else {
+          const existing = yield* Effect.promise(() => getCard(cardId, id));
+          if (existing.ok) existingSql = existing.data.sql;
+        }
+        if (existingSql !== undefined) {
           const updateAutoErr = validateAutoComparison(
-            existing.data.sql,
+            existingSql,
             parsed.chartConfig.kpi,
             dash.data.parameters,
           );
@@ -1735,6 +1951,21 @@ authed.openapi(
           }
         }
       }
+
+      // #4315 — the edit lands in the caller's private draft; nothing but
+      // publish writes the published card.
+      if (routeDraft) {
+        const edit = yield* Effect.promise(() =>
+          applyEditToDraft(uid, dash.data, { kind: "updateCard", cardId, updates: parsed }),
+        );
+        if (!edit.ok) {
+          const fail = draftEditFailResponse(edit, requestId);
+          return c.json(fail.body, fail.status);
+        }
+        const updated = edit.view.cards.find((cd) => cd.id === cardId);
+        return c.json(updated ?? edit.view, 200);
+      }
+
       const result = yield* Effect.promise(() => updateCard(cardId, id, parsed));
       if (!result.ok) {
         const fail = crudFailResponse(result.reason, requestId);
@@ -1760,7 +1991,7 @@ authed.openapi(
 authed.openapi(removeCardRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { id, cardId } = c.req.valid("param");
     if (!UUID_RE.test(id) || !UUID_RE.test(cardId)) {
       return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
@@ -1770,6 +2001,20 @@ authed.openapi(removeCardRoute, async (c) => {
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
+    }
+
+    // #4315 — removing a card removes it from the caller's private draft; the
+    // published card is untouched until publish promotes the deletion.
+    const uid = user?.id;
+    if (shouldRouteToDraft(uid)) {
+      const edit = yield* Effect.promise(() =>
+        applyEditToDraft(uid, dash.data, { kind: "removeCard", cardId }),
+      );
+      if (!edit.ok) {
+        const fail = draftEditFailResponse(edit, requestId);
+        return c.json(fail.body, fail.status);
+      }
+      return c.body(null, 204);
     }
 
     const result = yield* Effect.promise(() => removeCard(cardId, id));
@@ -1814,11 +2059,12 @@ authed.openapi(previewCardRoute, async (c) => {
 authed.openapi(refreshCardRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { id, cardId } = c.req.valid("param");
     if (!UUID_RE.test(id) || !UUID_RE.test(cardId)) {
       return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
     }
+    const { view } = c.req.valid("query");
 
     const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
     if (!dash.ok) {
@@ -1831,11 +2077,24 @@ authed.openapi(refreshCardRoute, async (c) => {
       return c.json({ error: "not_found", message: "Card not found." }, 404);
     }
 
+    // #4315 — draft-aware execution. When the caller is refreshing while
+    // viewing their draft, run the DRAFT card's SQL/config (its private
+    // working copy), not the published definition. Falls back to published
+    // when no draft exists — never another user's draft.
+    const resolved = yield* Effect.promise(() =>
+      resolveDraftExecCard(user?.id, view, dash.data, cardId),
+    );
+    if (resolved.kind === "not_in_draft") {
+      return c.json({ error: "not_found", message: "Card not found in your draft." }, 404);
+    }
+    const isDraftExec = resolved.kind === "override";
+    const execCard = isDraftExec ? resolved.card : cardResult.data;
+
     // #3138: a text / section-block card has no SQL — there's nothing to
     // refresh. Return it unchanged rather than running it through the query
     // pipeline (which would reject an empty query).
-    if (cardResult.data.kind === "text") {
-      return c.json(cardResult.data, 200);
+    if (execCard.kind === "text") {
+      return c.json(execCard, 200);
     }
 
     // Resolve group-scoped execution. A card pointing at a group with
@@ -1846,7 +2105,7 @@ authed.openapi(refreshCardRoute, async (c) => {
     try {
       resolvedConnectionId = yield* Effect.promise(() =>
         resolveCardConnectionId(
-          { connectionGroupId: cardResult.data.connectionGroupId },
+          { connectionGroupId: execCard.connectionGroupId },
           dash.data.orgId,
         ),
       );
@@ -1884,9 +2143,9 @@ authed.openapi(refreshCardRoute, async (c) => {
     const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
     const outcome = yield* Effect.promise(() =>
       runUserQueryPipeline({
-        sql: cardResult.data.sql,
+        sql: execCard.sql,
         ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
-        explanation: `Dashboard card refresh: ${cardResult.data.title}`,
+        explanation: `Dashboard card refresh: ${execCard.title}`,
         parameters: defaultParamValues,
       }),
     );
@@ -1894,6 +2153,23 @@ authed.openapi(refreshCardRoute, async (c) => {
     if (outcome.kind !== "ok") {
       const { body, status } = userQueryOutcomeToResponse(outcome, requestId);
       return c.json(body as never, status);
+    }
+
+    // #4315 — a draft refresh runs the draft's SQL but MUST NOT persist to the
+    // published card cache: the draft's query is un-published, so writing its
+    // results into the shared cache would leak draft data to teammates and
+    // violate the "only publish writes published" invariant. Return the
+    // freshly-run rows overlaid on the draft card, in-memory.
+    if (isDraftExec) {
+      return c.json(
+        {
+          ...execCard,
+          cachedColumns: outcome.columns,
+          cachedRows: outcome.rows,
+          cachedAt: new Date().toISOString(),
+        },
+        200,
+      );
     }
 
     const refreshResult = yield* Effect.promise(() => refreshCard(cardId, id, {
@@ -1923,12 +2199,12 @@ authed.openapi(refreshCardRoute, async (c) => {
 authed.openapi(renderCardRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { id, cardId } = c.req.valid("param");
     if (!UUID_RE.test(id) || !UUID_RE.test(cardId)) {
       return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
     }
-    const { format } = c.req.valid("query");
+    const { format, view } = c.req.valid("query");
     const asCsv = format === "csv";
     const { parameters: suppliedParameters } = c.req.valid("json");
 
@@ -1943,10 +2219,21 @@ authed.openapi(renderCardRoute, async (c) => {
       return c.json({ error: "not_found", message: "Card not found." }, 404);
     }
 
+    // #4315 — draft-aware execution. When rendering while viewing the draft,
+    // run the DRAFT card's SQL/config (never persisted — render is ephemeral),
+    // else the published definition. Falls back to published when no draft.
+    const resolved = yield* Effect.promise(() =>
+      resolveDraftExecCard(user?.id, view, dash.data, cardId),
+    );
+    if (resolved.kind === "not_in_draft") {
+      return c.json({ error: "not_found", message: "Card not found in your draft." }, 404);
+    }
+    const execCard = resolved.kind === "override" ? resolved.card : cardResult.data;
+
     // #3138: a text card has no query — render returns an empty result set
     // (no parameters bind, no SQL runs). The tile renders its markdown, not
     // this payload.
-    if (cardResult.data.kind === "text") {
+    if (execCard.kind === "text") {
       // #3210 — a text card has no tabular data to export. The UI never offers
       // the affordance on text tiles; reject here too (defence in depth) rather
       // than streaming an empty CSV.
@@ -1980,7 +2267,7 @@ authed.openapi(renderCardRoute, async (c) => {
     try {
       resolvedConnectionId = yield* Effect.promise(() =>
         resolveCardConnectionId(
-          { connectionGroupId: cardResult.data.connectionGroupId },
+          { connectionGroupId: execCard.connectionGroupId },
           dash.data.orgId,
         ),
       );
@@ -2009,7 +2296,7 @@ authed.openapi(renderCardRoute, async (c) => {
     //   - `autoComparison` (#3207): re-run the card's OWN sql with the bound
     //     date window shifted back one period (derived server-side; the prior
     //     window binds through the same parameter protocol).
-    const chartConfig = cardResult.data.chartConfig;
+    const chartConfig = execCard.chartConfig;
     const kpi = chartConfig?.type === "kpi" ? chartConfig.kpi : undefined;
     const comparisonSql = kpi?.comparisonSql;
 
@@ -2020,7 +2307,7 @@ authed.openapi(renderCardRoute, async (c) => {
     if (!comparisonSql && kpi?.autoComparison) {
       const priorValues = derivePriorPeriodValues(paramValues, kpi.comparisonDateParams);
       if (priorValues) {
-        comparisonRunSql = cardResult.data.sql;
+        comparisonRunSql = execCard.sql;
         comparisonParamValues = priorValues;
       } else {
         // No derivable prior window (a bound is missing/unparseable, or the
@@ -2037,9 +2324,9 @@ authed.openapi(renderCardRoute, async (c) => {
     const [outcome, comparisonOutcome] = yield* Effect.promise(() =>
       Promise.all([
         runUserQueryPipeline({
-          sql: cardResult.data.sql,
+          sql: execCard.sql,
           ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
-          explanation: `Dashboard card render: ${cardResult.data.title}`,
+          explanation: `Dashboard card render: ${execCard.title}`,
           parameters: paramValues,
         }),
         // The comparison is isolated with its own `.catch`: `runUserQueryPipeline`
@@ -2052,7 +2339,7 @@ authed.openapi(renderCardRoute, async (c) => {
           ? runUserQueryPipeline({
               sql: comparisonRunSql,
               ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
-              explanation: `Dashboard KPI comparison: ${cardResult.data.title}`,
+              explanation: `Dashboard KPI comparison: ${execCard.title}`,
               parameters: comparisonParamValues,
             }).catch((err) => {
               log.warn(
@@ -2073,7 +2360,7 @@ authed.openapi(renderCardRoute, async (c) => {
     // `{ error, message, requestId }` envelope regardless of `format`.
     if (asCsv && outcome.kind === "ok") {
       const csv = toCsv(outcome.columns, outcome.rows);
-      const filename = csvFilename(cardResult.data.title, new Date());
+      const filename = csvFilename(execCard.title, new Date());
       return new Response(csv, {
         status: 200,
         headers: {

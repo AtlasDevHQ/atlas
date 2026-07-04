@@ -252,29 +252,28 @@ describe("bound-dashboard tools — drafts flag", () => {
       expect(sqls).not.toContain("INSERT INTO dashboard_cards");
     });
 
-    it("addCard without a userId falls back to direct-published (anonymous bound chat)", async () => {
+    // #4315 — the anonymous-bound bypass is CLOSED. With drafts ON, a bound
+    // edit that can't be attributed to a user (no userId) must NOT write to
+    // the published tables — the privacy hole where anonymous edits went
+    // straight live. The tool rejects instead of forking a draft or writing
+    // published.
+    it("addCard without a userId is rejected and never writes published (drafts ON)", async () => {
       enableInternalDB();
-      setResults(
-        { rows: [{ next_pos: 1 }] },
-        {
-          rows: [
-            { ...cardRow, id: "card-new", position: 1, title: "Anon", sql: "SELECT 1" },
-          ],
-        },
-      );
       const tools = createBoundDashboardTools({
         dashboardId: "dash-1",
         orgId: "org-1",
         // userId intentionally omitted.
       });
-      const result = await runTool<{ kind: string }>(tools.addCard, {
+      const result = await runTool<{ kind: string; error?: string }>(tools.addCard, {
         title: "Anon",
         sql: "SELECT 1",
         chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
       });
-      expect(result.kind).toBe("ok");
+      expect(result.kind).toBe("err");
+      expect(result.error).toMatch(/sign/i);
       const sqls = queryCalls.map((c) => c.sql).join("\n");
-      expect(sqls).toContain("INSERT INTO dashboard_cards");
+      // Nothing was written — not to published, not to a draft.
+      expect(sqls).not.toContain("INSERT INTO dashboard_cards");
       expect(sqls).not.toContain("dashboard_user_drafts");
     });
 

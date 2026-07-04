@@ -771,6 +771,54 @@ export async function saveDraft(
   }
 }
 
+export type ApplyEditToDraftResult =
+  | { ok: true; snapshot: DashboardSnapshot; view: DashboardWithCards }
+  // The internal DB is NOT configured on this deployment — drafts are
+  // structurally unavailable (a static condition → 503, not retryable).
+  | { ok: false; reason: "no_db" }
+  // The internal DB IS configured but the fork/load returned null-from-throw
+  // (pool exhaustion, timeout, a jsonb/constraint error, a network blip) — a
+  // TRANSIENT failure the caller should retry (→ 500), distinct from `no_db`.
+  | { ok: false; reason: "load_failed" }
+  | { ok: false; reason: "unknown_card"; cardId: string }
+  | { ok: false; reason: "save_failed" };
+
+/**
+ * Route a single direct-manipulation edit (rename, add/update/remove card,
+ * layout) into the caller's per-user draft (#4315, ADR-0029). Fork-or-load
+ * the draft from `published`, apply `change` to the snapshot, persist it,
+ * and return the materialized draft view.
+ *
+ * This is the ONE seam the direct-manipulation REST routes funnel through,
+ * so the draft-first invariant — "no path writes the published tables
+ * except publish" — is enforced in a single, unit-testable place rather
+ * than re-derived per route. Failure modes are returned as a discriminated
+ * union (never thrown) so the route layer maps them to HTTP without a
+ * `try/catch`.
+ */
+export async function applyEditToDraft(
+  userId: string,
+  published: DashboardWithCards,
+  change: DraftChange,
+): Promise<ApplyEditToDraftResult> {
+  const draftRow = await forkOrLoadDraft(userId, published);
+  if (!draftRow) {
+    // `forkOrLoadDraft` returns null both when the DB is unconfigured AND when
+    // a query threw (it logs + swallows to null). Split the two so on-call
+    // isn't told "not configured on this deployment" for a transient blip.
+    return { ok: false, reason: hasInternalDB() ? "load_failed" : "no_db" };
+  }
+  const applied = applyChangeToDraft(draftRow.snapshot, change);
+  if (!applied.ok) return { ok: false, reason: "unknown_card", cardId: applied.cardId };
+  const saved = await saveDraft(userId, published.id, applied.snapshot);
+  if (!saved) return { ok: false, reason: "save_failed" };
+  return {
+    ok: true,
+    snapshot: applied.snapshot,
+    view: materializeDraftView(published, applied.snapshot),
+  };
+}
+
 /** Discard the user's draft for a dashboard. Idempotent. */
 export async function discardDraft(userId: string, dashboardId: string): Promise<boolean> {
   if (!hasInternalDB()) return false;

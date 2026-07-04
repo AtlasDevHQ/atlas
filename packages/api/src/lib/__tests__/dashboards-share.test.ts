@@ -140,4 +140,63 @@ describe("dashboards sharing — #1737 invariant", () => {
       expect(result).toEqual({ ok: false, reason: "error" });
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Token rotation hygiene (#4317)
+  //
+  // Editing a live share's expiry/visibility must NOT silently mint a new
+  // token — that would break every previously-distributed link. Rotation is
+  // opt-in via `rotate`. The CTE UPDATE preserves the prior token unless
+  // rotate=true or there is no prior token; `rotated` reports whether a live
+  // link was invalidated. (The CASE/CTE SQL itself is exercised against real
+  // Postgres in `dashboards-share-pg.test.ts`; here we pin the JS contract
+  // around the returned rows and the forwarded `rotate` flag, matching the
+  // mock-pool test style.)
+  // -------------------------------------------------------------------------
+
+  describe("shareDashboard() — token rotation (#4317)", () => {
+    it("preserves the existing token when re-sharing without rotate (edit expiry/visibility)", async () => {
+      enableInternalDB();
+      // The CASE kept the prior token because rotate=false and old_token exists.
+      setResults({ rows: [{ share_token: "existing-tok", old_token: "existing-tok" }] });
+
+      const result = await shareDashboard("d1", { orgId: "org-A" }, { expiresIn: "24h", shareMode: "public" });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.token).toBe("existing-tok");
+        expect(result.data.rotated).toBe(false);
+      }
+      // Single CTE UPDATE, and the rotate flag ($4) was forwarded as false.
+      expect(queryCalls).toHaveLength(1);
+      expect(queryCalls[0].sql).toContain("UPDATE dashboards");
+      expect(queryCalls[0].params?.[3]).toBe(false);
+    });
+
+    it("mints a NEW token and flags rotated=true when rotate is explicit", async () => {
+      enableInternalDB();
+      // The CASE applied the freshly-minted candidate token; the prior token
+      // differs, so a live link was invalidated.
+      setResults({ rows: [{ share_token: "brand-new-tok", old_token: "old-tok" }] });
+
+      const result = await shareDashboard("d1", { orgId: "org-A" }, { shareMode: "public", rotate: true });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.token).toBe("brand-new-tok");
+        expect(result.data.rotated).toBe(true);
+      }
+      expect(queryCalls[0].params?.[3]).toBe(true);
+    });
+
+    it("does not flag rotated on a first-time share (no prior token)", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ share_token: "first-tok", old_token: null }] });
+
+      const result = await shareDashboard("d1", { orgId: "org-A" }, { shareMode: "public" });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.token).toBe("first-tok");
+        expect(result.data.rotated).toBe(false);
+      }
+    });
+  });
 });

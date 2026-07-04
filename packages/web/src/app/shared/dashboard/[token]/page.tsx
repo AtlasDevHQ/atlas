@@ -1,46 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button";
-import { getApiBaseUrl, truncate } from "../../lib";
+import { truncate } from "../../lib";
 import { SharedDashboardView } from "./view";
-import type { SharedDashboard } from "./types";
-
-// ---------------------------------------------------------------------------
-// Fetch
-// ---------------------------------------------------------------------------
-
-type FetchResult =
-  | { ok: true; data: SharedDashboard }
-  | { ok: false; reason: "not-found" | "expired" | "auth-required" | "server-error" | "network-error" };
-
-async function fetchSharedDashboard(token: string): Promise<FetchResult> {
-  try {
-    const res = await fetch(
-      `${getApiBaseUrl()}/api/public/dashboards/${encodeURIComponent(token)}`,
-      // No cache — dashboard data may be sensitive; revoked links should be dead immediately
-      { cache: "no-store" },
-    );
-    if (!res.ok) {
-      if (res.status === 404) return { ok: false, reason: "not-found" };
-      if (res.status === 410) return { ok: false, reason: "expired" };
-      if (res.status === 401 || res.status === 403) return { ok: false, reason: "auth-required" };
-      console.error(`[shared-dashboard] API returned ${res.status} for token=${token}`);
-      return { ok: false, reason: "server-error" };
-    }
-    const data = await res.json();
-    if (!data || !data.title) {
-      console.error(`[shared-dashboard] Unexpected response shape for token=${token}`);
-      return { ok: false, reason: "server-error" };
-    }
-    return { ok: true, data: data as SharedDashboard };
-  } catch (err) {
-    console.error(
-      `[shared-dashboard] Failed to fetch token=${token}:`,
-      err instanceof Error ? err.message : err,
-    );
-    return { ok: false, reason: "network-error" };
-  }
-}
+import { fetchSharedDashboard, type FetchResult } from "./fetch";
 
 // ---------------------------------------------------------------------------
 // Metadata (OG tags)

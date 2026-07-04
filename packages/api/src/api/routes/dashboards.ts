@@ -137,6 +137,10 @@ const UpdateCardSchema = z.object({
 const ShareSchema = z.object({
   expiresIn: z.enum(["1h", "24h", "7d", "30d", "never"]).nullable().optional(),
   shareMode: z.enum(SHARE_MODES).optional(),
+  /** Explicit token rotation (#4317). Default false: editing a live share's
+   *  expiry/visibility PRESERVES the token so prior links keep working. Set
+   *  true to mint a new token (prior links die) — the caller must warn first. */
+  rotate: z.boolean().optional(),
 });
 
 /**
@@ -276,7 +280,9 @@ function sharedDashboardFailResponse(reason: SharedDashboardFailReason) {
 // Rate limiting (public endpoint)
 // ---------------------------------------------------------------------------
 
-const PUBLIC_RATE_MAX = 30;
+/** Per-viewer ceiling (requests/min) for the public shared-dashboard surface.
+ *  Exported so tests assert per-viewer bucketing without hardcoding the number. */
+export const PUBLIC_RATE_MAX = 30;
 
 const publicRateLimiter = createPublicRateLimiter({ maxRpm: PUBLIC_RATE_MAX });
 
@@ -804,10 +810,17 @@ const shareDashboardRoute = createRoute({
   path: "/{id}/share",
   tags: ["Dashboards"],
   summary: "Share a dashboard",
-  description: "Generates a share token for public or org-scoped access. Requires admin role.",
+  description:
+    "Generates (or updates) a share token for public or org-scoped access. Requires admin role. " +
+    "Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. " +
+    "An absent/empty body uses safe defaults (public, no rotation); a present-but-invalid body returns 400 and never downgrades the share to public (#4317). " +
+    "`rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
+  // The body is validated in-handler (fail closed → 400) rather than via the
+  // framework's json validator, so a malformed/invalid body returns a 400
+  // (#4317) instead of the generic 422 — and so an org-intended share can
+  // never silently fall through to `shareMode: "public"`.
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
-    body: { content: { "application/json": { schema: ShareSchema } }, required: false },
   },
   responses: {
     200: { description: "Share token generated", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -2536,20 +2549,56 @@ authed.openapi(
         return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
       }
 
-      let parsed: { expiresIn?: string | null; shareMode?: string } = {};
-      try {
-        const body = yield* Effect.promise(() => c.req.json().catch(() => null));
-        if (body) {
-          parsed = ShareSchema.parse(body);
+      // Fail CLOSED on the share config (#4317). The body is optional — an
+      // ABSENT/empty body uses the safe defaults — but a PRESENT-yet-invalid
+      // body must return 400, never fall through to defaults. The old
+      // parse-then-swallow path silently downgraded an org-intended share to
+      // `shareMode: "public"` on any validation error.
+      let parsed: z.infer<typeof ShareSchema> = {};
+      // Read the raw body via tryPromise so a STREAM/READ failure (aborted or
+      // truncated request, encoding error) surfaces on the error channel rather
+      // than becoming a defect. It must NOT be folded into "empty body" — doing
+      // so would let a failed read of `{ shareMode: "org" }` fall through to the
+      // public default. `null` is the read-failure sentinel (`c.req.text()`
+      // always yields a string, so it is unambiguous). Fail closed with 400.
+      const rawBody = yield* Effect.tryPromise({
+        try: () => c.req.text(),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.debug({ requestId, err: err.message }, "Share body read failed — rejecting (fail closed, never downgrade to public)");
+          return Effect.succeed(null);
+        }),
+      );
+      if (rawBody === null) {
+        return c.json({ error: "invalid_request", message: "Could not read the share configuration body. Please retry." }, 400);
+      }
+      if (rawBody.trim().length > 0) {
+        let json: unknown;
+        try {
+          json = JSON.parse(rawBody);
+        } catch (err) {
+          log.debug({ requestId, err: err instanceof Error ? err.message : String(err) }, "Share body is not valid JSON");
+          return c.json({ error: "invalid_request", message: "Share configuration must be valid JSON." }, 400);
         }
-      } catch (err) {
-        // intentionally ignored: body is optional, invalid values fall back to defaults
-        log.debug({ err: err instanceof Error ? err.message : String(err) }, "Share body parse/validation failed, using defaults");
+        const validated = ShareSchema.safeParse(json);
+        if (!validated.success) {
+          log.debug(
+            { requestId, issues: validated.error.issues.map((i) => i.path.join(".")) },
+            "Share body failed validation — rejecting (fail closed, never downgrade to public)",
+          );
+          return c.json(
+            { error: "invalid_request", message: "Invalid share configuration. Check the expiresIn, shareMode, and rotate values." },
+            400,
+          );
+        }
+        parsed = validated.data;
       }
 
       const result = yield* Effect.promise(() => shareDashboard(id, { orgId }, {
-        expiresIn: (parsed.expiresIn as "1h" | "24h" | "7d" | "30d" | "never" | null) ?? null,
-        shareMode: (parsed.shareMode as "public" | "org") ?? "public",
+        expiresIn: parsed.expiresIn ?? null,
+        shareMode: parsed.shareMode ?? "public",
+        rotate: parsed.rotate ?? false,
       }));
 
       if (!result.ok) {
@@ -3075,6 +3124,12 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
     return c.json({ error: "not_available", message: "Sharing is not available." }, 404);
   }
 
+  // Key the limiter on the REAL viewer's IP, not the web-server IP (#4317).
+  // The shared page is server-rendered, so its RSC fetch reaches us from the
+  // web tier — it forwards the viewer's `x-forwarded-for`. When ATLAS_TRUST_PROXY
+  // is set, `getClientIP` resolves that to the viewer, giving each viewer its
+  // own bucket; when it is unset, `getClientIP` returns null and all viewers
+  // fall back to the single anonymous ceiling (see F-73 below).
   const ip = getClientIP(c.req.raw);
   if (!publicRateLimiter.check(ip)) {
     // F-73: anonymous=true means the request landed in the shared

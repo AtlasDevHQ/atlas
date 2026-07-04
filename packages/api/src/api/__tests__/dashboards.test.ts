@@ -221,8 +221,8 @@ const mockRefreshCard = mock((): Promise<unknown> =>
 const mockGetCard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: true, data: mockCardData }),
 );
-const mockShareDashboard = mock((): Promise<unknown> =>
-  Promise.resolve({ ok: true, data: { token: "share-token-123", expiresAt: null, shareMode: "public" } }),
+const mockShareDashboard = mock((..._args: unknown[]): Promise<unknown> =>
+  Promise.resolve({ ok: true, data: { token: "share-token-123", expiresAt: null, shareMode: "public", rotated: false } }),
 );
 const mockUnshareDashboard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: true }),
@@ -505,7 +505,7 @@ mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
 const { app } = await import("../index");
 // Reset the public-share rate limiter between tests so the new shared
 // anonymous-bucket ceiling (F-73) does not exhaust across the suite.
-const { _resetDashboardRateLimit } = await import("../routes/dashboards");
+const { _resetDashboardRateLimit, PUBLIC_RATE_MAX } = await import("../routes/dashboards");
 
 describe("dashboard routes", () => {
   const origDatabaseUrl = process.env.DATABASE_URL;
@@ -559,7 +559,7 @@ describe("dashboard routes", () => {
     mockLoadDraft.mockReset();
     mockLoadDraft.mockResolvedValue(null);
     mockShareDashboard.mockReset();
-    mockShareDashboard.mockResolvedValue({ ok: true, data: { token: "share-token-123", expiresAt: null, shareMode: "public" } });
+    mockShareDashboard.mockResolvedValue({ ok: true, data: { token: "share-token-123", expiresAt: null, shareMode: "public", rotated: false } });
     mockUnshareDashboard.mockReset();
     mockUnshareDashboard.mockResolvedValue({ ok: true });
     mockGetShareStatus.mockReset();
@@ -1862,6 +1862,104 @@ describe("dashboard routes", () => {
       expect(body.error).toBe("invalid_request");
       expect(body.message).toContain("no organization");
     });
+
+    // -----------------------------------------------------------------------
+    // Fail-closed on share config (#4317)
+    //
+    // A PRESENT-yet-invalid body must return 400 and NEVER fall through to the
+    // safe defaults — the old parse-then-swallow path silently downgraded an
+    // org-intended share to `shareMode: "public"`. The load-bearing assertion
+    // is that `shareDashboard` is never reached on an invalid body, so no
+    // downgraded share can be written.
+    // -----------------------------------------------------------------------
+
+    it("returns 400 and never shares when the body is malformed JSON (#4317)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{ this is not json",
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("invalid_request");
+      expect(mockShareDashboard).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 for an invalid shareMode and never downgrades to public (#4317)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "everyone" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("invalid_request");
+      // Critical: the invalid body must NOT reach shareDashboard — if it did,
+      // the org-intended share would be written as public.
+      expect(mockShareDashboard).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 for an invalid expiresIn and never shares (#4317)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "org", expiresIn: "forever" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(mockShareDashboard).not.toHaveBeenCalled();
+    });
+
+    it("uses safe defaults for an empty body and forwards rotate=false (#4317)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockShareDashboard).toHaveBeenCalledTimes(1);
+      const opts = mockShareDashboard.mock.calls[0]?.[2] as { rotate?: boolean } | undefined;
+      expect(opts?.rotate).toBe(false);
+    });
+
+    it("forwards an explicit rotate=true to shareDashboard (#4317)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "public", rotate: true }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const opts = mockShareDashboard.mock.calls[0]?.[2] as { rotate?: boolean } | undefined;
+      expect(opts?.rotate).toBe(true);
+    });
+
+    // Positive control for the accept path: a VALID org body must reach
+    // shareDashboard with shareMode:"org" — proving the org intent is preserved
+    // end-to-end, not just that invalid bodies are rejected (#4317).
+    it("forwards a valid shareMode=org to shareDashboard (never dropped to public) (#4317)", async () => {
+      mockShareDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: { token: "org-share-tok", expiresAt: null, shareMode: "org", rotated: false },
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "org", expiresIn: "24h" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const opts = mockShareDashboard.mock.calls[0]?.[2] as { shareMode?: string; expiresIn?: string | null } | undefined;
+      expect(opts?.shareMode).toBe("org");
+      expect(opts?.expiresIn).toBe("24h");
+    });
   });
 
   describe("DELETE /api/v1/dashboards/:id/share", () => {
@@ -1954,6 +2052,43 @@ describe("dashboard routes", () => {
         new Request("http://localhost/api/public/dashboards/short"),
       );
       expect(response.status).toBe(404);
+    });
+
+    // -----------------------------------------------------------------------
+    // Rate-limit per real viewer identity (#4317)
+    //
+    // The shared page is server-rendered and forwards the viewer's
+    // x-forwarded-for, so `getClientIP` resolves the real viewer. Each viewer
+    // must get its OWN bucket — exhausting one viewer must not rate-limit a
+    // different viewer (the pre-fix bug collapsed every viewer into the single
+    // web-server-IP bucket).
+    // -----------------------------------------------------------------------
+
+    it("rate-limits per real viewer identity, not one shared bucket (#4317)", async () => {
+      // Resolve the viewer from the forwarded header, mirroring getClientIP
+      // when ATLAS_TRUST_PROXY is set.
+      mockGetClientIP.mockImplementation((req: Request) => req.headers.get("x-forwarded-for"));
+
+      const hitAsViewer = (viewer: string) =>
+        app.fetch(
+          new Request("http://localhost/api/public/dashboards/abc123def456ghi789jkl", {
+            headers: { "x-forwarded-for": viewer },
+          }),
+        );
+
+      // PUBLIC_RATE_MAX requests / viewer / minute — the (MAX+1)th for viewer-A
+      // trips the limiter (requests below the ceiling fall through to the
+      // not_found default → 404, never 429).
+      let lastStatus = 0;
+      for (let i = 0; i < PUBLIC_RATE_MAX + 1; i++) {
+        lastStatus = (await hitAsViewer("viewer-a")).status;
+      }
+      expect(lastStatus).toBe(429);
+
+      // A DIFFERENT viewer is unaffected — the bucket keys on the viewer, not a
+      // single shared web-server bucket.
+      const viewerB = await hitAsViewer("viewer-b");
+      expect(viewerB.status).not.toBe(429);
     });
 
     // -----------------------------------------------------------------------

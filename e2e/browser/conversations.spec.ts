@@ -28,8 +28,14 @@ test.describe("Conversations @llm", () => {
     // Click "+ New"
     await startNewChat(page);
 
-    // Starter prompts should be visible again (empty state)
-    await expect(page.locator("text=What would you like to know?")).toBeVisible({ timeout: 5_000 });
+    // The empty state should be visible again. Located by testid: the
+    // empty-state heading now shares the "Ask your data anything" phrasing
+    // with the standalone header tagline (#4297), so a bare text locator
+    // would be ambiguous on standalone (non-embedded) surfaces. The copy
+    // containment below is deliberate — it pins the #4297 phrasing
+    // unification; only the element LOOKUP is copy-independent.
+    await expect(page.getByTestId("chat-empty-state")).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("chat-empty-state")).toContainText("Ask your data anything");
   });
 
   test("clicking a previous conversation reloads its messages", async ({ page }) => {

@@ -91,9 +91,10 @@ function ChatPage() {
 
   // A failed `/api/health` probe means the API is unreachable / misconfigured.
   // Surface the actionable error + a Retry instead of rendering an
-  // apparently-working chat wired to a dead backend — in `embedded` mode
-  // `<AtlasChat>` only renders `healthWarning` as a faint inline hint, far too
-  // subtle for a hard failure. Restores the pre-#3081 inline page's health gate.
+  // apparently-working chat wired to a dead backend. `<AtlasChat>` renders its
+  // own `healthWarning` banner (#4297), but only inside an otherwise-live chat
+  // surface — this page-level gate replaces the whole surface with a Retry
+  // before that chat mounts. Restores the pre-#3081 inline page's health gate.
   if (healthWarning) {
     return (
       <div className="flex h-full items-center justify-center p-8">

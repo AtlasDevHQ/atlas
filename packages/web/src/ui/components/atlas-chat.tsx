@@ -13,7 +13,12 @@ import { useAtlasTransport } from "../hooks/use-atlas-transport";
 import { useConversations, transformMessages } from "../hooks/use-conversations";
 import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
 import { ChatComposer } from "./chat/chat-composer";
-import { ErrorBanner } from "./chat/error-banner";
+import {
+  ErrorBanner,
+  ActionErrorBanner,
+  clearFailureOfKind,
+  type StoredActionFailure,
+} from "./chat/error-banner";
 import { ContextWarningBanner } from "./chat/context-warning-banner";
 import { ResumeBanner } from "./chat/resume-banner";
 import { useRunStatus } from "../hooks/use-run-status";
@@ -53,6 +58,7 @@ import { PromptLibrary } from "./chat/prompt-library";
 import { StarterPromptList } from "./chat/starter-prompt-list";
 import type { StarterPrompt } from "@useatlas/types/starter-prompt";
 import { useContextWarnings } from "../hooks/use-context-warnings";
+import { useTransientNotice } from "../hooks/use-transient-notice";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { parseSuggestions } from "../lib/helpers";
@@ -200,7 +206,15 @@ export function AtlasChat({
   // "the active turn". The resume endpoint loads the latest non-terminal run by
   // conversation id, so this value is NOT used to target a resume.
   const runIdRef = useRef<string | null>(null);
-  const [transientWarning, setTransientWarning] = useState("");
+  // #4297 — real failures (send / load / pin / unpin / resume) surface as a
+  // persistent structured banner (`ActionErrorBanner`): visible until retried,
+  // superseded by a newer user action (including "+ New"), or explicitly
+  // dismissed. Machine-initiated paths (auto-resume) clear only their own
+  // `kind`, so they can't erase a failure the user hasn't seen. Genuinely
+  // informational transients (pin success / already-pinned) go through
+  // `useTransientNotice` — successes may whisper; failures must not.
+  const [actionFailure, setActionFailure] = useState<StoredActionFailure | null>(null);
+  const { notice: transientNotice, showNotice: showTransientNotice } = useTransientNotice();
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
   const setMobileSidebarOpen = useUiStore((s) => s.setMobileSidebarOpen);
@@ -210,7 +224,7 @@ export function AtlasChat({
   const setPromptLibraryOpen = useUiStore((s) => s.setPromptLibraryOpen);
   // Tracks the message text being pinned so the affordance disables
   // mid-flight — without this, a quick double-click fires two POSTs and
-  // the second 409s after a visible success toast.
+  // the second 409s right after a visible success notice.
   const [pinningText, setPinningText] = useState<string | null>(null);
   const [relatedSuggestions, setRelatedSuggestions] = useState<QuerySuggestion[]>([]);
   // #2345 / #4189 — the conversation's env/member/REST/reach scope lives in the
@@ -483,9 +497,25 @@ export function AtlasChat({
     refetchRunStatus: runStatusCtl.refetch,
     isLoading,
     resetPendingWarnings: warningCtl.resetPending,
-    onError: (message) => {
-      setTransientWarning(message);
-      setTimeout(() => setTransientWarning(""), 5000);
+    // #4297 — fires only when a resume actually begins (after the hook's
+    // re-entrancy guard), so a guarded no-op click can never erase the banner
+    // without retrying. Kind-scoped because auto-resume is machine-initiated:
+    // it must not clear an unrelated failure the user hasn't seen.
+    onStart: () => {
+      setActionFailure(clearFailureOfKind("resume"));
+    },
+    onError: (message, detail) => {
+      // #4297 — a failed resume is a real failure: persistent banner, not a
+      // fading whisper. Retry through the ref — this callback is constructed
+      // before `handleResume` exists (same seam as `handleParkedResolved`).
+      setActionFailure({
+        kind: "resume",
+        title: message,
+        detail,
+        retry: () => {
+          handleResumeRef.current();
+        },
+      });
     },
   });
   // #4294 — the Stop control's orchestration lives in `useStopHandler`
@@ -582,6 +612,8 @@ export function AtlasChat({
 
   async function handlePin(text: string) {
     if (!text.trim()) return;
+    // A fresh attempt supersedes any earlier failure banner (#4297).
+    setActionFailure(null);
     setPinningText(text);
     try {
       const res = await fetch(`${apiUrl}/api/v1/starter-prompts/favorites`, {
@@ -591,7 +623,10 @@ export function AtlasChat({
         body: JSON.stringify({ text }),
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as {
+        const body = (await res
+          .json()
+          // intentionally ignored: non-JSON error body — status/statusText logged below
+          .catch(() => ({}))) as {
           error?: string;
           message?: string;
           requestId?: string;
@@ -602,14 +637,30 @@ export function AtlasChat({
           // the authoritative list.
           console.warn("pin duplicate:", body.requestId);
           await queryClient.invalidateQueries({ queryKey: starterPromptsQueryKey });
-          setTransientWarning("Already pinned — it'll show up in a new chat.");
-          setTimeout(() => setTransientWarning(""), 4000);
+          showTransientNotice("Already pinned — it'll show up in a new chat.", 4000);
           return;
         }
-        const msg = body.message ?? "Failed to pin starter prompt.";
-        console.warn("pin failed:", res.status, res.statusText, body.requestId, msg);
-        setTransientWarning(msg);
-        setTimeout(() => setTransientWarning(""), 5000);
+        // Narrow at the seam: the cast above is unvalidated, and these values
+        // render as JSX outside the transcript's ErrorBoundary — a non-string
+        // (proxy error page, envelope drift) must not take down the surface.
+        const detail = typeof body.message === "string" ? body.message : undefined;
+        const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
+        console.warn(
+          "pin failed:",
+          res.status,
+          res.statusText,
+          requestId ?? "(no requestId — non-JSON body)",
+          detail,
+        );
+        setActionFailure({
+          kind: "pin",
+          title: "Couldn't pin starter prompt",
+          detail,
+          requestId,
+          retry: () => {
+            void handlePin(text);
+          },
+        });
         return;
       }
       const body = (await res.json()) as {
@@ -630,13 +681,17 @@ export function AtlasChat({
           ...base.filter((p) => !(p.provenance === "favorite" && p.text === body.favorite.text)),
         ];
       });
-      setTransientWarning("Pinned as starter prompt.");
-      setTimeout(() => setTransientWarning(""), 3000);
+      showTransientNotice("Pinned as starter prompt.", 3000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("pin request failed:", msg);
-      setTransientWarning("Failed to pin starter prompt.");
-      setTimeout(() => setTransientWarning(""), 5000);
+      setActionFailure({
+        kind: "pin",
+        title: "Couldn't pin starter prompt",
+        retry: () => {
+          void handlePin(text);
+        },
+      });
     } finally {
       setPinningText(null);
     }
@@ -649,6 +704,8 @@ export function AtlasChat({
     const raw = favoriteId.startsWith("favorite:")
       ? favoriteId.slice("favorite:".length)
       : favoriteId;
+    // A fresh attempt supersedes any earlier failure banner (#4297).
+    setActionFailure(null);
     try {
       const res = await fetch(
         `${apiUrl}/api/v1/starter-prompts/favorites/${encodeURIComponent(raw)}`,
@@ -660,15 +717,32 @@ export function AtlasChat({
       );
       if (!res.ok && res.status !== 404) {
         // 404 is fine — the pin is gone either way.
-        const body = (await res.json().catch(() => ({}))) as { requestId?: string };
+        const body = (await res
+          .json()
+          // intentionally ignored: non-JSON error body — status/statusText logged below
+          .catch(() => ({}))) as {
+          requestId?: string;
+          message?: string;
+        };
+        // Same seam-narrowing as the pin path — see the comment there.
+        const detail = typeof body.message === "string" ? body.message : undefined;
+        const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
         console.warn(
           "unpin failed:",
           res.status,
           res.statusText,
-          body.requestId ?? "(no requestId — non-JSON body)",
+          requestId ?? "(no requestId — non-JSON body)",
+          detail,
         );
-        setTransientWarning("Failed to unpin starter prompt.");
-        setTimeout(() => setTransientWarning(""), 5000);
+        setActionFailure({
+          kind: "unpin",
+          title: "Couldn't unpin starter prompt",
+          detail,
+          requestId,
+          retry: () => {
+            void handleUnpin(favoriteId);
+          },
+        });
         return;
       }
       queryClient.setQueryData<StarterPrompt[]>(starterPromptsQueryKey, (prev) =>
@@ -677,8 +751,13 @@ export function AtlasChat({
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("unpin request failed:", msg);
-      setTransientWarning("Failed to unpin starter prompt.");
-      setTimeout(() => setTransientWarning(""), 5000);
+      setActionFailure({
+        kind: "unpin",
+        title: "Couldn't unpin starter prompt",
+        retry: () => {
+          void handleUnpin(favoriteId);
+        },
+      });
     }
   }
 
@@ -689,6 +768,13 @@ export function AtlasChat({
     // conversation or be clobbered when the in-flight load commits. The composer
     // is disabled too; this also guards the chip / starter-prompt send paths.
     if (loadingConversation) return;
+    // #4297 — the composer is stream-disabled, but the failure banner's
+    // "Try again" is not: a retry clicked mid-stream must not erase the
+    // banner, null the live run's id (degrading Stop to client-only), or
+    // race a second stream. Guard BEFORE the clear, like every other path.
+    if (isLoading) return;
+    // A fresh attempt supersedes any earlier failure banner (#4297).
+    setActionFailure(null);
     const saved = text;
     setInput("");
     // Drop any unattached warnings from a stalled earlier turn so they
@@ -701,10 +787,25 @@ export function AtlasChat({
     sendMessage({ text: saved }).catch((err: unknown) => {
       console.error("Failed to send message:", err instanceof Error ? err.message : String(err));
       setInput(saved);
-      setTransientWarning("Failed to send message. Please try again.");
-      setTimeout(() => setTransientWarning(""), 5000);
+      setActionFailure({
+        kind: "send",
+        title: "Message failed to send",
+        detail: "Your message was put back in the composer.",
+        // Safe only while the draft is untouched: editing the restored text
+        // clears this failure (see the composer's onValueChange), so a stale
+        // "Try again" can never clobber an edit with the original text.
+        // Through the ref so the retry evaluates the CURRENT render's guards —
+        // a closure-captured handleSend would freeze isLoading /
+        // loadingConversation at the failing render's (false) values, making
+        // the guards above no-ops on exactly this path.
+        retry: () => handleSendRef.current(saved),
+      });
     });
   }
+  // Latest-value ref for the banner retry above — the same render-phase
+  // assignment pattern as handleSelectConversationRef below.
+  const handleSendRef = useRef(handleSend);
+  handleSendRef.current = handleSend;
 
   function handleSuggestionSelect(text: string, id: string) {
     fetch(`${apiUrl}/api/v1/suggestions/${id}/click`, {
@@ -729,6 +830,8 @@ export function AtlasChat({
     // in-flight load settles (`loadingConversation` is one of its deps), and the
     // stale check below stops that in-flight load from committing over this one.
     if (loadingConversation) return;
+    // A fresh attempt supersedes any earlier failure banner (#4297).
+    setActionFailure(null);
     // Mark bound for the open effect's dedup once we actually begin loading: a
     // redundant dispatch is then a no-op, and a load that fails below isn't
     // retried on every render.
@@ -778,8 +881,15 @@ export function AtlasChat({
       warningCtl.reset();
     } catch (err: unknown) {
       console.warn("Failed to load conversation:", err instanceof Error ? err.message : String(err));
-      setTransientWarning("Failed to load conversation. Please try again.");
-      setTimeout(() => setTransientWarning(""), 5000);
+      setActionFailure({
+        kind: "load",
+        title: "Couldn't load the conversation",
+        // Retry through the ref so a later attempt uses the freshest handler
+        // (this closure would otherwise pin the env groups it saw at failure).
+        retry: () => {
+          void handleSelectConversationRef.current(id);
+        },
+      });
       // #3068 — the open failed and never committed. Reset the dedup ref to the
       // still-mounted conversation so the failed id isn't treated as loaded. If
       // no newer navigation superseded this attempt, roll the URL + requested id
@@ -799,6 +909,9 @@ export function AtlasChat({
 
   function handleNewChat() {
     setMessages([]);
+    // #4297 — a fresh chat supersedes any failure banner (e.g. a "Couldn't
+    // load the conversation" whose retry targets the just-abandoned id).
+    setActionFailure(null);
     // #3068 — clear the bound + most-recently-requested refs and the URL
     // (`?id=`) so the open effect re-seeds a fresh chat instead of treating the
     // just-left conversation as still loaded. Clearing the requested ref also
@@ -1033,8 +1146,35 @@ export function AtlasChat({
             </header>
             )}
 
-            {(healthWarning || transientWarning || convos.fetchError) && (
-              <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">{healthWarning || transientWarning || convos.fetchError}</p>
+            {/* #4297 — the quiet line is for informational transients ONLY
+                (pin success / already-pinned). Failures render as structured
+                banners and never auto-dismiss unseen. */}
+            {transientNotice && (
+              <p role="status" className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
+                {transientNotice}
+              </p>
+            )}
+            {healthWarning && (
+              <ActionErrorBanner
+                failure={{ title: "Connection problem", detail: healthWarning }}
+              />
+            )}
+            {convos.fetchError && (
+              <ActionErrorBanner
+                failure={{
+                  title: "Couldn't load conversation history",
+                  detail: convos.fetchError,
+                  retry: () => {
+                    convos.fetchList().catch((err: unknown) => {
+                      // The failure re-surfaces via `convos.fetchError`; log for correlation.
+                      console.warn(
+                        "Conversation list refetch failed:",
+                        err instanceof Error ? err.message : String(err),
+                      );
+                    });
+                  },
+                }}
+              />
             )}
 
             {isManaged && !isSignedIn ? (
@@ -1067,13 +1207,19 @@ export function AtlasChat({
                     ) : showDevChatEmpty ? (
                       <DeveloperChatEmptyState />
                     ) : (
-                    <div className="flex h-full flex-col items-center justify-center gap-6">
+                    <div
+                      className="flex h-full flex-col items-center justify-center gap-6"
+                      data-testid="chat-empty-state"
+                    >
+                      {/* #4297 — one value proposition across the surface: this
+                          heading and the standalone header tagline share the
+                          brand phrasing (www hero / metadata) verbatim. */}
                       <div className="text-center">
                         <p className="text-lg font-medium text-zinc-500 dark:text-zinc-400">
-                          What would you like to know?
+                          Ask your data anything
                         </p>
                         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-500">
-                          Ask a question about your data to get started
+                          Start with a question about your data
                         </p>
                       </div>
                       <StarterPromptList
@@ -1250,6 +1396,19 @@ export function AtlasChat({
                 </ErrorBoundary>
                 </ScrollArea>
 
+                {/* #4297 — failed action (send / load / pin / unpin / resume).
+                    Composer-adjacent so it sits where the user is looking
+                    after acting; persistent until retried, superseded, or
+                    dismissed. Distinct from the ErrorBanner below, which owns
+                    errors from the chat turn itself (request + stream failures
+                    surfaced by useChat). */}
+                {actionFailure && (
+                  <ActionErrorBanner
+                    failure={actionFailure}
+                    onDismiss={() => setActionFailure(null)}
+                  />
+                )}
+
                 {error && (
                   <ErrorBanner
                     error={error}
@@ -1289,7 +1448,15 @@ export function AtlasChat({
                 {!(showDataSetupGate && messages.length === 0) && (
                   <ChatComposer
                     value={input}
-                    onValueChange={setInput}
+                    onValueChange={(v) => {
+                      setInput(v);
+                      // #4297 — editing the restored draft makes the composer
+                      // the retry vehicle; clearing here keeps the banner's
+                      // stale "Try again" (which resends the ORIGINAL text)
+                      // from clobbering the edit. Send-kind only — typing must
+                      // not dismiss an unrelated pin/load/resume failure.
+                      setActionFailure(clearFailureOfKind("send"));
+                    }}
                     onSend={handleSend}
                     streaming={isLoading}
                     loadingConversation={loadingConversation}

@@ -204,9 +204,11 @@ describe("runMigrations", () => {
     //   #4206) = 164.
     //   Plus 0164 (knowledge_sync_credentials + knowledge_sync_state for the
     //   bundle-sync knowledge collections, ADR-0028 §5 follow-up, #4211) = 165.
-    //   Plus 0165 (conversations.answer_style — per-conversation answer-style
-    //   picker, PRD #4292, #4302) = 166.
-    expect(count).toBe(166);
+    //   Plus 0165 (dashboards.first_published_at one-way visibility marker for
+    //   the first-publish gate, #4320) = 166.
+    //   Plus 0166 (conversations.answer_style — per-conversation answer-style
+    //   picker, PRD #4292, #4302) = 167.
+    expect(count).toBe(167);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -400,7 +402,8 @@ describe("runMigrations", () => {
         "0162_knowledge_documents.sql",
         "0163_knowledge_links.sql",
         "0164_knowledge_bundle_sync.sql",
-        "0165_conversations_answer_style.sql",
+        "0165_dashboard_first_published_at.sql",
+        "0166_conversations_answer_style.sql",
       ],
     });
 

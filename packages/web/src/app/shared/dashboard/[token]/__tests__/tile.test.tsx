@@ -18,7 +18,6 @@ const textCard: SharedCard = {
   id: "t1",
   title: "Top of funnel",
   kind: "text",
-  sql: "",
   chartConfig: null,
   content: "## Top of funnel\n\nLeads entering the pipeline.",
   annotations: [],

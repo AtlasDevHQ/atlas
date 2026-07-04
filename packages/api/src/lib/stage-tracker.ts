@@ -367,7 +367,12 @@ export async function acceptStagedChange(opts: {
   // pending → applied. Run the draft mutation + the status flip in a
   // single transaction so a draft write that fails leaves the stage
   // pending (and vice versa).
-  const dash = await getDashboard(row.dashboardId, { orgId: opts.orgId ?? undefined });
+  // #4320 — the acting user's id gates never-published boards: staging edits
+  // resolve only for a board the caller can read (their own, or org-published).
+  const dash = await getDashboard(row.dashboardId, {
+    orgId: opts.orgId ?? undefined,
+    viewerId: opts.userId ?? undefined,
+  });
   if (!dash.ok) {
     return { ok: false, reason: "not_found" };
   }

@@ -95,4 +95,83 @@ describe("useResumeHandler (#3749)", () => {
     });
     expect(opts.regenerate).not.toHaveBeenCalled();
   });
+
+  // #4297 — onStart is the caller's supersede seam for its failure banner: it
+  // must fire exactly when a resume actually begins, and NEVER on a guarded
+  // no-op call (otherwise a click could erase the banner without retrying).
+  test("onStart fires when a resume actually begins", async () => {
+    const onStart = mock(() => {});
+    const opts = makeOpts({ onStart });
+    const { result } = renderHook(() => useResumeHandler(opts));
+    await act(async () => {
+      result.current.resume();
+    });
+    expect(onStart).toHaveBeenCalledTimes(1);
+  });
+
+  test("onStart does NOT fire on a guarded no-op call (isLoading)", async () => {
+    const onStart = mock(() => {});
+    const opts = makeOpts({ onStart, isLoading: true });
+    const { result } = renderHook(() => useResumeHandler(opts));
+    await act(async () => {
+      result.current.resume();
+    });
+    expect(onStart).not.toHaveBeenCalled();
+    expect(opts.regenerate).not.toHaveBeenCalled();
+  });
+
+  test("onStart does NOT fire on a re-entrant call while a resume is in flight", async () => {
+    let resolveFirst: () => void = () => {};
+    const regenerate = mock(
+      () => new Promise<void>((res) => { resolveFirst = res; }),
+    );
+    const onStart = mock(() => {});
+    const opts = makeOpts({ regenerate, onStart });
+    const { result } = renderHook(() => useResumeHandler(opts));
+
+    await act(async () => {
+      result.current.resume();
+    });
+    await act(async () => {
+      result.current.resume();
+    });
+    // One real start, one guarded no-op — the supersede seam fired exactly once.
+    expect(onStart).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirst();
+    });
+    await waitFor(() => expect(result.current.resuming).toBe(false));
+  });
+
+  test("onStart fires before onError on a failed resume (clear-then-report ordering)", async () => {
+    const order: string[] = [];
+    const opts = makeOpts({
+      regenerate: mock(() => Promise.reject(new Error("boom"))),
+      onStart: mock(() => {
+        order.push("onStart");
+      }),
+      onError: mock(() => {
+        order.push("onError");
+      }),
+    });
+    const { result } = renderHook(() => useResumeHandler(opts));
+    await act(async () => {
+      result.current.resume();
+    });
+    await waitFor(() => expect(order).toEqual(["onStart", "onError"]));
+  });
+
+  test("onError receives the narrowed underlying error as detail (#4297)", async () => {
+    const opts = makeOpts({ regenerate: mock(() => Promise.reject(new Error("socket hang up"))) });
+    const { result } = renderHook(() => useResumeHandler(opts));
+    await act(async () => {
+      result.current.resume();
+    });
+    await waitFor(() => expect(opts.onError).toHaveBeenCalledTimes(1));
+    expect(opts.onError.mock.calls[0]).toEqual([
+      "Failed to resume the interrupted turn. Please try again.",
+      "socket hang up",
+    ]);
+  });
 });

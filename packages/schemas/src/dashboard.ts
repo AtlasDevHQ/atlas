@@ -18,7 +18,7 @@
  * NEVER interpolated into SQL text.
  */
 import { z } from "zod";
-import { CHART_TYPES } from "@useatlas/types";
+import { CHART_TYPES, SHARE_MODES } from "@useatlas/types";
 
 /** Supported parameter value kinds. Mirrors `DashboardParameterType`. */
 export const dashboardParameterTypeSchema = z.enum(["date", "text", "number"]);
@@ -141,8 +141,29 @@ export type RenderCardRequestWire = z.infer<typeof renderCardRequestSchema>;
  */
 export const renderCardQuerySchema = z.object({
   format: z.enum(["json", "csv"]).optional(),
+  /**
+   * Draft-aware execution (#4315, ADR-0029). `view=draft` runs the card's
+   * DRAFT SQL/config (the caller's private working copy) instead of the
+   * published definition, so the parameter bar / CSV export reflect the
+   * edits being made rather than the last-published query. Omitted/`published`
+   * runs the published definition. Viewers with no draft always fall back to
+   * published — never a leak of another user's draft.
+   */
+  view: z.enum(["published", "draft"]).optional(),
 });
 export type RenderCardQueryWire = z.infer<typeof renderCardQuerySchema>;
+
+/**
+ * Single-card refresh query. `view=draft` (#4315) runs the DRAFT SQL and
+ * returns the freshly-run rows WITHOUT persisting them to the published
+ * card cache — the draft's query is un-published, so writing its results
+ * into the shared cache would violate the draft-first invariant. Omitted/
+ * `published` keeps the legacy behavior (run published SQL, persist cache).
+ */
+export const refreshCardQuerySchema = z.object({
+  view: z.enum(["published", "draft"]).optional(),
+});
+export type RefreshCardQueryWire = z.infer<typeof refreshCardQuerySchema>;
 
 // ---------------------------------------------------------------------------
 // Text / section cards (#3138 — text blocks slice)
@@ -424,3 +445,88 @@ export const dashboardChartConfigSchema = z.object({
   thresholds: z.array(dashboardThresholdSchema).max(DASHBOARD_THRESHOLDS_MAX).optional(),
 });
 export type DashboardChartConfigWire = z.infer<typeof dashboardChartConfigSchema>;
+
+// ---------------------------------------------------------------------------
+// Shared-view projection (#4316 — data-only snapshot)
+//
+// SSOT for the payload the public / org share endpoint serializes. Mirrors
+// `SharedDashboardView` / `SharedDashboardCard` / `SharedDashboardParameterSummaryItem`
+// in `@useatlas/types`. Every object is `.strict()` so the round-trip test is a
+// RUNTIME leak guard: if the server projection ever spills a `sql`,
+// `connectionGroupId`, `orgId`, `refreshSchedule`, or a parameter DEFINITION
+// into the snapshot, parsing the projected object against this schema FAILS
+// (unrecognized key) instead of quietly shipping the internal field. Two layers:
+// the DTO type forbids it at compile time; `.strict()` forbids it at runtime.
+// ---------------------------------------------------------------------------
+
+/** Tile geometry as it appears in a shared snapshot. Looser than the authoring
+ *  `CardLayoutSchema` in `@atlas/api/lib/dashboards` (no grid-bounds refinement)
+ *  because this validates data already persisted + validated at write time —
+ *  it's a read-side shape check, not an authoring gate. */
+export const sharedDashboardCardLayoutSchema = z
+  .object({
+    x: z.number(),
+    y: z.number(),
+    w: z.number(),
+    h: z.number(),
+  })
+  .strict();
+export type SharedDashboardCardLayoutWire = z.infer<typeof sharedDashboardCardLayoutSchema>;
+
+/**
+ * One card in a shared snapshot. `.strict()` — a `sql`/`connectionGroupId`/
+ * `dashboardId` key on the projected object is rejected here, not serialized.
+ */
+export const sharedDashboardCardSchema = z
+  .object({
+    id: z.string(),
+    position: z.number(),
+    title: z.string(),
+    kind: dashboardCardKindSchema,
+    chartConfig: dashboardChartConfigSchema.nullable(),
+    content: z.string().nullable(),
+    annotations: dashboardCardAnnotationsSchema,
+    cachedColumns: z.array(z.string()).nullable(),
+    cachedRows: z.array(z.record(z.string(), z.unknown())).nullable(),
+    cachedAt: z.string().nullable(),
+    layout: sharedDashboardCardLayoutSchema.nullable(),
+  })
+  .strict();
+export type SharedDashboardCardWire = z.infer<typeof sharedDashboardCardSchema>;
+
+/**
+ * One frozen `{ label, displayValue }` parameter-summary entry (#4316).
+ * `.strict()` so a leaked `key`/`type`/`default` (the parameter DEFINITION)
+ * fails the round-trip rather than reaching the client.
+ */
+export const sharedDashboardParameterSummaryItemSchema = z
+  .object({
+    label: z.string(),
+    displayValue: z.string(),
+  })
+  .strict();
+export type SharedDashboardParameterSummaryItemWire = z.infer<
+  typeof sharedDashboardParameterSummaryItemSchema
+>;
+
+/**
+ * The full shared-snapshot payload. `.strict()` — `orgId`, `ownerId`,
+ * `shareToken`, `refreshSchedule`, and the parameter DEFINITION list
+ * (`parameters`) are all absent from this shape, so the projection cannot pass
+ * them through undetected.
+ */
+export const sharedDashboardViewSchema = z
+  .object({
+    title: z.string(),
+    description: z.string().nullable(),
+    shareMode: z.enum(SHARE_MODES),
+    cards: z.array(sharedDashboardCardSchema),
+    // Optional for wire forward-compat only — the server projection always
+    // emits it (see `SharedDashboardView.parameterSummary`).
+    parameterSummary: z.array(sharedDashboardParameterSummaryItemSchema).optional(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    lastRefreshAt: z.string().nullable(),
+  })
+  .strict();
+export type SharedDashboardViewWire = z.infer<typeof sharedDashboardViewSchema>;

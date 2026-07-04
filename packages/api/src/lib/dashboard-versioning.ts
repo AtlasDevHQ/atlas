@@ -199,6 +199,11 @@ export type DraftChange =
       cardId: string;
       updates: {
         title?: string;
+        /** #4318 — replace the card's SQL in place (the REST update surface's
+         *  parity with the bound-editor `editSql` op). Undefined leaves the
+         *  query unchanged. The new query is validated at render/refresh time
+         *  through the full SQL pipeline, not on store — same as `editSql`. */
+        sql?: string;
         chartConfig?: DashboardChartConfig | null;
         /** #3209 — replace the card's event markers. Undefined leaves them
          *  unchanged (the draft card keeps its current annotations). */
@@ -245,6 +250,9 @@ export function applyChangeToDraft(
           ? {
               ...c,
               ...(change.updates.title !== undefined && { title: change.updates.title }),
+              // #4318 — a card-SQL edit replaces the query in place, matching
+              // the `editSql` change the stage tracker dispatches.
+              ...(change.updates.sql !== undefined && { sql: change.updates.sql }),
               ...(change.updates.chartConfig !== undefined && { chartConfig: change.updates.chartConfig }),
               ...(change.updates.annotations !== undefined && { annotations: change.updates.annotations }),
               ...(change.updates.layout !== undefined && { layout: change.updates.layout }),
@@ -771,6 +779,54 @@ export async function saveDraft(
   }
 }
 
+export type ApplyEditToDraftResult =
+  | { ok: true; snapshot: DashboardSnapshot; view: DashboardWithCards }
+  // The internal DB is NOT configured on this deployment — drafts are
+  // structurally unavailable (a static condition → 503, not retryable).
+  | { ok: false; reason: "no_db" }
+  // The internal DB IS configured but the fork/load returned null-from-throw
+  // (pool exhaustion, timeout, a jsonb/constraint error, a network blip) — a
+  // TRANSIENT failure the caller should retry (→ 500), distinct from `no_db`.
+  | { ok: false; reason: "load_failed" }
+  | { ok: false; reason: "unknown_card"; cardId: string }
+  | { ok: false; reason: "save_failed" };
+
+/**
+ * Route a single direct-manipulation edit (rename, add/update/remove card,
+ * layout) into the caller's per-user draft (#4315, ADR-0029). Fork-or-load
+ * the draft from `published`, apply `change` to the snapshot, persist it,
+ * and return the materialized draft view.
+ *
+ * This is the ONE seam the direct-manipulation REST routes funnel through,
+ * so the draft-first invariant — "no path writes the published tables
+ * except publish" — is enforced in a single, unit-testable place rather
+ * than re-derived per route. Failure modes are returned as a discriminated
+ * union (never thrown) so the route layer maps them to HTTP without a
+ * `try/catch`.
+ */
+export async function applyEditToDraft(
+  userId: string,
+  published: DashboardWithCards,
+  change: DraftChange,
+): Promise<ApplyEditToDraftResult> {
+  const draftRow = await forkOrLoadDraft(userId, published);
+  if (!draftRow) {
+    // `forkOrLoadDraft` returns null both when the DB is unconfigured AND when
+    // a query threw (it logs + swallows to null). Split the two so on-call
+    // isn't told "not configured on this deployment" for a transient blip.
+    return { ok: false, reason: hasInternalDB() ? "load_failed" : "no_db" };
+  }
+  const applied = applyChangeToDraft(draftRow.snapshot, change);
+  if (!applied.ok) return { ok: false, reason: "unknown_card", cardId: applied.cardId };
+  const saved = await saveDraft(userId, published.id, applied.snapshot);
+  if (!saved) return { ok: false, reason: "save_failed" };
+  return {
+    ok: true,
+    snapshot: applied.snapshot,
+    view: materializeDraftView(published, applied.snapshot),
+  };
+}
+
 /** Discard the user's draft for a dashboard. Idempotent. */
 export async function discardDraft(userId: string, dashboardId: string): Promise<boolean> {
   if (!hasInternalDB()) return false;
@@ -983,9 +1039,15 @@ export async function publishDraft(opts: {
         }
       }
     }
-    // Touch the parent dashboard so the cards bump in too.
+    // Touch the parent dashboard so the cards bump in too, and stamp the
+    // one-way first-publish marker (#4320). COALESCE keeps it immutable after
+    // the first publish — a never-published dashboard becomes org-visible here
+    // and stays so permanently; re-publishing never moves the marker.
     await client.query(
-      `UPDATE dashboards SET updated_at = now() WHERE id = $1 AND deleted_at IS NULL`,
+      `UPDATE dashboards
+          SET updated_at = now(),
+              first_published_at = COALESCE(first_published_at, now())
+        WHERE id = $1 AND deleted_at IS NULL`,
       [opts.dashboardId],
     );
     // Drop the draft row — there's nothing left to publish.

@@ -94,8 +94,15 @@ export default function DashboardViewPage() {
   const searchParams = useSearchParams();
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
 
+  // #4315 — the canvas renders the caller's DRAFT while editing (the private
+  // working copy every edit lands in), the published state otherwise. The URL
+  // is the fetch cache key, so toggling Edit re-fetches the correct view. The
+  // server overlays the draft only when one exists (non-forking); a viewer or
+  // a board with no draft still gets published, so this never leaks.
+  const [editing, setEditing] = useState(false);
+
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
-    `/api/v1/dashboards/${id}`,
+    editing ? `/api/v1/dashboards/${id}?view=draft` : `/api/v1/dashboards/${id}`,
   );
 
   // #2365 — pending destructive stages for THIS user on THIS dashboard.
@@ -119,7 +126,6 @@ export default function DashboardViewPage() {
   const [suggestError, setSuggestError] = useState<string | null>(null);
   const [addingSuggestion, setAddingSuggestion] = useState<number | null>(null);
 
-  const [editing, setEditing] = useState(false);
   const [density, setDensity] = useState<Density>("comfortable");
   // #3211 — whole-dashboard export state. `exportError` surfaces a failed
   // render (or a partial-render warning) in the same banner family as the
@@ -241,7 +247,10 @@ export default function DashboardViewPage() {
 
   async function handleRefreshCard(cardId: string) {
     setRefreshingCardId(cardId);
-    await mutate({ path: `/api/v1/dashboards/${id}/cards/${cardId}/refresh`, method: "POST" });
+    // #4315 — while editing, a single-card refresh runs the DRAFT SQL (server
+    // returns fresh rows without persisting to the published cache).
+    const viewSuffix = editing ? "?view=draft" : "";
+    await mutate({ path: `/api/v1/dashboards/${id}/cards/${cardId}/refresh${viewSuffix}`, method: "POST" });
     setRefreshingCardId(null);
   }
 
@@ -341,8 +350,10 @@ export default function DashboardViewPage() {
     }
 
     try {
+      // #4315 — export the DRAFT card's data while editing (runs the draft SQL).
+      const viewParam = editing ? "&view=draft" : "";
       const res = await fetch(
-        `${apiUrl}/api/v1/dashboards/${id}/cards/${card.id}/render?format=csv`,
+        `${apiUrl}/api/v1/dashboards/${id}/cards/${card.id}/render?format=csv${viewParam}`,
         {
           method: "POST",
           credentials: isCrossOrigin ? "include" : "same-origin",
@@ -736,6 +747,8 @@ export default function DashboardViewPage() {
         apiUrl,
         dashboardId: id,
         isCrossOrigin,
+        // #4315 — the canvas shows the draft while editing; render its SQL.
+        view: editing ? "draft" : "published",
       });
       // A newer change superseded this batch — discard its results.
       if (seq !== paramReqSeq.current) return;
@@ -826,11 +839,13 @@ export default function DashboardViewPage() {
       setComparisons({});
       return;
     }
+    // #4315 — while editing, the KPI comparison runs the draft card's SQL too.
+    const viewParam = editing ? "?view=draft" : "";
     const entries = await Promise.all(
       kpiCards.map(async (card): Promise<[string, KpiComparisonResult | null]> => {
         try {
           const res = await fetch(
-            `${apiUrl}/api/v1/dashboards/${id}/cards/${card.id}/render`,
+            `${apiUrl}/api/v1/dashboards/${id}/cards/${card.id}/render${viewParam}`,
             {
               method: "POST",
               credentials: isCrossOrigin ? "include" : "same-origin",
@@ -969,6 +984,8 @@ export default function DashboardViewPage() {
               rebasing={rebasing}
               error={draftError}
               onDismissError={clearDraftError}
+              editing={editing}
+              onExitEditing={() => setEditing(false)}
             />
 
             {dashboard.parameters.length > 0 && (

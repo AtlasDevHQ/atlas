@@ -83,16 +83,17 @@ export interface BoundDashboardToolContext {
 }
 
 /**
- * Apply a change to the user's draft snapshot when the drafts flag is
- * on and we have a userId; otherwise the caller falls through to the
- * direct-published path. Returns:
+ * Apply a change to the user's draft snapshot when the drafts flag is on.
+ * Returns:
  *   - `{ routed: true, ok: true }`  → draft updated, the legacy path
  *     should NOT run.
- *   - `{ routed: true, ok: false, error }` → drafts path was selected
- *     but failed; surface the error and skip the legacy path so we
- *     don't double-write.
- *   - `{ routed: false }` → flag off or no userId; caller runs the
- *     legacy direct-published mutation.
+ *   - `{ routed: true, ok: false, error }` → the drafts path OWNS this op but
+ *     failed OR refused; surface the error and skip the legacy path so we
+ *     don't double-write. #4315: the no-userId case now lands here (a
+ *     REJECTION) — an unattributable bound edit must never fall through to a
+ *     direct-published write (the closed ADR-0029 privacy hole).
+ *   - `{ routed: false }` → flag OFF only; caller runs the legacy
+ *     direct-published mutation.
  */
 async function maybeApplyToDraft(
   ctx: BoundDashboardToolContext,
@@ -103,9 +104,26 @@ async function maybeApplyToDraft(
   | { routed: false }
 > {
   if (!isDashboardDraftsEnabled()) return { routed: false };
-  if (!ctx.userId) return { routed: false };
+  // #4315 — close the anonymous-bound bypass. Previously a bound edit with
+  // no userId fell through to the legacy direct-published path, so an
+  // anonymous edit went STRAIGHT LIVE to the org — the privacy hole ADR-0029
+  // calls out. With drafts on, an edit that can't be attributed to a user
+  // can't land in a private draft either, so we REJECT rather than write to
+  // published. `routed: true` here means "the draft path owns this op and it
+  // failed" — the caller must NOT fall through to the published write.
+  if (!ctx.userId) {
+    return {
+      routed: true,
+      ok: false,
+      error:
+        "This edit can't be saved: dashboard edits land in your private draft, which requires a signed-in user. Sign in and retry — edits never write to the published dashboard.",
+    };
+  }
   const published = await getDashboard(ctx.dashboardId, {
     orgId: ctx.orgId ?? undefined,
+    // #4320 — first-publish gate; the bound board is already gated at bind, this
+    // keeps the tool read consistent (owner of a never-published board matches).
+    viewerId: ctx.userId ?? undefined,
   });
   if (!published.ok) {
     return { routed: true, ok: false, error: `Could not read dashboard: ${published.reason}` };
@@ -148,7 +166,7 @@ export function createBoundDashboardTools(
     description: `Read the current state of the dashboard you are editing. Returns the title, description, and a compact summary of every card (id, title, chart type, position, layout). Call this when you need a fresh read after several mutations. Card SQL is NOT returned — use \`getCardDetail\` for that.`,
     inputSchema: z.object({}).describe("No arguments"),
     execute: async () => {
-      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined });
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
       if (!dash.ok) {
         return { kind: "err" as const, error: `Could not read dashboard: ${dash.reason}` };
       }
@@ -187,7 +205,7 @@ export function createBoundDashboardTools(
       // it's REPLACE-ALL on updateCard, so returning the published markers here
       // would let the agent fetch a stale set and drop staged ones when it
       // sends back a "merged" array.
-      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined });
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
       if (!dash.ok) {
         return { kind: "err" as const, error: `Could not read dashboard: ${dash.reason}` };
       }
@@ -628,7 +646,7 @@ export function createBoundDashboardTools(
     | { ok: false; error: string }
   > {
     if (isDashboardDraftsEnabled() && ctx.userId) {
-      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined });
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
       if (!dash.ok) {
         return { ok: false, error: `Could not read dashboard: ${dash.reason}` };
       }

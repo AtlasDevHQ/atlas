@@ -6304,6 +6304,31 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Drafts unavailable — internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
           }
         },
         "operationId": "patchDashboardsById"
@@ -7944,9 +7969,20 @@
                     "minLength": 1,
                     "maxLength": 200
                   },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "chart",
+                      "text"
+                    ]
+                  },
                   "sql": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "content": {
+                    "type": "string",
+                    "maxLength": 5000
                   },
                   "chartConfig": {
                     "type": [
@@ -8169,8 +8205,7 @@
                   }
                 },
                 "required": [
-                  "title",
-                  "sql"
+                  "title"
                 ]
               }
             }
@@ -8313,6 +8348,31 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Drafts unavailable — internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
           }
         },
         "operationId": "postDashboardsByIdCards"
@@ -8356,6 +8416,10 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200
+                  },
+                  "sql": {
+                    "type": "string",
+                    "minLength": 1
                   },
                   "chartConfig": {
                     "type": [
@@ -8700,6 +8764,31 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Drafts unavailable — internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
           }
         },
         "operationId": "patchDashboardsByIdCardsByCardId"
@@ -8808,6 +8897,31 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Drafts unavailable — internal database not configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -9084,6 +9198,18 @@
             "required": true,
             "name": "cardId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "published",
+                "draft"
+              ]
+            },
+            "required": false,
+            "name": "view",
+            "in": "query"
           }
         ],
         "responses": {
@@ -9314,9 +9440,22 @@
             "required": false,
             "name": "format",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "published",
+                "draft"
+              ]
+            },
+            "required": false,
+            "name": "view",
+            "in": "query"
           }
         ],
         "requestBody": {
+          "required": false,
           "content": {
             "application/json": {
               "schema": {
@@ -9674,7 +9813,7 @@
           "Dashboards"
         ],
         "summary": "Share a dashboard",
-        "description": "Generates a share token for public or org-scoped access. Requires admin role.",
+        "description": "Generates (or updates) a share token for public or org-scoped access. Requires admin role. Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. An absent/empty body uses safe defaults (public, no rotation); a present-but-invalid body returns 400 and never downgrades the share to public (#4317). `rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
         "parameters": [
           {
             "schema": {
@@ -9686,39 +9825,6 @@
             "in": "path"
           }
         ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "expiresIn": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "enum": [
-                      "1h",
-                      "24h",
-                      "7d",
-                      "30d",
-                      "never",
-                      null
-                    ]
-                  },
-                  "shareMode": {
-                    "type": "string",
-                    "enum": [
-                      "public",
-                      "org"
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Share token generated",

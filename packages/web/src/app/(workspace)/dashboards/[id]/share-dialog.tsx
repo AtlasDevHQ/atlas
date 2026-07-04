@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Share2, Copy, Check, Link2Off, Globe, Lock, Loader2 } from "lucide-react";
+import { Share2, Copy, Check, Link2Off, Globe, Lock, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -55,6 +55,10 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
   const [shareMode, setShareMode] = useState<ShareMode>("public");
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
   const [fetchingStatus, setFetchingStatus] = useState(false);
+  // Explicit, warned token rotation (#4317). Editing expiry/visibility on a
+  // live share preserves the token; regenerating (which kills prior links) is a
+  // separate, confirmed action.
+  const [confirmingRotate, setConfirmingRotate] = useState(false);
   const inFlightRef = useRef(false);
 
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
@@ -97,11 +101,14 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
     if (open) {
       setError(null);
       setCopied(false);
+      setConfirmingRotate(false);
       fetchShareStatus();
     }
   }, [open, fetchShareStatus]);
 
-  async function handleShare() {
+  // POST the share config. `rotate` is opt-in: absent/false PRESERVES the token
+  // (editing expiry/visibility), true mints a new one and kills prior links.
+  async function submitShare(rotate: boolean) {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     setError(null);
@@ -109,13 +116,14 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
       const result = await shareMutate({
         path: `/api/v1/dashboards/${dashboardId}/share`,
         method: "POST",
-        body: { expiresIn, shareMode },
+        body: { expiresIn, shareMode, rotate },
       });
       if (!result.ok) {
         setError(friendlyError(result.error));
         return;
       }
       setShared(true);
+      setConfirmingRotate(false);
       if (result.data) {
         setShareUrl(`${window.location.origin}/shared/dashboard/${(result.data as { token: string }).token}`);
         setExpiresAt((result.data as { expiresAt: string | null }).expiresAt);
@@ -124,6 +132,13 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
       inFlightRef.current = false;
     }
   }
+
+  // Create a brand-new share (first time) — no token to preserve.
+  const handleShare = () => submitShare(false);
+  // Edit a live share's expiry/visibility WITHOUT rotating the token.
+  const handleUpdateSettings = () => submitShare(false);
+  // Explicit, confirmed rotation — prior links stop working.
+  const handleRotate = () => submitShare(true);
 
   async function handleUnshare() {
     if (inFlightRef.current) return;
@@ -225,16 +240,93 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
                   )}
                 </div>
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleUnshare}
-                  disabled={unsharing}
-                  className="text-red-500 hover:text-red-600 dark:text-red-400"
-                >
-                  <Link2Off className="mr-1.5 size-3.5" />
-                  Revoke Link
-                </Button>
+                {/* Edit expiry/visibility WITHOUT rotating the token — prior
+                    links keep working (#4317). */}
+                <div className="grid gap-3 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+                  <div className="grid gap-2">
+                    <Label>Link expires</Label>
+                    <Select value={expiresIn} onValueChange={(v) => setExpiresIn(v as ShareExpiryKey)}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(Object.keys(SHARE_EXPIRY_OPTIONS) as ShareExpiryKey[]).map((key) => (
+                          <SelectItem key={key} value={key}>
+                            {EXPIRY_LABELS[key]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label>Visibility</Label>
+                    <Select value={shareMode} onValueChange={(v) => setShareMode(v as ShareMode)}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="public">
+                          <span className="inline-flex items-center gap-1.5">
+                            <Globe className="size-3" /> Public — anyone with the link
+                          </span>
+                        </SelectItem>
+                        <SelectItem value="org">
+                          <span className="inline-flex items-center gap-1.5">
+                            <Lock className="size-3" /> Organization — requires login
+                          </span>
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <Button variant="secondary" size="sm" onClick={handleUpdateSettings} disabled={sharing}>
+                    {sharing ? "Saving..." : "Update settings"}
+                  </Button>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    Updating settings keeps the same link. To invalidate it, generate a new link below.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleUnshare}
+                    disabled={unsharing}
+                    className="text-red-500 hover:text-red-600 dark:text-red-400"
+                  >
+                    <Link2Off className="mr-1.5 size-3.5" />
+                    Revoke Link
+                  </Button>
+                  {!confirmingRotate && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setConfirmingRotate(true)}
+                      disabled={sharing}
+                    >
+                      <RefreshCw className="mr-1.5 size-3.5" />
+                      Generate new link
+                    </Button>
+                  )}
+                </div>
+
+                {confirmingRotate && (
+                  <div className="grid gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-800/60 dark:bg-amber-950/30">
+                    <p className="text-xs text-amber-800 dark:text-amber-300">
+                      Generating a new link invalidates the current one. Anyone still using the old link will lose access.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button variant="destructive" size="sm" onClick={handleRotate} disabled={sharing}>
+                        {sharing ? "Generating..." : "Generate new link"}
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setConfirmingRotate(false)} disabled={sharing}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <>

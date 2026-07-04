@@ -24,6 +24,7 @@ import {
   loadDraft,
   forkOrLoadDraft,
   saveDraft,
+  applyEditToDraft,
   discardDraft,
   publishDraft,
   rebaseDraft,
@@ -192,6 +193,22 @@ describe("applyChangeToDraft", () => {
     if (!result.ok) return;
     expect(result.snapshot.cards[0].title).toBe("New");
     expect(result.snapshot.cards[0].sql).toBe(base.cards[0].sql);
+  });
+
+  it("updateCard replaces the card's sql in place, leaving other fields (#4318)", () => {
+    const base = snapshot([card("c1", { title: "Keep", sql: "SELECT 1" })]);
+    const result = applyChangeToDraft(base, {
+      kind: "updateCard",
+      cardId: "c1",
+      updates: { sql: "SELECT 2" },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.cards[0].sql).toBe("SELECT 2");
+    // Only sql changed — title (and every other field) is untouched.
+    expect(result.snapshot.cards[0].title).toBe("Keep");
+    // Pure: original snapshot unmodified.
+    expect(base.cards[0].sql).toBe("SELECT 1");
   });
 
   it("updateCard returns unknown_card when card is missing", () => {
@@ -945,6 +962,78 @@ describe("dashboard-versioning DB helpers", () => {
   });
 
   // -------------------------------------------------------------------------
+  // applyEditToDraft — the single seam every direct-manipulation REST route
+  // funnels through (#4315). Exercises the real fork→apply→save wiring + all
+  // four failure returns (the route tests mock this function out).
+  // -------------------------------------------------------------------------
+
+  describe("applyEditToDraft", () => {
+    it("happy path: forks/loads, applies the change, saves, returns the draft view", async () => {
+      enableInternalDB();
+      const published = dashboardWithCards([card("c1")]);
+      const snap = snapshot([card("c1")]);
+      // forkOrLoadDraft loads the existing row (1 query), then saveDraft UPDATE.
+      setResults({ rows: [draftRow({ draft: snap })] }, { rows: [{ user_id: "u1" }] });
+      const result = await applyEditToDraft("u1", published, {
+        kind: "updateMeta",
+        title: "Renamed in draft",
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.snapshot.title).toBe("Renamed in draft");
+        expect(result.view.title).toBe("Renamed in draft");
+      }
+      // The persisted UPDATE targeted the draft table, never a published one.
+      const sqls = queryCalls.map((q) => q.sql).join("\n");
+      expect(sqls).toContain("UPDATE dashboard_user_drafts");
+      expect(sqls).not.toContain("dashboard_cards");
+    });
+
+    it("returns no_db when the internal DB is not configured", async () => {
+      // DB intentionally NOT enabled.
+      const result = await applyEditToDraft("u1", dashboardWithCards([card("c1")]), {
+        kind: "updateMeta",
+        title: "x",
+      });
+      expect(result).toEqual({ ok: false, reason: "no_db" });
+    });
+
+    it("returns load_failed (not no_db) when the DB is configured but the load throws", async () => {
+      enableInternalDB();
+      queryThrow = new Error("connection reset by peer");
+      const result = await applyEditToDraft("u1", dashboardWithCards([card("c1")]), {
+        kind: "updateMeta",
+        title: "x",
+      });
+      expect(result).toEqual({ ok: false, reason: "load_failed" });
+    });
+
+    it("returns unknown_card when the change targets a card absent from the draft", async () => {
+      enableInternalDB();
+      const snap = snapshot([card("c1")]);
+      setResults({ rows: [draftRow({ draft: snap })] });
+      const result = await applyEditToDraft("u1", dashboardWithCards([card("c1")]), {
+        kind: "updateCard",
+        cardId: "does-not-exist",
+        updates: { title: "nope" },
+      });
+      expect(result).toEqual({ ok: false, reason: "unknown_card", cardId: "does-not-exist" });
+    });
+
+    it("returns save_failed when the persist UPDATE matches no row", async () => {
+      enableInternalDB();
+      const snap = snapshot([card("c1")]);
+      // load returns the row; saveDraft UPDATE returns no rows → false.
+      setResults({ rows: [draftRow({ draft: snap })] }, { rows: [] });
+      const result = await applyEditToDraft("u1", dashboardWithCards([card("c1")]), {
+        kind: "updateMeta",
+        title: "x",
+      });
+      expect(result).toEqual({ ok: false, reason: "save_failed" });
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // discardDraft
   // -------------------------------------------------------------------------
 
@@ -1099,6 +1188,48 @@ describe("dashboard-versioning DB helpers", () => {
       expect(sqls).toContain("DELETE FROM dashboard_user_drafts");
       // Pool client returned exactly once.
       expect(releaseCalls).toBe(1);
+    });
+
+    // #4320 — the publish transaction stamps the one-way first-publish marker
+    // via COALESCE, so a never-published dashboard becomes org-visible on its
+    // first publish and the marker never moves on subsequent publishes.
+    it("stamps the one-way first_published_at marker in the touch-dashboard UPDATE", async () => {
+      enableInternalDB();
+      const baseline = snapshot([card("c1")]);
+      const draftWithAdd = applyChangeToDraft(baseline, {
+        kind: "addCard",
+        card: card("c-new", { position: 1 }),
+      });
+      expect(draftWithAdd.ok).toBe(true);
+      if (!draftWithAdd.ok) return;
+
+      setResults({ rows: [draftRow({ draft: draftWithAdd.snapshot, baseline })] });
+      setClientResults(
+        { rows: [] }, // BEGIN
+        { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] }, // SELECT FOR UPDATE
+        { rows: [] }, // INSERT INTO dashboard_cards
+        { rows: [] }, // UPDATE dashboards SET updated_at + first_published_at
+        { rows: [] }, // DELETE FROM dashboard_user_drafts
+        { rows: [] }, // COMMIT
+      );
+
+      const published = dashboardWithCards([card("c1")], {
+        updatedAt: "2026-05-17T00:00:00.000Z",
+      });
+      const result = await publishDraft({
+        userId: "u1",
+        dashboardId: "dash-1",
+        orgId: "org-1",
+        loadDashboardForOrg: async () => published,
+      });
+      expect(result.ok).toBe(true);
+
+      // The parent-touch UPDATE carries the one-way marker stamp.
+      const touchCall = clientCalls.find(
+        (c) => /UPDATE dashboards/.test(c.sql) && /first_published_at/.test(c.sql),
+      );
+      expect(touchCall).toBeDefined();
+      expect(touchCall!.sql).toContain("COALESCE(first_published_at, now())");
     });
 
     // Regression: an accepted `editSql` stage rewrites the draft card's SQL,

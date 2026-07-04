@@ -6,6 +6,7 @@ import { parseSuggestions } from "../../lib/helpers";
 import { activityAwaitsUser, partitionTurn, type TurnPart } from "./turn-partitioner";
 import { TurnReceipt } from "./turn-receipt";
 import type { PythonProgressData } from "./python-result-card";
+import type { PreviousExecution } from "../notebook/types";
 
 /**
  * Answer-first rendering of a completed assistant turn (#4298): the activity
@@ -13,14 +14,23 @@ import type { PythonProgressData } from "./python-result-card";
  * most one promoted answer-bearing artifact sits with it. Streaming turns keep
  * the live part-by-part renderer — this component is for finished turns only.
  * The suggestion chips and Save/Share row stay with the caller (they belong to
- * the transcript row, not the turn's parts).
+ * the transcript row, not the turn's parts). Consumed by both the chat
+ * transcript and the notebook cell output (#4301) — the shared seam that keeps
+ * the two surfaces from drifting in formatting.
  */
 export function FinishedTurn({
   parts,
   pythonProgress,
+  previousExecution,
 }: {
   parts: readonly TurnPart[] | undefined;
   pythonProgress?: Map<string, PythonProgressData[]>;
+  /**
+   * Notebook rerun-comparison metadata (#4301). Deliberately bound to the
+   * promoted artifact's SQL card only — the snapshot describes the cell's
+   * result, not the intermediate queries inside the receipt.
+   */
+  previousExecution?: PreviousExecution;
 }) {
   const { activity, answer, answerBearingArtifact } = partitionTurn(parts);
 
@@ -59,7 +69,11 @@ export function FinishedTurn({
       })}
       {answerBearingArtifact && (
         <div className="max-w-[95%]" data-testid="answer-artifact">
-          <ToolPart part={answerBearingArtifact.part} pythonProgress={pythonProgress} />
+          <ToolPart
+            part={answerBearingArtifact.part}
+            pythonProgress={pythonProgress}
+            previousExecution={previousExecution}
+          />
         </div>
       )}
     </>

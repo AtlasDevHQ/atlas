@@ -3,7 +3,102 @@
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { parseChatError, type AuthMode, type ClientErrorCode } from "../../lib/types";
-import { WifiOff, ServerCrash, ShieldAlert, Clock, AlertTriangle, MessageSquarePlus } from "lucide-react";
+import { WifiOff, ServerCrash, ShieldAlert, Clock, AlertTriangle, MessageSquarePlus, X } from "lucide-react";
+
+/**
+ * A failure (or standing error condition) on the chat surface, described for
+ * `ActionErrorBanner` — failed actions (send / load / pin / unpin / resume) as
+ * well as standing conditions like the transport health warning or the
+ * conversation-list fetch error. Unlike the chat-stream `ErrorBanner` below —
+ * which parses a wire `Error` via `parseChatError` — these come from call
+ * sites that already know the user-facing title, any server-provided
+ * detail/request id, and — when retryable — how to re-run the action (#4297).
+ */
+export interface ChatActionFailure {
+  readonly title: string;
+  readonly detail?: string;
+  readonly requestId?: string;
+  /** Re-runs the failed action. Omit when the action isn't retryable. */
+  readonly retry?: () => void;
+}
+
+/**
+ * #4297 — which action produced a failure STORED in chat state (standing
+ * conditions like the health warning render directly and never carry a kind).
+ * Scopes narrow clears — machine-initiated (auto-resume supersedes only a
+ * `"resume"` failure) and implicit (composer edits clear only a `"send"`
+ * failure) — so neither can erase an unrelated failure the user hasn't seen.
+ * Deliberate user actions clear unscoped: a fresh attempt supersedes whatever
+ * banner is up (resume is the exception — its clear seam is shared with
+ * auto-resume, so it stays kind-scoped even on a ResumeBanner click).
+ */
+export type ChatActionKind = "send" | "load" | "pin" | "unpin" | "resume";
+export type StoredActionFailure = ChatActionFailure & { readonly kind: ChatActionKind };
+
+/**
+ * Functional-updater factory for the kind-scoped clears described on
+ * `ChatActionKind`. Identity-preserving on a non-matching kind so React's
+ * setState bails out of the re-render.
+ */
+export function clearFailureOfKind(
+  kind: ChatActionKind,
+): (failure: StoredActionFailure | null) => StoredActionFailure | null {
+  return (failure) => (failure && failure.kind === kind ? null : failure);
+}
+
+/**
+ * Structured error surface for failed chat actions — the same visual grade as
+ * `ErrorBanner` (icon, title, detail, request id, retry) but fed by a
+ * `ChatActionFailure` instead of a chat-stream `Error`. The component never
+ * auto-dismisses; callers keep it mounted until the failure is retried,
+ * superseded, resolved, or dismissed via `onDismiss` (#4297).
+ */
+export function ActionErrorBanner({
+  failure,
+  onDismiss,
+}: {
+  failure: ChatActionFailure;
+  /** Renders a dismiss affordance. Omit for standing conditions (e.g. a health warning) that should stay visible. */
+  onDismiss?: () => void;
+}) {
+  return (
+    <div
+      className="mb-2 rounded-lg border border-red-300 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400 px-4 py-3 text-sm"
+      role="alert"
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="size-4 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">{failure.title}</p>
+          {failure.detail && <p className="mt-1 text-xs opacity-80">{failure.detail}</p>}
+          {failure.requestId && (
+            <p className="mt-1 text-xs opacity-60">Request ID: {failure.requestId}</p>
+          )}
+          {failure.retry && (
+            <Button
+              variant="link"
+              size="sm"
+              onClick={failure.retry}
+              className="mt-2 h-auto p-0 text-xs font-medium text-red-700 dark:text-red-400"
+            >
+              Try again
+            </Button>
+          )}
+        </div>
+        {onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Dismiss"
+            className="-m-1 rounded-md p-1 text-red-700/70 hover:bg-red-100 hover:text-red-700 dark:text-red-400/70 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+          >
+            <X className="size-4" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /** Icon for each client error code */
 function ErrorIcon({ clientCode }: { clientCode?: ClientErrorCode }) {

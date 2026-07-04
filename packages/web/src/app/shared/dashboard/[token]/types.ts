@@ -1,29 +1,20 @@
-import type { DashboardCardAnnotation, DashboardCardKind, DashboardCardLayout, DashboardChartConfig } from "@/ui/lib/types";
+// The shared dashboard surface renders a data-only SNAPSHOT (#4316). Its shapes
+// are the wire types projected by the API (`SharedDashboardView` /
+// `SharedDashboardCard`) — the SSOT lives in `@useatlas/types`, mirrored by
+// `sharedDashboardViewSchema` in `@useatlas/schemas`. They deliberately carry NO
+// `sql` and no internal ids (connectionGroupId, owner/org ids), so a query
+// internal cannot reach this unauthenticated surface even by omission.
+//
+// Re-exported under the local `SharedCard` / `SharedDashboard` names the page,
+// tile, and helpers already use, plus the new `SharedParameterSummaryItem`
+// alias (#4316) for the frozen parameter chips.
 
-export interface SharedCard {
-  id: string;
-  title: string;
-  /** #3138 — discriminates a SQL chart card from a markdown `text` section block. */
-  kind: DashboardCardKind;
-  sql: string;
-  chartConfig: DashboardChartConfig | null;
-  /** Markdown body for a `text` card (#3138); `null` for a chart card. */
-  content: string | null;
-  /** #3209 — event annotations rendered as vertical reference lines on line/area cards. */
-  annotations: DashboardCardAnnotation[];
-  cachedColumns: string[] | null;
-  cachedRows: Record<string, unknown>[] | null;
-  cachedAt: string | null;
-  position: number;
-  layout: DashboardCardLayout | null;
-}
+import type {
+  SharedDashboardCard,
+  SharedDashboardParameterSummaryItem,
+  SharedDashboardView,
+} from "@/ui/lib/types";
 
-export interface SharedDashboard {
-  title: string;
-  description: string | null;
-  shareMode: string;
-  cards: SharedCard[];
-  createdAt: string;
-  updatedAt: string;
-  lastRefreshAt: string | null;
-}
+export type SharedCard = SharedDashboardCard;
+export type SharedParameterSummaryItem = SharedDashboardParameterSummaryItem;
+export type SharedDashboard = SharedDashboardView;

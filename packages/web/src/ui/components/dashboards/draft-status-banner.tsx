@@ -39,6 +39,18 @@ import { friendlyError, type FetchError } from "@/ui/lib/fetch-error";
 interface DraftStatusBannerProps {
   hasDraft: boolean;
   staleBaseline: boolean;
+  /**
+   * #4315 — the page is in explicit edit mode. Makes this a PERSISTENT bar
+   * shown for the whole editing session, not just a transient notice once a
+   * draft exists. Two states: before the first edit forks a draft
+   * (`editing && !hasDraft`) it renders a quiet "Editing your draft — no
+   * changes yet" bar with only a Done control; once `hasDraft` flips true the
+   * richer Draft block below (which owns the Publish / Discard controls) takes
+   * over.
+   */
+  editing: boolean;
+  /** Leave edit mode (used by the persistent bar's Done action). */
+  onExitEditing?: () => void;
   /** Used by the parent to gate rendering — passed through so the discard confirm survives layout shifts. */
   discardOpen: boolean;
   onDiscardOpenChange: (open: boolean) => void;
@@ -69,13 +81,47 @@ export function DraftStatusBanner({
   rebasing,
   error,
   onDismissError,
+  editing,
+  onExitEditing,
 }: DraftStatusBannerProps) {
-  // Bail entirely when there's no draft AND no error — the banner is
-  // a transient surface; we don't want a permanent empty row.
-  if (!hasDraft && !error) return null;
+  // Bail entirely when there's nothing to show — no draft, no error, and not
+  // in edit mode. In edit mode the bar is PERSISTENT (#4315) so the user
+  // always sees they're editing a private draft.
+  if (!hasDraft && !error && !editing) return null;
 
   return (
     <div className="mx-4 mt-3 space-y-2 sm:mx-6">
+      {/* #4315 — persistent editing bar BEFORE the first edit forks a draft.
+          Once `hasDraft` flips true the richer Draft block below takes over. */}
+      {editing && !hasDraft && (
+        <div
+          data-testid="editing-draft-bar"
+          className="flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200"
+        >
+          <Badge
+            variant="outline"
+            className="border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-100"
+          >
+            <Pencil className="mr-1 size-3" aria-hidden="true" />
+            Editing your draft
+          </Badge>
+          <span className="min-w-0 flex-1">
+            Changes are private to you until you Publish. No edits yet.
+          </span>
+          {onExitEditing && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 border-amber-300 bg-white text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-zinc-900 dark:text-amber-100 dark:hover:bg-amber-900/30"
+              onClick={onExitEditing}
+              data-testid="editing-done-button"
+            >
+              Done
+            </Button>
+          )}
+        </div>
+      )}
+
       {hasDraft && (
         <div
           data-testid="draft-status-banner"
@@ -90,8 +136,8 @@ export function DraftStatusBanner({
             Draft
           </Badge>
           <span className="min-w-0 flex-1">
-            You have unpublished changes. Only you can see them until you
-            publish.
+            Editing your draft — unpublished changes only you can see until you
+            Publish.
           </span>
           <div className="flex items-center gap-1.5">
             <Button

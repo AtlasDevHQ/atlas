@@ -146,6 +146,51 @@ const mockTextCardData = {
   cachedAt: null,
 };
 
+// #4316 — a card as it appears in the PROJECTED shared-view DTO: no `sql`, no
+// internal ids (`connectionGroupId`, `dashboardId`). Mirrors the output of
+// `projectSharedDashboardView` in the lib (which is mocked here). The lib's own
+// projection unit test proves the stripping against a full card; this fixture
+// lets the route tests assert the route serializes the projection untouched.
+const mockSharedCardData = {
+  id: VALID_CARD_ID,
+  position: 0,
+  title: "Total Revenue",
+  kind: "chart" as const,
+  chartConfig: { type: "bar", categoryColumn: "month", valueColumns: ["total"] },
+  content: null,
+  annotations: [],
+  cachedColumns: ["month", "total"],
+  cachedRows: [{ month: "Jan", total: 1000 }],
+  cachedAt: "2026-04-04T00:00:00.000Z",
+  layout: null,
+};
+
+// Build the `{ ok: true, view, access }` shape `getSharedDashboard` now returns
+// (#4316). `view` is the data-only snapshot the route serializes; `access`
+// carries the internal `orgId` the route gates on but never emits.
+function sharedViewResult(opts: {
+  orgId?: string | null;
+  shareMode?: "public" | "org";
+  cards?: Array<Record<string, unknown>>;
+  parameterSummary?: Array<{ label: string; displayValue: string }>;
+} = {}) {
+  const shareMode = opts.shareMode ?? "public";
+  return {
+    ok: true as const,
+    view: {
+      title: mockDashboardData.title,
+      description: mockDashboardData.description,
+      shareMode,
+      cards: opts.cards ?? [mockSharedCardData],
+      parameterSummary: opts.parameterSummary ?? [],
+      createdAt: mockDashboardData.createdAt,
+      updatedAt: mockDashboardData.updatedAt,
+      lastRefreshAt: null,
+    },
+    access: { shareMode, orgId: opts.orgId ?? null },
+  };
+}
+
 const mockCreateDashboard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: true, data: mockDashboardData }),
 );
@@ -176,8 +221,8 @@ const mockRefreshCard = mock((): Promise<unknown> =>
 const mockGetCard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: true, data: mockCardData }),
 );
-const mockShareDashboard = mock((): Promise<unknown> =>
-  Promise.resolve({ ok: true, data: { token: "share-token-123", expiresAt: null, shareMode: "public" } }),
+const mockShareDashboard = mock((..._args: unknown[]): Promise<unknown> =>
+  Promise.resolve({ ok: true, data: { token: "share-token-123", expiresAt: null, shareMode: "public", rotated: false } }),
 );
 const mockUnshareDashboard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: true }),
@@ -214,12 +259,38 @@ mock.module("@atlas/api/lib/dashboards", () => ({
   unshareDashboard: mockUnshareDashboard,
   getShareStatus: mockGetShareStatus,
   getSharedDashboard: mockGetSharedDashboard,
+  // #4316 — the route imports neither directly (both run inside the mocked
+  // getSharedDashboard), but mock ALL exports so a future direct call resolves
+  // to the real projection, not undefined (CLAUDE.md mock-all-exports rule).
+  projectSharedDashboardView: realDashboards.projectSharedDashboardView,
+  buildSharedParameterSummary: realDashboards.buildSharedParameterSummary,
   setRefreshSchedule: mock(() => Promise.resolve({ ok: true })),
   getDashboardsDueForRefresh: mock(() => Promise.resolve([])),
   lockDashboardForRefresh: mock(() => Promise.resolve(false)),
   refreshDashboardCards: mock(() => Promise.resolve({ refreshed: 0, failed: 0, total: 0 })),
   CardLayoutSchema: realDashboards.CardLayoutSchema,
   rowToCard: realDashboards.rowToCard,
+}));
+
+// #4315 — versioning mock. Keep everything REAL except the two DB-touching
+// seams the direct-manipulation + draft-aware-execution routes call
+// (`applyEditToDraft`, `loadDraft`). `isDashboardDraftsEnabled` stays real so
+// the env flag drives routing: the legacy suite runs flag-OFF (published
+// path, these spies never fire), the draft-first suite runs flag-ON.
+const realVersioning = await import("@atlas/api/lib/dashboard-versioning");
+type ApplyEditResult = import("@atlas/api/lib/dashboard-versioning").ApplyEditToDraftResult;
+type DraftRowT = import("@atlas/api/lib/dashboard-versioning").DraftRow;
+const mockApplyEditToDraft = mock(
+  (..._args: unknown[]): Promise<ApplyEditResult> =>
+    Promise.resolve({ ok: false, reason: "no_db" }),
+);
+const mockLoadDraft = mock(
+  (..._args: unknown[]): Promise<DraftRowT | null> => Promise.resolve(null),
+);
+mock.module("@atlas/api/lib/dashboard-versioning", () => ({
+  ...realVersioning,
+  applyEditToDraft: mockApplyEditToDraft,
+  loadDraft: mockLoadDraft,
 }));
 
 // #2368 — bound-chat-context mocks for the new sessions endpoints.
@@ -426,7 +497,14 @@ mock.module("@atlas/api/lib/config", () => ({
 }));
 
 import { createConnectionMock } from "@atlas/api/testing/connection";
-mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
+// #4318 — controllable so the preview-card org-check tests can force a
+// connection out of the caller's org (returns false → route 403s).
+const mockIsConnectionVisibleInMode = mock(
+  (..._args: unknown[]): Promise<boolean> => Promise.resolve(true),
+);
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({ isConnectionVisibleInMode: mockIsConnectionVisibleInMode }),
+);
 
 // Import after all mocks. The dynamic import avoids hoisting routes/dashboards.ts
 // past the mock.module() calls — a static `import` would load the module before
@@ -435,13 +513,21 @@ mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
 const { app } = await import("../index");
 // Reset the public-share rate limiter between tests so the new shared
 // anonymous-bucket ceiling (F-73) does not exhaust across the suite.
-const { _resetDashboardRateLimit } = await import("../routes/dashboards");
+const { _resetDashboardRateLimit, PUBLIC_RATE_MAX } = await import("../routes/dashboards");
 
 describe("dashboard routes", () => {
   const origDatabaseUrl = process.env.DATABASE_URL;
+  const origDraftsFlag = process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
 
   beforeEach(() => {
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    // #4315 — these cases assert the LEGACY direct-published CRUD path
+    // (addCard/updateCard/removeCard/updateDashboard call the published
+    // helpers). With drafts ON those direct-manipulation ops route to the
+    // caller's draft instead; that behavior is covered in
+    // `dashboards-drafts-routing.test.ts`. Opt out of the draft path here so
+    // this file keeps exercising the CRUD-forwarding + validation contract.
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
     capturedLogs.length = 0;
     mockAuthenticateRequest.mockReset();
     mockAuthenticateRequest.mockResolvedValue({
@@ -476,8 +562,12 @@ describe("dashboard routes", () => {
     mockRefreshCard.mockResolvedValue({ ok: true });
     mockGetCard.mockReset();
     mockGetCard.mockResolvedValue({ ok: true, data: mockCardData });
+    mockApplyEditToDraft.mockReset();
+    mockApplyEditToDraft.mockResolvedValue({ ok: false, reason: "no_db" });
+    mockLoadDraft.mockReset();
+    mockLoadDraft.mockResolvedValue(null);
     mockShareDashboard.mockReset();
-    mockShareDashboard.mockResolvedValue({ ok: true, data: { token: "share-token-123", expiresAt: null, shareMode: "public" } });
+    mockShareDashboard.mockResolvedValue({ ok: true, data: { token: "share-token-123", expiresAt: null, shareMode: "public", rotated: false } });
     mockUnshareDashboard.mockReset();
     mockUnshareDashboard.mockResolvedValue({ ok: true });
     mockGetShareStatus.mockReset();
@@ -494,6 +584,9 @@ describe("dashboard routes", () => {
       truncated: false,
       maskingApplied: false,
     });
+    // #4318 — default: every connection is in the caller's org (visible).
+    mockIsConnectionVisibleInMode.mockReset();
+    mockIsConnectionVisibleInMode.mockResolvedValue(true);
     mockListSessionsForDashboard.mockReset();
     mockListSessionsForDashboard.mockResolvedValue([]);
     mockGetSessionTranscript.mockReset();
@@ -503,6 +596,8 @@ describe("dashboard routes", () => {
   afterEach(() => {
     if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
     else delete process.env.DATABASE_URL;
+    if (origDraftsFlag === undefined) delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
+    else process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = origDraftsFlag;
   });
 
   // -------------------------------------------------------------------------
@@ -851,6 +946,63 @@ describe("dashboard routes", () => {
       const body = (await response.json()) as { error: string };
       expect(body.error).toBe("invalid_connection_group");
     });
+
+    // #4318 — REST/draft parity: a text / section card is creatable via REST.
+    it("creates a text card via REST, forwarding content (no sql) to addCard", async () => {
+      mockAddCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Section", kind: "text", content: "## Top of funnel" }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      const addArgs = mockAddCard.mock.calls[0] as unknown as [{ content?: string | null; sql: string }];
+      expect(addArgs[0].content).toBe("## Top of funnel");
+      // A text card stores sql = '' and never reaches the SQL pipeline.
+      expect(addArgs[0].sql).toBe("");
+    });
+
+    it("returns 422 for a text card with no content and never calls addCard (#4318)", async () => {
+      mockAddCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Section", kind: "text" }),
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    it("returns 422 for a text card that also carries sql and never calls addCard (#4318)", async () => {
+      mockAddCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Section", kind: "text", content: "# H", sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    it("returns 422 for a chart card that carries content and never calls addCard (#4318)", async () => {
+      mockAddCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // kind defaults to "chart"; `content` is only valid on a text card.
+          body: JSON.stringify({ title: "Revenue", sql: "SELECT 1", content: "# nope" }),
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -905,6 +1057,21 @@ describe("dashboard routes", () => {
       expect(clearResp.status).toBe(200);
       const clearArgs = mockUpdateCard.mock.calls[0] as unknown as [string, string, { annotations?: unknown }];
       expect(clearArgs[2].annotations).toEqual([]);
+    });
+
+    // #4318 — REST/draft parity: a card's SQL is editable via REST.
+    it("forwards a card-SQL edit to updateCard (#4318)", async () => {
+      mockUpdateCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT COUNT(*) FROM orders" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const args = mockUpdateCard.mock.calls[0] as unknown as [string, string, { sql?: string }];
+      expect(args[2].sql).toBe("SELECT COUNT(*) FROM orders");
     });
   });
 
@@ -1097,6 +1264,60 @@ describe("dashboard routes", () => {
       const callArgs = mockRunUserQueryPipeline.mock.calls[0][0];
       expect(callArgs).toMatchObject({ sql: "SELECT 1", connectionId: "analytics-replica" });
     });
+
+    // #4318 — preview-card verifies a client-supplied connectionId belongs to
+    // the caller's org BEFORE executing (parity with addCard's group check).
+    it("rejects a connectionId outside the caller's org with 403, never executing (#4318)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      // The connection is not visible in the caller's workspace.
+      mockIsConnectionVisibleInMode.mockResolvedValueOnce(false);
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1", connectionId: "other-org-conn" }),
+        }),
+      );
+      expect(response.status).toBe(403);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("connection_forbidden");
+      // Fail closed: the SQL never reached the pipeline.
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+      // The org check was actually consulted with the caller's org + connection.
+      expect(mockIsConnectionVisibleInMode).toHaveBeenCalledTimes(1);
+      const [orgArg, connArg] = mockIsConnectionVisibleInMode.mock.calls[0] as unknown as [string, string, string];
+      expect(orgArg).toBe("org-1");
+      expect(connArg).toBe("other-org-conn");
+    });
+
+    it("executes when the connectionId is in the caller's org (#4318)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockIsConnectionVisibleInMode.mockResolvedValueOnce(true);
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1", connectionId: "in-org-conn" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+    });
+
+    it("skips the org check when no connectionId is supplied (#4318)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockIsConnectionVisibleInMode.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockIsConnectionVisibleInMode).not.toHaveBeenCalled();
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1202,6 +1423,29 @@ describe("dashboard routes", () => {
       // date_from defaulted (a resolved ISO date), q supplied.
       expect(callArgs.parameters?.q).toBe("paid");
       expect(callArgs.parameters?.date_from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    // #4318 — a body-less POST falls back to parameter defaults (mirrors the
+    // export route's `?? {}`) rather than throwing a 500 on `undefined`.
+    it("renders with parameter defaults when the request has no body (never 500) (#4318)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: paramDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: paramCard });
+
+      // No body, no Content-Type — the body-less case that previously 500'd.
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+      const callArgs = mockRunUserQueryPipeline.mock.calls[0][0];
+      // Every parameter resolved to its default: date_from → an ISO date, q → its
+      // declared null default.
+      expect(callArgs.parameters?.date_from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(callArgs.parameters?.q).toBeNull();
     });
 
     it("rejects an invalid parameter value with 400 (never reaches the pipeline)", async () => {
@@ -1778,6 +2022,104 @@ describe("dashboard routes", () => {
       expect(body.error).toBe("invalid_request");
       expect(body.message).toContain("no organization");
     });
+
+    // -----------------------------------------------------------------------
+    // Fail-closed on share config (#4317)
+    //
+    // A PRESENT-yet-invalid body must return 400 and NEVER fall through to the
+    // safe defaults — the old parse-then-swallow path silently downgraded an
+    // org-intended share to `shareMode: "public"`. The load-bearing assertion
+    // is that `shareDashboard` is never reached on an invalid body, so no
+    // downgraded share can be written.
+    // -----------------------------------------------------------------------
+
+    it("returns 400 and never shares when the body is malformed JSON (#4317)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{ this is not json",
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("invalid_request");
+      expect(mockShareDashboard).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 for an invalid shareMode and never downgrades to public (#4317)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "everyone" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("invalid_request");
+      // Critical: the invalid body must NOT reach shareDashboard — if it did,
+      // the org-intended share would be written as public.
+      expect(mockShareDashboard).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 for an invalid expiresIn and never shares (#4317)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "org", expiresIn: "forever" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(mockShareDashboard).not.toHaveBeenCalled();
+    });
+
+    it("uses safe defaults for an empty body and forwards rotate=false (#4317)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockShareDashboard).toHaveBeenCalledTimes(1);
+      const opts = mockShareDashboard.mock.calls[0]?.[2] as { rotate?: boolean } | undefined;
+      expect(opts?.rotate).toBe(false);
+    });
+
+    it("forwards an explicit rotate=true to shareDashboard (#4317)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "public", rotate: true }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const opts = mockShareDashboard.mock.calls[0]?.[2] as { rotate?: boolean } | undefined;
+      expect(opts?.rotate).toBe(true);
+    });
+
+    // Positive control for the accept path: a VALID org body must reach
+    // shareDashboard with shareMode:"org" — proving the org intent is preserved
+    // end-to-end, not just that invalid bodies are rejected (#4317).
+    it("forwards a valid shareMode=org to shareDashboard (never dropped to public) (#4317)", async () => {
+      mockShareDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: { token: "org-share-tok", expiresAt: null, shareMode: "org", rotated: false },
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/share`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shareMode: "org", expiresIn: "24h" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const opts = mockShareDashboard.mock.calls[0]?.[2] as { shareMode?: string; expiresIn?: string | null } | undefined;
+      expect(opts?.shareMode).toBe("org");
+      expect(opts?.expiresIn).toBe("24h");
+    });
   });
 
   describe("DELETE /api/v1/dashboards/:id/share", () => {
@@ -1815,21 +2157,46 @@ describe("dashboard routes", () => {
     });
 
     it("returns 200 when shared dashboard exists", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          cards: [mockCardData],
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({
           shareMode: "public",
-        },
-      });
+          cards: [mockSharedCardData],
+          parameterSummary: [
+            { label: "Date", displayValue: "2026-06-01" },
+            { label: "Region", displayValue: "All" },
+          ],
+        }),
+      );
       const response = await app.fetch(
         new Request("http://localhost/api/public/dashboards/abc123def456ghi789jkl"),
       );
       expect(response.status).toBe(200);
-      const body = (await response.json()) as { title: string; cards: unknown[] };
+      const body = (await response.json()) as {
+        title: string;
+        cards: Array<Record<string, unknown>>;
+        parameterSummary: Array<{ label: string; displayValue: string }>;
+      };
       expect(body.title).toBe("Revenue Dashboard");
       expect(body.cards).toHaveLength(1);
+
+      // #4316 — the data-only projection: no query internals reach the wire.
+      // Absent at the dashboard level: owner/org ids, share token, refresh cron,
+      // and the live parameter DEFINITIONS.
+      for (const leaked of ["ownerId", "orgId", "shareToken", "refreshSchedule", "parameters", "id"]) {
+        expect(body).not.toHaveProperty(leaked);
+      }
+      // Absent at the card level: raw SQL + internal ids.
+      for (const card of body.cards) {
+        for (const leaked of ["sql", "connectionGroupId", "dashboardId"]) {
+          expect(card).not.toHaveProperty(leaked);
+        }
+      }
+      // Present: the frozen, display-only parameter summary — { label, displayValue }
+      // only, no keys/definitions/controls.
+      expect(body.parameterSummary).toEqual([
+        { label: "Date", displayValue: "2026-06-01" },
+        { label: "Region", displayValue: "All" },
+      ]);
     });
 
     it("returns 410 when share is expired", async () => {
@@ -1848,6 +2215,43 @@ describe("dashboard routes", () => {
     });
 
     // -----------------------------------------------------------------------
+    // Rate-limit per real viewer identity (#4317)
+    //
+    // The shared page is server-rendered and forwards the viewer's
+    // x-forwarded-for, so `getClientIP` resolves the real viewer. Each viewer
+    // must get its OWN bucket — exhausting one viewer must not rate-limit a
+    // different viewer (the pre-fix bug collapsed every viewer into the single
+    // web-server-IP bucket).
+    // -----------------------------------------------------------------------
+
+    it("rate-limits per real viewer identity, not one shared bucket (#4317)", async () => {
+      // Resolve the viewer from the forwarded header, mirroring getClientIP
+      // when ATLAS_TRUST_PROXY is set.
+      mockGetClientIP.mockImplementation((req: Request) => req.headers.get("x-forwarded-for"));
+
+      const hitAsViewer = (viewer: string) =>
+        app.fetch(
+          new Request("http://localhost/api/public/dashboards/abc123def456ghi789jkl", {
+            headers: { "x-forwarded-for": viewer },
+          }),
+        );
+
+      // PUBLIC_RATE_MAX requests / viewer / minute — the (MAX+1)th for viewer-A
+      // trips the limiter (requests below the ceiling fall through to the
+      // not_found default → 404, never 429).
+      let lastStatus = 0;
+      for (let i = 0; i < PUBLIC_RATE_MAX + 1; i++) {
+        lastStatus = (await hitAsViewer("viewer-a")).status;
+      }
+      expect(lastStatus).toBe(429);
+
+      // A DIFFERENT viewer is unaffected — the bucket keys on the viewer, not a
+      // single shared web-server bucket.
+      const viewerB = await hitAsViewer("viewer-b");
+      expect(viewerB.status).not.toBe(429);
+    });
+
+    // -----------------------------------------------------------------------
     // Org-scoped share regression tests (#1736 — F-01 class fail-open)
     //
     // Mirror the conversations.ts regression set from PR #1738: before the
@@ -1858,15 +2262,9 @@ describe("dashboard routes", () => {
     // -----------------------------------------------------------------------
 
     it("returns 403 auth_required for org-scoped shares when unauthenticated (#1736)", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: false as const,
         mode: "simple-key" as const,
@@ -1886,15 +2284,9 @@ describe("dashboard routes", () => {
     });
 
     it("returns 403 forbidden for org-scoped shares when requester has no active org (#1736)", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -1914,15 +2306,9 @@ describe("dashboard routes", () => {
     });
 
     it("returns 403 forbidden for org-scoped shares when requester belongs to a different org (#1736)", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -1947,15 +2333,13 @@ describe("dashboard routes", () => {
     });
 
     it("returns 200 for org-scoped shares when requester belongs to the dashboard's org (#1736)", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({
           orgId: "org-A",
-          cards: [mockCardData],
           shareMode: "org",
-        },
-      });
+          parameterSummary: [{ label: "Region", displayValue: "All" }],
+        }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -1973,25 +2357,38 @@ describe("dashboard routes", () => {
       );
       expect(response.status).toBe(200);
 
-      const body = (await response.json()) as { title: string; cards: unknown[]; shareMode: string };
+      const body = (await response.json()) as {
+        title: string;
+        cards: Array<Record<string, unknown>>;
+        shareMode: string;
+        parameterSummary: Array<{ label: string; displayValue: string }>;
+      };
       expect(body.shareMode).toBe("org");
       expect(body.title).toBe("Revenue Dashboard");
       expect(body.cards).toHaveLength(1);
+
+      // #4316 — the org (authenticated) mode gets the SAME data-only projection
+      // as public: no query internals, and the frozen parameter summary present.
+      // The route reads `access.orgId` for gating but serializes only `view`, so
+      // the org id can't ride along on the authenticated branch either.
+      for (const leaked of ["ownerId", "orgId", "shareToken", "refreshSchedule", "parameters", "id"]) {
+        expect(body).not.toHaveProperty(leaked);
+      }
+      for (const card of body.cards) {
+        for (const leaked of ["sql", "connectionGroupId", "dashboardId"]) {
+          expect(card).not.toHaveProperty(leaked);
+        }
+      }
+      expect(body.parameterSummary).toEqual([{ label: "Region", displayValue: "All" }]);
     });
 
     // Fail-closed regression for #1736 — the schema allows share_mode='org'
     // with org_id=NULL (createShareLink does not stamp orgId). Without a
     // fail-closed check, any authenticated caller could read such a row.
     it("returns 403 for org-scoped shares when the dashboard has no orgId (#1736)", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: null,
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: null, shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -2035,15 +2432,9 @@ describe("dashboard routes", () => {
 
     it("redacts share token in auth-failure log (#1743)", async () => {
       const rawToken = "abc123def456ghi789jkl";
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockImplementationOnce(() =>
         Promise.reject(new Error("session store unavailable")),
       );
@@ -2065,15 +2456,9 @@ describe("dashboard routes", () => {
 
     it("redacts share token and records actor in denial log (#1743)", async () => {
       const rawToken = "abc123def456ghi789jkl";
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -2124,15 +2509,9 @@ describe("dashboard routes", () => {
 
     it("redacts share token in denial log when actor has no active org (#1743)", async () => {
       const rawToken = "abc123def456ghi789jkl";
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -2762,5 +3141,458 @@ describe("dashboard routes", () => {
       expect(response.status).toBe(422);
       expect(mockExportDashboard).not.toHaveBeenCalled();
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // #4315 — draft-first editing spine. With drafts ON + a real user, every
+  // direct-manipulation edit routes to the caller's DRAFT; nothing but publish
+  // writes the published tables. Draft-aware execution runs the draft's SQL.
+  // -------------------------------------------------------------------------
+  describe("draft-first routing (#4315)", () => {
+    const DASH_WITH_CARD = {
+      ...mockDashboardData,
+      cards: [mockCardData],
+    };
+    const draftView = {
+      ...mockDashboardData,
+      lastRefreshAt: null,
+      nextRefreshAt: null,
+      cards: [],
+    };
+
+    beforeEach(() => {
+      // The parent beforeEach forces the flag OFF; opt back IN for this suite.
+      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "true";
+      mockGetDashboard.mockResolvedValue({ ok: true, data: DASH_WITH_CARD });
+      mockApplyEditToDraft.mockResolvedValue({
+        ok: true,
+        snapshot: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [],
+        },
+        // Test fixture: `mockDashboardData` carries `cardCount` (a list-view
+        // field) and the route only echoes the view back, so cast at the
+        // boundary rather than reconstruct the full wire type.
+        view: draftView as unknown as Extract<ApplyEditResult, { ok: true }>["view"],
+      });
+    });
+
+    it("PATCH /:id routes a rename to the draft, never the published table", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Renamed" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; title?: string },
+      ];
+      expect(change).toMatchObject({ kind: "updateMeta", title: "Renamed" });
+      // The published title was NOT touched.
+      expect(mockUpdateDashboard).not.toHaveBeenCalled();
+    });
+
+    it("POST /:id/cards stages the new card into the draft (published addCard not called)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "New card",
+            sql: "SELECT 1",
+            chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+          }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; card?: { title: string; sql: string } },
+      ];
+      expect(change.kind).toBe("addCard");
+      expect(change.card).toMatchObject({ title: "New card", sql: "SELECT 1" });
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    // #4318 — a text card creates via REST into the draft: content carried,
+    // sql = '' (a text card never touches the SQL pipeline).
+    it("POST /:id/cards stages a TEXT card into the draft with content + empty sql (#4318)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Section", kind: "text", content: "## Funnel" }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; card?: { content?: string | null; sql: string } },
+      ];
+      expect(change.kind).toBe("addCard");
+      expect(change.card).toMatchObject({ content: "## Funnel", sql: "" });
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    // #4318 — a card-SQL edit routes to the draft's updateCard change.
+    it("PATCH /:id/cards/:cardId routes a SQL edit to the draft updateCard change (#4318)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 42" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; cardId: string; updates: { sql?: string } },
+      ];
+      expect(change).toMatchObject({ kind: "updateCard", cardId: VALID_CARD_ID });
+      expect(change.updates).toMatchObject({ sql: "SELECT 42" });
+      expect(mockUpdateCard).not.toHaveBeenCalled();
+    });
+
+    it("PATCH /:id/cards/:cardId updates the draft card (published updateCard not called)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Edited" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; cardId: string; updates: { title?: string } },
+      ];
+      expect(change).toMatchObject({ kind: "updateCard", cardId: VALID_CARD_ID });
+      expect(change.updates).toMatchObject({ title: "Edited" });
+      expect(mockUpdateCard).not.toHaveBeenCalled();
+    });
+
+    it("DELETE /:id/cards/:cardId removes from the draft (published removeCard not called)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(204);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; cardId: string },
+      ];
+      expect(change).toMatchObject({ kind: "removeCard", cardId: VALID_CARD_ID });
+      expect(mockRemoveCard).not.toHaveBeenCalled();
+    });
+
+    it("returns 503 and never publishes when the draft store is unavailable", async () => {
+      mockApplyEditToDraft.mockResolvedValueOnce({ ok: false, reason: "no_db" });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "New card",
+            sql: "SELECT 1",
+            chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+          }),
+        }),
+      );
+      expect(response.status).toBe(503);
+      // Critically: it did NOT silently fall back to writing published.
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    it("render?view=draft executes the DRAFT card's SQL, not the published SQL", async () => {
+      mockLoadDraft.mockResolvedValue({
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [
+            {
+              id: VALID_CARD_ID,
+              position: 0,
+              title: "Total Revenue",
+              sql: "SELECT draft_only_sql",
+              chartConfig: null,
+              connectionGroupId: null,
+              layout: null,
+            },
+          ],
+        },
+        baseline: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [],
+        },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?view=draft`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parameters: {} }),
+          },
+        ),
+      );
+      expect(response.status).toBe(200);
+      expect(mockRunUserQueryPipeline).toHaveBeenCalled();
+      const runArg = mockRunUserQueryPipeline.mock.calls[0][0];
+      expect(runArg.sql).toBe("SELECT draft_only_sql");
+    });
+
+    it("refresh?view=draft runs the draft SQL and does NOT persist to the published cache", async () => {
+      mockLoadDraft.mockResolvedValue({
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [
+            {
+              id: VALID_CARD_ID,
+              position: 0,
+              title: "Total Revenue",
+              sql: "SELECT draft_refresh_sql",
+              chartConfig: null,
+              connectionGroupId: null,
+              layout: null,
+            },
+          ],
+        },
+        baseline: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [],
+        },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/refresh?view=draft`,
+          { method: "POST" },
+        ),
+      );
+      expect(response.status).toBe(200);
+      const runArg = mockRunUserQueryPipeline.mock.calls[0][0];
+      expect(runArg.sql).toBe("SELECT draft_refresh_sql");
+      // The invariant: a draft refresh never writes the published card cache.
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+      // The freshly-run rows are overlaid on the draft card, in-memory.
+      const body = (await response.json()) as {
+        id: string;
+        cachedColumns: string[];
+        cachedRows: Record<string, unknown>[];
+        cachedAt: string | null;
+      };
+      expect(body.id).toBe(VALID_CARD_ID);
+      expect(body.cachedColumns).toEqual(["month", "total"]);
+      expect(body.cachedRows).toEqual([{ month: "Jan", total: 1000 }]);
+      expect(typeof body.cachedAt).toBe("string");
+    });
+
+    it("render?view=draft 404s when the card was removed in the draft (never runs published)", async () => {
+      // A draft exists, but its snapshot no longer contains VALID_CARD_ID.
+      mockLoadDraft.mockResolvedValue({
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        baseline: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?view=draft`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parameters: {} }),
+          },
+        ),
+      );
+      expect(response.status).toBe(404);
+      // Critically: it did NOT silently run the published card under the draft view.
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+    });
+
+    it("refresh?view=draft 404s when the card was removed in the draft", async () => {
+      mockLoadDraft.mockResolvedValue({
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        baseline: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/refresh?view=draft`,
+          { method: "POST" },
+        ),
+      );
+      expect(response.status).toBe(404);
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+    });
+
+    it("CSV export with view=draft streams the DRAFT card's data", async () => {
+      mockLoadDraft.mockResolvedValue({
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [
+            {
+              id: VALID_CARD_ID,
+              position: 0,
+              title: "Total Revenue",
+              sql: "SELECT draft_csv_sql",
+              chartConfig: null,
+              connectionGroupId: null,
+              layout: null,
+            },
+          ],
+        },
+        baseline: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?format=csv&view=draft`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parameters: {} }),
+          },
+        ),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toContain("text/csv");
+      // The CSV ran the DRAFT SQL, not the published SQL.
+      const runArg = mockRunUserQueryPipeline.mock.calls[0][0];
+      expect(runArg.sql).toBe("SELECT draft_csv_sql");
+    });
+
+    it("PATCH /:id with ONLY parameters writes the live row (never the draft)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: [{ key: "region", type: "text", label: "Region" }] }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      // Parameters are operational metadata (ADR-0029) — they stay on the live
+      // row and NEVER route to the draft snapshot.
+      expect(mockUpdateDashboard).toHaveBeenCalledTimes(1);
+      expect(mockApplyEditToDraft).not.toHaveBeenCalled();
+    });
+
+    it("PATCH /:id with {title, parameters} splits: title→draft, parameters→live row", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "Renamed",
+            parameters: [{ key: "region", type: "text", label: "Region" }],
+          }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      // parameters → live row
+      expect(mockUpdateDashboard).toHaveBeenCalledTimes(1);
+      const [, , updates] = mockUpdateDashboard.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { parameters?: unknown; title?: string },
+      ];
+      expect(updates).toHaveProperty("parameters");
+      expect(updates).not.toHaveProperty("title");
+      // title → draft
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; title?: string },
+      ];
+      expect(change).toMatchObject({ kind: "updateMeta", title: "Renamed" });
+    });
+
+    it("maps applyEditToDraft unknown_card → 404 and save_failed → 500", async () => {
+      mockApplyEditToDraft.mockResolvedValueOnce({ ok: false, reason: "unknown_card", cardId: VALID_CARD_ID });
+      const r404 = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Edited" }),
+        }),
+      );
+      expect(r404.status).toBe(404);
+
+      mockApplyEditToDraft.mockResolvedValueOnce({ ok: false, reason: "save_failed" });
+      const r500 = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Edited" }),
+        }),
+      );
+      expect(r500.status).toBe(500);
+    });
+
+    it("maps applyEditToDraft load_failed → 500 (transient, distinct from no_db 503)", async () => {
+      mockApplyEditToDraft.mockResolvedValueOnce({ ok: false, reason: "load_failed" });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "New card",
+            sql: "SELECT 1",
+            chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+          }),
+        }),
+      );
+      expect(response.status).toBe(500);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
   });
 });

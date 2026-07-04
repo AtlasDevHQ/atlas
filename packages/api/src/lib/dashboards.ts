@@ -23,8 +23,13 @@ import type {
   DashboardWithCards,
   DashboardChartConfig,
   DashboardParameter,
+  SharedDashboardCard,
+  SharedDashboardParameterSummaryItem,
+  SharedDashboardView,
 } from "@atlas/api/lib/dashboard-types";
 import { DASHBOARD_GRID } from "@atlas/api/lib/dashboard-types";
+import { getSetting } from "@atlas/api/lib/settings";
+import { resolveDateExpression, DashboardParameterError } from "@atlas/api/lib/dashboard-parameters";
 import { dashboardParametersSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
@@ -202,6 +207,31 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
   };
 }
 
+/**
+ * First-publish visibility gate (#4320). A never-published dashboard
+ * (`first_published_at IS NULL`) is private to its creator; once published it
+ * is org-visible permanently. Returns `null` (no clause) when `viewerId` is
+ * omitted — that's the deliberate opt-out for system/owner-internal callers
+ * (the publish merge's own baseline load, auto-refresh, agent tools acting on
+ * an already-bound board) that must still resolve a never-published row. Every
+ * USER-FACING read surface passes `viewerId` so the gate is enforced at the
+ * request boundary, where the acting identity lives.
+ */
+function firstPublishVisibilityClause(
+  viewerId: string | null | undefined,
+  params: unknown[],
+  paramIdx: number,
+  tableAlias?: string,
+): { clause: string | null; nextIdx: number } {
+  if (viewerId == null) return { clause: null, nextIdx: paramIdx };
+  const prefix = tableAlias ? `${tableAlias}.` : "";
+  params.push(viewerId);
+  return {
+    clause: `(${prefix}first_published_at IS NOT NULL OR ${prefix}owner_id = $${paramIdx})`,
+    nextIdx: paramIdx + 1,
+  };
+}
+
 function orgScopeClause(
   orgId: string | null | undefined,
   params: unknown[],
@@ -338,18 +368,21 @@ export async function createDashboard(opts: {
 
 export async function getDashboard(
   id: string,
-  scope: { orgId?: string | null },
+  scope: { orgId?: string | null; viewerId?: string | null },
 ): Promise<CrudDataResult<DashboardWithCards>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const params: unknown[] = [id];
     const org = orgScopeClause(scope.orgId, params, 2, "d");
+    // #4320 — a never-published dashboard is only readable by its creator.
+    const vis = firstPublishVisibilityClause(scope.viewerId, params, org.nextIdx, "d");
+    const visClause = vis.clause ? ` AND ${vis.clause}` : "";
     const dashRows = await internalQuery<Record<string, unknown>>(
       `SELECT d.*, COALESCE(cc.cnt, 0)::int AS card_count
        FROM dashboards d
        LEFT JOIN (SELECT dashboard_id, COUNT(*)::int AS cnt FROM dashboard_cards GROUP BY dashboard_id) cc
          ON cc.dashboard_id = d.id
-       WHERE d.id = $1 AND ${org.clause} AND d.deleted_at IS NULL`,
+       WHERE d.id = $1 AND ${org.clause}${visClause} AND d.deleted_at IS NULL`,
       params,
     );
     if (dashRows.length === 0) return { ok: false, reason: "not_found" };
@@ -373,6 +406,7 @@ export async function getDashboard(
 
 export async function listDashboards(opts?: {
   orgId?: string | null;
+  viewerId?: string | null;
   limit?: number;
   offset?: number;
 }): Promise<CrudDataResult<{ dashboards: Dashboard[]; total: number }>> {
@@ -387,7 +421,12 @@ export async function listDashboards(opts?: {
     const org = orgScopeClause(opts?.orgId, params, paramIdx, "d");
     paramIdx = org.nextIdx;
 
-    const where = `WHERE ${org.clause} AND d.deleted_at IS NULL`;
+    // #4320 — never-published dashboards surface only in their creator's list.
+    const vis = firstPublishVisibilityClause(opts?.viewerId, params, paramIdx, "d");
+    paramIdx = vis.nextIdx;
+    const visClause = vis.clause ? ` AND ${vis.clause}` : "";
+
+    const where = `WHERE ${org.clause}${visClause} AND d.deleted_at IS NULL`;
 
     const [countRows, dataRows] = await Promise.all([
       internalQuery<Record<string, unknown>>(
@@ -498,6 +537,10 @@ export async function addCard(opts: {
   title: string;
   sql: string;
   chartConfig?: DashboardChartConfig | null;
+  /** #3138 / #4318 — markdown body of a text / section card. NULL/omitted for a
+   *  chart card; the card kind is DERIVED from this column's presence in
+   *  `rowToCard`. A text card stores sql = '' and content = markdown. */
+  content?: string | null;
   /** Event annotations (#3209) — dated markers on a time-series card. Defaults
    *  to none (empty array) when omitted; never null (the column is NOT NULL). */
   annotations?: DashboardCardAnnotation[];
@@ -517,8 +560,8 @@ export async function addCard(opts: {
     const nextPos = (posRows[0]?.next_pos as number) ?? 0;
 
     const rows = await internalQuery<Record<string, unknown>>(
-      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, annotations, cached_columns, cached_rows, cached_at, connection_group_id, layout)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, content, annotations, cached_columns, cached_rows, cached_at, connection_group_id, layout)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING *`,
       [
         opts.dashboardId,
@@ -526,6 +569,9 @@ export async function addCard(opts: {
         opts.title,
         opts.sql,
         opts.chartConfig ? JSON.stringify(opts.chartConfig) : null,
+        // 0117 — NULL for a chart card; markdown for a text card. `rowToCard`
+        // derives the kind from this column's presence (#3138 / #4318).
+        opts.content ?? null,
         // 0121 — the column is NOT NULL DEFAULT '[]'; pass the explicit array
         // (or '[]' when absent) so a card always persists a defined value.
         JSON.stringify(opts.annotations ?? []),
@@ -553,6 +599,10 @@ export async function updateCard(
   dashboardId: string,
   updates: {
     title?: string;
+    /** #4318 — replace the card's SQL in place (REST card-SQL edit parity).
+     *  Omitted leaves the query unchanged; the new query is validated at
+     *  render/refresh time through the full pipeline, not on store. */
+    sql?: string;
     chartConfig?: DashboardChartConfig | null;
     /** Event annotations (#3209). `null` / omitted leaves them unchanged; an
      *  explicit array (including `[]`) replaces the card's markers. */
@@ -570,6 +620,10 @@ export async function updateCard(
   if (updates.title !== undefined) {
     setClauses.push(`title = $${paramIdx++}`);
     params.push(updates.title);
+  }
+  if (updates.sql !== undefined) {
+    setClauses.push(`sql = $${paramIdx++}`);
+    params.push(updates.sql);
   }
   if (updates.chartConfig !== undefined) {
     setClauses.push(`chart_config = $${paramIdx++}`);
@@ -680,9 +734,12 @@ export async function getCard(
 /** Failure reason for shareDashboard — extends CrudFailReason with the invariant violation. */
 export type ShareDashboardFailReason = CrudFailReason | "invalid_org_scope";
 
-/** Result type for shareDashboard — carries the broader failure enum. */
+/** Result type for shareDashboard — carries the broader failure enum.
+ *  `rotated` is true only when a PRE-EXISTING share token was replaced by a new
+ *  one (an explicit rotation that invalidated prior links) — never on the
+ *  first-time creation of a share. Lets the caller warn that old links died. */
 export type ShareDashboardResult =
-  | { ok: true; data: { token: string; expiresAt: string | null; shareMode: ShareMode } }
+  | { ok: true; data: { token: string; expiresAt: string | null; shareMode: ShareMode; rotated: boolean } }
   | { ok: false; reason: ShareDashboardFailReason };
 
 /**
@@ -699,11 +756,16 @@ export type ShareDashboardResult =
 export async function shareDashboard(
   id: string,
   scope: { orgId?: string | null },
-  opts?: { expiresIn?: ShareExpiryKey | null; shareMode?: ShareMode },
+  opts?: { expiresIn?: ShareExpiryKey | null; shareMode?: ShareMode; rotate?: boolean },
 ): Promise<ShareDashboardResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const token = generateShareToken();
+    // A freshly-minted token used ONLY when there is no existing share, or when
+    // the caller explicitly asked to rotate. Editing a live share's expiry or
+    // visibility must NOT silently mint a new token — that would break every
+    // previously-distributed link. Rotation is opt-in via `rotate` (#4317).
+    const candidateToken = generateShareToken();
+    const rotate = opts?.rotate ?? false;
     const expiresAt = computeExpiresAt(opts?.expiresIn);
     const shareMode: ShareMode = opts?.shareMode ?? "public";
 
@@ -736,17 +798,33 @@ export async function shareDashboard(
       }
     }
 
-    const params: unknown[] = [token, expiresAt, shareMode, id];
-    const org = orgScopeClause(scope.orgId, params, 5);
+    // Capture the prior token in a CTE so the UPDATE can PRESERVE it (unless
+    // `rotate`) and so we can report whether a live link was invalidated —
+    // still a single round-trip. `prev.old_token IS NULL` covers the
+    // first-time-share case, where there is no existing link to preserve.
+    const params: unknown[] = [candidateToken, expiresAt, shareMode, rotate, id];
+    const org = orgScopeClause(scope.orgId, params, 6, "src");
 
-    const rows = await internalQuery<{ share_token: string }>(
-      `UPDATE dashboards SET share_token = $1, share_expires_at = $2, share_mode = $3, updated_at = now()
-       WHERE id = $4 AND ${org.clause} AND deleted_at IS NULL
-       RETURNING share_token`,
+    const rows = await internalQuery<{ share_token: string; old_token: string | null }>(
+      `WITH prev AS (
+         SELECT src.id, src.share_token AS old_token FROM dashboards src
+         WHERE src.id = $5 AND ${org.clause} AND src.deleted_at IS NULL
+       )
+       UPDATE dashboards d
+       SET share_token = CASE WHEN $4::boolean OR prev.old_token IS NULL THEN $1 ELSE prev.old_token END,
+           share_expires_at = $2,
+           share_mode = $3,
+           updated_at = now()
+       FROM prev
+       WHERE d.id = prev.id
+       RETURNING d.share_token AS share_token, prev.old_token AS old_token`,
       params,
     );
     if (rows.length === 0) return { ok: false, reason: "not_found" };
-    return { ok: true, data: { token: rows[0].share_token, expiresAt, shareMode } };
+    const token = rows[0].share_token;
+    const oldToken = rows[0].old_token ?? null;
+    const rotated = oldToken !== null && token !== oldToken;
+    return { ok: true, data: { token, expiresAt, shareMode, rotated } };
   } catch (err) {
     log.error({ err: errorMessage(err) }, "shareDashboard failed");
     return { ok: false, reason: "error" };
@@ -811,10 +889,113 @@ export async function getShareStatus(
 
 export type SharedDashboardFailReason = "no_db" | "not_found" | "expired" | "error";
 
+/**
+ * Access-control facts a share request needs to gate on, kept SEPARATE from the
+ * serialized {@link SharedDashboardView} (#4316). `orgId` is an internal id the
+ * viewer must never receive, but the route needs it to verify org membership —
+ * returning it here (not on the view) lets the handler gate without ever being
+ * able to spill it into the JSON body it returns.
+ */
+export interface SharedDashboardAccess {
+  shareMode: ShareMode;
+  orgId: string | null;
+}
+
+/**
+ * Format one dashboard parameter as a frozen, display-only summary value
+ * (#4316). Resolves the parameter's DEFAULT (the value the cached snapshot was
+ * built with) to a human string — never the `key`, `type`, or raw default
+ * expression. A `null` default reads as "All" (an unfiltered dimension, e.g.
+ * "Region: All"). A relative-date default (`now - 30 days`) is resolved to a
+ * concrete ISO date via the same server-side resolver the render path uses.
+ */
+function formatParameterDisplayValue(param: DashboardParameter, now: Date): string {
+  if (param.default === null || param.default === undefined) return "All";
+  if (param.type === "date") {
+    try {
+      return resolveDateExpression(String(param.default), now);
+    } catch (err) {
+      // `resolveDateExpression` throws ONLY `DashboardParameterError` on a
+      // malformed default. Narrow to it and re-throw anything else, so a future
+      // resolver change that throws a different error isn't silently relabeled
+      // as an "unparseable date". A malformed date must not break the whole
+      // shared snapshot — fall back to the raw literal (display-only text,
+      // never bound to SQL here). Logged so a bad persisted default stays
+      // visible.
+      if (!(err instanceof DashboardParameterError)) throw err;
+      log.warn(
+        { paramKey: param.key, default: param.default, err: errorMessage(err) },
+        "Shared parameter summary: unparseable date default — using raw literal",
+      );
+      return String(param.default);
+    }
+  }
+  return String(param.default);
+}
+
+/**
+ * Build the frozen `{ label, displayValue }` parameter summary for a shared
+ * snapshot (#4316) — one entry per declared parameter, in declaration order.
+ * Display-only: no keys, no definitions, no controls. Exported for unit tests.
+ */
+export function buildSharedParameterSummary(
+  parameters: DashboardParameter[] | null | undefined,
+  now: Date = new Date(),
+): SharedDashboardParameterSummaryItem[] {
+  return (parameters ?? []).map((param) => ({
+    label: param.label,
+    displayValue: formatParameterDisplayValue(param, now),
+  }));
+}
+
+/** Project one full {@link DashboardCard} down to the data-only shared shape
+ *  (#4316). Field-by-field construction — NOT a spread-then-delete — so `sql`
+ *  and the internal ids (`dashboardId`, `connectionGroupId`) are structurally
+ *  never copied across, and a new field on `DashboardCard` cannot ride along by
+ *  omission. */
+function projectSharedCard(card: DashboardCard): SharedDashboardCard {
+  return {
+    id: card.id,
+    position: card.position,
+    title: card.title,
+    kind: card.kind,
+    chartConfig: card.chartConfig,
+    content: card.content,
+    annotations: card.annotations,
+    cachedColumns: card.cachedColumns,
+    cachedRows: card.cachedRows,
+    cachedAt: card.cachedAt,
+    layout: card.layout,
+  };
+}
+
+/**
+ * Project a full {@link DashboardWithCards} into the minimal, data-only
+ * {@link SharedDashboardView} the share endpoint serializes (#4316). The
+ * projection is the single place the shared payload is constructed for BOTH
+ * public and org share modes — one shape, no per-mode divergence. Exported for
+ * unit tests. `now` is injectable for deterministic parameter-summary dates.
+ */
+export function projectSharedDashboardView(
+  dashboard: DashboardWithCards,
+  now: Date = new Date(),
+): SharedDashboardView {
+  return {
+    title: dashboard.title,
+    description: dashboard.description,
+    shareMode: dashboard.shareMode,
+    cards: dashboard.cards.map(projectSharedCard),
+    parameterSummary: buildSharedParameterSummary(dashboard.parameters, now),
+    createdAt: dashboard.createdAt,
+    updatedAt: dashboard.updatedAt,
+    lastRefreshAt: dashboard.lastRefreshAt,
+  };
+}
+
 export async function getSharedDashboard(
   token: string,
 ): Promise<
-  | { ok: true; data: DashboardWithCards }
+  | { ok: true; view: SharedDashboardView; access: SharedDashboardAccess }
   | { ok: false; reason: SharedDashboardFailReason }
 > {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
@@ -840,15 +1021,16 @@ export async function getSharedDashboard(
     );
 
     const dashboard = rowToDashboard(dash);
-    // Strip shareToken from public response — callers already know the token
-    const { cardCount: _, shareToken: _token, ...rest } = dashboard;
+    const view = projectSharedDashboardView(
+      { ...dashboard, cards: cardRows.map(rowToCard) },
+      new Date(),
+    );
+    // `orgId` rides in `access`, not `view` — the route gates org membership on
+    // it but can only serialize `view`, so the internal id can't leak (#4316).
     return {
       ok: true,
-      data: {
-        ...rest,
-        shareToken: null,
-        cards: cardRows.map(rowToCard),
-      },
+      view,
+      access: { shareMode: dashboard.shareMode, orgId: dashboard.orgId },
     };
   } catch (err) {
     log.error({ err: errorMessage(err) }, "getSharedDashboard failed");
@@ -878,6 +1060,63 @@ export async function getDashboardsDueForRefresh(): Promise<Dashboard[]> {
   } catch (err) {
     log.error({ err: errorMessage(err) }, "getDashboardsDueForRefresh failed");
     return [];
+  }
+}
+
+/** Default retention window before an abandoned never-published shell is swept. */
+export const DEFAULT_ABANDON_CLEANUP_HOURS = 72;
+
+/**
+ * Soft-delete abandoned never-published dashboard shells (#4320). A shell is
+ * "abandoned" when it was NEVER published (`first_published_at IS NULL`), has
+ * NO published cards AND NO in-flight per-user drafts (so the sweep can never
+ * destroy real work), and was created longer than the retention window ago.
+ * These rows are already invisible to everyone but their creator via the
+ * first-publish gate — this sweep stops empty shells accumulating in the
+ * creator's own list and in the table.
+ *
+ * The window is the platform setting `ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS`
+ * (default {@link DEFAULT_ABANDON_CLEANUP_HOURS}); a value <= 0 disables the
+ * sweep entirely. Returns the number of shells soft-deleted.
+ */
+export async function cleanupAbandonedDashboards(now: Date = new Date()): Promise<number> {
+  if (!hasInternalDB()) return 0;
+
+  const raw = getSetting("ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS");
+  const hours = raw == null || raw === "" ? DEFAULT_ABANDON_CLEANUP_HOURS : Number(raw);
+  if (!Number.isFinite(hours)) {
+    log.warn(
+      { value: raw },
+      "Invalid ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS — skipping abandoned-dashboard cleanup",
+    );
+    return 0;
+  }
+  // A non-positive window disables the sweep (operator opt-out).
+  if (hours <= 0) return 0;
+
+  const cutoff = new Date(now.getTime() - hours * 3_600_000).toISOString();
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE dashboards d
+          SET deleted_at = now(), updated_at = now()
+        WHERE d.first_published_at IS NULL
+          AND d.deleted_at IS NULL
+          AND d.created_at < $1
+          AND NOT EXISTS (SELECT 1 FROM dashboard_cards c WHERE c.dashboard_id = d.id)
+          AND NOT EXISTS (SELECT 1 FROM dashboard_user_drafts u WHERE u.dashboard_id = d.id)
+        RETURNING d.id`,
+      [cutoff],
+    );
+    if (rows.length > 0) {
+      log.info(
+        { count: rows.length, hours },
+        "Swept abandoned never-published dashboard shells",
+      );
+    }
+    return rows.length;
+  } catch (err) {
+    log.error({ err: errorMessage(err) }, "cleanupAbandonedDashboards failed");
+    return 0;
   }
 }
 

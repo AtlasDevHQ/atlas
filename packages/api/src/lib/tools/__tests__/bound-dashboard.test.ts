@@ -148,6 +148,7 @@ async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
 
 describe("createBoundDashboardTools", () => {
   const origDbUrl = process.env.DATABASE_URL;
+  const origDraftsFlag = process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
 
   beforeEach(() => {
     queryCalls = [];
@@ -157,12 +158,22 @@ describe("createBoundDashboardTools", () => {
     screenshotMock.mockClear();
     invalidateScreenshotMock.mockClear();
     delete process.env.DATABASE_URL;
+    // #4315 — this file asserts the LEGACY direct-published tool wiring
+    // (addCard → lib.addCard, updateDashboardMeta → UPDATE dashboards).
+    // With drafts ON those ops route to the caller's draft, and an anonymous
+    // (userId-less) `ctx` is now REJECTED rather than silently written to
+    // published (the closed privacy hole). Force the flag OFF so these cases
+    // keep exercising the direct-published path; the drafts-ON behavior lives
+    // in `bound-dashboard-drafts.test.ts`.
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
     _resetPool(null);
   });
 
   afterEach(() => {
     if (origDbUrl) process.env.DATABASE_URL = origDbUrl;
     else delete process.env.DATABASE_URL;
+    if (origDraftsFlag === undefined) delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
+    else process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = origDraftsFlag;
     _resetPool(null);
   });
 

@@ -16,6 +16,9 @@ export type {
   DashboardSuggestion,
   DashboardParameter,
   DashboardParameterType,
+  SharedDashboardCard,
+  SharedDashboardParameterSummaryItem,
+  SharedDashboardView,
 } from "@useatlas/types";
 
 export { CHART_TYPES } from "@useatlas/types";

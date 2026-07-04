@@ -1363,6 +1363,41 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // Dashboards — max simultaneous headless renders (screenshot + PDF/PNG
+  // export share one Chromium). Hot-reloadable: `getRenderConcurrency()` reads
+  // per acquire. Excess requests queue rather than spawning unbounded browser
+  // contexts. Clamped to [1, 16].
+  {
+    key: "ATLAS_DASHBOARD_RENDER_CONCURRENCY",
+    section: "Dashboards",
+    label: "Headless Render Concurrency",
+    description:
+      "Max simultaneous dashboard screenshot/export renders on the shared headless Chromium; excess requests queue (default 3, clamped to 1–16).",
+    type: "number",
+    default: "3",
+    envVar: "ATLAS_DASHBOARD_RENDER_CONCURRENCY",
+    scope: "platform",
+    saasVisible: false,
+  },
+
+  // Dashboards — retention window before an abandoned never-published shell is
+  // swept (#4320). A never-published dashboard with no cards and no drafts,
+  // created longer than this many hours ago, is soft-deleted by the scheduler
+  // sweep. `0` (or less) disables the sweep. Hot-reloadable:
+  // `cleanupAbandonedDashboards()` reads it per tick.
+  {
+    key: "ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS",
+    section: "Dashboards",
+    label: "Abandoned Shell Cleanup (hours)",
+    description:
+      "Hours a never-published, empty dashboard shell (no cards, no drafts) may sit before the scheduler soft-deletes it. 0 disables cleanup (default 72).",
+    type: "number",
+    default: "72",
+    envVar: "ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS",
+    scope: "platform",
+    saasVisible: false,
+  },
+
   // Observability — plugin-health probe cache TTL. Hot-reloadable:
   // `getPluginHealthCacheTtlMs()` reads per health probe. (OTEL exporter
   // endpoint/headers are intentionally NOT here — see the block header above.)

@@ -186,7 +186,7 @@ export default function AuditPage() {
     defaultPerPage: LIMIT,
     defaultSorting: [{ id: "timestamp", desc: true }],
     schema: AuditRowsResponseSchema,
-    select: (r) => ({ rows: r.rows as AuditRow[], total: r.total }),
+    select: (r) => ({ rows: r.rows, total: r.total }),
     enabled: tab !== "analytics",
     buildPath: (binding) =>
       `/api/v1/admin/audit?${buildQueryString({

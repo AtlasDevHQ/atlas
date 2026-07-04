@@ -197,6 +197,14 @@ export const AuditRowsResponseSchema = z.object({
   total: z.number(),
 });
 
+/**
+ * The audit-row shape, derived from {@link AuditRowSchema} so the schema is the
+ * single source of truth. The audit table's `columns.tsx` re-exports this;
+ * deriving it (rather than hand-writing a parallel interface) means a schema
+ * change can't silently drift from the rendered table (#4278).
+ */
+export type AuditRow = z.infer<typeof AuditRowSchema>;
+
 // `AuditConnectionMetaSchema` removed in #2444 — the audit page now reuses
 // the canonical `ConnectionsResponseSchema` so every consumer of
 // `/api/v1/admin/connections` shares the same TanStack Query cache shape

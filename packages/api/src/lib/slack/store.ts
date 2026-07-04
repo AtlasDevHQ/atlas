@@ -212,7 +212,8 @@ interface SlackSaveInput {
 const slackBackend: InstallationBackend<
   SlackInstallationWithSecret,
   SlackInstallation,
-  SlackSaveInput
+  SlackSaveInput,
+  "bot_token"
 > = {
   name: "Slack",
   routingNoun: "Slack workspace",

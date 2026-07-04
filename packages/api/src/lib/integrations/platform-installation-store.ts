@@ -87,8 +87,16 @@ export function decryptOrHide<Cipher>(
  * @typeParam Full - the with-secret record (e.g. `SlackInstallationWithSecret`).
  * @typeParam Public - the secret-stripped record returned by `getByOrg`.
  * @typeParam SaveInput - the platform-shaped save payload.
+ * @typeParam SecretKey - the key(s) `toPublic` must strip (e.g. `"bot_token"`).
+ *   Defaults to `never` (no compile-time strip enforcement); real backends name
+ *   their secret so a pass-through `toPublic` fails `tsgo` — see `toPublic`.
  */
-export interface InstallationBackend<Full, Public, SaveInput> {
+export interface InstallationBackend<
+  Full,
+  Public,
+  SaveInput,
+  SecretKey extends keyof Full = never,
+> {
   /** Platform name for log/error text, e.g. `"Slack"` / `"Discord"`. */
   readonly name: string;
   /**
@@ -124,14 +132,15 @@ export interface InstallationBackend<Full, Public, SaveInput> {
   /**
    * Drop the secret field(s) for the public (org-scoped) shape.
    *
-   * NOTE: the type system will NOT catch a passthrough — because every
-   * `Full` (with-secret) type structurally extends its `Public`
-   * counterpart, `toPublic: (full) => full` type-checks yet leaks the
-   * secret. The `{ bot_token: _drop, ...pub }` destructuring in each
-   * impl is the real guard; the store tests that assert the secret is
-   * absent are load-bearing, not redundant.
+   * The return type intersects `Public` with `{ [K in SecretKey]?: never }`,
+   * so a value that still carries the secret (`toPublic: (full) => full`)
+   * fails `tsgo` — the secret key's `string` value isn't assignable to
+   * `never`. This compile-enforces the strip that used to rest solely on the
+   * `{ bot_token: _drop, ...pub }` destructuring; the store tests asserting
+   * the secret is absent stay as belt-and-braces (#4278). A backend that
+   * leaves `SecretKey` at its `never` default gets no enforcement.
    */
-  toPublic(full: Full): Public;
+  toPublic(full: Full): Public & Partial<Record<SecretKey, never>>;
 }
 
 /**

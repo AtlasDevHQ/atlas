@@ -8,25 +8,11 @@ import { Clock, User, Code, Timer, Rows3, CheckCircle, Table2, Bot } from "lucid
 
 // ── Types ─────────────────────────────────────────────────────────
 
-export interface AuditRow {
-  id: string;
-  user_id: string | null;
-  sql: string;
-  success: boolean;
-  duration_ms: number;
-  row_count: number | null;
-  timestamp: string;
-  user_email?: string | null;
-  error?: string | null;
-  source_id?: string | null;
-  tables_accessed: string[] | null;
-  columns_accessed: string[] | null;
-  // MCP attribution (migration 0049). NULL for non-MCP rows; populated by the
-  // MCP transport with the actor kind, OAuth client id, and dispatched tool.
-  actor_kind?: string | null;
-  client_id?: string | null;
-  tool_name?: string | null;
-}
+// SSOT: `AuditRow` is derived from `AuditRowSchema` (`admin-schemas.ts`) via
+// `z.infer` and re-exported here for the table's consumers. Keeping the shape
+// in the schema means the Zod parse and this type can't drift (#4278).
+export type { AuditRow } from "@/ui/lib/admin-schemas";
+import type { AuditRow } from "@/ui/lib/admin-schemas";
 
 // ── Columns ───────────────────────────────────────────────────────
 

@@ -794,12 +794,30 @@ function configHasUrl(config: unknown): boolean {
  * });
  * ```
  */
+/**
+ * When `TConn` is narrower than {@link PluginDBConnection}, the default
+ * `buildStatic` (`buildConnection(...) as TConn`) is unsound — `buildConnection`
+ * only promises a `PluginDBConnection`. This conditional makes
+ * `createStaticConnection` a REQUIRED member of the options in exactly that
+ * case, so a narrowing plugin that forgets it fails `tsgo` (#4278). When `TConn`
+ * is the `PluginDBConnection` default, `PluginDBConnection extends TConn` holds
+ * and the requirement collapses to `unknown` (stays optional). Intersecting a
+ * required member with the interface's optional one makes it required — a
+ * narrower `TConn` therefore *cannot* reach the `as TConn` fallback, which makes
+ * that cast provably safe rather than discipline-guarded.
+ */
+type StaticConnectionRequirement<TConfig, TConn extends PluginDBConnection> =
+  PluginDBConnection extends TConn
+    ? unknown
+    : { createStaticConnection(runtime: DatasourcePluginRuntime<TConfig, TConn>): TConn };
+
 export function createDatasourcePlugin<
   TConfig,
   TRuntimeConfig,
   TConn extends PluginDBConnection = PluginDBConnection,
 >(
-  options: CreateDatasourcePluginOptions<TConfig, TRuntimeConfig, TConn>,
+  options: CreateDatasourcePluginOptions<TConfig, TRuntimeConfig, TConn> &
+    StaticConnectionRequirement<TConfig, TConn>,
 ): DatasourcePluginFactory<TConfig> {
   // Derive the log label by stripping a trailing " DataSource" suffix without a
   // polynomial-backtracking regex: `\s+` before an anchored literal is a ReDoS
@@ -824,9 +842,13 @@ export function createDatasourcePlugin<
     /**
      * Fresh static connection. Default: run the config-time config through the
      * STRICT schema and reuse `buildConnection` — sound because static mode
-     * implies a fully-specified config. `as TConn` is only exercised on the
-     * default path, where TConn is the PluginDBConnection default (plugins
-     * that narrow TConn supply `createStaticConnection`).
+     * implies a fully-specified config. The `as TConn` fallback is now
+     * type-guaranteed, not discipline-guarded: {@link StaticConnectionRequirement}
+     * forces `createStaticConnection` to be present whenever `TConn` narrows
+     * below `PluginDBConnection`, so this branch is reachable only when
+     * `TConn` IS `PluginDBConnection` (where `buildConnection`'s return type
+     * already satisfies it). TS still needs the cast because `TConn` stays
+     * abstract inside the generic body.
      */
     const buildStatic = (): TConn =>
       options.createStaticConnection

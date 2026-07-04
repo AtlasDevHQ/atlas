@@ -1201,9 +1201,11 @@ const publicDashboards = new OpenAPIHono({ defaultHook: validationHook });
 authed.openapi(listDashboardsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
-    const result = yield* Effect.promise(() => listDashboards({ orgId, limit, offset }));
+    const result = yield* Effect.promise(() =>
+      listDashboards({ orgId, viewerId: user?.id ?? "anonymous", limit, offset }),
+    );
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1259,7 +1261,7 @@ authed.openapi(getDashboardRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
 
-    const result = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const result = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1310,7 +1312,7 @@ authed.openapi(getDraftRoute, async (c) => {
     if (!user?.id) {
       return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
     }
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1362,7 +1364,7 @@ authed.openapi(getDraftStatusRoute, async (c) => {
     // whether a draft row exists (the FK + the route gate already make
     // cross-org reads impossible at the DB layer, but the read-path
     // shape stays consistent with `GET /:id`).
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1407,7 +1409,7 @@ authed.openapi(publishDraftRoute, async (c) => {
         dashboardId: id,
         orgId,
         loadDashboardForOrg: async (dId, oId) => {
-          const r = await getDashboard(dId, { orgId: oId ?? undefined });
+          const r = await getDashboard(dId, { orgId: oId ?? undefined, viewerId: user?.id ?? "anonymous" });
           return r.ok ? r.data : null;
         },
       }),
@@ -1510,7 +1512,7 @@ authed.openapi(rebaseDraftRoute, async (c) => {
         dashboardId: id,
         orgId,
         loadDashboardForOrg: async (dId, oId) => {
-          const r = await getDashboard(dId, { orgId: oId ?? undefined });
+          const r = await getDashboard(dId, { orgId: oId ?? undefined, viewerId: user?.id ?? "anonymous" });
           return r.ok ? r.data : null;
         },
       }),
@@ -1570,7 +1572,7 @@ authed.openapi(listStagesRoute, async (c) => {
     // `listStagedChangesForUser` is per-user, this gate prevents an
     // attacker probing whether a dashboard exists in another org by
     // hitting `/stage` against arbitrary uuids.
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1592,7 +1594,7 @@ authed.openapi(stageRoute, async (c) => {
     if (!user?.id) {
       return c.json({ error: "auth_required", message: "Stages require an authenticated user." }, 401);
     }
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -1729,7 +1731,7 @@ authed.openapi(
       // undeclared-parameter error. Validate against the published cards —
       // the set that render/refresh actually execute.
       if (parsed.parameters !== undefined) {
-        const existing = yield* Effect.promise(() => getDashboard(id, { orgId }));
+        const existing = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
         if (existing.ok) {
           const declared = new Set(parsed.parameters.map((p) => p.key));
           const orphaned = new Set<string>();
@@ -1803,7 +1805,7 @@ authed.openapi(
       if (Object.keys(metaUpdates).length > 0) {
         const uid = user?.id;
         if (shouldRouteToDraft(uid)) {
-          const published = yield* Effect.promise(() => getDashboard(id, { orgId }));
+          const published = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
           if (!published.ok) {
             const fail = crudFailResponse(published.reason, requestId);
             return c.json(fail.body, fail.status);
@@ -1826,7 +1828,7 @@ authed.openapi(
 
       // Return updated dashboard (published view — reflects the
       // parameters/schedule writes above; a draft meta edit returned earlier).
-      const updated = yield* Effect.promise(() => getDashboard(id, { orgId }));
+      const updated = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
       if (!updated.ok) return c.body(null, 204);
       return c.json(updated.data, 200);
     }), { label: "update dashboard" });
@@ -1876,7 +1878,7 @@ authed.openapi(
       }
 
       // Verify dashboard exists and belongs to org
-      const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+      const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
       if (!dash.ok) {
         const fail = crudFailResponse(dash.reason, requestId);
         return c.json(fail.body, fail.status);
@@ -1989,7 +1991,7 @@ authed.openapi(
       }
 
       // Verify dashboard ownership
-      const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+      const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
       if (!dash.ok) {
         const fail = crudFailResponse(dash.reason, requestId);
         return c.json(fail.body, fail.status);
@@ -2074,7 +2076,7 @@ authed.openapi(removeCardRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
     }
 
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2169,7 +2171,7 @@ authed.openapi(refreshCardRoute, async (c) => {
     }
     const { view } = c.req.valid("query");
 
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2314,7 +2316,7 @@ authed.openapi(renderCardRoute, async (c) => {
     // `export` route's `?? {}`.
     const { parameters: suppliedParameters } = c.req.valid("json") ?? {};
 
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2519,13 +2521,13 @@ authed.openapi(renderCardRoute, async (c) => {
 authed.openapi(refreshAllCardsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
 
-    const dashResult = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const dashResult = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dashResult.ok) {
       const fail = crudFailResponse(dashResult.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2760,13 +2762,13 @@ authed.openapi(getShareStatusRoute, async (c) => {
 authed.openapi(suggestCardsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
 
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2931,7 +2933,7 @@ authed.openapi(suggestCardsRoute, async (c) => {
 authed.openapi(listDashboardSessionsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
@@ -2941,7 +2943,7 @@ authed.openapi(listDashboardSessionsRoute, async (c) => {
     // can read the dashboard sees the same sessions list (matches current
     // dashboard ACL per PRD #2362, user stories 21/22). Failing the
     // dashboard lookup here doubles as the cross-org safety net.
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2962,7 +2964,7 @@ authed.openapi(listDashboardSessionsRoute, async (c) => {
 authed.openapi(getDashboardSessionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { id, sessionId } = c.req.valid("param");
     if (!UUID_RE.test(id) || !UUID_RE.test(sessionId)) {
       return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
@@ -2972,7 +2974,7 @@ authed.openapi(getDashboardSessionRoute, async (c) => {
     // a 404 from getSessionTranscript would still leak the org-id mapping
     // of a guessed dashboardId (a cross-org session lookup returns
     // "not_found" too).
-    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dash.ok) {
       const fail = crudFailResponse(dash.reason, requestId);
       return c.json(fail.body, fail.status);

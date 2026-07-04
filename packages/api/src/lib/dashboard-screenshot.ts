@@ -163,8 +163,11 @@ export function _screenshotCacheSize(): number {
 async function computeSnapshotHash(
   dashboardId: string,
   orgId: string | null | undefined,
+  viewerId: string | null | undefined,
 ): Promise<{ ok: true; hash: string } | { ok: false; reason: ScreenshotFailReason }> {
-  const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined });
+  // #4320 — the requesting user's id gates never-published boards: a teammate
+  // can't screenshot a board they can't read.
+  const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: viewerId ?? undefined });
   if (!dash.ok) {
     if (dash.reason === "no_db") return { ok: false, reason: "no_db" };
     if (dash.reason === "not_found") return { ok: false, reason: "dashboard_not_found" };
@@ -639,7 +642,7 @@ function parseCookieHeader(header: string): ParsedCookie[] {
 export async function screenshotDashboard(opts: ScreenshotOpts): Promise<ScreenshotResult> {
   const startedAt = Date.now();
 
-  const snap = await computeSnapshotHash(opts.dashboardId, opts.orgId);
+  const snap = await computeSnapshotHash(opts.dashboardId, opts.orgId, opts.userId);
   if (!snap.ok) {
     return {
       ok: false,
@@ -934,8 +937,12 @@ export async function exportDashboard(opts: ExportOpts): Promise<ExportResult> {
 
   // Resolve the dashboard for its title + an existence/org gate. Same
   // reason-mapping discipline as the screenshot path: a non-not_found lookup
-  // failure is infra (`dashboard_unavailable` → 503), never a 404.
-  const dash = await getDashboard(opts.dashboardId, { orgId: opts.orgId ?? undefined });
+  // failure is infra (`dashboard_unavailable` → 503), never a 404. #4320 — the
+  // exporting user's id gates never-published boards.
+  const dash = await getDashboard(opts.dashboardId, {
+    orgId: opts.orgId ?? undefined,
+    viewerId: opts.userId ?? undefined,
+  });
   if (!dash.ok) {
     if (dash.reason === "no_db") {
       return { ok: false, reason: "no_db", message: "Dashboard export requires an internal database." };

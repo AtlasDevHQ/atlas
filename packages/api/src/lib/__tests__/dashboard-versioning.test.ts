@@ -1190,6 +1190,48 @@ describe("dashboard-versioning DB helpers", () => {
       expect(releaseCalls).toBe(1);
     });
 
+    // #4320 — the publish transaction stamps the one-way first-publish marker
+    // via COALESCE, so a never-published dashboard becomes org-visible on its
+    // first publish and the marker never moves on subsequent publishes.
+    it("stamps the one-way first_published_at marker in the touch-dashboard UPDATE", async () => {
+      enableInternalDB();
+      const baseline = snapshot([card("c1")]);
+      const draftWithAdd = applyChangeToDraft(baseline, {
+        kind: "addCard",
+        card: card("c-new", { position: 1 }),
+      });
+      expect(draftWithAdd.ok).toBe(true);
+      if (!draftWithAdd.ok) return;
+
+      setResults({ rows: [draftRow({ draft: draftWithAdd.snapshot, baseline })] });
+      setClientResults(
+        { rows: [] }, // BEGIN
+        { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] }, // SELECT FOR UPDATE
+        { rows: [] }, // INSERT INTO dashboard_cards
+        { rows: [] }, // UPDATE dashboards SET updated_at + first_published_at
+        { rows: [] }, // DELETE FROM dashboard_user_drafts
+        { rows: [] }, // COMMIT
+      );
+
+      const published = dashboardWithCards([card("c1")], {
+        updatedAt: "2026-05-17T00:00:00.000Z",
+      });
+      const result = await publishDraft({
+        userId: "u1",
+        dashboardId: "dash-1",
+        orgId: "org-1",
+        loadDashboardForOrg: async () => published,
+      });
+      expect(result.ok).toBe(true);
+
+      // The parent-touch UPDATE carries the one-way marker stamp.
+      const touchCall = clientCalls.find(
+        (c) => /UPDATE dashboards/.test(c.sql) && /first_published_at/.test(c.sql),
+      );
+      expect(touchCall).toBeDefined();
+      expect(touchCall!.sql).toContain("COALESCE(first_published_at, now())");
+    });
+
     // Regression: an accepted `editSql` stage rewrites the draft card's SQL,
     // which surfaces as an updateCard op — the publish UPDATE must persist it
     // (it previously wrote every field EXCEPT sql, silently dropping the edit).

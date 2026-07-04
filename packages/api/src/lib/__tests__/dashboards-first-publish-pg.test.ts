@@ -1,0 +1,268 @@
+/**
+ * Real-Postgres coverage for the #4320 first-publish visibility gate.
+ *
+ * A never-published dashboard (`first_published_at IS NULL`) is private to its
+ * creator; on its FIRST publish the one-way marker is stamped and it becomes
+ * org-visible permanently. These behaviours are pure SQL (the visibility clause
+ * in `getDashboard`/`listDashboards`, the `COALESCE` stamp in `publishDraft`,
+ * and the abandoned-shell sweep) — a mock pool would never execute them, so
+ * this runs the ACTUAL SQL against the real schema.
+ *
+ * Skips cleanly when `TEST_DATABASE_URL` is unset. Opt in locally with:
+ *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
+ */
+
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { Pool } from "pg";
+import { runMigrations } from "@atlas/api/lib/db/migrate";
+import {
+  MANAGED_AUTH_MIGRATIONS,
+  _resetPool,
+  type InternalPool,
+} from "@atlas/api/lib/db/internal";
+import {
+  createDashboard,
+  getDashboard,
+  listDashboards,
+  cleanupAbandonedDashboards,
+} from "@atlas/api/lib/dashboards";
+
+const TEST_DB_URL = process.env.TEST_DATABASE_URL;
+const describeIfPg = TEST_DB_URL ? describe : describe.skip;
+
+const PG_TEST_TIMEOUT_MS = 30_000;
+
+const CREATOR = "user-creator";
+const TEAMMATE = "user-teammate";
+const ORG = "org-A";
+
+describeIfPg("dashboard first-publish visibility gate (real Postgres, #4320)", () => {
+  let pool: Pool;
+  const schemaName = `first_publish_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    pool.on("connect", (client) => {
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        console.error(
+          `first-publish-pg: SET search_path failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+
+    process.env.DATABASE_URL = TEST_DB_URL;
+    _resetPool(pool as unknown as InternalPool, null);
+  }, PG_TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    _resetPool(null, null);
+    if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`).catch((err) => {
+      console.error(
+        `first-publish-pg: DROP SCHEMA cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    await pool.end();
+  });
+
+  beforeEach(async () => {
+    await pool.query(`DELETE FROM dashboards`);
+  });
+
+  async function firstPublishedAt(id: string): Promise<string | null> {
+    const rows = await pool.query<{ first_published_at: Date | string | null }>(
+      `SELECT first_published_at FROM dashboards WHERE id = $1`,
+      [id],
+    );
+    const raw = rows.rows[0]?.first_published_at ?? null;
+    // node-postgres returns timestamptz as a Date — normalise to an ISO string
+    // so equality is by value, not object identity.
+    return raw == null ? null : new Date(raw).toISOString();
+  }
+
+  /**
+   * Stamp first_published_at via the SAME one-way SQL `publishDraft` runs
+   * (`COALESCE(first_published_at, now())`), so the transition test exercises
+   * the exact marker semantics without the draft/timestamp round-trip.
+   */
+  async function firstPublish(id: string): Promise<void> {
+    await pool.query(
+      `UPDATE dashboards
+          SET updated_at = now(),
+              first_published_at = COALESCE(first_published_at, now())
+        WHERE id = $1 AND deleted_at IS NULL`,
+      [id],
+    );
+  }
+
+  it("hides a never-published dashboard from a teammate on direct read", async () => {
+    const created = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Draft board" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const id = created.data.id;
+
+    // Creator reads their own never-published board.
+    const asCreator = await getDashboard(id, { orgId: ORG, viewerId: CREATOR });
+    expect(asCreator.ok).toBe(true);
+
+    // Teammate in the same org cannot read it — fail closed as not_found.
+    const asTeammate = await getDashboard(id, { orgId: ORG, viewerId: TEAMMATE });
+    expect(asTeammate).toEqual({ ok: false, reason: "not_found" });
+  });
+
+  it("scopes the list: never-published shows only for its creator", async () => {
+    const priv = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Private" });
+    const pub = await createDashboard({ ownerId: TEAMMATE, orgId: ORG, title: "Public" });
+    expect(priv.ok && pub.ok).toBe(true);
+    if (!priv.ok || !pub.ok) return;
+    await firstPublish(pub.data.id); // pub has been published at least once
+
+    const creatorList = await listDashboards({ orgId: ORG, viewerId: CREATOR });
+    expect(creatorList.ok).toBe(true);
+    if (!creatorList.ok) return;
+    const creatorIds = creatorList.data.dashboards.map((d) => d.id).sort();
+    expect(creatorIds).toEqual([priv.data.id, pub.data.id].sort());
+    expect(creatorList.data.total).toBe(2);
+
+    // Teammate sees ONLY the published board — the creator's private draft is invisible.
+    const teammateList = await listDashboards({ orgId: ORG, viewerId: TEAMMATE });
+    expect(teammateList.ok).toBe(true);
+    if (!teammateList.ok) return;
+    expect(teammateList.data.dashboards.map((d) => d.id)).toEqual([pub.data.id]);
+    expect(teammateList.data.total).toBe(1);
+  });
+
+  it("becomes org-visible after first publish and stays so permanently", async () => {
+    const created = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Board" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const id = created.data.id;
+
+    // Before publish: teammate blocked, no marker.
+    expect(await firstPublishedAt(id)).toBeNull();
+    const before = await getDashboard(id, { orgId: ORG, viewerId: TEAMMATE });
+    expect(before).toEqual({ ok: false, reason: "not_found" });
+
+    // First publish stamps the one-way marker (same SQL publishDraft runs).
+    await firstPublish(id);
+    const stampedAt = await firstPublishedAt(id);
+    expect(stampedAt).not.toBeNull();
+
+    // The teammate can now read AND list it.
+    const afterRead = await getDashboard(id, { orgId: ORG, viewerId: TEAMMATE });
+    expect(afterRead.ok).toBe(true);
+    const afterList = await listDashboards({ orgId: ORG, viewerId: TEAMMATE });
+    expect(afterList.ok && afterList.data.dashboards.map((d) => d.id)).toContain(id);
+
+    // One-way: a second publish must NOT move the marker.
+    await firstPublish(id);
+    expect(await firstPublishedAt(id)).toBe(stampedAt);
+  });
+
+  it("self-hosted null-org: creator (anonymous owner) sees their own never-published board", async () => {
+    // The route passes viewerId `user?.id ?? "anonymous"`; createDashboard uses
+    // the same default, so the self-hosted single-operator path is symmetric.
+    const created = await createDashboard({ ownerId: "anonymous", orgId: null, title: "Local" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const asOperator = await getDashboard(created.data.id, { orgId: null, viewerId: "anonymous" });
+    expect(asOperator.ok).toBe(true);
+    const list = await listDashboards({ orgId: null, viewerId: "anonymous" });
+    expect(list.ok && list.data.dashboards.map((d) => d.id)).toContain(created.data.id);
+  });
+
+  it("omitting viewerId (system/owner-internal caller) does not apply the gate", async () => {
+    // publishDraft's own baseline load, auto-refresh, etc. must still resolve a
+    // never-published row — the gate is opt-in via viewerId.
+    const created = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Ungated" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const ungated = await getDashboard(created.data.id, { orgId: ORG });
+    expect(ungated.ok).toBe(true);
+  });
+
+  describe("abandoned-shell cleanup", () => {
+    async function insertCard(dashboardId: string): Promise<void> {
+      await pool.query(
+        `INSERT INTO dashboard_cards (dashboard_id, title, sql) VALUES ($1, 'Card', 'SELECT 1')`,
+        [dashboardId],
+      );
+    }
+    async function insertDraft(dashboardId: string): Promise<void> {
+      await pool.query(
+        `INSERT INTO dashboard_user_drafts (user_id, dashboard_id, draft, baseline, published_baseline_at)
+         VALUES ($1, $2, '{}'::jsonb, '{}'::jsonb, now())`,
+        [CREATOR, dashboardId],
+      );
+    }
+    async function isSoftDeleted(id: string): Promise<boolean> {
+      const rows = await pool.query<{ deleted_at: string | null }>(
+        `SELECT deleted_at FROM dashboards WHERE id = $1`,
+        [id],
+      );
+      return rows.rows[0]?.deleted_at != null;
+    }
+
+    it("sweeps a stale never-published empty shell but spares real work", async () => {
+      const stale = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Stale shell" });
+      const withCard = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Has card" });
+      const withDraft = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Has draft" });
+      const published = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Published" });
+      expect(stale.ok && withCard.ok && withDraft.ok && published.ok).toBe(true);
+      if (!stale.ok || !withCard.ok || !withDraft.ok || !published.ok) return;
+
+      await insertCard(withCard.data.id);
+      await insertDraft(withDraft.data.id);
+      await firstPublish(published.data.id);
+
+      // Run the sweep as if 100h have elapsed (default window is 72h), so every
+      // row created "now" is past the cutoff — isolating the content predicate.
+      const cleaned = await cleanupAbandonedDashboards(new Date(Date.now() + 100 * 3_600_000));
+
+      // Only the empty never-published shell is swept.
+      expect(await isSoftDeleted(stale.data.id)).toBe(true);
+      // A shell with a card is real work — spared.
+      expect(await isSoftDeleted(withCard.data.id)).toBe(false);
+      // A shell with an in-flight draft is real work — spared.
+      expect(await isSoftDeleted(withDraft.data.id)).toBe(false);
+      // A published (org-visible) board is never swept.
+      expect(await isSoftDeleted(published.data.id)).toBe(false);
+      expect(cleaned).toBe(1);
+
+      // A soft-deleted shell no longer surfaces to its creator's list either.
+      const list = await listDashboards({ orgId: ORG, viewerId: CREATOR });
+      expect(list.ok && list.data.dashboards.map((d) => d.id)).not.toContain(stale.data.id);
+    });
+
+    it("respects the retention window: a fresh shell is not swept", async () => {
+      const shell = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Fresh shell" });
+      expect(shell.ok).toBe(true);
+      if (!shell.ok) return;
+      // Real-time now: the shell's created_at is not older than the 72h window.
+      const cleaned = await cleanupAbandonedDashboards(new Date());
+      expect(cleaned).toBe(0);
+      expect(await isSoftDeleted(shell.data.id)).toBe(false);
+    });
+
+    it("a non-positive window disables the sweep entirely", async () => {
+      const shell = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Old shell" });
+      expect(shell.ok).toBe(true);
+      if (!shell.ok) return;
+      const prev = process.env.ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS;
+      process.env.ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS = "0";
+      try {
+        // Even far past any real cutoff, a window of 0 is a full opt-out.
+        const cleaned = await cleanupAbandonedDashboards(new Date(Date.now() + 1000 * 3_600_000));
+        expect(cleaned).toBe(0);
+        expect(await isSoftDeleted(shell.data.id)).toBe(false);
+      } finally {
+        if (prev === undefined) delete process.env.ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS;
+        else process.env.ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS = prev;
+      }
+    });
+  });
+});

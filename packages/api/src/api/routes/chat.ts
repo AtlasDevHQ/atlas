@@ -1374,7 +1374,12 @@ chat.openapi(chatRoute, async (c) => {
                   const bound = await bindConversationToDashboard(
                     conversationId,
                     requestedBoundDashboardId,
-                    { orgId: authResult.user?.activeOrganizationId },
+                    {
+                      orgId: authResult.user?.activeOrganizationId,
+                      // #4320 — gate the bind on first-publish visibility so a
+                      // teammate can't bind (and read) a never-published board.
+                      viewerId: authResult.user?.id ?? undefined,
+                    },
                   );
                   if (!bound.ok) {
                     log.warn(
@@ -1410,6 +1415,8 @@ chat.openapi(chatRoute, async (c) => {
         if (conversationId) {
           const resolved = await resolveBoundDashboard(conversationId, {
             orgId: authResult.user?.activeOrganizationId,
+            // #4320 — first-publish gate follows the binding read.
+            viewerId: authResult.user?.id ?? undefined,
           });
           if (resolved.ok) {
             boundDashboardForAgent = {

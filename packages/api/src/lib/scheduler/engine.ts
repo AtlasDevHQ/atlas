@@ -217,13 +217,51 @@ function tickEffect(
     // Dashboard auto-refresh — runs after task executions
     const dashRefresh = yield* refreshDueDashboardsEffect(semaphore);
 
+    // Abandoned never-published shell cleanup (#4320) — throttled to hourly.
+    const shellsCleaned = yield* cleanupAbandonedDashboardsEffect();
+
     return {
       tasksFound: dueTasks.length,
       tasksDispatched,
       tasksCompleted,
       tasksFailed,
       ...(dashRefresh.total > 0 ? { dashboardsRefreshed: dashRefresh.refreshed, dashboardsFailed: dashRefresh.failed } : {}),
+      ...(shellsCleaned > 0 ? { dashboardShellsCleaned: shellsCleaned } : {}),
     };
+  });
+}
+
+// Abandoned-shell cleanup runs at most once an hour, not every tick — the
+// window (default 72h) makes sub-hourly sweeps pure waste. Module-level so the
+// throttle survives across ticks on the same process.
+const ABANDON_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+let lastAbandonSweepAt = 0;
+
+/**
+ * Soft-delete abandoned never-published dashboard shells (#4320), throttled to
+ * hourly. Non-fatal: a sweep failure logs and yields 0 so the tick still
+ * reports task/refresh outcomes.
+ */
+function cleanupAbandonedDashboardsEffect(): Effect.Effect<number> {
+  return Effect.gen(function* () {
+    const now = Date.now();
+    if (now - lastAbandonSweepAt < ABANDON_SWEEP_INTERVAL_MS) return 0;
+    lastAbandonSweepAt = now;
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const { cleanupAbandonedDashboards } = await import("@atlas/api/lib/dashboards");
+        return cleanupAbandonedDashboards();
+      },
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(
+      Effect.catchAll((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Abandoned-dashboard cleanup sweep failed",
+        );
+        return Effect.succeed(0);
+      }),
+    );
   });
 }
 
@@ -414,6 +452,8 @@ export interface TickResult {
   /** Dashboard auto-refresh counts (only present when dashboards were due). */
   dashboardsRefreshed?: number;
   dashboardsFailed?: number;
+  /** Abandoned never-published shells soft-deleted this tick (#4320). */
+  dashboardShellsCleaned?: number;
   /** Non-null when the tick itself failed (e.g. DB unreachable). */
   error?: string;
 }

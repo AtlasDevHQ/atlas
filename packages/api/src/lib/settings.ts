@@ -1380,6 +1380,24 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // Dashboards — retention window before an abandoned never-published shell is
+  // swept (#4320). A never-published dashboard with no cards and no drafts,
+  // created longer than this many hours ago, is soft-deleted by the scheduler
+  // sweep. `0` (or less) disables the sweep. Hot-reloadable:
+  // `cleanupAbandonedDashboards()` reads it per tick.
+  {
+    key: "ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS",
+    section: "Dashboards",
+    label: "Abandoned Shell Cleanup (hours)",
+    description:
+      "Hours a never-published, empty dashboard shell (no cards, no drafts) may sit before the scheduler soft-deletes it. 0 disables cleanup (default 72).",
+    type: "number",
+    default: "72",
+    envVar: "ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS",
+    scope: "platform",
+    saasVisible: false,
+  },
+
   // Observability — plugin-health probe cache TTL. Hot-reloadable:
   // `getPluginHealthCacheTtlMs()` reads per health probe. (OTEL exporter
   // endpoint/headers are intentionally NOT here — see the block header above.)

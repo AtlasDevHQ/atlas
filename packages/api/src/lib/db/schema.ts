@@ -1955,6 +1955,12 @@ export const dashboards = pgTable(
     // label }]; cards bind to them via `:<key>`. See
     // 0116_dashboard_parameters.sql + lib/dashboard-parameters.ts.
     parameters: jsonb("parameters").notNull().default(sql`'[]'`),
+    // First-publish visibility gate (#4320, 0165). One-way marker: NULL until
+    // the dashboard's first publish, then set and NEVER unset. A never-published
+    // dashboard is private to `owner_id`; once published it is org-visible
+    // permanently. This is NOT a content-mode status enum (ADR-0029) — it gates
+    // the list/read scope, nothing else.
+    firstPublishedAt: timestamp("first_published_at", { withTimezone: true }),
     // Timestamps
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1968,6 +1974,9 @@ export const dashboards = pgTable(
     // share_mode='org' without an org_id is the F-01 bug class — see #1737 / 0034.
     check("chk_org_scoped_share", sql`share_mode <> 'org' OR org_id IS NOT NULL`),
     index("idx_dashboards_next_refresh").on(t.nextRefreshAt).where(sql`refresh_schedule IS NOT NULL AND deleted_at IS NULL`),
+    // Never-published, live rows: creator-visibility filter + abandoned-shell
+    // cleanup sweep (#4320, 0165).
+    index("idx_dashboards_unpublished").on(t.orgId, t.ownerId).where(sql`first_published_at IS NULL AND deleted_at IS NULL`),
   ],
 );
 

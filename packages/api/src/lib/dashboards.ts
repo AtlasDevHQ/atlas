@@ -28,6 +28,7 @@ import type {
   SharedDashboardView,
 } from "@atlas/api/lib/dashboard-types";
 import { DASHBOARD_GRID } from "@atlas/api/lib/dashboard-types";
+import { getSetting } from "@atlas/api/lib/settings";
 import { resolveDateExpression, DashboardParameterError } from "@atlas/api/lib/dashboard-parameters";
 import { dashboardParametersSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
@@ -206,6 +207,31 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
   };
 }
 
+/**
+ * First-publish visibility gate (#4320). A never-published dashboard
+ * (`first_published_at IS NULL`) is private to its creator; once published it
+ * is org-visible permanently. Returns `null` (no clause) when `viewerId` is
+ * omitted — that's the deliberate opt-out for system/owner-internal callers
+ * (the publish merge's own baseline load, auto-refresh, agent tools acting on
+ * an already-bound board) that must still resolve a never-published row. Every
+ * USER-FACING read surface passes `viewerId` so the gate is enforced at the
+ * request boundary, where the acting identity lives.
+ */
+function firstPublishVisibilityClause(
+  viewerId: string | null | undefined,
+  params: unknown[],
+  paramIdx: number,
+  tableAlias?: string,
+): { clause: string | null; nextIdx: number } {
+  if (viewerId == null) return { clause: null, nextIdx: paramIdx };
+  const prefix = tableAlias ? `${tableAlias}.` : "";
+  params.push(viewerId);
+  return {
+    clause: `(${prefix}first_published_at IS NOT NULL OR ${prefix}owner_id = $${paramIdx})`,
+    nextIdx: paramIdx + 1,
+  };
+}
+
 function orgScopeClause(
   orgId: string | null | undefined,
   params: unknown[],
@@ -342,18 +368,21 @@ export async function createDashboard(opts: {
 
 export async function getDashboard(
   id: string,
-  scope: { orgId?: string | null },
+  scope: { orgId?: string | null; viewerId?: string | null },
 ): Promise<CrudDataResult<DashboardWithCards>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const params: unknown[] = [id];
     const org = orgScopeClause(scope.orgId, params, 2, "d");
+    // #4320 — a never-published dashboard is only readable by its creator.
+    const vis = firstPublishVisibilityClause(scope.viewerId, params, org.nextIdx, "d");
+    const visClause = vis.clause ? ` AND ${vis.clause}` : "";
     const dashRows = await internalQuery<Record<string, unknown>>(
       `SELECT d.*, COALESCE(cc.cnt, 0)::int AS card_count
        FROM dashboards d
        LEFT JOIN (SELECT dashboard_id, COUNT(*)::int AS cnt FROM dashboard_cards GROUP BY dashboard_id) cc
          ON cc.dashboard_id = d.id
-       WHERE d.id = $1 AND ${org.clause} AND d.deleted_at IS NULL`,
+       WHERE d.id = $1 AND ${org.clause}${visClause} AND d.deleted_at IS NULL`,
       params,
     );
     if (dashRows.length === 0) return { ok: false, reason: "not_found" };
@@ -377,6 +406,7 @@ export async function getDashboard(
 
 export async function listDashboards(opts?: {
   orgId?: string | null;
+  viewerId?: string | null;
   limit?: number;
   offset?: number;
 }): Promise<CrudDataResult<{ dashboards: Dashboard[]; total: number }>> {
@@ -391,7 +421,12 @@ export async function listDashboards(opts?: {
     const org = orgScopeClause(opts?.orgId, params, paramIdx, "d");
     paramIdx = org.nextIdx;
 
-    const where = `WHERE ${org.clause} AND d.deleted_at IS NULL`;
+    // #4320 — never-published dashboards surface only in their creator's list.
+    const vis = firstPublishVisibilityClause(opts?.viewerId, params, paramIdx, "d");
+    paramIdx = vis.nextIdx;
+    const visClause = vis.clause ? ` AND ${vis.clause}` : "";
+
+    const where = `WHERE ${org.clause}${visClause} AND d.deleted_at IS NULL`;
 
     const [countRows, dataRows] = await Promise.all([
       internalQuery<Record<string, unknown>>(
@@ -1025,6 +1060,63 @@ export async function getDashboardsDueForRefresh(): Promise<Dashboard[]> {
   } catch (err) {
     log.error({ err: errorMessage(err) }, "getDashboardsDueForRefresh failed");
     return [];
+  }
+}
+
+/** Default retention window before an abandoned never-published shell is swept. */
+export const DEFAULT_ABANDON_CLEANUP_HOURS = 72;
+
+/**
+ * Soft-delete abandoned never-published dashboard shells (#4320). A shell is
+ * "abandoned" when it was NEVER published (`first_published_at IS NULL`), has
+ * NO published cards AND NO in-flight per-user drafts (so the sweep can never
+ * destroy real work), and was created longer than the retention window ago.
+ * These rows are already invisible to everyone but their creator via the
+ * first-publish gate — this sweep stops empty shells accumulating in the
+ * creator's own list and in the table.
+ *
+ * The window is the platform setting `ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS`
+ * (default {@link DEFAULT_ABANDON_CLEANUP_HOURS}); a value <= 0 disables the
+ * sweep entirely. Returns the number of shells soft-deleted.
+ */
+export async function cleanupAbandonedDashboards(now: Date = new Date()): Promise<number> {
+  if (!hasInternalDB()) return 0;
+
+  const raw = getSetting("ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS");
+  const hours = raw == null || raw === "" ? DEFAULT_ABANDON_CLEANUP_HOURS : Number(raw);
+  if (!Number.isFinite(hours)) {
+    log.warn(
+      { value: raw },
+      "Invalid ATLAS_DASHBOARD_ABANDON_CLEANUP_HOURS — skipping abandoned-dashboard cleanup",
+    );
+    return 0;
+  }
+  // A non-positive window disables the sweep (operator opt-out).
+  if (hours <= 0) return 0;
+
+  const cutoff = new Date(now.getTime() - hours * 3_600_000).toISOString();
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE dashboards d
+          SET deleted_at = now(), updated_at = now()
+        WHERE d.first_published_at IS NULL
+          AND d.deleted_at IS NULL
+          AND d.created_at < $1
+          AND NOT EXISTS (SELECT 1 FROM dashboard_cards c WHERE c.dashboard_id = d.id)
+          AND NOT EXISTS (SELECT 1 FROM dashboard_user_drafts u WHERE u.dashboard_id = d.id)
+        RETURNING d.id`,
+      [cutoff],
+    );
+    if (rows.length > 0) {
+      log.info(
+        { count: rows.length, hours },
+        "Swept abandoned never-published dashboard shells",
+      );
+    }
+    return rows.length;
+  } catch (err) {
+    log.error({ err: errorMessage(err) }, "cleanupAbandonedDashboards failed");
+    return 0;
   }
 }
 

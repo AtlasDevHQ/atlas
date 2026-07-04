@@ -121,6 +121,9 @@ async function maybeApplyToDraft(
   }
   const published = await getDashboard(ctx.dashboardId, {
     orgId: ctx.orgId ?? undefined,
+    // #4320 — first-publish gate; the bound board is already gated at bind, this
+    // keeps the tool read consistent (owner of a never-published board matches).
+    viewerId: ctx.userId ?? undefined,
   });
   if (!published.ok) {
     return { routed: true, ok: false, error: `Could not read dashboard: ${published.reason}` };
@@ -163,7 +166,7 @@ export function createBoundDashboardTools(
     description: `Read the current state of the dashboard you are editing. Returns the title, description, and a compact summary of every card (id, title, chart type, position, layout). Call this when you need a fresh read after several mutations. Card SQL is NOT returned — use \`getCardDetail\` for that.`,
     inputSchema: z.object({}).describe("No arguments"),
     execute: async () => {
-      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined });
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
       if (!dash.ok) {
         return { kind: "err" as const, error: `Could not read dashboard: ${dash.reason}` };
       }
@@ -202,7 +205,7 @@ export function createBoundDashboardTools(
       // it's REPLACE-ALL on updateCard, so returning the published markers here
       // would let the agent fetch a stale set and drop staged ones when it
       // sends back a "merged" array.
-      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined });
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
       if (!dash.ok) {
         return { kind: "err" as const, error: `Could not read dashboard: ${dash.reason}` };
       }
@@ -643,7 +646,7 @@ export function createBoundDashboardTools(
     | { ok: false; error: string }
   > {
     if (isDashboardDraftsEnabled() && ctx.userId) {
-      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined });
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
       if (!dash.ok) {
         return { ok: false, error: `Could not read dashboard: ${dash.reason}` };
       }

@@ -55,13 +55,18 @@ export type ResolveResult =
 export async function bindConversationToDashboard(
   conversationId: string,
   dashboardId: string,
-  opts: { orgId?: string | null },
+  opts: { orgId?: string | null; viewerId?: string | null },
 ): Promise<BindResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
 
   // Org-scoped dashboard existence check (mirrors #2424's connectionGroupId
-  // pre-write gate in the chat route).
-  const dash = await getDashboard(dashboardId, { orgId: opts.orgId ?? undefined });
+  // pre-write gate in the chat route). `viewerId` also applies the #4320
+  // first-publish gate so a teammate can't bind a drawer to (and thereby read)
+  // a never-published dashboard they didn't create.
+  const dash = await getDashboard(dashboardId, {
+    orgId: opts.orgId ?? undefined,
+    viewerId: opts.viewerId ?? undefined,
+  });
   if (!dash.ok) {
     if (dash.reason === "not_found") return { ok: false, reason: "dashboard_not_found" };
     if (dash.reason === "no_db") return { ok: false, reason: "no_db" };
@@ -99,7 +104,7 @@ export async function bindConversationToDashboard(
  */
 export async function resolveBoundDashboard(
   conversationId: string,
-  opts: { orgId?: string | null },
+  opts: { orgId?: string | null; viewerId?: string | null },
 ): Promise<ResolveResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
@@ -111,7 +116,12 @@ export async function resolveBoundDashboard(
     const boundId = rows[0]?.bound_dashboard_id ?? null;
     if (!boundId) return { ok: false, reason: "not_bound" };
 
-    const dash = await getDashboard(boundId, { orgId: opts.orgId ?? undefined });
+    // `viewerId` carries the #4320 first-publish gate through the binding read —
+    // a never-published board resolves only for its creator.
+    const dash = await getDashboard(boundId, {
+      orgId: opts.orgId ?? undefined,
+      viewerId: opts.viewerId ?? undefined,
+    });
     if (!dash.ok) {
       // Dashboard either deleted between bind and read (FK SET NULL hasn't
       // propagated through cache) OR no longer belongs to the caller's org.

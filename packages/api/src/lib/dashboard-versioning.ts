@@ -1039,9 +1039,15 @@ export async function publishDraft(opts: {
         }
       }
     }
-    // Touch the parent dashboard so the cards bump in too.
+    // Touch the parent dashboard so the cards bump in too, and stamp the
+    // one-way first-publish marker (#4320). COALESCE keeps it immutable after
+    // the first publish — a never-published dashboard becomes org-visible here
+    // and stays so permanently; re-publishing never moves the marker.
     await client.query(
-      `UPDATE dashboards SET updated_at = now() WHERE id = $1 AND deleted_at IS NULL`,
+      `UPDATE dashboards
+          SET updated_at = now(),
+              first_published_at = COALESCE(first_published_at, now())
+        WHERE id = $1 AND deleted_at IS NULL`,
       [opts.dashboardId],
     );
     // Drop the draft row — there's nothing left to publish.

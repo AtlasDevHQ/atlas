@@ -1378,7 +1378,10 @@ chat.openapi(chatRoute, async (c) => {
                       orgId: authResult.user?.activeOrganizationId,
                       // #4320 — gate the bind on first-publish visibility so a
                       // teammate can't bind (and read) a never-published board.
-                      viewerId: authResult.user?.id ?? undefined,
+                      // Fail-closed sentinel (matches the dashboards routes):
+                      // "anonymous" never equals a real owner_id, so an
+                      // unauthenticated caller sees published boards only.
+                      viewerId: authResult.user?.id ?? "anonymous",
                     },
                   );
                   if (!bound.ok) {
@@ -1415,8 +1418,9 @@ chat.openapi(chatRoute, async (c) => {
         if (conversationId) {
           const resolved = await resolveBoundDashboard(conversationId, {
             orgId: authResult.user?.activeOrganizationId,
-            // #4320 — first-publish gate follows the binding read.
-            viewerId: authResult.user?.id ?? undefined,
+            // #4320 — first-publish gate follows the binding read; fail-closed
+            // sentinel matches the bind call and the dashboards routes.
+            viewerId: authResult.user?.id ?? "anonymous",
           });
           if (resolved.ok) {
             boundDashboardForAgent = {

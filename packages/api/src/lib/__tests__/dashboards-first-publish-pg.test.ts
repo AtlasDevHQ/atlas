@@ -26,6 +26,10 @@ import {
   listDashboards,
   cleanupAbandonedDashboards,
 } from "@atlas/api/lib/dashboards";
+import {
+  bindConversationToDashboard,
+  resolveBoundDashboard,
+} from "@atlas/api/lib/bound-chat-context";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -183,6 +187,85 @@ describeIfPg("dashboard first-publish visibility gate (real Postgres, #4320)", (
     if (!created.ok) return;
     const ungated = await getDashboard(created.data.id, { orgId: ORG });
     expect(ungated.ok).toBe(true);
+  });
+
+  it("gates the bound-chat drawer: a teammate can't bind/resolve a never-published board", async () => {
+    // A conversation can carry a caller-supplied boundDashboardId, so the bind
+    // (and the follow-up resolve) is a read vector the gate must close — a
+    // teammate must not be able to bind a drawer to, and thereby read, a
+    // never-published board they didn't create (#4320 AC).
+    const created = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Bindable" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const id = created.data.id;
+
+    // Seed a conversation the teammate could try to bind.
+    const conv = await pool.query<{ id: string }>(
+      `INSERT INTO conversations (org_id, title) VALUES ($1, 'c') RETURNING id`,
+      [ORG],
+    );
+    const conversationId = conv.rows[0]!.id;
+
+    // Teammate bind is refused (dashboard_not_found) while the board is private.
+    const teammateBind = await bindConversationToDashboard(conversationId, id, {
+      orgId: ORG,
+      viewerId: TEAMMATE,
+    });
+    expect(teammateBind).toEqual({ ok: false, reason: "dashboard_not_found" });
+
+    // Creator can bind their own never-published board.
+    const creatorBind = await bindConversationToDashboard(conversationId, id, {
+      orgId: ORG,
+      viewerId: CREATOR,
+    });
+    expect(creatorBind.ok).toBe(true);
+
+    // Even once bound, a teammate resolving the binding cannot read the board.
+    const teammateResolve = await resolveBoundDashboard(conversationId, {
+      orgId: ORG,
+      viewerId: TEAMMATE,
+    });
+    expect(teammateResolve).toEqual({ ok: false, reason: "dashboard_not_found" });
+    // The creator resolves it fine.
+    const creatorResolve = await resolveBoundDashboard(conversationId, {
+      orgId: ORG,
+      viewerId: CREATOR,
+    });
+    expect(creatorResolve.ok).toBe(true);
+
+    // After first publish, the teammate can bind + resolve it.
+    await firstPublish(id);
+    const afterBind = await bindConversationToDashboard(conversationId, id, {
+      orgId: ORG,
+      viewerId: TEAMMATE,
+    });
+    expect(afterBind.ok).toBe(true);
+  });
+
+  it("migration 0165 backfills pre-existing boards so they stay org-visible", async () => {
+    // Pre-existing dashboards predate the marker; the migration backfills
+    // first_published_at from created_at so they are NOT retroactively hidden
+    // from teammates. Simulate a pre-migration row (marker NULL) then run the
+    // exact backfill statement and assert the row is now teammate-visible.
+    const created = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Legacy board" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const id = created.data.id;
+    await pool.query(`UPDATE dashboards SET first_published_at = NULL WHERE id = $1`, [id]);
+
+    // Before backfill: private to creator (teammate blocked).
+    expect(
+      await getDashboard(id, { orgId: ORG, viewerId: TEAMMATE }),
+    ).toEqual({ ok: false, reason: "not_found" });
+
+    // The migration's backfill statement (0165).
+    await pool.query(
+      `UPDATE dashboards SET first_published_at = created_at WHERE first_published_at IS NULL`,
+    );
+
+    // Marker is now set to created_at and the board is org-visible.
+    expect(await firstPublishedAt(id)).not.toBeNull();
+    expect((await getDashboard(id, { orgId: ORG, viewerId: TEAMMATE })).ok).toBe(true);
   });
 
   describe("abandoned-shell cleanup", () => {

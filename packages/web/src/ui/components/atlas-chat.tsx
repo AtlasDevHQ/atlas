@@ -794,10 +794,18 @@ export function AtlasChat({
         // Safe only while the draft is untouched: editing the restored text
         // clears this failure (see the composer's onValueChange), so a stale
         // "Try again" can never clobber an edit with the original text.
-        retry: () => handleSend(saved),
+        // Through the ref so the retry evaluates the CURRENT render's guards —
+        // a closure-captured handleSend would freeze isLoading /
+        // loadingConversation at the failing render's (false) values, making
+        // the guards above no-ops on exactly this path.
+        retry: () => handleSendRef.current(saved),
       });
     });
   }
+  // Latest-value ref for the banner retry above — the same render-phase
+  // assignment pattern as handleSelectConversationRef below.
+  const handleSendRef = useRef(handleSend);
+  handleSendRef.current = handleSend;
 
   function handleSuggestionSelect(text: string, id: string) {
     fetch(`${apiUrl}/api/v1/suggestions/${id}/click`, {

@@ -29,7 +29,8 @@ export interface ChatActionFailure {
  * `"resume"` failure) and implicit (composer edits clear only a `"send"`
  * failure) — so neither can erase an unrelated failure the user hasn't seen.
  * Deliberate user actions clear unscoped: a fresh attempt supersedes whatever
- * banner is up.
+ * banner is up (resume is the exception — its clear seam is shared with
+ * auto-resume, so it stays kind-scoped even on a ResumeBanner click).
  */
 export type ChatActionKind = "send" | "load" | "pin" | "unpin" | "resume";
 export type StoredActionFailure = ChatActionFailure & { readonly kind: ChatActionKind };

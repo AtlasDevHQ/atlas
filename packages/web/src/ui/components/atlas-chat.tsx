@@ -32,9 +32,12 @@ import {
 } from "./chat/developer-empty-state";
 import {
   ChatEnvPicker,
-  shouldRenderEnvPicker,
   useChatEnvGroups,
 } from "./chat/env-picker";
+import {
+  AnswerStylePicker,
+  type AnswerStyle,
+} from "./chat/answer-style-picker";
 import {
   useConversationScope,
   INITIAL_CONVERSATION_SCOPE,
@@ -224,6 +227,17 @@ export function AtlasChat({
   // into it on every render right after the hook call (the same latest-value ref
   // pattern as `refreshConvosRef`).
   const scopeRef = useRef<ConversationScope>(INITIAL_CONVERSATION_SCOPE);
+  // #4302 — the conversation's answer style (the header picker). `null` = no
+  // explicit choice: the trigger shows the web default ("Analyst") and the
+  // transport omits the field so the server inherits the row / applies the
+  // surface default. Deliberately NOT part of `useConversationScope`: it has
+  // no sticky preference, no group validation, and no provenance races — a
+  // plain state + latest-value ref (for the transport's fetch-time getter)
+  // covers restore-on-open and reset-on-new-chat at the same two call sites
+  // the scope hook uses.
+  const [answerStyle, setAnswerStyle] = useState<AnswerStyle | null>(null);
+  const answerStyleRef = useRef<AnswerStyle | null>(null);
+  answerStyleRef.current = answerStyle;
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -278,6 +292,9 @@ export function AtlasChat({
     // #3895 — forward the Group reach on every turn (always, even null) so a
     // widen back to All sources nulls the row instead of inheriting stale Focus.
     getGroupReach: () => scopeRef.current.groupReach,
+    // #4302 — forward the picker's answer style (omitted when null — the
+    // server inherits the row's stored style / applies the surface default).
+    getAnswerStyle: () => answerStyleRef.current,
     // #3749 / #4294 — onRunId: capture the active run id; it targets the
     // explicit stop endpoint (not a resume — a resume targets the bound
     // CONVERSATION, and the affordance only shows once a conversation is
@@ -315,31 +332,19 @@ export function AtlasChat({
     getCredentials,
   });
 
-  // Whether the env/member picker has anything to show. In `embedded` mode the
-  // header collapses to just the picker, so gate the header row on this to avoid
-  // an empty bordered strip on a legacy 1×1 workspace. Standalone renders the
-  // full header (logo / theme / user menu) regardless of this flag.
-  //
-  // #3081 — this MUST pass the same `restDatasources` the inner <ChatEnvPicker>
-  // below receives, or the gate and the picker disagree: a zero-group REST-only
-  // or 1×1-SQL + REST workspace has REST exclude/focus scope to show, the inner
-  // picker would render it, but a gate computed without `restDatasources` returns
-  // false and suppresses the whole header — making the REST scope controls
-  // unreachable on the hosted (embedded) surface, the exact gap this unification
-  // exists to close.
-  const showEnvPicker = shouldRenderEnvPicker({
-    groups: envGroupsQuery.groups,
-    reason: envGroupsQuery.reason,
-    error: envGroupsQuery.error,
-    restDatasources: envGroupsQuery.restDatasources,
-  });
+  // #4302 — the header row is no longer gated on the env-picker having
+  // something to show (the old `showEnvPicker` header gate, #3081): the
+  // answer-style picker renders for every workspace, so the row is never an
+  // empty bordered strip — including the legacy 1×1 whose <ChatEnvPicker>
+  // hides itself (it self-gates via `shouldRenderEnvPicker` internally, so
+  // the #3081 gate-vs-picker agreement concern is moot).
 
   // #3883 — in developer mode, show the "no connections" empty state only when
   // the workspace has *zero* connections the chat can reach (SQL groups + REST
   // datasources), NOT when there are merely zero drafts. Dev mode resolves
   // published + draft connections, and this env-groups query already reflects
-  // that superset — so keying off it (the same list `shouldRenderEnvPicker`
-  // above consumes) stops a fully-published workspace from being wrongly
+  // that superset — so keying off it (the same query the <ChatEnvPicker>
+  // below consumes) stops a fully-published workspace from being wrongly
   // blocked. The previous `useDevModeNoDrafts(["connections"])` gate fired on
   // draft-count and showed a misleading "No connection configured" prompt.
   const showDevChatEmpty = shouldShowDevChatEmpty({ mode, ...envGroupsQuery });
@@ -771,6 +776,9 @@ export function AtlasChat({
       // are always restored from the row and made authoritative regardless of the
       // SQL decision, while an all-null SQL scope defers to the seed effect.
       restoreConversationScope(data, envGroupsQuery.groups);
+      // #4302 — restore the conversation's persisted answer style alongside
+      // its scope (null = no explicit choice → the picker shows the default).
+      setAnswerStyle(data.answerStyle ?? null);
       setMobileSidebarOpen(false);
       // Loaded turns predate this session — no warning frames replay over
       // the wire, so any prior in-memory bucket is stale relative to the
@@ -820,6 +828,9 @@ export function AtlasChat({
     // exactly as on a fresh page load. Without this, a just-opened conversation's
     // `explicit` scope would carry into the new chat and the effect would no-op.
     resetScopeForNewChat();
+    // #4302 — a new chat starts at the default voice (AC: "new conversations
+    // use the default"); the just-left conversation's style must not carry.
+    setAnswerStyle(null);
   }
 
   // #3068 — the single bridge from URL → conversation state. A deep link / page
@@ -941,9 +952,12 @@ export function AtlasChat({
           <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden p-4">
             {/* In `embedded` mode the host shell owns the app-identity header
                 (logo, theme, user menu) + the sidebar/modals, so collapse this
-                header to just the env-picker — and only when it has something to
-                show, so a legacy 1×1 workspace doesn't render an empty row. */}
-            {(!embedded || showEnvPicker) && (
+                header to just the pickers. #4302 — the header row renders
+                unconditionally now: the answer-style picker applies to every
+                workspace (every conversation has a voice), so even a legacy
+                1×1 whose env-picker hides itself no longer collapses the row
+                (the PRD's open question, resolved). `showEnvPicker` gates
+                only the env-picker itself below. */}
             <header className="mb-4 flex-none border-b border-zinc-100 pb-3 dark:border-zinc-800">
               <div className="flex items-center justify-between gap-2">
                 {!embedded && (
@@ -995,6 +1009,12 @@ export function AtlasChat({
                     // is authoritative; the hook marks it explicit and persists it.
                     onSelect={applyScopeSelection}
                   />
+                  {/* #4302 — per-conversation answer style. Always renders
+                      (every conversation has a voice), which is what keeps
+                      this header row populated on a legacy 1×1 workspace
+                      where the env-picker above hides itself. A pick takes
+                      effect on the next turn and persists onto the row. */}
+                  <AnswerStylePicker value={answerStyle} onChange={setAnswerStyle} />
                   {!embedded && (
                   <>
                   <Button
@@ -1031,7 +1051,6 @@ export function AtlasChat({
                 </div>
               </div>
             </header>
-            )}
 
             {(healthWarning || transientWarning || convos.fetchError) && (
               <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">{healthWarning || transientWarning || convos.fetchError}</p>

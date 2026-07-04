@@ -459,6 +459,7 @@ describe("migrateAuthTables", () => {
             // knowledge_sync_state for bundle-sync collections. Atlas-internal
             // tables, no FK to a Better Auth table, so it runs in every auth mode.
             { name: "0164_knowledge_bundle_sync.sql" },
+            { name: "0165_conversations_answer_style.sql" },
           ],
         };
       }

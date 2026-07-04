@@ -143,7 +143,9 @@ const ANSWER_STYLE_ADDENDA: Record<AnswerStyle, string> = {
  */
 export function resolveAnswerStyleAddendum(style: AnswerStyle): string {
   const addendum = ANSWER_STYLE_ADDENDA[style];
-  if (!addendum) {
+  // `=== undefined` (not falsiness): an empty-string addendum would be a
+  // registry bug, but "Unknown answer style" would be the wrong error for it.
+  if (addendum === undefined) {
     throw new Error(
       `Unknown answer style "${String(style)}" — expected one of: ${ANSWER_STYLE_NAMES.join(", ")}`,
     );
@@ -184,6 +186,12 @@ export function answerStyleForPresentationMode(
     case undefined:
       return fallback;
     default: {
+      // Compile-time tripwire: if this signature's union is ever widened to
+      // track a widened plugin `PresentationMode`, this line stops compiling
+      // until the new arm gets an explicit case above — the widened value
+      // must never silently route to `fallback`.
+      const _exhaustive: never = mode;
+      void _exhaustive;
       // Runtime reality can exceed the compile-time union: the value
       // originates from the published `@useatlas/chat` bridge, so a
       // version-skewed or third-party host may send a token TypeScript

@@ -175,17 +175,6 @@ export function createProactiveAnswerAdapter(
   return async (question, context): Promise<ProactiveQueryResult> => {
     const requestId = crypto.randomUUID();
     const { threadId, asker, atlasUserId, workspaceId } = context;
-    // #2705/#4299 — the proactive seam still speaks the legacy
-    // presentation-mode signal; resolve it through the answer-style
-    // registry. The chat plugin's listener always passes
-    // `"conversational"` for both the linked-asker and public-dataset
-    // branches; a host whose `executeQueryProactive` predates #2705
-    // falls back to "analyst" — the answer-first successor of the old
-    // addendum-free "developer" analyst-grade body.
-    const answerStyle = answerStyleForPresentationMode(
-      context.presentationMode,
-      "analyst",
-    );
     const askerId = describeAskerId(asker);
 
     // 1. Resolve identity + (unlinked) restricted tool registry ----------
@@ -315,10 +304,20 @@ export function createProactiveAnswerAdapter(
             ],
             aiModel,
             ...(toolRegistry ? { tools: toolRegistry } : {}),
-            // #2705/#4299 — pass through the resolved answer style so the
-            // system prompt carries that style's addendum (conversational
-            // from the listener; analyst for pre-#2705 hosts).
-            answerStyle,
+            // #2705/#4299 — the proactive seam still speaks the legacy
+            // presentation-mode signal; resolve it through the answer-style
+            // registry so the system prompt carries that style's addendum.
+            // The chat plugin's listener always passes "conversational"
+            // (both linked-asker and public-dataset branches); a host whose
+            // `executeQueryProactive` predates #2705 falls back to
+            // "analyst" — the answer-first successor of the retired
+            // addendum-free "developer" body. Resolved HERE, inside
+            // `withRequestContext`, so the mapper's version-skew warn is
+            // stamped with this turn's requestId.
+            answerStyle: answerStyleForPresentationMode(
+              context.presentationMode,
+              "analyst",
+            ),
           }),
       );
 

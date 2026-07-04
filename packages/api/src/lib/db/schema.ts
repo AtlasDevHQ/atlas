@@ -152,15 +152,17 @@ export const conversations = pgTable(
     // resolver (#3893) so Focus actually bounds executeSQL. Existing group-bound
     // rows were backfilled to Focus (behavior-preserving).
     groupReach: text("group_reach"),
-    // 0165 — per-conversation answer style (#4302, PRD #4292). Which
+    // 0166 — per-conversation answer style (#4302, PRD #4292). Which
     // answer-style registry entry (lib/answer-styles.ts) voices the agent's
     // answers in this conversation: 'plain-english' / 'analyst' /
     // 'executive' / 'conversational'. NULL (the default) = no explicit
-    // choice — prompt assembly resolves the surface default ('analyst' for
-    // web; chat-platform callers pass 'conversational' explicitly), so
-    // untouched rows keep tracking the default. Validation lives in the
-    // chat route's Zod schema (single source of truth) rather than a CHECK
-    // here — same rationale as routing_mode (0077).
+    // choice — prompt assembly resolves the live default (the workspace
+    // default ATLAS_DEFAULT_ANSWER_STYLE #4303 when set, else the surface
+    // default: 'analyst' for web; chat-platform callers pass
+    // 'conversational' explicitly), so untouched rows keep tracking the
+    // default. Validation lives in the chat route's Zod schema (single
+    // source of truth) rather than a CHECK here — same rationale as
+    // routing_mode (0077).
     answerStyle: text("answer_style"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),

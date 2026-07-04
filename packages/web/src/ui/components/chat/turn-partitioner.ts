@@ -1,9 +1,10 @@
 /**
- * Turn partitioner (#4298) — the single seam that decides how a finished agent
- * turn is presented, per CONTEXT.md § Chat turn presentation. A pure function
- * (no React, no DOM) so both the chat transcript and the notebook renderer
- * (#4301) partition identically, and the live working phase (#4300) can settle
- * into the same shape.
+ * Turn partitioner (#4298) — the single seam that decides how an agent turn is
+ * presented, streaming or finished, per CONTEXT.md § Chat turn presentation. A
+ * pure function (no React, no DOM) so the chat transcript, the notebook
+ * renderer (#4301), and the live working phase (#4300) — which partitions
+ * mid-flight to detect the answer's start and settle into the receipt — all
+ * partition identically.
  *
  * Boundary rules (v1 — all of them live here, nowhere else):
  * - Everything up to and including the last tool part is **activity** (tool
@@ -53,7 +54,7 @@ export interface IndexedTurnPart<P extends TurnPart = TurnPart> {
   readonly index: number;
 }
 
-/** The three presentation buckets of a finished turn. */
+/** The three presentation buckets of a turn — streaming or finished. */
 export interface PartitionedTurn {
   /**
    * What the agent did on the way to the answer — tool parts plus narration

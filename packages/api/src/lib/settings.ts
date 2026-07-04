@@ -25,7 +25,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { EMAIL_PROVIDERS } from "@atlas/api/lib/integrations/types";
 import { SaasImmutableSettingError } from "@atlas/api/lib/settings-errors";
-import { ANSWER_STYLE_NAMES } from "@atlas/api/lib/answer-styles";
+import { WORKSPACE_DEFAULT_STYLE_OPTIONS } from "@atlas/api/lib/answer-styles";
 
 const log = createLogger("settings");
 
@@ -358,19 +358,23 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // the description documents. Resolution seam:
     // `resolveWorkspaceDefaultAnswerStyle` (lib/agent.ts).
     //
-    // Options derive from the answer-style registry minus `conversational`:
-    // that addendum is written for chat platforms (it references the Slack
-    // "Show SQL" progressive-disclosure buttons), so it isn't offered as a
-    // house voice for analyst-grade surfaces. No `default` on purpose — unset
-    // means "track the surface default" (analyst), not a frozen copy of it.
-    // Hot-reloadable: read per turn through the settings cache, no restart.
+    // Options are the registry's offered house voices
+    // (`WORKSPACE_DEFAULT_STYLE_OPTIONS` — the registry minus
+    // `NON_HOUSE_VOICE_STYLES`): `conversational` is excluded because its
+    // addendum is written for chat platforms (it references the Slack
+    // "Show SQL" progressive-disclosure buttons). The read-side resolver
+    // (`resolveWorkspaceDefaultAnswerStyle`, lib/agent.ts) enforces the same
+    // list, so the env-var ingress can't smuggle a non-offered voice past
+    // this select. No `default` on purpose — unset means "track the surface
+    // default" (analyst), not a frozen copy of it. Hot-reloadable: read per
+    // turn through the settings cache, no restart.
     key: "ATLAS_DEFAULT_ANSWER_STYLE",
     section: "Agent",
     label: "Default Answer Style",
     description:
       "Workspace default answer style (the house voice) for surfaces that don't explicitly choose one — web chat conversations without a per-conversation pick, and SDK/MCP/query API calls that send no style. A per-conversation pick always wins. Chat platforms (Slack mentions, proactive chat) choose their own voice per turn and are not affected. Reset to fall back to the built-in default (analyst).",
     type: "select",
-    options: ANSWER_STYLE_NAMES.filter((s) => s !== "conversational"),
+    options: [...WORKSPACE_DEFAULT_STYLE_OPTIONS],
     envVar: "ATLAS_DEFAULT_ANSWER_STYLE",
     scope: "workspace",
   },

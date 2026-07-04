@@ -147,7 +147,11 @@ mock.module("@atlas/api/lib/plugins/secrets", () => ({
 
 // #3044 — the group_id assignment guard calls verifyGroupBelongsToOrg; mock it
 // so the existence verdict is controllable without seeding the db recorder.
+// Spread the real exports (per CLAUDE.md "mock all exports") so a route later
+// importing another conversations export doesn't hit "Export named X not found".
+const realConversations = await import("@atlas/api/lib/conversations");
 mock.module("@atlas/api/lib/conversations", () => ({
+  ...realConversations,
   verifyGroupBelongsToOrg: async () => mockGroupVerdict,
 }));
 

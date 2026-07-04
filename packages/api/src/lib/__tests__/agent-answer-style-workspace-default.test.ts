@@ -202,12 +202,27 @@ describe("resolveWorkspaceDefaultAnswerStyle (#4303)", () => {
     expect(resolveWorkspaceDefaultAnswerStyle(ORG)).toBeUndefined();
   });
 
-  it("accepts every registered style — including conversational (registry-total; curation lives at the admin options seam)", async () => {
-    const { ANSWER_STYLE_NAMES } = await import("@atlas/api/lib/answer-styles");
-    for (const style of ANSWER_STYLE_NAMES) {
+  it("accepts every OFFERED house voice and rejects conversational — curation is enforced at resolution, not only the admin options seam", async () => {
+    const { WORKSPACE_DEFAULT_STYLE_OPTIONS } = await import(
+      "@atlas/api/lib/answer-styles"
+    );
+    for (const style of WORKSPACE_DEFAULT_STYLE_OPTIONS) {
       await setSetting(KEY, style, "test", ORG);
       expect(resolveWorkspaceDefaultAnswerStyle(ORG)).toBe(style);
     }
+    // The env-var ingress bypasses the admin select's write validation, so a
+    // registered-but-non-offered style must take the same warn-and-fall-back
+    // path as an unknown token: `conversational`'s addendum instructs the
+    // agent to reference Slack affordances ("Show SQL" buttons) that don't
+    // exist on the analyst-grade surfaces this default applies to.
+    process.env[KEY] = "conversational";
+    _resetSettingsCache();
+    expect(resolveWorkspaceDefaultAnswerStyle(ORG)).toBeUndefined();
+    // A DB-stored value gets the same treatment (defense in depth — today's
+    // admin route can't store it, but the resolver must not trust that).
+    delete process.env[KEY];
+    await setSetting(KEY, "conversational", "test", ORG);
+    expect(resolveWorkspaceDefaultAnswerStyle(ORG)).toBeUndefined();
   });
 });
 

@@ -150,6 +150,20 @@ function isPendingInteractiveResult(output: unknown): boolean {
 }
 
 /**
+ * True when this part is an interactive card awaiting the user (action
+ * approval, staged change, write confirmation). Presentation must never
+ * reduce these to a summary line — the live working feed (#4300) renders
+ * them at full card weight and the receipt defaults open around them.
+ */
+export function isPendingInteractivePart(part: TurnPart): boolean {
+  return (
+    isToolUIPart(part) &&
+    part.state === "output-available" &&
+    isPendingInteractiveResult(part.output)
+  );
+}
+
+/**
  * True when any activity part is an interactive card awaiting the user
  * (action approval, staged change, write confirmation). The receipt must not
  * collapse these out of sight — even when the turn also has answer text
@@ -158,22 +172,17 @@ function isPendingInteractiveResult(output: unknown): boolean {
 export function activityAwaitsUser(
   activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[],
 ): boolean {
-  return activity.some(
-    ({ part }) =>
-      isToolUIPart(part) &&
-      part.state === "output-available" &&
-      isPendingInteractiveResult(part.output),
-  );
+  return activity.some(({ part }) => isPendingInteractivePart(part));
 }
 
 /**
  * A tool execution that ended in failure: the AI SDK's `output-error` state,
  * or a completed result envelope reporting `success: false` (the executeSQL /
  * executePython family). Action envelopes have their own resolved-failure
- * states rendered by their cards; the receipt marker covers the common
- * query-failure case.
+ * states rendered by their cards; this marker covers the common query-failure
+ * case for both the receipt summary and the live working feed (#4300).
  */
-function isFailedToolPart(part: ToolTurnPart): boolean {
+export function isFailedToolPart(part: ToolTurnPart): boolean {
   if (part.state === "output-error") return true;
   if (part.state !== "output-available") return false;
   const output = part.output;

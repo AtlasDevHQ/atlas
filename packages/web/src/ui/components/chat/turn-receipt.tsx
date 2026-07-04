@@ -22,7 +22,7 @@ import type { PythonProgressData } from "./python-result-card";
  *
  * Renders nothing for empty activity (a zero-tool turn has no receipt).
  * `defaultOpen` lets the caller keep the work visible when collapsing would
- * hide the turn's substance — see FinishedTurn for the policy.
+ * hide the turn's substance — see AgentTurn for the policy.
  */
 export function TurnReceipt({
   activity,

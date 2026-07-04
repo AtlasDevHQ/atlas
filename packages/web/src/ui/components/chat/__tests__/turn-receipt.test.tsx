@@ -1,5 +1,6 @@
 /**
- * Component tests for the collapsed receipt + finished-turn renderer (#4298):
+ * Component tests for the collapsed receipt + finished-turn rendering (#4298,
+ * now AgentTurn's streaming=false shape):
  * a finished turn renders receipt → answer → promoted artifact; the receipt
  * expands on click to the full activity; narration never renders outside it.
  */
@@ -27,7 +28,7 @@ mock.module("@/ui/components/chat/markdown", () => ({
 import { render, cleanup, fireEvent } from "@testing-library/react";
 
 const { TurnReceipt } = await import("../turn-receipt");
-const { FinishedTurn } = await import("../finished-turn");
+const { AgentTurn } = await import("../agent-turn");
 const { partitionTurn } = await import("../turn-partitioner");
 
 afterEach(cleanup);
@@ -125,13 +126,13 @@ describe("TurnReceipt", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  FinishedTurn                                                       */
+/*  AgentTurn                                                       */
 /* ------------------------------------------------------------------ */
 
-describe("FinishedTurn", () => {
+describe("AgentTurn", () => {
   test("renders receipt → answer → promoted artifact, in that order", () => {
     const { container, getByTestId, getByRole } = render(
-      <FinishedTurn
+      <AgentTurn
         parts={[
           text("Looking at the data..."),
           explore(),
@@ -157,7 +158,7 @@ describe("FinishedTurn", () => {
 
   test("suggestions block is stripped from the answer text", () => {
     const { getByTestId } = render(
-      <FinishedTurn
+      <AgentTurn
         parts={[
           sql(),
           text("Here you go.\n<suggestions>\nWhat about Q2?\n</suggestions>"),
@@ -171,7 +172,7 @@ describe("FinishedTurn", () => {
 
   test("zero-tool turn renders the answer with no receipt", () => {
     const { queryByRole, getByTestId } = render(
-      <FinishedTurn parts={[text("Just an answer.")]} />,
+      <AgentTurn parts={[text("Just an answer.")]} />,
     );
     expect(queryByRole("button")).toBeNull();
     expect(getByTestId("turn-answer").textContent).toContain("Just an answer.");
@@ -181,7 +182,7 @@ describe("FinishedTurn", () => {
     // An interrupted stream (or an approval-parked action) ends the turn with
     // activity only — collapsing it would hide the only content of the turn.
     const { getByRole, queryAllByTestId } = render(
-      <FinishedTurn parts={[text("Working on it..."), explore()]} />,
+      <AgentTurn parts={[text("Working on it..."), explore()]} />,
     );
     expect(getByRole("button").getAttribute("aria-expanded")).toBe("true");
     expect(queryAllByTestId("tool-part-stub")).toHaveLength(1);
@@ -189,7 +190,7 @@ describe("FinishedTurn", () => {
 
   test("empty answer with a promoted artifact: the receipt stays collapsed", () => {
     const { getByRole, getByTestId } = render(
-      <FinishedTurn parts={[explore(), sql()]} />,
+      <AgentTurn parts={[explore(), sql()]} />,
     );
     expect(getByRole("button").getAttribute("aria-expanded")).toBe("false");
     expect(getByTestId("answer-artifact")).not.toBeNull();
@@ -206,7 +207,7 @@ describe("FinishedTurn", () => {
       output: { status: "pending", actionId: "a1", summary: "Send the email" },
     } as TurnPart;
     const { getByRole, queryAllByTestId, getByTestId } = render(
-      <FinishedTurn parts={[pendingApproval, text("I need your approval to send this.")]} />,
+      <AgentTurn parts={[pendingApproval, text("I need your approval to send this.")]} />,
     );
     expect(getByRole("button").getAttribute("aria-expanded")).toBe("true");
     expect(queryAllByTestId("tool-part-stub")).toHaveLength(1);
@@ -222,7 +223,7 @@ describe("FinishedTurn", () => {
       output: { status: "executed", actionId: "a1", result: { ok: true } },
     } as TurnPart;
     const { getByRole } = render(
-      <FinishedTurn parts={[executed, text("The email went out.")]} />,
+      <AgentTurn parts={[executed, text("The email went out.")]} />,
     );
     expect(getByRole("button").getAttribute("aria-expanded")).toBe("false");
   });

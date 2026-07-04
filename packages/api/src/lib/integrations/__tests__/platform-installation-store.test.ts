@@ -201,6 +201,23 @@ describe("PlatformInstallationStore", () => {
       expect((result as Record<string, unknown>).secret).toBeUndefined();
     });
 
+    // Compile-time backstop for the strip (#4278): when a backend names its
+    // secret via the SecretKey param, a pass-through `toPublic` must fail
+    // `tsgo`. The @ts-expect-error IS the assertion — it fails the type-check
+    // (unused-directive) if the enforcement ever regresses. `bun test` doesn't
+    // type-check, but the `type` CI gate compiles this file.
+    it("rejects a pass-through toPublic at compile time (type-level)", () => {
+      type StrippingFn = InstallationBackend<FakeFull, FakePublic, FakeSaveInput, "secret">["toPublic"];
+      const stripping: StrippingFn = (full) => {
+        const { secret: _drop, ...pub } = full;
+        return pub;
+      };
+      // @ts-expect-error a pass-through leaks `secret` — the SecretKey brand forbids it
+      const leaking: StrippingFn = (full) => full;
+      expect(typeof stripping).toBe("function");
+      expect(typeof leaking).toBe("function");
+    });
+
     it("returns null (no query) when no internal DB", async () => {
       mockHasDB = false;
       const { backend, calls } = makeBackend();

@@ -166,36 +166,57 @@ export const AuditFacetsSchema = z.object({
 });
 
 /**
+ * The strict audit-row shape — one field per `audit_log` column the table
+ * knows about. This object is the SSOT: the exported {@link AuditRow} type is
+ * inferred from it (no index signature, so typos on property access still fail
+ * `tsgo`), while {@link AuditRowSchema} adds `.passthrough()` on top for the
+ * wire parse only.
+ */
+const AuditRowShape = z.object({
+  id: z.string(),
+  user_id: z.string().nullable(),
+  sql: z.string(),
+  success: z.boolean(),
+  duration_ms: z.number(),
+  row_count: z.number().nullable(),
+  timestamp: z.string(),
+  user_email: z.string().nullable().optional(),
+  error: z.string().nullable().optional(),
+  source_id: z.string().nullable().optional(),
+  tables_accessed: z.array(z.string()).nullable(),
+  columns_accessed: z.array(z.string()).nullable(),
+  // MCP attribution (migration 0049) — NULL for non-MCP rows; populated by
+  // the MCP transport with the actor kind, OAuth client id, and dispatched
+  // tool.
+  actor_kind: z.string().nullable().optional(),
+  client_id: z.string().nullable().optional(),
+  tool_name: z.string().nullable().optional(),
+});
+
+/**
  * One audit-log row as returned by `GET /api/v1/admin/audit` (the route
  * selects `a.*`, so every audit_log column is present). Validating here turns
  * a wire-shape drift into a TS/runtime error instead of a silent `undefined`.
- * `.passthrough()` keeps forward-compat columns the table doesn't render yet.
+ * `.passthrough()` keeps forward-compat columns the table doesn't render yet —
+ * on the runtime parse ONLY; the derived {@link AuditRow} type stays strict.
  */
-export const AuditRowSchema = z
-  .object({
-    id: z.string(),
-    user_id: z.string().nullable(),
-    sql: z.string(),
-    success: z.boolean(),
-    duration_ms: z.number(),
-    row_count: z.number().nullable(),
-    timestamp: z.string(),
-    user_email: z.string().nullable().optional(),
-    error: z.string().nullable().optional(),
-    source_id: z.string().nullable().optional(),
-    tables_accessed: z.array(z.string()).nullable(),
-    columns_accessed: z.array(z.string()).nullable(),
-    // MCP attribution (migration 0049) — NULL for non-MCP rows.
-    actor_kind: z.string().nullable().optional(),
-    client_id: z.string().nullable().optional(),
-    tool_name: z.string().nullable().optional(),
-  })
-  .passthrough();
+export const AuditRowSchema = AuditRowShape.passthrough();
 
 export const AuditRowsResponseSchema = z.object({
   rows: z.array(AuditRowSchema),
   total: z.number(),
 });
+
+/**
+ * The audit-row shape, derived from {@link AuditRowShape} (the strict object,
+ * NOT the passthrough schema) so the schema is the single source of truth AND
+ * the type keeps typo-detection on property access — a `.passthrough()` infer
+ * would add an `[key: string]: unknown` index signature that silently swallows
+ * typos. The audit table's `columns.tsx` re-exports this; deriving it (rather
+ * than hand-writing a parallel interface) means a schema change can't silently
+ * drift from the rendered table (#4278).
+ */
+export type AuditRow = z.infer<typeof AuditRowShape>;
 
 // `AuditConnectionMetaSchema` removed in #2444 — the audit page now reuses
 // the canonical `ConnectionsResponseSchema` so every consumer of

@@ -493,3 +493,40 @@ describe("static connection caching", () => {
     expect(conns).toHaveLength(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Type-level: createStaticConnection is mandatory when TConn narrows (#4278)
+// ---------------------------------------------------------------------------
+
+describe("static-connection requirement (type-level)", () => {
+  interface NarrowConn extends PluginDBConnection {
+    marker(): void;
+  }
+  const baseOptions = {
+    id: "narrow",
+    name: "Narrow DataSource",
+    dbType: "testdb" as const,
+    dialect: "x",
+    configSchema: ConfigSchema,
+    connectionConfigSchema: ConnectionSchema,
+    describeStaticTarget: (c: TestConfig) => String(c.url),
+    buildConnection: (_p: TestRuntimeConfig) => makeConn(),
+    attachIntrospection: (built: PluginDBConnection) => built,
+  };
+
+  test("a narrowed TConn without createStaticConnection fails tsgo", () => {
+    // The @ts-expect-error IS the assertion: narrowing TConn below
+    // PluginDBConnection makes createStaticConnection required, so omitting it
+    // must not compile. Regressing the requirement turns this into an
+    // unused-directive type error under the `type` CI gate.
+    // @ts-expect-error createStaticConnection required when TConn narrows (#4278)
+    const bad = createDatasourcePlugin<TestConfig, TestRuntimeConfig, NarrowConn>(baseOptions);
+    // Supplying it compiles.
+    const good = createDatasourcePlugin<TestConfig, TestRuntimeConfig, NarrowConn>({
+      ...baseOptions,
+      createStaticConnection: () => ({ ...makeConn(), marker() {} }),
+    });
+    expect(typeof bad).toBe("function");
+    expect(typeof good).toBe("function");
+  });
+});

@@ -110,7 +110,8 @@ interface DiscordSaveInput {
 const discordBackend: InstallationBackend<
   DiscordInstallationWithSecret,
   DiscordInstallation,
-  DiscordSaveInput
+  DiscordSaveInput,
+  "bot_token"
 > = {
   name: "Discord",
   routingNoun: "Guild",

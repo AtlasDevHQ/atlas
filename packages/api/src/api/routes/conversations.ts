@@ -38,6 +38,7 @@ import {
   type CrudFailReason,
   type SharedConversationFailReason,
 } from "@atlas/api/lib/conversations";
+import { ANSWER_STYLE_NAMES } from "@atlas/api/lib/answer-styles";
 import { readSessionMemorySlots, resetSessionMemory } from "@atlas/api/lib/durable-state";
 import { SessionMemorySlotSchema } from "@useatlas/schemas";
 import type { ShareExpiryKey } from "@useatlas/types/share";
@@ -122,6 +123,18 @@ const ConversationSchema = z.object({
    * carries it so the picker restores the persisted reach on open.
    */
   groupReach: z.string().nullable().optional(),
+  /**
+   * Per-conversation answer style (#4302, PRD #4292) — the editorial voice
+   * of the agent's answers (lib/answer-styles.ts registry). `null` = no
+   * explicit choice: prompt assembly resolves the surface default
+   * (`analyst` for web). Genuinely nullable; optional so pre-#4302 rows /
+   * SDK consumers need not supply it. Mirrors the `Conversation` wire type
+   * — `GET /conversations/:id` carries it so the header picker restores the
+   * persisted style on reopen. `conversational` is a legal persisted value
+   * (accepted from API/SDK callers), though the web picker doesn't offer it
+   * and chat platforms apply that voice per-turn, leaving their rows NULL.
+   */
+  answerStyle: z.enum(ANSWER_STYLE_NAMES).nullable().optional(),
   starred: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

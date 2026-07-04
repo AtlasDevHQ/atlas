@@ -145,6 +145,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   updateConversationRestExcluded: mock(() => Promise.resolve({ ok: true as const })),
   updateConversationRestFocus: mock(() => Promise.resolve({ ok: true as const })),
   updateConversationGroupReach: mock(() => Promise.resolve({ ok: true as const })),
+  updateConversationAnswerStyle: mock(() => Promise.resolve({ ok: true as const })),
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 

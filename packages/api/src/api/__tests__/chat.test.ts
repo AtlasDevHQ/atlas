@@ -141,6 +141,13 @@ const mockUpdateConversationRestFocus = mock(() =>
 const mockUpdateConversationGroupReach = mock(() =>
   Promise.resolve({ ok: true as const }),
 );
+// #4302 — captured so tests can assert the answer-style persist path (persist
+// on explicit change, no UPDATE when unchanged/omitted). Like the reach helper
+// above, chat.ts calls this synchronously (before .catch), so it MUST be
+// mocked or the persist-style branch throws the moment the picker is touched.
+const mockUpdateConversationAnswerStyle = mock(() =>
+  Promise.resolve({ ok: true as const }),
+);
 type ReservationResult =
   | { status: "ok"; totalStepsBefore: number }
   | { status: "exceeded"; totalSteps: number }
@@ -184,6 +191,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   updateConversationRestExcluded: mockUpdateConversationRestExcluded,
   updateConversationRestFocus: mockUpdateConversationRestFocus,
   updateConversationGroupReach: mockUpdateConversationGroupReach,
+  updateConversationAnswerStyle: mockUpdateConversationAnswerStyle,
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
@@ -311,6 +319,8 @@ describe("POST /api/v1/chat", () => {
     mockUpdateConversationRestFocus.mockResolvedValue({ ok: true as const });
     mockUpdateConversationGroupReach.mockReset();
     mockUpdateConversationGroupReach.mockResolvedValue({ ok: true as const });
+    mockUpdateConversationAnswerStyle.mockReset();
+    mockUpdateConversationAnswerStyle.mockResolvedValue({ ok: true as const });
     mockReserveConversationBudget.mockReset();
     mockReserveConversationBudget.mockResolvedValue({ status: "ok", totalStepsBefore: 0 });
     mockSettleConversationSteps.mockReset();
@@ -869,6 +879,230 @@ describe("POST /api/v1/chat", () => {
     expect(capturedContext?.groupReach).toBe("g_prod");
     // …and did NOT burn an UPDATE (body absent → inherit, no change).
     expect(mockUpdateConversationGroupReach).not.toHaveBeenCalled();
+  });
+
+  // #4302 — per-conversation answer style: the header picker's selection
+  // rides the chat request, feeds prompt assembly via runAgent's
+  // `answerStyle` param (NOT the ALS frame — it's a direct agent option),
+  // and persists on the conversation row so it restores on reopen.
+  it("passes a body-supplied answerStyle to runAgent and persists it at creation (#4302)", async () => {
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+        answerStyle: "executive",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockRunAgent).toHaveBeenCalledTimes(1);
+    const runCalls = mockRunAgent.mock.calls as unknown as unknown[][];
+    expect((runCalls[0]![0] as { answerStyle?: string }).answerStyle).toBe("executive");
+    // The conversation-creating turn stamps the picked style onto the row.
+    expect(mockCreateConversation).toHaveBeenCalledTimes(1);
+    const createCalls = mockCreateConversation.mock.calls as unknown as unknown[][];
+    expect((createCalls[0]![0] as { answerStyle?: string | null }).answerStyle).toBe("executive");
+  });
+
+  // #4302 — the schema seam is the single validation layer (no DB CHECK, see
+  // migration 0165): an out-of-vocabulary style must 422 before any
+  // conversation write or agent run.
+  it("rejects an out-of-vocabulary answerStyle at the schema seam (#4302)", async () => {
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+        answerStyle: "sarcastic",
+      }),
+    );
+    expect(response.status).toBe(422);
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+  });
+
+  // #4302 — the acceptance criterion's "subsequent turns" half at the route
+  // seam: a conversation pinned to `executive` keeps voicing executive on a
+  // follow-up turn whose body omits the field (the transport only sends the
+  // style once its state holds one — picked or restored). The prompt-assembly
+  // half — runAgent
+  // with `executive` building the executive addendum — is pinned by the
+  // mock-LLM test in lib/__tests__/agent-answer-style-prompt-shape.test.ts.
+  it("inherits the stored answer style on a follow-up turn that omits it (#4302)", async () => {
+    const convId = "c3d4e5f6-a7b8-4920-9c1d-3e4f50617283";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+        groupReach: null,
+        answerStyle: "executive",
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "follow up" }] }],
+        conversationId: convId,
+        // answerStyle intentionally omitted
+      }),
+    );
+    expect(response.status).toBe(200);
+    const runCalls = mockRunAgent.mock.calls as unknown as unknown[][];
+    expect((runCalls[0]![0] as { answerStyle?: string }).answerStyle).toBe("executive");
+    // Inherit is not a change — no UPDATE burned.
+    expect(mockUpdateConversationAnswerStyle).not.toHaveBeenCalled();
+  });
+
+  // #4302 — the pre-#4302 back-compat path: an existing conversation whose
+  // row has NO explicit choice (NULL) and whose body omits the field must
+  // reach runAgent with NO answerStyle — prompt assembly then applies the
+  // live surface default, so legacy conversations keep tracking it.
+  it("threads no answerStyle for a NULL-row conversation whose body omits it (#4302)", async () => {
+    const convId = "a7b8c9d0-e1f2-4d64-b051-728394051627";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+        groupReach: null,
+        answerStyle: null,
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "legacy turn" }] }],
+        conversationId: convId,
+      }),
+    );
+    expect(response.status).toBe(200);
+    const runCalls = mockRunAgent.mock.calls as unknown as unknown[][];
+    expect((runCalls[0]![0] as { answerStyle?: string }).answerStyle).toBeUndefined();
+    expect(mockUpdateConversationAnswerStyle).not.toHaveBeenCalled();
+  });
+
+  // #4302 — an explicit picker change persists onto the row (that's what
+  // makes it restore on reopen), and takes effect on this very turn.
+  it("persists an explicit answer-style change on an existing conversation (#4302)", async () => {
+    const convId = "d4e5f6a7-b8c9-4a31-8d2e-4f5061728394";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+        groupReach: null,
+        answerStyle: "analyst",
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "switch voice" }] }],
+        conversationId: convId,
+        answerStyle: "plain-english",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockUpdateConversationAnswerStyle).toHaveBeenCalledTimes(1);
+    const updateCalls = mockUpdateConversationAnswerStyle.mock.calls as unknown as unknown[][];
+    expect(updateCalls[0]![0]).toBe(convId);
+    expect(updateCalls[0]![1]).toBe("plain-english");
+    // The changed style also voices THIS turn.
+    const runCalls = mockRunAgent.mock.calls as unknown as unknown[][];
+    expect((runCalls[0]![0] as { answerStyle?: string }).answerStyle).toBe("plain-english");
+  });
+
+  // #4302 — the most common real-world transition: an existing conversation
+  // with NO explicit choice (NULL row) gets its first explicit pick — the
+  // UPDATE must fire (null !== "executive") so the pick survives reopen.
+  it("persists the first explicit pick on a previously-default conversation (#4302)", async () => {
+    const convId = "f6a7b8c9-d0e1-4c53-af40-617283940516";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+        groupReach: null,
+        answerStyle: null,
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "first pick" }] }],
+        conversationId: convId,
+        answerStyle: "executive",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockUpdateConversationAnswerStyle).toHaveBeenCalledTimes(1);
+    const updateCalls = mockUpdateConversationAnswerStyle.mock.calls as unknown as unknown[][];
+    expect(updateCalls[0]![1]).toBe("executive");
+  });
+
+  // #4302 — re-sending the stored style (the transport re-sends it every turn
+  // once its state holds one — picked this session or restored on reopen)
+  // must NOT burn an UPDATE. This is the common reopened-conversation turn.
+  it("skips the UPDATE when the body's answerStyle equals the stored value (#4302)", async () => {
+    const convId = "e5f6a7b8-c9d0-4b42-9e3f-506172839405";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+        groupReach: null,
+        answerStyle: "executive",
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "same voice" }] }],
+        conversationId: convId,
+        answerStyle: "executive",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockUpdateConversationAnswerStyle).not.toHaveBeenCalled();
+  });
+
+  // #4302 — no explicit choice anywhere ⇒ runAgent gets NO answerStyle (prompt
+  // assembly applies the live surface default, `analyst`) and the created row
+  // persists NULL so it keeps tracking the default rather than freezing it.
+  it("omits answerStyle from runAgent and persists NULL when nothing supplies one (#4302)", async () => {
+    const response = await app.fetch(makeRequest()); // no answerStyle in body
+    expect(response.status).toBe(200);
+    const runCalls = mockRunAgent.mock.calls as unknown as unknown[][];
+    expect((runCalls[0]![0] as { answerStyle?: string }).answerStyle).toBeUndefined();
+    const createCalls = mockCreateConversation.mock.calls as unknown as unknown[][];
+    expect((createCalls[0]![0] as { answerStyle?: string | null }).answerStyle).toBeNull();
   });
 
   // F-74 regression pin: the chat handler MUST pass `bucket: "chat"` so the

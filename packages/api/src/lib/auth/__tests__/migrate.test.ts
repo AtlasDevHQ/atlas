@@ -463,6 +463,9 @@ describe("migrateAuthTables", () => {
             // marker. An Atlas-internal column, no FK to a Better Auth table, so
             // it runs in every auth mode — NOT a MANAGED_AUTH_MIGRATION.
             { name: "0165_dashboard_first_published_at.sql" },
+            // 0166 (#4302) — conversations.answer_style. Atlas-internal column,
+            // no FK to a Better Auth table, so it runs in every auth mode.
+            { name: "0166_conversations_answer_style.sql" },
           ],
         };
       }

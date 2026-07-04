@@ -52,8 +52,11 @@ import {
   updateConversationRestExcluded,
   updateConversationRestFocus,
   updateConversationGroupReach,
+  updateConversationAnswerStyle,
   resolveRoutingMode,
 } from "@atlas/api/lib/conversations";
+import { ANSWER_STYLE_NAMES } from "@atlas/api/lib/answer-styles";
+import type { AnswerStyle } from "@atlas/api/lib/answer-styles";
 import type { ConversationRoutingMode } from "@useatlas/types/conversation";
 import {
   bindConversationToDashboard,
@@ -400,6 +403,19 @@ export const ChatRequestSchema = z.object({
    * migration 0077).
    */
   routingMode: z.enum(["auto", "pin", "all"]).optional(),
+  /**
+   * #4302 — per-conversation answer style (PRD #4292): the editorial voice
+   * of the agent's answers, resolved through the registry in
+   * `lib/answer-styles.ts`. Sent by the chat header's style picker; the
+   * route persists it onto the conversation row AND feeds it into prompt
+   * assembly for this turn. Omitted turns inherit the conversation's stored
+   * value; a stored NULL (or a brand-new conversation) resolves to the
+   * surface default (`analyst`) at prompt assembly. The Zod enum derives
+   * from `ANSWER_STYLE_NAMES` — the registry is the single source of truth
+   * for acceptable values; there's no DB-layer CHECK constraint (see
+   * migration 0165, same rationale as `routingMode`/0077).
+   */
+  answerStyle: z.enum(ANSWER_STYLE_NAMES).optional(),
   /**
    * #3066 — per-conversation REST datasource exclude-set. The scope
    * picker sends the excluded `install_id`s; the route persists them
@@ -984,6 +1000,13 @@ chat.openapi(chatRoute, async (c) => {
         // (the transport-omits-null bug class, #3073).
         let effectiveGroupReach: string | null | undefined =
           parsed.data.groupReach;
+        // #4302 — per-conversation answer style. Body value (this turn, from
+        // the header picker) > stored value on the row. `undefined` all the
+        // way down means "no explicit choice anywhere" — `runAgent` then
+        // applies the surface default (`analyst`) at prompt assembly, so a
+        // NULL row keeps tracking the default rather than freezing a copy.
+        let effectiveAnswerStyle: AnswerStyle | undefined =
+          parsed.data.answerStyle;
 
         // #2424 — when the body supplies `connectionGroupId`, verify it
         // belongs to the caller's active org BEFORE persisting it onto the
@@ -1123,6 +1146,13 @@ chat.openapi(chatRoute, async (c) => {
             if (effectiveGroupReach === undefined) {
               effectiveGroupReach = existing.data.groupReach ?? null;
             }
+            // #4302 — inherit the answer style from the row when the body
+            // omits it. A NULL row stays `undefined` here (there is no
+            // explicit choice to inherit) so prompt assembly keeps applying
+            // the live surface default.
+            if (effectiveAnswerStyle === undefined && existing.data.answerStyle) {
+              effectiveAnswerStyle = existing.data.answerStyle;
+            }
             // Persist the picker mode if the body explicitly set one for
             // this turn. We compare against the stored value to avoid
             // burning an UPDATE on every chat turn when nothing changed.
@@ -1231,6 +1261,36 @@ chat.openapi(chatRoute, async (c) => {
                     conversationId,
                   },
                   "updateConversationGroupReach rejected",
+                );
+              });
+            }
+            // #4302 — persist the answer style when the body explicitly set
+            // one this turn AND it differs from the stored value, so the
+            // choice restores on reopen. Compared against the row to avoid
+            // burning an UPDATE on every turn: the transport re-sends the
+            // style whenever its state holds one — touched this session OR
+            // restored from the row on reopen — so the reopen path is the
+            // main beneficiary of this skip-UPDATE gate.
+            if (
+              parsed.data.answerStyle !== undefined &&
+              parsed.data.answerStyle !== existing.data.answerStyle
+            ) {
+              // Fire-and-forget, same contract as routing-mode / REST scope /
+              // Group reach above: the runtime honours the body's style for
+              // this turn even if the persist fails; the helper logs its own
+              // failures.
+              updateConversationAnswerStyle(
+                conversationId,
+                parsed.data.answerStyle,
+                authResult.user?.id,
+                authResult.user?.activeOrganizationId,
+              ).catch((err: unknown) => {
+                log.warn(
+                  {
+                    err: err instanceof Error ? err.message : String(err),
+                    conversationId,
+                  },
+                  "updateConversationAnswerStyle rejected",
                 );
               });
             }
@@ -1355,6 +1415,10 @@ chat.openapi(chatRoute, async (c) => {
                 // transport sends null when the picker is at All sources, so
                 // `?? null` keeps a newly-created conversation ranging all groups.
                 groupReach: effectiveGroupReach ?? null,
+                // #4302 — persist the answer style the user picked at
+                // creation. Undefined ⇒ NULL (no explicit choice — the row
+                // keeps tracking the surface default at prompt assembly).
+                answerStyle: effectiveAnswerStyle ?? null,
                 orgId: authResult.user?.activeOrganizationId,
               });
               if (created) {
@@ -1655,6 +1719,11 @@ chat.openapi(chatRoute, async (c) => {
                 ...(boundDashboardForAgent && {
                   boundDashboardContext: { cardSummary: boundDashboardForAgent.cardSummary },
                 }),
+                // #4302 — the conversation's answer style (body > row).
+                // Stripped when undefined so prompt assembly applies the
+                // surface default (`analyst`) for no-explicit-choice
+                // conversations instead of pinning a frozen copy of it.
+                ...(effectiveAnswerStyle && { answerStyle: effectiveAnswerStyle }),
                 // #4294 — the pre-minted id + its stop signal (see above).
                 runId: turnRunId,
                 abortSignal: turnAbort.signal,
@@ -2125,6 +2194,15 @@ chat.openapi(chatResumeRoute, async (c) => {
             messages: [],
             ...(toolRegistry && { tools: toolRegistry }),
             conversationId,
+            // #4302 — a resumed turn rebuilds its system prompt live (the
+            // checkpoint stores the message transcript, not the system
+            // param), so re-thread the conversation's pinned style from the
+            // row loaded for the ownership check above. NULL stays stripped
+            // — the resumed prompt applies the surface default, exactly as
+            // the original turn did.
+            ...(existing.data.answerStyle && {
+              answerStyle: existing.data.answerStyle,
+            }),
             resume: {
               runId: handle.runId,
               transcript: handle.transcript,

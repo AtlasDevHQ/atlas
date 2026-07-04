@@ -123,6 +123,18 @@ describe("buildChatRequestBody (#3749)", () => {
     const body = buildChatRequestBody(MSGS, { groupReach: undefined });
     expect("groupReach" in body).toBe(false);
   });
+
+  test("#4302 — sends answerStyle when the picker selected one", () => {
+    const body = buildChatRequestBody(MSGS, { answerStyle: "executive" });
+    expect(body.answerStyle).toBe("executive");
+  });
+
+  test("#4302 — omits answerStyle when null/absent (server inherits the row / applies the default)", () => {
+    // Unlike the REST fields there is no "clear back to null" path — the
+    // picker only selects concrete styles — so null and absent both omit.
+    expect("answerStyle" in buildChatRequestBody(MSGS, { answerStyle: null })).toBe(false);
+    expect("answerStyle" in buildChatRequestBody(MSGS, {})).toBe(false);
+  });
 });
 
 describe("buildAuthHeaders (#4018)", () => {

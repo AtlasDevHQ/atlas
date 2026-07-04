@@ -27,6 +27,7 @@ import {
   updateConversationRestExcluded,
   updateConversationRestFocus,
   updateConversationGroupReach,
+  updateConversationAnswerStyle,
 } from "../conversations";
 
 // ---------------------------------------------------------------------------
@@ -135,8 +136,8 @@ describe("conversations module", () => {
       const result = await createConversation({ userId: "u1", title: "Test" });
       expect(result).toEqual({ id: "conv-123" });
       expect(queryCalls[0].sql).toContain("INSERT INTO conversations");
-      // [user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id]
-      expect(queryCalls[0].params).toEqual(["u1", "Test", "web", null, null, null, [], null, null, null]);
+      // [user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id]
+      expect(queryCalls[0].params).toEqual(["u1", "Test", "web", null, null, null, [], null, null, null, null]);
     });
 
     it("returns null when no DB", async () => {
@@ -157,7 +158,7 @@ describe("conversations module", () => {
       setResults({ rows: [{ id: "conv-456" }] });
 
       await createConversation({});
-      expect(queryCalls[0].params).toEqual([null, null, "web", null, null, null, [], null, null, null]);
+      expect(queryCalls[0].params).toEqual([null, null, "web", null, null, null, [], null, null, null, null]);
     });
 
     it("accepts custom surface and connectionId", async () => {
@@ -165,7 +166,7 @@ describe("conversations module", () => {
       setResults({ rows: [{ id: "conv-789" }] });
 
       await createConversation({ surface: "api", connectionId: "wh" });
-      expect(queryCalls[0].params).toEqual([null, null, "api", "wh", null, null, [], null, null, null]);
+      expect(queryCalls[0].params).toEqual([null, null, "api", "wh", null, null, [], null, null, null, null]);
     });
 
     it("includes orgId when provided", async () => {
@@ -174,7 +175,7 @@ describe("conversations module", () => {
 
       const result = await createConversation({ userId: "u1", orgId: "org-123" });
       expect(result).toEqual({ id: "conv-org" });
-      expect(queryCalls[0].params).toEqual(["u1", null, "web", null, null, null, [], null, null, "org-123"]);
+      expect(queryCalls[0].params).toEqual(["u1", null, "web", null, null, null, [], null, null, null, "org-123"]);
     });
 
     // #2345 — group-aware routing. Both columns are independent;
@@ -198,6 +199,7 @@ describe("conversations module", () => {
         "g_prod",
         null,
         [],
+        null,
         null,
         null,
         "org-1",
@@ -227,6 +229,7 @@ describe("conversations module", () => {
         [],
         null,
         null,
+        null,
         "org-1",
       ]);
     });
@@ -253,6 +256,34 @@ describe("conversations module", () => {
         [],
         "ds-stripe",
         null,
+        null,
+        "org-1",
+      ]);
+    });
+
+    // #4302 — persist an answer style at creation (the answer_style param
+    // sits between group_reach and org_id).
+    it("persists answerStyle when the conversation is created with a picked style", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "conv-style" }] });
+
+      await createConversation({
+        userId: "u1",
+        answerStyle: "executive",
+        orgId: "org-1",
+      });
+      expect(queryCalls[0].sql).toContain("answer_style");
+      expect(queryCalls[0].params).toEqual([
+        "u1",
+        null,
+        "web",
+        null,
+        null,
+        null,
+        [],
+        null,
+        null,
+        "executive",
         "org-1",
       ]);
     });
@@ -331,6 +362,40 @@ describe("conversations module", () => {
       }
     });
 
+    // #4302 — the read side of answer-style persistence: a stored style comes
+    // back typed; NULL and out-of-vocabulary strings (a style retired from the
+    // registry, a manual DB edit) both read as null = "track the default",
+    // never a junk string leaking into the typed union.
+    it("maps answer_style through the registry guard (stored value | NULL | junk)", async () => {
+      enableInternalDB();
+      const baseRow = {
+        id: "c1",
+        user_id: "u1",
+        title: "Test",
+        surface: "web",
+        connection_id: null,
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+      };
+      const emptyMessages = { rows: [] as Record<string, unknown>[] };
+
+      setResults({ rows: [{ ...baseRow, answer_style: "executive" }] }, emptyMessages);
+      let result = await getConversation("c1", "u1");
+      // Pin the column into the SELECT list too — dropping it there would
+      // silently read every restore-on-reopen as null while this mapping
+      // test (which feeds rows directly) stayed green.
+      expect(queryCalls[0].sql).toContain("answer_style");
+      expect(result.ok && result.data.answerStyle).toBe("executive");
+
+      setResults({ rows: [{ ...baseRow, answer_style: null }] }, emptyMessages);
+      result = await getConversation("c1", "u1");
+      expect(result.ok && result.data.answerStyle).toBeNull();
+
+      setResults({ rows: [{ ...baseRow, answer_style: "sarcastic" }] }, emptyMessages);
+      result = await getConversation("c1", "u1");
+      expect(result.ok && result.data.answerStyle).toBeNull();
+    });
+
     it("returns { ok: false, reason: 'not_found' } when not found", async () => {
       enableInternalDB();
       setResults({ rows: [] });
@@ -405,6 +470,10 @@ describe("conversations module", () => {
       expect(result.total).toBe(1);
       expect(result.conversations).toHaveLength(1);
       expect(result.conversations[0].id).toBe("c1");
+      // #4302 — pin the column into the list SELECT (same rationale as the
+      // getConversation mapping test: dropping it from the SQL would read
+      // every row's style as null while row-fed mapping tests stayed green).
+      expect(queryCalls[1].sql).toContain("answer_style");
     });
 
     it("returns empty when no DB", async () => {
@@ -1507,6 +1576,34 @@ describe("conversations module", () => {
       expect(queryCalls).toHaveLength(0);
     });
 
+    // #4302 — answer-style persistence. Same org-scoped / fail-open contract
+    // as the reach helper; uses scopeClause(3, ...) so the org param lands at
+    // $4 (an off-by-one in the SQL would surface in the param assertion).
+    it("updateConversationAnswerStyle writes the style, scoped + parameterized", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "c1" }] });
+
+      const result = await updateConversationAnswerStyle("c1", "executive", "u1", "org-B");
+      expect(result).toEqual({ ok: true });
+      expect(queryCalls[0].sql).toContain("UPDATE conversations SET answer_style = $1");
+      expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["executive", "c1", "u1", "org-B"]);
+    });
+
+    it("updateConversationAnswerStyle returns not_found when no row matches (cross-org)", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await updateConversationAnswerStyle("c1", "executive", "u1", "org-B");
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("updateConversationAnswerStyle short-circuits to no_db when the internal DB is off", async () => {
+      const result = await updateConversationAnswerStyle("c1", "executive");
+      expect(result).toEqual({ ok: false, reason: "no_db" });
+      expect(queryCalls).toHaveLength(0);
+    });
+
     it("shareConversation scopes the preflight SELECT by orgId (shareMode='org')", async () => {
       enableInternalDB();
       // Preflight sees no matching row because of cross-org filter.
@@ -1601,7 +1698,7 @@ describe("conversations module", () => {
         orgId: "org-B",
       });
       expect(result).toEqual({ ok: false, reason: "not_found" });
-      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id");
+      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id");
       expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
       expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
     });
@@ -1616,9 +1713,96 @@ describe("conversations module", () => {
         orgId: "org-B",
       });
       expect(result).toEqual({ ok: false, reason: "not_found" });
-      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id");
+      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id");
       expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
       expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
+    });
+
+    // #4302 — happy-path INSERT contract for fork/convert. These pin the FULL
+    // params array against the column list (a placeholder/params arity drift —
+    // e.g. adding a column to the SQL without adding its value — throws
+    // "bind message supplies N parameters" on real Postgres but is invisible
+    // to this mock harness without the explicit arity + array assertions).
+    const FORK_SOURCE_ROW = {
+      id: "src-c1",
+      title: "Q3 revenue",
+      surface: "web",
+      connection_id: "us-int",
+      connection_group_id: "g_prod",
+      routing_mode: "auto",
+      rest_excluded_datasource_ids: ["ds-1"],
+      rest_focus_datasource_id: null,
+      group_reach: "g_prod",
+      answer_style: "executive",
+      org_id: "org-B",
+    };
+
+    it("forkConversation inherits every scope column — including the pinned answer style (#4302)", async () => {
+      enableInternalDB();
+      setResults(
+        { rows: [FORK_SOURCE_ROW] }, // source lookup
+        { rows: [{ created_at: "2024-01-01T00:00:00Z" }] }, // fork-point message
+        { rows: [] }, // no assistant follow-up
+        { rows: [{ id: "fork-1" }] }, // conversations INSERT
+        { rows: [{ id: "m-copy-1" }] }, // message bulk copy
+      );
+
+      const result = await forkConversation({
+        sourceId: "src-c1",
+        forkPointMessageId: "m1",
+        userId: "u1",
+        orgId: "org-B",
+      });
+      expect(result).toEqual({ ok: true, data: { id: "fork-1", messageCount: 1 } });
+      const insert = queryCalls[3];
+      expect(insert.sql).toContain("INSERT INTO conversations");
+      // Placeholder count must equal bound-param count (the drift class above).
+      expect(insert.sql.match(/\$\d+/g)?.length).toBe(insert.params?.length);
+      expect(insert.params).toEqual([
+        "u1",
+        "Q3 revenue (fork)",
+        "web",
+        "us-int",
+        "g_prod",
+        "auto",
+        ["ds-1"],
+        null,
+        "g_prod",
+        "executive",
+        "org-B",
+      ]);
+    });
+
+    it("convertToNotebook inherits every scope column — including the pinned answer style (#4302)", async () => {
+      enableInternalDB();
+      setResults(
+        { rows: [FORK_SOURCE_ROW] }, // source lookup
+        { rows: [{ id: "nb-1" }] }, // conversations INSERT
+        { rows: [{ id: "m-copy-1" }] }, // message bulk copy
+      );
+
+      const result = await convertToNotebook({
+        sourceId: "src-c1",
+        userId: "u1",
+        orgId: "org-B",
+      });
+      expect(result).toEqual({ ok: true, data: { id: "nb-1", messageCount: 1 } });
+      const insert = queryCalls[1];
+      expect(insert.sql).toContain("INSERT INTO conversations");
+      expect(insert.sql.match(/\$\d+/g)?.length).toBe(insert.params?.length);
+      expect(insert.params).toEqual([
+        "u1",
+        "Q3 revenue (notebook)",
+        "notebook",
+        "us-int",
+        "g_prod",
+        "auto",
+        ["ds-1"],
+        null,
+        "g_prod",
+        "executive",
+        "org-B",
+      ]);
     });
 
     it("org_id IS NULL branch allows access to legacy rows (self-hosted back-compat)", async () => {

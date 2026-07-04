@@ -121,11 +121,14 @@ function userMessages(text: string): UIMessage[] {
   ];
 }
 
-async function runTurn(answerStyle?: "conversational"): Promise<string> {
+async function runTurn(
+  answerStyle?: import("@atlas/api/lib/answer-styles").AnswerStyle,
+  messages: UIMessage[] = userMessages("Which region grew the most last quarter?"),
+): Promise<string> {
   lastSystemPrompt = undefined;
   const result = await runAgent({
     // The acceptance criterion's simple-question case (#4299).
-    messages: userMessages("Which region grew the most last quarter?"),
+    messages,
     aiModel: {
       model: makeSpyingModel(),
       providerType: "openai",
@@ -152,6 +155,33 @@ describe("runAgent — answer-style default threading (#4299)", () => {
     expect(prompt).toContain("## Presentation mode — conversational");
     expect(prompt).toContain("Do NOT include SQL");
     expect(prompt).not.toContain("## Answer style — analyst");
+  });
+
+  // #4302 — the acceptance criterion's mock-LLM half: a conversation pinned
+  // to `executive` builds the executive addendum on SUBSEQUENT turns. The
+  // route seam (chat.test.ts) pins that a follow-up turn inherits the stored
+  // style into runAgent's `answerStyle`; this pins that runAgent, handed that
+  // inherited style on a multi-turn transcript, renders the executive
+  // addendum (and no other style's) in the prompt the mock LLM receives.
+  it("a conversation pinned to executive builds the executive addendum on subsequent turns (#4302)", async () => {
+    const followUpTurn: UIMessage[] = [
+      ...userMessages("Which region grew the most last quarter?"),
+      {
+        id: "msg-2",
+        role: "assistant" as const,
+        parts: [{ type: "text" as const, text: "EU grew the most, up 14%." }],
+      },
+      {
+        id: "msg-3",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "And which shrank?" }],
+      },
+    ];
+    const prompt = await runTurn("executive", followUpTurn);
+    expect(prompt).toContain("## Answer style — executive");
+    expect(prompt).toContain("The first line is the headline");
+    expect(prompt).not.toContain("## Answer style — analyst");
+    expect(prompt).not.toContain("## Presentation mode — conversational");
   });
 
   it("the <suggestions> contract reaches the model in both styles", async () => {

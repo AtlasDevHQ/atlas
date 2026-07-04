@@ -137,6 +137,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   updateConversationRestExcluded: mock(() => Promise.resolve({ ok: true as const })),
   updateConversationRestFocus: mock(() => Promise.resolve({ ok: true as const })),
   updateConversationGroupReach: mock(() => Promise.resolve({ ok: true as const })),
+  updateConversationAnswerStyle: mock(() => Promise.resolve({ ok: true as const })),
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
@@ -237,6 +238,31 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     const arg = calls[0]![0];
     expect(arg.resume?.runId).toBe("run-abc");
     expect(arg.resume?.priorStepIndex).toBe(2);
+  });
+
+  // #4302 — a resumed turn rebuilds its system prompt live (the checkpoint
+  // stores the transcript, not the system param), so the conversation's
+  // pinned answer style must be re-threaded from the row loaded for the
+  // ownership check. Without this, a resumed executive conversation would
+  // silently flip back to the default voice mid-turn.
+  it("re-threads the conversation's pinned answer style into the resumed runAgent (#4302)", async () => {
+    mockGetConversation.mockResolvedValue({
+      ok: true,
+      data: { id: CONV_ID, answerStyle: "executive", messages: [] },
+    });
+    const res = await app.fetch(resumeRequest());
+    expect(res.status).toBe(200);
+    const calls = mockRunAgent.mock.calls as unknown as Array<[{ answerStyle?: string }]>;
+    expect(calls[0]![0].answerStyle).toBe("executive");
+  });
+
+  it("strips answerStyle from the resumed runAgent when the row has no explicit choice (#4302)", async () => {
+    // Default beforeEach row carries no answerStyle — the resumed prompt must
+    // apply the live surface default, exactly as the original turn did.
+    const res = await app.fetch(resumeRequest());
+    expect(res.status).toBe(200);
+    const calls = mockRunAgent.mock.calls as unknown as Array<[{ answerStyle?: string }]>;
+    expect(calls[0]![0].answerStyle).toBeUndefined();
   });
 
   it("fails closed (404) when conversation ownership re-check fails — never claims or resumes", async () => {

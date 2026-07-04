@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
+import type { AnswerStyle } from "@useatlas/types/conversation";
 import { applyBrandColor, OKLCH_RE } from "./use-dark-mode";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
@@ -96,6 +97,15 @@ export interface ChatRoutingInputs {
    * sources; a `connection_group_id` value = Focus → that group.
    */
   groupReach?: string | null | undefined;
+  /**
+   * #4302 — per-conversation answer style. Omitted when `null` (no explicit
+   * choice — the server inherits the row's stored style, or applies the
+   * surface default for a NULL row), like `routingMode`. The getter returns
+   * a style once its state holds one — picked this session or restored from
+   * the row on reopen — so every turn re-sends it; only a genuine change
+   * burns an UPDATE server-side (the route's skip-UPDATE gate).
+   */
+  answerStyle?: AnswerStyle | null;
 }
 
 /**
@@ -127,6 +137,10 @@ export function buildChatRequestBody(
   if (inputs.groupReach !== undefined) {
     body.groupReach = inputs.groupReach;
   }
+  // #4302 — answer style: omit-when-null (like routingMode). There is no
+  // "clear back to null" path — the picker only ever selects a concrete
+  // style — so the omit-vs-null distinction of the REST fields isn't needed.
+  if (inputs.answerStyle) body.answerStyle = inputs.answerStyle;
   return body;
 }
 
@@ -196,6 +210,12 @@ export interface UseAtlasTransportOptions {
    * a widen would silently keep a stale Focus — the #3073 bug class.
    */
   getGroupReach?: () => string | null;
+  /**
+   * #4302 — the conversation's answer style from the header picker (`null` =
+   * no explicit choice). Omitted from the body when null so the server
+   * inherits the row's stored style (or applies the surface default).
+   */
+  getAnswerStyle?: () => AnswerStyle | null;
 }
 
 export interface UseAtlasTransportReturn {
@@ -264,6 +284,12 @@ export function useAtlasTransport(
   // transport.
   const getGroupReachRef = useRef(opts.getGroupReach);
   getGroupReachRef.current = opts.getGroupReach;
+
+  // #4302 — answer-style getter. Ref for the same reason as the routing
+  // getters: a picker change between turns reaches the next request without
+  // rebuilding `useChat`'s transport (which would cancel an in-flight stream).
+  const getAnswerStyleRef = useRef(opts.getAnswerStyle);
+  getAnswerStyleRef.current = opts.getAnswerStyle;
 
   // --- Auth state (seed from module cache to avoid flash on client-side nav) ---
   const [authMode, setAuthModeState] = useState<AuthMode | null>(_cachedAuthMode);
@@ -457,6 +483,7 @@ export function useAtlasTransport(
             restExcludedDatasourceIds: getRestExcludedDatasourceIdsRef.current?.(),
             restFocusDatasourceId: getRestFocusDatasourceIdRef.current?.(),
             groupReach: getGroupReachRef.current?.(),
+            answerStyle: getAnswerStyleRef.current?.(),
           }),
         };
       },

@@ -19,6 +19,26 @@ export type Surface = "web" | "api" | "mcp" | "slack" | "notebook";
  */
 export type ConversationRoutingMode = "auto" | "pin" | "all";
 
+/**
+ * The answer's editorial voice for a conversation (#4302, PRD #4292).
+ *
+ * The canonical registry (names, prompt addenda, default, type guard) lives
+ * in `@atlas/api/lib/answer-styles`; this union is the WIRE-TYPE lift for
+ * the values that cross the HTTP boundary — the chat request body and the
+ * persisted conversation record. The registry's `ANSWER_STYLE_NAMES` array
+ * is compile-time-checked against this union in both directions, so the two
+ * cannot drift.
+ *
+ * `conversational` is the chat-platform (Slack) voice — a legal persisted
+ * value but not offered by the web picker, which surfaces only
+ * `plain-english` / `analyst` / `executive`.
+ */
+export type AnswerStyle =
+  | "plain-english"
+  | "analyst"
+  | "executive"
+  | "conversational";
+
 export interface Conversation {
   id: string;
   userId: string | null;
@@ -104,6 +124,18 @@ export interface Conversation {
    * it; the runtime treats missing the same as `null`.
    */
   groupReach?: string | null;
+  /**
+   * Per-conversation answer style (#4302, PRD #4292) — the editorial voice
+   * of the agent's answers in this conversation. Genuinely nullable: the
+   * column is plain nullable `text` and `null` is the meaningful "no
+   * explicit choice" state, resolved to the surface default at prompt
+   * assembly (`analyst` for web; chat-platform surfaces pass
+   * `conversational` explicitly). The header picker persists an explicit
+   * value; `null` rows keep tracking the default. Optional so pre-#4302
+   * fixtures / SDK consumers can omit it; the runtime treats missing the
+   * same as `null`.
+   */
+  answerStyle?: AnswerStyle | null;
   starred: boolean;
   createdAt: string;
   updatedAt: string;

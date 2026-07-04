@@ -12,6 +12,7 @@
 import * as crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { isAnswerStyle, type AnswerStyle } from "@atlas/api/lib/answer-styles";
 import {
   hasInternalDB,
   internalQuery,
@@ -157,6 +158,12 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
     // getSharedConversation, which doesn't surface scope to anon viewers) reads
     // as null, matching the column's "All sources" default.
     groupReach: (r.group_reach as string) ?? null,
+    // #4302 — per-conversation answer style. Plain nullable text column:
+    // NULL → null = no explicit choice (prompt assembly resolves the surface
+    // default — DEFAULT_ANSWER_STYLE for web). The guard keeps an unknown DB
+    // string (a style retired from the registry, a manual edit) from leaking
+    // into the typed union — it reads as null, i.e. "track the default".
+    answerStyle: isAnswerStyle(r.answer_style) ? r.answer_style : null,
     starred: r.starred === true,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
@@ -227,6 +234,14 @@ export async function createConversation(opts: {
    * (hard/exclusive). Legacy callers are unaffected — omitting it keeps All.
    */
   groupReach?: string | null;
+  /**
+   * #4302 — per-conversation answer style (the editorial voice of the
+   * agent's answers — lib/answer-styles.ts). `null` / undefined ⇒ persist
+   * NULL = no explicit choice: prompt assembly resolves the surface default
+   * (`analyst` for web), so untouched conversations keep tracking the
+   * default. An explicit value pins the conversation to that voice.
+   */
+  answerStyle?: AnswerStyle | null;
   orgId?: string | null;
 }): Promise<{ id: string } | null> {
   if (!hasInternalDB()) return null;
@@ -238,11 +253,13 @@ export async function createConversation(opts: {
   const restFocus = opts.restFocusDatasourceId ?? null;
   // #3895 — null/undefined ⇒ persist NULL ("All sources").
   const groupReach = opts.groupReach ?? null;
+  // #4302 — null/undefined ⇒ persist NULL ("no explicit choice").
+  const answerStyle = opts.answerStyle ?? null;
   try {
     const rows = opts.id
       ? await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          `INSERT INTO conversations (id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
            RETURNING id`,
           [
             opts.id,
@@ -255,12 +272,13 @@ export async function createConversation(opts: {
             restExcluded,
             restFocus,
             groupReach,
+            answerStyle,
             opts.orgId ?? null,
           ],
         )
       : await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
            RETURNING id`,
           [
             opts.userId ?? null,
@@ -272,6 +290,7 @@ export async function createConversation(opts: {
             restExcluded,
             restFocus,
             groupReach,
+            answerStyle,
             opts.orgId ?? null,
           ],
         );
@@ -394,6 +413,35 @@ export async function updateConversationGroupReach(
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error({ err: errorMessage(err) }, "updateConversationGroupReach failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+/**
+ * #4302 — update the conversation's `answer_style` (the editorial voice of
+ * the agent's answers — lib/answer-styles.ts). Same fail-open / org-scoped
+ * contract as {@link updateConversationRoutingMode}: a no-DB / error result
+ * is logged but the chat turn still proceeds (the runtime honours the
+ * body's style for this turn even if the persist fails). The chat route's
+ * Zod schema is the validation seam — only registry names reach here.
+ */
+export async function updateConversationAnswerStyle(
+  id: string,
+  answerStyle: AnswerStyle,
+  userId?: string | null,
+  orgId?: string | null,
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const scope = scopeClause(3, userId, orgId);
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE conversations SET answer_style = $1, updated_at = now()
+       WHERE id = $2${scope.sql} RETURNING id`,
+      [answerStyle, id, ...scope.params],
+    );
+    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
+  } catch (err) {
+    log.error({ err: errorMessage(err) }, "updateConversationAnswerStyle failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -778,7 +826,7 @@ export async function getConversation(
   try {
     const scope = scopeClause(2, userId, orgId);
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, starred, notebook_state, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, starred, notebook_state, created_at, updated_at
        FROM conversations WHERE id = $1${scope.sql}`,
       [id, ...scope.params],
     );
@@ -850,7 +898,7 @@ export async function listConversations(opts?: {
       params,
     );
     const dataRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, starred, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, starred, created_at, updated_at
        FROM conversations ${where}
        ORDER BY updated_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
       [...params, limit, offset],
@@ -927,7 +975,7 @@ export async function forkConversation(opts: {
     // source row's org_id; scopeClause rejects mismatches (NULL-safe for legacy rows).
     const sourceScope = scopeClause(2, opts.userId, opts.orgId);
     const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
       [opts.sourceId, ...sourceScope.params],
     );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
@@ -963,8 +1011,8 @@ export async function forkConversation(opts: {
     // the user keeps the same env context after branching.
     const orgId = opts.orgId ?? (source.org_id as string) ?? null;
     const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
       [
         opts.userId ?? null,
         `${sourceTitle} (fork)`,
@@ -980,6 +1028,9 @@ export async function forkConversation(opts: {
         // #3895 — inherit the source's Group reach (All / Focus → group) so the
         // fork/notebook keeps the same cross-group scope after branching.
         (source.group_reach as string) ?? null,
+        // #4302 — inherit the source's pinned answer style so the fork keeps
+        // the same voice after branching (NULL = still tracking the default).
+        (source.answer_style as string) ?? null,
         orgId,
       ],
     );
@@ -1123,7 +1174,7 @@ export async function convertToNotebook(opts: {
     // Verify source exists and caller has access in both the user + org dimensions.
     const sourceScope = scopeClause(2, opts.userId, opts.orgId);
     const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
       [opts.sourceId, ...sourceScope.params],
     );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
@@ -1136,8 +1187,8 @@ export async function convertToNotebook(opts: {
     // both routing columns + the picker mode so the notebook preserves
     // the source's env context end-to-end.
     const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
       [
         opts.userId ?? null,
         `${sourceTitle} (notebook)`,
@@ -1153,6 +1204,9 @@ export async function convertToNotebook(opts: {
         // #3895 — inherit the source's Group reach (All / Focus → group) so the
         // fork/notebook keeps the same cross-group scope after branching.
         (source.group_reach as string) ?? null,
+        // #4302 — inherit the source's pinned answer style so the notebook
+        // keeps the same voice after branching (NULL = tracking the default).
+        (source.answer_style as string) ?? null,
         orgId,
       ],
     );

@@ -204,10 +204,11 @@ export function sameExcludeSet(
 }
 
 /**
- * Single source of truth for the picker's visibility shape. Parent
- * layouts use it to collapse their own wrapper row (hairline border)
- * when the picker self-hides — exporting keeps the predicate from
- * drifting against a future #2408-style tweak.
+ * Single source of truth for the picker's visibility shape. Was the parent
+ * layout's header-row gate until #4302 made the chat header unconditional
+ * (the answer-style picker always renders, so the row never collapses); now
+ * the picker's own internal self-hide gate, still exported so its tests pin
+ * the predicate against a future #2408-style tweak.
  */
 export interface ShouldRenderEnvPickerArgs {
   readonly groups: ReadonlyArray<{ readonly members: ReadonlyArray<unknown> }>;

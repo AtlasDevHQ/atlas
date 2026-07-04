@@ -23,25 +23,52 @@
  * The canonical term is **answer style** — "mode" is avoided (deploy mode /
  * content mode / routing mode collisions). The registry lives in core
  * (never `/ee`) and reads no env vars. The per-conversation picker (#4302)
- * builds on this seam: {@link ANSWER_STYLE_NAMES} is the vocabulary it will
- * validate against, and lifts to `@useatlas/types` when the style crosses
- * the HTTP boundary.
+ * builds on this seam: {@link ANSWER_STYLE_NAMES} is the vocabulary the
+ * chat route validates against, and the `AnswerStyle` union lives in
+ * `@useatlas/types` (lifted by #4302) because the style crosses the HTTP
+ * boundary on the chat request + conversation record.
  */
+
+import type { AnswerStyle } from "@useatlas/types/conversation";
 
 import { createLogger } from "./logger";
 
 const log = createLogger("answer-styles");
 
-/** Every registered answer style name (intended #4302 picker display order). */
+/**
+ * Every registered answer style name (#4302 picker display order). The
+ * member TYPE is the wire union in `@useatlas/types` (the style crosses the
+ * HTTP boundary since #4302); this array remains the canonical runtime
+ * vocabulary — validation (`isAnswerStyle`, the chat route's `z.enum`)
+ * derives from it. The `satisfies` clause forbids an entry outside the wire
+ * union; the `_everyWireStyleRegistered` assertion below forbids a wire
+ * union member missing here — so registry and wire type cannot drift in
+ * either direction.
+ */
 export const ANSWER_STYLE_NAMES = [
   "plain-english",
   "analyst",
   "executive",
   "conversational",
-] as const;
+] as const satisfies readonly AnswerStyle[];
 
-/** A named answer style — the editorial voice of the agent's answer. */
-export type AnswerStyle = (typeof ANSWER_STYLE_NAMES)[number];
+// Compile-time drift tripwire (reverse direction of the `satisfies` above):
+// if `@useatlas/types` ever adds a style this array doesn't register, the
+// `Exclude` stops being `never` and this constant fails to compile.
+const _everyWireStyleRegistered: Exclude<
+  AnswerStyle,
+  (typeof ANSWER_STYLE_NAMES)[number]
+> extends never
+  ? true
+  : never = true;
+void _everyWireStyleRegistered;
+
+/**
+ * A named answer style — the editorial voice of the agent's answer.
+ * Re-exported from the wire types (`@useatlas/types`, lifted by #4302) so
+ * the registry stays the single import site API code needs.
+ */
+export type { AnswerStyle };
 
 /**
  * Default style when a caller doesn't select one: the analyst voice, the

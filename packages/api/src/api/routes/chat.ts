@@ -954,6 +954,10 @@ chat.openapi(chatRoute, async (c) => {
                 // tool's headless browser can authenticate against the
                 // bound dashboard's web route without a fresh sign-in.
                 cookieHeader?: string | null;
+                // #4322 — the conversation's content scope, so a card
+                // `addCard` mints inherits the right connection group
+                // instead of defaulting to the workspace `default`.
+                connectionGroupId?: string | null;
               };
             }
           | null = null;
@@ -1506,6 +1510,10 @@ chat.openapi(chatRoute, async (c) => {
                 // browser so it can authenticate against the dashboard's
                 // web route without doing a fresh sign-in.
                 cookieHeader: req.headers.get("cookie"),
+                // #4322 — the resolved content scope for this turn. A card
+                // added via `addCard` inherits it so it queries the
+                // conversation's group, not the workspace default.
+                connectionGroupId: effectiveConnectionGroupId ?? null,
               },
             };
           } else if (resolved.reason === "error") {

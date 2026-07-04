@@ -29,6 +29,7 @@ import { AgentTurn } from "./chat/agent-turn";
 import { WorkingActivity, showPreStreamActivity } from "./chat/working-activity";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { SuggestionChips } from "./chat/suggestion-chips";
+import { ChatConversationProvider } from "./chat/chat-conversation-context";
 import {
   DeveloperChatEmptyState,
   shouldShowDevChatEmpty,
@@ -1231,6 +1232,10 @@ export function AtlasChat({
                     </div>
                   )}
                 >
+                {/* #4322 — expose the conversation id to CreateDashboardCard's
+                    handoff link (deeply nested under AgentTurn/ToolPart) so the
+                    bound drawer resumes THIS conversation on "Continue editing". */}
+                <ChatConversationProvider conversationId={conversationId}>
                 <div className="space-y-4 pb-4 pr-3">
                   {messages.length === 0 && !error && (
                     // #3081 — host-gated "connect data" empty state takes
@@ -1417,6 +1422,7 @@ export function AtlasChat({
                     <WorkingActivity parts={NO_PARTS} />
                   )}
                 </div>
+                </ChatConversationProvider>
                 </ErrorBoundary>
                 </ScrollArea>
 

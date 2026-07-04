@@ -21,6 +21,14 @@ export interface StageContextValue {
    * stage list so the ghost overlay updates.
    */
   onStagesChanged: () => void;
+  /**
+   * #4322 — the History tab renders past bound sessions read-only. A
+   * staged change from a finished session is inert history, not a live
+   * decision: `StageChangeCard` drops its Accept / Discard affordances and
+   * shows a static "staged in this session" note when this is set. Defaults
+   * to false (the live drawer + dashboard page).
+   */
+  readOnly?: boolean;
 }
 
 const StageContext = createContext<StageContextValue | null>(null);

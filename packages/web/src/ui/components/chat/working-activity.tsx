@@ -31,6 +31,23 @@ function stepLabel(part: ToolTurnPart): { active: string; done: string } {
       return { active: "Running Python", done: "Ran Python" };
     case "createDashboard":
       return { active: "Creating dashboard", done: "Created dashboard" };
+    // #4322 — bound-editor building + inspection tools. First-class step copy
+    // instead of the generic "Running addCard…" fallback, so the live feed
+    // reads in the user's vocabulary as the agent composes the dashboard.
+    case "getDashboardState":
+      return { active: "Reading the dashboard", done: "Read the dashboard" };
+    case "getCardDetail":
+      return { active: "Inspecting a card", done: "Inspected a card" };
+    case "addCard":
+      return { active: "Adding a card", done: "Added a card" };
+    case "updateCard":
+      return { active: "Updating a card", done: "Updated a card" };
+    case "updateLayout":
+      return { active: "Rearranging the layout", done: "Rearranged the layout" };
+    case "updateDashboardMeta":
+      return { active: "Updating dashboard details", done: "Updated dashboard details" };
+    case "screenshotDashboard":
+      return { active: "Looking at the dashboard", done: "Looked at the dashboard" };
     // #2365 — bound-editor destructive edits stage rather than commit.
     case "removeCard":
     case "updateCardSql":

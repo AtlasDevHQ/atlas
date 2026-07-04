@@ -40,12 +40,33 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Send, MessagesSquare, ArrowLeft, History, MessageCircle, User } from "lucide-react";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
-import { Markdown } from "@/ui/components/chat/markdown";
-import { ToolPart } from "@/ui/components/chat/tool-part";
-import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
+import { AgentTurn } from "@/ui/components/chat/agent-turn";
+import { WorkingActivity, showPreStreamActivity } from "@/ui/components/chat/working-activity";
+import { FollowUpChips } from "@/ui/components/chat/follow-up-chips";
+import { StageProvider } from "@/ui/components/dashboards/stage-context";
 import { parseSuggestions } from "@/ui/lib/helpers";
 import { transformMessages } from "@useatlas/types/conversation";
 import type { Message } from "@useatlas/types/conversation";
+
+/** Stable empty parts array for the pre-stream feed (avoids a new [] per render). */
+const NO_PARTS: [] = [];
+
+/** Sentinel marking that a fresh (non-resume) open has cleared its transcript. */
+const FRESH_SESSION = "__fresh__";
+
+/** Pull the last set of parsed <suggestions> chips from an assistant turn. */
+function suggestionsForMessage(message: UIMessage): string[] {
+  if (message.role !== "assistant") return [];
+  const parts = message.parts ?? [];
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i];
+    if (part.type === "text" && "text" in part) {
+      const parsed = parseSuggestions(part.text);
+      if (parsed.suggestions.length > 0) return parsed.suggestions;
+    }
+  }
+  return [];
+}
 
 interface BoundChatDrawerProps {
   open: boolean;
@@ -60,6 +81,16 @@ interface BoundChatDrawerProps {
    * smarter invalidation in a follow-up.
    */
   onDashboardMutated?: () => void;
+  /**
+   * #4322 — creation-to-bound continuity. When the drawer is opened from a
+   * `createDashboard` handoff, the originating conversation (with the SQL
+   * and intent it just produced) carries into bound mode instead of a
+   * reset-to-empty. The drawer pins this conversation id and hydrates its
+   * transcript, so the next turn appends to the same conversation — which
+   * the chat route then binds to this dashboard. `null`/undefined = the
+   * default fresh-session-per-open behavior (opened from "Edit with chat").
+   */
+  resumeConversationId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +126,7 @@ export function BoundChatDrawer({
   dashboardId,
   dashboardTitle,
   onDashboardMutated,
+  resumeConversationId,
 }: BoundChatDrawerProps) {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const [input, setInput] = useState("");
@@ -113,14 +145,21 @@ export function BoundChatDrawer({
   // matches the PRD's "fresh conversation per drawer-open" requirement
   // (each open starts a new bound conversation; history accessible via
   // the History tab).
+  //
+  // #4322 — EXCEPT when opened from a `createDashboard` handoff: then the
+  // originating conversation carries in (pinned below + hydrated by the
+  // resume effect) rather than resetting to empty.
   useEffect(() => {
     if (open) {
-      conversationIdRef.current = null;
+      conversationIdRef.current = resumeConversationId ?? null;
       setSessionKey((k) => k + 1);
       setActiveTab("chat");
       setSelectedSessionId(null);
+      // The transcript itself (fresh-clear vs. resume-hydrate) is managed by
+      // the seed effect below — it owns `setMessages`, which isn't in scope
+      // until `useChat` is destructured.
     }
-  }, [open]);
+  }, [open, resumeConversationId]);
 
   const transport = useMemo(() => {
     return new DefaultChatTransport({
@@ -161,8 +200,18 @@ export function BoundChatDrawer({
     detail: string;
   } | null>(null);
 
-  // Clear the warning between sessions so a previous run's banner
-  // doesn't leak into the new conversation.
+  // #4322 — a failed resume GET must NOT masquerade as a fresh session. When
+  // the originating conversation can't be loaded (403 on a stale/foreign
+  // `?conversationId=`, 404 after deletion, 5xx, network error), the seed
+  // effect falls back to a genuinely fresh session (un-pins the ref so the
+  // next turn mints a new conversation the user can see) and flips this so the
+  // banner explains why — rather than silently appending to an invisible one.
+  const [resumeFailed, setResumeFailed] = useState(false);
+
+  // Clear the bind-warning between sessions so a previous run's banner
+  // doesn't leak into the new conversation. (`resumeFailed` is owned by the
+  // seed effect below, which co-locates the whole resume lifecycle — resetting
+  // it here would race that effect when `sessionKey` bumps.)
   useEffect(() => {
     if (open) setBoundUnavailable(null);
   }, [open, sessionKey]);
@@ -183,7 +232,7 @@ export function BoundChatDrawer({
     });
   }, []);
 
-  const { messages, sendMessage, status, error } = useChat({
+  const { messages, setMessages, sendMessage, status, error } = useChat({
     transport,
     // Subscribe to the same `data-context-warning` channel the main
     // chat uses so the bound flow can surface bind/resolve failures.
@@ -191,6 +240,53 @@ export function BoundChatDrawer({
   });
 
   const isLoading = status === "streaming" || status === "submitted";
+
+  // #4322 — creation-to-bound continuity. When `resumeConversationId` is
+  // set, hydrate the drawer with that conversation's transcript so the SQL +
+  // intent it just produced carries in (no reset-to-empty). Fetched only
+  // while the drawer is open AND a resume id is present; the creating user
+  // owns the conversation, so the per-user `/conversations/:id` GET resolves.
+  const resumeQuery = useAdminFetch<{ messages: Message[] }>(
+    `/api/v1/conversations/${resumeConversationId}`,
+    { enabled: open && !!resumeConversationId },
+  );
+
+  // Own the transcript lifecycle for an open: clear on a fresh open, hydrate
+  // once on a resume open. Guarded by a ref so a later live turn is never
+  // clobbered by a re-run of this effect. Reset on close so reopening re-runs.
+  const seededConversationRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!open) {
+      seededConversationRef.current = null;
+      return;
+    }
+    if (!resumeConversationId) {
+      // Fresh open → empty transcript, exactly once per open.
+      if (seededConversationRef.current !== FRESH_SESSION) {
+        setMessages([]);
+        setResumeFailed(false);
+        seededConversationRef.current = FRESH_SESSION;
+      }
+      return;
+    }
+    if (seededConversationRef.current === resumeConversationId) return;
+    // Resume GET failed — do NOT stay pinned to a conversation the user can't
+    // see. Un-pin so the next turn mints a fresh, visible conversation, clear
+    // any partial transcript, and flip the banner. Mark seeded so we don't
+    // loop on the same failing id.
+    if (resumeQuery.error) {
+      conversationIdRef.current = null;
+      setMessages([]);
+      setResumeFailed(true);
+      seededConversationRef.current = resumeConversationId;
+      return;
+    }
+    const loaded = resumeQuery.data?.messages;
+    if (!Array.isArray(loaded)) return;
+    setMessages(transformMessages(loaded) as unknown as UIMessage[]);
+    setResumeFailed(false);
+    seededConversationRef.current = resumeConversationId;
+  }, [open, resumeConversationId, resumeQuery.data, resumeQuery.error, setMessages]);
 
   // Refetch the dashboard whenever a tool result lands. The bound editor
   // tools mutate cards/title/layout — viewers expect the canvas to
@@ -229,6 +325,16 @@ export function BoundChatDrawer({
     await sendMessage({ text });
   }
 
+  // #4322 — a follow-up chip sends its text as the next turn (parity with the
+  // main chat's FollowUpChips). Guarded against firing mid-stream.
+  const handleSuggestionSelect = useCallback(
+    (text: string) => {
+      if (isLoading || !text.trim()) return;
+      void sendMessage({ text });
+    },
+    [isLoading, sendMessage],
+  );
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -266,7 +372,34 @@ export function BoundChatDrawer({
             className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
           >
             <ScrollArea className="flex-1 px-4 py-3">
-              {messages.length === 0 && (
+              {/* #4322 — resuming the originating conversation: hold the space
+                  with a skeleton instead of flashing the fresh-session prompts
+                  before the transcript pops in. */}
+              {resumeConversationId && resumeQuery.loading && messages.length === 0 && (
+                <div className="space-y-3 py-2" data-testid="resume-loading">
+                  <Skeleton className="h-8 w-2/3" />
+                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className="h-8 w-1/2" />
+                </div>
+              )}
+
+              {/* #4322 — a failed resume GET falls back to a fresh session
+                  (the seed effect un-pinned the conversation ref); tell the
+                  user why rather than silently starting over. */}
+              {resumeFailed && (
+                <div
+                  role="alert"
+                  data-testid="resume-failed-banner"
+                  className="my-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300"
+                >
+                  Couldn&rsquo;t load the previous conversation — starting a fresh
+                  editing session. Your earlier work is safe in its own
+                  conversation.
+                </div>
+              )}
+
+              {messages.length === 0 &&
+                !(resumeConversationId && resumeQuery.loading) && (
                 <div className="space-y-3 py-6 text-sm text-zinc-500 dark:text-zinc-400">
                   <p>Tell the agent what to change. Examples:</p>
                   <ul className="space-y-1 pl-4">
@@ -278,13 +411,32 @@ export function BoundChatDrawer({
                 </div>
               )}
 
-              {messages.map((m: UIMessage) => (
-                <BoundChatMessage key={m.id} message={m} />
-              ))}
+              {messages.map((m: UIMessage, i) => {
+                const isLastAssistant =
+                  m.role === "assistant" && i === messages.length - 1;
+                return (
+                  <BoundChatTurn
+                    key={m.id}
+                    message={m}
+                    // #4300 — only the last assistant turn is live; it renders
+                    // the working feed and settles into the receipt as the
+                    // answer streams. Earlier turns are finished (receipt →
+                    // answer → promoted artifact).
+                    streaming={isLastAssistant && isLoading}
+                    // Follow-up chips only on the finished final assistant turn.
+                    showSuggestions={isLastAssistant && !isLoading}
+                    onSelectSuggestion={handleSuggestionSelect}
+                  />
+                );
+              })}
 
-              {isLoading && messages[messages.length - 1]?.role === "user" && (
+              {/* #4300 — the working phase begins at send, before the assistant
+                  message mounts: a standalone activity feed holds the spot the
+                  streaming turn's own feed then takes over (same component, same
+                  position), so the drawer never opens a turn with dead air. */}
+              {showPreStreamActivity(isLoading, messages[messages.length - 1]?.role) && (
                 <div className="my-2">
-                  <TypingIndicator />
+                  <WorkingActivity parts={NO_PARTS} />
                 </div>
               )}
 
@@ -461,6 +613,15 @@ function HistoryTranscriptPanel({
   );
 
   const transformed = data ? transformMessages(data.messages) : [];
+  // Index of the last assistant turn — the only one whose suggestion chips
+  // we surface (the session's closing follow-ups).
+  let lastAssistantIndex = -1;
+  for (let i = transformed.length - 1; i >= 0; i--) {
+    if (transformed[i].role === "assistant") {
+      lastAssistantIndex = i;
+      break;
+    }
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -505,13 +666,25 @@ function HistoryTranscriptPanel({
           </div>
         )}
 
-        {transformed.map((m) => (
-          <BoundChatMessage
-            key={m.id}
-            message={m as unknown as UIMessage}
-            readOnly
-          />
-        ))}
+        {/* #4322 — the transcript is INERT history. The read-only stage
+            context makes any replayed `stage_required` card drop its live
+            Accept / Discard (a finished session has nothing to resolve), and
+            `BoundChatTurn` renders every turn as finished (receipt → answer)
+            with its suggestion chips shown but non-interactive. */}
+        <StageProvider
+          value={{ dashboardId, onStagesChanged: () => {}, readOnly: true }}
+        >
+          {transformed.map((m, i) => (
+            <BoundChatTurn
+              key={m.id}
+              message={m as unknown as UIMessage}
+              streaming={false}
+              // Show the final assistant turn's parsed suggestions inert.
+              showSuggestions={i === lastAssistantIndex}
+              readOnly
+            />
+          ))}
+        </StageProvider>
 
         {data && !loading && (
           <div className="mt-6 border-t border-dashed border-zinc-200 pt-3 text-[10px] uppercase tracking-wide text-zinc-400 dark:border-zinc-800">
@@ -525,24 +698,32 @@ function HistoryTranscriptPanel({
 }
 
 // ---------------------------------------------------------------------------
-// Shared message renderer (used by both live chat + read-only transcript)
+// Shared turn renderer (used by both live chat + read-only transcript)
 // ---------------------------------------------------------------------------
 
-function BoundChatMessage({
+/**
+ * #4322 — the bound drawer renders a turn through the SAME shared partitioner
+ * the main chat uses (`AgentTurn`): the activity feed settles into a collapsed
+ * receipt, the answer streams as the dominant element, and the building tools
+ * (`addCard`, `getDashboardState`, `updateLayout`, …) get first-class receipt
+ * cards instead of gray "Tool: addCard" boxes. This retires the drawer's old
+ * divergent renderer (full-weight inline tool cards, no receipt, no live feed).
+ */
+function BoundChatTurn({
   message,
+  streaming,
+  showSuggestions,
+  onSelectSuggestion,
   readOnly = false,
 }: {
   message: UIMessage;
+  streaming: boolean;
+  showSuggestions: boolean;
+  onSelectSuggestion?: (text: string) => void;
   readOnly?: boolean;
 }) {
-  const isUser = message.role === "user";
-  // Split text and tool parts so tool results render inline as cards
-  // between the assistant's text turns (matches the main AtlasChat
-  // layout convention).
-  const parts = message.parts ?? [];
-
-  if (isUser) {
-    const text = parts
+  if (message.role === "user") {
+    const text = (message.parts ?? [])
       .filter((p): p is { type: "text"; text: string } => p.type === "text")
       .map((p) => p.text)
       .join("");
@@ -561,22 +742,20 @@ function BoundChatMessage({
     );
   }
 
+  const suggestions = showSuggestions ? suggestionsForMessage(message) : [];
+
   return (
-    <div className="my-3 space-y-2">
-      {parts.map((part, idx) => {
-        if (part.type === "text" && "text" in part) {
-          // parseSuggestions splits assistant text into the body + a
-          // trailing <suggestions> block. The bound prompt asks the
-          // agent to emit those; we render only the body in this slice
-          // — chips land in a polish pass.
-          const { text } = parseSuggestions(part.text);
-          return <Markdown key={`t-${idx}`} content={text} />;
-        }
-        if (isToolUIPart(part)) {
-          return <ToolPart key={`tool-${idx}`} part={part} />;
-        }
-        return null;
-      })}
+    <div className="my-3 space-y-2" role="article" aria-label="Message from Atlas">
+      <AgentTurn parts={message.parts} streaming={streaming} />
+      {suggestions.length > 0 && (
+        <FollowUpChips
+          suggestions={suggestions}
+          // In the read-only History transcript the chips render but don't act
+          // (no live composer); the live drawer wires them to the next turn.
+          onSelect={onSelectSuggestion ?? (() => {})}
+          disabled={readOnly || !onSelectSuggestion}
+        />
+      )}
     </div>
   );
 }

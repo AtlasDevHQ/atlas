@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ArrowRight, LayoutDashboard, AlertCircle } from "lucide-react";
 import { getToolResult, isToolComplete } from "../../lib/helpers";
 import { Button } from "@/components/ui/button";
+import { useChatConversationId } from "./chat-conversation-context";
 
 /**
  * Render the result of the `createDashboard` tool (#2369).
@@ -57,6 +58,11 @@ function asCreateDashboardResult(value: unknown): CreateDashboardResult | null {
 }
 
 export function CreateDashboardCard({ part }: { part: unknown }) {
+  // #4322 — the originating conversation (if any) rides the handoff link so
+  // the bound drawer resumes it. `null` in the notebook / when unavailable →
+  // the link degrades to a plain open (fresh bound session).
+  const conversationId = useChatConversationId();
+
   if (!isToolComplete(part)) {
     return (
       <div className="my-2 inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400">
@@ -124,7 +130,11 @@ export function CreateDashboardCard({ part }: { part: unknown }) {
           className="ml-auto h-7 border-emerald-300 text-xs text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:text-emerald-200 dark:hover:bg-emerald-900/40"
         >
           <Link
-            href={`/dashboards/${result.dashboardId}?openChat=true`}
+            href={
+              conversationId
+                ? `/dashboards/${result.dashboardId}?openChat=true&conversationId=${encodeURIComponent(conversationId)}`
+                : `/dashboards/${result.dashboardId}?openChat=true`
+            }
             aria-label={`Continue editing dashboard ${result.title}`}
           >
             Continue editing

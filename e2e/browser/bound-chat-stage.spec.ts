@@ -28,9 +28,9 @@
  * Preconditions (auto-skips when missing):
  *   - Internal Postgres reachable (admin dashboard create needs it).
  *   - `ATLAS_PROVIDER` + a real model key in env.
- *   - `ATLAS_DASHBOARD_DRAFTS_ENABLED=true` so accept actually mutates
- *     the user's draft via the versioning module (the slice's
- *     acceptance criterion).
+ *
+ * Drafts are unconditional (#4324) — `accept` always mutates the user's draft
+ * via the versioning module; there is no flag to gate on.
  */
 
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
@@ -48,10 +48,6 @@ function llmConfigured(): boolean {
     "GATEWAY_API_KEY",
   ].some((k) => (process.env[k] ?? "").length > 0);
   return explicit || provided;
-}
-
-function draftsEnabled(): boolean {
-  return process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED === "true";
 }
 
 async function seedDashboard(request: APIRequestContext): Promise<string> {
@@ -113,12 +109,8 @@ test.describe("bound chat — destructive-op staging + ghost overlays @llm", () 
     if (!llmConfigured()) {
       test.skip(true, "ATLAS_PROVIDER or model key unset — @llm specs require a real model.");
     }
-    if (!draftsEnabled()) {
-      test.skip(
-        true,
-        "ATLAS_DASHBOARD_DRAFTS_ENABLED is not 'true' — accept needs the drafts pipeline to land.",
-      );
-    }
+    // Drafts are unconditional (#4324) — no flag gate. `accept` always lands
+    // through the drafts pipeline.
   });
 
   test("delete card 3 → strikethrough overlay + Accept/Discard in chat", async ({ page, request }) => {

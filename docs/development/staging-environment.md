@@ -468,7 +468,7 @@ entry in that file is accounted for here. Legend:
 
 | Var(s) | Class | Staging value source |
 | ------ | ----- | -------------------- |
-| `ATLAS_AGENT_MAX_STEPS`, `ATLAS_BYOT_CATALOG_TTL_MS`, `ATLAS_CONVERSATION_STEP_CAP`, `ATLAS_DASHBOARD_DRAFTS_ENABLED` | ♻️ | Mirror prod (defaults fine). |
+| `ATLAS_AGENT_MAX_STEPS`, `ATLAS_BYOT_CATALOG_TTL_MS`, `ATLAS_CONVERSATION_STEP_CAP`, `ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS` | ♻️ | Mirror prod (defaults fine). |
 
 ### Semantic expert
 

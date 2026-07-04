@@ -343,9 +343,9 @@ Destructive operations (card removal, SQL rewrites) return a `stage_required` en
 
 Each dashboard's chat drawer has a **History** tab listing prior chat sessions tied to this dashboard (workspace-wide). Open any session for a read-only transcript so you can see what your team asked Atlas before — useful when picking up a dashboard mid-investigation.
 
-### Feature flag
+### Draft retention
 
-Set `ATLAS_DASHBOARD_DRAFTS_ENABLED=false` to disable per-user drafts entirely — admin mutations go straight to the published copy. The flag defaults to `true`. See the [environment-variables reference](/reference/environment-variables#settings).
+Per-user drafts are always on — every chat edit lands on the caller's private draft, and **Publish** promotes it. A draft is cleared the moment you publish or discard it; a draft you fork and then walk away from is reaped by the scheduler after `ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS` (default `30`) days without an edit, so the drafts table can't grow unbounded. Set it to `0` to disable cleanup. It's a hot-reloadable setting (Admin → Settings → Dashboards) — no redeploy to change. See the [environment-variables reference](/reference/environment-variables#settings).
 
 ---
 

@@ -1,19 +1,11 @@
 /**
- * Drafts-on integration test for the bound dashboard tools (#2364).
+ * Drafts integration test for the bound dashboard tools (#2364).
  *
- * Covers the two acceptance criteria the existing `bound-dashboard.test.ts`
- * doesn't:
- *   1. Flag OFF (default) — mutations land in `dashboard_cards` directly.
- *      The existing tests in `bound-dashboard.test.ts` ALREADY exercise
- *      this path — every assertion of "UPDATE dashboard_cards" / "INSERT
- *      INTO dashboard_cards" against a flag-off environment IS the
- *      regression for #2363 behavior. This file adds an explicit
- *      flag-off case in case `bound-dashboard.test.ts` ever stops being
- *      the regression.
- *   2. Flag ON — first mutation forks a draft from published, subsequent
- *      mutations stay on the draft. Two users editing the same dashboard
- *      each get their own draft row. Same user in two tabs converges on
- *      one draft row.
+ * Drafts are unconditional (#4324): the first mutation forks a draft from
+ * published, subsequent mutations stay on the draft, two users editing the
+ * same dashboard each get their own draft row, and the same user in two tabs
+ * converges on one draft row. A mutating tool with no userId is rejected — an
+ * unattributable bound edit never writes to published (#4315).
  *
  * Validates the wire from the bound-dashboard tools → versioning module
  * → dashboard_user_drafts table, without standing up a real Postgres.
@@ -113,9 +105,12 @@ async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
   return (await tool.execute(args, undefined as any)) as T;
 }
 
-describe("bound-dashboard tools — drafts flag", () => {
+// Drafts are UNCONDITIONAL (#4324) — every authenticated mutating bound-editor
+// tool routes through `dashboard_user_drafts`; a mutating tool with no userId
+// is rejected. The retired `ATLAS_DASHBOARD_DRAFTS_ENABLED` flag no longer
+// factors in (its legacy direct-published off-path was deleted).
+describe("bound-dashboard tools — drafts", () => {
   const origDbUrl = process.env.DATABASE_URL;
-  const origFlag = process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
 
   beforeEach(() => {
     queryCalls = [];
@@ -123,86 +118,20 @@ describe("bound-dashboard tools — drafts flag", () => {
     queryResultIndex = 0;
     validateSQLMock.mockClear();
     delete process.env.DATABASE_URL;
-    // #2521 flipped the default to ON. Per-describe blocks below set the
-    // value explicitly ("false" for the legacy direct-published path,
-    // "true" for the drafts path); we clear the var here so a stray
-    // setting from a previous file doesn't bleed in.
-    delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
     _resetPool(null);
   });
 
   afterEach(() => {
     if (origDbUrl) process.env.DATABASE_URL = origDbUrl;
     else delete process.env.DATABASE_URL;
-    if (origFlag === undefined) delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
-    else process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = origFlag;
     _resetPool(null);
   });
 
   // -------------------------------------------------------------------
-  // Flag OFF — regression that addCard / updateCard go straight to
-  // dashboard_cards / dashboards, NOT through dashboard_user_drafts.
+  // Mutations route through dashboard_user_drafts
   // -------------------------------------------------------------------
 
-  describe("flag OFF (legacy direct-published path)", () => {
-    beforeEach(() => {
-      // #2521 flipped the default to ON; this describe block must opt
-      // out explicitly to exercise the legacy direct-write path.
-      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
-    });
-
-    it("addCard writes to dashboard_cards (not dashboard_user_drafts)", async () => {
-      enableInternalDB();
-      // addCard issues two queries: MAX(position) + INSERT
-      setResults(
-        { rows: [{ next_pos: 1 }] },
-        {
-          rows: [
-            { ...cardRow, id: "card-new", position: 1, title: "New", sql: "SELECT 1" },
-          ],
-        },
-      );
-      const tools = createBoundDashboardTools({
-        dashboardId: "dash-1",
-        orgId: "org-1",
-        userId: "user-1",
-      });
-      const result = await runTool<{ kind: string }>(tools.addCard, {
-        title: "New",
-        sql: "SELECT 1",
-        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
-      });
-      expect(result.kind).toBe("ok");
-      // Critically: every query targets dashboard_cards / dashboards.
-      const sqls = queryCalls.map((c) => c.sql).join("\n");
-      expect(sqls).toContain("dashboard_cards");
-      expect(sqls).not.toContain("dashboard_user_drafts");
-    });
-
-    it("updateDashboardMeta writes to dashboards (not dashboard_user_drafts)", async () => {
-      enableInternalDB();
-      setResults({ rows: [{ id: "dash-1" }] });
-      const tools = createBoundDashboardTools({
-        dashboardId: "dash-1",
-        orgId: "org-1",
-        userId: "user-1",
-      });
-      await runTool(tools.updateDashboardMeta, { title: "New title" });
-      const sqls = queryCalls.map((c) => c.sql).join("\n");
-      expect(sqls).toContain("UPDATE dashboards");
-      expect(sqls).not.toContain("dashboard_user_drafts");
-    });
-  });
-
-  // -------------------------------------------------------------------
-  // Flag ON — mutations route through dashboard_user_drafts
-  // -------------------------------------------------------------------
-
-  describe("flag ON (drafts path)", () => {
-    beforeEach(() => {
-      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "true";
-    });
-
+  describe("drafts path", () => {
     it("addCard with a userId forks a draft on first call (no INSERT into dashboard_cards)", async () => {
       enableInternalDB();
       // Sequence:
@@ -349,12 +278,11 @@ describe("bound-dashboard tools — drafts flag", () => {
       expect(added!.connectionGroupId).toBeNull();
     });
 
-    // #4315 — the anonymous-bound bypass is CLOSED. With drafts ON, a bound
-    // edit that can't be attributed to a user (no userId) must NOT write to
-    // the published tables — the privacy hole where anonymous edits went
-    // straight live. The tool rejects instead of forking a draft or writing
-    // published.
-    it("addCard without a userId is rejected and never writes published (drafts ON)", async () => {
+    // #4315 — the anonymous-bound bypass is CLOSED. A bound edit that can't be
+    // attributed to a user (no userId) must NOT write to the published tables —
+    // the privacy hole where anonymous edits went straight live. The tool
+    // rejects instead of forking a draft or writing published.
+    it("addCard without a userId is rejected and never writes published", async () => {
       enableInternalDB();
       const tools = createBoundDashboardTools({
         dashboardId: "dash-1",

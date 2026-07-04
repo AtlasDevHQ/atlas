@@ -1520,9 +1520,9 @@ chat.openapi(chatRoute, async (c) => {
                 dashboardId: resolved.dashboard.id,
                 orgId: authResult.user?.activeOrganizationId,
                 // #2364 — propagate userId so the bound editor tools
-                // can route mutations through the per-user draft when
-                // `ATLAS_DASHBOARD_DRAFTS_ENABLED=true`. Anonymous
-                // bound chats stay on the legacy direct-published path.
+                // route mutations through the per-user draft (unconditional
+                // as of #4324). An anonymous bound chat (no userId) has its
+                // mutating edits rejected, never written to published.
                 // #2367 — also used by the screenshot tool as part of
                 // the per-user cache key (forward-compat with the per-
                 // user draft view that lands as drafts mature).

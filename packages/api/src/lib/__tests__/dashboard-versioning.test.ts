@@ -28,9 +28,11 @@ import {
   saveDraft,
   applyEditToDraft,
   discardDraft,
+  cleanupAbandonedDrafts,
+  getDashboardDraftRetentionDays,
+  DEFAULT_DASHBOARD_DRAFT_RETENTION_DAYS,
   publishDraft,
   rebaseDraft,
-  isDashboardDraftsEnabled,
   materializeDraftView,
   type DashboardSnapshot,
   type DashboardSnapshotCard,
@@ -176,41 +178,6 @@ describe("cardsNeedingRefresh", () => {
       { kind: "updateCard", cardId: "c1", card: card("c1", { sql: "SELECT 1", connectionGroupId: "g2" }) },
     ];
     expect(cardsNeedingRefresh(ops, published)).toEqual(["c1"]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Pure: feature flag
-// ---------------------------------------------------------------------------
-
-describe("isDashboardDraftsEnabled", () => {
-  const orig = process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
-  afterEach(() => {
-    if (orig === undefined) delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
-    else process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = orig;
-  });
-
-  it("is true by default (#2521 flipped the default ON)", () => {
-    delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
-    expect(isDashboardDraftsEnabled()).toBe(true);
-  });
-
-  it("is false only when env var is exactly 'false'", () => {
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
-    expect(isDashboardDraftsEnabled()).toBe(false);
-  });
-
-  it("is true when env var is anything other than 'false' (no accidental opt-out)", () => {
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "true";
-    expect(isDashboardDraftsEnabled()).toBe(true);
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "1";
-    expect(isDashboardDraftsEnabled()).toBe(true);
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "0";
-    expect(isDashboardDraftsEnabled()).toBe(true);
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "FALSE";
-    expect(isDashboardDraftsEnabled()).toBe(true);
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "no";
-    expect(isDashboardDraftsEnabled()).toBe(true);
   });
 });
 
@@ -1162,6 +1129,81 @@ describe("dashboard-versioning DB helpers", () => {
       expect(ok).toBe(true);
       expect(queryCalls[0].sql).toContain("DELETE FROM dashboard_user_drafts");
       expect(queryCalls[0].params).toEqual(["u1", "dash-1"]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // cleanupAbandonedDrafts (#4324) — bound the drafts table's growth
+  // -------------------------------------------------------------------------
+
+  describe("cleanupAbandonedDrafts", () => {
+    const origRetention = process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS;
+    afterEach(() => {
+      if (origRetention === undefined) delete process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS;
+      else process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS = origRetention;
+    });
+
+    it("deletes drafts older than the retention window and returns the count", async () => {
+      delete process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS; // → default 30
+      enableInternalDB();
+      // DELETE ... RETURNING user_id → two swept rows.
+      setResults({ rows: [{ user_id: "u1" }, { user_id: "u2" }] });
+      const swept = await cleanupAbandonedDrafts();
+      expect(swept).toBe(2);
+      expect(queryCalls).toHaveLength(1);
+      expect(queryCalls[0].sql).toContain("DELETE FROM dashboard_user_drafts");
+      expect(queryCalls[0].sql).toContain("updated_at <");
+      // The retention window (days) is bound as the sole positive-int param.
+      expect(queryCalls[0].params).toEqual([DEFAULT_DASHBOARD_DRAFT_RETENTION_DAYS]);
+    });
+
+    it("hot-reloads the retention window from the settings registry per call", async () => {
+      // The knob resolves through the settings registry (env tier here) with no
+      // module reload — the reader is called per sweep, so an operator change
+      // takes effect without a restart.
+      process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS = "7";
+      expect(getDashboardDraftRetentionDays()).toBe(7);
+      enableInternalDB();
+      setResults({ rows: [] });
+      await cleanupAbandonedDrafts();
+      expect(queryCalls[0].params).toEqual([7]);
+
+      // Change it — the very next sweep picks up the new value (no restart).
+      process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS = "90";
+      expect(getDashboardDraftRetentionDays()).toBe(90);
+      queryCalls.length = 0;
+      setResults({ rows: [] });
+      await cleanupAbandonedDrafts();
+      expect(queryCalls[0].params).toEqual([90]);
+    });
+
+    it("is a no-op (no query) when the window is disabled (<= 0)", async () => {
+      process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS = "0";
+      enableInternalDB();
+      const swept = await cleanupAbandonedDrafts();
+      expect(swept).toBe(0);
+      expect(queryCalls).toHaveLength(0);
+    });
+
+    it("returns 0 without querying when there is no internal DB", async () => {
+      // enableInternalDB() intentionally NOT called → hasInternalDB() false.
+      const swept = await cleanupAbandonedDrafts();
+      expect(swept).toBe(0);
+      expect(queryCalls).toHaveLength(0);
+    });
+
+    it("fails soft (returns 0) when the DELETE throws", async () => {
+      delete process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS;
+      const throwingPool: InternalPool = {
+        ...mockPool,
+        query: async () => {
+          throw new Error("connection reset");
+        },
+      };
+      process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+      _resetPool(throwingPool);
+      const swept = await cleanupAbandonedDrafts();
+      expect(swept).toBe(0);
     });
   });
 

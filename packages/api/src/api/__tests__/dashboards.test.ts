@@ -286,9 +286,10 @@ mock.module("@atlas/api/lib/dashboards", () => ({
 
 // #4315 — versioning mock. Keep everything REAL except the two DB-touching
 // seams the direct-manipulation + draft-aware-execution routes call
-// (`applyEditToDraft`, `loadDraft`). `isDashboardDraftsEnabled` stays real so
-// the env flag drives routing: the legacy suite runs flag-OFF (published
-// path, these spies never fire), the draft-first suite runs flag-ON.
+// (`applyEditToDraft`, `loadDraft`). Drafts are unconditional (#4324), so the
+// caller's userId drives routing: the direct-CRUD describes authenticate with
+// an empty userId (published path, these spies never fire), the draft-first
+// describe authenticates with a real userId.
 const realVersioning = await import("@atlas/api/lib/dashboard-versioning");
 type ApplyEditResult = import("@atlas/api/lib/dashboard-versioning").ApplyEditToDraftResult;
 type DraftRowT = import("@atlas/api/lib/dashboard-versioning").DraftRow;
@@ -538,17 +539,17 @@ const { _resetDashboardRateLimit, PUBLIC_RATE_MAX } = await import("../routes/da
 
 describe("dashboard routes", () => {
   const origDatabaseUrl = process.env.DATABASE_URL;
-  const origDraftsFlag = process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
 
   beforeEach(() => {
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
-    // #4315 — these cases assert the LEGACY direct-published CRUD path
-    // (addCard/updateCard/removeCard/updateDashboard call the published
-    // helpers). With drafts ON those direct-manipulation ops route to the
-    // caller's draft instead; that behavior is covered in
-    // `dashboards-drafts-routing.test.ts`. Opt out of the draft path here so
-    // this file keeps exercising the CRUD-forwarding + validation contract.
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
+    // Drafts are UNCONDITIONAL (#4324). An authenticated (userId-carrying)
+    // caller routes direct-manipulation CRUD edits to the per-user draft —
+    // covered by the `draft-first routing (#4315)` describe below. The
+    // direct-published CRUD-forwarding + validation contract is the DEFENSIVE
+    // no-userId fall-through in `shouldRouteToDraft` (an `auth: none` single
+    // operator); the CRUD-mutation describes below opt into that via
+    // `directCrudAuth()`. This default auth carries a real userId (screenshot /
+    // export / sessions need one).
     capturedLogs.length = 0;
     mockAuthenticateRequest.mockReset();
     mockAuthenticateRequest.mockResolvedValue({
@@ -617,9 +618,22 @@ describe("dashboard routes", () => {
   afterEach(() => {
     if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
     else delete process.env.DATABASE_URL;
-    if (origDraftsFlag === undefined) delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
-    else process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = origDraftsFlag;
   });
+
+  // Drafts are unconditional (#4324), so a direct-manipulation CRUD edit only
+  // hits the published helpers on the DEFENSIVE no-userId path (`auth: none`
+  // single operator). The CRUD-mutation describes below opt into that path by
+  // authenticating with an empty user id (`shouldRouteToDraft` → false), so
+  // they keep asserting the direct-published forwarding + validation contract.
+  // The userId-carrying (draft-routed) behavior is covered separately by the
+  // `draft-first routing (#4315)` describe.
+  function directCrudAuth() {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true as const,
+      mode: "simple-key" as const,
+      user: { id: "", label: "operator", mode: "simple-key" as const, role: "admin" as const, activeOrganizationId: "org-1" },
+    });
+  }
 
   // -------------------------------------------------------------------------
   // GET /api/v1/dashboards
@@ -738,6 +752,7 @@ describe("dashboard routes", () => {
   // -------------------------------------------------------------------------
 
   describe("PATCH /api/v1/dashboards/:id", () => {
+    beforeEach(directCrudAuth);
     it("returns 200 on valid update", async () => {
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
@@ -825,6 +840,7 @@ describe("dashboard routes", () => {
   // -------------------------------------------------------------------------
 
   describe("POST /api/v1/dashboards/:id/cards", () => {
+    beforeEach(directCrudAuth);
     it("returns 201 on valid card add", async () => {
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
@@ -1031,6 +1047,7 @@ describe("dashboard routes", () => {
   // -------------------------------------------------------------------------
 
   describe("PATCH /api/v1/dashboards/:id/cards/:cardId", () => {
+    beforeEach(directCrudAuth);
     it("returns 200 on valid update", async () => {
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
@@ -1101,6 +1118,7 @@ describe("dashboard routes", () => {
   // -------------------------------------------------------------------------
 
   describe("DELETE /api/v1/dashboards/:id/cards/:cardId", () => {
+    beforeEach(directCrudAuth);
     it("returns 204 on successful remove", async () => {
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
@@ -3182,8 +3200,8 @@ describe("dashboard routes", () => {
     };
 
     beforeEach(() => {
-      // The parent beforeEach forces the flag OFF; opt back IN for this suite.
-      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "true";
+      // Parent auth already carries a real userId (u1) → CRUD edits route to
+      // the per-user draft. That's exactly what this suite asserts.
       mockGetDashboard.mockResolvedValue({ ok: true, data: DASH_WITH_CARD });
       mockApplyEditToDraft.mockResolvedValue({
         ok: true,

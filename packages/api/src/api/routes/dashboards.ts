@@ -3095,12 +3095,17 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
     const fail = sharedDashboardFailResponse(result.reason);
     if (result.reason === "error") {
       log.error({ requestId, tokenHash }, "Public dashboard fetch failed due to DB error");
+      // Every 500 carries requestId for log correlation (CLAUDE.md). The other
+      // fail reasons map to 4xx (404/410) and don't need it.
+      return c.json({ ...fail.body, requestId }, fail.status);
     }
     return c.json(fail.body, fail.status);
   }
 
-  // Org-scoped shares require authentication
-  if (result.data.shareMode === "org") {
+  // Org-scoped shares require authentication. Gating reads `result.access`
+  // (which carries the internal `orgId`); the response only ever serializes
+  // `result.view` — the data-only DTO — so the org id can't leak (#4316).
+  if (result.access.shareMode === "org") {
     let authResult: AuthResult;
     try {
       authResult = await authenticateRequest(c.req.raw);
@@ -3119,12 +3124,12 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
     // share_mode='org' (createShareLink does not stamp orgId), so a truthy-check
     // here would silently fall through and leak the dashboard cross-tenant —
     // same class of bug as #1727 (conversations). See #1736.
-    if (!result.data.orgId || authResult.user?.activeOrganizationId !== result.data.orgId) {
+    if (!result.access.orgId || authResult.user?.activeOrganizationId !== result.access.orgId) {
       log.warn(
         {
           requestId,
           tokenHash,
-          hasOrgId: Boolean(result.data.orgId),
+          hasOrgId: Boolean(result.access.orgId),
           actorUserId: authResult.user?.id,
           actorOrgId: authResult.user?.activeOrganizationId,
         },
@@ -3134,7 +3139,9 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
     }
   }
 
-  return c.json(result.data, 200);
+  // Both public and org modes serialize the SAME projection — the minimal,
+  // data-only snapshot with no sql / internal ids / parameter definitions.
+  return c.json(result.view, 200);
 });
 
 export { dashboards, publicDashboards };

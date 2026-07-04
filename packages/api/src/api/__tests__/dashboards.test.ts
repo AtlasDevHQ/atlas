@@ -146,6 +146,51 @@ const mockTextCardData = {
   cachedAt: null,
 };
 
+// #4316 — a card as it appears in the PROJECTED shared-view DTO: no `sql`, no
+// internal ids (`connectionGroupId`, `dashboardId`). Mirrors the output of
+// `projectSharedDashboardView` in the lib (which is mocked here). The lib's own
+// projection unit test proves the stripping against a full card; this fixture
+// lets the route tests assert the route serializes the projection untouched.
+const mockSharedCardData = {
+  id: VALID_CARD_ID,
+  position: 0,
+  title: "Total Revenue",
+  kind: "chart" as const,
+  chartConfig: { type: "bar", categoryColumn: "month", valueColumns: ["total"] },
+  content: null,
+  annotations: [],
+  cachedColumns: ["month", "total"],
+  cachedRows: [{ month: "Jan", total: 1000 }],
+  cachedAt: "2026-04-04T00:00:00.000Z",
+  layout: null,
+};
+
+// Build the `{ ok: true, view, access }` shape `getSharedDashboard` now returns
+// (#4316). `view` is the data-only snapshot the route serializes; `access`
+// carries the internal `orgId` the route gates on but never emits.
+function sharedViewResult(opts: {
+  orgId?: string | null;
+  shareMode?: "public" | "org";
+  cards?: Array<Record<string, unknown>>;
+  parameterSummary?: Array<{ label: string; displayValue: string }>;
+} = {}) {
+  const shareMode = opts.shareMode ?? "public";
+  return {
+    ok: true as const,
+    view: {
+      title: mockDashboardData.title,
+      description: mockDashboardData.description,
+      shareMode,
+      cards: opts.cards ?? [mockSharedCardData],
+      parameterSummary: opts.parameterSummary ?? [],
+      createdAt: mockDashboardData.createdAt,
+      updatedAt: mockDashboardData.updatedAt,
+      lastRefreshAt: null,
+    },
+    access: { shareMode, orgId: opts.orgId ?? null },
+  };
+}
+
 const mockCreateDashboard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: true, data: mockDashboardData }),
 );
@@ -214,6 +259,11 @@ mock.module("@atlas/api/lib/dashboards", () => ({
   unshareDashboard: mockUnshareDashboard,
   getShareStatus: mockGetShareStatus,
   getSharedDashboard: mockGetSharedDashboard,
+  // #4316 — the route imports neither directly (both run inside the mocked
+  // getSharedDashboard), but mock ALL exports so a future direct call resolves
+  // to the real projection, not undefined (CLAUDE.md mock-all-exports rule).
+  projectSharedDashboardView: realDashboards.projectSharedDashboardView,
+  buildSharedParameterSummary: realDashboards.buildSharedParameterSummary,
   setRefreshSchedule: mock(() => Promise.resolve({ ok: true })),
   getDashboardsDueForRefresh: mock(() => Promise.resolve([])),
   lockDashboardForRefresh: mock(() => Promise.resolve(false)),
@@ -1849,21 +1899,46 @@ describe("dashboard routes", () => {
     });
 
     it("returns 200 when shared dashboard exists", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          cards: [mockCardData],
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({
           shareMode: "public",
-        },
-      });
+          cards: [mockSharedCardData],
+          parameterSummary: [
+            { label: "Date", displayValue: "2026-06-01" },
+            { label: "Region", displayValue: "All" },
+          ],
+        }),
+      );
       const response = await app.fetch(
         new Request("http://localhost/api/public/dashboards/abc123def456ghi789jkl"),
       );
       expect(response.status).toBe(200);
-      const body = (await response.json()) as { title: string; cards: unknown[] };
+      const body = (await response.json()) as {
+        title: string;
+        cards: Array<Record<string, unknown>>;
+        parameterSummary: Array<{ label: string; displayValue: string }>;
+      };
       expect(body.title).toBe("Revenue Dashboard");
       expect(body.cards).toHaveLength(1);
+
+      // #4316 — the data-only projection: no query internals reach the wire.
+      // Absent at the dashboard level: owner/org ids, share token, refresh cron,
+      // and the live parameter DEFINITIONS.
+      for (const leaked of ["ownerId", "orgId", "shareToken", "refreshSchedule", "parameters", "id"]) {
+        expect(body).not.toHaveProperty(leaked);
+      }
+      // Absent at the card level: raw SQL + internal ids.
+      for (const card of body.cards) {
+        for (const leaked of ["sql", "connectionGroupId", "dashboardId"]) {
+          expect(card).not.toHaveProperty(leaked);
+        }
+      }
+      // Present: the frozen, display-only parameter summary — { label, displayValue }
+      // only, no keys/definitions/controls.
+      expect(body.parameterSummary).toEqual([
+        { label: "Date", displayValue: "2026-06-01" },
+        { label: "Region", displayValue: "All" },
+      ]);
     });
 
     it("returns 410 when share is expired", async () => {
@@ -1892,15 +1967,9 @@ describe("dashboard routes", () => {
     // -----------------------------------------------------------------------
 
     it("returns 403 auth_required for org-scoped shares when unauthenticated (#1736)", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: false as const,
         mode: "simple-key" as const,
@@ -1920,15 +1989,9 @@ describe("dashboard routes", () => {
     });
 
     it("returns 403 forbidden for org-scoped shares when requester has no active org (#1736)", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -1948,15 +2011,9 @@ describe("dashboard routes", () => {
     });
 
     it("returns 403 forbidden for org-scoped shares when requester belongs to a different org (#1736)", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -1981,15 +2038,13 @@ describe("dashboard routes", () => {
     });
 
     it("returns 200 for org-scoped shares when requester belongs to the dashboard's org (#1736)", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({
           orgId: "org-A",
-          cards: [mockCardData],
           shareMode: "org",
-        },
-      });
+          parameterSummary: [{ label: "Region", displayValue: "All" }],
+        }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -2007,25 +2062,38 @@ describe("dashboard routes", () => {
       );
       expect(response.status).toBe(200);
 
-      const body = (await response.json()) as { title: string; cards: unknown[]; shareMode: string };
+      const body = (await response.json()) as {
+        title: string;
+        cards: Array<Record<string, unknown>>;
+        shareMode: string;
+        parameterSummary: Array<{ label: string; displayValue: string }>;
+      };
       expect(body.shareMode).toBe("org");
       expect(body.title).toBe("Revenue Dashboard");
       expect(body.cards).toHaveLength(1);
+
+      // #4316 — the org (authenticated) mode gets the SAME data-only projection
+      // as public: no query internals, and the frozen parameter summary present.
+      // The route reads `access.orgId` for gating but serializes only `view`, so
+      // the org id can't ride along on the authenticated branch either.
+      for (const leaked of ["ownerId", "orgId", "shareToken", "refreshSchedule", "parameters", "id"]) {
+        expect(body).not.toHaveProperty(leaked);
+      }
+      for (const card of body.cards) {
+        for (const leaked of ["sql", "connectionGroupId", "dashboardId"]) {
+          expect(card).not.toHaveProperty(leaked);
+        }
+      }
+      expect(body.parameterSummary).toEqual([{ label: "Region", displayValue: "All" }]);
     });
 
     // Fail-closed regression for #1736 — the schema allows share_mode='org'
     // with org_id=NULL (createShareLink does not stamp orgId). Without a
     // fail-closed check, any authenticated caller could read such a row.
     it("returns 403 for org-scoped shares when the dashboard has no orgId (#1736)", async () => {
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: null,
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: null, shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -2069,15 +2137,9 @@ describe("dashboard routes", () => {
 
     it("redacts share token in auth-failure log (#1743)", async () => {
       const rawToken = "abc123def456ghi789jkl";
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockImplementationOnce(() =>
         Promise.reject(new Error("session store unavailable")),
       );
@@ -2099,15 +2161,9 @@ describe("dashboard routes", () => {
 
     it("redacts share token and records actor in denial log (#1743)", async () => {
       const rawToken = "abc123def456ghi789jkl";
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -2158,15 +2214,9 @@ describe("dashboard routes", () => {
 
     it("redacts share token in denial log when actor has no active org (#1743)", async () => {
       const rawToken = "abc123def456ghi789jkl";
-      mockGetSharedDashboard.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          ...mockDashboardData,
-          orgId: "org-A",
-          cards: [mockCardData],
-          shareMode: "org",
-        },
-      });
+      mockGetSharedDashboard.mockResolvedValueOnce(
+        sharedViewResult({ orgId: "org-A", shareMode: "org" }),
+      );
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,

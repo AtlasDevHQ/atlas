@@ -6,8 +6,10 @@ function card(over: Partial<SharedCard> = {}): SharedCard {
   return {
     id: "c1",
     title: "T",
-    sql: "SELECT 1",
+    kind: "chart",
     chartConfig: null,
+    content: null,
+    annotations: [],
     cachedColumns: null,
     cachedRows: null,
     cachedAt: null,

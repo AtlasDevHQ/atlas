@@ -88,6 +88,23 @@ describe("answer-style registry (#4299)", () => {
     expect(isAnswerStyle(undefined)).toBe(false);
   });
 
+  it("fails loud when an out-of-vocabulary style reaches the resolver", () => {
+    // Unreachable for typed in-repo callers; #4302's wire boundary makes it a
+    // runtime possibility. The cast models a route that forgot `isAnswerStyle`.
+    expect(() => resolveAnswerStyleAddendum("bogus" as AnswerStyle)).toThrow(
+      /Unknown answer style "bogus"/,
+    );
+  });
+
+  it("falls back (rather than crashing) on an out-of-vocabulary presentation mode", () => {
+    // A version-skewed or third-party @useatlas/chat bridge can send a token
+    // the compile-time union never saw; the mapper warns and falls back.
+    const skewed = "narrative" as unknown as "developer";
+    expect(answerStyleForPresentationMode(skewed, "conversational")).toBe(
+      "conversational",
+    );
+  });
+
   it("maps the legacy chat-plugin presentation-mode signal onto registry styles", () => {
     // Slack's explicit signal keeps the conversational voice.
     expect(answerStyleForPresentationMode("conversational", "analyst")).toBe(
@@ -135,9 +152,10 @@ describe("buildSystemParam — per-style prompt assembly (#4299)", () => {
     for (const style of ANSWER_STYLE_NAMES) {
       if (style === "analyst") continue;
       const stylePrompt = promptText(buildSystemParam("openai", { answerStyle: style }));
+      // Function replacer: a plain string replacement would treat `$&`-style
+      // tokens in a future addendum edit as replacement patterns.
       expect(
-        stylePrompt.replace(
-          resolveAnswerStyleAddendum(style),
+        stylePrompt.replace(resolveAnswerStyleAddendum(style), () =>
           resolveAnswerStyleAddendum("analyst"),
         ),
       ).toBe(analystPrompt);
@@ -171,6 +189,13 @@ describe("buildSystemParam — per-style prompt assembly (#4299)", () => {
     expect(prompt).toContain("1-2 sentences");
     expect(prompt).toContain("Do NOT include SQL");
     expect(prompt).toContain("Do NOT use markdown tables");
+    // The glossary suppression and the closing CTA that pairs with the
+    // listener's progressive-disclosure buttons are behavior too.
+    expect(prompt).toContain("Skip the glossary lecture.");
+    expect(prompt).toContain("Want the SQL or full breakdown? Tap the button below.");
+    // The trailing newline is part of the pre-registry byte identity — the
+    // conversational addendum is the only one that carries it.
+    expect(resolveAnswerStyleAddendum("conversational").endsWith("\n")).toBe(true);
   });
 
   it("the <suggestions> block contract is unchanged across styles", () => {
@@ -217,7 +242,7 @@ describe("buildSystemParam — per-style prompt assembly (#4299)", () => {
     expect(typeof wrapped).toBe("object");
     if (typeof wrapped === "string") return; // unreachable, narrows TS
     expect(wrapped.role).toBe("system");
-    expect(typeof wrapped.content).toBe("string");
-    expect(wrapped.content as string).toContain("Presentation mode — conversational");
+    if (typeof wrapped.content !== "string") throw new Error("expected string content");
+    expect(wrapped.content).toContain("Presentation mode — conversational");
   });
 });

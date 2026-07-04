@@ -315,8 +315,9 @@ export function createProactiveAnswerAdapter(
             ],
             aiModel,
             ...(toolRegistry ? { tools: toolRegistry } : {}),
-            // #2705/#4299 — pass through the resolved answer style so
-            // the system prompt carries the conversational addendum.
+            // #2705/#4299 — pass through the resolved answer style so the
+            // system prompt carries that style's addendum (conversational
+            // from the listener; analyst for pre-#2705 hosts).
             answerStyle,
           }),
       );

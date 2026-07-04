@@ -230,7 +230,7 @@ How one agent turn is presented in the chat transcript. A turn has two faces: th
 
 - **Answer style**:
   The named editorial voice of the answer — `plain-english`, `analyst` (web default), `executive`, `conversational` (chat-platform default, ex-#2705). Resolves through the registry in `packages/api/src/lib/answer-styles.ts` (#4299): each style contributes exactly one prompt addendum to the system prompt; everything else (the `<suggestions>` contract, cross-source provenance guidance) is style-independent. Surfaces auto-select their default until the per-conversation picker lands (#4302).
-  _Avoid_: "presentation mode" (the superseded #2705 binary — survives only as the chat-plugin boundary field, translated at the seam); any bare "mode" phrasing (deploy / content / routing collisions).
+  _Avoid_: "presentation mode" (the superseded #2705 binary — survives only as the chat-plugin boundary field, translated at the seam, and as the deliberately retained legacy heading inside the conversational addendum); any bare "mode" phrasing (deploy / content / routing collisions).
 
 ### Anti-confusions
 

@@ -1788,8 +1788,9 @@ async function runAnswerFlow(
       // #2705 — conversational Slack-audience mode. Same rationale as
       // the public-dataset branch above; centralizing the choice here
       // means a future "dev follows proactive into a thread" surface
-      // can opt back into developer mode at one site without changing
-      // the agent.
+      // can opt into another answer style at one site without changing
+      // the agent (the legacy "developer" arm now resolves to the
+      // analyst voice — #4299).
       presentationMode: "conversational",
     });
   } catch (err) {

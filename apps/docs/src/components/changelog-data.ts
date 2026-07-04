@@ -20,6 +20,23 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.43",
+    title: "The Analyst Voice",
+    date: "2026-07-04",
+    summary:
+      "The chat turn is redesigned around the answer. While Atlas works, a live activity feed streams each step from the moment you hit send; when the answer arrives it takes the lead, with the working detail collapsed into an expandable receipt and at most one chart or table promoted to sit alongside it. You can now choose the voice answers are written in — Plain English, Analyst (the new web default), or Executive — per conversation or as a workspace default. Dashboards get the same trust treatment: every edit lands in a private draft that publishing promotes, shared dashboards are data-only snapshots, and each tile reports its own status.",
+    highlights: [
+      "Answer-first turns — the finished turn leads with the answer; working steps collapse into an expandable receipt that honestly marks failed steps (#4298)",
+      "Live working phase — an activity feed streams each step from the moment of send, so the first turn has no dead air (#4300)",
+      "Answer styles — Plain English, Analyst, and Executive voices, selectable per conversation with a workspace-default setting; Analyst is the new web default (#4299, #4302, #4303)",
+      "Chat interaction pass — stop an in-flight turn, copy an answer, multiline composer (Enter sends, Shift+Enter for a newline), and failures surfaced in a persistent banner instead of a vanishing one-liner (#4294–#4297)",
+      "Notebook cells render finished turns through the same answer-first model as chat (#4301)",
+      "Dashboards: draft-first editing — every edit lands in your private draft, publishing promotes it, and a new dashboard stays private to its creator until first publish (#4315, #4320)",
+      "Shared dashboards are data-only snapshots with a frozen parameter summary, org-scoped shares, and fail-closed share configuration (#4316, #4317)",
+      "Per-tile status makes each tile the unit of trust, and the dashboard editor converges with chat — the canvas renders as an artifact with receipt rendering and conversation continuity (#4321, #4322)",
+    ],
+  },
+  {
     version: "v0.0.42",
     title: "Docs Portal Segmentation + Truthfulness Pass",
     date: "2026-07-03",

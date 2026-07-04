@@ -31,8 +31,9 @@ test.describe("Conversations @llm", () => {
     // The empty state should be visible again. Located by testid: the
     // empty-state heading now shares the "Ask your data anything" phrasing
     // with the standalone header tagline (#4297), so a bare text locator
-    // would be ambiguous on standalone (non-embedded) surfaces — and the
-    // testid stays robust to copy changes on this embedded one.
+    // would be ambiguous on standalone (non-embedded) surfaces. The copy
+    // containment below is deliberate — it pins the #4297 phrasing
+    // unification; only the element LOOKUP is copy-independent.
     await expect(page.getByTestId("chat-empty-state")).toBeVisible({ timeout: 5_000 });
     await expect(page.getByTestId("chat-empty-state")).toContainText("Ask your data anything");
   });

@@ -1,6 +1,10 @@
 import { describe, expect, test, mock } from "bun:test";
 import { render, fireEvent } from "@testing-library/react";
-import { ActionErrorBanner } from "../components/chat/error-banner";
+import {
+  ActionErrorBanner,
+  clearFailureOfKind,
+  type StoredActionFailure,
+} from "../components/chat/error-banner";
 
 describe("ActionErrorBanner", () => {
   test("renders title as an alert", () => {
@@ -58,5 +62,27 @@ describe("ActionErrorBanner", () => {
 
     rerender(<ActionErrorBanner failure={{ title: "Couldn't unpin starter prompt" }} />);
     expect(queryByLabelText("Dismiss")).toBeNull();
+  });
+});
+
+// #4297 — the kind-scoped clear discipline: machine-initiated / implicit
+// clears may only supersede their own kind, never an unrelated failure the
+// user hasn't seen.
+describe("clearFailureOfKind", () => {
+  const pinFailure: StoredActionFailure = {
+    kind: "pin",
+    title: "Couldn't pin starter prompt",
+  };
+
+  test("clears a failure of the matching kind", () => {
+    expect(clearFailureOfKind("pin")(pinFailure)).toBeNull();
+  });
+
+  test("preserves a failure of a different kind by identity (setState bail-out)", () => {
+    expect(clearFailureOfKind("resume")(pinFailure)).toBe(pinFailure);
+  });
+
+  test("passes through null", () => {
+    expect(clearFailureOfKind("send")(null)).toBeNull();
   });
 });

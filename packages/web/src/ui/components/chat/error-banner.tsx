@@ -23,6 +23,29 @@ export interface ChatActionFailure {
 }
 
 /**
+ * #4297 — which action produced a failure STORED in chat state (standing
+ * conditions like the health warning render directly and never carry a kind).
+ * Scopes narrow clears — machine-initiated (auto-resume supersedes only a
+ * `"resume"` failure) and implicit (composer edits clear only a `"send"`
+ * failure) — so neither can erase an unrelated failure the user hasn't seen.
+ * Deliberate user actions clear unscoped: a fresh attempt supersedes whatever
+ * banner is up.
+ */
+export type ChatActionKind = "send" | "load" | "pin" | "unpin" | "resume";
+export type StoredActionFailure = ChatActionFailure & { readonly kind: ChatActionKind };
+
+/**
+ * Functional-updater factory for the kind-scoped clears described on
+ * `ChatActionKind`. Identity-preserving on a non-matching kind so React's
+ * setState bails out of the re-render.
+ */
+export function clearFailureOfKind(
+  kind: ChatActionKind,
+): (failure: StoredActionFailure | null) => StoredActionFailure | null {
+  return (failure) => (failure && failure.kind === kind ? null : failure);
+}
+
+/**
  * Structured error surface for failed chat actions — the same visual grade as
  * `ErrorBanner` (icon, title, detail, request id, retry) but fed by a
  * `ChatActionFailure` instead of a chat-stream `Error`. The component never

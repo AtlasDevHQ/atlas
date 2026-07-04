@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, spyOn } from "bun:test";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { useTransientNotice } from "../use-transient-notice";
 
@@ -30,12 +30,19 @@ describe("useTransientNotice (#4297)", () => {
     await waitFor(() => expect(result.current.notice).toBe(""), { timeout: 1000 });
   });
 
-  test("unmount clears the pending timer without state updates", async () => {
-    const { result, unmount } = renderHook(() => useTransientNotice());
-    act(() => result.current.showNotice("bye", 30));
-    unmount();
-    // Let the timer deadline pass — a leaked timer would fire setState on an
-    // unmounted hook (surfacing as a console error under strict test runners).
-    await new Promise((r) => setTimeout(r, 60));
+  test("unmount cancels the pending dismissal timer", () => {
+    // React 19 silently ignores setState on an unmounted component, so a
+    // leaked timer would be invisible to a render-side assertion — assert the
+    // cancellation itself instead.
+    const clearSpy = spyOn(globalThis, "clearTimeout");
+    try {
+      const { result, unmount } = renderHook(() => useTransientNotice());
+      act(() => result.current.showNotice("bye", 30));
+      const callsBefore = clearSpy.mock.calls.length;
+      unmount();
+      expect(clearSpy.mock.calls.length).toBeGreaterThan(callsBefore);
+    } finally {
+      clearSpy.mockRestore();
+    }
   });
 });

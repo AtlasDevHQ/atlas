@@ -13,7 +13,12 @@ import { useAtlasTransport } from "../hooks/use-atlas-transport";
 import { useConversations, transformMessages } from "../hooks/use-conversations";
 import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
 import { ChatComposer } from "./chat/chat-composer";
-import { ErrorBanner, ActionErrorBanner, type ChatActionFailure } from "./chat/error-banner";
+import {
+  ErrorBanner,
+  ActionErrorBanner,
+  clearFailureOfKind,
+  type StoredActionFailure,
+} from "./chat/error-banner";
 import { ContextWarningBanner } from "./chat/context-warning-banner";
 import { ResumeBanner } from "./chat/resume-banner";
 import { useRunStatus } from "../hooks/use-run-status";
@@ -116,14 +121,6 @@ function SaveButton({
     </Button>
   );
 }
-
-/**
- * #4297 — which action produced the stored failure. Scopes machine-initiated
- * clears: the auto-resume path may supersede only a `"resume"` failure, never
- * an unrelated one the user hasn't seen yet.
- */
-type ChatActionKind = "send" | "load" | "pin" | "unpin" | "resume";
-type StoredActionFailure = ChatActionFailure & { readonly kind: ChatActionKind };
 
 interface AtlasChatProps {
   /**
@@ -505,15 +502,16 @@ export function AtlasChat({
     // without retrying. Kind-scoped because auto-resume is machine-initiated:
     // it must not clear an unrelated failure the user hasn't seen.
     onStart: () => {
-      setActionFailure((f) => (f && f.kind === "resume" ? null : f));
+      setActionFailure(clearFailureOfKind("resume"));
     },
-    onError: (message) => {
+    onError: (message, detail) => {
       // #4297 — a failed resume is a real failure: persistent banner, not a
       // fading whisper. Retry through the ref — this callback is constructed
       // before `handleResume` exists (same seam as `handleParkedResolved`).
       setActionFailure({
         kind: "resume",
         title: message,
+        detail,
         retry: () => {
           handleResumeRef.current();
         },
@@ -625,7 +623,10 @@ export function AtlasChat({
         body: JSON.stringify({ text }),
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as {
+        const body = (await res
+          .json()
+          // intentionally ignored: non-JSON error body — status/statusText logged below
+          .catch(() => ({}))) as {
           error?: string;
           message?: string;
           requestId?: string;
@@ -644,7 +645,13 @@ export function AtlasChat({
         // (proxy error page, envelope drift) must not take down the surface.
         const detail = typeof body.message === "string" ? body.message : undefined;
         const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
-        console.warn("pin failed:", res.status, res.statusText, requestId, detail);
+        console.warn(
+          "pin failed:",
+          res.status,
+          res.statusText,
+          requestId ?? "(no requestId — non-JSON body)",
+          detail,
+        );
         setActionFailure({
           kind: "pin",
           title: "Couldn't pin starter prompt",
@@ -710,7 +717,10 @@ export function AtlasChat({
       );
       if (!res.ok && res.status !== 404) {
         // 404 is fine — the pin is gone either way.
-        const body = (await res.json().catch(() => ({}))) as {
+        const body = (await res
+          .json()
+          // intentionally ignored: non-JSON error body — status/statusText logged below
+          .catch(() => ({}))) as {
           requestId?: string;
           message?: string;
         };
@@ -758,6 +768,11 @@ export function AtlasChat({
     // conversation or be clobbered when the in-flight load commits. The composer
     // is disabled too; this also guards the chip / starter-prompt send paths.
     if (loadingConversation) return;
+    // #4297 — the composer is stream-disabled, but the failure banner's
+    // "Try again" is not: a retry clicked mid-stream must not erase the
+    // banner, null the live run's id (degrading Stop to client-only), or
+    // race a second stream. Guard BEFORE the clear, like every other path.
+    if (isLoading) return;
     // A fresh attempt supersedes any earlier failure banner (#4297).
     setActionFailure(null);
     const saved = text;
@@ -1432,7 +1447,7 @@ export function AtlasChat({
                       // stale "Try again" (which resends the ORIGINAL text)
                       // from clobbering the edit. Send-kind only — typing must
                       // not dismiss an unrelated pin/load/resume failure.
-                      setActionFailure((f) => (f && f.kind === "send" ? null : f));
+                      setActionFailure(clearFailureOfKind("send"));
                     }}
                     onSend={handleSend}
                     streaming={isLoading}

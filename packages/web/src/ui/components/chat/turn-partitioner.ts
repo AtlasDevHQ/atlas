@@ -1,0 +1,175 @@
+/**
+ * Turn partitioner (#4298) — the single seam that decides how a finished agent
+ * turn is presented, per CONTEXT.md § Chat turn presentation. A pure function
+ * (no React, no DOM) so both the chat transcript and the notebook renderer
+ * (#4301) partition identically, and the live working phase (#4300) can settle
+ * into the same shape.
+ *
+ * Boundary rules (v1 — all of them live here, nowhere else):
+ * - Everything up to and including the last tool part is **activity** (tool
+ *   executions + narration text between them). It renders inside the receipt.
+ * - Text parts after the last tool part are the **answer**. A zero-tool turn is
+ *   all answer; an interrupted stream can have an empty answer.
+ * - The last *successful* `executeSQL` result is promoted as the
+ *   **answer-bearing artifact** and excluded from `activity` — it sits with the
+ *   answer, everything else stays in the receipt.
+ * - Reasoning parts are never surfaced in any bucket — the receipt is activity,
+ *   not chain-of-thought. Non-renderable parts (step-start, data, source, file)
+ *   are dropped, matching what the transcript rendered before this seam.
+ *
+ * If this heuristic misfires in practice, the planned escape hatch is an
+ * explicit agent-emitted answer marker (see PRD #4292) — not more rules here.
+ */
+
+import { isToolUIPart, getToolName, type UIMessagePart, type UIDataTypes, type UITools } from "ai";
+
+/** One part of an assistant message, as delivered by the AI SDK. */
+export type TurnPart = UIMessagePart<UIDataTypes, UITools>;
+
+/**
+ * A part paired with its index in the original `parts` array. The index is the
+ * stable React key: partition output arrays re-shuffle across buckets, but the
+ * source position of a part never changes once streamed.
+ */
+export interface IndexedTurnPart {
+  part: TurnPart;
+  index: number;
+}
+
+/** The three presentation buckets of a finished turn. */
+export interface PartitionedTurn {
+  /**
+   * What the agent did on the way to the answer — tool parts plus narration
+   * text — excluding the promoted artifact. Rendered inside the receipt.
+   */
+  activity: IndexedTurnPart[];
+  /**
+   * The turn's user-facing text: non-empty text parts after the last tool
+   * part. Empty for an interrupted stream that never reached the answer.
+   */
+  answer: IndexedTurnPart[];
+  /**
+   * The at-most-one query result promoted to sit with the answer, or null
+   * when no successful `executeSQL` ran.
+   */
+  answerBearingArtifact: IndexedTurnPart | null;
+}
+
+/** `getToolName` throws on malformed parts; treat those as unnamed. */
+function safeToolName(part: TurnPart): string | null {
+  try {
+    return getToolName(part as Parameters<typeof getToolName>[0]);
+  } catch {
+    // intentionally ignored: a tool part without a recognizable name still
+    // renders in the receipt (ToolPart shows its own fallback card), it just
+    // can't be promoted or counted by name.
+    return null;
+  }
+}
+
+/** A completed executeSQL whose output reported success — the only promotable shape (v1). */
+function isPromotableQueryResult(part: TurnPart): boolean {
+  if (!isToolUIPart(part)) return false;
+  if (safeToolName(part) !== "executeSQL") return false;
+  if (part.state !== "output-available") return false;
+  const output = part.output;
+  return (
+    output != null &&
+    typeof output === "object" &&
+    Boolean((output as { success?: unknown }).success)
+  );
+}
+
+function isNonEmptyText(part: TurnPart): part is Extract<TurnPart, { type: "text" }> {
+  return part.type === "text" && part.text.trim().length > 0;
+}
+
+/**
+ * Split a finished assistant turn's parts into
+ * `{ activity, answer, answerBearingArtifact }`.
+ *
+ * Total over any parts array (in-progress tool parts are activity; a
+ * still-streaming trailing text part is the answer), but this slice only
+ * consumes it for completed turns — streaming turns keep the live renderer.
+ */
+export function partitionTurn(parts: readonly TurnPart[] | undefined): PartitionedTurn {
+  if (!parts || parts.length === 0) {
+    return { activity: [], answer: [], answerBearingArtifact: null };
+  }
+
+  let lastToolIndex = -1;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (isToolUIPart(parts[i])) {
+      lastToolIndex = i;
+      break;
+    }
+  }
+
+  let answerBearingArtifact: IndexedTurnPart | null = null;
+  for (let i = lastToolIndex; i >= 0; i--) {
+    if (isPromotableQueryResult(parts[i])) {
+      answerBearingArtifact = { part: parts[i], index: i };
+      break;
+    }
+  }
+
+  const activity: IndexedTurnPart[] = [];
+  const answer: IndexedTurnPart[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (i <= lastToolIndex) {
+      if (i === answerBearingArtifact?.index) continue; // promoted out of the receipt
+      if (isToolUIPart(part) || isNonEmptyText(part)) {
+        activity.push({ part, index: i });
+      }
+    } else if (isNonEmptyText(part)) {
+      answer.push({ part, index: i });
+    }
+  }
+
+  return { activity, answer, answerBearingArtifact };
+}
+
+/**
+ * The receipt's one-line summary of what stayed in it, e.g.
+ * "Explored schema · 2 queries". Counts describe the receipt's own contents —
+ * the promoted artifact is visible next to the answer, not re-counted here.
+ * Returns "" for empty activity (the receipt doesn't render then).
+ */
+export function summarizeActivity(activity: readonly IndexedTurnPart[]): string {
+  if (activity.length === 0) return "";
+
+  let explores = 0;
+  let queries = 0;
+  let pythonRuns = 0;
+  let otherSteps = 0;
+  for (const { part } of activity) {
+    if (!isToolUIPart(part)) continue;
+    switch (safeToolName(part)) {
+      case "explore":
+        explores++;
+        break;
+      case "executeSQL":
+        queries++;
+        break;
+      case "executePython":
+        pythonRuns++;
+        break;
+      default:
+        otherSteps++;
+    }
+  }
+
+  const segments: string[] = [];
+  if (explores > 0) segments.push("Explored schema");
+  if (queries > 0) segments.push(queries === 1 ? "1 query" : `${queries} queries`);
+  if (pythonRuns > 0) {
+    segments.push(pythonRuns === 1 ? "1 Python run" : `${pythonRuns} Python runs`);
+  }
+  if (otherSteps > 0) {
+    segments.push(otherSteps === 1 ? "1 more step" : `${otherSteps} more steps`);
+  }
+
+  // Narration-only receipts (the lone query was promoted) still need a label.
+  return segments.length > 0 ? segments.join(" · ") : "Working notes";
+}

@@ -207,30 +207,74 @@ async function computeSnapshotHash(
 // users may not install browsers).
 let cachedBrowser: unknown | null = null;
 let browserShuttingDown = false;
+// Single-flight guard: N concurrent renders that find the cache empty (or a
+// dead handle) share ONE (close-dead + launch) instead of each spawning its
+// own Chromium and leaking all but one. Cleared once the acquire settles.
+let browserAcquire: Promise<unknown> | null = null;
 
 interface PlaywrightChromium {
-  launch: (opts?: Record<string, unknown>) => Promise<{
-    newContext: (opts?: Record<string, unknown>) => Promise<{
-      newPage: () => Promise<{
-        goto: (url: string, opts?: Record<string, unknown>) => Promise<unknown>;
-        waitForSelector: (sel: string, opts?: Record<string, unknown>) => Promise<unknown>;
-        waitForFunction: (fn: string | (() => boolean), opts?: Record<string, unknown>) => Promise<unknown>;
-        evaluate: <T>(fn: string | (() => T)) => Promise<T>;
-        screenshot: (opts?: Record<string, unknown>) => Promise<Buffer>;
-        close: () => Promise<void>;
-      }>;
-      addCookies: (cookies: unknown[]) => Promise<void>;
-      setExtraHTTPHeaders: (headers: Record<string, string>) => Promise<void>;
+  launch: (opts?: Record<string, unknown>) => Promise<LaunchedBrowser>;
+}
+
+/**
+ * Minimal lifecycle surface of a launched browser. `isConnected()` is
+ * Playwright's liveness signal — it flips to `false` the moment the underlying
+ * Chromium process dies or the transport drops, which is exactly the
+ * dead-instance-cached-forever failure (#4319) we relaunch on.
+ */
+export interface LaunchedBrowser {
+  isConnected?: () => boolean;
+  close: () => Promise<void>;
+  newContext: (opts?: Record<string, unknown>) => Promise<{
+    newPage: () => Promise<{
+      goto: (url: string, opts?: Record<string, unknown>) => Promise<unknown>;
+      waitForSelector: (sel: string, opts?: Record<string, unknown>) => Promise<unknown>;
+      waitForFunction: (fn: string | (() => boolean), opts?: Record<string, unknown>) => Promise<unknown>;
+      evaluate: <T>(fn: string | (() => T)) => Promise<T>;
+      screenshot: (opts?: Record<string, unknown>) => Promise<Buffer>;
       close: () => Promise<void>;
     }>;
+    addCookies: (cookies: unknown[]) => Promise<void>;
+    setExtraHTTPHeaders: (headers: Record<string, string>) => Promise<void>;
     close: () => Promise<void>;
   }>;
 }
 
-async function getBrowser(): Promise<unknown> {
-  if (cachedBrowser) return cachedBrowser;
-  if (browserShuttingDown) throw new Error("Screenshot browser is shutting down");
+/** Injectable launcher — the real one lazy-imports Playwright. */
+type BrowserLauncher = () => Promise<LaunchedBrowser>;
 
+let browserLauncherOverride: BrowserLauncher | null = null;
+
+/**
+ * @internal — test seam. Swap in a fake browser launcher so the launch /
+ * liveness / relaunch lifecycle is testable without downloading Chromium.
+ * Pass `null` to restore the real Playwright launcher.
+ */
+export function _setBrowserLauncher(fn: BrowserLauncher | null): void {
+  browserLauncherOverride = fn;
+}
+
+/**
+ * @internal — test-only. Reset the browser cache + single-flight guard between
+ * tests (the cache and shutdown flag are module-level singletons).
+ */
+export function _resetScreenshotBrowserState(): void {
+  cachedBrowser = null;
+  browserShuttingDown = false;
+  browserAcquire = null;
+}
+
+/**
+ * @internal — test-only. Force-acquire the shared browser through the real
+ * `getBrowser()` path (liveness check + relaunch + single-flight), so the
+ * lifecycle can be asserted directly.
+ */
+export function _acquireScreenshotBrowser(): Promise<unknown> {
+  return getBrowser();
+}
+
+/** The real launcher: lazy-import Playwright and launch headless Chromium. */
+async function launchViaPlaywright(): Promise<LaunchedBrowser> {
   // Lazy import — surface a graceful error if Playwright isn't installed.
   let chromium: PlaywrightChromium;
   try {
@@ -243,11 +287,68 @@ async function getBrowser(): Promise<unknown> {
     log.warn({ err: errorMessage(err) }, "Playwright not available — screenshot tool disabled");
     throw new Error("playwright_not_installed", { cause: err });
   }
-
-  cachedBrowser = await chromium.launch({
+  return chromium.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
+}
+
+/**
+ * Liveness check. A cached browser whose process has crashed reports
+ * `isConnected() === false`; serving it would fail every render until an API
+ * restart (#4319). A handle that doesn't expose `isConnected` (a stub, or an
+ * older Playwright) is treated as alive — we can't prove it's dead. A throw
+ * from `isConnected()` means the transport is gone → treat as dead.
+ */
+function isBrowserAlive(b: LaunchedBrowser): boolean {
+  if (typeof b.isConnected !== "function") return true;
+  try {
+    return b.isConnected();
+  } catch (err) {
+    log.debug({ err: errorMessage(err) }, "browser isConnected() threw — treating as dead");
+    return false;
+  }
+}
+
+async function getBrowser(): Promise<unknown> {
+  if (browserShuttingDown) throw new Error("Screenshot browser is shutting down");
+
+  // Fast path: a live cached browser.
+  if (cachedBrowser && isBrowserAlive(cachedBrowser as LaunchedBrowser)) {
+    return cachedBrowser;
+  }
+
+  // Slow path: no browser, or the cached one is dead. Single-flight the
+  // (close-dead + launch) so concurrent renders share one relaunch.
+  if (!browserAcquire) {
+    browserAcquire = acquireBrowser().finally(() => {
+      browserAcquire = null;
+    });
+  }
+  return browserAcquire;
+}
+
+async function acquireBrowser(): Promise<unknown> {
+  // Re-check inside the single-flight — a racing caller may have already
+  // relaunched a live browser while we were queued behind it.
+  if (cachedBrowser && isBrowserAlive(cachedBrowser as LaunchedBrowser)) {
+    return cachedBrowser;
+  }
+
+  // A dead handle is cached: best-effort close so we don't leak the crashed
+  // process, then drop it. A throw here must not block the relaunch.
+  if (cachedBrowser) {
+    log.warn("Cached headless Chromium is disconnected — relaunching");
+    try {
+      await (cachedBrowser as LaunchedBrowser).close();
+    } catch (err) {
+      log.debug({ err: errorMessage(err) }, "closing dead browser handle failed (ignored)");
+    }
+    cachedBrowser = null;
+  }
+
+  const launch = browserLauncherOverride ?? launchViaPlaywright;
+  cachedBrowser = await launch();
   log.info("Headless Chromium launched for dashboard screenshots");
   return cachedBrowser;
 }
@@ -258,7 +359,10 @@ async function getBrowser(): Promise<unknown> {
  */
 export async function closeScreenshotBrowser(): Promise<void> {
   browserShuttingDown = true;
-  if (!cachedBrowser) return;
+  if (!cachedBrowser) {
+    browserShuttingDown = false;
+    return;
+  }
   try {
     const browser = cachedBrowser as { close: () => Promise<void> };
     await browser.close();
@@ -269,6 +373,107 @@ export async function closeScreenshotBrowser(): Promise<void> {
     cachedBrowser = null;
     browserShuttingDown = false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Render concurrency semaphore (#4319)
+// ---------------------------------------------------------------------------
+//
+// One shared headless Chromium serves every screenshot AND export. Without a
+// bound, a burst of export requests each opens its own browser context/page in
+// parallel, and memory (each ~1920×2160 or 1600×2000 @2× render) climbs
+// unbounded until the process OOMs. The semaphore caps simultaneous renders;
+// excess requests QUEUE (FIFO) and run as permits free up, rather than being
+// rejected or spawning unbounded contexts.
+
+const RENDER_CONCURRENCY_DEFAULT = 3;
+const RENDER_CONCURRENCY_MIN = 1;
+const RENDER_CONCURRENCY_MAX = 16;
+
+let renderConcurrencyOverride: number | null = null;
+
+/**
+ * @internal — test seam. Pin the concurrency cap so the queueing behaviour is
+ * deterministic without reaching into the settings registry. `null` restores
+ * the registry-backed value.
+ */
+export function _setRenderConcurrency(n: number | null): void {
+  renderConcurrencyOverride = n;
+}
+
+/**
+ * Clamp a raw setting value to a valid concurrency cap. Pure + exported so the
+ * boundary behaviour is unit-testable without the settings registry:
+ *   - unset / empty / non-numeric → default (3)
+ *   - below the floor (incl. 0 / negative) → 1  (a 0 cap would deadlock all renders)
+ *   - above the ceiling → 16
+ *   - fractional → truncated
+ */
+export function clampRenderConcurrency(raw: string | number | null | undefined): number {
+  if (raw === null || raw === undefined || raw === "") return RENDER_CONCURRENCY_DEFAULT;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return RENDER_CONCURRENCY_DEFAULT;
+  return Math.min(RENDER_CONCURRENCY_MAX, Math.max(RENDER_CONCURRENCY_MIN, Math.trunc(parsed)));
+}
+
+/** Effective cap: test override > platform DB override > env > default. */
+function getRenderConcurrency(): number {
+  if (renderConcurrencyOverride !== null) return renderConcurrencyOverride;
+  return clampRenderConcurrency(getSettingAuto("ATLAS_DASHBOARD_RENDER_CONCURRENCY"));
+}
+
+/**
+ * Minimal FIFO counting semaphore. The limit is read live on every admission
+ * decision (via `getLimit`) so a settings hot-reload takes effect for the next
+ * queued waiter without a restart.
+ */
+class RenderSemaphore {
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(private readonly getLimit: () => number) {}
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
+
+  private acquire(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const tryAdmit = (): void => {
+        if (this.active < this.getLimit()) {
+          this.active += 1;
+          resolve();
+        } else {
+          // Over the cap — queue and re-attempt when a permit frees up.
+          this.waiters.push(tryAdmit);
+        }
+      };
+      tryAdmit();
+    });
+  }
+
+  private release(): void {
+    this.active -= 1;
+    const next = this.waiters.shift();
+    if (next) next();
+  }
+
+  /** @internal — test-only. Current in-flight render count. */
+  get inFlight(): number {
+    return this.active;
+  }
+}
+
+const renderSemaphore = new RenderSemaphore(getRenderConcurrency);
+
+/** @internal — test-only. Current in-flight render count (semaphore probe). */
+export function _renderInFlight(): number {
+  return renderSemaphore.inFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -466,13 +671,17 @@ export async function screenshotDashboard(opts: ScreenshotOpts): Promise<Screens
   let png: Buffer;
   try {
     const fn = renderImpl ?? defaultRender;
-    png = await fn({
-      dashboardId: opts.dashboardId,
-      userId: opts.userId,
-      orgId: opts.orgId,
-      cookieHeader: opts.cookieHeader ?? null,
-      baseUrl,
-    });
+    // Bound simultaneous headless renders — excess requests queue here rather
+    // than each opening its own browser context (#4319).
+    png = await renderSemaphore.run(() =>
+      fn({
+        dashboardId: opts.dashboardId,
+        userId: opts.userId,
+        orgId: opts.orgId,
+        cookieHeader: opts.cookieHeader ?? null,
+        baseUrl,
+      }),
+    );
   } catch (err) {
     const msg = errorMessage(err);
     if (msg === "playwright_not_installed") {
@@ -772,21 +981,26 @@ export async function exportDashboard(opts: ExportOpts): Promise<ExportResult> {
   let rendered: ExportRenderOutput;
   try {
     const fn = exportRenderImpl ?? defaultExportRender;
-    rendered = await withTimeout(
-      fn({
-        dashboardId: opts.dashboardId,
-        userId: opts.userId,
-        orgId: opts.orgId,
-        cookieHeader: opts.cookieHeader ?? null,
-        baseUrl,
-        apiBaseUrl: opts.apiBaseUrl,
-        format: opts.format,
-        parameters: opts.parameters ?? null,
-        title,
-        generatedAt: formatDisplayStamp(now),
+    // Bound simultaneous headless renders (shared with the screenshot path).
+    // The permit is acquired BEFORE the render timeout starts, so time spent
+    // queueing for a permit doesn't count against the render budget (#4319).
+    rendered = await renderSemaphore.run(() =>
+      withTimeout(
+        fn({
+          dashboardId: opts.dashboardId,
+          userId: opts.userId,
+          orgId: opts.orgId,
+          cookieHeader: opts.cookieHeader ?? null,
+          baseUrl,
+          apiBaseUrl: opts.apiBaseUrl,
+          format: opts.format,
+          parameters: opts.parameters ?? null,
+          title,
+          generatedAt: formatDisplayStamp(now),
+          timeoutMs,
+        }),
         timeoutMs,
-      }),
-      timeoutMs,
+      ),
     );
   } catch (err) {
     const msg = errorMessage(err);

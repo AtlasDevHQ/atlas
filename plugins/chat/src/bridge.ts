@@ -696,8 +696,9 @@ export function createChatBridge(
       // #2705 — every bridge call (mention, slash, subscribed reply)
       // is destined for a chat-platform surface whose audience is
       // non-analyst team members. Ask the agent for the conversational
-      // shape; hosts whose `executeQuery` callback predates #2705
-      // ignore the field and keep producing the developer-mode body.
+      // shape; the Atlas host resolves the signal through its
+      // answer-style registry (#4299), which also falls back to
+      // conversational when the field is absent.
       presentationMode: "conversational",
     });
 

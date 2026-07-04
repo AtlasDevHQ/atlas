@@ -88,6 +88,11 @@ import {
 import { ModelRouter } from "./effect/services";
 import { runEnterprise } from "./effect/enterprise-layer";
 import { BOUND_AGENT_PROMPT_GUIDANCE } from "./bound-chat-context";
+import {
+  DEFAULT_ANSWER_STYLE,
+  resolveAnswerStyleAddendum,
+  type AnswerStyle,
+} from "./answer-styles";
 
 const log = createLogger("agent");
 const tracer = trace.getTracer("atlas");
@@ -536,34 +541,6 @@ function buildSystemPrompt(
 }
 
 /**
- * #2705 — Conversational-mode addendum.
- *
- * Appended to the system prompt when the caller requests
- * `presentationMode: "conversational"` (Slack @mention + proactive
- * paths). Overrides the prefix/suffix formatting guidance so the
- * agent renders a chat-platform-friendly answer rather than the
- * analyst-grade developer view. Pairs with the proactive listener's
- * progressive-disclosure buttons (#2705) — anything heavier
- * (markdown tables, SQL, glossary) is one tap away on demand.
- *
- * Exported so unit tests can pin the contract that the conversational
- * branch suppresses SQL/tables and reframes the closing CTA.
- */
-export const CONVERSATIONAL_PROMPT_ADDENDUM = `
-
-## Presentation mode — conversational
-
-You are answering inside a chat platform (Slack/Teams/etc.) where the audience is a non-analyst teammate skimming a thread. Override the standard formatting guidance with the following rules:
-
-- Keep the answer to **1-2 sentences of plain English prose**. No headings, no bullet lists, no preamble.
-- **Do NOT include SQL** in the response body. The chat surface attaches a "Show SQL" button that surfaces the query on demand.
-- **Do NOT use markdown tables.** Express small comparisons as prose ("3 in the US, 1 in EU, 1 in APAC"); use bare numbers, not formatted tables. For larger result sets, summarize the top line in prose and let the "Show details" button surface the breakdown.
-- **Skip the glossary lecture.** Assume the reader already knows what a customer / order / MRR is. Don't define terms.
-- Cite figures inline in the prose, with units. ("Revenue grew to $1.2M in March, up 14% from February.")
-- End with a single short line offering the analyst view: "Want the SQL or full breakdown? Tap the button below." Do NOT use markdown formatting on this closing line.
-`;
-
-/**
  * #3909 — Cross-source composition guidance (ADR-0022 §2, slice (d)).
  *
  * Teaches the agent how to *compose* an answer across the sources it can now
@@ -596,9 +573,6 @@ When a question spans more than one source in the catalog above — several SQL 
 - **Report which source(s) you drew from** so the user can check provenance — e.g. "1,240 signups (Postgres), 180 of them paid (Stripe)".
 - **Never silently fall back to an unrelated source.** If the source that actually holds the answer is empty or errors, say so plainly and state the gap — do not answer from a different source and imply it is equivalent.`;
 
-/** Response-audience mode; `"conversational"` renders chat-platform-friendly answers (#2705). */
-export type PresentationMode = "developer" | "conversational";
-
 export interface BuildSystemParamOptions {
   /** Tool registry the prompt's tool-guidance sections are built from. Defaults to `defaultRegistry`. */
   readonly registry?: ToolRegistry;
@@ -619,8 +593,13 @@ export interface BuildSystemParamOptions {
   readonly routingContext?: ScopeRoutingContext;
   /** Bound dashboard context (dashboard-scoped chat). */
   readonly boundDashboardContext?: BoundDashboardAgentContext;
-  /** `"conversational"` appends the chat-surface addendum. Defaults to `"developer"`. */
-  readonly presentationMode?: PresentationMode;
+  /**
+   * #4299 — the answer's editorial voice. Resolves through the answer-style
+   * registry (lib/answer-styles.ts); exactly one style's addendum is appended.
+   * Defaults to {@link DEFAULT_ANSWER_STYLE} (`"analyst"`, the answer-first
+   * web voice). Chat-platform callers pass `"conversational"`.
+   */
+  readonly answerStyle?: AnswerStyle;
   /**
    * #2924 — Path A REST representation. When a REST datasource resolves, the
    * trimmed operation-graph prompt context is appended so the agent can address
@@ -685,7 +664,7 @@ export function buildSystemParam(
     learnedPatternsSection,
     routingContext,
     boundDashboardContext,
-    presentationMode = "developer",
+    answerStyle = DEFAULT_ANSWER_STYLE,
     restRepresentation,
     modelId,
     memoryBlock,
@@ -706,9 +685,11 @@ export function buildSystemParam(
     content += "\n\n" + restRepresentation;
   }
 
-  if (presentationMode === "conversational") {
-    content += CONVERSATIONAL_PROMPT_ADDENDUM;
-  }
+  // #4299 — the answer style contributes exactly one addendum, resolved
+  // through the registry. Position preserved from the #2705 conversational
+  // addendum (after the REST representation, before warnings) so the
+  // conversational prompt stays byte-identical to the pre-registry assembly.
+  content += "\n\n" + resolveAnswerStyleAddendum(answerStyle);
 
   if (warnings && warnings.length > 0) {
     content += "\n\n## Warnings\n\n" + warnings.map((w) => `- ${w}`).join("\n");
@@ -968,7 +949,7 @@ export async function runAgent({
   /** Optional pre-resolved AI model. When provided, skips provider resolution. */
   aiModel: injectedAiModel,
   boundDashboardContext,
-  presentationMode,
+  answerStyle,
   resume,
   runId: callerRunId,
   subagent,
@@ -1020,21 +1001,22 @@ export async function runAgent({
    */
   boundDashboardContext?: BoundDashboardAgentContext;
   /**
-   * #2705 — presentation mode for the agent's response body.
+   * #4299 — the answer style for this turn (PRD #4292). Resolves through
+   * the registry in `lib/answer-styles.ts`; exactly one style's prompt
+   * addendum is appended by {@link buildSystemParam}.
    *
-   * - `"developer"` (default): analyst-grade output — markdown,
-   *   SQL, tables, glossary disambiguation. Matches every pre-#2705
-   *   surface (web chat, SDK, MCP).
+   * - `"analyst"` (default): the answer-first web voice — lead with the
+   *   result, length scales with the question, no emoji headers, caveats
+   *   only when material. The default for the web chat, SDK, MCP, and
+   *   `/api/v1/query` (superseding #2705's addendum-free "developer" view).
    * - `"conversational"`: 1-2 sentence prose answer for chat-platform
-   *   surfaces (Slack @mention, proactive). Suppresses SQL by
-   *   default, replaces markdown tables with prose comparisons, drops
-   *   glossary lectures. The chat plugin pairs this with progressive-
-   *   disclosure buttons that surface the developer view on demand.
-   *
-   * Optional + defaulting to `"developer"` keeps every pre-#2705
-   * caller's behavior unchanged.
+   *   surfaces (Slack @mention, proactive) — behavior-identical to the
+   *   #2705 binary. The chat plugin pairs this with progressive-disclosure
+   *   buttons that surface the SQL and full result tables on demand.
+   * - `"plain-english"` / `"executive"`: selectable voices for the
+   *   per-conversation picker (#4302); no surface auto-selects them yet.
    */
-  presentationMode?: PresentationMode;
+  answerStyle?: AnswerStyle;
   /**
    * #3747 — crash-resume re-entry (ADR-0020 phase 2). When supplied, the agent
    * RE-ENTERS an interrupted turn instead of starting a fresh one:
@@ -1606,7 +1588,7 @@ export async function runAgent({
     learnedPatternsSection,
     routingContext: scopeRoutingContext,
     boundDashboardContext,
-    presentationMode: presentationMode ?? "developer",
+    answerStyle,
     restRepresentation,
     modelId: resolvedModelId,
     memoryBlock,

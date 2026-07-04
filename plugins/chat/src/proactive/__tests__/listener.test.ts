@@ -1741,6 +1741,13 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
     expect(executeQueryProactive.mock.calls[0]![1].atlasUserId as string).toBe(
       "atlas-user-1",
     );
+    // #2705/#4299 — the listener must send the conversational signal: the
+    // Atlas host's proactive adapter falls back to the ANALYST voice when
+    // the field is absent, so dropping it here would silently flip
+    // proactive Slack replies to the web voice.
+    expect(executeQueryProactive.mock.calls[0]![1].presentationMode).toBe(
+      "conversational",
+    );
     // The allowlist lookup is for the unlinked path — linked asker
     // should never trigger it.
     expect(getPublicDataset).not.toHaveBeenCalled();
@@ -1816,6 +1823,11 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
     // empty string from upstream is no longer indistinguishable from
     // "intentional public-dataset call".
     expect(executeQueryProactive.mock.calls[0]![1].atlasUserId).toBeNull();
+    // #2705/#4299 — the public-dataset branch sends the conversational
+    // signal too (same analyst-fallback hazard as the linked path).
+    expect(executeQueryProactive.mock.calls[0]![1].presentationMode).toBe(
+      "conversational",
+    );
     // Answer card + subscribe → one thread.post for the answer.
     expect(thread.post).toHaveBeenCalledTimes(1);
     expect(thread.subscribe).toHaveBeenCalledTimes(1);

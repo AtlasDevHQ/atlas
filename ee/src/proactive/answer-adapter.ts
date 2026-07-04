@@ -55,6 +55,7 @@ import type {
 } from "@useatlas/chat";
 
 import { runAgent } from "@atlas/api/lib/agent";
+import { answerStyleForPresentationMode } from "@atlas/api/lib/answer-styles";
 import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
 import { AtlasAiModel, type AtlasAiModelShape } from "@atlas/api/lib/effect/ai";
 import {
@@ -174,12 +175,6 @@ export function createProactiveAnswerAdapter(
   return async (question, context): Promise<ProactiveQueryResult> => {
     const requestId = crypto.randomUUID();
     const { threadId, asker, atlasUserId, workspaceId } = context;
-    // #2705 — Slack presentation mode. Default to "developer" so a
-    // host whose `executeQueryProactive` predates #2705 still produces
-    // the analyst-grade body (the backward-compatible posture). The
-    // chat plugin's listener now always passes `"conversational"` for
-    // both the linked-asker and public-dataset branches.
-    const presentationMode = context.presentationMode ?? "developer";
     const askerId = describeAskerId(asker);
 
     // 1. Resolve identity + (unlinked) restricted tool registry ----------
@@ -309,9 +304,20 @@ export function createProactiveAnswerAdapter(
             ],
             aiModel,
             ...(toolRegistry ? { tools: toolRegistry } : {}),
-            // #2705 — pass through the listener's presentation mode so
-            // the system prompt branches to the conversational shape.
-            presentationMode,
+            // #2705/#4299 — the proactive seam still speaks the legacy
+            // presentation-mode signal; resolve it through the answer-style
+            // registry so the system prompt carries that style's addendum.
+            // The chat plugin's listener always passes "conversational"
+            // (both linked-asker and public-dataset branches); a host whose
+            // `executeQueryProactive` predates #2705 falls back to
+            // "analyst" — the answer-first successor of the retired
+            // addendum-free "developer" body. Resolved HERE, inside
+            // `withRequestContext`, so the mapper's version-skew warn is
+            // stamped with this turn's requestId.
+            answerStyle: answerStyleForPresentationMode(
+              context.presentationMode,
+              "analyst",
+            ),
           }),
       );
 

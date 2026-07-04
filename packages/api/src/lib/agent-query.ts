@@ -7,6 +7,7 @@
  */
 
 import { runAgent } from "@atlas/api/lib/agent";
+import type { AnswerStyle } from "@atlas/api/lib/answer-styles";
 import { createLogger, getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
 import type { ActorKind, RequestActor } from "@atlas/api/lib/logger";
 import { BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
@@ -129,17 +130,17 @@ export interface ExecuteAgentQueryOptions {
   /** Content scope for group-aware semantic overlays. */
   connectionGroupId?: string;
   /**
-   * #2705 — presentation mode for the agent's response body. Threaded
-   * through to {@link runAgent}'s `presentationMode` parameter; the
-   * chat plugin's `executeQuery` path sets `"conversational"` so the
-   * Slack @mention reply renders as 1-2 sentences of prose with the
-   * SQL and tables surfaced via progressive-disclosure buttons (#2705).
+   * #4299 — answer style for the agent's response body. Threaded through
+   * to {@link runAgent}'s `answerStyle` parameter; the chat plugin's
+   * `executeQuery` path resolves `"conversational"` so the Slack @mention
+   * reply renders as 1-2 sentences of prose with the SQL and tables
+   * surfaced via progressive-disclosure buttons (#2705).
    *
-   * Optional, defaulting to `"developer"` so the synchronous JSON
-   * `/api/v1/query` route, MCP, and any other non-chat caller keep
-   * the analyst-grade body unchanged.
+   * Optional, defaulting to `"analyst"` (the answer-first analyst voice)
+   * so the synchronous JSON `/api/v1/query` route, MCP, and any other
+   * non-chat caller get the analyst-grade body.
    */
-  presentationMode?: "developer" | "conversational";
+  answerStyle?: AnswerStyle;
 }
 
 /**
@@ -274,7 +275,7 @@ export async function executeAgentQuery(
       messages,
       ...(toolRegistry && { tools: toolRegistry }),
       ...(options?.conversationId && { conversationId: options.conversationId }),
-      ...(options?.presentationMode && { presentationMode: options.presentationMode }),
+      ...(options?.answerStyle && { answerStyle: options.answerStyle }),
     });
 
     const [text, steps, totalUsage] = await Promise.all([

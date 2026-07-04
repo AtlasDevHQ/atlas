@@ -63,7 +63,7 @@ export type ChatMessage = { role: "user" | "assistant"; content: string };
  *   non-analyst team member skimming a thread. Suppresses SQL,
  *   markdown tables, and glossary lectures by default; the chat
  *   plugin pairs this with progressive-disclosure buttons that
- *   surface the full analyst view on demand.
+ *   surface the SQL and full result tables on demand.
  *
  * Threaded through `executeQuery` / `executeQueryStream` and
  * `executeQueryProactive` so the host can adjust the system prompt

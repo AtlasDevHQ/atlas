@@ -32,7 +32,7 @@ import { createLogger } from "./logger";
 
 const log = createLogger("answer-styles");
 
-/** Every registered answer style name, in picker display order. */
+/** Every registered answer style name (intended #4302 picker display order). */
 export const ANSWER_STYLE_NAMES = [
   "plain-english",
   "analyst",
@@ -170,9 +170,11 @@ export function resolveAnswerStyleAddendum(style: AnswerStyle): string {
  * `mode`'s inline union deliberately does NOT import `PresentationMode` from
  * `@useatlas/chat`: the duplication is compile-time drift detection. Both
  * call seams pass values typed from the published boundary, so if the plugin
- * union ever widens, this signature stops compiling and forces an explicit
- * mapping decision here instead of silently routing the new value to
- * `fallback`. It also keeps the registry free of plugin imports.
+ * union ever widens, the call seams stop compiling — and widening this
+ * signature to match trips the `never` check in the `default` branch — so a
+ * new arm always forces an explicit mapping decision here instead of falling
+ * through to the runtime warn-and-fallback. It also keeps the registry free
+ * of plugin imports.
  */
 export function answerStyleForPresentationMode(
   mode: "developer" | "conversational" | undefined,
@@ -194,7 +196,7 @@ export function answerStyleForPresentationMode(
       void _exhaustive;
       // Runtime reality can exceed the compile-time union: the value
       // originates from the published `@useatlas/chat` bridge, so a
-      // version-skewed or third-party host may send a token TypeScript
+      // version-skewed or third-party bridge may send a token TypeScript
       // never saw. Falling back is the right behavior, but never silently
       // (CLAUDE.md) — leave a breadcrumb for the day a bridge "intended
       // conversational" and got the fallback voice instead.

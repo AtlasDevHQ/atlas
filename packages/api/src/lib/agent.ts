@@ -1012,7 +1012,7 @@ export async function runAgent({
    * - `"conversational"`: 1-2 sentence prose answer for chat-platform
    *   surfaces (Slack @mention, proactive) — behavior-identical to the
    *   #2705 binary. The chat plugin pairs this with progressive-disclosure
-   *   buttons that surface the full analyst view on demand.
+   *   buttons that surface the SQL and full result tables on demand.
    * - `"plain-english"` / `"executive"`: selectable voices for the
    *   per-conversation picker (#4302); no surface auto-selects them yet.
    */

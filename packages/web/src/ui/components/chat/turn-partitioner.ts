@@ -7,7 +7,8 @@
  *
  * Boundary rules (v1 — all of them live here, nowhere else):
  * - Everything up to and including the last tool part is **activity** (tool
- *   executions + narration text between them). It renders inside the receipt.
+ *   executions plus the narration text around them). It renders inside the
+ *   receipt.
  * - Text parts after the last tool part are the **answer**. A zero-tool turn is
  *   all answer; an interrupted stream can have an empty answer.
  * - The last *successful* `executeSQL` result is promoted as the
@@ -21,19 +22,35 @@
  * explicit agent-emitted answer marker (see PRD #4292) — not more rules here.
  */
 
-import { isToolUIPart, getToolName, type UIMessagePart, type UIDataTypes, type UITools } from "ai";
+import {
+  isToolUIPart,
+  getToolName,
+  type UIMessagePart,
+  type UIDataTypes,
+  type UITools,
+  type ToolUIPart,
+  type DynamicToolUIPart,
+} from "ai";
+import { isActionToolResult } from "../../lib/action-types";
+import { isRestWriteConfirmResult } from "../../lib/rest-operation-types";
 
 /** One part of an assistant message, as delivered by the AI SDK. */
 export type TurnPart = UIMessagePart<UIDataTypes, UITools>;
+
+/** The text arm of {@link TurnPart} — what `answer` and narration are made of. */
+export type TextTurnPart = Extract<TurnPart, { type: "text" }>;
+
+/** The tool arms of {@link TurnPart} — exactly what `isToolUIPart` narrows to. */
+export type ToolTurnPart = ToolUIPart<UITools> | DynamicToolUIPart;
 
 /**
  * A part paired with its index in the original `parts` array. The index is the
  * stable React key: partition output arrays re-shuffle across buckets, but the
  * source position of a part never changes once streamed.
  */
-export interface IndexedTurnPart {
-  part: TurnPart;
-  index: number;
+export interface IndexedTurnPart<P extends TurnPart = TurnPart> {
+  readonly part: P;
+  readonly index: number;
 }
 
 /** The three presentation buckets of a finished turn. */
@@ -42,35 +59,23 @@ export interface PartitionedTurn {
    * What the agent did on the way to the answer — tool parts plus narration
    * text — excluding the promoted artifact. Rendered inside the receipt.
    */
-  activity: IndexedTurnPart[];
+  readonly activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[];
   /**
    * The turn's user-facing text: non-empty text parts after the last tool
    * part. Empty for an interrupted stream that never reached the answer.
    */
-  answer: IndexedTurnPart[];
+  readonly answer: readonly IndexedTurnPart<TextTurnPart>[];
   /**
    * The at-most-one query result promoted to sit with the answer, or null
    * when no successful `executeSQL` ran.
    */
-  answerBearingArtifact: IndexedTurnPart | null;
-}
-
-/** `getToolName` throws on malformed parts; treat those as unnamed. */
-function safeToolName(part: TurnPart): string | null {
-  try {
-    return getToolName(part as Parameters<typeof getToolName>[0]);
-  } catch {
-    // intentionally ignored: a tool part without a recognizable name still
-    // renders in the receipt (ToolPart shows its own fallback card), it just
-    // can't be promoted or counted by name.
-    return null;
-  }
+  readonly answerBearingArtifact: IndexedTurnPart<ToolTurnPart> | null;
 }
 
 /** A completed executeSQL whose output reported success — the only promotable shape (v1). */
-function isPromotableQueryResult(part: TurnPart): boolean {
+function isPromotableQueryResult(part: TurnPart): part is ToolTurnPart {
   if (!isToolUIPart(part)) return false;
-  if (safeToolName(part) !== "executeSQL") return false;
+  if (getToolName(part) !== "executeSQL") return false;
   if (part.state !== "output-available") return false;
   const output = part.output;
   return (
@@ -80,7 +85,7 @@ function isPromotableQueryResult(part: TurnPart): boolean {
   );
 }
 
-function isNonEmptyText(part: TurnPart): part is Extract<TurnPart, { type: "text" }> {
+function isNonEmptyText(part: TurnPart): part is TextTurnPart {
   return part.type === "text" && part.text.trim().length > 0;
 }
 
@@ -105,16 +110,17 @@ export function partitionTurn(parts: readonly TurnPart[] | undefined): Partition
     }
   }
 
-  let answerBearingArtifact: IndexedTurnPart | null = null;
+  let answerBearingArtifact: IndexedTurnPart<ToolTurnPart> | null = null;
   for (let i = lastToolIndex; i >= 0; i--) {
-    if (isPromotableQueryResult(parts[i])) {
-      answerBearingArtifact = { part: parts[i], index: i };
+    const part = parts[i];
+    if (isPromotableQueryResult(part)) {
+      answerBearingArtifact = { part, index: i };
       break;
     }
   }
 
-  const activity: IndexedTurnPart[] = [];
-  const answer: IndexedTurnPart[] = [];
+  const activity: IndexedTurnPart<TextTurnPart | ToolTurnPart>[] = [];
+  const answer: IndexedTurnPart<TextTurnPart>[] = [];
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     if (i <= lastToolIndex) {
@@ -131,12 +137,44 @@ export function partitionTurn(parts: readonly TurnPart[] | undefined): Partition
 }
 
 /**
+ * True when `output` is one of the interactive tool envelopes that waits on a
+ * user decision: a pending action approval, a staged dashboard change
+ * (#2365 `stage_required` — the card validates the full payload, the kind
+ * alone identifies the envelope family), or a REST write confirmation (#2929).
+ */
+function isPendingInteractiveResult(output: unknown): boolean {
+  if (output == null || typeof output !== "object") return false;
+  if ((output as { kind?: unknown }).kind === "stage_required") return true;
+  if (isRestWriteConfirmResult(output)) return true;
+  return isActionToolResult(output) && output.status === "pending";
+}
+
+/**
+ * True when any activity part is an interactive card awaiting the user
+ * (action approval, staged change, write confirmation). The receipt must not
+ * collapse these out of sight — even when the turn also has answer text
+ * ("I need your approval to…"), the decision buttons are the turn's point.
+ */
+export function activityAwaitsUser(
+  activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[],
+): boolean {
+  return activity.some(
+    ({ part }) =>
+      isToolUIPart(part) &&
+      part.state === "output-available" &&
+      isPendingInteractiveResult(part.output),
+  );
+}
+
+/**
  * The receipt's one-line summary of what stayed in it, e.g.
  * "Explored schema · 2 queries". Counts describe the receipt's own contents —
  * the promoted artifact is visible next to the answer, not re-counted here.
  * Returns "" for empty activity (the receipt doesn't render then).
  */
-export function summarizeActivity(activity: readonly IndexedTurnPart[]): string {
+export function summarizeActivity(
+  activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[],
+): string {
   if (activity.length === 0) return "";
 
   let explores = 0;
@@ -145,7 +183,7 @@ export function summarizeActivity(activity: readonly IndexedTurnPart[]): string 
   let otherSteps = 0;
   for (const { part } of activity) {
     if (!isToolUIPart(part)) continue;
-    switch (safeToolName(part)) {
+    switch (getToolName(part)) {
       case "explore":
         explores++;
         break;

@@ -13,6 +13,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  activityAwaitsUser,
   partitionTurn,
   summarizeActivity,
   type TurnPart,
@@ -23,15 +24,15 @@ import {
 /* ------------------------------------------------------------------ */
 
 function text(t: string, state?: "streaming" | "done"): TurnPart {
-  return { type: "text", text: t, ...(state ? { state } : {}) } as TurnPart;
+  return { type: "text", text: t, state };
 }
 
 function reasoning(t: string): TurnPart {
-  return { type: "reasoning", text: t } as TurnPart;
+  return { type: "reasoning", text: t };
 }
 
 function stepStart(): TurnPart {
-  return { type: "step-start" } as TurnPart;
+  return { type: "step-start" };
 }
 
 let nextCallId = 0;
@@ -194,18 +195,16 @@ describe("partitionTurn", () => {
       ...result.answer.map((p) => p.part),
       ...(result.answerBearingArtifact ? [result.answerBearingArtifact.part] : []),
     ];
-    expect(surfaced.some((p) => (p as { type: string }).type === "reasoning")).toBe(false);
+    expect(surfaced.some((p) => p.type === "reasoning")).toBe(false);
     // A trailing reasoning part after the last tool must not leak into the answer either.
     const trailing = partitionTurn([sql({}), reasoning("post-hoc"), text("Answer.")]);
-    expect(trailing.answer.map((p) => (p.part as { type: string }).type)).toEqual(["text"]);
+    expect(trailing.answer.map((p) => p.part.type)).toEqual(["text"]);
   });
 
   test("step-start parts are dropped", () => {
     const result = partitionTurn([stepStart(), sql({}), stepStart(), text("Answer.")]);
 
-    const surfaced = [...result.activity, ...result.answer].map(
-      (p) => (p.part as { type: string }).type,
-    );
+    const surfaced = [...result.activity, ...result.answer].map((p) => p.part.type);
     expect(surfaced).not.toContain("step-start");
   });
 
@@ -236,6 +235,79 @@ describe("partitionTurn", () => {
     expect(result.activity).toEqual([{ part: narration, index: 1 }]);
     expect(result.answerBearingArtifact).toEqual({ part: query, index: 2 });
     expect(result.answer).toEqual([{ part: answerText, index: 3 }]);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  activityAwaitsUser                                                 */
+/* ------------------------------------------------------------------ */
+
+/** A generic tool part with an arbitrary output envelope. */
+function toolWithOutput(output: unknown): TurnPart {
+  return {
+    type: "tool-someAction",
+    toolCallId: `call-${nextCallId++}`,
+    state: "output-available",
+    input: {},
+    output,
+  } as TurnPart;
+}
+
+describe("activityAwaitsUser", () => {
+  test("pending action approval awaits the user", () => {
+    const pending = toolWithOutput({
+      status: "pending",
+      actionId: "a1",
+      summary: "Send the email",
+    });
+    const { activity } = partitionTurn([pending, text("I need your approval.")]);
+    expect(activityAwaitsUser(activity)).toBe(true);
+  });
+
+  test("resolved action does not await the user", () => {
+    const executed = toolWithOutput({
+      status: "executed",
+      actionId: "a1",
+      result: { ok: true },
+    });
+    const { activity } = partitionTurn([executed, text("Done.")]);
+    expect(activityAwaitsUser(activity)).toBe(false);
+  });
+
+  test("staged dashboard change (#2365) awaits the user", () => {
+    const staged = toolWithOutput({
+      kind: "stage_required",
+      stageId: "s1",
+      stageKind: "remove_card",
+      target: { cardId: "c1", currentTitle: "T" },
+    });
+    const { activity } = partitionTurn([staged, text("Confirm the removal?")]);
+    expect(activityAwaitsUser(activity)).toBe(true);
+  });
+
+  test("REST write confirmation (#2929) awaits the user", () => {
+    const confirm = toolWithOutput({
+      status: "needs_confirmation",
+      method: "POST",
+      operationId: "op1",
+      datasourceId: "d1",
+      datasourceName: "CRM",
+      summary: "Create a contact",
+      confirm: { token: "t1" },
+    });
+    const { activity } = partitionTurn([confirm, text("Shall I create it?")]);
+    expect(activityAwaitsUser(activity)).toBe(true);
+  });
+
+  test("ordinary activity (explore, queries, narration) does not await the user", () => {
+    const { activity } = partitionTurn([
+      text("Checking..."),
+      explore(),
+      sql({ success: false }),
+      text("Answer."),
+    ]);
+    expect(activityAwaitsUser(activity)).toBe(false);
+    expect(activityAwaitsUser([])).toBe(false);
   });
 });
 

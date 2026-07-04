@@ -10,9 +10,11 @@
  * composition holds with today's actual cards.
  */
 
-import { expect, test } from "bun:test";
+import { expect, test, afterEach } from "bun:test";
 import React from "react";
-import { render, fireEvent } from "@testing-library/react";
+import { render, cleanup, fireEvent } from "@testing-library/react";
+
+afterEach(cleanup);
 import { FinishedTurn } from "@/ui/components/chat/finished-turn";
 import type { TurnPart } from "@/ui/components/chat/turn-partitioner";
 
@@ -60,6 +62,9 @@ test("finished turn renders receipt, answer, and real SQL result card", () => {
   expect(artifact.textContent).toContain("Revenue by region");
   expect(artifact.textContent).toContain("Show SQL");
   expect(artifact.textContent).toContain("EU");
+  // The chart/table view toggles survive promotion (the fixture is chartable).
+  expect(artifact.textContent).toContain("Chart");
+  expect(artifact.textContent).toContain("Table");
 
   // Expand the receipt: the explore card + narration appear.
   fireEvent.click(toggle);

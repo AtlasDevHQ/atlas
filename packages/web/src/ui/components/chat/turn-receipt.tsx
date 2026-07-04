@@ -2,12 +2,16 @@
 
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
-import { isToolUIPart } from "ai";
 import { cn } from "@/lib/utils";
 import { Markdown } from "./markdown";
 import { ToolPart } from "./tool-part";
 import { parseSuggestions } from "../../lib/helpers";
-import { summarizeActivity, type IndexedTurnPart } from "./turn-partitioner";
+import {
+  summarizeActivity,
+  type IndexedTurnPart,
+  type TextTurnPart,
+  type ToolTurnPart,
+} from "./turn-partitioner";
 import type { PythonProgressData } from "./python-result-card";
 
 /**
@@ -17,15 +21,15 @@ import type { PythonProgressData } from "./python-result-card";
  * SQL, result views) plus the agent's narration at sub-answer weight.
  *
  * Renders nothing for empty activity (a zero-tool turn has no receipt).
- * `defaultOpen` lets the caller keep the work visible when the activity is
- * the turn's only content (interrupted stream, approval-parked action).
+ * `defaultOpen` lets the caller keep the work visible when collapsing would
+ * hide the turn's substance — see FinishedTurn for the policy.
  */
 export function TurnReceipt({
   activity,
   pythonProgress,
   defaultOpen = false,
 }: {
-  activity: IndexedTurnPart[];
+  activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[];
   pythonProgress?: Map<string, PythonProgressData[]>;
   defaultOpen?: boolean;
 }) {
@@ -61,11 +65,7 @@ export function TurnReceipt({
                 </div>
               );
             }
-            if (isToolUIPart(part)) {
-              return <ToolPart key={index} part={part} pythonProgress={pythonProgress} />;
-            }
-            // The partitioner only emits text + tool parts; this is a type-narrowing dead end.
-            return null;
+            return <ToolPart key={index} part={part} pythonProgress={pythonProgress} />;
           })}
         </div>
       )}

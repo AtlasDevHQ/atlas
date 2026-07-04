@@ -3,7 +3,7 @@
 import { Markdown } from "./markdown";
 import { ToolPart } from "./tool-part";
 import { parseSuggestions } from "../../lib/helpers";
-import { partitionTurn, type TurnPart } from "./turn-partitioner";
+import { activityAwaitsUser, partitionTurn, type TurnPart } from "./turn-partitioner";
 import { TurnReceipt } from "./turn-receipt";
 import type { PythonProgressData } from "./python-result-card";
 
@@ -26,7 +26,7 @@ export function FinishedTurn({
 
   // A text part can be all <suggestions> block — stripped, it renders nothing.
   const hasRenderedAnswer = answer.some(
-    ({ part }) => part.type === "text" && parseSuggestions(part.text).text.trim(),
+    ({ part }) => parseSuggestions(part.text).text.trim(),
   );
 
   return (
@@ -34,13 +34,17 @@ export function FinishedTurn({
       <TurnReceipt
         activity={activity}
         pythonProgress={pythonProgress}
-        // With no answer and no artifact, the activity IS the turn (interrupted
-        // stream, approval-parked action) — start open so it isn't hidden
-        // behind a bare one-line receipt.
-        defaultOpen={!hasRenderedAnswer && !answerBearingArtifact}
+        // Start expanded when collapsing would hide the turn's substance:
+        // (a) no answer and no artifact — the activity IS the turn (e.g. an
+        // interrupted stream); (b) the activity holds an interactive card
+        // awaiting a user decision (action approval, staged change, REST write
+        // confirmation) — its buttons are the turn's point even when trailing
+        // answer text exists.
+        defaultOpen={
+          (!hasRenderedAnswer && !answerBearingArtifact) || activityAwaitsUser(activity)
+        }
       />
       {answer.map(({ part, index }) => {
-        if (part.type !== "text") return null;
         const displayText = parseSuggestions(part.text).text;
         if (!displayText.trim()) return null;
         return (

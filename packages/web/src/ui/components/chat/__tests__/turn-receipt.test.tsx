@@ -194,4 +194,36 @@ describe("FinishedTurn", () => {
     expect(getByRole("button").getAttribute("aria-expanded")).toBe("false");
     expect(getByTestId("answer-artifact")).not.toBeNull();
   });
+
+  test("pending interactive card with trailing answer text: the receipt starts expanded", () => {
+    // An action approval's buttons are the turn's point — collapsing them
+    // behind the receipt would stall the flow even though answer text exists.
+    const pendingApproval = {
+      type: "tool-sendEmail",
+      toolCallId: "call-approval",
+      state: "output-available",
+      input: {},
+      output: { status: "pending", actionId: "a1", summary: "Send the email" },
+    } as TurnPart;
+    const { getByRole, queryAllByTestId, getByTestId } = render(
+      <FinishedTurn parts={[pendingApproval, text("I need your approval to send this.")]} />,
+    );
+    expect(getByRole("button").getAttribute("aria-expanded")).toBe("true");
+    expect(queryAllByTestId("tool-part-stub")).toHaveLength(1);
+    expect(getByTestId("turn-answer").textContent).toContain("I need your approval");
+  });
+
+  test("resolved action with trailing answer text: the receipt stays collapsed", () => {
+    const executed = {
+      type: "tool-sendEmail",
+      toolCallId: "call-executed",
+      state: "output-available",
+      input: {},
+      output: { status: "executed", actionId: "a1", result: { ok: true } },
+    } as TurnPart;
+    const { getByRole } = render(
+      <FinishedTurn parts={[executed, text("The email went out.")]} />,
+    );
+    expect(getByRole("button").getAttribute("aria-expanded")).toBe("false");
+  });
 });

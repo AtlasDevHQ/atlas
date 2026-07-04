@@ -43,6 +43,7 @@ import { activeFilters, incompatibleCardIds } from "./cross-filter";
 import { renderDashboardCard, renderDashboardCards, isRenderableCard } from "./dashboard-card-render";
 import { foldRenderEntries, mergeOverlays, phaseTag, type TileOverlay } from "./tile-phases";
 import type { TileRenderPhase } from "@/ui/components/dashboards/tile-status";
+import { pendingRefreshesRemaining } from "@/ui/components/dashboards/tile-status";
 import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banner";
 import { PublishDiffModal } from "@/ui/components/dashboards/publish-diff-modal";
 import { diffDashboards, type DashboardDiff } from "@/ui/components/dashboards/dashboard-diff";
@@ -89,6 +90,25 @@ interface DraftViewResponse {
  *  Query's default staleTime in this app, so the window-focus refetch
  *  picks up baseline drift even sooner. */
 const DRAFT_STATUS_POLL_MS = 30_000;
+// #4325 — while a post-publish async refresh is in flight, re-fetch the board on
+// this cadence so the refreshed cards flip from `stale` back to `fresh` shortly
+// after their data lands (the poll stops as soon as nothing is pending).
+const PENDING_REFRESH_POLL_MS = 2_500;
+// #4325 — give up polling after this long. If a card's async refresh fails for
+// good (e.g. its SQL no longer validates post-publish) its `cachedAt` never
+// advances; without a bound the 2.5s re-fetch would loop forever. On timeout we
+// stop polling — the tile simply stays `stale` (labeled + retryable), which is
+// the intended fallback UX.
+const PENDING_REFRESH_MAX_MS = 60_000;
+
+/** #4325 — pull the `refreshingCardIds` array out of the publish response body,
+ *  tolerating the untyped mutation result (missing / wrong-typed → none). */
+function extractRefreshingCardIds(data: unknown): string[] {
+  if (!data || typeof data !== "object") return [];
+  const ids = (data as { refreshingCardIds?: unknown }).refreshingCardIds;
+  if (!Array.isArray(ids)) return [];
+  return ids.filter((x): x is string => typeof x === "string");
+}
 
 export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>();
@@ -206,6 +226,50 @@ export default function DashboardViewPage() {
   // resolution lives in `resolveTileStatus`. There is no page-level failure
   // banner — the tile is the unit of trust.
   const [renderPhases, setRenderPhases] = useState<Record<string, TileRenderPhase>>({});
+  // #4325 — cards whose post-publish async refresh is still in flight. Their
+  // tiles read `stale` (holding pre-publish data, labeled with age) until the
+  // refresh lands. `pendingRefreshBaseline` captures each card's `cachedAt` at
+  // publish time so a card settles the moment its `cachedAt` advances.
+  const [pendingRefreshIds, setPendingRefreshIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const pendingRefreshBaseline = useRef<Record<string, string | null>>({});
+  // Wall-clock deadline after which the poll-until-fresh loop gives up (a
+  // permanently-failing refresh must not poll forever). Set at publish time.
+  const pendingRefreshDeadline = useRef<number>(0);
+
+  // #4325 — as the board re-fetches, drop cards whose async refresh has landed
+  // (their `cachedAt` advanced past the publish-time baseline). A tile flips
+  // stale → fresh automatically the moment its id leaves the set. Since
+  // `pendingRefreshesRemaining` only ever removes ids, a size change is a
+  // sufficient (and loop-free) signal that something settled.
+  useEffect(() => {
+    if (pendingRefreshIds.size === 0) return;
+    const remaining = pendingRefreshesRemaining(
+      pendingRefreshIds,
+      dashboard?.cards ?? [],
+      pendingRefreshBaseline.current,
+    );
+    if (remaining.size !== pendingRefreshIds.size) setPendingRefreshIds(remaining);
+  }, [dashboard, pendingRefreshIds]);
+
+  // #4325 — poll the board while any refresh is pending so the stale tiles pick
+  // up their fresh data shortly after it lands; the interval clears as soon as
+  // nothing is pending.
+  const hasPendingRefresh = pendingRefreshIds.size > 0;
+  useEffect(() => {
+    if (!hasPendingRefresh) return;
+    const timer = setInterval(() => {
+      // Give up once past the deadline — a refresh that never lands would
+      // otherwise poll forever; the tile stays stale + retryable.
+      if (Date.now() >= pendingRefreshDeadline.current) {
+        setPendingRefreshIds(new Set());
+        return;
+      }
+      void refetch();
+    }, PENDING_REFRESH_POLL_MS);
+    return () => clearInterval(timer);
+  }, [hasPendingRefresh, refetch]);
   const [paramLoading, setParamLoading] = useState(false);
   // #3211 — flips true once the first parameter batch (fired by the parameter
   // bar on mount with the URL's overrides) has settled. The whole-dashboard
@@ -616,6 +680,19 @@ export default function DashboardViewPage() {
     });
     setPublishing(false);
     if (result.ok) {
+      // #4325 — the publish promoted the definitions; the server has enqueued an
+      // async refresh of the cards whose SQL/config changed. Mark those tiles
+      // `stale` (capturing their current `cachedAt` as the settle baseline) and
+      // let the poll below flip them back to `fresh` once the refresh lands.
+      const ids = extractRefreshingCardIds(result.data);
+      if (ids.length > 0 && dashboard) {
+        const byId = new Map(dashboard.cards.map((cc) => [cc.id, cc] as const));
+        const baseline: Record<string, string | null> = {};
+        for (const cid of ids) baseline[cid] = byId.get(cid)?.cachedAt ?? null;
+        pendingRefreshBaseline.current = baseline;
+        pendingRefreshDeadline.current = Date.now() + PENDING_REFRESH_MAX_MS;
+        setPendingRefreshIds(new Set(ids));
+      }
       setPublishModalOpen(false);
       setDraftView(null);
     } else if (result.error.status === 409) {
@@ -1212,6 +1289,7 @@ export default function DashboardViewPage() {
                   incompatibleCardIds={incompatIds}
                   selectedValues={selectedValues}
                   renderPhases={renderPhases}
+                  pendingRefreshIds={pendingRefreshIds}
                   onRetryCard={handleRetryCard}
                   onLayoutChange={handleLayoutChange}
                   onRefresh={handleRefreshCard}

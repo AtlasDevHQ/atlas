@@ -709,6 +709,46 @@ export async function refreshCard(
   }
 }
 
+/**
+ * Read a dashboard's `updated_at` at FULL microsecond precision, as text
+ * (#4325). The node-postgres driver coerces a timestamptz to a millisecond JS
+ * `Date`, and `String(date)` truncates further to whole seconds — so the draft
+ * stale-baseline guard, which compared `String(updated_at)` on both sides,
+ * treated two publishes in the SAME wall-clock second as equal and let the
+ * second clobber the first (a lost update). Casting to `text` in SQL preserves
+ * the stored microseconds and is byte-stable across reads of the same value, so
+ * the guard distinguishes same-second publishes.
+ *
+ * Returns a DISCRIMINATED result rather than `string | null` so callers can
+ * tell a transient DB failure (`error` → retry / 500) apart from a genuinely
+ * absent row (`not_found` → 404) — collapsing both into "not found" would take
+ * a retryable blip and report it to the user as a definitive 404 (CLAUDE.md
+ * "prefer errors over silent fallbacks").
+ */
+export type DashboardUpdatedAtResult =
+  | { ok: true; updatedAt: string }
+  | { ok: false; reason: "no_db" | "not_found" | "error" };
+
+export async function loadDashboardUpdatedAtPrecise(
+  dashboardId: string,
+): Promise<DashboardUpdatedAtResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const rows = await internalQuery<{ updated_at: string | null }>(
+      `SELECT updated_at::text AS updated_at
+         FROM dashboards
+        WHERE id = $1 AND deleted_at IS NULL`,
+      [dashboardId],
+    );
+    const updatedAt = rows[0]?.updated_at ?? null;
+    if (updatedAt === null) return { ok: false, reason: "not_found" };
+    return { ok: true, updatedAt };
+  } catch (err) {
+    log.error({ err: errorMessage(err), dashboardId }, "loadDashboardUpdatedAtPrecise failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
 export async function getCard(
   cardId: string,
   dashboardId: string,
@@ -1165,9 +1205,18 @@ export async function lockDashboardForRefresh(
 
 /**
  * Refresh all cards in a dashboard (standalone — no Hono context).
- * Used by the scheduler engine during auto-refresh ticks.
+ * Used by the scheduler engine during auto-refresh ticks, and by the
+ * post-publish async refresh (#4325) with `onlyCardIds` set to just the cards
+ * whose SQL/config changed.
+ *
+ * @param opts.onlyCardIds When provided, only cards whose id is in the set are
+ *   refreshed; every other card is skipped entirely (not counted). Absent →
+ *   refresh every card (the scheduler default).
  */
-export async function refreshDashboardCards(dashboardId: string): Promise<{
+export async function refreshDashboardCards(
+  dashboardId: string,
+  opts?: { onlyCardIds?: ReadonlySet<string> },
+): Promise<{
   refreshed: number;
   failed: number;
   total: number;
@@ -1189,7 +1238,10 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
     return { refreshed: 0, failed: 0, total: 0 };
   }
 
-  const cards = dashResult.data.cards;
+  const onlyCardIds = opts?.onlyCardIds;
+  const cards = onlyCardIds
+    ? dashResult.data.cards.filter((c) => onlyCardIds.has(c.id))
+    : dashResult.data.cards;
   const dashboardOrgId = dashResult.data.orgId ?? null;
   // Auto-refresh renders the cached snapshot with the parameters' DEFAULT
   // values (#2267) — there's no interactive viewer to supply overrides. A

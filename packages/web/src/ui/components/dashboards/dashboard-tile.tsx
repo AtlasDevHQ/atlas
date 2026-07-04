@@ -184,6 +184,13 @@ interface DashboardTileProps {
    */
   renderPhase?: TileRenderPhase;
   /**
+   * #4325 — a publish just promoted this card's new SQL/config and an async
+   * refresh is in flight; the tile still holds its pre-publish cache. While true
+   * the tile reads `stale` (old data, labeled with its age) instead of `fresh`,
+   * until the refreshed data lands. Undefined/false → not awaiting a refresh.
+   */
+  pendingRefresh?: boolean;
+  /**
    * #4321 — one-click retry for a `stale` / `errored` tile: re-runs THIS card's
    * render with the current parameters. Distinct from `onRefresh` (which
    * re-executes and persists the card cache when not editing) — retry is the
@@ -241,6 +248,7 @@ function ChartTile({
   incompatible,
   selectedValue,
   renderPhase,
+  pendingRefresh,
   onRetry,
   onFullscreen,
   onRefresh,
@@ -270,7 +278,7 @@ function ChartTile({
   // `stale` (keep the old data, labeled with its age, + retry) or `errored`
   // (never had data) — never a silent revert, never a page banner.
   const everRun = card.cachedAt != null || renderPhase === "ok";
-  const status: TileStatus = resolveTileStatus({ renderPhase, hasData, everRun });
+  const status: TileStatus = resolveTileStatus({ renderPhase, hasData, everRun, pendingRefresh });
   const captionTone = tileCaptionTone(status, card.cachedAt);
   // `stale`/`loading` keep rendering the retained data body, but dimmed so the
   // viewer reads it as "not the current filtered result".

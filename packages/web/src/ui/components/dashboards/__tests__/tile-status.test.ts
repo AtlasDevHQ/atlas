@@ -12,6 +12,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   resolveTileStatus,
+  pendingRefreshesRemaining,
   statusShowsData,
   statusCanRetry,
   ageTone,
@@ -25,6 +26,36 @@ describe("resolveTileStatus", () => {
     expect(resolveTileStatus({ renderPhase: "loading", hasData: true, everRun: true })).toBe("loading");
     // loading wins even before any data exists (a never-run card being rendered).
     expect(resolveTileStatus({ renderPhase: "loading", hasData: false, everRun: false })).toBe("loading");
+  });
+
+  // #4325 — a post-publish async refresh is pending: the promoted definition is
+  // live but its data hasn't refreshed, so the tile shows its retained data as
+  // `stale` (never `fresh`) until the refresh lands.
+  test("pending post-publish refresh with retained data → stale", () => {
+    expect(resolveTileStatus({ hasData: true, everRun: true, pendingRefresh: true })).toBe("stale");
+  });
+
+  test("pending refresh on a card with no prior data → loading (being populated)", () => {
+    expect(resolveTileStatus({ hasData: false, everRun: false, pendingRefresh: true })).toBe("loading");
+  });
+
+  test("an interactive render in flight beats a pending refresh", () => {
+    expect(
+      resolveTileStatus({ renderPhase: "loading", hasData: true, everRun: true, pendingRefresh: true }),
+    ).toBe("loading");
+  });
+
+  test("a failed interactive render beats a pending refresh (stays stale/errored)", () => {
+    expect(
+      resolveTileStatus({ renderPhase: "error", hasData: true, everRun: true, pendingRefresh: true }),
+    ).toBe("stale");
+    expect(
+      resolveTileStatus({ renderPhase: "error", hasData: false, everRun: true, pendingRefresh: true }),
+    ).toBe("errored");
+  });
+
+  test("once the refresh settles (pendingRefresh cleared) the tile reads fresh", () => {
+    expect(resolveTileStatus({ hasData: true, everRun: true, pendingRefresh: false })).toBe("fresh");
   });
 
   test("a fresh render / snapshot with rows → fresh", () => {
@@ -123,5 +154,46 @@ describe("tileCaptionTone — status + age", () => {
     expect(tileCaptionTone("fresh", iso(0), now)).toBe("muted");
     expect(tileCaptionTone("fresh", iso(AGE_AMBER_MS), now)).toBe("amber");
     expect(tileCaptionTone("empty", iso(AGE_RED_MS), now)).toBe("red");
+  });
+});
+
+describe("pendingRefreshesRemaining", () => {
+  test("a card whose cachedAt advanced past the baseline settles (drops out)", () => {
+    const remaining = pendingRefreshesRemaining(
+      new Set(["a", "b"]),
+      [
+        { id: "a", cachedAt: "2026-07-04T12:00:05.000Z" }, // advanced
+        { id: "b", cachedAt: "2026-07-04T12:00:00.000Z" }, // unchanged
+      ],
+      { a: "2026-07-04T12:00:00.000Z", b: "2026-07-04T12:00:00.000Z" },
+    );
+    expect([...remaining]).toEqual(["b"]);
+  });
+
+  test("a newly-inserted card (baseline null) settles once cachedAt is populated", () => {
+    const remaining = pendingRefreshesRemaining(
+      new Set(["new"]),
+      [{ id: "new", cachedAt: "2026-07-04T12:00:03.000Z" }],
+      { new: null },
+    );
+    expect(remaining.size).toBe(0);
+  });
+
+  test("a still-empty inserted card stays pending (cachedAt still null)", () => {
+    const remaining = pendingRefreshesRemaining(
+      new Set(["new"]),
+      [{ id: "new", cachedAt: null }],
+      { new: null },
+    );
+    expect([...remaining]).toEqual(["new"]);
+  });
+
+  test("a card that disappeared from the board settles", () => {
+    const remaining = pendingRefreshesRemaining(
+      new Set(["gone"]),
+      [{ id: "other", cachedAt: "2026-07-04T12:00:00.000Z" }],
+      { gone: "2026-07-04T12:00:00.000Z" },
+    );
+    expect(remaining.size).toBe(0);
   });
 });

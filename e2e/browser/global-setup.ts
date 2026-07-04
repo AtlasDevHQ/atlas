@@ -38,7 +38,7 @@ setup("authenticate as admin", async ({ page }) => {
     await page.locator('button[type="submit"]').click();
 
     // Wait for either: chat UI loads, or error appears (locator.or avoids dangling promises)
-    const chatInput = page.locator('input[placeholder="Ask a question about your data..."]');
+    const chatInput = page.locator('textarea[placeholder="Ask a question about your data..."]');
     const errorMsg = page.getByText(/invalid|incorrect/i).first();
     const outcome = chatInput.or(errorMsg);
 
@@ -92,7 +92,7 @@ setup("authenticate as admin", async ({ page }) => {
     const changeDialog = page.locator("text=Change your password");
     if (await changeDialog.isVisible({ timeout: 2_000 }).catch(() => false)) {
       await page.reload();
-      await page.locator('input[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
+      await page.locator('textarea[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
     }
   }
 

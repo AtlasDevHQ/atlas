@@ -2,7 +2,7 @@ import { type Page, expect } from "@playwright/test";
 
 /** Send a chat message and wait for the response to finish streaming. */
 export async function askQuestion(page: Page, question: string) {
-  const input = page.locator('input[placeholder="Ask a question about your data..."]');
+  const input = page.locator('textarea[placeholder="Ask a question about your data..."]');
   await input.fill(question);
 
   // Click the "Ask" button specifically (not any other submit button like password change)
@@ -27,7 +27,7 @@ export async function waitForSQLResult(page: Page) {
 export async function startNewChat(page: Page) {
   await page.locator('button:has-text("+ New")').click();
 
-  const input = page.locator('input[placeholder="Ask a question about your data..."]');
+  const input = page.locator('textarea[placeholder="Ask a question about your data..."]');
   await expect(input).toHaveValue("");
 }
 
@@ -43,6 +43,6 @@ export async function dismissTourIfVisible(page: Page) {
 /** Navigate to home and ensure chat UI is ready. */
 export async function ensureChatReady(page: Page) {
   await page.goto("/");
-  await page.locator('input[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
+  await page.locator('textarea[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
   await dismissTourIfVisible(page);
 }

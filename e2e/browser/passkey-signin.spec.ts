@@ -187,7 +187,7 @@ test.describe("Passkey-only sign-in (no password) @llm", () => {
       // After a successful signIn.passkey(), the page navigates to "/".
       // Reaching the chat UI proves an authenticated session exists.
       await expect(
-        page.locator('input[placeholder="Ask a question about your data..."]'),
+        page.locator('textarea[placeholder="Ask a question about your data..."]'),
       ).toBeVisible({ timeout: 15_000 });
 
       // Sanity: an authenticated route is reachable. /api/v1/admin/audit

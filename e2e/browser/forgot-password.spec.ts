@@ -109,7 +109,7 @@ test.describe("Password reset", () => {
     await page.locator('input[type="password"]').fill(NEW_PASSWORD);
     await page.locator('button[type="submit"]').click();
     await expect(
-      page.locator('input[placeholder="Ask a question about your data..."]'),
+      page.locator('textarea[placeholder="Ask a question about your data..."]'),
     ).toBeVisible({ timeout: 15_000 });
 
     // 5. Rotate back to the e2e password so other specs can log in.

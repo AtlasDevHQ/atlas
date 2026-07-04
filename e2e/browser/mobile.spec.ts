@@ -5,7 +5,7 @@ test.describe("Mobile Responsive", () => {
     await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
 
-    const input = page.locator('input[placeholder="Ask a question about your data..."]');
+    const input = page.locator('textarea[placeholder="Ask a question about your data..."]');
     await input.waitFor({ timeout: 15_000 });
     await expect(input).toBeVisible();
 
@@ -22,7 +22,7 @@ test.describe("Mobile Responsive", () => {
     await page.setViewportSize({ width: 375, height: 667 });
     await page.goto("/");
 
-    await page.locator('input[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
+    await page.locator('textarea[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
 
     await page.getByRole("button", { name: "Toggle Sidebar" }).first().click();
 
@@ -36,7 +36,7 @@ test.describe("Mobile Responsive", () => {
     await page.setViewportSize({ width: 768, height: 1024 });
     await page.goto("/");
 
-    const input = page.locator('input[placeholder="Ask a question about your data..."]');
+    const input = page.locator('textarea[placeholder="Ask a question about your data..."]');
     await input.waitFor({ timeout: 15_000 });
     await expect(input).toBeVisible();
 

@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.42",
+    title: "Docs Portal Segmentation + Truthfulness Pass",
+    date: "2026-07-03",
+    summary:
+      "The documentation site is now segmented by audience. The hosted SaaS docs live at the site root with URLs unchanged, self-hosted operators get a dedicated /self-hosted section, and the API reference stays at /api-reference. Concept pages that apply to both audiences are written once and single-sourced into each tree, so they can't drift apart. An audience taxonomy drives the split at build time: a hosted reader is structurally prevented from being shown self-hosted-only instructions, and the same rule holds across the rendered pages, the machine-readable llms.txt and .mdx twins, search, and each page's table of contents. A full truthfulness audit over the segmented portal corrected stale and mixed-audience content. This release also carries a set of behavior-preserving internal refactors that had already soaked on staging.",
+    highlights: [
+      "Docs split into three audience sections — SaaS at the site root, a new /self-hosted, and the API reference — with shared concept pages single-sourced into both human trees (#4259, #4265)",
+      "Build-time audience taxonomy: a hosted reader can't receive self-hosted-only content, enforced across the rendered HTML, the .mdx/llms.txt twins, search, and the table of contents (#4260, #4266)",
+      "308 redirects and canonical tags for every moved page, so existing deep links keep working (#4267)",
+      "Section-faceted search across all three documentation sources (#4262)",
+      "Truthfulness audit over the segmented portal — stale and mixed-audience pages corrected (#4274, #4290)",
+      "Behavior-preserving internal refactors soaked on staging: architecture deepenings, knowledge-sync interval hot-reload, and type-strength follow-ups (#4284, #4293, #4306)",
+    ],
+  },
+  {
     version: "v0.0.41",
     title: "Architecture Deepening II",
     date: "2026-07-03",

@@ -201,21 +201,9 @@
   background-position: 7px 7px;
 }
 
-/* Fullscreen tile sits on a fully opaque backdrop so the underlying grid
- * (and any stale chart bleed) cannot show through the inset gutter. */
-.dash-tile-wrapper.is-fullscreen {
-  position: fixed !important;
-  inset: 0 !important;
-  width: auto !important;
-  height: auto !important;
-  transform: none !important;
-  z-index: 100;
-  background: var(--background);
-  padding: 14px;
-}
-.dash-tile-wrapper.is-fullscreen > .dash-tile {
-  box-shadow: 0 14px 32px oklch(0 0 0 / 0.18);
-}
+/* #4323 — the fullscreen tile is a real Radix dialog (see DashboardGrid); its
+ * backdrop, sizing, and focus trap are owned by <DialogContent>, so the old
+ * `.is-fullscreen` fixed-position hack was removed. */
 
 .dash-mobile-tile {
   width: 100%;

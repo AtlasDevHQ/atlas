@@ -9,7 +9,7 @@ import { MessagesSquare, Plus, Sparkles, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BoundChatDrawer } from "@/ui/components/dashboards/bound-chat-drawer";
 import { Card } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { DashboardDetailSkeleton } from "@/ui/components/dashboards/dashboard-skeleton";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1098,18 +1098,7 @@ export default function DashboardViewPage() {
         className="flex h-full flex-1 flex-col overflow-auto"
         data-dashboard-export-ready={exportReady ? "1" : "0"}
       >
-        {loading && (
-          <div className="space-y-4 px-4 py-6 sm:px-6">
-            <Skeleton className="h-8 w-1/3" />
-            <Skeleton className="h-4 w-1/4" />
-            <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2">
-              <Skeleton className="h-64 w-full" />
-              <Skeleton className="h-64 w-full" />
-              <Skeleton className="h-64 w-full" />
-              <Skeleton className="h-64 w-full" />
-            </div>
-          </div>
-        )}
+        {loading && <DashboardDetailSkeleton />}
 
         {!loading && error && (
           <div className="m-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">

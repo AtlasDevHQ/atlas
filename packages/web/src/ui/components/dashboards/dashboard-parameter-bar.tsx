@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
+import { cn } from "@/lib/utils";
 import type { DashboardParameter } from "@/ui/lib/types";
 // The override map is shared with click-to-drilldown (#3212) — both read/write
 // the same nuqs key via these helpers, so the key + (de)serialization stay
@@ -139,11 +140,19 @@ function ParameterControl({
   // Local mirror for free-text / number inputs so we commit on blur/Enter,
   // not on every keystroke. Date pickers commit immediately on select.
   const [draft, setDraft] = useState(value == null ? "" : String(value));
+  // #4323 — inline validation. A malformed number is surfaced as a per-control
+  // error rather than silently coerced to "no override" (the old `Number("x")`
+  // → NaN → dropped path). Reset whenever the committed value changes (a URL /
+  // drilldown / Reset update supersedes any local error).
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     setDraft(value == null ? "" : String(value));
+    setError(null);
   }, [value]);
 
   if (param.type === "date") {
+    // The DatePicker is calendar-only, so it cannot produce a malformed date —
+    // there is nothing to validate inline here.
     return (
       <DatePicker
         id={`param-${param.key}`}
@@ -159,28 +168,59 @@ function ParameterControl({
   const commitDraft = () => {
     const trimmed = draft.trim();
     if (trimmed === "") {
+      setError(null);
       onCommit(null);
       return;
     }
-    onCommit(param.type === "number" ? Number(trimmed) : trimmed);
+    if (param.type === "number") {
+      const n = Number(trimmed);
+      if (!Number.isFinite(n)) {
+        // Keep the malformed text visible + flag it; do NOT commit (which would
+        // drop the override), so the user can correct it in place.
+        setError("Enter a valid number");
+        return;
+      }
+      setError(null);
+      onCommit(n);
+      return;
+    }
+    setError(null);
+    onCommit(trimmed);
   };
 
+  const errorId = `param-${param.key}-error`;
   return (
-    <Input
-      id={`param-${param.key}`}
-      type={param.type === "number" ? "number" : "text"}
-      value={draft}
-      placeholder={param.label}
-      aria-label={param.label}
-      disabled={disabled}
-      className="h-9 w-40"
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commitDraft}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.currentTarget.blur();
-        }
-      }}
-    />
+    <>
+      {/* `type="text"` + `inputMode` (not `type="number"`) so a malformed entry
+          can actually be typed and validated inline, rather than being silently
+          swallowed by the native number input. */}
+      <Input
+        id={`param-${param.key}`}
+        type="text"
+        inputMode={param.type === "number" ? "decimal" : undefined}
+        value={draft}
+        placeholder={param.label}
+        aria-label={param.label}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? errorId : undefined}
+        disabled={disabled}
+        className={cn("h-9 w-40", error && "border-red-500 focus-visible:ring-red-500/40 dark:border-red-500")}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          if (error) setError(null);
+        }}
+        onBlur={commitDraft}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      {error && (
+        <p id={errorId} role="alert" className="text-[11px] text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
+    </>
   );
 }

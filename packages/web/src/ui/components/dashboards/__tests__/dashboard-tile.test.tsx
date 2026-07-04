@@ -409,6 +409,48 @@ describe("DashboardTile — drilldown (#3212)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Keyboard drilldown (#4323)
+// ---------------------------------------------------------------------------
+
+describe("DashboardTile — keyboard drilldown (#4323)", () => {
+  afterEach(cleanup);
+
+  // Radix DropdownMenu opens on a real PointerEvent — activate via keyboard
+  // (Enter on the focused trigger), mirroring the CSV-menu tests. This is also
+  // exactly the keyboard path the feature exists to provide.
+  function openDrilldownMenu() {
+    const trigger = screen.getByRole("button", { name: "Drill down" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  }
+
+  test("a chart drilldown card exposes a keyboard-navigable Drill down menu of its categories", async () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const onDrilldown = mock((_param: string, _value: string) => {});
+    render(<DashboardTile {...baseProps} card={barDrillCard} onDrilldown={onDrilldown} />);
+
+    openDrilldownMenu();
+    // Distinct category values from the card's `stage` column become menu items.
+    expect(await screen.findByRole("menuitem", { name: /Discovery/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Closed Won/ }));
+    expect(onDrilldown).toHaveBeenCalledTimes(1);
+    expect(onDrilldown.mock.calls[0]).toEqual(["stage", "Closed Won"]);
+  });
+
+  test("no Drill down menu on a chart card without a drilldown target", () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    render(<DashboardTile {...baseProps} card={baseCard} />);
+    expect(screen.queryByRole("button", { name: "Drill down" })).toBeNull();
+  });
+
+  test("the Drill down menu is hidden while editing (the chart is a drag surface)", () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    render(<DashboardTile {...baseProps} card={barDrillCard} editing onDrilldown={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Drill down" })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Per-card CSV export (#3210)
 // ---------------------------------------------------------------------------
 

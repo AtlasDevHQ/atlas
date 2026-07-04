@@ -84,6 +84,31 @@ describe("DashboardGrid", () => {
     expect(screen.getByTestId("rgl-root")).toBeTruthy();
   });
 
+  test("fullscreen opens a real modal dialog (focus trap / backdrop / aria-modal), not a CSS overlay", () => {
+    widthOverride = 1024;
+    render(<DashboardGrid {...baseProps} />);
+    // No dialog until a tile is maximized.
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Fullscreen" }));
+
+    // #4323 — a real modal dialog (Radix): a dialog role + an opaque backdrop
+    // overlay (click-away) replace the old fixed-position CSS overlay.
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeTruthy();
+    expect(document.querySelector('[data-slot="dialog-overlay"]')).toBeTruthy();
+    // The maximized tile lives inside the dialog and offers the exit affordance.
+    expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeTruthy();
+  });
+
+  test("the fullscreen dialog closes when its Exit-fullscreen button is clicked", () => {
+    widthOverride = 1024;
+    render(<DashboardGrid {...baseProps} />);
+    fireEvent.click(screen.getByRole("button", { name: "Fullscreen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   test("Esc closes a fullscreen tile and prevents the page-level handler from also firing", () => {
     widthOverride = 1024;
     render(<DashboardGrid {...baseProps} />);

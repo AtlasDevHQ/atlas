@@ -1078,6 +1078,8 @@ type ClientErrorCode =
   | "offline";            // navigator.onLine === false
 ```
 
+`ChatErrorCode`, `ClientErrorCode`, and `ChatErrorInfo` are all root-exported — `import type { ChatErrorInfo, ChatErrorCode, ClientErrorCode } from "@useatlas/react"` — so a custom `ErrorBanner` can narrow on both the server `code` and the client-side `clientCode` returned by [`parseChatError`](#parsechaterror).
+
 ### Hook Option & Return Types
 
 All hooks export their option and return types for use in wrapper components:
@@ -1150,6 +1152,83 @@ interface FavoriteStarterPrompt {
 ```
 
 The `AtlasChat` widget also accepts a [`starterPrompts` prop](#atlaschat-props) that overrides the adaptive empty-state list. For script-tag embeds, the same list can be supplied via the `data-starter-prompts` JSON attribute — see [Embedding the Widget](/guides/embedding-widget) for details.
+
+---
+
+## Shared render primitives
+
+Beyond the `AtlasChat` component and the hooks, `@useatlas/react` **root-exports** the leaf render components and pure utilities that `AtlasChat` uses internally. Reach for these when you build a custom UI with the [hooks](#hooks-vs-atlaschat-component) and want to render Atlas's tool results — SQL result tables, charts, Markdown, error banners — with the *same* components the pre-built chat uses, rather than re-implementing them.
+
+<Callout type="warn">
+These are lower-level than the hooks and `AtlasChat`. Their prop shapes track the components' internals and can change between minor versions — treat them as an advanced surface, and pin your `@useatlas/react` version if you depend on the exact props. The [stability policy](/reference/stability) covers the component and hook API; these primitives are best-effort.
+</Callout>
+
+### Components
+
+```typescript
+import { Markdown, DataTable, ErrorBanner, SQLResultCard } from "@useatlas/react";
+```
+
+| Export | Renders |
+|--------|---------|
+| `Markdown` | Chat-flavored Markdown (GFM tables, fenced code, sanitized HTML) |
+| `DataTable` | A query result grid with sorting, formatting, and CSV/Excel export |
+| `SQLResultCard` | The full `executeSQL` result card — table, chart toggle, row count, error state. Also exports `SQLResultCardProps`, `SqlResultActionContext`, `PreviousExecution` |
+| `PythonResultCard` | The `runPython` result card (stdout, artifacts, progress). Also exports `PythonResultCardProps`, `PythonProgressData` |
+| `ResultCardBase` / `ResultCardErrorBoundary` | The shared card chrome + an error boundary to wrap a custom card. Also exports `ResultCardBaseProps` |
+| `ErrorBanner` | The inline error surface driven by a parsed `ChatErrorInfo` |
+
+<Callout type="info">
+`ResultChart` (Recharts) is **not** on the root entry — it statically imports `recharts`, an optional peer, so it lives behind the `@useatlas/react/chart` subpath and `AtlasChat` reaches it only via `lazy()`. The **chart-detection** utilities below are pure (their one Recharts import is type-only), so they are safe to import from the root.
+</Callout>
+
+### Chart detection
+
+Pure functions that decide which chart (if any) fits a result set, plus the palette constants — no Recharts runtime:
+
+```typescript
+import {
+  detectCharts, transformData, classifyColumn,
+  categoryFromChartClick, categoryFromPieClick,
+  resolveThresholdLines, resolveAnnotationLines,
+  CHART_COLORS_LIGHT, CHART_COLORS_DARK,
+  THRESHOLD_LINE_LIGHT, THRESHOLD_LINE_DARK,
+  ANNOTATION_LINE_LIGHT, ANNOTATION_LINE_DARK,
+  MAX_THRESHOLD_LINES, MAX_ANNOTATION_LINES,
+} from "@useatlas/react";
+```
+
+Their types — `ChartDetectionResult`, `ChartRecommendation`, `ChartType`, `ClassifiedColumn`, `ColumnType`, `RechartsRow`, `ThresholdInput`, `ThresholdLine`, `AnnotationInput`, `AnnotationLine` — are exported alongside.
+
+### Tool-part + export helpers
+
+```typescript
+import {
+  getToolArgs, getToolResult, isToolComplete,   // read AI-SDK tool parts
+  parseCSV, toCsvString, downloadCSV, downloadBlob, downloadExcel, coerceExcelCell,
+  parseAttachmentFilename, parseSuggestions, normalizeList,
+  categoryMatchesSelection, formatCell,          // cross-filter matching + cell formatting
+} from "@useatlas/react";
+```
+
+### Tool renderer types
+
+Type your own `executeSQL` / `explore` / `runPython` renderers against the same wire shapes `AtlasChat` uses:
+
+```typescript
+import type {
+  ToolRendererProps, ToolRenderers,
+  SQLToolResult, ExploreToolResult, PythonToolResult,
+} from "@useatlas/react";
+```
+
+### Cold-start starter prompts
+
+The static fallback set the widget's empty state shows while the adaptive list loads (or when it resolves empty). Exported so a custom empty state draws from the same source instead of hardcoding a divergent list:
+
+```typescript
+import { DEFAULT_STARTER_PROMPTS, DEFAULT_STARTER_PROMPT_TEXTS } from "@useatlas/react";
+```
 
 ---
 

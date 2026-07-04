@@ -116,6 +116,24 @@ curl -X POST https://your-atlas.example.com/api/v1/demo/chat \
 
 ---
 
+## Operator: demo funnel analytics
+
+The endpoints above are the visitor path. Operators watch the funnel — who started a demo, what they asked, and what it cost — from a separate **platform-admin** surface mounted at `/api/v1/platform/demo`. Every route requires the `platform_admin` role **and** MFA, and needs an internal database (`DATABASE_URL`). Lead emails and the questions visitors ask are PII-adjacent, so platform-admin gating *is* the access control for this data.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/config` | Current demo model, max-steps, and RPM, plus the resolved effective model |
+| `PUT` | `/config` | Update the demo model, max-steps, and RPM |
+| `GET` | `/leads` | Demo leads with per-email session + conversation counts and a token/cost spend rollup |
+| `GET` | `/transcript?email=<addr>` | The full question/answer transcript for one lead email |
+| `GET` | `/metrics` | Token + cache + latency rollup — aggregate and per-model |
+
+### Changing demo limits without a redeploy
+
+`PUT /config` writes `ATLAS_DEMO_MODEL`, `ATLAS_DEMO_MAX_STEPS`, and `ATLAS_DEMO_RATE_LIMIT_RPM` to the settings registry at platform scope. They are **hot-reloadable** — a change takes effect within the settings refresh window (~30s), no restart required. The [environment variables](#environment-variables) above are the boot default; once the internal DB is up, the operator console (or `PUT /config`) is the authoritative surface for these three knobs. A blank `model` clears the override and reverts the demo to the resolved default model.
+
+---
+
 ## Limitations
 
 - **No plugin tools** — demo sessions use default tools only (executeSQL, explore). Custom actions and plugin-provided tools are not available

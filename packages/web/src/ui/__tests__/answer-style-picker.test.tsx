@@ -98,14 +98,15 @@ describe("isKnownAnswerStyle (#4302)", () => {
     for (const style of ["plain-english", "analyst", "executive", "conversational"]) {
       expect(isKnownAnswerStyle(style)).toBe(true);
     }
-    // The version-skew ingress case: a style this bundle doesn't know must be
-    // rejected so restore-on-open degrades to the default instead of
-    // committing a value the picker can't display, which would be echoed
-    // back to fail validation on every turn.
+    // The version-skew ingress case: a style this bundle doesn't know must
+    // be rejected so restore-on-open degrades to the default instead of
+    // committing a value the picker can't display — silently re-sent every
+    // turn, and a 422 loop if the echo lands on an older instance mid-deploy.
     expect(isKnownAnswerStyle("sarcastic")).toBe(false);
     // Object.prototype members must not pass (the `in`-operator hole): a
-    // "toString" that slipped through would ALSO defeat the styleDisplay
-    // fallback, since Object.prototype.toString is truthy.
+    // "toString" that slipped through would have crashed the render against
+    // the previous `??`-based styleDisplay fallback (inherited
+    // Object.prototype.toString is truthy) — both layers now use hasOwn.
     expect(isKnownAnswerStyle("toString")).toBe(false);
     expect(isKnownAnswerStyle("__proto__")).toBe(false);
     expect(isKnownAnswerStyle("")).toBe(false);

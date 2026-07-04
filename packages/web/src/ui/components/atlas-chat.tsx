@@ -780,8 +780,8 @@ export function AtlasChat({
       // is a typed cast, not runtime validation, so a version-skewed API
       // sending a style this bundle doesn't know must degrade to the default
       // — knowingly, with a breadcrumb — rather than commit a value the
-      // picker can't display and echo it back to fail validation (422) on
-      // every subsequent turn.
+      // picker can't display: it would be silently re-sent every turn, and
+      // 422-loop if the echo lands on an older instance mid-deploy.
       const restoredStyle = data.answerStyle ?? null;
       const knownStyle = isKnownAnswerStyle(restoredStyle) ? restoredStyle : null;
       if (restoredStyle !== null && knownStyle === null) {

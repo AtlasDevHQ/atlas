@@ -103,9 +103,10 @@ const STYLE_DISPLAY: Record<AnswerStyle, { label: string; icon: LucideIcon }> = 
  */
 export function isKnownAnswerStyle(value: unknown): value is AnswerStyle {
   // Object.hasOwn (not `in`): `in` walks the prototype chain, so junk like
-  // "toString" would pass the guard AND defeat the styleDisplay fallback
-  // (Object.prototype.toString is truthy) — crashing the exact render this
-  // guard exists to protect.
+  // "toString" would pass the guard — and against the previous `??`-based
+  // styleDisplay fallback (inherited Object.prototype.toString is truthy)
+  // would have crashed the render. Both layers were hardened with hasOwn
+  // together so neither depends on the other.
   return typeof value === "string" && Object.hasOwn(STYLE_DISPLAY, value);
 }
 

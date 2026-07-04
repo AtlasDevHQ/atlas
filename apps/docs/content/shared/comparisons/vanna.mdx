@@ -49,7 +49,7 @@ Atlas also learns from usage, but through a different mechanism: `atlas learn` r
 
 ## SQL Safety
 
-Atlas enforces read-only access through a [7-layer SQL validation pipeline](/security/sql-validation): empty check, regex mutation guard, AST parsing (single SELECT only), table whitelist (only semantic layer entities), RLS injection, auto LIMIT, and statement timeout.
+Atlas enforces read-only access through a <AudienceLink saas="/security/sql-validation">7-layer SQL validation pipeline</AudienceLink>: empty check, regex mutation guard, AST parsing (single SELECT only), table whitelist (only semantic layer entities), RLS injection, auto LIMIT, and statement timeout.
 
 Vanna v2.0 added parameterized queries and row-level security, but does not include a 7-layer SQL validation pipeline. The generated SQL is passed to your database connection with basic guardrails. You're responsible for adding additional protections -- read-only database users, mutation guards, and timeout enforcement.
 

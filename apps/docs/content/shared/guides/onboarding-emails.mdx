@@ -62,7 +62,7 @@ Admins can view onboarding email status for their organization via the admin API
 - **List statuses** — `GET /api/v1/admin/onboarding-emails` returns per-user progress (sent steps, pending steps, unsubscribe status)
 - **View sequence** — `GET /api/v1/admin/onboarding-emails/sequence` returns the configured sequence steps with triggers and timing
 
-See the [API Reference](/api-reference/admin-onboarding-emails/getAdminOnboardingEmails) for full endpoint documentation.
+See the <AudienceLink saas="/api-reference/admin-onboarding-emails/getAdminOnboardingEmails">API Reference</AudienceLink> for full endpoint documentation.
 
 ---
 
@@ -82,5 +82,5 @@ Both endpoints require a signed `token` bound to the `userId` (HMAC-SHA256 over 
 ## See Also
 
 - [Environment Variables — Email Delivery](/reference/environment-variables#email-delivery)
-- [Guided Tour](/guides/guided-tour) — In-app walkthrough complementing the email sequence
-- [Signup](/guides/signup) — User registration flow that triggers the welcome email
+- <AudienceLink saas="/guides/guided-tour">Guided Tour</AudienceLink> — In-app walkthrough complementing the email sequence
+- <AudienceLink saas="/guides/signup">Signup</AudienceLink> — User registration flow that triggers the welcome email

@@ -2,9 +2,14 @@ import { test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
-import { audienceConditionals } from "@/lib/audience-conditionals";
+import type { ComponentProps } from "react";
+import {
+  audienceConditionals,
+  makeAudienceLink,
+} from "@/lib/audience-conditionals";
 import {
   stripInactiveAudienceBlocks,
+  resolveAudienceLinks,
   filterTocByAudience,
   tocTitleToText,
   survivingHeadingTitles,
@@ -93,6 +98,159 @@ test("audience-conditionals.tsx stays a server module resolved from its argument
   expect(audienceConditionals("self-hosted").WhenSaaS).not.toBe(a.WhenSaaS);
 });
 
+// ── <AudienceLink> cross-link component (#4289) ──────────────────────────────
+//
+// A shared page mounts into BOTH sections, so a single hard-coded root-absolute
+// link leaks across the SaaS/self-hosted boundary. `<AudienceLink>` links only
+// within the current mount's audience and renders plain text otherwise, so the
+// emitted HTML on each mount can never point into the other audience's surface.
+
+// A stand-in for the mount's `createRelativeLink` result: a plain anchor.
+const StubLink = (props: ComponentProps<"a">) => <a {...props} />;
+
+test("AudienceLink on the SaaS mount links its saas href and drops a self-hosted-only href", () => {
+  const AudienceLink = makeAudienceLink("saas", StubLink);
+  // saas href present → a real link on the saas mount.
+  expect(
+    renderToStaticMarkup(
+      <AudienceLink saas="/guides/admin-console">Admin Console</AudienceLink>,
+    ),
+  ).toBe('<a href="/guides/admin-console">Admin Console</a>');
+  // Only a self-hosted href → the saas mount renders PLAIN TEXT (no anchor, no
+  // `/self-hosted` href), so a SaaS reader is never sent into the self-hosted
+  // section.
+  const selfHostedOnly = renderToStaticMarkup(
+    <AudienceLink selfHosted="/self-hosted/deployment/authentication">
+      Authentication
+    </AudienceLink>,
+  );
+  expect(selfHostedOnly).toBe("Authentication");
+  expect(selfHostedOnly).not.toContain("/self-hosted");
+});
+
+test("AudienceLink on the self-hosted mount links its selfHosted href and drops a saas-only href", () => {
+  const AudienceLink = makeAudienceLink("self-hosted", StubLink);
+  expect(
+    renderToStaticMarkup(
+      <AudienceLink selfHosted="/self-hosted/deployment/authentication">
+        Authentication
+      </AudienceLink>,
+    ),
+  ).toBe('<a href="/self-hosted/deployment/authentication">Authentication</a>');
+  // Only a saas href → plain text on the self-hosted mount (no leak into a
+  // saas-only page).
+  const saasOnly = renderToStaticMarkup(
+    <AudienceLink saas="/guides/admin-console">Admin Console</AudienceLink>,
+  );
+  expect(saasOnly).toBe("Admin Console");
+  expect(saasOnly).not.toContain("/guides/admin-console");
+});
+
+// ── <AudienceLink> markdown resolution (twin + llms-full.txt) ─────────────────
+//
+// The string-surface twin of the component: `getText("processed")` preserves the
+// raw `<AudienceLink>` tag (and BOTH hrefs) verbatim, so the `.mdx`/`.txt`
+// surfaces must resolve it to this audience's href — or the opposite audience's
+// target would leak into the machine surface.
+
+test("resolveAudienceLinks emits this mount's href and plain text for the other", () => {
+  const md =
+    'See <AudienceLink saas="/guides/x" selfHosted="/self-hosted/y">the guide</AudienceLink>.';
+  expect(resolveAudienceLinks(md, "saas")).toBe("See [the guide](/guides/x).");
+  expect(resolveAudienceLinks(md, "self-hosted")).toBe(
+    "See [the guide](/self-hosted/y).",
+  );
+
+  // A saas-only link degrades to plain text on the self-hosted surface (matching
+  // the component's bare-fragment branch) — no href leaks.
+  const saasOnly = 'A <AudienceLink saas="/guides/x">link</AudienceLink> here.';
+  expect(resolveAudienceLinks(saasOnly, "self-hosted")).toBe("A link here.");
+  expect(resolveAudienceLinks(saasOnly, "self-hosted")).not.toContain("/guides/x");
+});
+
+test("resolveAudienceLinks resolves several links on one line independently", () => {
+  // e.g. a "See Also" table row / list line with multiple cross-links.
+  const md =
+    '| <AudienceLink saas="/a">A</AudienceLink> | <AudienceLink selfHosted="/self-hosted/b">B</AudienceLink> |';
+  expect(resolveAudienceLinks(md, "saas")).toBe("| [A](/a) | B |");
+  expect(resolveAudienceLinks(md, "self-hosted")).toBe("| A | [B](/self-hosted/b) |");
+});
+
+test("resolveAudienceLinks is order-independent in the attribute list", () => {
+  // The JSDoc claims attribute order is free; author them reversed to prove it.
+  const md =
+    'x <AudienceLink selfHosted="/self-hosted/y" saas="/guides/x">t</AudienceLink> z';
+  expect(resolveAudienceLinks(md, "saas")).toBe("x [t](/guides/x) z");
+  expect(resolveAudienceLinks(md, "self-hosted")).toBe("x [t](/self-hosted/y) z");
+});
+
+test("resolveAudienceLinks FAILS CLOSED on an unexpected audience — neither href leaks", () => {
+  // `Audience` is a closed 2-member union, so this is only reachable via an
+  // unchecked cast — but the whole module is defensive on exactly that. An
+  // unexpected value must match NEITHER branch and drop to plain text (parity
+  // with stripInactiveAudienceBlocks), NOT fall through to the self-hosted href.
+  const md =
+    'See <AudienceLink saas="/guides/x" selfHosted="/self-hosted/y">the guide</AudienceLink>.';
+  const bogus = resolveAudienceLinks(md, "enterprise" as unknown as Audience);
+  expect(bogus).toBe("See the guide.");
+  expect(bogus).not.toContain("/self-hosted/y");
+  expect(bogus).not.toContain("/guides/x");
+});
+
+test("makeAudienceLink FAILS CLOSED on an unexpected audience — renders plain text", () => {
+  const AudienceLink = makeAudienceLink(
+    "enterprise" as unknown as Audience,
+    StubLink,
+  );
+  const html = renderToStaticMarkup(
+    <AudienceLink saas="/guides/x" selfHosted="/self-hosted/y">
+      the guide
+    </AudienceLink>,
+  );
+  expect(html).toBe("the guide");
+  expect(html).not.toContain("href");
+});
+
+test("resolveAudienceLinks degrades an unquoted/malformed href to plain text (fail-safe, no leak)", () => {
+  // `attr` only reads a double-quoted value (the codemod always emits one). An
+  // unquoted authoring typo yields no href → plain text; it never leaks a target
+  // and never throws (the element is well-formed, so no residual tag survives).
+  const md = "A <AudienceLink saas=/guides/x>link</AudienceLink> here.";
+  expect(resolveAudienceLinks(md, "saas")).toBe("A link here.");
+});
+
+test("stripInactiveAudienceBlocks also resolves AudienceLinks to the mount audience", () => {
+  const md = [
+    "<WhenSaaS>",
+    "  Hosted note.",
+    "</WhenSaaS>",
+    "",
+    'Docs: <AudienceLink saas="/guides/x" selfHosted="/self-hosted/y">here</AudienceLink>.',
+  ].join("\n");
+  const saas = stripInactiveAudienceBlocks(md, "saas");
+  expect(saas).toContain("[here](/guides/x)");
+  expect(saas).not.toContain("/self-hosted/y");
+  const selfHosted = stripInactiveAudienceBlocks(md, "self-hosted");
+  expect(selfHosted).toContain("[here](/self-hosted/y)");
+  expect(selfHosted).not.toContain("/guides/x");
+});
+
+test("markdown strip FAILS CLOSED on a malformed/unclosed AudienceLink", () => {
+  // An unclosed cross-link would otherwise pass its raw tag (and both hrefs) into
+  // the machine surface — fail the page instead.
+  const malformed = 'Text <AudienceLink saas="/guides/x">no closing tag here.';
+  expect(() => stripInactiveAudienceBlocks(malformed, "saas")).toThrow(
+    /residual <When…> \/ <AudienceLink> tag/,
+  );
+});
+
+test("an inline-code mention of AudienceLink is NOT treated as a residual tag", () => {
+  const mention = "Authors use `<AudienceLink>` for shared-page cross-links.";
+  expect(stripInactiveAudienceBlocks(mention, "saas")).toContain(
+    "`<AudienceLink>`",
+  );
+});
+
 // ── markdown text surfaces (twin + llms-full.txt) ────────────────────────────
 
 // Note the INLINE mention of the tag names in the intro — a real doc sentence
@@ -171,7 +329,7 @@ test("markdown strip FAILS CLOSED on a malformed/unclosed inactive block", () =>
   // A silent pass would leak the self-hosted tail into the saas surface; assert
   // it throws instead.
   expect(() => stripInactiveAudienceBlocks(unclosed, "saas")).toThrow(
-    /residual <When…> tag/,
+    /residual <When…> \/ <AudienceLink> tag/,
   );
 });
 
@@ -182,7 +340,7 @@ test("markdown strip FAILS CLOSED on an unsupported single-line inline audience 
   const inline =
     "Price is <WhenSaaS>$39</WhenSaaS><WhenSelfHosted>free</WhenSelfHosted>/mo.";
   expect(() => stripInactiveAudienceBlocks(inline, "saas")).toThrow(
-    /residual <When…> tag/,
+    /residual <When…> \/ <AudienceLink> tag/,
   );
 });
 

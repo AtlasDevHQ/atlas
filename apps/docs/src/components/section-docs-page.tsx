@@ -14,7 +14,10 @@ import { APIPage } from "@/components/api-page";
 import { ChangelogTimeline } from "@/components/changelog-timeline";
 import { LLMCopyButton } from "@/components/llm-copy-button";
 import { AudienceProvider, AudienceLabel, type Audience } from "@/lib/audience";
-import { audienceConditionals } from "@/lib/audience-conditionals";
+import {
+  audienceConditionals,
+  makeAudienceLink,
+} from "@/lib/audience-conditionals";
 import { filterTocByAudience } from "@/lib/audience-markdown";
 import { githubEditPath } from "@/lib/mdx-links";
 import type { SectionPage } from "@/lib/source";
@@ -86,6 +89,10 @@ export async function SectionDocsPage({
   // that returns null, so its children never enter the emitted HTML / RSC
   // payload (unlike a client conditional). See audience-conditionals.tsx.
   const { WhenSaaS, WhenSelfHosted } = audienceConditionals(audience);
+  // Per-mount cross-link: renders `linkComponent` for this audience's href and
+  // plain text when it has none, so a shared page never links across the
+  // SaaS/self-hosted boundary (#4289).
+  const AudienceLink = makeAudienceLink(audience, linkComponent);
   // `page.data.toc` is compiled from ALL headings in the raw MDX — the runtime
   // audience conditional is invisible to it — so a `<WhenSelfHosted>`-wrapped
   // section's heading would otherwise show in the SaaS mount's ToC and link to
@@ -134,6 +141,9 @@ export async function SectionDocsPage({
               // from the emitted HTML on the opposite mount (PRD #4257).
               WhenSaaS,
               WhenSelfHosted,
+              // Per-mount cross-link (#4289): links within this audience's
+              // surface only, plain text otherwise.
+              AudienceLink,
               // Resolve relative MDX links against THIS mount's source.
               a: linkComponent,
             }}

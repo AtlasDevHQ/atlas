@@ -2,11 +2,58 @@ import type { Audience } from "@/lib/audience";
 
 const AUDIENCE_TAGS = ["WhenSaaS", "WhenSelfHosted"] as const;
 
-/** Any raw audience tag, open or close, block OR inline. Used as the fail-closed
- * post-condition AFTER code spans are masked out (so a doc sentence that MENTIONS
- * `` `<WhenSaaS>` `` in inline code is not a false positive). `\b` after the name
- * avoids matching a differently-named component like `<WhenSaaSFoo>`. */
-const RESIDUAL_AUDIENCE_TAG = /<\/?When(?:SaaS|SelfHosted)\b/;
+/** Any raw audience construct, open or close, block OR inline: the two
+ * `<When…>` conditionals AND the `<AudienceLink>` cross-link (#4289). Used as the
+ * fail-closed post-condition AFTER code spans are masked out (so a doc sentence
+ * that MENTIONS `` `<WhenSaaS>` `` / `` `<AudienceLink>` `` in inline code is not
+ * a false positive). `\b` after the name avoids matching a differently-named
+ * component like `<WhenSaaSFoo>`. */
+const RESIDUAL_AUDIENCE_TAG = /<\/?(?:When(?:SaaS|SelfHosted)|AudienceLink)\b/;
+
+/**
+ * Inline `<AudienceLink saas="…" selfHosted="…">text</AudienceLink>` — the
+ * cross-link a shared page uses instead of a bare root-absolute markdown link, so
+ * it never leaks across the SaaS/self-hosted boundary (#4289). Non-greedy body,
+ * so several on one line (e.g. a "See Also" list row) each resolve independently.
+ * Attribute order is free and either href may be absent.
+ */
+const AUDIENCE_LINK = /<AudienceLink\b([^>]*)>([\s\S]*?)<\/AudienceLink>/g;
+
+/** Pull a double-quoted `name="value"` attribute out of an `<AudienceLink>` tag's
+ * attribute string, or null when absent. */
+function attr(attrs: string, name: string): string | null {
+  const m = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`).exec(attrs);
+  return m ? m[1] : null;
+}
+
+/**
+ * Resolve every `<AudienceLink>` in a page's PROCESSED MARKDOWN to `audience`'s
+ * mount: the string-surface twin of the `makeAudienceLink` server component.
+ * fumadocs' `getText("processed")` preserves custom MDX tags verbatim, so without
+ * this the `.mdx` twin / `llms-full.txt` would carry the raw `<AudienceLink>` tag
+ * (and BOTH hrefs) — re-leaking the opposite audience's target into the machine
+ * surface the HTML conditional closes. The active audience's href becomes an
+ * ordinary `[text](href)` markdown link; when this audience has no href the link
+ * degrades to plain `text` (matching the component's bare-fragment branch).
+ */
+export function resolveAudienceLinks(
+  markdown: string,
+  audience: Audience,
+): string {
+  return markdown.replace(AUDIENCE_LINK, (_full, attrs: string, text: string) => {
+    // Explicit positive match (fail closed): an unexpected audience matches
+    // neither branch and drops to plain text — the same both-branches-stripped
+    // posture `stripInactiveAudienceBlocks` takes, rather than defaulting to one
+    // audience's href on a cross-boundary primitive.
+    const href =
+      audience === "saas"
+        ? attr(attrs, "saas")
+        : audience === "self-hosted"
+          ? attr(attrs, "selfHosted")
+          : null;
+    return href ? `[${text}](${href})` : text;
+  });
+}
 
 /** Mask fenced and inline code spans (their raw tag MENTIONS must be spared) so
  * the residual check only sees real tags. Returns text safe to scan, not to emit. */
@@ -77,16 +124,22 @@ export function stripInactiveAudienceBlocks(
   }
   // Unwrap the ACTIVE branch's tags, keeping its prose (nothing if none active).
   if (active) out = out.replace(tagsOf(active), "");
+  // Resolve inline `<AudienceLink>` cross-links to this mount's href (or plain
+  // text), the string twin of the `makeAudienceLink` server component (#4289).
+  // With an unknown audience `resolveAudienceLinks` matches neither branch and
+  // keeps no href, mirroring the fail-closed both-branches-stripped behaviour above.
+  out = resolveAudienceLinks(out, audience);
   out = out.replace(/\n{3,}/g, "\n\n");
 
-  // Fail closed: after masking code-span mentions, NO raw audience tag may
-  // survive. This catches both a malformed/unclosed BLOCK and the unsupported
-  // single-line INLINE form (`<WhenSelfHosted>x</WhenSelfHosted>` on one line) —
-  // the strip only handles block-form, so an inline usage must fail the
-  // build/page rather than silently leak the other audience's prose.
+  // Fail closed: after masking code-span mentions, NO raw audience construct may
+  // survive. This catches a malformed/unclosed `<When…>` BLOCK, the unsupported
+  // single-line INLINE `<When…>` form (`<WhenSelfHosted>x</WhenSelfHosted>` on one
+  // line — the strip only handles block-form), and a malformed `<AudienceLink>`
+  // the inline resolver could not close — any must fail the build/page rather
+  // than silently leak the other audience's prose or link target.
   if (RESIDUAL_AUDIENCE_TAG.test(maskCodeSpans(out))) {
     throw new Error(
-      `[docs] audience strip left a residual <When…> tag while resolving "${audience}" — a branch was not removed. Audience conditionals must be BLOCK-form (opening/closing tags each on their own line); inline usage is unsupported. Also check for malformed/unclosed tags.`,
+      `[docs] audience strip left a residual <When…> / <AudienceLink> tag while resolving "${audience}" — a branch or cross-link was not resolved. <When…> conditionals must be BLOCK-form (opening/closing tags each on their own line); <AudienceLink> must be a single well-formed element. Also check for malformed/unclosed tags.`,
     );
   }
   return out;

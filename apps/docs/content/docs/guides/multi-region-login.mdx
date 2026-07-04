@@ -6,7 +6,7 @@ description: How returning users are routed back to their workspace's region on 
 import { Callout } from "fumadocs-ui/components/callout";
 
 <Callout type="info" title="SaaS multi-region only">
-This flow exists only on the hosted Atlas SaaS when more than one data region is configured. Self-hosted and single-region deployments authenticate against one API base and never engage the region front-door — sign-in is the standard email/password (or SSO) flow described in [Authentication](/deployment/authentication).
+This flow exists only on the hosted Atlas SaaS when more than one data region is configured. Self-hosted and single-region deployments authenticate against one API base and never engage the region front-door — sign-in is the standard email/password (or SSO) flow.
 </Callout>
 
 Under [regional identity isolation (ADR-0024)](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0024-regional-identity-isolation.md), each region (US, EU, Asia Pacific) is a **fully independent stack** — its own internal database **and** its own [Better Auth](https://www.better-auth.com/) instance. An EU workspace's `user`, `organization`, `member`, and `session` rows live **only** in the EU database; the US API genuinely returns `401` for it. That isolation is the residency promise, but it creates a routing problem at login: a returning user types an email and password, and the browser must figure out **which region's API** to send them to *before* any session exists.
@@ -56,7 +56,7 @@ Once a user has selected a region (during signup or a prior login), Atlas persis
 The `atlas_region` cookie is client-writable, so only its **region key** is honored. The actual API base is always re-derived from the server's region map — a tampered cookie can never repoint authenticated traffic at an attacker-controlled host. A stale cookie (a region that was removed) falls through to the cold fan-out. This same validation governs the pre-auth API base during signup; see [Self-Serve Signup](/guides/signup#region-selection).
 </Callout>
 
-The cookie is also what makes the rest of the session regional: the auth client reads it at load and binds its base URL to the region's API, so every credentialed call rides the host-only, same-site session cookie for that region (see [host-only session cookies](/deployment/authentication#cross-origin-deployment-self-hosted)).
+The cookie is also what makes the rest of the session regional: the auth client reads it at load and binds its base URL to the region's API, so every credentialed call rides the host-only, same-site session cookie for that region.
 
 ## Same email = two accounts
 
@@ -77,11 +77,11 @@ The region probe is an **account-existence oracle** — exactly like any forgot-
 - **Hash-only input.** `POST /api/v1/auth/region-probe` accepts *only* a 64-character lowercase hex sha256, never a raw email, so it can confirm a guessed address but can't be used to harvest a region's email list.
 - **Boolean-only output.** The probe returns just `{ exists }`.
 - **No global store.** The email→region mapping is computed transiently per request; each region only ever checks its own `user` table.
-- **Rate-limited at two layers.** The `app.useatlas.dev` front-door rate-limits per client IP (the primary per-user control), keying on the leftmost `X-Forwarded-For` hop set by the platform edge; every regional probe additionally rate-limits per IP as a backstop. For the regional probe's per-IP limit to key on the real client IP, set [`ATLAS_TRUST_PROXY=true`](/deployment/authentication#rate-limiting) on the regional APIs.
+- **Rate-limited at two layers.** The `app.useatlas.dev` front-door rate-limits per client IP (the primary per-user control), keying on the leftmost `X-Forwarded-For` hop set by the platform edge; every regional probe additionally rate-limits per IP as a backstop. For the regional probe's per-IP limit to key on the real client IP, set `ATLAS_TRUST_PROXY=true` on the regional APIs.
 
 ## Related
 
 - [Self-Serve Signup](/guides/signup) — the new-user flow, where the region is chosen before account creation
-- [Authentication](/deployment/authentication) — auth modes, sessions, and host-only cookies
+- Authentication — auth modes, sessions, and host-only cookies
 - [Data Residency](/platform-ops/data-residency) — operator-side region configuration and migration
 - [ADR-0024: Regional identity isolation](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0024-regional-identity-isolation.md) — the architecture decision behind this flow

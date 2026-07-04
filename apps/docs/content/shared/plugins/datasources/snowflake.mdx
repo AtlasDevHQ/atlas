@@ -39,7 +39,7 @@ export default defineConfig({
 
 ### Install from the admin console
 
-You don't have to edit `atlas.config.ts` to add a Snowflake connection. A workspace admin can install Snowflake from **Admin → Connections**: click **Add datasource**, pick the Snowflake tile (under *Databases*), and fill in the schema-driven install form — paste the connection URL (plus an optional schema and description) and submit. The URL is encrypted at rest (it's a `secret: true` field in the catalog's config schema), and the connection registers immediately — it's queryable via `executeSQL` as soon as the install succeeds, no reload required. Re-submitting the form edits the existing install in place. This works on SaaS too. See [Admin Console — Connections](/guides/admin-console#connections).
+You don't have to edit `atlas.config.ts` to add a Snowflake connection. A workspace admin can install Snowflake from **Admin → Connections**: click **Add datasource**, pick the Snowflake tile (under *Databases*), and fill in the schema-driven install form — paste the connection URL (plus an optional schema and description) and submit. The URL is encrypted at rest (it's a `secret: true` field in the catalog's config schema), and the connection registers immediately — it's queryable via `executeSQL` as soon as the install succeeds, no reload required. Re-submitting the form edits the existing install in place. This works on SaaS too. See <AudienceLink saas="/guides/admin-console#connections">Admin Console — Connections</AudienceLink>.
 
 ### Connection string format
 
@@ -76,7 +76,7 @@ Snowflake profiles into a semantic layer (entities, metrics, glossary) the same 
 - **CLI** — `bun run atlas -- init` (and `diff`) against a named Snowflake datasource from `atlas.config.ts` (`--connection <name>`) or a `snowflake://` `ATLAS_DATASOURCE_URL`.
 - **MCP** — the `profile_datasource` tool, to profile directly from an MCP client.
 
-See the [semantic layer wizard](/guides/semantic-layer-wizard) for the full flow.
+See the <AudienceLink saas="/guides/semantic-layer-wizard">semantic layer wizard</AudienceLink> for the full flow.
 
 ## Validation
 

@@ -54,7 +54,7 @@ When running locally, either set `GOOGLE_APPLICATION_CREDENTIALS` to a service a
 
 ### Install from the admin console
 
-You don't have to edit `atlas.config.ts` to add a BigQuery connection. A workspace admin can install BigQuery from **Admin → Connections**: click **Add datasource**, pick the BigQuery tile (under *Databases*), and fill in the schema-driven install form. The form has three fields, matching the catalog's config schema: **Service Account JSON** (required — paste the full service account key JSON), **GCP Project ID** (required), and an optional **Description** shown in the agent system prompt. The service-account JSON is encrypted at rest (it's a `secret: true` field) while the project ID stays in plaintext, and the connection registers immediately — it's queryable via `executeSQL` as soon as the install succeeds, no reload required. Re-submitting the form edits the existing install in place. This works on SaaS too. See [Admin Console — Connections](/guides/admin-console#connections).
+You don't have to edit `atlas.config.ts` to add a BigQuery connection. A workspace admin can install BigQuery from **Admin → Connections**: click **Add datasource**, pick the BigQuery tile (under *Databases*), and fill in the schema-driven install form. The form has three fields, matching the catalog's config schema: **Service Account JSON** (required — paste the full service account key JSON), **GCP Project ID** (required), and an optional **Description** shown in the agent system prompt. The service-account JSON is encrypted at rest (it's a `secret: true` field) while the project ID stays in plaintext, and the connection registers immediately — it's queryable via `executeSQL` as soon as the install succeeds, no reload required. Re-submitting the form edits the existing install in place. This works on SaaS too. See <AudienceLink saas="/guides/admin-console#connections">Admin Console — Connections</AudienceLink>.
 
 ## SQL Dialect
 
@@ -136,7 +136,7 @@ BigQuery profiles into a semantic layer (entities, metrics, glossary) the same w
 - **CLI** — `bun run atlas -- init` (and `diff`) against a named BigQuery datasource from `atlas.config.ts` (`--connection <name>`).
 - **MCP** — the `profile_datasource` tool, to profile directly from an MCP client.
 
-See the [semantic layer wizard](/guides/semantic-layer-wizard) for the full flow.
+See the <AudienceLink saas="/guides/semantic-layer-wizard">semantic layer wizard</AudienceLink> for the full flow.
 
 ## Validation
 

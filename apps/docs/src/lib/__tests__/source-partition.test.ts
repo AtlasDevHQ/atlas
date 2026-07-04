@@ -740,3 +740,73 @@ test("[#4282] extracted self-hosted sections are gone from the SaaS page and liv
     }
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4289 — the audience-link hygiene pass. Two lightweight scans over the real
+// content tree (read-only, no bundler) keep the two cross-mount link leaks this
+// slice fixed from silently regressing — one drift guard per half of #4289:
+//
+//   1. Part 1 (stale moved-slug): a SaaS-root page (content/docs/**) must not
+//      link to a BARE old-root slug that slice #4264 moved under /self-hosted/*
+//      (`MOVED_SELF_HOSTED_SLUGS`). Those old URLs only 308-redirect on the live
+//      site (#4267); the in-repo link is stale. The genuine self-hosting handoffs
+//      were repointed to `/self-hosted/*` (which START with `/self-hosted`, so
+//      they never match this bare-root pattern), and the managed-auth boilerplate
+//      was de-linked — so after the pass the SaaS tree carries zero. (Only
+//      root-absolute `](/…)` / `href="/…"` links are modelled; a relative stale
+//      link would evade this — acceptable, docs author root-absolute links.)
+//   2. Part 2, Direction B (/self-hosted leak on the SaaS mount): a shared page
+//      (content/shared/**) must not carry a bare `](/self-hosted/…)` markdown link
+//      that survives on the SaaS mount — it would send a SaaS reader into the
+//      self-hosted section. A legitimate self-hosted target is authored either
+//      inside a `<WhenSelfHosted>` block or via `<AudienceLink selfHosted="…">`;
+//      both resolve away on the SaaS mount. We MODEL the SaaS mount with
+//      `stripInactiveAudienceBlocks(_, "saas")` — the exact strip behind the
+//      `.mdx` twin / `llms-full.txt` — and assert no `/self-hosted` link survives.
+//      (Part 2 Direction A — shared → saas-only leaks — is resolved in-content via
+//      `<AudienceLink saas=…>`; it has no cheap bare-link guard, so it is not
+//      re-checked here.)
+//
+// Reuses the read-only filesystem consts above (`saasTreeFiles`, `sharedMdxFiles`,
+// `CONTENT_DIR`) and the `MOVED_SELF_HOSTED_SLUGS` redirect SSOT.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A bare old-root moved slug at a markdown-link or href-attr path boundary. The
+// alternation is anchored right after `](/` or `href="/`, so a link ALREADY under
+// `/self-hosted/…` starts with `/self-hosted` and can never match. The trailing
+// lookahead pins the slug's end (anchor, close-paren, or closing quote), so a
+// longer distinct slug that merely shares a prefix does not false-match.
+const MOVED_SLUG_ALT = MOVED_SELF_HOSTED_SLUGS.map((s) =>
+  s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+).join("|");
+const STALE_MOVED_IN_SAAS = new RegExp(
+  `(?:\\]\\(|href=")/(?:${MOVED_SLUG_ALT})(?=[#)"]|$)`,
+);
+
+test("[#4289] no SaaS-root page links to a bare old-root moved slug (stale in-repo link)", () => {
+  const saasMdx = saasTreeFiles.filter((p) => p.endsWith(".mdx"));
+  // Non-vacuous floor: we actually scanned the SaaS tree.
+  expect(saasMdx.length).toBeGreaterThan(0);
+  const offenders = saasMdx.filter((f) =>
+    STALE_MOVED_IN_SAAS.test(readFileSync(f, "utf8")),
+  );
+  expect(offenders).toEqual([]);
+});
+
+const SELF_HOSTED_MD_LINK = /\]\(\/self-hosted\//;
+
+test("[#4289] no shared page leaks a /self-hosted link on the SaaS mount (Direction B)", () => {
+  expect(sharedMdxFiles.length).toBeGreaterThan(0);
+  const offenders = sharedMdxFiles.filter((f) => {
+    // Model the SaaS mount: <WhenSelfHosted> blocks removed, <AudienceLink>
+    // resolved to its saas branch (plain text for a self-hosted-only target).
+    // Mask fenced code so a `](/self-hosted/…)` inside a code EXAMPLE isn't a
+    // false leak (a real cross-link lives in prose, not a fence).
+    const saasMount = stripInactiveAudienceBlocks(
+      readFileSync(f, "utf8"),
+      "saas",
+    ).replace(/```[\s\S]*?```/g, "");
+    return SELF_HOSTED_MD_LINK.test(saasMount);
+  });
+  expect(offenders).toEqual([]);
+});

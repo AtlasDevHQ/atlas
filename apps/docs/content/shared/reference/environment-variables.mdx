@@ -7,7 +7,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
 <Callout type="info" title="Self-hosted only">
-  Environment variables are used for self-hosted deployments. Hosted users at [app.useatlas.dev](https://app.useatlas.dev) can skip this — the platform manages all configuration through the admin console. See [Workspace Settings](/guides/workspace-settings).
+  Environment variables are used for self-hosted deployments. Hosted users at [app.useatlas.dev](https://app.useatlas.dev) can skip this — the platform manages all configuration through the admin console. See <AudienceLink saas="/guides/workspace-settings">Workspace Settings</AudienceLink>.
 </Callout>
 
 Atlas can be configured entirely via environment variables. Most have safe defaults — a minimal deployment needs only an LLM provider key and a datasource URL. For multi-datasource setups or advanced configuration, see the [Configuration reference](/reference/config).
@@ -139,7 +139,7 @@ OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1  # Required
 
 **Demo data fallback chain:** When `ATLAS_DEMO_DATA=true` and `ATLAS_DATASOURCE_URL` is not set, Atlas resolves the analytics datasource by checking `DATABASE_URL_UNPOOLED` first, then `DATABASE_URL`. This lets a single Postgres instance (e.g. Neon on Vercel) serve as both the analytics datasource and Atlas's internal database.
 
-> **SaaS multi-region only:** `ATLAS_REGION_US_DB_URL`, `ATLAS_REGION_EU_DB_URL`, and `ATLAS_REGION_APAC_DB_URL` are part of the SaaS boot contract (`SAAS_ENV_KEYS` in `packages/api/src/lib/effect/saas-env.ts`) — the per-region internal Postgres URLs the data-residency router targets. Self-hosted single-region deploys use `DATABASE_URL` only and never set these. See the [SaaS environment variables reference](/platform-ops/saas-environment-variables).
+> **SaaS multi-region only:** `ATLAS_REGION_US_DB_URL`, `ATLAS_REGION_EU_DB_URL`, and `ATLAS_REGION_APAC_DB_URL` are part of the SaaS boot contract (`SAAS_ENV_KEYS` in `packages/api/src/lib/effect/saas-env.ts`) — the per-region internal Postgres URLs the data-residency router targets. Self-hosted single-region deploys use `DATABASE_URL` only and never set these. See the <AudienceLink saas="/platform-ops/saas-environment-variables">SaaS environment variables reference</AudienceLink>.
 
 <Tabs items={["Local development", "Production (separate DBs)", "Vercel (shared DB)"]}>
 <Tab value="Local development">
@@ -194,7 +194,7 @@ ATLAS_DEMO_DATA=true
 
 ## Knowledge Base
 
-Caps and cadence for hosted [Knowledge Base collections](/guides/knowledge-base). These are **platform-scoped settings-registry knobs** — a platform admin can change them in Admin → Settings without a redeploy; the env var form below is honored on self-hosted deployments (precedence: settings registry > env > default). All six clamp non-positive or unparseable overrides back to the default, with a logged warning.
+Caps and cadence for hosted <AudienceLink saas="/guides/knowledge-base">Knowledge Base collections</AudienceLink>. These are **platform-scoped settings-registry knobs** — a platform admin can change them in Admin → Settings without a redeploy; the env var form below is honored on self-hosted deployments (precedence: settings registry > env > default). All six clamp non-positive or unparseable overrides back to the default, with a logged warning.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -209,7 +209,7 @@ Caps and cadence for hosted [Knowledge Base collections](/guides/knowledge-base)
 
 ## Security
 
-Query safety and SQL validation settings. See [SQL Validation Pipeline](/security/sql-validation) for how these are enforced.
+Query safety and SQL validation settings. See <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink> for how these are enforced.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -217,7 +217,7 @@ Query safety and SQL validation settings. See [SQL Validation Pipeline](/securit
 | `ATLAS_QUERY_TIMEOUT` | `30000` | Query timeout in milliseconds |
 | `ATLAS_TABLE_WHITELIST` | `true` | Only allow queries against tables defined in the semantic layer |
 | `ATLAS_SCHEMA` | — | PostgreSQL schema name. When set to a non-`public` value, the API sets `search_path` to `"<schema>", public` on each connection. When unset, no `search_path` is set and PostgreSQL uses its server default (typically `public`). Also used by `atlas doctor` to verify the schema exists |
-| `ATLAS_ENCRYPTION_KEYS` | — | F-47 versioned at-rest encryption keyset. Comma-separated `version:key` pairs (e.g. `v2:NEW-KEY,v1:OLD-KEY`). The first entry is the active write key; later entries are legacy read-only keys kept available during a rotation soak. **Preferred form for production** — see the [encryption key rotation guide](/platform-ops/encryption-key-rotation) |
+| `ATLAS_ENCRYPTION_KEYS` | — | F-47 versioned at-rest encryption keyset. Comma-separated `version:key` pairs (e.g. `v2:NEW-KEY,v1:OLD-KEY`). The first entry is the active write key; later entries are legacy read-only keys kept available during a rotation soak. **Preferred form for production** — see the <AudienceLink saas="/platform-ops/encryption-key-rotation">encryption key rotation guide</AudienceLink> |
 | `ATLAS_ENCRYPTION_KEY` | — | Legacy single-key form, treated as an implicit `v1` when `ATLAS_ENCRYPTION_KEYS` is unset. Takes precedence over `BETTER_AUTH_SECRET`. Kept for back-compat — new deployments should set `ATLAS_ENCRYPTION_KEYS` instead. Key derivation order: `ATLAS_ENCRYPTION_KEYS` → `ATLAS_ENCRYPTION_KEY` → `BETTER_AUTH_SECRET` (the last is deprecated under SaaS — startup warns) |
 | `ATLAS_STRICT_PLUGIN_SECRETS` | `false` | F-42 / #1835: when `true`, plugin admin write paths reject PUTs whose catalog schema is corrupt or carries per-key secret/passthrough drift. SaaS regions opt in; self-hosted defaults to off. Tolerant idempotent passthrough is the baseline |
 | `ATLAS_POOL_WARMUP` | `2` | Number of warmup probes per connection at startup. Set to `0` to disable warmup |
@@ -243,7 +243,7 @@ ATLAS_SCHEMA=analytics        # Non-default PostgreSQL schema
 
 ## Auth
 
-Authentication mode and per-mode settings. See [Authentication](/self-hosted/deployment/authentication) for full setup guides.
+Authentication mode and per-mode settings. See <AudienceLink selfHosted="/self-hosted/deployment/authentication">Authentication</AudienceLink> for full setup guides.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -260,7 +260,7 @@ When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects based on which variables a
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_API_KEY` | — | **Legacy operator god-key** — a single env-configured shared secret for self-hosted simple-key auth. Clients send `Authorization: Bearer <key>` or `X-API-Key: <key>`. This is distinct from a **workspace-scoped API key**: the *same variable name* is also read by the REST-backed workspace CLI commands (`atlas sql` / `metric run` / `explore` / `datasource`) as a per-member workspace key ([#4046](https://github.com/AtlasDevHQ/atlas/issues/4046)) — see [Workspace CLI credentials](#workspace-cli-credentials) and [API Key Management](/guides/api-keys) |
+| `ATLAS_API_KEY` | — | **Legacy operator god-key** — a single env-configured shared secret for self-hosted simple-key auth. Clients send `Authorization: Bearer <key>` or `X-API-Key: <key>`. This is distinct from a **workspace-scoped API key**: the *same variable name* is also read by the REST-backed workspace CLI commands (`atlas sql` / `metric run` / `explore` / `datasource`) as a per-member workspace key ([#4046](https://github.com/AtlasDevHQ/atlas/issues/4046)) — see [Workspace CLI credentials](#workspace-cli-credentials) and <AudienceLink saas="/guides/api-keys">API Key Management</AudienceLink> |
 | `ATLAS_API_KEY_ROLE` | `admin` | Role for the operator god-key above. Valid values: `member`, `admin`, `owner`. Invalid values fall back to `admin` with a warning at startup. Does not apply to workspace keys, which carry their own server-side role |
 
 ```bash
@@ -323,7 +323,7 @@ GITHUB_CLIENT_SECRET=ghs_...
 
 ### OAuth Provider (MCP / DCR)
 
-Atlas issues OAuth 2.1 access tokens via `@better-auth/oauth-provider` so MCP clients (Claude Desktop, ChatGPT, Cursor) can connect to the [hosted MCP endpoint](/guides/mcp#hosted-protocol-reference) via Dynamic Client Registration + PKCE. Most operators leave these on defaults; tune only when SaaS regions or stricter threat models require it.
+Atlas issues OAuth 2.1 access tokens via `@better-auth/oauth-provider` so MCP clients (Claude Desktop, ChatGPT, Cursor) can connect to the <AudienceLink saas="/guides/mcp#hosted-protocol-reference">hosted MCP endpoint</AudienceLink> via Dynamic Client Registration + PKCE. Most operators leave these on defaults; tune only when SaaS regions or stricter threat models require it.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -353,7 +353,7 @@ ATLAS_AUTH_ROLE_CLAIM=app_metadata.atlas_role
 
 ### Workspace CLI credentials
 
-How the `atlas` CLI authenticates to a running Atlas API for the [workspace commands](/reference/cli#workspace-commands) (`login`, `switch`, `sql`, `metric run`, `explore`, `datasource`). The recommended path is an ambient `atlas login` device-flow session stored in `~/.atlas/credentials`; the variables below cover targeting a non-local API and the unattended-CI / headless paths. See [API Key Management](/guides/api-keys) for the full credential model.
+How the `atlas` CLI authenticates to a running Atlas API for the [workspace commands](/reference/cli#workspace-commands) (`login`, `switch`, `sql`, `metric run`, `explore`, `datasource`). The recommended path is an ambient `atlas login` device-flow session stored in `~/.atlas/credentials`; the variables below cover targeting a non-local API and the unattended-CI / headless paths. See <AudienceLink saas="/guides/api-keys">API Key Management</AudienceLink> for the full credential model.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -391,7 +391,7 @@ ATLAS_RATE_LIMIT_RPM=30
 ATLAS_TRUST_PROXY=true
 ```
 
-See [Rate Limiting & Retry](/guides/rate-limiting) for client-side handling, SDK retry patterns, and troubleshooting.
+See <AudienceLink saas="/guides/rate-limiting">Rate Limiting & Retry</AudienceLink> for client-side handling, SDK retry patterns, and troubleshooting.
 
 ### Abuse Prevention
 
@@ -403,7 +403,7 @@ See [Rate Limiting & Retry](/guides/rate-limiting) for client-side handling, SDK
 | `ATLAS_ABUSE_UNIQUE_TABLES` | `50` | Max unique tables accessed per window |
 | `ATLAS_ABUSE_THROTTLE_DELAY_MS` | `2000` | Delay injected for throttled workspaces (ms) |
 | `ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS` | `60` | Minimum seconds between abuse-prevention escalation steps for the same workspace. Prevents a single bad-actor burst from cascading the workspace through every escalation tier in one window. Set `0` to disable (test-only). Invalid values fall back to the default with a warning |
-| `ATLAS_LOADTEST_ALLOWED_ORGS` | _unset_ | Comma-separated workspace IDs designated for load testing. Listed workspaces (a) may mint MCP load-test JWTs via `POST /api/v1/me/load-test/mcp-token` (see [MCP load-test tokens](/platform-ops/mcp-load-test-tokens)) and (b) bypass abuse-prevention escalation so a load run can't auto-suspend the workspace it's running against. Operator escape hatch — never a substitute for raising thresholds. |
+| `ATLAS_LOADTEST_ALLOWED_ORGS` | _unset_ | Comma-separated workspace IDs designated for load testing. Listed workspaces (a) may mint MCP load-test JWTs via `POST /api/v1/me/load-test/mcp-token` (see <AudienceLink saas="/platform-ops/mcp-load-test-tokens">MCP load-test tokens</AudienceLink>) and (b) bypass abuse-prevention escalation so a load run can't auto-suspend the workspace it's running against. Operator escape hatch — never a substitute for raising thresholds. |
 
 ```bash
 # Stricter abuse detection for production
@@ -416,7 +416,7 @@ ATLAS_ABUSE_THROTTLE_DELAY_MS=5000
 ATLAS_LOADTEST_ALLOWED_ORGS=ws_dharma_uuid,ws_canary_uuid
 ```
 
-See [Abuse Prevention](/platform-ops/abuse-prevention) for details on graduated response and admin reinstatement.
+See <AudienceLink saas="/platform-ops/abuse-prevention">Abuse Prevention</AudienceLink> for details on graduated response and admin reinstatement.
 
 ### Session Timeouts
 
@@ -450,7 +450,7 @@ Idle and absolute timeouts can also be configured via [`atlas.config.ts`](/refer
 
 ## MCP Transport
 
-Actor binding for the [MCP server](/guides/mcp). The transport runs in one of two modes — bound (governed) or unbound (trusted).
+Actor binding for the <AudienceLink saas="/guides/mcp">MCP server</AudienceLink>. The transport runs in one of two modes — bound (governed) or unbound (trusted).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -488,7 +488,7 @@ ATLAS_SEMANTIC_INDEX_ENABLED=false
 
 ## Row-Level Security
 
-Env var shorthand for a single global RLS policy. For per-table policies, use [`atlas.config.ts`](/reference/config#rls-row-level-security). See [Row-Level Security](/security/row-level-security) for the full guide.
+Env var shorthand for a single global RLS policy. For per-table policies, use [`atlas.config.ts`](/reference/config#rls-row-level-security). See <AudienceLink saas="/security/row-level-security">Row-Level Security</AudienceLink> for the full guide.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -601,7 +601,7 @@ ATLAS_PUBLIC_URL=https://api.example.com
 
 ## Data Residency
 
-Settings for multi-region deployments with per-workspace region routing. See also [`residency` in atlas.config.ts](/reference/config#residency) and the [Data Residency guide](/platform-ops/data-residency).
+Settings for multi-region deployments with per-workspace region routing. See also [`residency` in atlas.config.ts](/reference/config#residency) and the <AudienceLink saas="/platform-ops/data-residency">Data Residency guide</AudienceLink>.
 
 <Callout type="info">
 **Per-service scoping (#3176).** Each `ATLAS_REGION_*_DB_URL` only has to be set on the api service whose `ATLAS_API_REGION` **claims that region** — the US service needs `ATLAS_REGION_US_DB_URL`, the EU service needs `ATLAS_REGION_EU_DB_URL`, and so on. The shared `deploy/api/atlas.config.ts` declares all regions in one map, but a non-claimed region's URL may be left unset/empty on a given service without aborting its boot. Only the **claimed** region's URL is hard-validated at boot (by `RegionGuardLive`); an empty or malformed claimed URL still fails boot.
@@ -628,7 +628,7 @@ Settings for multi-region deployments with per-workspace region routing. See als
 
 ## Actions
 
-Action framework settings. These can also be configured via [`atlas.config.ts`](/reference/config#actions). See the [Actions guide](/guides/actions) for the full setup.
+Action framework settings. These can also be configured via [`atlas.config.ts`](/reference/config#actions). See the <AudienceLink saas="/guides/actions">Actions guide</AudienceLink> for the full setup.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -651,7 +651,7 @@ ATLAS_EMAIL_ALLOWED_DOMAINS=example.com,trusted-partner.com
 
 ## Scheduler
 
-Scheduled task execution. Can also be configured via [`atlas.config.ts`](/reference/config#scheduler). See [Scheduled Tasks](/guides/scheduled-tasks) for the full guide.
+Scheduled task execution. Can also be configured via [`atlas.config.ts`](/reference/config#scheduler). See <AudienceLink saas="/guides/scheduled-tasks">Scheduled Tasks</AudienceLink> for the full guide.
 
 <Callout type="info">
 **Multi-region (SaaS): run a single global scheduler.** In a multi-region SaaS
@@ -723,7 +723,7 @@ The first three are the self-host fallback tier for **workspace-scoped runtime s
 | `ATLAS_PYTHON_ENABLED` | — | Set `true` to enable the `executePython` agent tool. Requires `ATLAS_SANDBOX_URL` to be set (Python runs in the sandbox sidecar for isolation) |
 | `ATLAS_PYTHON_TIMEOUT` | `30000` | Python execution timeout in milliseconds |
 
-See [Python Tool](/guides/python) for the full guide.
+See <AudienceLink saas="/guides/python">Python Tool</AudienceLink> for the full guide.
 
 ---
 
@@ -761,7 +761,7 @@ Password-reset / signup-verification emails are sent through a durable `email_ou
 | `SLACK_ENCRYPTION_KEY` | — | At-rest encryption key for per-Workspace Slack OAuth credentials in `chat_cache`. Failure mode differs by deploy mode: **on SaaS** (`deployMode === "saas"`), `ChatAdapterEnvGuardLive` fails boot with `ChatAdapterEnvMissingError` when any Slack OAuth catalog entry is `enabled` but the key (or the other Slack envs) is missing — incident response should look for the boot-failure error, not for dropped events. **On self-hosted**, the guard is a no-op; `SLACK_BUILDER.build()` returns `null` and the adapter silently doesn't activate (the api still boots — fix the env when ready). Sources: `packages/api/src/lib/effect/saas-guards.ts:793` (the guard), `packages/api/src/lib/effect/saas-env.ts` (env wiring) |
 | `ATLAS_SLACK_INSTALL_TABLE` | `chat_cache` | Override the SQL table OAuth installs land in. Must be a valid SQL identifier. Set this on self-hosted deploys that customize the chat plugin's `state.tablePrefix` (e.g. `myorg_` → `myorg_cache`) so OAuth installs land in the same physical table the chat-adapter reads from. SaaS pins the default. Source: `packages/api/src/lib/slack/store.ts` |
 
-See [Slack guide](/guides/slack) for the full setup.
+See <AudienceLink saas="/guides/slack">Slack guide</AudienceLink> for the full setup.
 
 ---
 
@@ -854,7 +854,7 @@ The createJiraTicket action uses a static API-token credential; the catalog-driv
 | `JIRA_API_TOKEN` | — | Jira API token. Generate at [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens) |
 | `JIRA_DEFAULT_PROJECT` | — | Default project key for issue creation (e.g. `PROJ`). Can be overridden per-action |
 
-Requires the [action framework](/guides/actions) to be enabled (`ATLAS_ACTIONS_ENABLED=true`).
+Requires the <AudienceLink saas="/guides/actions">action framework</AudienceLink> to be enabled (`ATLAS_ACTIONS_ENABLED=true`).
 
 ```bash
 # JIRA integration for the createJiraTicket action
@@ -1037,7 +1037,7 @@ Operator-only, **SaaS staging region only** (the `api-staging` service with `ATL
 | `ATLAS_DEPLOY_MODE` | `auto` | Deployment mode: `saas` (hosted product features, enterprise-gated), `self-hosted`, or `auto` (detect from environment). When `auto`, resolves to `saas` if enterprise is enabled and an internal database is configured |
 | `ATLAS_ENTERPRISE_ENABLED` | `false` | Set `true` to enable enterprise features (SSO, SCIM, PII detection, custom roles). Requires a valid license key for production use |
 | `ATLAS_ENTERPRISE_LICENSE_KEY` | — | License key for enterprise features. Obtain from [useatlas.dev/enterprise](https://www.useatlas.dev/enterprise) |
-| `ATLAS_APPROVAL_EXPIRY_HOURS` | `24` | Hours before pending approval requests auto-expire. See [Approval Workflows](/guides/approval-workflows) |
+| `ATLAS_APPROVAL_EXPIRY_HOURS` | `24` | Hours before pending approval requests auto-expire. See <AudienceLink saas="/guides/approval-workflows">Approval Workflows</AudienceLink> |
 | `ATLAS_SCIM_OVERRIDE_POLICY` | `strict` | F-57 SCIM provenance gate. Controls admin mutations on SCIM-provisioned users: `strict` blocks the mutation with `409 SCIM_MANAGED` so the IdP stays canonical; `override` allows the mutation but stamps the audit row with `metadata.scim_override = true`. No-op for workspaces with no SCIM provider configured |
 
 These can also be configured via [`atlas.config.ts`](/reference/config#enterprise).
@@ -1085,7 +1085,7 @@ SaaS only. Required for custom domain support via Railway.
 | `ATLAS_DEMO_RATE_LIMIT_RPM` | `10` | Max requests per minute per demo user |
 | `ATLAS_DEMO_MAX_STEPS` | `10` | Max agent steps per demo request (lower than authenticated default of 25) |
 | `ATLAS_DEMO_MODEL` | — | Model the public `/demo` path runs on — a gateway model id (e.g. `anthropic/claude-haiku-4.5`) or a direct model id matching the configured provider. Blank = the resolved default (Haiku on the gateway for SaaS). Platform-scoped, hot-reloadable |
-| `ATLAS_DEMO_INDUSTRY` | — | Industry label for the seeded `__demo__` connection (e.g. `cybersecurity`, `ecommerce`). Set this explicitly to pre-configure the demo dataset industry on a single-tenant deploy; in the hosted product it is captured during onboarding. Drives prompt-library industry filtering and the publish flow's demo-prompt archival cascade. See [Developer Mode](/guides/developer-mode) for the full demo lifecycle |
+| `ATLAS_DEMO_INDUSTRY` | — | Industry label for the seeded `__demo__` connection (e.g. `cybersecurity`, `ecommerce`). Set this explicitly to pre-configure the demo dataset industry on a single-tenant deploy; in the hosted product it is captured during onboarding. Drives prompt-library industry filtering and the publish flow's demo-prompt archival cascade. See <AudienceLink saas="/guides/developer-mode">Developer Mode</AudienceLink> for the full demo lifecycle |
 
 Requires `BETTER_AUTH_SECRET` for demo token signing.
 
@@ -1123,8 +1123,8 @@ Destructive operator-CLI subcommands gated by explicit env confirmation. None of
 |----------|---------|-------------|
 | `ATLAS_SETTINGS_REFRESH_INTERVAL` | `30000` | Hot-reload interval for settings in milliseconds (default: 30s). Controls how often the API re-reads workspace-level settings from the database. Set to `0` to disable periodic refresh |
 | `ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS` | `15000` (15s) | TTL for the plugin-liveness health cache. `0` disables caching (every call re-probes upstream). Max accepted value `300000` (5m); values above the max or unparseable fall back to the default with a warn. Source: `packages/api/src/lib/plugins/registry.ts` |
-| `ATLAS_DASHBOARD_DRAFTS_ENABLED` | `true` | Per-user dashboard drafts. When enabled, admin mutations to a bound dashboard write to the caller's draft and the **Publish** flow promotes them via an atomic three-way merge against the persisted baseline. Set to the literal string `false` to fall back to the direct-write model — draft fetch returns `503` and the chat-bound editor degrades to a read-only viewer. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
-| `ATLAS_INTERNAL_SCREENSHOT_COOKIE` | — | Service cookie value used by the `screenshotDashboard` vision tool (#2367). The headless Chromium worker calls back into `/admin/dashboards/:id/screenshot` and must authenticate as the requesting user; without this cookie the screenshot request is rejected and the agent falls back to its last-good description. Set this on **both** the API and web services when running behind a reverse proxy. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
+| `ATLAS_DASHBOARD_DRAFTS_ENABLED` | `true` | Per-user dashboard drafts. When enabled, admin mutations to a bound dashboard write to the caller's draft and the **Publish** flow promotes them via an atomic three-way merge against the persisted baseline. Set to the literal string `false` to fall back to the direct-write model — draft fetch returns `503` and the chat-bound editor degrades to a read-only viewer. See <AudienceLink saas="/guides/dashboards#chat-as-editor">Dashboards → Chat as editor</AudienceLink> |
+| `ATLAS_INTERNAL_SCREENSHOT_COOKIE` | — | Service cookie value used by the `screenshotDashboard` vision tool (#2367). The headless Chromium worker calls back into `/admin/dashboards/:id/screenshot` and must authenticate as the requesting user; without this cookie the screenshot request is rejected and the agent falls back to its last-good description. Set this on **both** the API and web services when running behind a reverse proxy. See <AudienceLink saas="/guides/dashboards#chat-as-editor">Dashboards → Chat as editor</AudienceLink> |
 | `ATLAS_WEB_BASE_URL` | `http://localhost:3000` | Base URL of the Next.js web app used by `screenshotDashboard` to construct the screenshot target URL (`${ATLAS_WEB_BASE_URL}/dashboards/:id`). Set to the production web origin when self-hosting (e.g. `https://atlas.acme.com`) so the headless Chromium worker hits the right host |
 
 ---
@@ -1158,14 +1158,14 @@ The sub-processor publisher fetches Atlas's authoritative sub-processor list (th
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | Auth/header(s) your collector requires, in W3C Baggage format (percent-encode spaces, e.g. `authorization=Bearer%20<token>`). Most hosted collectors are non-functional without this. Set per-service in production |
 | `OTEL_SERVICE_NAME` | `atlas-api` | Overrides the `service.name` resource attribute reported on emitted spans |
 
-See [Observability](/platform-ops/observability) for the full setup guide.
+See <AudienceLink saas="/platform-ops/observability">Observability</AudienceLink> for the full setup guide.
 
 ---
 
 ## See Also
 
 - [Configuration](/reference/config) — Declarative `atlas.config.ts` for multi-datasource, plugins, and RLS
-- [Deploy](/self-hosted/deployment/deploy) — Platform-specific env var setup for Railway, Vercel, and Docker
-- [Authentication](/self-hosted/deployment/authentication) — Auth mode setup and required variables
+- <AudienceLink selfHosted="/self-hosted/deployment/deploy">Deploy</AudienceLink> — Platform-specific env var setup for Railway, Vercel, and Docker
+- <AudienceLink selfHosted="/self-hosted/deployment/authentication">Authentication</AudienceLink> — Auth mode setup and required variables
 - [CLI Reference](/reference/cli) — `atlas doctor` validates your environment configuration
-- [Troubleshooting](/guides/troubleshooting) — Diagnosing startup errors from missing or invalid variables
+- <AudienceLink saas="/guides/troubleshooting">Troubleshooting</AudienceLink> — Diagnosing startup errors from missing or invalid variables

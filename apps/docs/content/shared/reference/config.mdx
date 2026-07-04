@@ -7,7 +7,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
 <Callout type="info" title="Self-hosted only">
-  Configuration files are used for self-hosted deployments. Hosted users at [app.useatlas.dev](https://app.useatlas.dev) can skip this — configure datasources, plugins, and settings from the admin console instead. See [Workspace Settings](/guides/workspace-settings).
+  Configuration files are used for self-hosted deployments. Hosted users at [app.useatlas.dev](https://app.useatlas.dev) can skip this — configure datasources, plugins, and settings from the admin console instead. See <AudienceLink saas="/guides/workspace-settings">Workspace Settings</AudienceLink>.
 </Callout>
 
 Atlas can be configured via environment variables (see [Environment Variables](/reference/environment-variables)) or a declarative `atlas.config.ts` file. For multi-datasource setups, plugins, RLS, or actions, use the config file. For simple single-datasource deployments, env vars alone are sufficient.
@@ -40,7 +40,7 @@ Config loading is **binary**: when a config file exists, it is used exclusively.
 3. **Secrets should stay in env vars** — reference them via `process.env` in the config file (this is user code executing at import time, not a config-loader merge)
 
 <Callout type="info">
-Auth mode resolution priority: `ATLAS_AUTH_MODE` env var (highest) → config file `auth` field → auto-detection from env var presence (lowest). Setting `auth: "managed"` in the config file pins the auth mode without needing `ATLAS_AUTH_MODE`, but the env var still overrides if set. See [Authentication](/self-hosted/deployment/authentication) for details.
+Auth mode resolution priority: `ATLAS_AUTH_MODE` env var (highest) → config file `auth` field → auto-detection from env var presence (lowest). Setting `auth: "managed"` in the config file pins the auth mode without needing `ATLAS_AUTH_MODE`, but the env var still overrides if set. See <AudienceLink selfHosted="/self-hosted/deployment/authentication">Authentication</AudienceLink> for details.
 </Callout>
 
 ```typescript
@@ -172,7 +172,7 @@ export default defineConfig({
 | `idleTimeoutMs` | `number` | No | — | Idle connection timeout in milliseconds |
 | `rateLimit` | `object` | No | `{ queriesPerMinute: 60, concurrency: 5 }` | Per-datasource rate limiting. `queriesPerMinute` caps queries per minute (default: 60). `concurrency` caps concurrent queries (default: 5) |
 
-The `"default"` datasource is used when the agent's `executeSQL` tool is called without a `connectionId`. See [Multi-Datasource Routing](/deployment/multi-datasource) for a full guide on how the agent selects and queries multiple datasources.
+The `"default"` datasource is used when the agent's `executeSQL` tool is called without a `connectionId`. See <AudienceLink saas="/deployment/multi-datasource">Multi-Datasource Routing</AudienceLink> for a full guide on how the agent selects and queries multiple datasources.
 
 ---
 
@@ -226,7 +226,7 @@ export default defineConfig({
 });
 ```
 
-When set to `"auto"` (or omitted), Atlas detects the mode from environment variables. See [Authentication](/self-hosted/deployment/authentication) for full setup guides.
+When set to `"auto"` (or omitted), Atlas detects the mode from environment variables. See <AudienceLink selfHosted="/self-hosted/deployment/authentication">Authentication</AudienceLink> for full setup guides.
 
 ---
 
@@ -302,7 +302,7 @@ Connection pools are automatically warmed at startup and drained when consecutiv
 | `ATLAS_POOL_WARMUP` | `2` | Number of `SELECT 1` probes per connection at startup. `0` disables warmup |
 | `ATLAS_POOL_DRAIN_THRESHOLD` | `5` | Consecutive query errors before the pool is drained and recreated |
 
-Auto-drain has a 30-second cooldown to prevent drain storms. Manual drain is available via the [admin console](/guides/admin-console#pool-stats) or `POST /api/v1/admin/connections/:id/drain`.
+Auto-drain has a 30-second cooldown to prevent drain storms. Manual drain is available via the <AudienceLink saas="/guides/admin-console#pool-stats">admin console</AudienceLink> or `POST /api/v1/admin/connections/:id/drain`.
 
 ### Per-Org Pool Isolation
 
@@ -376,7 +376,7 @@ The first three are **workspace-scoped runtime settings**, not `atlas.config.ts`
 | Auto-Promote Min Repetitions | `ATLAS_LEARN_PROMOTE_MIN_REPETITIONS` | Platform | `5` | Minimum times a pending pattern must be seen before auto-promotion |
 | Pattern Decay Window (days) | `ATLAS_LEARN_DECAY_UNSEEN_DAYS` | Platform | `30` | An auto-promoted pattern unseen this long is demoted to pending. Human approvals are never auto-demoted |
 
-See [Learned query patterns](/guides/semantic-expert#learned-query-patterns) for how performance-weighting and the nightly job work together.
+See <AudienceLink saas="/guides/semantic-expert#learned-query-patterns">Learned query patterns</AudienceLink> for how performance-weighting and the nightly job work together.
 
 ```bash
 ATLAS_LEARN_CONFIDENCE_THRESHOLD=0.7
@@ -423,7 +423,7 @@ ATLAS_STARTER_PROMPT_MAX_FAVORITES=10
 
 Define RLS policies that inject WHERE clauses on every query based on user JWT claims. Each policy specifies which tables it applies to, which column to filter on, and which JWT claim provides the value.
 
-See [Row-Level Security](/security/row-level-security) for the full guide.
+See <AudienceLink saas="/security/row-level-security">Row-Level Security</AudienceLink> for the full guide.
 
 <Tabs items={["Single policy", "Per-table policies", "All tables", "OR-combined"]}>
 <Tab value="Single policy">
@@ -558,7 +558,7 @@ For per-table policies or multi-condition policies, use the config file.
 
 ## Actions
 
-Configure the [action framework](/guides/actions) with default approval modes and per-action overrides.
+Configure the <AudienceLink saas="/guides/actions">action framework</AudienceLink> with default approval modes and per-action overrides.
 
 ```typescript
 // atlas.config.ts — action framework
@@ -623,7 +623,7 @@ export default defineConfig({
 });
 ```
 
-See [Scheduled Tasks](/guides/scheduled-tasks) for the full guide.
+See <AudienceLink saas="/guides/scheduled-tasks">Scheduled Tasks</AudienceLink> for the full guide.
 
 ---
 
@@ -959,7 +959,7 @@ Each entry in `configSchema` is a strict object with the following fields:
 - **Form entries need a schema.** When `install_model === "form"`, `configSchema` is required and must be non-empty. A missing or empty schema fails Zod parsing at config-load time (the install route can't validate user input without it)
 - **Strict shape.** Every entry is parsed with `.strict()` — unknown fields are rejected
 
-See also: [`packages/api/src/lib/config.ts:CatalogEntrySchema`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/config.ts) for the authoritative Zod schema, and the [Plugin Catalog deployment guide](/deployment/plugin-catalog) for the seeder behaviour.
+See also: [`packages/api/src/lib/config.ts:CatalogEntrySchema`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/config.ts) for the authoritative Zod schema, and the <AudienceLink saas="/deployment/plugin-catalog">Plugin Catalog deployment guide</AudienceLink> for the seeder behaviour.
 
 ---
 
@@ -1090,7 +1090,7 @@ export default defineConfig({
 
 - [Environment Variables](/reference/environment-variables) — Env-var-only configuration (used when no config file exists)
 - [CLI Reference](/reference/cli) — `atlas validate` checks your config file for errors
-- [Deploy](/self-hosted/deployment/deploy) — Platform-specific deployment with config examples
-- [Multi-Datasource Routing](/deployment/multi-datasource) — Guide for configuring multiple datasources
+- <AudienceLink selfHosted="/self-hosted/deployment/deploy">Deploy</AudienceLink> — Platform-specific deployment with config examples
+- <AudienceLink saas="/deployment/multi-datasource">Multi-Datasource Routing</AudienceLink> — Guide for configuring multiple datasources
 - [Plugin Authoring Guide](/plugins/authoring-guide) — Building plugins registered via the config file
-- [Row-Level Security](/security/row-level-security) — Full RLS guide for the `rls` config option
+- <AudienceLink saas="/security/row-level-security">Row-Level Security</AudienceLink> — Full RLS guide for the `rls` config option

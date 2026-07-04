@@ -361,7 +361,7 @@ metrics:
 4. **Use metrics** -- If a question matches a defined metric, the agent uses that metric's SQL exactly
 5. **Write validated SQL** -- The agent writes a query using only tables and columns defined in the semantic layer
 
-The semantic layer also powers the [table whitelist](/security/sql-validation) -- queries can only reference tables that have an entity YAML file.
+The semantic layer also powers the <AudienceLink saas="/security/sql-validation">table whitelist</AudienceLink> -- queries can only reference tables that have an entity YAML file.
 
 ---
 
@@ -382,7 +382,7 @@ Use `atlas diff` to detect schema drift between your database and semantic layer
 bun run atlas -- diff                    # Compare DB schema vs YAML files
 ```
 
-See the [Schema Evolution guide](/deployment/schema-evolution) for a complete workflow on detecting drift, updating YAMLs, and preserving manual enrichments. See [CLI Reference](/reference/cli) for all options.
+See the <AudienceLink saas="/deployment/schema-evolution">Schema Evolution guide</AudienceLink> for a complete workflow on detecting drift, updating YAMLs, and preserving manual enrichments. See [CLI Reference](/reference/cli) for all options.
 
 ---
 
@@ -404,7 +404,7 @@ Re-run `atlas init --enrich` after manual edits to fill in any missing fields wi
 ## See Also
 
 - [Semantic Layer Concepts](/getting-started/concepts) — Definitions of entities, dimensions, measures, joins, and metrics
-- [Schema Evolution](/deployment/schema-evolution) — Detect database drift and update your semantic layer
+- <AudienceLink saas="/deployment/schema-evolution">Schema Evolution</AudienceLink> — Detect database drift and update your semantic layer
 - [CLI Reference](/reference/cli#init) — `atlas init` command flags for profiling databases
 - [Configuration](/reference/config#semantic-layer-path) — Override the default semantic layer directory
-- [SQL Validation Pipeline](/security/sql-validation) — How entity YAMLs define the table whitelist
+- <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink> — How entity YAMLs define the table whitelist

@@ -33,7 +33,7 @@ Atlas works across four onboarding shapes. Pick the one that matches what you wa
   />
   <Card
     title="Self-host on my infrastructure"
-    href="/getting-started/quick-start"
+    href="/self-hosted/getting-started/quick-start"
     description="Docker, Vercel, Railway — your data never leaves your network. Free and AGPL-licensed."
   />
 </Cards>
@@ -97,7 +97,7 @@ The YAML format is a first-class concept. Read these before authoring anything i
 
 <Accordion title="For developers — plugin authoring, architecture, frameworks">
 
-- [Bring Your Own Frontend](/frameworks/overview) — Use Atlas with any frontend framework (Nuxt, SvelteKit, React/Vite, TanStack Start)
+- [Bring Your Own Frontend](/self-hosted/frameworks/overview) — Use Atlas with any frontend framework (Nuxt, SvelteKit, React/Vite, TanStack Start)
 - [Plugin Authoring Guide](/plugins/authoring-guide) — Build datasource, context, interaction, action, and sandbox plugins
 - [Sandbox Architecture](/architecture/sandbox) — Platform-agnostic code execution sandboxing design
 - [SQL Validation Pipeline](/security/sql-validation) — 7-layer defense-in-depth for read-only SQL enforcement; REST/OpenAPI operations get their own parallel safety stack via `validateRestOperation` (see [OpenAPI / Generic REST datasources](/plugins/datasources/openapi-generic))
@@ -107,8 +107,8 @@ The YAML format is a first-class concept. Read these before authoring anything i
 
 <Accordion title="Deployment & operations">
 
-- [Deploy](/deployment/deploy) — One-click deploy to Railway, Vercel, or Docker
-- [Authentication](/deployment/authentication) — Configure auth modes: none, API key, managed, BYOT
+- [Deploy](/self-hosted/deployment/deploy) — One-click deploy to Railway, Vercel, or Docker
+- [Authentication](/self-hosted/deployment/authentication) — Configure auth modes: none, API key, managed, BYOT
 - [Multi-Datasource Routing](/deployment/multi-datasource) — Route per-conversation across datasources, including cross-environment scope
 - [Schema Evolution](/deployment/schema-evolution) — Detecting database drift with `atlas diff` and the inline drift drawer
 

@@ -8,7 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 The sandbox is the isolated execution environment that Atlas uses to run the **explore** tool (file browsing, grep, find on the semantic layer) and **Python** tool (data analysis scripts). The admin page lets you select which backend to use and — in SaaS mode — connect your own cloud sandbox providers.
 
 <Callout title="Prerequisites">
-- [Managed auth](/deployment/authentication#managed-auth) enabled
+- Managed auth enabled
 - A user with the `admin` role
 </Callout>
 
@@ -200,7 +200,7 @@ When the **Sidecar** backend is selected, an additional **Sidecar URL** field ap
 - Leave empty to use the platform default
 
 <Callout type="info">
-The sidecar is a separate service that runs explore and Python commands in an isolated container. See the [Docker deployment example](/deployment/deploy#deploy-with-docker) for a production sidecar setup.
+The sidecar is a separate service that runs explore and Python commands in an isolated container. See the [Docker deployment example](/self-hosted/deployment/deploy#deploy-with-docker) for a production sidecar setup.
 </Callout>
 
 <Callout type="info">
@@ -285,4 +285,4 @@ All endpoints require admin authentication.
 - [Admin Console](/guides/admin-console) — Overview of all admin pages
 - [Integrations Hub](/guides/integrations) — Connect Slack, Teams, and other platforms
 - [Environment Variables](/reference/environment-variables) — Full variable reference
-- [Docker Deployment](/deployment/deploy#deploy-with-docker) — Sidecar setup in Docker
+- [Docker Deployment](/self-hosted/deployment/deploy#deploy-with-docker) — Sidecar setup in Docker

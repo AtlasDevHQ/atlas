@@ -9,7 +9,7 @@ import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 Atlas exposes a Hono-based HTTP API. All endpoints are mounted under `/api/`. Use the [SDK](/reference/sdk) for a typed client, or call the API directly.
 
 <Callout>
-For detailed endpoint documentation with request/response schemas, see the **[interactive API Reference](/api-reference/chat/postChat)**, auto-generated from the OpenAPI specification.
+For detailed endpoint documentation with request/response schemas, see the **<AudienceLink saas="/api-reference/chat/postChat">interactive API Reference</AudienceLink>**, auto-generated from the OpenAPI specification.
 </Callout>
 
 ## OpenAPI Specification
@@ -36,7 +36,7 @@ All examples below use `http://localhost:3001` as the base URL. Replace with you
 
 ## Authentication
 
-Authentication headers depend on the configured [auth mode](/self-hosted/deployment/authentication):
+Authentication headers depend on the configured <AudienceLink selfHosted="/self-hosted/deployment/authentication">auth mode</AudienceLink>:
 
 | Auth Mode | Header |
 |-----------|--------|
@@ -428,7 +428,7 @@ See [Environment Variables](/reference/environment-variables) for configuration.
 
 CORS is configured via `ATLAS_CORS_ORIGIN` (defaults to `*`). When an explicit origin is set, credentials (cookies) are allowed. The `Retry-After`, `x-conversation-id`, and `x-run-id` headers are exposed to the client.
 
-For cross-origin managed auth deployments, see the [cross-origin section](/self-hosted/deployment/authentication#cross-origin-deployment) in the authentication guide.
+For cross-origin managed auth deployments, see the <AudienceLink selfHosted="/self-hosted/deployment/authentication#cross-origin-deployment">cross-origin section</AudienceLink> in the authentication guide.
 
 ---
 
@@ -437,5 +437,5 @@ For cross-origin managed auth deployments, see the [cross-origin section](/self-
 - [SDK Reference](/reference/sdk) — Typed TypeScript client for the Atlas API
 - [Error Codes](/reference/error-codes) — Full catalog of every error code, HTTP status, and retry guidance
 - [Environment Variables](/reference/environment-variables) — Configuration that affects API behavior
-- [Authentication](/self-hosted/deployment/authentication) — Auth mode setup and configuration
-- [Rate Limiting & Retry](/guides/rate-limiting) — Rate limit configuration and client-side handling
+- <AudienceLink selfHosted="/self-hosted/deployment/authentication">Authentication</AudienceLink> — Auth mode setup and configuration
+- <AudienceLink saas="/guides/rate-limiting">Rate Limiting & Retry</AudienceLink> — Rate limit configuration and client-side handling

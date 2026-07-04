@@ -734,7 +734,7 @@ Atlas datasources are not limited to SQL. Point Atlas at any REST service that p
 
 REST/OpenAPI datasources install from **Admin &gt; Connections** like any other datasource. For a generic API, paste its OpenAPI spec URL plus a credential; pre-wired vendors need less setup — Stripe and Notion take just a credential (no spec URL), and GitHub connects via OAuth. Either way, no `bun run atlas -- init` step is needed; the operation surface comes from the spec.
 
-See the [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic) guide for the full walkthrough, and [Multi-Datasource Routing](/deployment/multi-datasource) for mixing REST and SQL sources in one deployment.
+See the [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic) guide for the full walkthrough, and <AudienceLink saas="/deployment/multi-datasource">Multi-Datasource Routing</AudienceLink> for mixing REST and SQL sources in one deployment.
 
 ---
 
@@ -776,7 +776,7 @@ See [Semantic Layer](/getting-started/semantic-layer) for a deep dive, or [CLI R
 ## Multi-source configuration
 
 <Callout type="info">
-For a comprehensive guide on how the agent routes queries across datasources, semantic layer organization per source, cross-source relationships, and troubleshooting, see [Multi-Datasource Routing](/deployment/multi-datasource).
+For a comprehensive guide on how the agent routes queries across datasources, semantic layer organization per source, cross-source relationships, and troubleshooting, see <AudienceLink saas="/deployment/multi-datasource">Multi-Datasource Routing</AudienceLink>.
 </Callout>
 
 To query multiple datasources from a single Atlas deployment, list them in `atlas.config.ts`:
@@ -846,15 +846,15 @@ ATLAS_QUERY_TIMEOUT=15000
 
 Lower the row limit to reduce load. Reduce the timeout to kill runaway queries faster.
 
-For multi-tenant deployments, see [Row-Level Security](/security/row-level-security).
+For multi-tenant deployments, see <AudienceLink saas="/security/row-level-security">Row-Level Security</AudienceLink>.
 
 ---
 
 ## See Also
 
 - [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic) — Connect Stripe, GitHub, Notion, Twenty, or any OpenAPI 3.x service
-- [Multi-Datasource Routing](/deployment/multi-datasource) — Connect multiple databases and REST APIs in a single deployment
+- <AudienceLink saas="/deployment/multi-datasource">Multi-Datasource Routing</AudienceLink> — Connect multiple databases and REST APIs in a single deployment
 - [Configuration](/reference/config#datasources) — Declarative datasource configuration in `atlas.config.ts`
 - [Semantic Layer](/getting-started/semantic-layer) — Generate entity YAML files from your connected database
 - [CLI Reference](/reference/cli#init) — `atlas init` command for profiling your database
-- [Row-Level Security](/security/row-level-security) — Automatic data isolation per tenant
+- <AudienceLink saas="/security/row-level-security">Row-Level Security</AudienceLink> — Automatic data isolation per tenant

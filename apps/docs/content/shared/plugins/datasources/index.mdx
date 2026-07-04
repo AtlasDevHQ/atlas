@@ -45,5 +45,5 @@ Never commit credentials to version control. Use environment variables (`process
 | Connection caching | No (stateless REST) | No (stateless HTTP) | Yes (in-process) | Yes (pool) | Yes (pool) | Yes (session) | No (stateless `fetch`) |
 
 <Callout type="info">
-The table above compares the **SQL** datasources. REST services are connected through the built-in [OpenAPI (Generic REST)](/plugins/datasources/openapi-generic) datasource instead — the agent calls operations via the `executeRestOperation` tool (not `executeSQL`), reads are allowed by default, and writes require a per-endpoint `write_allowlist` plus confirm-before-write. See [Multi-Datasource Routing](/deployment/multi-datasource) for mixing REST and SQL sources in one deployment.
+The table above compares the **SQL** datasources. REST services are connected through the built-in [OpenAPI (Generic REST)](/plugins/datasources/openapi-generic) datasource instead — the agent calls operations via the `executeRestOperation` tool (not `executeSQL`), reads are allowed by default, and writes require a per-endpoint `write_allowlist` plus confirm-before-write. See <AudienceLink saas="/deployment/multi-datasource">Multi-Datasource Routing</AudienceLink> for mixing REST and SQL sources in one deployment.
 </Callout>

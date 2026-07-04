@@ -181,19 +181,19 @@ Every feature in the table below calls `requireEnterprise(...)` or `requireEnter
 
 | Category | Feature label | What's gated | Guide |
 |---|---|---|---|
-| **Identity** | `sso` | SAML 2.0 / OIDC providers, domain verification, IdP test connection, auto-provisioning toggles | [Enterprise SSO](/guides/enterprise-sso) |
-| **Identity** | `scim` | SCIM 2.0 connections, group mapping, sync-status endpoints | [SCIM Directory Sync](/guides/scim) |
-| **Identity** | `roles` | Custom role definitions, permission flag CRUD, role assignment beyond the built-in admin/member/owner triad | [Custom Roles](/guides/custom-roles) |
-| **Network** | `ip-allowlist` | CIDR allowlist CRUD, request-time allowlist enforcement | [IP Allowlisting](/guides/ip-allowlisting) |
-| **Governance** | `approval-workflows` | Approval rules, request lifecycle, expiration sweeps, pending-count queries | [Approval Workflows](/guides/approval-workflows) |
-| **Compliance** | `pii-detection` | Column classification CRUD, masking config, PII scan triggers (write paths via `requireEnterpriseEffect`); query-time row masking gated inline via `isEnterpriseEnabled()` in `masking.ts` so AGPL deployments simply skip masking instead of failing the query | [PII Masking](/guides/pii-masking) |
-| **Compliance** | `compliance` | SOC 2 / ISO / GDPR report generation, evidence aggregation | [Compliance Reporting](/guides/compliance-reporting) |
-| **Audit** | `audit-retention` | Long-tail retention policies, archive/export, retention policy CRUD | [Audit Retention](/guides/audit-retention) |
-| **Platform** | `backups` | Scheduled backups, restore, integrity verification | [Backups](/platform-ops/backups) |
-| **Platform** | `model-routing` | Per-workspace model overrides, routing rules, BYOT model config beyond defaults | [Model Routing](/guides/model-routing) |
-| **Platform** | `branding` | White-label branding, custom logo / colors / favicon, hosted-product theming | [White Labeling](/guides/white-labeling) |
-| **Platform** | (admin-domains route) | Custom domains for SaaS workspaces — gated inline via `Effect.fail(new EnterpriseError(...))` in `admin-domains.ts` rather than a `requireEnterprise` label | [Custom Domains](/platform-ops/custom-domains) |
-| **Platform ops** | (resolveDeployMode) | Abuse prevention surfaces, data residency routing, SLA monitoring — gated indirectly via `isEnterpriseEnabled()` checks at the service-init layer rather than per-call `requireEnterprise` | [Abuse Prevention](/platform-ops/abuse-prevention), [Data Residency](/platform-ops/data-residency) |
+| **Identity** | `sso` | SAML 2.0 / OIDC providers, domain verification, IdP test connection, auto-provisioning toggles | <AudienceLink saas="/guides/enterprise-sso">Enterprise SSO</AudienceLink> |
+| **Identity** | `scim` | SCIM 2.0 connections, group mapping, sync-status endpoints | <AudienceLink saas="/guides/scim">SCIM Directory Sync</AudienceLink> |
+| **Identity** | `roles` | Custom role definitions, permission flag CRUD, role assignment beyond the built-in admin/member/owner triad | <AudienceLink saas="/guides/custom-roles">Custom Roles</AudienceLink> |
+| **Network** | `ip-allowlist` | CIDR allowlist CRUD, request-time allowlist enforcement | <AudienceLink saas="/guides/ip-allowlisting">IP Allowlisting</AudienceLink> |
+| **Governance** | `approval-workflows` | Approval rules, request lifecycle, expiration sweeps, pending-count queries | <AudienceLink saas="/guides/approval-workflows">Approval Workflows</AudienceLink> |
+| **Compliance** | `pii-detection` | Column classification CRUD, masking config, PII scan triggers (write paths via `requireEnterpriseEffect`); query-time row masking gated inline via `isEnterpriseEnabled()` in `masking.ts` so AGPL deployments simply skip masking instead of failing the query | <AudienceLink saas="/guides/pii-masking">PII Masking</AudienceLink> |
+| **Compliance** | `compliance` | SOC 2 / ISO / GDPR report generation, evidence aggregation | <AudienceLink saas="/guides/compliance-reporting">Compliance Reporting</AudienceLink> |
+| **Audit** | `audit-retention` | Long-tail retention policies, archive/export, retention policy CRUD | <AudienceLink saas="/guides/audit-retention">Audit Retention</AudienceLink> |
+| **Platform** | `backups` | Scheduled backups, restore, integrity verification | <AudienceLink saas="/platform-ops/backups">Backups</AudienceLink> |
+| **Platform** | `model-routing` | Per-workspace model overrides, routing rules, BYOT model config beyond defaults | <AudienceLink saas="/guides/model-routing">Model Routing</AudienceLink> |
+| **Platform** | `branding` | White-label branding, custom logo / colors / favicon, hosted-product theming | <AudienceLink saas="/guides/white-labeling">White Labeling</AudienceLink> |
+| **Platform** | (admin-domains route) | Custom domains for SaaS workspaces — gated inline via `Effect.fail(new EnterpriseError(...))` in `admin-domains.ts` rather than a `requireEnterprise` label | <AudienceLink saas="/platform-ops/custom-domains">Custom Domains</AudienceLink> |
+| **Platform ops** | (resolveDeployMode) | Abuse prevention surfaces, data residency routing, SLA monitoring — gated indirectly via `isEnterpriseEnabled()` checks at the service-init layer rather than per-call `requireEnterprise` | <AudienceLink saas="/platform-ops/abuse-prevention">Abuse Prevention</AudienceLink>, <AudienceLink saas="/platform-ops/data-residency">Data Residency</AudienceLink> |
 
 The labels are stable identifiers — once a feature ships with a label, audit log entries and admin UI surfaces lock onto it. Don't rename a label without a migration plan.
 

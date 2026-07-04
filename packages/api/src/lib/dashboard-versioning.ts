@@ -923,14 +923,19 @@ export function getDashboardDraftRetentionDays(): number {
  */
 export async function cleanupAbandonedDrafts(): Promise<number> {
   if (!hasInternalDB()) return 0;
-  const retentionDays = getDashboardDraftRetentionDays();
+  // Floor BEFORE the disable gate: a fractional window in (0, 1) must disable
+  // the sweep, NOT delete every draft. `make_interval(days => 0)` is a zero
+  // interval, so `updated_at < now()` matches every row — flooring 0.5 → 0
+  // first, then gating on `<= 0`, keeps the integer-day domain the thing that's
+  // actually checked (any window < 1 day disables rather than nukes).
+  const retentionDays = Math.floor(getDashboardDraftRetentionDays());
   if (retentionDays <= 0) return 0;
   try {
     const rows = await internalQuery<{ user_id: string }>(
       `DELETE FROM dashboard_user_drafts
         WHERE updated_at < now() - make_interval(days => $1::int)
         RETURNING user_id`,
-      [Math.floor(retentionDays)],
+      [retentionDays],
     );
     if (rows.length > 0) {
       log.info(

@@ -1068,24 +1068,25 @@ authed.use(requireOrgContext());
 
 /**
  * True when this caller's direct-manipulation edits must route to their
- * per-user draft instead of the published tables. Requires drafts-on AND a
- * real user id.
+ * per-user draft instead of the published tables. Requires a real user id.
  *
- * The `!userId` fall-through to the legacy direct-published write is
- * DEFENSIVE, not a deliberate open hole: every direct-manipulation route here
- * is behind `authed` + `requireOrgContext()`, so a caller normally always has
- * a `user.id`. The only way to reach it with no user is a single-operator
+ * The `!userId` fall-through to the direct-published write is DEFENSIVE, not a
+ * deliberate open hole: every direct-manipulation route here is behind
+ * `authed` + `requireOrgContext()`, so a caller normally always has a
+ * `user.id`. The only way to reach it with no user is a single-operator
  * `auth: none` self-host — where there is exactly one operator and no teammate
  * to leak a live edit to, so writing published directly is safe. This is
  * intentionally ASYMMETRIC with the bound-tool path (`bound-dashboard.ts`
  * `maybeApplyToDraft`), which *rejects* the no-user case: the bound editor can
  * run in a hosted/multi-user context without a userId, so an unattributable
- * bound edit going live IS the ADR-0029 privacy hole. A deploy with no internal
- * DB also keeps this direct path — there's no draft store to hold the edit.
+ * bound edit going live IS the ADR-0029 privacy hole.
  *
  * Drafts themselves are UNCONDITIONAL (#4324): the retired
  * `ATLAS_DASHBOARD_DRAFTS_ENABLED` gate no longer factors in — the only reason
- * a CRUD write skips the draft store is a genuinely absent `userId`.
+ * a CRUD write skips the draft store is a genuinely absent `userId`. (When a
+ * userId IS present but the internal DB is absent, the edit does NOT fall
+ * through to a direct write — `applyEditToDraft` returns `no_db` → 503; there
+ * are no dashboards to edit on a no-internal-DB deploy anyway.)
  */
 function shouldRouteToDraft(userId: string | null | undefined): userId is string {
   return typeof userId === "string" && userId.length > 0;

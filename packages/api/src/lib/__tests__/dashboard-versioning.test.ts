@@ -1157,10 +1157,12 @@ describe("dashboard-versioning DB helpers", () => {
       expect(queryCalls[0].params).toEqual([DEFAULT_DASHBOARD_DRAFT_RETENTION_DAYS]);
     });
 
-    it("hot-reloads the retention window from the settings registry per call", async () => {
-      // The knob resolves through the settings registry (env tier here) with no
-      // module reload — the reader is called per sweep, so an operator change
-      // takes effect without a restart.
+    it("re-reads the retention window per call (no import-time caching)", async () => {
+      // The reader resolves the knob on every sweep (here via the env tier of
+      // getSettingAuto) rather than caching at import — so an operator change
+      // to the setting takes effect on the very next sweep, no restart. This is
+      // the per-call property the hot-reloadable settings registry relies on;
+      // the DB-override (Admin-console) tier rides the same reader.
       process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS = "7";
       expect(getDashboardDraftRetentionDays()).toBe(7);
       enableInternalDB();
@@ -1179,6 +1181,34 @@ describe("dashboard-versioning DB helpers", () => {
 
     it("is a no-op (no query) when the window is disabled (<= 0)", async () => {
       process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS = "0";
+      enableInternalDB();
+      const swept = await cleanupAbandonedDrafts();
+      expect(swept).toBe(0);
+      expect(queryCalls).toHaveLength(0);
+    });
+
+    it("disables the sweep for a fractional window < 1 day (never mass-deletes)", async () => {
+      // Regression: floor-before-gate. A value in (0, 1) floors to 0; without
+      // flooring FIRST, `make_interval(days => 0)` would match every row and
+      // wipe the whole table. It must disable instead — no query fired.
+      process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS = "0.5";
+      enableInternalDB();
+      const swept = await cleanupAbandonedDrafts();
+      expect(swept).toBe(0);
+      expect(queryCalls).toHaveLength(0);
+    });
+
+    it("floors a fractional window >= 1 to whole days before binding", async () => {
+      process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS = "2.9";
+      enableInternalDB();
+      setResults({ rows: [] });
+      await cleanupAbandonedDrafts();
+      expect(queryCalls[0].params).toEqual([2]);
+    });
+
+    it("returns 0 without querying when the setting is non-numeric (misconfiguration)", async () => {
+      process.env.ATLAS_DASHBOARD_DRAFT_RETENTION_DAYS = "not-a-number";
+      expect(getDashboardDraftRetentionDays()).toBe(0);
       enableInternalDB();
       const swept = await cleanupAbandonedDrafts();
       expect(swept).toBe(0);

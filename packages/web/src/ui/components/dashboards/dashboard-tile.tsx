@@ -236,8 +236,8 @@ function drilldownValueFromRow(
  * column can't render a thousand-item menu (drilldown is for a handful of
  * categories; the table view remains the path for long tails).
  */
-const DRILLDOWN_MENU_CAP = 100;
-function distinctCategoryValues(
+export const DRILLDOWN_MENU_CAP = 100;
+export function distinctCategoryValues(
   rows: Record<string, unknown>[],
   categoryColumn: string,
   cap: number = DRILLDOWN_MENU_CAP,

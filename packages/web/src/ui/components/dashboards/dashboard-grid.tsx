@@ -273,9 +273,10 @@ export function DashboardGrid({
       {/* #4323 — fullscreen tile as a REAL dialog: Radix gives focus trap +
           return, an opaque backdrop with click-away, and aria-modal. The tile
           renders again here (not moved) so the grid underneath keeps its place;
-          the in-grid Maximize button opens it, the tile's own Exit-fullscreen
-          button / Esc / backdrop close it. Rendered for the RGL grid only —
-          the mobile stack is already a single-column read-only view. */}
+          a Maximize button opens it, the tile's own Exit-fullscreen button /
+          Esc / backdrop close it. The dialog is shared — reachable from BOTH
+          the desktop grid and the mobile stack, since each wires its tile's
+          Maximize to `setFullscreenId`. */}
       <Dialog
         open={!!fullscreenCard}
         onOpenChange={(open) => {

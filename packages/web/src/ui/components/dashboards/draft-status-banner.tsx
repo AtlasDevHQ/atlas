@@ -144,7 +144,13 @@ export function DraftStatusBanner({
               size="sm"
               variant="outline"
               className="h-7 border-amber-300 bg-white text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-zinc-900 dark:text-amber-100 dark:hover:bg-amber-900/30"
-              onClick={() => onDiscardOpenChange(true)}
+              onClick={() => {
+                // #4323 — clear any prior publish/rebase/discard error so the
+                // dialog's in-place error surface opens clean, rather than
+                // showing a stale message from an earlier attempt.
+                onDismissError?.();
+                onDiscardOpenChange(true);
+              }}
               disabled={discarding || publishing}
               data-testid="draft-discard-button"
             >

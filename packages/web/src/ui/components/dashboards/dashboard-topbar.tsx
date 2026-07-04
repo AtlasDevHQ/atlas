@@ -96,8 +96,9 @@ export function DashboardTopBar({
 
   // #4323 — the dashboard is viewing-first on touch. Editing means dragging /
   // resizing tiles on a 24-col grid, which needs a fine pointer; on a coarse
-  // (touch) pointer the grid renders a read-only stack anyway, so we HIDE the
-  // View/Edit toggle rather than show it inert, and explain why in one line.
+  // (touch) pointer we HIDE the View/Edit toggle rather than show it inert, and
+  // explain in one line where to edit. (Tracks the INPUT, not the viewport — a
+  // wide touch tablet still can't usefully drag-arrange.)
   const coarsePointer = useCoarsePointer();
 
   // Resync the draft when the canonical title changes (e.g. after a server save

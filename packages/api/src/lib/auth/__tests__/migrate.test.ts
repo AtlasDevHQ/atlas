@@ -459,6 +459,10 @@ describe("migrateAuthTables", () => {
             // knowledge_sync_state for bundle-sync collections. Atlas-internal
             // tables, no FK to a Better Auth table, so it runs in every auth mode.
             { name: "0164_knowledge_bundle_sync.sql" },
+            // 0165 (#4320) — dashboards.first_published_at one-way visibility
+            // marker. An Atlas-internal column, no FK to a Better Auth table, so
+            // it runs in every auth mode — NOT a MANAGED_AUTH_MIGRATION.
+            { name: "0165_dashboard_first_published_at.sql" },
           ],
         };
       }

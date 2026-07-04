@@ -7934,9 +7934,20 @@
                     "minLength": 1,
                     "maxLength": 200
                   },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "chart",
+                      "text"
+                    ]
+                  },
                   "sql": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "content": {
+                    "type": "string",
+                    "maxLength": 5000
                   },
                   "chartConfig": {
                     "type": [
@@ -8159,8 +8170,7 @@
                   }
                 },
                 "required": [
-                  "title",
-                  "sql"
+                  "title"
                 ]
               }
             }
@@ -8371,6 +8381,10 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200
+                  },
+                  "sql": {
+                    "type": "string",
+                    "minLength": 1
                   },
                   "chartConfig": {
                     "type": [
@@ -9406,6 +9420,7 @@
           }
         ],
         "requestBody": {
+          "required": false,
           "content": {
             "application/json": {
               "schema": {

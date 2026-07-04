@@ -195,6 +195,22 @@ describe("applyChangeToDraft", () => {
     expect(result.snapshot.cards[0].sql).toBe(base.cards[0].sql);
   });
 
+  it("updateCard replaces the card's sql in place, leaving other fields (#4318)", () => {
+    const base = snapshot([card("c1", { title: "Keep", sql: "SELECT 1" })]);
+    const result = applyChangeToDraft(base, {
+      kind: "updateCard",
+      cardId: "c1",
+      updates: { sql: "SELECT 2" },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.cards[0].sql).toBe("SELECT 2");
+    // Only sql changed — title (and every other field) is untouched.
+    expect(result.snapshot.cards[0].title).toBe("Keep");
+    // Pure: original snapshot unmodified.
+    expect(base.cards[0].sql).toBe("SELECT 1");
+  });
+
   it("updateCard returns unknown_card when card is missing", () => {
     const base = snapshot([card("c1")]);
     const result = applyChangeToDraft(base, {

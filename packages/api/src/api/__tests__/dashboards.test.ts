@@ -496,7 +496,14 @@ mock.module("@atlas/api/lib/config", () => ({
 }));
 
 import { createConnectionMock } from "@atlas/api/testing/connection";
-mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
+// #4318 — controllable so the preview-card org-check tests can force a
+// connection out of the caller's org (returns false → route 403s).
+const mockIsConnectionVisibleInMode = mock(
+  (..._args: unknown[]): Promise<boolean> => Promise.resolve(true),
+);
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({ isConnectionVisibleInMode: mockIsConnectionVisibleInMode }),
+);
 
 // Import after all mocks. The dynamic import avoids hoisting routes/dashboards.ts
 // past the mock.module() calls — a static `import` would load the module before
@@ -576,6 +583,9 @@ describe("dashboard routes", () => {
       truncated: false,
       maskingApplied: false,
     });
+    // #4318 — default: every connection is in the caller's org (visible).
+    mockIsConnectionVisibleInMode.mockReset();
+    mockIsConnectionVisibleInMode.mockResolvedValue(true);
     mockListSessionsForDashboard.mockReset();
     mockListSessionsForDashboard.mockResolvedValue([]);
     mockGetSessionTranscript.mockReset();
@@ -935,6 +945,63 @@ describe("dashboard routes", () => {
       const body = (await response.json()) as { error: string };
       expect(body.error).toBe("invalid_connection_group");
     });
+
+    // #4318 — REST/draft parity: a text / section card is creatable via REST.
+    it("creates a text card via REST, forwarding content (no sql) to addCard", async () => {
+      mockAddCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Section", kind: "text", content: "## Top of funnel" }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      const addArgs = mockAddCard.mock.calls[0] as unknown as [{ content?: string | null; sql: string }];
+      expect(addArgs[0].content).toBe("## Top of funnel");
+      // A text card stores sql = '' and never reaches the SQL pipeline.
+      expect(addArgs[0].sql).toBe("");
+    });
+
+    it("returns 422 for a text card with no content and never calls addCard (#4318)", async () => {
+      mockAddCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Section", kind: "text" }),
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    it("returns 422 for a text card that also carries sql and never calls addCard (#4318)", async () => {
+      mockAddCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Section", kind: "text", content: "# H", sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    it("returns 422 for a chart card that carries content and never calls addCard (#4318)", async () => {
+      mockAddCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // kind defaults to "chart"; `content` is only valid on a text card.
+          body: JSON.stringify({ title: "Revenue", sql: "SELECT 1", content: "# nope" }),
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -989,6 +1056,21 @@ describe("dashboard routes", () => {
       expect(clearResp.status).toBe(200);
       const clearArgs = mockUpdateCard.mock.calls[0] as unknown as [string, string, { annotations?: unknown }];
       expect(clearArgs[2].annotations).toEqual([]);
+    });
+
+    // #4318 — REST/draft parity: a card's SQL is editable via REST.
+    it("forwards a card-SQL edit to updateCard (#4318)", async () => {
+      mockUpdateCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT COUNT(*) FROM orders" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const args = mockUpdateCard.mock.calls[0] as unknown as [string, string, { sql?: string }];
+      expect(args[2].sql).toBe("SELECT COUNT(*) FROM orders");
     });
   });
 
@@ -1181,6 +1263,60 @@ describe("dashboard routes", () => {
       const callArgs = mockRunUserQueryPipeline.mock.calls[0][0];
       expect(callArgs).toMatchObject({ sql: "SELECT 1", connectionId: "analytics-replica" });
     });
+
+    // #4318 — preview-card verifies a client-supplied connectionId belongs to
+    // the caller's org BEFORE executing (parity with addCard's group check).
+    it("rejects a connectionId outside the caller's org with 403, never executing (#4318)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      // The connection is not visible in the caller's workspace.
+      mockIsConnectionVisibleInMode.mockResolvedValueOnce(false);
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1", connectionId: "other-org-conn" }),
+        }),
+      );
+      expect(response.status).toBe(403);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("connection_forbidden");
+      // Fail closed: the SQL never reached the pipeline.
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+      // The org check was actually consulted with the caller's org + connection.
+      expect(mockIsConnectionVisibleInMode).toHaveBeenCalledTimes(1);
+      const [orgArg, connArg] = mockIsConnectionVisibleInMode.mock.calls[0] as unknown as [string, string, string];
+      expect(orgArg).toBe("org-1");
+      expect(connArg).toBe("other-org-conn");
+    });
+
+    it("executes when the connectionId is in the caller's org (#4318)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockIsConnectionVisibleInMode.mockResolvedValueOnce(true);
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1", connectionId: "in-org-conn" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+    });
+
+    it("skips the org check when no connectionId is supplied (#4318)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockIsConnectionVisibleInMode.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/preview-card`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockIsConnectionVisibleInMode).not.toHaveBeenCalled();
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1286,6 +1422,29 @@ describe("dashboard routes", () => {
       // date_from defaulted (a resolved ISO date), q supplied.
       expect(callArgs.parameters?.q).toBe("paid");
       expect(callArgs.parameters?.date_from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    // #4318 — a body-less POST falls back to parameter defaults (mirrors the
+    // export route's `?? {}`) rather than throwing a 500 on `undefined`.
+    it("renders with parameter defaults when the request has no body (never 500) (#4318)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: paramDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: paramCard });
+
+      // No body, no Content-Type — the body-less case that previously 500'd.
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+      const callArgs = mockRunUserQueryPipeline.mock.calls[0][0];
+      // Every parameter resolved to its default: date_from → an ISO date, q → its
+      // declared null default.
+      expect(callArgs.parameters?.date_from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(callArgs.parameters?.q).toBeNull();
     });
 
     it("rejects an invalid parameter value with 400 (never reaches the pipeline)", async () => {
@@ -3061,6 +3220,49 @@ describe("dashboard routes", () => {
       expect(change.kind).toBe("addCard");
       expect(change.card).toMatchObject({ title: "New card", sql: "SELECT 1" });
       expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    // #4318 — a text card creates via REST into the draft: content carried,
+    // sql = '' (a text card never touches the SQL pipeline).
+    it("POST /:id/cards stages a TEXT card into the draft with content + empty sql (#4318)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "Section", kind: "text", content: "## Funnel" }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; card?: { content?: string | null; sql: string } },
+      ];
+      expect(change.kind).toBe("addCard");
+      expect(change.card).toMatchObject({ content: "## Funnel", sql: "" });
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    // #4318 — a card-SQL edit routes to the draft's updateCard change.
+    it("PATCH /:id/cards/:cardId routes a SQL edit to the draft updateCard change (#4318)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sql: "SELECT 42" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; cardId: string; updates: { sql?: string } },
+      ];
+      expect(change).toMatchObject({ kind: "updateCard", cardId: VALID_CARD_ID });
+      expect(change.updates).toMatchObject({ sql: "SELECT 42" });
+      expect(mockUpdateCard).not.toHaveBeenCalled();
     });
 
     it("PATCH /:id/cards/:cardId updates the draft card (published updateCard not called)", async () => {

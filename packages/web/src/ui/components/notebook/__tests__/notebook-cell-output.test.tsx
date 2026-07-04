@@ -83,6 +83,9 @@ test("finished cell renders receipt → answer → promoted artifact via the sha
   // Receipt is collapsed: activity narration stays hidden until expanded.
   expect(container.textContent).not.toContain("Let me check the schema.");
   expect(getByRole("button", { name: /Explored schema/ })).toBeTruthy();
+  // The answer's copy affordance (#4296) ships on the notebook surface too —
+  // AgentTurn is the shared seam.
+  expect(getByRole("button", { name: "Copy answer" })).toBeTruthy();
   // Notebook chrome: everything sits inside the AssistantTurn gutter.
   const gutter = container.querySelector('[data-slot="assistant-turn"]');
   expect(gutter).not.toBeNull();

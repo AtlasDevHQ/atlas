@@ -1,5 +1,6 @@
 "use client";
 
+import { CopyButton } from "./copy-button";
 import { Markdown } from "./markdown";
 import { ToolPart } from "./tool-part";
 import { parseSuggestions } from "../../lib/helpers";
@@ -62,6 +63,15 @@ export function AgentTurn({
     ({ part }) => parseSuggestions(part.text).text.trim(),
   );
 
+  // What the copy affordance writes (#4296): the answer's markdown SOURCE with
+  // the <suggestions> block stripped — the same source text the Markdown
+  // blocks below render (trimmed per part), joined across parts, not the
+  // rendered DOM text.
+  const answerCopyText = answer
+    .map(({ part }) => parseSuggestions(part.text).text.trim())
+    .filter(Boolean)
+    .join("\n\n");
+
   // Working phase: the answer hasn't begun, the live feed is the whole turn.
   if (streaming && !hasRenderedAnswer) {
     return <WorkingActivity parts={parts ?? []} pythonProgress={pythonProgress} />;
@@ -91,19 +101,39 @@ export function AgentTurn({
           activityAwaitsUser(receiptActivity)
         }
       />
-      {answer.map(({ part, index }) => {
-        const displayText = parseSuggestions(part.text).text;
-        if (!displayText.trim()) return null;
-        return (
-          <div
-            key={index}
-            data-testid="turn-answer"
-            className="max-w-[90%] text-[0.9375rem] leading-relaxed text-zinc-800 dark:text-zinc-200"
-          >
-            <Markdown content={displayText} />
-          </div>
-        );
-      })}
+      {hasRenderedAnswer && (
+        // Named group so the hover reveal can't be hijacked by a bare `group`
+        // ancestor — notebook-cell.tsx's root has one (same guard as
+        // conversations/conversation-item.tsx). space-y-2 matches the spacing
+        // both consumers' containers put between answer parts. The wrapper is
+        // unconditional across the stream settling so the answer blocks keep
+        // their DOM position (no remount) when the copy row appears.
+        <div className="group/turn-answer space-y-2">
+          {answer.map(({ part, index }) => {
+            const displayText = parseSuggestions(part.text).text;
+            if (!displayText.trim()) return null;
+            return (
+              <div
+                key={index}
+                data-testid="turn-answer"
+                className="max-w-[90%] text-[0.9375rem] leading-relaxed text-zinc-800 dark:text-zinc-200"
+              >
+                <Markdown content={displayText} />
+              </div>
+            );
+          })}
+          {/* #4296 — copy the answer's markdown source. Finished turns only:
+              a still-streaming answer is incomplete, so offering to copy it
+              would hand out a truncated snapshot. Always visible below the
+              md: breakpoint (proxy for touch layouts); revealed on
+              hover/focus from md: up. */}
+          {!streaming && (
+            <div className="opacity-100 transition-opacity md:opacity-0 md:group-focus-within/turn-answer:opacity-100 md:group-hover/turn-answer:opacity-100">
+              <CopyButton text={answerCopyText} label="Copy answer" />
+            </div>
+          )}
+        </div>
+      )}
       {!streaming && answerBearingArtifact && (
         <div className="max-w-[95%]" data-testid="answer-artifact">
           <ToolPart

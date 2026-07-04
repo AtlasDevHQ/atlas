@@ -208,8 +208,11 @@ describe("AgentTurn (streaming)", () => {
     );
     rerender(<AgentTurn parts={parts} streaming={false} />);
     expect(getByTestId("answer-artifact")).not.toBeNull();
-    expect(getByRole("button").textContent).toContain("Explored schema");
-    expect(getByRole("button").textContent).not.toContain("query");
+    // Settling also reveals the answer's CopyButton (#4296) — locate the
+    // receipt toggle by its aria-expanded state, not as the only button.
+    const settledToggle = getByRole("button", { expanded: false });
+    expect(settledToggle.textContent).toContain("Explored schema");
+    expect(settledToggle.textContent).not.toContain("query");
   });
 
   test("a receipt expanded mid-stream stays expanded when the stream settles", () => {
@@ -222,7 +225,9 @@ describe("AgentTurn (streaming)", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
 
     rerender(<AgentTurn parts={parts} streaming={false} />);
-    expect(getByRole("button").getAttribute("aria-expanded")).toBe("true");
+    // Settling also reveals the answer's CopyButton (#4296) — locate the
+    // receipt toggle by its aria-expanded state, not as the only button.
+    expect(getByRole("button", { expanded: true })).not.toBeNull();
     // Expanded receipt (explore card) + the now-promoted artifact.
     expect(queryAllByTestId("tool-part-stub")).toHaveLength(2);
   });

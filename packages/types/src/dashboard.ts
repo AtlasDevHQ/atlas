@@ -301,6 +301,84 @@ export interface DashboardWithCards extends Omit<Dashboard, "cardCount"> {
 }
 
 // ---------------------------------------------------------------------------
+// Shared-view projection (#4316)
+//
+// The public / org share endpoint serializes a MINIMAL, data-only snapshot —
+// never the full {@link DashboardWithCards}. A shared link exposes the rendered
+// result (title/description + per-card title/kind/chart-config/annotations/
+// cached data/layout) and NOTHING that reveals how the data was produced. The
+// query internals a viewer must never see — every card's raw `sql`, its
+// `connectionGroupId`, the dashboard's owner/org ids, refresh cron, and the
+// live parameter DEFINITIONS — are absent at the TYPE layer, so a field cannot
+// leak by an omitted redaction step (a new field on {@link DashboardCard} does
+// not silently appear on the wire; it has to be added here explicitly).
+//
+// The runtime Zod mirror is `sharedDashboardViewSchema` in `@useatlas/schemas`;
+// the server-side projection is `projectSharedDashboardView` in
+// `@atlas/api/lib/dashboards`.
+// ---------------------------------------------------------------------------
+
+/**
+ * One card in a shared snapshot. A deliberate subset of {@link DashboardCard}:
+ * it carries what the read-only renderer needs (`title`, `kind`, `chartConfig`,
+ * `content`, `annotations`, the cached `columns`/`rows`/`cachedAt`, `layout`,
+ * plus `id`/`position` for React keys + ordering) and OMITS `sql` and every
+ * internal identifier (`dashboardId`, `connectionGroupId`). The renderer never
+ * re-executes a query on the shared surface, so it never needs the SQL.
+ */
+export interface SharedDashboardCard {
+  id: string;
+  position: number;
+  title: string;
+  kind: DashboardCardKind;
+  chartConfig: DashboardChartConfig | null;
+  content: string | null;
+  annotations: DashboardCardAnnotation[];
+  cachedColumns: string[] | null;
+  cachedRows: Record<string, unknown>[] | null;
+  cachedAt: string | null;
+  layout: DashboardCardLayout | null;
+}
+
+/**
+ * One frozen, display-only entry in a shared snapshot's parameter summary
+ * (#4316). It states the resolved value the snapshot represents for a single
+ * dashboard parameter (e.g. `{ label: "Region", displayValue: "All" }`) so a
+ * viewer knows the snapshot's frame — WITHOUT exposing the parameter's `key`,
+ * `type`, or `default` (its definition) and WITHOUT any interactive control:
+ * the shared view is a snapshot, not a live query surface.
+ */
+export interface SharedDashboardParameterSummaryItem {
+  label: string;
+  displayValue: string;
+}
+
+/**
+ * The minimal, data-only shape the share endpoint serializes for both public
+ * (no-auth) and org (authenticated) share modes — a snapshot, never the live
+ * dashboard. Excludes `ownerId`, `orgId`, `shareToken`, `refreshSchedule`, and
+ * the parameter DEFINITIONS present on {@link DashboardWithCards}; the frozen
+ * {@link parameterSummary} conveys the snapshot's parameter frame instead.
+ */
+export interface SharedDashboardView {
+  title: string;
+  description: string | null;
+  shareMode: ShareMode;
+  cards: SharedDashboardCard[];
+  /**
+   * Frozen `{ label, displayValue }` summary of the snapshot's parameter frame
+   * — empty when the dashboard declares no parameters. The server projection
+   * ALWAYS emits it (at least `[]`). Optional only for wire forward-compat: a
+   * pre-#4316 API build that predates the projection omits it, so a newer web
+   * client must tolerate its absence (`?? []`) across a deploy-overlap window.
+   */
+  parameterSummary?: SharedDashboardParameterSummaryItem[];
+  createdAt: string;
+  updatedAt: string;
+  lastRefreshAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // AI-suggested cards
 // ---------------------------------------------------------------------------
 

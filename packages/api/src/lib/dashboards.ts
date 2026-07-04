@@ -23,8 +23,12 @@ import type {
   DashboardWithCards,
   DashboardChartConfig,
   DashboardParameter,
+  SharedDashboardCard,
+  SharedDashboardParameterSummaryItem,
+  SharedDashboardView,
 } from "@atlas/api/lib/dashboard-types";
 import { DASHBOARD_GRID } from "@atlas/api/lib/dashboard-types";
+import { resolveDateExpression, DashboardParameterError } from "@atlas/api/lib/dashboard-parameters";
 import { dashboardParametersSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
@@ -811,10 +815,113 @@ export async function getShareStatus(
 
 export type SharedDashboardFailReason = "no_db" | "not_found" | "expired" | "error";
 
+/**
+ * Access-control facts a share request needs to gate on, kept SEPARATE from the
+ * serialized {@link SharedDashboardView} (#4316). `orgId` is an internal id the
+ * viewer must never receive, but the route needs it to verify org membership —
+ * returning it here (not on the view) lets the handler gate without ever being
+ * able to spill it into the JSON body it returns.
+ */
+export interface SharedDashboardAccess {
+  shareMode: ShareMode;
+  orgId: string | null;
+}
+
+/**
+ * Format one dashboard parameter as a frozen, display-only summary value
+ * (#4316). Resolves the parameter's DEFAULT (the value the cached snapshot was
+ * built with) to a human string — never the `key`, `type`, or raw default
+ * expression. A `null` default reads as "All" (an unfiltered dimension, e.g.
+ * "Region: All"). A relative-date default (`now - 30 days`) is resolved to a
+ * concrete ISO date via the same server-side resolver the render path uses.
+ */
+function formatParameterDisplayValue(param: DashboardParameter, now: Date): string {
+  if (param.default === null || param.default === undefined) return "All";
+  if (param.type === "date") {
+    try {
+      return resolveDateExpression(String(param.default), now);
+    } catch (err) {
+      // `resolveDateExpression` throws ONLY `DashboardParameterError` on a
+      // malformed default. Narrow to it and re-throw anything else, so a future
+      // resolver change that throws a different error isn't silently relabeled
+      // as an "unparseable date". A malformed date must not break the whole
+      // shared snapshot — fall back to the raw literal (display-only text,
+      // never bound to SQL here). Logged so a bad persisted default stays
+      // visible.
+      if (!(err instanceof DashboardParameterError)) throw err;
+      log.warn(
+        { paramKey: param.key, default: param.default, err: errorMessage(err) },
+        "Shared parameter summary: unparseable date default — using raw literal",
+      );
+      return String(param.default);
+    }
+  }
+  return String(param.default);
+}
+
+/**
+ * Build the frozen `{ label, displayValue }` parameter summary for a shared
+ * snapshot (#4316) — one entry per declared parameter, in declaration order.
+ * Display-only: no keys, no definitions, no controls. Exported for unit tests.
+ */
+export function buildSharedParameterSummary(
+  parameters: DashboardParameter[] | null | undefined,
+  now: Date = new Date(),
+): SharedDashboardParameterSummaryItem[] {
+  return (parameters ?? []).map((param) => ({
+    label: param.label,
+    displayValue: formatParameterDisplayValue(param, now),
+  }));
+}
+
+/** Project one full {@link DashboardCard} down to the data-only shared shape
+ *  (#4316). Field-by-field construction — NOT a spread-then-delete — so `sql`
+ *  and the internal ids (`dashboardId`, `connectionGroupId`) are structurally
+ *  never copied across, and a new field on `DashboardCard` cannot ride along by
+ *  omission. */
+function projectSharedCard(card: DashboardCard): SharedDashboardCard {
+  return {
+    id: card.id,
+    position: card.position,
+    title: card.title,
+    kind: card.kind,
+    chartConfig: card.chartConfig,
+    content: card.content,
+    annotations: card.annotations,
+    cachedColumns: card.cachedColumns,
+    cachedRows: card.cachedRows,
+    cachedAt: card.cachedAt,
+    layout: card.layout,
+  };
+}
+
+/**
+ * Project a full {@link DashboardWithCards} into the minimal, data-only
+ * {@link SharedDashboardView} the share endpoint serializes (#4316). The
+ * projection is the single place the shared payload is constructed for BOTH
+ * public and org share modes — one shape, no per-mode divergence. Exported for
+ * unit tests. `now` is injectable for deterministic parameter-summary dates.
+ */
+export function projectSharedDashboardView(
+  dashboard: DashboardWithCards,
+  now: Date = new Date(),
+): SharedDashboardView {
+  return {
+    title: dashboard.title,
+    description: dashboard.description,
+    shareMode: dashboard.shareMode,
+    cards: dashboard.cards.map(projectSharedCard),
+    parameterSummary: buildSharedParameterSummary(dashboard.parameters, now),
+    createdAt: dashboard.createdAt,
+    updatedAt: dashboard.updatedAt,
+    lastRefreshAt: dashboard.lastRefreshAt,
+  };
+}
+
 export async function getSharedDashboard(
   token: string,
 ): Promise<
-  | { ok: true; data: DashboardWithCards }
+  | { ok: true; view: SharedDashboardView; access: SharedDashboardAccess }
   | { ok: false; reason: SharedDashboardFailReason }
 > {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
@@ -840,15 +947,16 @@ export async function getSharedDashboard(
     );
 
     const dashboard = rowToDashboard(dash);
-    // Strip shareToken from public response — callers already know the token
-    const { cardCount: _, shareToken: _token, ...rest } = dashboard;
+    const view = projectSharedDashboardView(
+      { ...dashboard, cards: cardRows.map(rowToCard) },
+      new Date(),
+    );
+    // `orgId` rides in `access`, not `view` — the route gates org membership on
+    // it but can only serialize `view`, so the internal id can't leak (#4316).
     return {
       ok: true,
-      data: {
-        ...rest,
-        shareToken: null,
-        cards: cardRows.map(rowToCard),
-      },
+      view,
+      access: { shareMode: dashboard.shareMode, orgId: dashboard.orgId },
     };
   } catch (err) {
     log.error({ err: errorMessage(err) }, "getSharedDashboard failed");

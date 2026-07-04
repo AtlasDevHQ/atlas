@@ -15,6 +15,9 @@ import {
   dashboardCardAnnotationSchema,
   dashboardCardAnnotationsSchema,
   DASHBOARD_ANNOTATIONS_MAX,
+  sharedDashboardCardSchema,
+  sharedDashboardParameterSummaryItemSchema,
+  sharedDashboardViewSchema,
 } from "../dashboard";
 
 describe("dashboardParameterSchema", () => {
@@ -431,5 +434,99 @@ describe("dashboardDrilldownConfigSchema", () => {
     expect(
       dashboardDrilldownConfigSchema.safeParse({ targetParam: "region", crossFilter: true }).success,
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared-view projection (#4316 — data-only snapshot)
+// ---------------------------------------------------------------------------
+
+describe("sharedDashboardCardSchema (#4316)", () => {
+  const validCard = {
+    id: "card-1",
+    position: 0,
+    title: "Revenue",
+    kind: "chart" as const,
+    chartConfig: { type: "bar", categoryColumn: "month", valueColumns: ["total"] },
+    content: null,
+    annotations: [],
+    cachedColumns: ["month", "total"],
+    cachedRows: [{ month: "Jan", total: 1000 }],
+    cachedAt: "2026-04-04T00:00:00.000Z",
+    layout: { x: 0, y: 0, w: 12, h: 6 },
+  };
+
+  test("accepts a minimal data-only card", () => {
+    expect(sharedDashboardCardSchema.safeParse(validCard).success).toBe(true);
+  });
+
+  test("rejects a card that leaks sql (strict — no query internals on the wire)", () => {
+    expect(
+      sharedDashboardCardSchema.safeParse({ ...validCard, sql: "SELECT 1" }).success,
+    ).toBe(false);
+  });
+
+  test("rejects a card that leaks connectionGroupId / dashboardId", () => {
+    expect(
+      sharedDashboardCardSchema.safeParse({ ...validCard, connectionGroupId: "cg-1" }).success,
+    ).toBe(false);
+    expect(
+      sharedDashboardCardSchema.safeParse({ ...validCard, dashboardId: "d-1" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("sharedDashboardParameterSummaryItemSchema (#4316)", () => {
+  test("accepts a frozen { label, displayValue } pair", () => {
+    expect(
+      sharedDashboardParameterSummaryItemSchema.safeParse({ label: "Region", displayValue: "All" })
+        .success,
+    ).toBe(true);
+  });
+
+  test("rejects a leaked parameter definition field (key/type/default)", () => {
+    for (const stray of [{ key: "region" }, { type: "text" }, { default: null }]) {
+      expect(
+        sharedDashboardParameterSummaryItemSchema.safeParse({
+          label: "Region",
+          displayValue: "All",
+          ...stray,
+        }).success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe("sharedDashboardViewSchema (#4316)", () => {
+  const validView = {
+    title: "Revenue",
+    description: "Quarterly",
+    shareMode: "public" as const,
+    cards: [],
+    parameterSummary: [{ label: "Date", displayValue: "2026-06-01" }],
+    createdAt: "2026-04-01T00:00:00.000Z",
+    updatedAt: "2026-04-02T00:00:00.000Z",
+    lastRefreshAt: null,
+  };
+
+  test("round-trips a valid data-only snapshot", () => {
+    const parsed = sharedDashboardViewSchema.safeParse(validView);
+    expect(parsed.success).toBe(true);
+  });
+
+  test("accepts both public and org share modes", () => {
+    expect(sharedDashboardViewSchema.safeParse({ ...validView, shareMode: "org" }).success).toBe(true);
+  });
+
+  test("rejects a snapshot that leaks orgId / ownerId / shareToken / refreshSchedule / parameters", () => {
+    for (const stray of [
+      { orgId: "org-1" },
+      { ownerId: "u-1" },
+      { shareToken: "tok" },
+      { refreshSchedule: "0 * * * *" },
+      { parameters: [] },
+    ]) {
+      expect(sharedDashboardViewSchema.safeParse({ ...validView, ...stray }).success).toBe(false);
+    }
   });
 });

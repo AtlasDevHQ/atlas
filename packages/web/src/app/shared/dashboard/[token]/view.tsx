@@ -22,6 +22,11 @@ export function SharedDashboardView({ dashboard }: { dashboard: SharedDashboard 
     ? new Date(capturedIso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
     : null;
   const tileCount = dashboard.cards.length;
+  // #4316 — the frozen, display-only parameter summary. Older API builds that
+  // predate the projection may omit `parameterSummary`; default to `[]` so the
+  // page still renders. These are static `{ label, displayValue }` chips — the
+  // snapshot's frame, NOT interactive controls (the shared view has no /render).
+  const parameterSummary = dashboard.parameterSummary ?? [];
 
   return (
     <div className="flex min-h-screen flex-col bg-white dark:bg-zinc-950 print:bg-white print:text-black">
@@ -79,6 +84,26 @@ export function SharedDashboardView({ dashboard }: { dashboard: SharedDashboard 
               </>
             )}
           </div>
+          {parameterSummary.length > 0 && (
+            <dl
+              className="mt-3 flex flex-wrap items-center gap-2"
+              aria-label="Snapshot parameters"
+            >
+              {parameterSummary.map((param) => (
+                <div
+                  key={param.label}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-xs dark:border-zinc-800 dark:bg-zinc-900 print:border-zinc-300 print:bg-transparent"
+                >
+                  <dt className="font-medium text-zinc-500 dark:text-zinc-400">
+                    {param.label}
+                  </dt>
+                  <dd className="font-medium text-zinc-800 dark:text-zinc-200">
+                    {param.displayValue}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
         </header>
 
         {tileCount === 0 ? (

@@ -25,10 +25,8 @@ import { useRunStatus } from "../hooks/use-run-status";
 import { useResumeHandler } from "../hooks/use-resume-handler";
 import { useStopHandler } from "../hooks/use-stop-handler";
 import { ApiKeyBar } from "./chat/api-key-bar";
-import { TypingIndicator } from "./chat/typing-indicator";
-import { ToolPart } from "./chat/tool-part";
-import { FinishedTurn } from "./chat/finished-turn";
-import { Markdown } from "./chat/markdown";
+import { AgentTurn } from "./chat/agent-turn";
+import { WorkingActivity, showPreStreamActivity } from "./chat/working-activity";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { SuggestionChips } from "./chat/suggestion-chips";
 import {
@@ -69,6 +67,13 @@ import { parseSuggestions } from "../lib/helpers";
 import { ErrorBoundary } from "./error-boundary";
 import { useUiStore } from "@/lib/stores/ui-store";
 import { chatSearchParams, resolveConversationUrlAction } from "./search-params";
+import type { TurnPart } from "./chat/turn-partitioner";
+
+/* Stable empty parts for the pre-stream working feed (#4300) — a hoisted
+   constant keeps the prop reference identical across renders, so React
+   Compiler memoization of the container holds (empty parts render no keyed
+   children; keying was never at stake). */
+const NO_PARTS: readonly TurnPart[] = [];
 
 /* Static SVG icons — hoisted to avoid recreation on every render */
 const MenuIcon = (
@@ -1312,12 +1317,13 @@ export function AtlasChat({
                       m.role === "assistant" &&
                       msgIndex === messages.length - 1;
 
-                    // #4298 — only the actively-streaming turn keeps the live
-                    // part-by-part renderer; every completed turn renders
-                    // answer-first (receipt → answer → promoted artifact) via
-                    // the turn partitioner. Earlier messages are completed by
-                    // definition; the last one is completed once the stream
-                    // settles.
+                    // #4298 / #4300 — every assistant turn renders through the
+                    // one lifecycle-aware AgentTurn: the actively-streaming
+                    // turn gets the live working feed → settles into the
+                    // receipt as the answer streams; completed turns render
+                    // answer-first (receipt → answer → promoted artifact).
+                    // Keeping the component identity stable across the flip
+                    // preserves receipt/card state at stream end.
                     const isStreamingTurn = isLastAssistant && isLoading;
 
                     // Skip rendering assistant messages with no visible content
@@ -1345,31 +1351,11 @@ export function AtlasChat({
                         {hasWarnings && warningBucket && (
                           <ContextWarningBanner warnings={warningBucket.warnings} />
                         )}
-                        {isStreamingTurn ? (
-                          m.parts?.map((part, i) => {
-                            if (part.type === "text" && part.text.trim()) {
-                              const displayText = parseSuggestions(part.text).text;
-                              if (!displayText.trim()) return null;
-                              return (
-                                <div key={i} className="max-w-[90%]">
-                                  <div className="rounded-xl bg-zinc-100 px-4 py-3 text-sm text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">
-                                    <Markdown content={displayText} />
-                                  </div>
-                                </div>
-                              );
-                            }
-                            if (isToolUIPart(part)) {
-                              return (
-                                <div key={i} className="max-w-[95%]">
-                                  <ToolPart part={part} pythonProgress={pythonProgress} />
-                                </div>
-                              );
-                            }
-                            return null;
-                          })
-                        ) : (
-                          <FinishedTurn parts={m.parts} pythonProgress={pythonProgress} />
-                        )}
+                        <AgentTurn
+                          parts={m.parts}
+                          pythonProgress={pythonProgress}
+                          streaming={isStreamingTurn}
+                        />
                         {/* Show inline error when the last assistant message is empty (stream failed before producing content) */}
                         {isLastAssistant && !hasVisibleParts && !isLoading && error && (
                           <div className="max-w-[90%]">
@@ -1421,7 +1407,15 @@ export function AtlasChat({
                     );
                   })}
 
-                  {isLoading && messages.length > 0 && <TypingIndicator />}
+                  {/* #4300 — the working phase begins at send, not at first
+                      stream part: until the assistant message mounts, a
+                      standalone activity container holds the spot the
+                      streaming turn's feed then takes over — same component,
+                      same position, so it reads as one element ticking. No
+                      message-count gate: the very first send shows it too. */}
+                  {showPreStreamActivity(isLoading, messages[messages.length - 1]?.role) && (
+                    <WorkingActivity parts={NO_PARTS} />
+                  )}
                 </div>
                 </ErrorBoundary>
                 </ScrollArea>

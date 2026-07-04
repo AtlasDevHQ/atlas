@@ -15,10 +15,10 @@ import React from "react";
 import { render, cleanup, fireEvent } from "@testing-library/react";
 
 afterEach(cleanup);
-import { FinishedTurn } from "@/ui/components/chat/finished-turn";
+import { AgentTurn } from "@/ui/components/chat/agent-turn";
 import type { TurnPart } from "@/ui/components/chat/turn-partitioner";
 
-test("finished turn renders receipt, answer, and real SQL result card", () => {
+test("finished agent turn renders receipt, answer, and real SQL result card", () => {
   const parts = [
     { type: "text", text: "Let me check the schema." },
     {
@@ -52,7 +52,7 @@ test("finished turn renders receipt, answer, and real SQL result card", () => {
     },
   ] as TurnPart[];
 
-  const { container, getByRole, getByTestId } = render(<FinishedTurn parts={parts} />);
+  const { container, getByRole, getByTestId } = render(<AgentTurn parts={parts} />);
 
   // Receipt line + dominant answer + promoted artifact with its affordances.
   const toggle = getByRole("button", { name: /Explored schema/ });

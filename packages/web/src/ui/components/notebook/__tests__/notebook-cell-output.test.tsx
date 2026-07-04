@@ -1,6 +1,6 @@
 /**
  * Notebook cell output renders finished assistant turns through the SHARED
- * turn partitioner + turn components (#4301) — the same FinishedTurn the chat
+ * turn partitioner + turn components (#4301) — the same AgentTurn the chat
  * transcript uses (#4298) — so the two surfaces cannot drift in formatting.
  * Notebook-specific chrome (typing indicator, "No output yet", collapsed
  * preview, the AssistantTurn gutter, rerun comparison, live-run failure
@@ -9,7 +9,7 @@
  * The partition/receipt policy matrix (defaultOpen, pending interactive
  * cards, suggestion stripping) lives in
  * ui/components/chat/__tests__/turn-receipt.test.tsx and
- * ui/__tests__/finished-turn.test.tsx (both relative to src/) — not
+ * ui/__tests__/agent-turn.test.tsx (both relative to src/) — not
  * re-tested here.
  */
 

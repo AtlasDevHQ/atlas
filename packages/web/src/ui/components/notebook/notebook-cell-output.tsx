@@ -4,7 +4,7 @@ import type { UIMessage } from "@ai-sdk/react";
 import { isToolUIPart } from "ai";
 import type { CellStatus, PreviousExecution } from "./types";
 import { AssistantTurn } from "@/ui/components/chat/assistant-turn";
-import { FinishedTurn } from "@/ui/components/chat/finished-turn";
+import { AgentTurn } from "@/ui/components/chat/agent-turn";
 import { ToolPart } from "@/ui/components/chat/tool-part";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
@@ -49,12 +49,13 @@ export function NotebookCellOutput({ assistantMessage, status, collapsed, previo
   // #4301 — finished cells render through the same partitioner + turn
   // components as the chat transcript (receipt → answer → promoted artifact),
   // so the two surfaces cannot drift in formatting. Only the actively-running
-  // cell keeps the live part-by-part renderer below, mirroring the chat's
-  // streaming-turn carve-out (#4298).
+  // cell keeps the live part-by-part renderer below — the chat's live path
+  // moved to the working-phase feed (#4300); converging the running cell on
+  // it is deliberately out of that slice's scope.
   if (status !== "running") {
     return (
       <AssistantTurn className="space-y-2 text-sm">
-        <FinishedTurn parts={assistantMessage.parts} previousExecution={previousExecution} />
+        <AgentTurn parts={assistantMessage.parts} previousExecution={previousExecution} />
       </AssistantTurn>
     );
   }

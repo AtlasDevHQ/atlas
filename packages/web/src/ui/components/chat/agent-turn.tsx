@@ -1,0 +1,118 @@
+"use client";
+
+import { Markdown } from "./markdown";
+import { ToolPart } from "./tool-part";
+import { parseSuggestions } from "../../lib/helpers";
+import { activityAwaitsUser, partitionTurn, type TurnPart } from "./turn-partitioner";
+import { TurnReceipt } from "./turn-receipt";
+import { WorkingActivity } from "./working-activity";
+import type { PythonProgressData } from "./python-result-card";
+import type { PreviousExecution } from "../notebook/types";
+
+/**
+ * Answer-first rendering of an agent turn across its whole lifecycle
+ * (#4298 finished shape, #4300 live phases — CONTEXT.md § Chat turn
+ * presentation):
+ *
+ * - **Working phase** (`streaming`, no answer text yet): the live
+ *   `WorkingActivity` feed — one compact line per step, results collapsed.
+ * - **Settled, still streaming** (answer text has begun): the activity
+ *   settles into the collapsed `TurnReceipt` and the answer streams as the
+ *   dominant element. The would-be promoted artifact stays inside the
+ *   receipt until the stream ends — expanding a chart mid-flight is exactly
+ *   the layout churn this design removes, and the v1 partition heuristic can
+ *   still reclassify trailing narration as activity if another step follows.
+ * - **Finished** (`streaming` false, the default): receipt → answer → at
+ *   most one promoted answer-bearing artifact.
+ *
+ * The transcript renders every assistant message through this one component
+ * (the streaming flag flips on the last turn) so the receipt's open state and
+ * the state of cards that stay inside it survive the stream settling — a
+ * receipt expanded mid-stream stays expanded. (The promoted artifact's card
+ * remounts when it leaves the receipt at stream end, so its own toggles reset
+ * — mid-stream it is deliberately not rendered in its promoted position.) The
+ * suggestion chips and Save/Share row stay with the caller
+ * (they belong to the transcript row, not the turn's parts). Consumed by
+ * both the chat transcript and the notebook cell output (#4301) — the shared
+ * seam that keeps the two surfaces from drifting in formatting.
+ */
+export function AgentTurn({
+  parts,
+  pythonProgress,
+  previousExecution,
+  streaming = false,
+}: {
+  parts: readonly TurnPart[] | undefined;
+  pythonProgress?: Map<string, PythonProgressData[]>;
+  /**
+   * Notebook rerun-comparison metadata (#4301). Deliberately bound to the
+   * promoted artifact's SQL card only — the snapshot describes the cell's
+   * result, not the intermediate queries inside the receipt. Notebook-only:
+   * the artifact isn't rendered while `streaming`, so combining the two
+   * props is a harmless no-op, not a supported state.
+   */
+  previousExecution?: PreviousExecution;
+  /** True while this turn's stream is still open (#4300 live rendering). */
+  streaming?: boolean;
+}) {
+  const { activity, answer, answerBearingArtifact } = partitionTurn(parts);
+
+  // A text part can be all <suggestions> block — stripped, it renders nothing.
+  const hasRenderedAnswer = answer.some(
+    ({ part }) => parseSuggestions(part.text).text.trim(),
+  );
+
+  // Working phase: the answer hasn't begun, the live feed is the whole turn.
+  if (streaming && !hasRenderedAnswer) {
+    return <WorkingActivity parts={parts ?? []} pythonProgress={pythonProgress} />;
+  }
+
+  // Mid-stream the artifact is not promoted out (see the doc comment above):
+  // fold it back into the receipt at its original position so the work stays
+  // inspectable and the summary counts every query that ran.
+  const receiptActivity =
+    streaming && answerBearingArtifact
+      ? [...activity, answerBearingArtifact].toSorted((a, b) => a.index - b.index)
+      : activity;
+
+  return (
+    <>
+      <TurnReceipt
+        activity={receiptActivity}
+        pythonProgress={pythonProgress}
+        // Start expanded when collapsing would hide the turn's substance:
+        // (a) no answer and no artifact — the activity IS the turn (e.g. an
+        // interrupted stream); (b) the activity holds an interactive card
+        // awaiting a user decision (action approval, staged change, REST write
+        // confirmation) — its buttons are the turn's point even when trailing
+        // answer text exists.
+        defaultOpen={
+          (!hasRenderedAnswer && !answerBearingArtifact) ||
+          activityAwaitsUser(receiptActivity)
+        }
+      />
+      {answer.map(({ part, index }) => {
+        const displayText = parseSuggestions(part.text).text;
+        if (!displayText.trim()) return null;
+        return (
+          <div
+            key={index}
+            data-testid="turn-answer"
+            className="max-w-[90%] text-[0.9375rem] leading-relaxed text-zinc-800 dark:text-zinc-200"
+          >
+            <Markdown content={displayText} />
+          </div>
+        );
+      })}
+      {!streaming && answerBearingArtifact && (
+        <div className="max-w-[95%]" data-testid="answer-artifact">
+          <ToolPart
+            part={answerBearingArtifact.part}
+            pythonProgress={pythonProgress}
+            previousExecution={previousExecution}
+          />
+        </div>
+      )}
+    </>
+  );
+}

@@ -90,12 +90,14 @@ function isNonEmptyText(part: TurnPart): part is TextTurnPart {
 }
 
 /**
- * Split a finished assistant turn's parts into
+ * Split an assistant turn's parts into
  * `{ activity, answer, answerBearingArtifact }`.
  *
- * Total over any parts array (in-progress tool parts are activity; a
- * still-streaming trailing text part is the answer), but this slice only
- * consumes it for completed turns — streaming turns keep the live renderer.
+ * Total over any parts array: in-progress tool parts are activity and a
+ * still-streaming trailing text part is the answer, so the streaming turn
+ * partitions mid-flight (#4300) — that is how the working phase detects the
+ * answer's start and settles into the receipt. Finished turns partition
+ * identically, which is what makes the settle transition seamless.
  */
 export function partitionTurn(parts: readonly TurnPart[] | undefined): PartitionedTurn {
   if (!parts || parts.length === 0) {
@@ -150,6 +152,20 @@ function isPendingInteractiveResult(output: unknown): boolean {
 }
 
 /**
+ * True when this part is an interactive card awaiting the user (action
+ * approval, staged change, write confirmation). Presentation must never
+ * reduce these to a summary line — the live working feed (#4300) renders
+ * them at full card weight and the receipt defaults open around them.
+ */
+export function isPendingInteractivePart(part: TurnPart): boolean {
+  return (
+    isToolUIPart(part) &&
+    part.state === "output-available" &&
+    isPendingInteractiveResult(part.output)
+  );
+}
+
+/**
  * True when any activity part is an interactive card awaiting the user
  * (action approval, staged change, write confirmation). The receipt must not
  * collapse these out of sight — even when the turn also has answer text
@@ -158,25 +174,26 @@ function isPendingInteractiveResult(output: unknown): boolean {
 export function activityAwaitsUser(
   activity: readonly IndexedTurnPart<TextTurnPart | ToolTurnPart>[],
 ): boolean {
-  return activity.some(
-    ({ part }) =>
-      isToolUIPart(part) &&
-      part.state === "output-available" &&
-      isPendingInteractiveResult(part.output),
-  );
+  return activity.some(({ part }) => isPendingInteractivePart(part));
 }
 
 /**
  * A tool execution that ended in failure: the AI SDK's `output-error` state,
- * or a completed result envelope reporting `success: false` (the executeSQL /
- * executePython family). Action envelopes have their own resolved-failure
- * states rendered by their cards; the receipt marker covers the common
- * query-failure case.
+ * a completed result envelope reporting `success: false` (the executeSQL /
+ * executePython family), or an action envelope resolved to `status: "failed"`
+ * (execution errors after approval — SMTP failure, upstream 5xx). Both the
+ * receipt summary's "N failed" count and the live working feed's failure
+ * marker (#4300) key off this — the feed reduces every non-pending step to a
+ * compact line, so a failure the predicate misses would tick off as a
+ * checkmark. Action `denied` / `timed_out` / `rolled_back` resolutions are
+ * user decisions or lifecycle outcomes, not execution failures, and stay
+ * unmarked.
  */
-function isFailedToolPart(part: ToolTurnPart): boolean {
+export function isFailedToolPart(part: ToolTurnPart): boolean {
   if (part.state === "output-error") return true;
   if (part.state !== "output-available") return false;
   const output = part.output;
+  if (isActionToolResult(output)) return output.status === "failed";
   return (
     output != null &&
     typeof output === "object" &&

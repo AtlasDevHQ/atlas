@@ -40,7 +40,9 @@ import {
   normalizeDrilldownValue,
 } from "./search-params";
 import { activeFilters, incompatibleCardIds } from "./cross-filter";
-import { renderDashboardCards } from "./dashboard-card-render";
+import { renderDashboardCard, renderDashboardCards, isRenderableCard } from "./dashboard-card-render";
+import { foldRenderEntries, mergeOverlays, phaseTag, type TileOverlay } from "./tile-phases";
+import type { TileRenderPhase } from "@/ui/components/dashboards/tile-status";
 import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banner";
 import { PublishDiffModal } from "@/ui/components/dashboards/publish-diff-modal";
 import { diffDashboards, type DashboardDiff } from "@/ui/components/dashboards/dashboard-diff";
@@ -190,9 +192,20 @@ export default function DashboardViewPage() {
 
   // #2267 — parameter bar state. `paramResults` holds ephemeral, per-viewer
   // rendered rows keyed by cardId (NOT persisted to the card cache); when set,
-  // they overlay the cached snapshot on the grid. Empty override map → show the
-  // cached snapshot (rendered server-side with the parameters' defaults).
-  const [paramResults, setParamResults] = useState<Record<string, { columns: string[]; rows: Record<string, unknown>[] }>>({});
+  // they overlay the cached snapshot on the grid. `renderedAt` resets the tile's
+  // age caption to "just now" (#4321) — a fresh parameter render is not as old
+  // as the persisted snapshot it replaced. Empty override map → show the cached
+  // snapshot (rendered server-side with the parameters' defaults).
+  const [paramResults, setParamResults] = useState<Record<string, TileOverlay>>({});
+  // #4321 — per-card render phase (loading / ok / error) for the current
+  // parameter / cross-filter batch (or a single-tile retry). This is what makes
+  // a FAILED update visible ON the tile: a failed card is recorded as `error`
+  // rather than silently dropped back to its cached unfiltered number. The tile
+  // then reads as `stale` when it has retained data (`error` leaves its prior
+  // overlay in `paramResults` untouched) or `errored` when it had none — the
+  // resolution lives in `resolveTileStatus`. There is no page-level failure
+  // banner — the tile is the unit of trust.
+  const [renderPhases, setRenderPhases] = useState<Record<string, TileRenderPhase>>({});
   const [paramLoading, setParamLoading] = useState(false);
   // #3211 — flips true once the first parameter batch (fired by the parameter
   // bar on mount with the URL's overrides) has settled. The whole-dashboard
@@ -200,11 +213,6 @@ export default function DashboardViewPage() {
   // below so it never captures the cached default board before parameterized
   // renders land.
   const [paramSettledOnce, setParamSettledOnce] = useState(false);
-  // Surfaced when one or more cards fail to render with the chosen parameters
-  // (e.g. 409 approval_required, 503 connection unavailable) — otherwise the
-  // grid would silently fall back to the cached snapshot and the filter would
-  // appear to do nothing.
-  const [paramError, setParamError] = useState<string | null>(null);
 
   // #3137 / #3207 — KPI comparison results keyed by cardId. A `kpi` card's delta
   // chip is computed client-side from its primary value vs. this comparison
@@ -664,8 +672,19 @@ export default function DashboardViewPage() {
     ? dashboard.cards.map((c) => {
         const withLayout = optimisticLayouts[c.id] ? { ...c, layout: optimisticLayouts[c.id] } : c;
         const rendered = paramResults[c.id];
+        // #4321 — overlay the fresh render AND its timestamp, so the tile's age
+        // caption reflects the parameterized render's recency, not the stale
+        // persisted `cachedAt`. A card with no successful overlay (never rendered
+        // this session, or its update FAILED) keeps its persisted snapshot; the
+        // tile's `renderPhase` marks the failed case as stale rather than passing
+        // the old number off as the current filtered one.
         return rendered
-          ? { ...withLayout, cachedColumns: rendered.columns, cachedRows: rendered.rows }
+          ? {
+              ...withLayout,
+              cachedColumns: rendered.columns,
+              cachedRows: rendered.rows,
+              cachedAt: rendered.renderedAt,
+            }
           : withLayout;
       })
     : [];
@@ -722,12 +741,13 @@ export default function DashboardViewPage() {
     // user has cleared or changed the parameters.
     const seq = ++paramReqSeq.current;
     // No overrides → show the cached snapshot (server-rendered with defaults).
-    // KPI deltas still need their comparison query though — re-fetch it against
-    // the parameter defaults so resetting the bar restores the default-period
-    // delta rather than leaving a stale one from the prior override.
+    // Clear both the ephemeral overlays and the per-tile phases so every tile
+    // reads its persisted snapshot again. KPI deltas still need their comparison
+    // query though — re-fetch it against the parameter defaults so resetting the
+    // bar restores the default-period delta rather than leaving a stale one.
     if (Object.keys(overrides).length === 0) {
       setParamResults({});
-      setParamError(null);
+      setRenderPhases({});
       setParamLoading(false);
       setParamSettledOnce(true);
       void loadDefaultComparisons();
@@ -738,7 +758,15 @@ export default function DashboardViewPage() {
     // reset) can't land afterward and overwrite this batch's delta chips.
     const cSeq = ++comparisonReqSeq.current;
     setParamLoading(true);
-    setParamError(null);
+    // #4321 — mark every chart card `loading` up front. A card still shows its
+    // prior data (dimmed) while its render is in flight; a card with no data yet
+    // shows the loading placeholder. This is the per-tile loading state.
+    const chartCardIds = dashboard.cards.filter(isRenderableCard).map((c) => c.id);
+    setRenderPhases((prev) => {
+      const next = { ...prev };
+      for (const cid of chartCardIds) next[cid] = "loading";
+      return next;
+    });
     try {
       // #3138: text cards are skipped inside renderDashboardCards (no SQL).
       // One POST per chart card, binding `overrides` server-side (#3212 drilldown
@@ -752,36 +780,92 @@ export default function DashboardViewPage() {
       });
       // A newer change superseded this batch — discard its results.
       if (seq !== paramReqSeq.current) return;
-      const next: Record<string, { columns: string[]; rows: Record<string, unknown>[] }> = {};
-      const nextComparisons: Record<string, KpiComparisonResult | null> = {};
-      const errors: string[] = [];
-      for (const entry of entries) {
-        if (entry.ok) {
-          next[entry.cardId] = { columns: entry.columns, rows: entry.rows };
-          // `comparison` is undefined for a non-KPI card (the render endpoint
-          // omits the field) — record only the KPI cards, whose value is the
-          // comparison block or `null` (comparison configured but failed).
-          if (entry.comparison !== undefined) nextComparisons[entry.cardId] = entry.comparison;
-        } else errors.push(entry.error);
-      }
-      setParamResults(next);
+      // #4321 — fold EVERY entry into a phase: successes overlay fresh rows,
+      // FAILURES become an explicit `error` phase. A failed card is never dropped
+      // (the old silent-revert bug) — the tile keeps its retained data labeled
+      // stale, with a retry, instead of masquerading the old unfiltered number.
+      const renderedAt = new Date().toISOString();
+      const { phases, comparisons: nextComparisons } = foldRenderEntries(entries, renderedAt);
+      // `ok` cards refresh their overlay + timestamp; `error` cards keep whatever
+      // overlay they had (their data stays visible, now labeled-stale). The
+      // retention rule is `mergeOverlays` — a single pure, unit-tested step.
+      setParamResults((prev) => mergeOverlays(prev, phases));
+      setRenderPhases((prev) => {
+        const next = { ...prev };
+        for (const [cardId, phase] of Object.entries(phases)) next[cardId] = phaseTag(phase);
+        return next;
+      });
       // Guarded by the shared comparison counter, not paramReqSeq — a newer
       // default-period fetch must win over this batch's deltas.
       if (cSeq === comparisonReqSeq.current) setComparisons(nextComparisons);
-      if (errors.length > 0) {
-        const distinct = [...new Set(errors)];
-        const shown = distinct.slice(0, 2).join("; ");
-        setParamError(
-          `${errors.length} card${errors.length > 1 ? "s" : ""} couldn't be updated with these parameters: ${shown}${distinct.length > 2 ? "…" : ""}`,
-        );
-      } else {
-        setParamError(null);
-      }
+    } catch (err) {
+      // `renderDashboardCards` maps every per-card failure to an `ok:false` entry,
+      // so `Promise.all` shouldn't reject — but if a future refactor lets one
+      // throw escape, flip the in-flight tiles to `error` (→ stale/errored +
+      // retry) rather than stranding the board on the loading placeholder forever.
+      if (seq !== paramReqSeq.current) return;
+      const message = err instanceof Error ? err.message : String(err);
+      console.debug("[dashboard] parameter render batch failed", { dashboardId: id, error: message });
+      setRenderPhases((prev) => {
+        const next = { ...prev };
+        for (const cid of chartCardIds) if (next[cid] === "loading") next[cid] = "error";
+        return next;
+      });
     } finally {
       if (seq === paramReqSeq.current) {
         setParamLoading(false);
         setParamSettledOnce(true);
       }
+    }
+  }
+
+  // #4321 — retry ONE tile's parameter-bound render (the stale / errored tile's
+  // one-click retry). Re-renders just this card with the CURRENT override map;
+  // on success it overlays fresh rows and flips the tile to `ok`, on failure it
+  // reads as stale (retained data) or errored (no prior data). Distinct from
+  // `onRefresh`, which re-executes AND persists the card cache (published mode) —
+  // retry is the ephemeral, parameter-aware path.
+  async function handleRetryCard(cardId: string) {
+    if (!dashboard) return;
+    const card = dashboard.cards.find((c) => c.id === cardId);
+    if (!card || card.kind === "text") return;
+    // Share the batch sequence guard: if a newer parameter change / clear lands
+    // while this retry is in flight, discard the retry's result rather than
+    // overlaying a superseded window — a silent retry would otherwise reintroduce
+    // the "board mixing two windows" trust failure this issue exists to kill.
+    const seq = paramReqSeq.current;
+    const currentOverrides = parseOverrides(dparamsRaw);
+    setRenderPhases((prev) => ({ ...prev, [cardId]: "loading" }));
+    try {
+      const entry = await renderDashboardCard(card, currentOverrides, {
+        apiUrl,
+        dashboardId: id,
+        isCrossOrigin,
+        view: editing ? "draft" : "published",
+      });
+      if (seq !== paramReqSeq.current) return;
+      if (entry.ok) {
+        const renderedAt = new Date().toISOString();
+        setParamResults((prev) => ({
+          ...prev,
+          [cardId]: { columns: entry.columns, rows: entry.rows, renderedAt },
+        }));
+        setRenderPhases((prev) => ({ ...prev, [cardId]: "ok" }));
+        if (entry.comparison !== undefined) {
+          setComparisons((prev) => ({ ...prev, [cardId]: entry.comparison ?? null }));
+        }
+      } else {
+        setRenderPhases((prev) => ({ ...prev, [cardId]: "error" }));
+      }
+    } catch (err) {
+      // Symmetric with the batch route: `renderDashboardCard` is contractually
+      // no-throw, but if a future refactor lets one escape, flip THIS tile
+      // `loading → error` (→ stale/errored + retry) rather than stranding it on
+      // the spinner forever — there's no guaranteed superseding event here.
+      if (seq !== paramReqSeq.current) return;
+      const message = err instanceof Error ? err.message : String(err);
+      console.debug("[dashboard] tile retry failed", { dashboardId: id, cardId, error: message });
+      setRenderPhases((prev) => ({ ...prev, [cardId]: "error" }));
     }
   }
 
@@ -1003,19 +1087,10 @@ export default function DashboardViewPage() {
               onClearAll={handleClearAllFilters}
             />
 
-            {paramError && (
-              <div className="mx-4 mt-3 flex items-start justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 sm:mx-6 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300">
-                <span>{paramError}</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 shrink-0 text-xs"
-                  onClick={() => setParamError(null)}
-                >
-                  Dismiss
-                </Button>
-              </div>
-            )}
+            {/* #4321 — a failed parameter / cross-filter render is surfaced ON
+                the affected tile (labeled-stale caption + retry), never a page
+                banner: the tile is the unit of trust, so a board with one stale
+                tile reads as one amber caption rather than a whole-board alert. */}
 
             {mutationError && (
               <div className="mx-4 mt-3 rounded-md border border-red-200 bg-red-50/60 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400 sm:mx-6">
@@ -1136,6 +1211,8 @@ export default function DashboardViewPage() {
                   onDrilldown={handleDrilldown}
                   incompatibleCardIds={incompatIds}
                   selectedValues={selectedValues}
+                  renderPhases={renderPhases}
+                  onRetryCard={handleRetryCard}
                   onLayoutChange={handleLayoutChange}
                   onRefresh={handleRefreshCard}
                   onDuplicate={handleDuplicate}

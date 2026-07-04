@@ -16,6 +16,10 @@ import {
   Clock,
   FilterX,
   Download,
+  AlertTriangle,
+  Inbox,
+  CircleDashed,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +37,15 @@ import { KpiCard } from "./kpi-card";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "./time-ago";
+import {
+  resolveTileStatus,
+  tileCaptionTone,
+  statusShowsData,
+  statusCanRetry,
+  type TileStatus,
+  type TileRenderPhase,
+  type CaptionTone,
+} from "./tile-status";
 import type { DashboardCard, DashboardChartConfig, KpiComparisonResult, StagedChange } from "@/ui/lib/types";
 
 const ResultChart = dynamic(
@@ -42,6 +55,83 @@ const ResultChart = dynamic(
 
 function toStringRows(columns: string[], rows: Record<string, unknown>[]): string[][] {
   return rows.map((row) => columns.map((col) => (row[col] == null ? "" : String(row[col]))));
+}
+
+/** #4321 — text colour for the age caption per tone. Muted → amber → red. */
+const TONE_TEXT: Record<CaptionTone, string> = {
+  muted: "text-zinc-500 dark:text-zinc-500",
+  amber: "text-amber-600 dark:text-amber-400",
+  red: "text-red-600 dark:text-red-400",
+};
+
+/**
+ * #4321 — the distinct body placeholders for the non-data tile states. `errored`,
+ * `empty`, and `never-run` are three visually distinct treatments (icon + copy +
+ * colour) so a blank tile always explains WHY it's blank; `loading` is a spinner.
+ * `onRetry` (present for `errored`) offers a one-click re-render.
+ */
+function TileStatePlaceholder({
+  status,
+  onRetry,
+}: {
+  status: TileStatus;
+  onRetry?: () => void;
+}) {
+  if (status === "loading") {
+    return (
+      <div
+        className="flex flex-1 items-center justify-center gap-2 px-2 text-center text-xs text-zinc-500 dark:text-zinc-400"
+        data-testid="tile-state-loading"
+      >
+        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+        <span>Loading…</span>
+      </div>
+    );
+  }
+  if (status === "errored") {
+    return (
+      <div
+        className="flex flex-1 flex-col items-center justify-center gap-2 px-2 text-center text-xs text-red-600 dark:text-red-400"
+        data-testid="tile-state-errored"
+      >
+        <AlertTriangle className="size-5" aria-hidden="true" />
+        <span>Couldn&rsquo;t load this tile.</span>
+        {onRetry && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 gap-1 border-red-300 px-2 text-[11px] text-red-600 hover:bg-red-50 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-950/30"
+            onClick={onRetry}
+            data-testid="tile-state-errored-retry"
+          >
+            <RefreshCw className="size-2.5" aria-hidden="true" />
+            Retry
+          </Button>
+        )}
+      </div>
+    );
+  }
+  if (status === "empty") {
+    return (
+      <div
+        className="flex flex-1 flex-col items-center justify-center gap-1.5 px-2 text-center text-xs text-zinc-500 dark:text-zinc-400"
+        data-testid="tile-state-empty"
+      >
+        <Inbox className="size-5" aria-hidden="true" />
+        <span>No rows match.</span>
+      </div>
+    );
+  }
+  // never-run
+  return (
+    <div
+      className="flex flex-1 flex-col items-center justify-center gap-1.5 px-2 text-center text-xs text-zinc-400 dark:text-zinc-500"
+      data-testid="tile-state-never-run"
+    >
+      <CircleDashed className="size-5" aria-hidden="true" />
+      <span>Never run — refresh to load results.</span>
+    </div>
+  );
 }
 
 type ViewMode = "chart" | "table";
@@ -84,6 +174,23 @@ interface DashboardTileProps {
    */
   incompatible?: boolean;
   selectedValue?: string;
+  /**
+   * #4321 — phase of this tile's CURRENT parameter / cross-filter render (or a
+   * single-tile retry). Drives the tile's own status: `loading` while a render
+   * is in flight, `error` when a parameter update FAILED (the tile then stays
+   * labeled-stale with its data's age instead of silently reverting to the old
+   * unfiltered number), `ok` once a fresh render lands. Undefined → no render
+   * attempted this session; the tile reflects its persisted snapshot.
+   */
+  renderPhase?: TileRenderPhase;
+  /**
+   * #4321 — one-click retry for a `stale` / `errored` tile: re-runs THIS card's
+   * render with the current parameters. Distinct from `onRefresh` (which
+   * re-executes and persists the card cache when not editing) — retry is the
+   * ephemeral, parameter-aware re-render. Undefined → the retry affordance is
+   * hidden.
+   */
+  onRetry?: (cardId: string) => void;
   onFullscreen: (cardId: string) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
@@ -133,6 +240,8 @@ function ChartTile({
   onDrilldown,
   incompatible,
   selectedValue,
+  renderPhase,
+  onRetry,
   onFullscreen,
   onRefresh,
   onDuplicate,
@@ -154,6 +263,25 @@ function ChartTile({
   const rows = (card.cachedRows ?? []) as Record<string, unknown>[];
   const hasData = columns.length > 0 && rows.length > 0;
   const stringRows = hasData ? toStringRows(columns, rows) : [];
+
+  // #4321 — the tile is the unit of trust: resolve THIS tile's own status from
+  // its render phase + the data it currently holds, and drive the age caption's
+  // colour + a subtle body dim off it. A failed parameter update surfaces as
+  // `stale` (keep the old data, labeled with its age, + retry) or `errored`
+  // (never had data) — never a silent revert, never a page banner.
+  const everRun = card.cachedAt != null || renderPhase === "ok";
+  const status: TileStatus = resolveTileStatus({ renderPhase, hasData, everRun });
+  const captionTone = tileCaptionTone(status, card.cachedAt);
+  // `stale`/`loading` keep rendering the retained data body, but dimmed so the
+  // viewer reads it as "not the current filtered result".
+  const showData = hasData && (statusShowsData(status) || status === "loading");
+  const dimBody = incompatible || status === "stale" || status === "loading";
+  // `canRetry` gates the errored PLACEHOLDER's retry (its body is the error
+  // state); the footer retry is for `stale` only — a stale tile shows its data
+  // body, so its retry lives in the footer. Split so an errored tile never
+  // renders two retry buttons (placeholder + footer).
+  const canRetry = statusCanRetry(status) && !!onRetry;
+  const footerRetry = status === "stale" && !!onRetry;
 
   // #3212 — click-to-drilldown. A card that declares `chartConfig.drilldown`
   // forwards the clicked category value to its target parameter. Disabled while
@@ -210,6 +338,7 @@ function ChartTile({
       data-stage-kind={stage?.kind ?? undefined}
       data-stage-id={stage?.id ?? undefined}
       data-filter-incompatible={incompatible ? "true" : undefined}
+      data-tile-status={status}
     >
       <div
         className={cn(
@@ -378,13 +507,15 @@ function ChartTile({
 
       <div
         className={cn(
-          "dash-tile-body flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 py-2.5",
-          // #3213 — an active cross-filter that can't touch this card dims it so
-          // the unchanged result reads as intentional, not stale.
-          incompatible && "opacity-60",
+          "dash-tile-body relative flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 py-2.5",
+          // #3213 / #4321 — dim the body when the shown data is NOT the current
+          // filtered result: an active cross-filter that can't touch this card
+          // (incompatible), a failed update we're keeping labeled-stale, or a
+          // render in flight. A subtle dim, never a full-tile overlay.
+          dimBody && "opacity-60",
         )}
       >
-        {hasData ? (
+        {showData ? (
           isKpi ? (
             <KpiCard card={card} comparison={comparison} />
           ) : viewMode === "chart" && hasChartConfig ? (
@@ -410,18 +541,48 @@ function ChartTile({
             </div>
           )
         ) : (
-          <div className="flex flex-1 items-center justify-center px-2 text-center text-xs text-zinc-500 dark:text-zinc-400">
-            No cached data — refresh to load results.
-          </div>
+          // #4321 — errored ≠ empty ≠ never-run ≠ loading: three (four) visually
+          // distinct placeholders, so a blank tile always says WHY it's blank.
+          <TileStatePlaceholder status={status} onRetry={canRetry ? () => onRetry?.(card.id) : undefined} />
         )}
       </div>
 
-      <div className="flex shrink-0 items-center justify-between border-t border-zinc-100 px-3 py-1.5 text-[11px] text-zinc-500 dark:border-zinc-800/80 dark:text-zinc-500">
-        <span className="inline-flex items-center gap-1 tabular-nums">
-          <Clock className="size-2.5" />
-          {timeAgo(card.cachedAt)}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-t border-zinc-100 px-3 py-1.5 text-[11px] dark:border-zinc-800/80">
+        {/* #4321 — the color-shifting age caption: muted → amber → red as the
+            shown data ages, plus a `Stale` / `Failed` label so a board with one
+            stale tile reads as one amber caption. */}
+        <span
+          className={cn("inline-flex items-center gap-1 tabular-nums", TONE_TEXT[captionTone])}
+          data-testid="tile-age-caption"
+          data-caption-tone={captionTone}
+        >
+          <Clock className="size-2.5" aria-hidden="true" />
+          {status === "stale" && <span className="font-medium">Stale · </span>}
+          {status === "errored" && <span className="font-medium">Failed</span>}
+          {status !== "errored" && timeAgo(card.cachedAt)}
         </span>
-        {hasData && !isKpi && <span className="tabular-nums">{rows.length} rows</span>}
+        <span className="flex items-center gap-2">
+          {footerRetry && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(
+                "h-5 gap-1 px-1.5 text-[11px]",
+                captionTone === "red"
+                  ? "text-red-600 hover:text-red-700 dark:text-red-400"
+                  : "text-amber-600 hover:text-amber-700 dark:text-amber-400",
+              )}
+              onClick={() => onRetry?.(card.id)}
+              data-testid="tile-retry"
+            >
+              <RefreshCw className="size-2.5" aria-hidden="true" />
+              Retry
+            </Button>
+          )}
+          {hasData && !isKpi && (
+            <span className="tabular-nums text-zinc-500 dark:text-zinc-500">{rows.length} rows</span>
+          )}
+        </span>
       </div>
 
       {/* #2365 — remove_card ghost overlay: tinted scrim + banner. */}

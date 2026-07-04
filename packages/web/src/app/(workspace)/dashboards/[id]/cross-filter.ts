@@ -103,16 +103,35 @@ export function extractCardPlaceholders(sql: string): Set<string> {
 }
 
 /**
- * Whether a card is AFFECTED by the active cross-filters — its SQL binds at
- * least one active filter param. A chart card that binds none is "incompatible":
- * no active filter can change its result. With no filters active, every card is
- * "affected" (nothing is incompatible). Text / section-block cards have no SQL
- * and are never affected.
+ * Every parameter placeholder a card binds — across BOTH its primary `sql` and,
+ * for a KPI card, its `comparisonSql` (#4321). A KPI card can bind a parameter
+ * only in the comparison query (e.g. the headline is period-agnostic but the
+ * delta compares `:date_from`/`:date_to`); scanning `sql` alone would wrongly
+ * mark such a card "Not filtered" even though an active filter DOES move its
+ * comparison. `autoComparison` re-runs the card's own `sql` with a shifted
+ * window, so its bound set is already covered by the primary scan.
+ */
+export function cardBoundPlaceholders(card: DashboardCard): Set<string> {
+  const names = card.sql ? extractCardPlaceholders(card.sql) : new Set<string>();
+  const comparisonSql = card.chartConfig?.kpi?.comparisonSql;
+  if (comparisonSql) {
+    for (const name of extractCardPlaceholders(comparisonSql)) names.add(name);
+  }
+  return names;
+}
+
+/**
+ * Whether a card is AFFECTED by the active cross-filters — it binds at least one
+ * active filter param, in its primary `sql` OR its KPI `comparisonSql` (#4321).
+ * A chart card that binds none is "incompatible": no active filter can change
+ * its result. With no filters active, every card is "affected" (nothing is
+ * incompatible). Text / section-block cards have no SQL and are never affected.
  */
 export function isCardAffectedByFilters(card: DashboardCard, activeKeys: string[]): boolean {
   if (activeKeys.length === 0) return true;
-  if (card.kind === "text" || !card.sql) return false;
-  const bound = extractCardPlaceholders(card.sql);
+  if (card.kind === "text") return false;
+  const bound = cardBoundPlaceholders(card);
+  if (bound.size === 0) return false;
   return activeKeys.some((k) => bound.has(k));
 }
 

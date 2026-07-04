@@ -376,12 +376,13 @@ describe("summarizeActivity", () => {
     expect(summarizeActivity(activity)).toBe("1 more step · 1 failed");
   });
 
-  test("executed and denied action envelopes do not count as failed", () => {
-    // A denial is a user decision, not a failure.
+  test("executed, denied, and timed-out action envelopes do not count as failed", () => {
+    // Denial and timeout are user decisions / lifecycle outcomes, not failures.
     const executed = toolWithOutput({ status: "executed", actionId: "a1", result: { ok: true } });
     const denied = toolWithOutput({ status: "denied", actionId: "a2" });
-    const { activity } = partitionTurn([executed, denied, text("Done.")]);
-    expect(summarizeActivity(activity)).toBe("2 more steps");
+    const timedOut = toolWithOutput({ status: "timed_out", actionId: "a3" });
+    const { activity } = partitionTurn([executed, denied, timedOut, text("Done.")]);
+    expect(summarizeActivity(activity)).toBe("3 more steps");
   });
 
   test("narration-only activity falls back to a generic label", () => {

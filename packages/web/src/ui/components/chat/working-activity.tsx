@@ -2,6 +2,7 @@
 
 import { Check } from "lucide-react";
 import { getToolName, isToolUIPart } from "ai";
+import type { UIMessage } from "ai";
 import { Markdown } from "./markdown";
 import { ToolPart } from "./tool-part";
 import { parseSuggestions } from "../../lib/helpers";
@@ -53,7 +54,7 @@ function stepLabel(part: ToolTurnPart): { active: string; done: string } {
  */
 export function showPreStreamActivity(
   isLoading: boolean,
-  lastMessageRole: string | undefined,
+  lastMessageRole: UIMessage["role"] | undefined,
 ): boolean {
   return isLoading && lastMessageRole !== "assistant";
 }

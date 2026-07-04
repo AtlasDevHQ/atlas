@@ -185,8 +185,9 @@ export function activityAwaitsUser(
  * receipt summary's "N failed" count and the live working feed's failure
  * marker (#4300) key off this — the feed reduces every non-pending step to a
  * compact line, so a failure the predicate misses would tick off as a
- * checkmark. Action `denied` / `expired` resolutions are user decisions, not
- * failures, and stay unmarked.
+ * checkmark. Action `denied` / `timed_out` / `rolled_back` resolutions are
+ * user decisions or lifecycle outcomes, not execution failures, and stay
+ * unmarked.
  */
 export function isFailedToolPart(part: ToolTurnPart): boolean {
   if (part.state === "output-error") return true;

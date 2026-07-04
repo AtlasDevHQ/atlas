@@ -103,6 +103,52 @@ describe("diffDashboards", () => {
     expect(fields).toContain("chartType");
   });
 
+  // #4325 — a chartConfig change BEYOND `type` (thresholds/colours/columns) must
+  // be shown + publishable. The old diff compared only `chartConfig.type`, so a
+  // thresholds edit read as "no change" and disabled Publish on a real edit.
+  test("a chartConfig-only change (same type) is shown and publishable", () => {
+    const p = dashboard([
+      card({ id: "a", chartConfig: { type: "bar", categoryColumn: "x", valueColumns: ["y"] } }),
+    ]);
+    const d = dashboard([
+      card({
+        id: "a",
+        chartConfig: {
+          type: "bar",
+          categoryColumn: "x",
+          valueColumns: ["y"],
+          thresholds: [{ value: 100, label: "Goal" }],
+        },
+      }),
+    ]);
+    const diff = diffDashboards(p, d);
+    expect(diff.empty).toBe(false);
+    expect(diff.changed).toHaveLength(1);
+    expect(diff.changed[0].changes.map((c) => c.field)).toEqual(["chartConfig"]);
+    expect(describeFieldChange(diff.changed[0].changes[0])).toBe("Chart configuration updated");
+  });
+
+  // #4325 — a pure reorder (position-only) must be shown + publishable. The old
+  // diff never compared `position`, so a reorder read as "no change".
+  test("a pure reorder (position change) is shown and publishable", () => {
+    const p = dashboard([
+      card({ id: "a", position: 0 }),
+      card({ id: "b", position: 1 }),
+    ]);
+    const d = dashboard([
+      card({ id: "a", position: 1 }),
+      card({ id: "b", position: 0 }),
+    ]);
+    const diff = diffDashboards(p, d);
+    expect(diff.empty).toBe(false);
+    // Both cards moved.
+    expect(diff.changed.map((c) => c.cardId).sort()).toEqual(["a", "b"]);
+    for (const c of diff.changed) {
+      expect(c.changes.map((x) => x.field)).toEqual(["position"]);
+      expect(describeFieldChange(c.changes[0])).toBe("Reordered");
+    }
+  });
+
   test("detects layout changes via JSON stringify", () => {
     const p = dashboard([
       card({ id: "a", layout: { x: 0, y: 0, w: 6, h: 4 } }),

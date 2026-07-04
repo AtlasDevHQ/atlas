@@ -55,6 +55,12 @@ interface DashboardGridProps {
    * reflects its persisted snapshot.
    */
   renderPhases?: Record<string, TileRenderPhase>;
+  /**
+   * #4325 — ids of cards whose post-publish async refresh is still in flight.
+   * Each such tile reads `stale` (holding its pre-publish data, labeled with its
+   * age) until the refresh lands and the id drops out. Absent → nothing pending.
+   */
+  pendingRefreshIds?: ReadonlySet<string>;
   /** #4321 — retry a single tile's parameter-bound render (stale / errored). */
   onRetryCard?: (cardId: string) => void;
   onLayoutChange: (cardId: string, layout: DashboardCardLayout) => void;
@@ -79,6 +85,7 @@ export function DashboardGrid({
   incompatibleCardIds,
   selectedValues,
   renderPhases,
+  pendingRefreshIds,
   onRetryCard,
   onLayoutChange,
   onRefresh,
@@ -186,6 +193,7 @@ export function DashboardGrid({
                 incompatible={incompatibleCardIds?.has(card.id)}
                 selectedValue={selectedValues?.[card.id]}
                 renderPhase={renderPhases?.[card.id]}
+                pendingRefresh={pendingRefreshIds?.has(card.id)}
                 onRetry={onRetryCard}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}
@@ -239,6 +247,7 @@ export function DashboardGrid({
                 incompatible={incompatibleCardIds?.has(card.id)}
                 selectedValue={selectedValues?.[card.id]}
                 renderPhase={renderPhases?.[card.id]}
+                pendingRefresh={pendingRefreshIds?.has(card.id)}
                 onRetry={onRetryCard}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}

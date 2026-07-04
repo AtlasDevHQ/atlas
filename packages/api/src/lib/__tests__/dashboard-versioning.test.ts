@@ -19,7 +19,9 @@ import {
   forkDraftFromPublished,
   applyChangeToDraft,
   publishDraftMerge,
+  cardsNeedingRefresh,
   rebaseDraftSnapshot,
+  type PublishOp,
   toSnapshot,
   loadDraft,
   forkOrLoadDraft,
@@ -108,6 +110,74 @@ function dashboardWithCards(
     ...overrides,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Pure: cardsNeedingRefresh (#4325 — which cards the publish enqueues)
+// ---------------------------------------------------------------------------
+
+describe("cardsNeedingRefresh", () => {
+  const published = snapshot([
+    card("c1", { sql: "SELECT 1" }),
+    card("c2", { sql: "SELECT 2" }),
+  ]);
+
+  it("includes an inserted chart card (empty cache)", () => {
+    const ops: PublishOp[] = [{ kind: "insertCard", card: card("c-new") }];
+    expect(cardsNeedingRefresh(ops, published)).toEqual(["c-new"]);
+  });
+
+  it("excludes an inserted TEXT card (no query)", () => {
+    const ops: PublishOp[] = [
+      { kind: "insertCard", card: card("t", { content: "## Header", sql: "" }) },
+    ];
+    expect(cardsNeedingRefresh(ops, published)).toEqual([]);
+  });
+
+  it("includes an updateCard whose SQL changed", () => {
+    const ops: PublishOp[] = [
+      { kind: "updateCard", cardId: "c1", card: card("c1", { sql: "SELECT 999" }) },
+    ];
+    expect(cardsNeedingRefresh(ops, published)).toEqual(["c1"]);
+  });
+
+  it("includes an updateCard whose chartConfig changed (same SQL)", () => {
+    const ops: PublishOp[] = [
+      {
+        kind: "updateCard",
+        cardId: "c1",
+        card: card("c1", {
+          sql: "SELECT 1",
+          chartConfig: { type: "bar", categoryColumn: "v_x", valueColumns: ["v_y"] },
+        }),
+      },
+    ];
+    expect(cardsNeedingRefresh(ops, published)).toEqual(["c1"]);
+  });
+
+  it("EXCLUDES an updateCard that only moved (position/title/layout, same data)", () => {
+    // A pure reorder / rename must NOT enqueue a refresh — its data can't move,
+    // so the tile is never needlessly marked stale.
+    const ops: PublishOp[] = [
+      { kind: "updateCard", cardId: "c1", card: card("c1", { sql: "SELECT 1", position: 5, title: "Renamed" }) },
+    ];
+    expect(cardsNeedingRefresh(ops, published)).toEqual([]);
+  });
+
+  it("excludes deleteCard and updateMeta ops", () => {
+    const ops: PublishOp[] = [
+      { kind: "deleteCard", cardId: "c2" },
+      { kind: "updateMeta", title: "New", description: null },
+    ];
+    expect(cardsNeedingRefresh(ops, published)).toEqual([]);
+  });
+
+  it("includes a connection-group change (new execution target)", () => {
+    const ops: PublishOp[] = [
+      { kind: "updateCard", cardId: "c1", card: card("c1", { sql: "SELECT 1", connectionGroupId: "g2" }) },
+    ];
+    expect(cardsNeedingRefresh(ops, published)).toEqual(["c1"]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Pure: feature flag
@@ -420,6 +490,50 @@ describe("publishDraftMerge", () => {
       kind: "updateCard",
       cardId: "c1",
       updates: { title: "New" },
+    });
+    expect(draft.ok).toBe(true);
+    if (!draft.ok) return;
+    const result = publishDraftMerge(draft.snapshot, baseline, baseline);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.ops).toEqual([{ kind: "updateCard", cardId: "c1", card: draft.snapshot.cards[0] }]);
+  });
+
+  // #4325 — the server merge consumes the SAME shared card-equality as the
+  // client diff, so a pure reorder (position-only) surfaces as an updateCard op
+  // exactly as the modal shows it. Guards the "client == server" contract.
+  it("a pure reorder (position change) → updateCard op", () => {
+    const baseline = snapshot([card("c1", { position: 0 })]);
+    const draft = applyChangeToDraft(baseline, {
+      kind: "updateCard",
+      cardId: "c1",
+      updates: { position: 5 },
+    });
+    expect(draft.ok).toBe(true);
+    if (!draft.ok) return;
+    const result = publishDraftMerge(draft.snapshot, baseline, baseline);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.ops).toEqual([{ kind: "updateCard", cardId: "c1", card: draft.snapshot.cards[0] }]);
+  });
+
+  // #4325 — a chartConfig change BEYOND `type` (thresholds) surfaces server-side
+  // too (the old client diff missed it, but the server equality always caught it).
+  it("a chartConfig-beyond-type change → updateCard op", () => {
+    const baseline = snapshot([
+      card("c1", { chartConfig: { type: "bar", categoryColumn: "v_x", valueColumns: ["v_y"] } }),
+    ]);
+    const draft = applyChangeToDraft(baseline, {
+      kind: "updateCard",
+      cardId: "c1",
+      updates: {
+        chartConfig: {
+          type: "bar",
+          categoryColumn: "v_x",
+          valueColumns: ["v_y"],
+          thresholds: [{ value: 100, label: "Goal" }],
+        },
+      },
     });
     expect(draft.ok).toBe(true);
     if (!draft.ok) return;
@@ -935,8 +1049,11 @@ describe("dashboard-versioning DB helpers", () => {
       expect(result?.userId).toBe("u1");
       expect(queryCalls[1].sql).toContain("INSERT INTO dashboard_user_drafts");
       expect(queryCalls[1].sql).toContain("ON CONFLICT (user_id, dashboard_id) DO NOTHING");
-      // INSERT params include the persisted baseline column.
-      expect(queryCalls[1].params?.length).toBe(5);
+      // #4325 — baseline_at is copied from the live `updated_at` in SQL (INSERT
+      // … SELECT FROM dashboards) at full precision, so the INSERT now binds 4
+      // params (user, dashboard, draft, baseline) — not a JS-truncated timestamp.
+      expect(queryCalls[1].sql).toContain("FROM dashboards");
+      expect(queryCalls[1].params?.length).toBe(4);
     });
   });
 
@@ -1089,7 +1206,12 @@ describe("dashboard-versioning DB helpers", () => {
         ...baseline,
         cards: [{ ...baseline.cards[0], title: "draft" }],
       };
-      setResults({ rows: [draftRow({ draft: draftSnap, baseline })] });
+      setResults(
+        { rows: [draftRow({ draft: draftSnap, baseline })] },
+        // #4325 — the live `updated_at::text` read. Published has moved past the
+        // draft's baseline, so the early guard trips stale.
+        { rows: [{ updated_at: "2026-05-17T02:00:00.000Z" }] },
+      );
       const newPublished = dashboardWithCards([card("c1", { title: "teammate" })], {
         updatedAt: "2026-05-17T02:00:00.000Z",
       });
@@ -1106,6 +1228,60 @@ describe("dashboard-versioning DB helpers", () => {
       expect(result.reason).toBe("stale_baseline");
     });
 
+    // #4325 — the precise baseline read returns NO row (dashboard deleted between
+    // the load and the guard). This is the one genuinely-absent case, so it maps
+    // to dashboard_not_found (404).
+    it("returns dashboard_not_found when the precise baseline read finds no row", async () => {
+      enableInternalDB();
+      const snap = snapshot([card("c1")]);
+      setResults(
+        { rows: [draftRow({ draft: snap })] }, // loadDraft
+        { rows: [] }, // precise read → row gone
+      );
+      const published = dashboardWithCards([card("c1")], { updatedAt: "2026-05-17T00:00:00.000Z" });
+      const result = await publishDraft({
+        userId: "u1",
+        dashboardId: "dash-1",
+        orgId: "org-1",
+        loadDashboardForOrg: async () => published,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toBe("dashboard_not_found");
+    });
+
+    // #4325 must-fix — a DB blip on the precise read must surface as `error`
+    // (→ 500 + requestId), NEVER a misleading dashboard_not_found: `published`
+    // was just loaded non-null, so a null-from-throw is transient, not missing.
+    it("returns error (not a bogus 404) when the precise baseline read throws", async () => {
+      enableInternalDB();
+      const snap = snapshot([card("c1")]);
+      let call = 0;
+      const throwingPool: InternalPool = {
+        ...mockPool,
+        query: async (sql: string, params?: unknown[]) => {
+          call++;
+          if (call === 1) {
+            queryCalls.push({ sql, params });
+            return { rows: [draftRow({ draft: snap })] }; // loadDraft
+          }
+          // 2nd pool query is loadDashboardUpdatedAtPrecise → simulate a blip.
+          throw new Error("connection reset by peer");
+        },
+      };
+      _resetPool(throwingPool);
+      const published = dashboardWithCards([card("c1")], { updatedAt: "2026-05-17T00:00:00.000Z" });
+      const result = await publishDraft({
+        userId: "u1",
+        dashboardId: "dash-1",
+        orgId: "org-1",
+        loadDashboardForOrg: async () => published,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toBe("error");
+    });
+
     it("returns conflict when persisted baseline says BOTH sides edited the same card", async () => {
       // Real three-way merge: baseline persisted at fork time, draft
       // and published BOTH diverged. Demonstrates publishDraftMerge's
@@ -1119,15 +1295,20 @@ describe("dashboard-versioning DB helpers", () => {
       };
       // Stash the baseline distinct from current published — the route
       // would have called rebase to bump baselineAt = current published.
-      setResults({
-        rows: [
-          draftRow({
-            draft: draftSnap,
-            baseline,
-            publishedBaselineAt: "2026-05-17T02:00:00.000Z",
-          }),
-        ],
-      });
+      setResults(
+        {
+          rows: [
+            draftRow({
+              draft: draftSnap,
+              baseline,
+              publishedBaselineAt: "2026-05-17T02:00:00.000Z",
+            }),
+          ],
+        },
+        // #4325 — live `updated_at::text` MATCHES the draft baseline so the
+        // early guard passes; the three-way merge then surfaces the conflict.
+        { rows: [{ updated_at: "2026-05-17T02:00:00.000Z" }] },
+      );
       const newPublished = dashboardWithCards(
         [card("c1", { title: "teammate" })],
         { updatedAt: "2026-05-17T02:00:00.000Z" }, // matches baselineAt
@@ -1152,9 +1333,11 @@ describe("dashboard-versioning DB helpers", () => {
       expect(draftWithAdd.ok).toBe(true);
       if (!draftWithAdd.ok) return;
 
-      setResults({
-        rows: [draftRow({ draft: draftWithAdd.snapshot, baseline })],
-      });
+      setResults(
+        { rows: [draftRow({ draft: draftWithAdd.snapshot, baseline })] },
+        // #4325 — live `updated_at::text` matches the baseline → early guard passes.
+        { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] },
+      );
 
       // BEGIN, SELECT updated_at FOR UPDATE (lock + re-check), INSERT
       // card, touch dashboards, DELETE draft, COMMIT.
@@ -1203,7 +1386,10 @@ describe("dashboard-versioning DB helpers", () => {
       expect(draftWithAdd.ok).toBe(true);
       if (!draftWithAdd.ok) return;
 
-      setResults({ rows: [draftRow({ draft: draftWithAdd.snapshot, baseline })] });
+      setResults(
+        { rows: [draftRow({ draft: draftWithAdd.snapshot, baseline })] },
+        { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] }, // #4325 precise read
+      );
       setClientResults(
         { rows: [] }, // BEGIN
         { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] }, // SELECT FOR UPDATE
@@ -1246,7 +1432,10 @@ describe("dashboard-versioning DB helpers", () => {
       expect(draftEdit.ok).toBe(true);
       if (!draftEdit.ok) return;
 
-      setResults({ rows: [draftRow({ draft: draftEdit.snapshot, baseline })] });
+      setResults(
+        { rows: [draftRow({ draft: draftEdit.snapshot, baseline })] },
+        { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] }, // #4325 precise read
+      );
       setClientResults(
         { rows: [] }, // BEGIN
         { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] }, // SELECT FOR UPDATE
@@ -1281,7 +1470,10 @@ describe("dashboard-versioning DB helpers", () => {
       const draftAdd = applyChangeToDraft(baseline, { kind: "addCard", card: card("c-new", { position: 1 }) });
       expect(draftAdd.ok).toBe(true);
       if (!draftAdd.ok) return;
-      setResults({ rows: [draftRow({ draft: draftAdd.snapshot, baseline })] });
+      setResults(
+        { rows: [draftRow({ draft: draftAdd.snapshot, baseline })] },
+        { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] }, // #4325 precise read
+      );
       // BEGIN + SELECT FOR UPDATE succeed, then the next op throws.
       let serviced = 0;
       clientThrow = null;
@@ -1344,15 +1536,20 @@ describe("dashboard-versioning DB helpers", () => {
       });
       expect(draftAdd.ok).toBe(true);
       if (!draftAdd.ok) return;
-      setResults({
-        rows: [
-          draftRow({
-            draft: draftAdd.snapshot,
-            baseline,
-            publishedBaselineAt: "2026-05-17T00:00:00.000Z",
-          }),
-        ],
-      });
+      setResults(
+        {
+          rows: [
+            draftRow({
+              draft: draftAdd.snapshot,
+              baseline,
+              publishedBaselineAt: "2026-05-17T00:00:00.000Z",
+            }),
+          ],
+        },
+        // #4325 — early precise read MATCHES the baseline (cached-read race), so
+        // only the in-transaction FOR UPDATE catches the concurrent publish.
+        { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] },
+      );
       setClientResults(
         { rows: [] }, // BEGIN
         // SELECT updated_at FOR UPDATE — another user's publish already
@@ -1398,6 +1595,8 @@ describe("dashboard-versioning DB helpers", () => {
       setResults(
         // loadDraft
         { rows: [draftRow({ draft: baseline, baseline })] },
+        // #4325 — live `updated_at::text` (drives the new baseline stamp).
+        { rows: [{ updated_at: "2026-05-17T02:00:00.000Z" }] },
         // UPDATE dashboard_user_drafts
         { rows: [{ user_id: "u1" }] },
       );
@@ -1415,8 +1614,8 @@ describe("dashboard-versioning DB helpers", () => {
       if (!result.ok) return;
       expect(result.snapshot.cards.map((c) => c.id)).toEqual(["c1", "c2"]);
       expect(result.newBaselineAt).toBe("2026-05-17T02:00:00.000Z");
-      // Second query is the UPDATE; params: [draft, baseline, baselineAt, user, dash]
-      const updateCall = queryCalls[1];
+      // Third query is the UPDATE; params: [draft, baseline, baselineAt, user, dash]
+      const updateCall = queryCalls[2];
       expect(updateCall.sql).toContain("UPDATE dashboard_user_drafts");
       expect(updateCall.sql).toContain("baseline = $2");
       expect(updateCall.params?.[2]).toBe("2026-05-17T02:00:00.000Z");
@@ -1429,7 +1628,11 @@ describe("dashboard-versioning DB helpers", () => {
         ...baseline,
         cards: [{ ...baseline.cards[0], title: "draft" }],
       };
-      setResults({ rows: [draftRow({ draft: draftSnap, baseline })] });
+      setResults(
+        { rows: [draftRow({ draft: draftSnap, baseline })] },
+        // #4325 — live read moved past baseline → real three-way merge → conflict.
+        { rows: [{ updated_at: "2026-05-17T02:00:00.000Z" }] },
+      );
       const newPublished = dashboardWithCards([card("c1", { title: "teammate" })], {
         updatedAt: "2026-05-17T02:00:00.000Z",
       });
@@ -1442,22 +1645,26 @@ describe("dashboard-versioning DB helpers", () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.reason).toBe("conflict");
-      // Exactly one query — the loadDraft — no UPDATE.
-      expect(queryCalls.length).toBe(1);
+      // loadDraft + the precise-read guard — no UPDATE.
+      expect(queryCalls.length).toBe(2);
     });
 
     it("short-circuits without an UPDATE when published hasn't moved", async () => {
       enableInternalDB();
       const snap = snapshot([card("c1")]);
-      setResults({
-        rows: [
-          draftRow({
-            draft: snap,
-            baseline: snap,
-            publishedBaselineAt: "2026-05-17T00:00:00.000Z",
-          }),
-        ],
-      });
+      setResults(
+        {
+          rows: [
+            draftRow({
+              draft: snap,
+              baseline: snap,
+              publishedBaselineAt: "2026-05-17T00:00:00.000Z",
+            }),
+          ],
+        },
+        // #4325 — live read equals the baseline → fast-forward no-op.
+        { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] },
+      );
       const published = dashboardWithCards([card("c1")], {
         updatedAt: "2026-05-17T00:00:00.000Z",
       });
@@ -1468,8 +1675,8 @@ describe("dashboard-versioning DB helpers", () => {
         loadDashboardForOrg: async () => published,
       });
       expect(result.ok).toBe(true);
-      // Only the load — no UPDATE.
-      expect(queryCalls.length).toBe(1);
+      // loadDraft + the precise-read guard — no UPDATE.
+      expect(queryCalls.length).toBe(2);
     });
   });
 

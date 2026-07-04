@@ -48,6 +48,15 @@ export interface TileStatusInput {
   /** Whether the card has EVER produced data — a persisted cache exists, or a
    *  render has succeeded this session. Distinguishes `never-run` from `empty`. */
   everRun: boolean;
+  /**
+   * #4325 — a publish just promoted this card's new SQL/config and an async
+   * refresh is in flight; the tile still holds its PRE-publish cache. Until the
+   * refresh lands the tile reads `stale` (old data, labeled with its age) rather
+   * than `fresh` — the new definition is live but its data isn't yet. A pending
+   * refresh on a card with no prior data reads `loading` (it's being populated).
+   * An interactive render (`renderPhase`) always takes precedence.
+   */
+  pendingRefresh?: boolean;
 }
 
 /**
@@ -55,7 +64,12 @@ export interface TileStatusInput {
  * always yield the same status, so the page can derive it and the tile can
  * render it without either owning the rule.
  */
-export function resolveTileStatus({ renderPhase, hasData, everRun }: TileStatusInput): TileStatus {
+export function resolveTileStatus({
+  renderPhase,
+  hasData,
+  everRun,
+  pendingRefresh,
+}: TileStatusInput): TileStatus {
   if (renderPhase === "loading") return "loading";
   if (renderPhase === "error") {
     // The anti-silent-revert rule: a failed update NEVER swaps in fresh data.
@@ -63,9 +77,37 @@ export function resolveTileStatus({ renderPhase, hasData, everRun }: TileStatusI
     // prior data at all does the failure read as `errored`.
     return hasData ? "stale" : "errored";
   }
+  // #4325 — a post-publish async refresh is pending and no interactive render is
+  // in flight: the promoted definition is live but its data hasn't refreshed, so
+  // show the retained data as `stale` (never as `fresh`) until it lands. A card
+  // with no prior data is `loading` (the refresh will populate it).
+  if (pendingRefresh) return hasData ? "stale" : "loading";
   // `ok` (a fresh render just landed) or `undefined` (showing the snapshot).
   if (!everRun) return "never-run";
   return hasData ? "fresh" : "empty";
+}
+
+/**
+ * #4325 — given the cards after a post-publish refetch and the `cachedAt`
+ * captured at publish time, return the ids STILL awaiting their refresh. A card
+ * settles (drops out) when its `cachedAt` advances past the captured baseline
+ * (the async refresh landed) or the card is gone. Pure so the page can drive
+ * the poll-until-fresh loop without owning the rule.
+ */
+export function pendingRefreshesRemaining(
+  pending: ReadonlySet<string>,
+  cards: readonly { id: string; cachedAt: string | null }[],
+  baseline: Readonly<Record<string, string | null>>,
+): Set<string> {
+  const cachedAtById = new Map(cards.map((c) => [c.id, c.cachedAt ?? null] as const));
+  const remaining = new Set<string>();
+  for (const id of pending) {
+    if (!cachedAtById.has(id)) continue; // card removed → settled
+    const prev = baseline[id] ?? null;
+    // Unchanged cachedAt → the refresh hasn't landed yet; still pending.
+    if ((cachedAtById.get(id) ?? null) === prev) remaining.add(id);
+  }
+  return remaining;
 }
 
 /** Whether a status keeps rendering the tile's data body (vs. a placeholder). */

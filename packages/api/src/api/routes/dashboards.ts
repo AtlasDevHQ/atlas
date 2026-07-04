@@ -32,6 +32,7 @@ import {
   updateCard,
   removeCard,
   refreshCard,
+  refreshDashboardCards,
   getCard,
   shareDashboard,
   unshareDashboard,
@@ -1415,7 +1416,36 @@ authed.openapi(publishDraftRoute, async (c) => {
       }),
     );
     if (result.ok) {
-      return c.json({ ok: true, opsApplied: result.opsApplied }, 200);
+      // #4325 — async refresh-on-publish. Definitions are already promoted; now
+      // enqueue a background refresh of ONLY the cards whose SQL/config changed
+      // and return immediately. Publish NEVER blocks on query execution — those
+      // tiles render `stale` (old cache, labeled with its age) until the refresh
+      // lands. Fire-and-forget on the long-lived API process; the client's
+      // poll-until-fresh re-fetch covers the common case, and the scheduler's
+      // auto-refresh tick (where a schedule is configured) is a further backstop
+      // if this process is torn down before the refresh completes.
+      // Errors are logged (never swallowed) — a failed refresh just leaves the
+      // tile stale + retryable, it does not fail the publish.
+      const refreshCardIds = result.refreshCardIds;
+      if (refreshCardIds.length > 0) {
+        void refreshDashboardCards(id, { onlyCardIds: new Set(refreshCardIds) }).catch(
+          (err: unknown) => {
+            log.warn(
+              {
+                err: err instanceof Error ? err.message : String(err),
+                dashboardId: id,
+                cardCount: refreshCardIds.length,
+                requestId,
+              },
+              "post-publish async refresh failed — tiles stay stale until the next refresh",
+            );
+          },
+        );
+      }
+      return c.json(
+        { ok: true, opsApplied: result.opsApplied, refreshingCardIds: refreshCardIds },
+        200,
+      );
     }
     if (result.reason === "no_db") {
       return c.json(

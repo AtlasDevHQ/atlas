@@ -240,6 +240,13 @@ const mockVerifyGroupBelongsToOrg = mock(
   (): Promise<"ok" | "not_found" | "no_db" | "error"> => Promise.resolve("ok"),
 );
 
+// #4325 — captured so the publish-route test can assert the async refresh is
+// enqueued with the right ids (and exercise the fire-and-forget .catch path).
+const mockRefreshDashboardCards = mock(
+  (..._args: unknown[]): Promise<{ refreshed: number; failed: number; total: number }> =>
+    Promise.resolve({ refreshed: 0, failed: 0, total: 0 }),
+);
+
 // Re-import the real CardLayoutSchema + rowToCard so the mock is otherwise complete
 // per CLAUDE.md ("Mock all exports — partial mocks cause SyntaxError").
 const realDashboards = await import("@atlas/api/lib/dashboards");
@@ -267,7 +274,12 @@ mock.module("@atlas/api/lib/dashboards", () => ({
   setRefreshSchedule: mock(() => Promise.resolve({ ok: true })),
   getDashboardsDueForRefresh: mock(() => Promise.resolve([])),
   lockDashboardForRefresh: mock(() => Promise.resolve(false)),
-  refreshDashboardCards: mock(() => Promise.resolve({ refreshed: 0, failed: 0, total: 0 })),
+  refreshDashboardCards: mockRefreshDashboardCards,
+  // #4325 — real versioning's rebaseDraft/publishDraft resolve this from the
+  // (mocked) dashboards module; export it so a real path never hits undefined.
+  loadDashboardUpdatedAtPrecise: mock(() =>
+    Promise.resolve({ ok: true as const, updatedAt: "2026-05-17T00:00:00.000000+00" }),
+  ),
   CardLayoutSchema: realDashboards.CardLayoutSchema,
   rowToCard: realDashboards.rowToCard,
 }));
@@ -287,10 +299,19 @@ const mockApplyEditToDraft = mock(
 const mockLoadDraft = mock(
   (..._args: unknown[]): Promise<DraftRowT | null> => Promise.resolve(null),
 );
+// #4325 — controllable publish so the route test can assert it returns
+// `refreshingCardIds` and enqueues the async refresh (the real publishDraft
+// opens a transaction, out of scope for a route-wiring test).
+type PublishResultT = import("@atlas/api/lib/dashboard-versioning").PublishDraftResult;
+const mockPublishDraft = mock(
+  (..._args: unknown[]): Promise<PublishResultT> =>
+    Promise.resolve({ ok: true, opsApplied: 1, refreshCardIds: [] }),
+);
 mock.module("@atlas/api/lib/dashboard-versioning", () => ({
   ...realVersioning,
   applyEditToDraft: mockApplyEditToDraft,
   loadDraft: mockLoadDraft,
+  publishDraft: mockPublishDraft,
 }));
 
 // #2368 — bound-chat-context mocks for the new sessions endpoints.
@@ -3319,6 +3340,55 @@ describe("dashboard routes", () => {
       expect(response.status).toBe(503);
       // Critically: it did NOT silently fall back to writing published.
       expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    // #4325 — async refresh-on-publish. The route promotes definitions, returns
+    // `refreshingCardIds`, and ENQUEUES a background refresh scoped to exactly
+    // the changed cards. It must never block the response on query execution.
+    it("POST /:id/draft/publish returns refreshingCardIds and enqueues the async refresh scoped to them", async () => {
+      mockPublishDraft.mockResolvedValueOnce({
+        ok: true,
+        opsApplied: 2,
+        refreshCardIds: ["card-1", "card-2"],
+      });
+      mockRefreshDashboardCards.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft/publish`, { method: "POST" }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { refreshingCardIds: string[] };
+      expect(body.refreshingCardIds).toEqual(["card-1", "card-2"]);
+      // Refresh enqueued exactly once, scoped to the changed cards.
+      expect(mockRefreshDashboardCards).toHaveBeenCalledTimes(1);
+      const [dashId, opts] = mockRefreshDashboardCards.mock.calls[0] as [
+        string,
+        { onlyCardIds: Set<string> },
+      ];
+      expect(dashId).toBe(VALID_ID);
+      expect([...opts.onlyCardIds].sort()).toEqual(["card-1", "card-2"]);
+    });
+
+    it("POST /:id/draft/publish does NOT enqueue a refresh when no card data changed", async () => {
+      mockPublishDraft.mockResolvedValueOnce({ ok: true, opsApplied: 1, refreshCardIds: [] });
+      mockRefreshDashboardCards.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft/publish`, { method: "POST" }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockRefreshDashboardCards).not.toHaveBeenCalled();
+    });
+
+    // The fire-and-forget refresh must be caught (logged, not thrown) — a failed
+    // refresh leaves tiles stale + retryable, it never fails the publish.
+    it("POST /:id/draft/publish still returns 200 when the async refresh rejects", async () => {
+      mockPublishDraft.mockResolvedValueOnce({ ok: true, opsApplied: 1, refreshCardIds: ["card-1"] });
+      mockRefreshDashboardCards.mockRejectedValueOnce(new Error("refresh boom"));
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft/publish`, { method: "POST" }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { ok: boolean };
+      expect(body.ok).toBe(true);
     });
 
     it("render?view=draft executes the DRAFT card's SQL, not the published SQL", async () => {

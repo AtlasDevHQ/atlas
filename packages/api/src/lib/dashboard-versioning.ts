@@ -58,7 +58,12 @@ import {
   internalQuery,
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
-import { rowToCard } from "@atlas/api/lib/dashboards";
+import { rowToCard, loadDashboardUpdatedAtPrecise } from "@atlas/api/lib/dashboards";
+// #4325 — the publish diff SSOT. The client publish-diff and this server merge
+// consume the SAME card-equality (full `chartConfig` + `position`), so the diff
+// the user reviews is exactly the change we merge. Do NOT re-inline a private
+// copy here — that divergence is the bug this issue closes.
+import { dashboardCardsEqual } from "@useatlas/schemas";
 import type {
   Dashboard,
   DashboardCard,
@@ -481,37 +486,65 @@ export function publishDraftMerge(
   return { kind: "ok", ops };
 }
 
-function cardEquals(a: DashboardSnapshotCard, b: DashboardSnapshotCard): boolean {
-  if (a.title !== b.title) return false;
-  if (a.position !== b.position) return false;
-  if (a.connectionGroupId !== b.connectionGroupId) return false;
-  if (!jsonEquals(a.layout, b.layout)) return false;
-
-  // Kind is derived from `content` presence (#3138). A chart↔text flip is never
-  // equal; otherwise compare only the fields that kind owns — a text card's
-  // identity is its markdown, a chart card's is its sql + viz config. (`!= null`
-  // also catches `undefined` on pre-#3138 draft JSONB → chart.)
-  const aText = a.content != null;
-  const bText = b.content != null;
-  if (aText !== bText) return false;
-  if (aText) {
-    if (a.content !== b.content) return false;
-  } else {
-    if (a.sql !== b.sql) return false;
-    if (!jsonEquals(a.chartConfig, b.chartConfig)) return false;
-    // #3209 — event annotations are part of a chart card's identity, so a
-    // change to them surfaces as an updateCard op on publish. Normalize the
-    // absent value to `[]` so a pre-#3209 draft (no `annotations` key) doesn't
-    // read as different from a freshly-forked one that carries `[]`.
-    if (!jsonEquals(a.annotations ?? [], b.annotations ?? [])) return false;
+/**
+ * Cards whose DATA cache is now out of date after a publish — the ids the
+ * publish path enqueues for an async refresh (#4325). Computed from the merge
+ * ops against the CURRENTLY published snapshot:
+ *
+ *   - `insertCard` of a chart card → always (its cache is empty).
+ *   - `updateCard` of a chart card whose sql / chartConfig / connection group
+ *     changed vs. published → its cached rows may no longer match the new
+ *     definition.
+ *
+ * A pure reorder / title / layout `updateCard`, a `deleteCard`, an
+ * `updateMeta`, or any text card (no SQL) never needs a data refresh — so the
+ * tile isn't needlessly marked stale for a change that can't move its data.
+ */
+export function cardsNeedingRefresh(
+  ops: PublishOp[],
+  published: DashboardSnapshot,
+): string[] {
+  const publishedById = new Map(published.cards.map((c) => [c.id, c] as const));
+  const ids: string[] = [];
+  for (const op of ops) {
+    if (op.kind === "insertCard") {
+      // A text card (content present) carries no query — nothing to refresh.
+      if (op.card.content == null) ids.push(op.card.id);
+    } else if (op.kind === "updateCard") {
+      if (op.card.content != null) continue; // text card — no data
+      const prev = publishedById.get(op.cardId);
+      if (!prev || dataAffectingChanged(prev, op.card)) ids.push(op.cardId);
+    }
   }
-  return true;
+  return ids;
 }
 
-function jsonEquals(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a == null || b == null) return false;
-  return JSON.stringify(a) === JSON.stringify(b);
+/** Whether a chart card's DATA-producing definition moved (vs. its published
+ *  version): the query, the execution target, or the viz config. Deliberately
+ *  NARROWER than `dashboardCardsEqual` (the publish SSOT) — a card can be
+ *  "changed" for publish (title / layout / position moved) without its data
+ *  moving, and only a data move warrants a refresh. Do NOT consolidate the two. */
+function dataAffectingChanged(
+  prev: DashboardSnapshotCard,
+  next: DashboardSnapshotCard,
+): boolean {
+  if (prev.sql !== next.sql) return true;
+  if ((prev.connectionGroupId ?? null) !== (next.connectionGroupId ?? null)) return true;
+  if (JSON.stringify(prev.chartConfig ?? null) !== JSON.stringify(next.chartConfig ?? null)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Card-equality wrapper over the shared SSOT (`@useatlas/schemas`). A
+ * `DashboardSnapshotCard` is structurally assignable to
+ * `DashboardCardEqualityInput`, so this is a thin local alias that keeps the
+ * merge code reading `cardEquals(a, b)` while the RULE lives in one place the
+ * client diff also consumes.
+ */
+function cardEquals(a: DashboardSnapshotCard, b: DashboardSnapshotCard): boolean {
+  return dashboardCardsEqual(a, b);
 }
 
 // ---------------------------------------------------------------------------
@@ -691,8 +724,13 @@ export async function loadDraft(
 ): Promise<DraftRow | null> {
   if (!hasInternalDB()) return null;
   try {
+    // #4325 — read `published_baseline_at` as text so it keeps the stored
+    // microseconds. `rowToDraft`'s `String(...)` on a JS `Date` truncates to
+    // whole seconds, which defeats the same-second stale-baseline guard; the
+    // `::text` cast preserves full precision and matches the value the live
+    // `updated_at::text` read compares against in `publishDraft`.
     const rows = await internalQuery<Record<string, unknown>>(
-      `SELECT user_id, dashboard_id, draft, baseline, published_baseline_at, created_at, updated_at
+      `SELECT user_id, dashboard_id, draft, baseline, published_baseline_at::text AS published_baseline_at, created_at, updated_at
          FROM dashboard_user_drafts
         WHERE user_id = $1 AND dashboard_id = $2`,
       [userId, dashboardId],
@@ -724,19 +762,28 @@ export async function forkOrLoadDraft(
   if (existing) return existing;
   const snapshot = forkDraftFromPublished(published);
   const baselineSnapshot = toSnapshot(published);
-  const baselineAt = published.updatedAt;
   try {
+    // #4325 — stamp `published_baseline_at` by copying the live `updated_at` at
+    // FULL precision from the dashboards row (INSERT … SELECT), rather than
+    // round-tripping through the JS-truncated `published.updatedAt` (a
+    // `String(Date)` value that has lost its sub-second digits). This keeps the
+    // draft baseline byte-comparable — via the `::text` reads on both sides —
+    // with the live `updated_at`, so the same-second stale-baseline guard is
+    // exact. The `baseline` JSONB snapshot still reflects the loaded view; a
+    // publish that lands in the microseconds between load and this INSERT is
+    // caught by the three-way merge's per-card `publishedDiff` check, not lost.
     await internalQuery(
       `INSERT INTO dashboard_user_drafts
          (user_id, dashboard_id, draft, baseline, published_baseline_at)
-       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5)
+       SELECT $1, $2, $3::jsonb, $4::jsonb, d.updated_at
+         FROM dashboards d
+        WHERE d.id = $2 AND d.deleted_at IS NULL
        ON CONFLICT (user_id, dashboard_id) DO NOTHING`,
       [
         userId,
         published.id,
         JSON.stringify(snapshot),
         JSON.stringify(baselineSnapshot),
-        baselineAt,
       ],
     );
   } catch (err) {
@@ -843,7 +890,17 @@ export async function discardDraft(userId: string, dashboardId: string): Promise
 }
 
 export type PublishDraftResult =
-  | { ok: true; opsApplied: number }
+  | {
+      ok: true;
+      opsApplied: number;
+      /**
+       * Ids of the cards whose SQL/config changed in this publish (#4325). The
+       * route enqueues an ASYNC refresh of exactly these (never blocking the
+       * publish response on query execution) and returns them to the client so
+       * their tiles render `stale` until the refreshed data lands.
+       */
+      refreshCardIds: string[];
+    }
   | { ok: false; reason: "no_db" | "no_draft" | "dashboard_not_found" | "error" }
   | {
       ok: false;
@@ -903,8 +960,22 @@ export async function publishDraft(opts: {
   // This pre-check avoids opening a transaction in the common no-race
   // case; the real serialization happens inside the transaction below
   // (`SELECT … FOR UPDATE`).
-  if (published.updatedAt !== draftRow.publishedBaselineAt) {
-    return { ok: false, reason: "stale_baseline", currentBaselineAt: published.updatedAt };
+  //
+  // #4325 — compare at FULL precision. `published.updatedAt` is a JS-truncated
+  // (whole-second) string; `draftRow.publishedBaselineAt` is now microsecond
+  // text (loadDraft's `::text` cast). Reading the live `updated_at` as text too
+  // makes both sides byte-comparable, so two publishes in the same wall-clock
+  // second are distinguished instead of both passing the guard.
+  const live = await loadDashboardUpdatedAtPrecise(opts.dashboardId);
+  if (!live.ok) {
+    // `published` was already loaded non-null just above, so a failure here is a
+    // transient DB error (or a rare concurrent delete) — NOT a routine "missing"
+    // case. Prefer an error over a misleading 404: only a genuinely absent row
+    // is `dashboard_not_found`; a DB blip / no_db is `error` → 500 + requestId.
+    return { ok: false, reason: live.reason === "not_found" ? "dashboard_not_found" : "error" };
+  }
+  if (live.updatedAt !== draftRow.publishedBaselineAt) {
+    return { ok: false, reason: "stale_baseline", currentBaselineAt: live.updatedAt };
   }
 
   const merge = publishDraftMerge(
@@ -930,18 +1001,21 @@ export async function publishDraft(opts: {
     // Without this guard the second publish would apply its ops on
     // top of the first's state silently, defeating the "your baseline
     // has changed" promise.
+    // #4325 — read the locked row's `updated_at` as text (full microsecond
+    // precision), matching the draft baseline's `::text` representation, so the
+    // serialized guard also distinguishes same-second publishes.
     const lockResult = await client.query(
-      `SELECT updated_at FROM dashboards
+      `SELECT updated_at::text AS updated_at FROM dashboards
         WHERE id = $1 AND deleted_at IS NULL
         FOR UPDATE`,
       [opts.dashboardId],
     );
-    const lockedRow = lockResult.rows[0] as { updated_at: Date | string } | undefined;
+    const lockedRow = lockResult.rows[0] as { updated_at: string } | undefined;
     if (!lockedRow) {
       await client.query("ROLLBACK");
       return { ok: false, reason: "dashboard_not_found" };
     }
-    const lockedBaselineAt = String(lockedRow.updated_at);
+    const lockedBaselineAt = lockedRow.updated_at;
     if (lockedBaselineAt !== draftRow.publishedBaselineAt) {
       await client.query("ROLLBACK");
       return { ok: false, reason: "stale_baseline", currentBaselineAt: lockedBaselineAt };
@@ -1056,7 +1130,11 @@ export async function publishDraft(opts: {
       [opts.userId, opts.dashboardId],
     );
     await client.query("COMMIT");
-    return { ok: true, opsApplied };
+    // #4325 — the cards whose SQL/config changed. The route enqueues an async
+    // refresh of exactly these AFTER the commit and returns them to the client;
+    // publish itself never blocks on query execution.
+    const refreshCardIds = cardsNeedingRefresh(merge.ops, toSnapshot(published));
+    return { ok: true, opsApplied, refreshCardIds };
   } catch (err) {
     try {
       await client.query("ROLLBACK");
@@ -1100,10 +1178,24 @@ export async function rebaseDraft(opts: {
   const published = await opts.loadDashboardForOrg(opts.dashboardId, opts.orgId);
   if (!published) return { ok: false, reason: "dashboard_not_found" };
 
+  // #4325 — compare + stamp at FULL precision. `published.updatedAt` is a
+  // whole-second JS string; the baseline (and the value we write back) must be
+  // microsecond text so it stays byte-comparable with the live `updated_at` the
+  // publish guard reads. Using the truncated value here would defeat the
+  // fast-path and write a truncated baseline that then reads as spuriously
+  // stale on the next publish.
+  const live = await loadDashboardUpdatedAtPrecise(opts.dashboardId);
+  if (!live.ok) {
+    // As in publishDraft: `published` was just loaded non-null, so a failure
+    // here is transient/no_db (→ error/500), not a routine missing row.
+    return { ok: false, reason: live.reason === "not_found" ? "dashboard_not_found" : "error" };
+  }
+  const liveUpdatedAt = live.updatedAt;
+
   // Rebase is a no-op when nothing has moved on published since the
   // user forked. Fast-forward returns the existing snapshot + the same
   // baseline; the route layer can short-circuit without a write.
-  if (published.updatedAt === draftRow.publishedBaselineAt) {
+  if (liveUpdatedAt === draftRow.publishedBaselineAt) {
     return {
       ok: true,
       snapshot: draftRow.snapshot,
@@ -1117,7 +1209,7 @@ export async function rebaseDraft(opts: {
     draftRow.snapshot,
     toSnapshot(published),
     draftRow.baseline,
-    published.updatedAt,
+    liveUpdatedAt,
   );
   if (result.kind === "conflict") {
     return { ok: false, reason: "conflict", conflicts: result.conflicts };

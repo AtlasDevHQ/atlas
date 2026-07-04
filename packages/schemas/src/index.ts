@@ -9,6 +9,7 @@ export * from "./common";
 export * from "./connection";
 export * from "./custom-domain";
 export * from "./dashboard";
+export * from "./dashboard-card-equality";
 export * from "./datasource-profile";
 export * from "./execute-sql";
 export * from "./metric-run";

@@ -86,8 +86,9 @@ describe("answerStyleLabel (#4302)", () => {
     expect(answerStyleLabel("plain-english")).toBe("Plain English");
     expect(answerStyleLabel("analyst")).toBe("Analyst");
     expect(answerStyleLabel("executive")).toBe("Executive");
-    // A Slack-originated conversation opened in the web must still read
-    // sensibly on the trigger, even though the menu never offers this.
+    // An API/SDK-persisted conversational row opened in the web must still
+    // read sensibly on the trigger, even though the menu never offers it
+    // (chat platforms apply the voice per-turn and leave the row NULL).
     expect(answerStyleLabel("conversational")).toBe("Conversational");
   });
 });
@@ -99,9 +100,14 @@ describe("isKnownAnswerStyle (#4302)", () => {
     }
     // The version-skew ingress case: a style this bundle doesn't know must be
     // rejected so restore-on-open degrades to the default instead of
-    // committing a value that crashes the display lookup and is echoed back
-    // on every turn.
+    // committing a value the picker can't display, which would be echoed
+    // back to fail validation on every turn.
     expect(isKnownAnswerStyle("sarcastic")).toBe(false);
+    // Object.prototype members must not pass (the `in`-operator hole): a
+    // "toString" that slipped through would ALSO defeat the styleDisplay
+    // fallback, since Object.prototype.toString is truthy.
+    expect(isKnownAnswerStyle("toString")).toBe(false);
+    expect(isKnownAnswerStyle("__proto__")).toBe(false);
     expect(isKnownAnswerStyle("")).toBe(false);
     expect(isKnownAnswerStyle(null)).toBe(false);
     expect(isKnownAnswerStyle(undefined)).toBe(false);
@@ -151,7 +157,7 @@ describe("AnswerStylePicker (#4302)", () => {
     expect(picks).toEqual(["executive", "plain-english"]);
   });
 
-  test("a Slack-originated conversational conversation renders a sensible trigger", () => {
+  test("an API-persisted conversational conversation renders a sensible trigger", () => {
     const { getByTestId } = render(
       <AnswerStylePicker value="conversational" onChange={noop} />,
     );

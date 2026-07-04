@@ -956,6 +956,40 @@ describe("POST /api/v1/chat", () => {
     expect(mockUpdateConversationAnswerStyle).not.toHaveBeenCalled();
   });
 
+  // #4302 — the pre-#4302 back-compat path: an existing conversation whose
+  // row has NO explicit choice (NULL) and whose body omits the field must
+  // reach runAgent with NO answerStyle — prompt assembly then applies the
+  // live surface default, so legacy conversations keep tracking it.
+  it("threads no answerStyle for a NULL-row conversation whose body omits it (#4302)", async () => {
+    const convId = "a7b8c9d0-e1f2-4d64-b051-728394051627";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+        groupReach: null,
+        answerStyle: null,
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "legacy turn" }] }],
+        conversationId: convId,
+      }),
+    );
+    expect(response.status).toBe(200);
+    const runCalls = mockRunAgent.mock.calls as unknown as unknown[][];
+    expect((runCalls[0]![0] as { answerStyle?: string }).answerStyle).toBeUndefined();
+    expect(mockUpdateConversationAnswerStyle).not.toHaveBeenCalled();
+  });
+
   // #4302 — an explicit picker change persists onto the row (that's what
   // makes it restore on reopen), and takes effect on this very turn.
   it("persists an explicit answer-style change on an existing conversation (#4302)", async () => {

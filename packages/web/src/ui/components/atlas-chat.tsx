@@ -333,12 +333,9 @@ export function AtlasChat({
     getCredentials,
   });
 
-  // #4302 — the header row is no longer gated on the env-picker having
-  // something to show (the old `showEnvPicker` header gate, #3081): the
-  // answer-style picker renders for every workspace, so the row is never an
-  // empty bordered strip — including the legacy 1×1 whose <ChatEnvPicker>
-  // hides itself (it self-gates via `shouldRenderEnvPicker` internally, so
-  // the #3081 gate-vs-picker agreement concern is moot).
+  // #4302 — the `showEnvPicker` header-row gate (#3081) that lived here is
+  // gone: the header now renders unconditionally (see the JSX comment at the
+  // <header> below).
 
   // #3883 — in developer mode, show the "no connections" empty state only when
   // the workspace has *zero* connections the chat can reach (SQL groups + REST
@@ -782,8 +779,9 @@ export function AtlasChat({
       // Guarded like the server's own read seam (rowToConversation): the GET
       // is a typed cast, not runtime validation, so a version-skewed API
       // sending a style this bundle doesn't know must degrade to the default
-      // — knowingly, with a breadcrumb — rather than crash the header render
-      // or echo the unknown value back and 400 every subsequent turn.
+      // — knowingly, with a breadcrumb — rather than commit a value the
+      // picker can't display and echo it back to fail validation (422) on
+      // every subsequent turn.
       const restoredStyle = data.answerStyle ?? null;
       const knownStyle = isKnownAnswerStyle(restoredStyle) ? restoredStyle : null;
       if (restoredStyle !== null && knownStyle === null) {

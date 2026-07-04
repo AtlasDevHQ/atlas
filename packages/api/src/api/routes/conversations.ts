@@ -130,8 +130,9 @@ const ConversationSchema = z.object({
    * (`analyst` for web). Genuinely nullable; optional so pre-#4302 rows /
    * SDK consumers need not supply it. Mirrors the `Conversation` wire type
    * — `GET /conversations/:id` carries it so the header picker restores the
-   * persisted style on reopen (`conversational` is a legal persisted value
-   * for chat-platform conversations, though the web picker doesn't offer it).
+   * persisted style on reopen. `conversational` is a legal persisted value
+   * (accepted from API/SDK callers), though the web picker doesn't offer it
+   * and chat platforms apply that voice per-turn, leaving their rows NULL.
    */
   answerStyle: z.enum(ANSWER_STYLE_NAMES).nullable().optional(),
   starred: z.boolean(),

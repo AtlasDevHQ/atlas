@@ -16,8 +16,11 @@
  * Fully controlled/stateless like `ChatEnvPicker`: reads `value`, emits
  * `onChange`. The menu offers the three user-facing styles (plain English /
  * analyst / executive); `conversational` is the chat-platform (Slack) voice
- * — a legal persisted value this picker can DISPLAY (a Slack-originated
- * conversation opened in the web) but deliberately does not offer.
+ * — a legal persisted value (the chat route's enum accepts it from API/SDK
+ * callers) this picker can DISPLAY but deliberately does not offer.
+ * Chat-platform surfaces apply that voice per-turn via `presentationMode`
+ * and leave the row NULL, so a Slack-originated conversation opened here
+ * shows the default, not "Conversational".
  */
 
 import { BarChart3, Briefcase, Check, MessageCircle, MessagesSquare, type LucideIcon } from "lucide-react";
@@ -78,7 +81,8 @@ const ANSWER_STYLE_OPTIONS: readonly AnswerStyleOption[] = [
 ];
 
 /** Display metadata for every persistable style — including the non-offered
- * `conversational`, so a Slack-originated conversation's trigger still reads
+ * `conversational` (persistable via API/SDK callers; chat platforms apply it
+ * per-turn and leave the row NULL), so such a row's trigger still reads
  * sensibly when opened in the web. */
 const STYLE_DISPLAY: Record<AnswerStyle, { label: string; icon: LucideIcon }> = {
   "plain-english": { label: "Plain English", icon: MessageCircle },
@@ -93,11 +97,16 @@ const STYLE_DISPLAY: Record<AnswerStyle, { label: string; icon: LucideIcon }> = 
  * null). The conversation GET is a typed cast, not runtime validation, so a
  * version-skewed API (newer server, older bundle / pinned embed) can hand
  * this bundle a style it doesn't know; callers degrade it to null ("track
- * the default") instead of committing it to state, where it would crash the
- * `STYLE_DISPLAY` lookup and be echoed back on every subsequent turn.
+ * the default") instead of committing it to state, where it would be echoed
+ * back on every subsequent turn (and would raw-index `STYLE_DISPLAY` but
+ * for `styleDisplay`'s fallback).
  */
 export function isKnownAnswerStyle(value: unknown): value is AnswerStyle {
-  return typeof value === "string" && value in STYLE_DISPLAY;
+  // Object.hasOwn (not `in`): `in` walks the prototype chain, so junk like
+  // "toString" would pass the guard AND defeat the styleDisplay fallback
+  // (Object.prototype.toString is truthy) — crashing the exact render this
+  // guard exists to protect.
+  return typeof value === "string" && Object.hasOwn(STYLE_DISPLAY, value);
 }
 
 /**
@@ -107,7 +116,13 @@ export function isKnownAnswerStyle(value: unknown): value is AnswerStyle {
  * shows the default's display rather than throwing a TypeError mid-render.
  */
 function styleDisplay(style: AnswerStyle): { label: string; icon: LucideIcon } {
-  return STYLE_DISPLAY[style] ?? STYLE_DISPLAY[DEFAULT_WEB_ANSWER_STYLE];
+  // Object.hasOwn (not `??`) so this layer is independent of the guard:
+  // property ACCESS also walks the prototype chain, so for junk like
+  // "toString" the lookup returns a truthy inherited function and a bare
+  // `??` fallback would never engage.
+  return Object.hasOwn(STYLE_DISPLAY, style)
+    ? STYLE_DISPLAY[style]
+    : STYLE_DISPLAY[DEFAULT_WEB_ANSWER_STYLE];
 }
 
 /**

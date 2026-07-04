@@ -100,9 +100,10 @@ export interface ChatRoutingInputs {
   /**
    * #4302 — per-conversation answer style. Omitted when `null` (no explicit
    * choice — the server inherits the row's stored style, or applies the
-   * surface default for a NULL row), like `routingMode`. Once the header
-   * picker is touched the getter returns the explicit style, so every
-   * subsequent turn re-sends it and the change persists onto the row.
+   * surface default for a NULL row), like `routingMode`. The getter returns
+   * a style once its state holds one — picked this session or restored from
+   * the row on reopen — so every turn re-sends it; only a genuine change
+   * burns an UPDATE server-side (the route's skip-UPDATE gate).
    */
   answerStyle?: AnswerStyle | null;
 }

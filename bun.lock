@@ -102,6 +102,7 @@
         "zod": "^4.4.3",
       },
       "devDependencies": {
+        "@atlas/fumadocs-okf": "workspace:*",
         "@shikijs/transformers": "^4.2.0",
         "@tailwindcss/postcss": "^4.3.1",
         "@types/node": "^25.9.4",
@@ -292,6 +293,16 @@
         "@clack/prompts": "^1.6.0",
         "@types/pg": "^8.20.0",
         "picocolors": "^1.1.1",
+      },
+    },
+    "packages/fumadocs-okf": {
+      "name": "@atlas/fumadocs-okf",
+      "version": "0.0.0",
+      "dependencies": {
+        "fflate": "^0.8.2",
+      },
+      "devDependencies": {
+        "@atlas/api": "workspace:*",
       },
     },
     "packages/mcp": {
@@ -943,6 +954,8 @@
     "@atlas/ee": ["@atlas/ee@workspace:ee"],
 
     "@atlas/embedded-mcp-onboarding-example": ["@atlas/embedded-mcp-onboarding-example@workspace:examples/embedded-mcp-onboarding"],
+
+    "@atlas/fumadocs-okf": ["@atlas/fumadocs-okf@workspace:packages/fumadocs-okf"],
 
     "@atlas/mcp": ["@atlas/mcp@workspace:packages/mcp"],
 

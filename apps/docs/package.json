@@ -23,6 +23,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@atlas/fumadocs-okf": "workspace:*",
     "@types/node": "^25.9.4",
     "@shikijs/transformers": "^4.2.0",
     "@tailwindcss/postcss": "^4.3.1",

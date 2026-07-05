@@ -17,6 +17,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { Cause, Effect } from "effect";
 import { Parser } from "node-sql-parser";
+import type { AST } from "node-sql-parser";
 import { connections, detectDBType, isConnectionVisibleInMode, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables, loadOrgWhitelist } from "@atlas/api/lib/semantic";
@@ -146,6 +147,51 @@ function warnWhitelistDisabled() {
 
 const parser = new Parser();
 
+// ── Parse-once seam (#4349) ─────────────────────────────────────────
+//
+// The validate-then-execute path used to parse the same query string ~5–6
+// times: `astify` for the statement shape; a `tableList` each for the
+// ONLY-guard, the whitelist, and the classifier (which also ran `columnList`);
+// and a final `tableList` inside `applyRLSEffect`. Each recomputed the dialect
+// and discarded the prior parse, so the whitelist bucket and the classifier's
+// table set matched only because re-parses of the same string can't disagree —
+// an undocumented "these parses can't diverge" invariant rather than a
+// structural guarantee. That mattered because `extractClassification` fails
+// open to an empty table set, and that set drives the approval gate and PII
+// masking: a classifier that could diverge from the whitelist could silently
+// un-gate a query.
+//
+// `parseOnce` collapses all of it: `parser.parse` returns `{ ast, tableList,
+// columnList }` from a SINGLE parse. Every consumer (statement-shape guard,
+// ONLY-guard, whitelist, classifier) reads from this one result, so they share
+// one table set by construction. In node-sql-parser 5.x `astify` is defined AS
+// `parse(...).ast`, so `parser.parse` throws exactly when `astify` would and
+// the reject-on-unparseable behavior is unchanged.
+
+interface ParsedQuery {
+  /** Statement AST (array for multi-statement input — rejected downstream). */
+  readonly ast: AST | AST[];
+  /** Raw table refs in node-sql-parser's `select::schema::table` format. */
+  readonly tables: readonly string[];
+  /** Raw column refs in node-sql-parser's `select::table::column` format. */
+  readonly columns: readonly string[];
+}
+
+/** Parse `sql` exactly once, returning the shared `{ ast, tables, columns }`. */
+function parseOnce(sql: string, dialect: string): ParsedQuery {
+  const { ast, tableList, columnList } = parser.parse(sql, { database: dialect });
+  return { ast, tables: tableList, columns: columnList };
+}
+
+/**
+ * Reduce a `select::schema::table` ref to its lowercased table name — the
+ * shared derivation the ONLY-guard, the classifier, and RLS all apply to the
+ * one parse so their table sets can't drift.
+ */
+function tableNameFromRef(ref: string): string {
+  return ref.split("::").pop()?.toLowerCase() ?? "";
+}
+
 // ── Classification ──────────────────────────────────────────────────
 
 interface SQLClassification {
@@ -153,17 +199,72 @@ interface SQLClassification {
   readonly columnsAccessed: string[];
 }
 
+/**
+ * The shared parse threaded out of {@link validateSQL} so RLS injection can
+ * reuse it instead of re-parsing (#4349). `sql` is the exact normalized string
+ * that was parsed; a downstream consumer reuses `tables` only when it is about
+ * to operate on that same string (a plugin `beforeQuery` rewrite or a MySQL
+ * executable-comment unwrap makes them diverge, and the consumer re-parses).
+ *
+ * `tables` is valid only for the connection/dialect that produced it — every
+ * reuse site here shares the same `connId`, so the dialect is stable and is
+ * deliberately NOT part of the reuse key (string identity suffices).
+ */
+interface ValidatedParse {
+  readonly sql: string;
+  readonly tables: readonly string[];
+}
+
 type SQLValidationResult =
-  | { valid: true; error?: undefined; classification: SQLClassification }
-  | { valid: false; error: string; classification?: undefined };
+  // `parsed` is always present on the valid standard-SQL path (validateSQL sets
+  // it at its single return). It stays absent only for the invalid arm.
+  | { valid: true; error?: undefined; classification: SQLClassification; parsed: ValidatedParse }
+  | { valid: false; error: string; classification?: undefined; parsed?: undefined };
 
 /**
- * Extract table and column references from validated SQL.
+ * Derive the classification (tables + columns accessed) from an ALREADY-parsed
+ * query. Pure — no parse, no I/O — so it cannot fail independently of the
+ * shared parse that produced `parsed`. CTE names are excluded from
+ * `tablesAccessed`; `SELECT *` is stored as `["*"]` in `columnsAccessed`.
  *
- * Uses node-sql-parser's tableList/columnList helpers.
- * CTE names are excluded from tablesAccessed.
- * SELECT * is stored as ["*"] in columnsAccessed.
- * Best-effort: returns empty arrays on extraction failure.
+ * This is the seam that closes #4349: `validateSQL` feeds the SAME
+ * {@link ParsedQuery} to the whitelist check and to this function, so the
+ * classifier's `tablesAccessed` is exactly the whitelist's table set (minus
+ * CTEs). An empty `tablesAccessed` can now only mean a genuinely table-less
+ * query — never a classifier parse that diverged from the whitelist and
+ * fail-opened to empty.
+ */
+function classifyParsed(
+  parsed: Pick<ParsedQuery, "tables" | "columns">,
+  cteNames: Set<string>,
+): SQLClassification {
+  const tablesAccessed = [...new Set(
+    parsed.tables
+      .map(tableNameFromRef)
+      .filter((t) => t && !cteNames.has(t)),
+  )];
+
+  const columnsAccessed = [...new Set(
+    parsed.columns
+      .map((ref) => {
+        const col = ref.split("::").pop() ?? "";
+        // node-sql-parser uses "(.*)" for SELECT *
+        if (col === "(.*)") return "*";
+        return col.toLowerCase();
+      })
+      .filter(Boolean),
+  )];
+
+  return { tablesAccessed, columnsAccessed };
+}
+
+/**
+ * Extract table and column references from SQL.
+ *
+ * Best-effort: parses the query and returns empty arrays on parse failure.
+ * Retained as the standalone (re-parsing) entry point for callers outside the
+ * `validateSQL` pipeline; inside the pipeline the parse is shared via
+ * {@link parseOnce} + {@link classifyParsed} so no re-parse happens (#4349).
  */
 export function extractClassification(
   sql: string,
@@ -171,30 +272,7 @@ export function extractClassification(
   cteNames: Set<string>,
 ): SQLClassification {
   try {
-    const tableRefs = parser.tableList(sql, { database: dialect });
-    const tablesAccessed = [...new Set(
-      tableRefs
-        .map((ref) => {
-          const parts = ref.split("::");
-          return parts.pop()?.toLowerCase() ?? "";
-        })
-        .filter((t) => t && !cteNames.has(t)),
-    )];
-
-    const columnRefs = parser.columnList(sql, { database: dialect });
-    const columnsAccessed = [...new Set(
-      columnRefs
-        .map((ref) => {
-          const parts = ref.split("::");
-          const col = parts.pop() ?? "";
-          // node-sql-parser uses "(.*)" for SELECT *
-          if (col === "(.*)") return "*";
-          return col.toLowerCase();
-        })
-        .filter(Boolean),
-    )];
-
-    return { tablesAccessed, columnsAccessed };
+    return classifyParsed(parseOnce(sql, dialect), cteNames);
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err : new Error(String(err)), sql: sql.slice(0, 200), dialect },
@@ -430,6 +508,106 @@ function getExtraPatterns(dbType: DBType | string, connectionId?: string, worksp
   }
 }
 
+/**
+ * Parse `sql` exactly once (via {@link parseOnce}) and run the statement-shape
+ * guards: single statement, SELECT-only, no `SELECT ... INTO <table>`, no
+ * forbidden side-effecting function, and — PG-family only — no bare `ONLY`
+ * table modifier. Returns the shared parse and the collected CTE names so the
+ * whitelist check and the classifier downstream consume ONE table set (#4349).
+ *
+ * A parse failure or a shape violation is returned as `{ ok: false, error }`;
+ * the caller maps it to the `{ valid: false }` validation result verbatim.
+ */
+function parseAndGuardShape(
+  sql: string,
+  dialect: string,
+):
+  | { ok: true; parsed: ParsedQuery; cteNames: Set<string> }
+  | { ok: false; error: string } {
+  let parsed: ParsedQuery;
+  try {
+    parsed = parseOnce(sql, dialect);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "";
+    return {
+      ok: false,
+      error: `Query could not be parsed.${detail ? ` ${detail}.` : ""} Rewrite using standard SQL syntax.`,
+    };
+  }
+
+  const statements = Array.isArray(parsed.ast) ? parsed.ast : [parsed.ast];
+
+  // Single-statement check — reject batched queries
+  if (statements.length > 1) {
+    return { ok: false, error: "Multiple statements are not allowed" };
+  }
+
+  const cteNames = new Set<string>();
+  for (const stmt of statements) {
+    if (stmt.type !== "select") {
+      return { ok: false, error: `Only SELECT statements are allowed, got: ${stmt.type}` };
+    }
+    // F-18: reject `SELECT ... INTO <table>` (PG creates a new table).
+    // node-sql-parser surfaces these as `stmt.into.type === "into"`; plain
+    // SELECTs come back with `stmt.into = { position: null }` and no `type`.
+    // MySQL `SELECT ... INTO @var` uses `keyword === "var"` (session-local
+    // variable assignment) — explicitly allowed.
+    //
+    // MySQL `INTO OUTFILE|DUMPFILE` is already rejected upstream by the
+    // F-19 `FORBIDDEN_PATTERNS` regex; this guard is the AST-level safety
+    // net if that regex is ever loosened or a new filesystem-write syntax
+    // is added that the regex misses.
+    const into = (stmt as { into?: { type?: string; keyword?: string | null } }).into;
+    if (into?.type === "into" && into.keyword !== "var") {
+      return {
+        ok: false,
+        error: "SELECT ... INTO is a forbidden operation — only plain read-only SELECT is allowed.",
+      };
+    }
+    // Extract CTE names so they can be excluded from the table whitelist check
+    if (Array.isArray(stmt.with)) {
+      for (const cte of stmt.with) {
+        const name = cte?.name?.value ?? cte?.name;
+        if (typeof name === "string") cteNames.add(name.toLowerCase());
+      }
+    }
+
+    // #3342 L-3 — block side-effecting / file / network / DoS functions.
+    const forbiddenFn = findForbiddenFunction(stmt);
+    if (forbiddenFn) {
+      return {
+        ok: false,
+        error: `Function "${forbiddenFn}" is not allowed — file, network, administrative, and timing functions are blocked.`,
+      };
+    }
+  }
+
+  // F-20 (#3346): reject PG-family queries whose extracted table set
+  // contains the bare keyword ONLY. node-sql-parser mis-models
+  // `SELECT * FROM ONLY accounts` as table "ONLY" with alias "accounts",
+  // dropping the real relation from `tableList` — which silently defeats
+  // the whitelist (when disabled), named RLS policies, and audit
+  // classification. The agent can always drop the inheritance modifier.
+  // Derives from the SHARED parse — no re-parse (#4349).
+  if (!/mysql|mariadb/i.test(dialect)) {
+    for (const ref of parsed.tables) {
+      // No CTE exemption: a CTE named `only` would otherwise mask a real
+      // `FROM ONLY accounts` mis-parse (the CTE name and the keyword are
+      // the same lowered token). ONLY is a reserved word in PG anyway —
+      // an unquoted CTE cannot legitimately carry that name.
+      if (tableNameFromRef(ref) === "only") {
+        return {
+          ok: false,
+          error:
+            "The PostgreSQL ONLY table modifier is not supported. Rewrite the query without ONLY (e.g. SELECT ... FROM accounts).",
+        };
+      }
+    }
+  }
+
+  return { ok: true, parsed, cteNames };
+}
+
 export async function validateSQL(
   sql: string,
   connectionId?: string,
@@ -510,95 +688,24 @@ export async function validateSQL(
     }
   }
 
-  // 2. AST validation — must be a single SELECT
+  // Resolve the node-sql-parser dialect ONCE for this validation — every
+  // downstream parse consumer (statement-shape guard, ONLY-guard, whitelist,
+  // classifier) reads this single value instead of recomputing the plugin
+  // registry lookup per parse (#4349).
+  const dialect = parserDatabase(dbType, connectionId, workspaceId);
+
+  // 2. AST validation — parse ONCE, then run the statement-shape guards.
   //
-  // Security rationale: if the regex guard (layer 1) passed but the AST parser
-  // cannot parse the query, we REJECT it rather than allowing it through.
-  // A query that passes regex but confuses the parser could be a crafted bypass
-  // attempt. The agent can always reformulate into standard SQL that parses.
-  const cteNames = new Set<string>();
-  try {
-    const ast = parser.astify(trimmed, { database: parserDatabase(dbType, connectionId, workspaceId) });
-    const statements = Array.isArray(ast) ? ast : [ast];
-
-    // Single-statement check — reject batched queries
-    if (statements.length > 1) {
-      return { valid: false, error: "Multiple statements are not allowed" };
-    }
-
-    for (const stmt of statements) {
-      if (stmt.type !== "select") {
-        return {
-          valid: false,
-          error: `Only SELECT statements are allowed, got: ${stmt.type}`,
-        };
-      }
-      // F-18: reject `SELECT ... INTO <table>` (PG creates a new table).
-      // node-sql-parser surfaces these as `stmt.into.type === "into"`; plain
-      // SELECTs come back with `stmt.into = { position: null }` and no `type`.
-      // MySQL `SELECT ... INTO @var` uses `keyword === "var"` (session-local
-      // variable assignment) — explicitly allowed.
-      //
-      // MySQL `INTO OUTFILE|DUMPFILE` is already rejected upstream by the
-      // F-19 `FORBIDDEN_PATTERNS` regex; this guard is the AST-level safety
-      // net if that regex is ever loosened or a new filesystem-write syntax
-      // is added that the regex misses.
-      const into = (stmt as { into?: { type?: string; keyword?: string | null } }).into;
-      if (into?.type === "into" && into.keyword !== "var") {
-        return {
-          valid: false,
-          error: "SELECT ... INTO is a forbidden operation — only plain read-only SELECT is allowed.",
-        };
-      }
-      // Extract CTE names so they can be excluded from the table whitelist check
-      if (Array.isArray(stmt.with)) {
-        for (const cte of stmt.with) {
-          const name = cte?.name?.value ?? cte?.name;
-          if (typeof name === "string") cteNames.add(name.toLowerCase());
-        }
-      }
-
-      // #3342 L-3 — block side-effecting / file / network / DoS functions.
-      const forbiddenFn = findForbiddenFunction(stmt);
-      if (forbiddenFn) {
-        return {
-          valid: false,
-          error: `Function "${forbiddenFn}" is not allowed — file, network, administrative, and timing functions are blocked.`,
-        };
-      }
-    }
-
-    // F-20 (#3346): reject PG-family queries whose extracted table set
-    // contains the bare keyword ONLY. node-sql-parser mis-models
-    // `SELECT * FROM ONLY accounts` as table "ONLY" with alias "accounts",
-    // dropping the real relation from `tableList` — which silently defeats
-    // the whitelist (when disabled), named RLS policies, and audit
-    // classification. The agent can always drop the inheritance modifier.
-    const guardDialect = parserDatabase(dbType, connectionId, workspaceId);
-    if (!/mysql|mariadb/i.test(guardDialect)) {
-      const tableRefs = parser.tableList(trimmed, { database: guardDialect });
-      for (const ref of tableRefs) {
-        const tableName = ref.split("::").pop()?.toLowerCase();
-        // No CTE exemption: a CTE named `only` would otherwise mask a real
-        // `FROM ONLY accounts` mis-parse (the CTE name and the keyword are
-        // the same lowered token). ONLY is a reserved word in PG anyway —
-        // an unquoted CTE cannot legitimately carry that name.
-        if (tableName === "only") {
-          return {
-            valid: false,
-            error:
-              "The PostgreSQL ONLY table modifier is not supported. Rewrite the query without ONLY (e.g. SELECT ... FROM accounts).",
-          };
-        }
-      }
-    }
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : "";
-    return {
-      valid: false,
-      error: `Query could not be parsed.${detail ? ` ${detail}.` : ""} Rewrite using standard SQL syntax.`,
-    };
+  // Security rationale: if the regex guard (layer 1) passed but the parser
+  // cannot parse the query, we REJECT it rather than allowing it through — a
+  // query that passes regex but confuses the parser could be a crafted bypass.
+  // The single parse produced here feeds the ONLY-guard, the table whitelist
+  // below, and the classifier, so their table sets cannot diverge (#4349).
+  const shape = parseAndGuardShape(trimmed, dialect);
+  if (!shape.ok) {
+    return { valid: false, error: shape.error };
   }
+  const { parsed, cteNames } = shape;
 
   // 3. Table whitelist check — use getSettingAuto for SaaS hot-reload
   const whitelistSetting = getSettingAuto("ATLAS_TABLE_WHITELIST") ?? process.env.ATLAS_TABLE_WHITELIST;
@@ -606,7 +713,9 @@ export async function validateSQL(
     warnWhitelistDisabled();
   } else {
     try {
-      const tables = parser.tableList(trimmed, { database: parserDatabase(dbType, connectionId, workspaceId) });
+      // Reuse the SHARED parse (#4349) — the same table set the classifier
+      // reads below, so the whitelist bucket and the classification can't drift.
+      const tables = parsed.tables;
       const sqlReqCtx = getRequestContext();
       // Use the resolved workspace scope (above) for the whitelist — not just the
       // request context. Scheduler-driven callers (dashboard auto-refresh) have
@@ -714,9 +823,11 @@ export async function validateSQL(
         }
       }
     } catch (err) {
-      // Table extraction uses the same parser that just succeeded in step 2.
-      // If it fails here, reject to avoid bypassing the whitelist.
-      log.warn({ err, sql: trimmed.slice(0, 200) }, "Table extraction failed after successful AST parse");
+      // The table refs come from the shared parse (step 2 already succeeded);
+      // this catch now guards the whitelist LOAD/LOOKUP (loadOrgWhitelist,
+      // getOrgWhitelistedTables, resolveExecutionTarget). A failure here must
+      // reject to avoid bypassing the whitelist.
+      log.warn({ err, sql: trimmed.slice(0, 200) }, "Whitelist resolution failed after successful AST parse");
       return {
         valid: false,
         error: "Could not verify table permissions. Rewrite using standard SQL syntax.",
@@ -724,14 +835,15 @@ export async function validateSQL(
     }
   }
 
-  // 4. Extract classification data (best-effort, never blocks validation)
-  const classification = extractClassification(
-    trimmed,
-    parserDatabase(dbType, connectionId, workspaceId),
-    cteNames,
-  );
+  // 4. Derive classification data from the SHARED parse (best-effort, never
+  // blocks validation). Same table set the whitelist consumed above, so a
+  // classify divergence can no longer fail-open to an empty set that bypasses
+  // the approval gate / PII masking (#4349).
+  const classification = classifyParsed(parsed, cteNames);
 
-  return { valid: true, classification };
+  // Thread the shared parse out so RLS injection can reuse it instead of
+  // re-parsing the (unchanged) query at execution time (#4349).
+  return { valid: true, classification, parsed: { sql: trimmed, tables: parsed.tables } };
 }
 
 let lastWarnedRowLimit: string | undefined;
@@ -926,14 +1038,14 @@ function runQueryValidationEffect(
   customValidator: CustomValidator | undefined,
   workspaceId?: string,
   executionTarget?: ExecutionTarget,
-): Effect.Effect<{ ok: true; classification?: SQLClassification } | { ok: false; error: string; auditError: string }> {
+): Effect.Effect<{ ok: true; classification?: SQLClassification; parsed?: ValidatedParse } | { ok: false; error: string; auditError: string }> {
   if (!customValidator) {
     return Effect.promise(async () => {
       const validation = await validateSQL(sql, connId, workspaceId, executionTarget);
       if (!validation.valid) {
         return { ok: false as const, error: validation.error, auditError: `Validation rejected: ${validation.error}` };
       }
-      return { ok: true as const, classification: validation.classification };
+      return { ok: true as const, classification: validation.classification, parsed: validation.parsed };
     });
   }
 
@@ -959,12 +1071,23 @@ function runQueryValidationEffect(
   });
 }
 
-/** Apply RLS conditions. Returns the (possibly modified) SQL. Fails with RLSError. */
+/**
+ * Apply RLS conditions. Returns the (possibly modified) SQL. Fails with RLSError.
+ *
+ * `validatedParse` (#4349) is the shared parse threaded out of `validateSQL`.
+ * When it describes the EXACT string this function is about to inject into,
+ * RLS reuses its table refs instead of re-parsing — the fifth parse in the old
+ * pipeline. It's deliberately reused only on an exact-string match: a plugin
+ * `beforeQuery` rewrite or a MySQL executable-comment unwrap makes the executed
+ * string diverge from what was validated, and RLS then re-parses the string it
+ * will actually inject into (the correct target for filter resolution).
+ */
 function applyRLSEffect(
   sql: string,
   connId: string,
   dbType: DBType | string,
   targetHost: string | undefined,
+  validatedParse?: ValidatedParse,
 ): Effect.Effect<string, RLSError> {
   return Effect.gen(function* () {
     const config = getConfig();
@@ -1009,17 +1132,21 @@ function applyRLSEffect(
     const ctx = getRequestContext();
     const user = ctx?.user;
 
-    // Extract tables
+    // Extract tables — reuse the shared parse when the executed string is
+    // byte-identical to what was validated (the common case: no plugin rewrite
+    // and no MySQL executable-comment unwrap actually changed it), else
+    // re-parse (#4349). The reuse branch's refs came from the workspace-scoped
+    // dialect and the fallback uses the connection dialect; table-NAME
+    // extraction is dialect-invariant, so the asymmetry is intentional.
     const queriedTables = yield* Effect.try({
       try: () => {
-        const dialect = parserDatabase(dbType, connId);
-        const tableRefs = parser.tableList(sql, { database: dialect });
+        const tableRefs =
+          validatedParse && validatedParse.sql === sql
+            ? validatedParse.tables
+            : parser.tableList(sql, { database: parserDatabase(dbType, connId) });
         return new Set(
           tableRefs
-            .map((ref) => {
-              const parts = ref.split("::");
-              return parts.pop()?.toLowerCase() ?? "";
-            })
+            .map(tableNameFromRef)
             .filter(Boolean),
         );
       },
@@ -1614,6 +1741,9 @@ export function runSqlPipelineEffect(
     // Custom validators (SOQL, GraphQL) bypass node-sql-parser so classification
     // stays undefined — their audit entries store NULL for tables/columns_accessed.
     const classification = initial.classification;
+    // Shared parse for RLS reuse (#4349) — tracks whichever validation produced
+    // the string RLS will inject into (updated on a plugin rewrite below).
+    let parsedForRls = initial.parsed;
 
     // Enterprise approval check — the fail-closed gate, exactly once.
     // F-54 / F-55: this gate is fail-CLOSED. The previous behaviour
@@ -1927,11 +2057,14 @@ export function runSqlPipelineEffect(
             });
             return { kind: "validation_failed" as const, message: `Plugin-rewritten SQL failed validation: ${revalidation.error}` };
           }
+          // The re-validation reparsed the rewritten SQL — carry its parse so RLS
+          // reuses it rather than parsing the mutated string a third time (#4349).
+          parsedForRls = revalidation.parsed;
         }
 
         // RLS: inject WHERE conditions (skipped for custom validators / non-SQL languages)
         if (!customValidator) {
-          normalizedMutated = yield* applyRLSEffect(normalizedMutated, connId, dbType, targetHost);
+          normalizedMutated = yield* applyRLSEffect(normalizedMutated, connId, dbType, targetHost, parsedForRls);
         }
 
         // Auto-append LIMIT if not present

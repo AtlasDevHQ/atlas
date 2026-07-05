@@ -41,12 +41,11 @@
  * @see docs/adr/0005-integration-credentials-table.md
  */
 
-import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
-import { internalQuery } from "@atlas/api/lib/db/internal";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import type { CredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import type { WorkspaceId } from "@useatlas/types";
+import { persistSingletonInstall } from "./persist-form-install";
 import { mintOAuthStateToken } from "./oauth-state-token";
 import { verifyCallbackState } from "./oauth-callback-verify";
 import { writeCredentialWithReconnectFallback } from "./oauth-reconnect";
@@ -462,7 +461,6 @@ export class LinearOAuthInstallHandler implements OAuthPlatformInstallHandler {
     // `workspace_plugins_singleton`. Newer pattern than Jira's
     // pre-0092 trigger-derived shape (see discord-static-bot-handler.ts
     // for the same explicit-pillar idiom in newer code).
-    const installId = crypto.randomUUID();
     const installConfig: Record<string, unknown> = {
       scopes,
       status: "ok",
@@ -473,30 +471,27 @@ export class LinearOAuthInstallHandler implements OAuthPlatformInstallHandler {
       ...(viewer.userName ? { user_name: viewer.userName } : {}),
       ...(viewer.userEmail ? { user_email: viewer.userEmail } : {}),
     };
-    try {
-      await internalQuery(
-        `INSERT INTO workspace_plugins
-           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $1, 'action', $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
-         DO UPDATE
-           SET config = EXCLUDED.config,
-               enabled = true`,
-        [installId, workspaceId, LINEAR_CATALOG_ID, JSON.stringify(installConfig)],
-      );
-    } catch (err) {
-      log.error(
-        {
-          workspaceId,
-          err: err instanceof Error ? err.message : String(err),
-        },
+
+    // The workspace_plugins upsert + the RETURNING invariant live in
+    // `persistSingletonInstall` (issue #4352) — the one tested spine every
+    // singleton (chat/action) install writes through. Linear is action-pillar
+    // with no chat cap and no routing identifier, so it takes the bare
+    // internalQuery path (no capGate / routingConflictClassifier). Returns the
+    // PERSISTED id — on a reconnect the existing row keeps its original id, so
+    // the record now carries that id rather than the fresh candidate.
+    const persistedId = await persistSingletonInstall({
+      workspaceId,
+      catalogId: LINEAR_CATALOG_ID,
+      displayName: "Linear",
+      log,
+      config: installConfig,
+      pillar: "action",
+      persistFailureMessage:
         "Failed to write workspace_plugins install record — aborting Linear install",
-      );
-      throw err;
-    }
+    });
 
     const installRecord: InstallRecord = {
-      id: installId,
+      id: persistedId,
       workspaceId,
       catalogId: LINEAR_SLUG,
     };

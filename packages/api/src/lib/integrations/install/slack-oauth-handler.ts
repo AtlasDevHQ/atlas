@@ -34,14 +34,15 @@
  * @see docs/adr/0003-two-store-chat-install-metadata-credentials.md
  */
 
-import crypto from "crypto";
 import { Data } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { slackAPI } from "@atlas/api/lib/slack/api";
 import { saveInstallation } from "@atlas/api/lib/slack/store";
 import { BillingCheckFailedError, ChatIntegrationLimitError, PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
-import { checkChatIntegrationLimit, checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
+import { checkChatIntegrationLimit } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
+import { persistSingletonInstall } from "./persist-form-install";
+import { makeChatIntegrationCapGate } from "./chat-integration-cap-gate";
 import { mintOAuthStateToken } from "./oauth-state-token";
 import { verifyCallbackState } from "./oauth-callback-verify";
 import type {
@@ -245,26 +246,10 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
     // advisory lock, so two *distinct* net-new platforms installing
     // concurrently can't both slip past the cap. Reconnecting Slack
     // (already installed) is never blocked — the gate excludes Slack's own
-    // row from the count, and the UPSERT collapses the duplicate.
-    //
-    // Schema notes (mirrors `discord-static-bot-handler.ts`):
-    //   - `pillar` + `install_id` became NOT NULL in migration 0092
-    //     (#2739) and the auto-fill trigger was dropped in 0096 (#2744),
-    //     so every writer must name both columns explicitly — and the
-    //     chat-integration cap (#2953) counts `pillar = 'chat'` rows, so
-    //     omitting `pillar` would make Slack installs invisible to it.
-    //   - Chat-pillar installs are singletons per (workspace, catalog),
-    //     enforced by the `workspace_plugins_singleton` partial unique
-    //     index (`WHERE pillar IN ('chat','action')`). We target it via
-    //     the inference clause so re-install lands on the existing row.
-    //   - One install per (workspace, catalog) for chat, so `install_id`
-    //     mirrors `id`.
-    //   - `RETURNING id` so we hand back the PERSISTED row id, not this
-    //     candidate (#3005): on reconnect the UPSERT lands on the existing
-    //     row, which keeps its original id (ON CONFLICT DO UPDATE never
-    //     touches `id`), so the freshly-minted candidate would not match the
-    //     DB row. The gate surfaces the INSERT's RETURNING rows on success.
-    const installId = crypto.randomUUID();
+    // row from the count, and the UPSERT collapses the duplicate. The
+    // post-0092 schema shape (explicit `pillar` + `install_id`, the
+    // `workspace_plugins_singleton` partial-index conflict target) is owned
+    // by `buildFormInstallUpsertSql`'s docstring, not restated here.
     const installConfig = {
       team_id: teamId,
       team_name: teamName,
@@ -272,70 +257,30 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
       scopes,
       app_id: appId,
     };
-    let capCheck;
-    try {
-      capCheck = await checkChatIntegrationLimitAndInstall<{ id: string }>(workspaceId, SLACK_CATALOG_ID, {
-        sql: `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action') DO UPDATE
-           SET config = EXCLUDED.config,
-               enabled = true
-         RETURNING id`,
-        params: [installId, workspaceId, SLACK_CATALOG_ID, JSON.stringify(installConfig)],
-      });
-    } catch (err) {
-      log.error(
-        { workspaceId, teamId, err: err instanceof Error ? err.message : String(err) },
-        "Failed to write workspace_plugins install record — aborting install",
-      );
-      // Re-throw — the install record is the first store; without it
-      // the credential write is meaningless. Surfaced to the route as
-      // a 5xx by the runHandler bridge.
-      throw err;
-    }
-    if (!capCheck.allowed) {
-      if (capCheck.reason === "check_failed") {
-        // We couldn't read the workspace's chat-integration count, so the
-        // cap check failed closed. Surface this as a transient 503 "try
-        // again" — NOT a 429 "upgrade your plan", which would be wrong and
-        // non-actionable when the block is an internal-DB blip.
-        log.error(
-          { workspaceId },
-          "Slack install blocked — chat-integration count check failed (failing closed)",
-        );
-        throw new BillingCheckFailedError({
-          message: capCheck.errorMessage,
-          workspaceId,
-        });
-      }
-      log.info(
-        { workspaceId, limit: capCheck.limit },
-        "Slack install blocked — workspace at chat-integration cap",
-      );
-      throw new ChatIntegrationLimitError({
-        message: capCheck.errorMessage,
-        workspaceId,
-        limit: capCheck.limit,
-      });
-    }
-
-    // Read the id back from the UPSERT's RETURNING row rather than reusing the
-    // candidate `installId` (#3005). On reconnect the row already exists and
-    // keeps its ORIGINAL id, so the candidate would be wrong. Mirrors the
-    // non-empty guard in `discord-static-bot-handler.ts`.
-    const returned = capCheck.rows[0]?.id;
-    if (typeof returned !== "string" || returned.length === 0) {
-      // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING` returns the
-      // row on both insert and update. Empty here means a driver / wrapper
-      // regression — fail loudly rather than hand back a stale candidate id
-      // (on re-install the DB row has the existing id; falling back to the
-      // fresh candidate would strand subsequent lookups and the credential
-      // write below).
-      throw new Error(
-        `workspace_plugins UPSERT returned no id for Slack install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
-      );
-    }
-    const persistedId: string = returned;
+    // The upsert SQL, the cap-result → error mapping, and the RETURNING
+    // invariant (read the persisted id back rather than the candidate — on
+    // reconnect the existing row keeps its ORIGINAL id, #3005) all live in
+    // `persistSingletonInstall` (issue #4352) — the one tested spine every
+    // singleton (chat/action) install writes through. Slack carries no
+    // routing identifier, so no routing-conflict classifier is passed. The
+    // install record is the first store; a write failure surfaces as a 5xx
+    // (via the spine's rethrow) so the credential write below never runs.
+    const persistedId = await persistSingletonInstall({
+      workspaceId,
+      catalogId: SLACK_CATALOG_ID,
+      displayName: "Slack",
+      log,
+      config: installConfig,
+      pillar: "chat",
+      capGate: makeChatIntegrationCapGate({
+        orgId: workspaceId,
+        catalogId: SLACK_CATALOG_ID,
+        displayName: "Slack",
+        log,
+      }),
+      persistFailureMessage: "Failed to write workspace_plugins install record — aborting install",
+      failureLogFields: { teamId },
+    });
 
     const installRecord: InstallRecord = {
       id: persistedId,

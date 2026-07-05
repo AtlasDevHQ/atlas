@@ -248,12 +248,217 @@ export interface PersistInstallRecordParams {
 }
 
 /**
+ * The `workspace_plugins` upsert the spine hands to a {@link SingletonInstallCapGate}
+ * — raw SQL + bound params, structurally the billing gate's `WorkspacePluginInsert`
+ * (kept local so the generic spine doesn't depend on the billing module).
+ */
+export interface SingletonInstallInsert {
+  readonly sql: string;
+  readonly params: readonly unknown[];
+}
+
+/**
+ * The outcome of a {@link SingletonInstallCapGate}: `ok` carries the upsert's
+ * `RETURNING` rows; the denied arm carries the already-built (and already
+ * logged) 429/503 error to throw. A cap denial is RETURNED, never thrown, so
+ * the generic spine can distinguish it from a raw write-path throw — the
+ * denial passes straight through (no persist-failure log), while a throw
+ * (routing-id `23505`, driver fault) is routed through
+ * {@link RoutingConflictClassifier} / the persist-failure log.
+ */
+export type SingletonInstallCapResult =
+  | { readonly ok: true; readonly rows: readonly { id: string }[] }
+  | { readonly ok: false; readonly error: Error };
+
+/**
+ * The atomic chat-integration cap gate, bound to `(workspaceId, catalogId)`
+ * by the caller. When supplied to {@link persistSingletonInstall} the
+ * singleton upsert runs THROUGH the gate — inside its advisory-locked
+ * transaction — instead of a bare {@link internalQuery}, so a net-new chat
+ * platform can't slip past the plan cap under concurrency (#3001).
+ *
+ * The hook OWNS the cap decision: it runs `checkChatIntegrationLimitAndInstall`
+ * and maps a denied result to the platform's 429/503 error (returned via the
+ * `{ ok: false }` arm) — so the generic spine stays free of billing/chat error
+ * types. It returns the upsert's `RETURNING` rows on success. A raw write-path
+ * throw (routing-id `23505`, driver fault) propagates OUT to the spine, which
+ * routes it through {@link RoutingConflictClassifier} / its persist-failure
+ * log. The five static-bot handlers and the Slack OAuth handler supply this;
+ * the action-pillar OAuth handlers + the form spine omit it (no chat cap).
+ */
+export type SingletonInstallCapGate = (
+  insert: SingletonInstallInsert,
+) => Promise<SingletonInstallCapResult>;
+
+/**
+ * Classifies a write-path error as a platform-specific routing-id conflict,
+ * returning the actionable error to throw (or `null` when the error is
+ * something else and should propagate as a 5xx). The five static-bot
+ * handlers pass an adapter over {@link import("./routing-id-conflict").isRoutingIdUniqueViolation}
+ * that also logs the platform's own warn line, so the specific routing-id
+ * noun ("chat_id" / "guild_id" / "tenant_id" / …) stays with the platform.
+ * Returning `null` lets {@link persistSingletonInstall} fall through to its
+ * generic persist-failure log + rethrow.
+ */
+export type RoutingConflictClassifier = (err: unknown) => Error | null;
+
+export interface PersistSingletonInstallParams {
+  readonly workspaceId: WorkspaceId;
+  /** Full `plugin_catalog.id` row key ("catalog:telegram"). */
+  readonly catalogId: string;
+  /**
+   * Human-readable Platform name composed into log lines + the invariant
+   * error ("Telegram", "Slack", "Linear").
+   */
+  readonly displayName: string;
+  /** The caller's own logger so install lines stay attributable per platform. */
+  readonly log: InstallLogger;
+  /**
+   * Config exactly as persisted to `workspace_plugins.config` — already
+   * encrypted where applicable.
+   */
+  readonly config: Record<string, unknown>;
+  /** Candidate row-id generator (handlers inject a fixed one in tests). */
+  readonly newId?: () => string;
+  /** Default `true` — see {@link buildFormInstallUpsertSql}. */
+  readonly updateConfigOnConflict?: boolean;
+  /** Default `'action'` — chat handlers pass `'chat'`. See {@link buildFormInstallUpsertSql}. */
+  readonly pillar?: "chat" | "action";
+  /**
+   * Acting user attributed as `installed_by` (first install only — never
+   * rewritten on conflict). Default `null`: the form/OAuth/static-bot
+   * handlers run below the auth seam and have no user id.
+   */
+  readonly installedBy?: string | null;
+  /**
+   * When present, the upsert runs atomically through the chat-integration
+   * cap gate (which owns the denied → 429/503 mapping and returns the
+   * `RETURNING` rows). When absent, the upsert runs via a bare
+   * {@link internalQuery} — the action-pillar OAuth handlers (Linear) + the
+   * form spine, which have no chat cap. See {@link SingletonInstallCapGate}.
+   *
+   * NOTE: `pillar` and `capGate` are independent — a `chat`-pillar caller that
+   * omits `capGate` deliberately skips the chat-integration cap (there is no
+   * such caller today; all six chat handlers pass it).
+   */
+  readonly capGate?: SingletonInstallCapGate;
+  /** See {@link RoutingConflictClassifier}. */
+  readonly routingConflictClassifier?: RoutingConflictClassifier;
+  /** Override for the persist-failure log line. */
+  readonly persistFailureMessage?: string;
+  /**
+   * Extra structured fields merged into the persist-failure log
+   * (per-Platform breadcrumbs like `teamId` / `instanceUrl`). Never
+   * secrets.
+   */
+  readonly failureLogFields?: Record<string, unknown>;
+}
+
+/**
+ * The single write path for every SINGLETON (chat/action-pillar)
+ * `workspace_plugins` install (issue #4352). Builds the one canonical
+ * upsert via {@link buildFormInstallUpsertSql}, runs it either through the
+ * chat-integration cap gate (`capGate`) or a bare {@link internalQuery},
+ * classifies a concurrent routing-id conflict, and enforces the single
+ * returned-id invariant — the block that used to be hand-copied across the
+ * five static-bot handlers, the Slack + Linear OAuth handlers, and this
+ * spine (each copy a place for the write path to drift, the exact class
+ * that produced #3357 / the pre-spine 42P10). Returns the PERSISTED row id:
+ * on a re-install the upsert's RETURNING yields the EXISTING row's id, not
+ * the fresh candidate, so callers must use this value (not their own UUID)
+ * for {@link InstallRecord.id}.
+ *
+ * Does NOT evict the lazy-loader cache — that stays with
+ * {@link persistInstallRecord} / {@link persistFormInstall}, which layer it
+ * on top. The OAuth + static-bot handlers never evicted, and this
+ * convergence preserves that (their credentials/config are re-read on the
+ * next lazy build, and adding an evict here would be a behavioural change
+ * outside this refactor's scope).
+ */
+export async function persistSingletonInstall(
+  params: PersistSingletonInstallParams,
+): Promise<string> {
+  const {
+    workspaceId,
+    catalogId,
+    displayName,
+    log,
+    config,
+    newId = () => crypto.randomUUID(),
+    updateConfigOnConflict = true,
+    pillar = "action",
+    installedBy = null,
+    capGate,
+    routingConflictClassifier,
+    persistFailureMessage = `Failed to persist ${displayName} install record — aborting install`,
+    failureLogFields = {},
+  } = params;
+
+  const candidateId = newId();
+  const insert: SingletonInstallInsert = {
+    sql: buildFormInstallUpsertSql(updateConfigOnConflict, pillar),
+    params: [candidateId, workspaceId, catalogId, JSON.stringify(config), installedBy],
+  };
+
+  // A raw write-path throw (lock/INSERT/COMMIT/driver error, or a routing-id
+  // `23505` bubbling up from the cap gate) is either the platform's routing-id
+  // conflict — re-surfaced as its actionable error — or a genuine 5xx that we
+  // log with the caller's breadcrumbs and rethrow. A cap denial is NOT a throw:
+  // the `capGate` hook returns it via `{ ok: false }`, so it never reaches here.
+  const raiseWriteError = (err: unknown): never => {
+    const routingConflict = routingConflictClassifier?.(err) ?? null;
+    if (routingConflict) throw routingConflict;
+    // Log the Error object (not `.message`) so Pino's `err` serializer keeps
+    // the type + stack of a genuine driver fault — the frame you actually need
+    // to debug the write. The serializer scrubs secrets from the stack.
+    log.error(
+      { workspaceId, ...failureLogFields, err: err instanceof Error ? err : new Error(String(err)) },
+      persistFailureMessage,
+    );
+    throw err instanceof Error ? err : new Error(String(err));
+  };
+
+  let rows: readonly { id: string }[];
+  if (capGate) {
+    const capResult = await capGate(insert).catch(raiseWriteError);
+    // Cap denial (429/503) — already built + logged by the hook. Throw it as
+    // is, without the persist-failure breadcrumb a genuine write error gets.
+    if (!capResult.ok) throw capResult.error;
+    rows = capResult.rows;
+  } else {
+    rows = await internalQuery<{ id: string }>(insert.sql, insert.params as unknown[]).catch(
+      raiseWriteError,
+    );
+  }
+
+  const returned = rows[0]?.id;
+  if (typeof returned !== "string" || returned.length === 0) {
+    // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed by
+    // Postgres (≥9.5) to emit exactly one row on both the insert and the
+    // update path. Reaching here means a structural anomaly (driver
+    // rewrite, RLS hiding the result, partial-index miss). Falling back to
+    // candidateId would silently return the WRONG id on the DO UPDATE path
+    // (the persisted row keeps its existing id, not the candidate), and
+    // downstream lookups would strand — so fail loud with a 500.
+    log.error(
+      { workspaceId, candidateId },
+      "workspace_plugins upsert returned no id — Postgres invariant violation",
+    );
+    throw new Error(
+      `workspace_plugins upsert returned no id for ${displayName} install (workspaceId=${workspaceId}). ` +
+        `RETURNING must always populate on PG ≥9.5; this indicates a driver/RLS/query-rewrite regression. Aborting install.`,
+    );
+  }
+  return returned;
+}
+
+/**
  * The persistence core shared by the form spine and the OAuth install
- * handlers: `workspace_plugins` upsert → returned-id invariant →
- * unconditional lazy-loader evict. Returns the PERSISTED row id — on a
- * re-install the upsert's RETURNING yields the existing row's id, not
- * the freshly-generated candidate, so callers must use this value (not
- * their own UUID) for {@link InstallRecord.id}.
+ * handlers: {@link persistSingletonInstall} (the `workspace_plugins` upsert
+ * + returned-id invariant) → unconditional lazy-loader evict. Returns the
+ * PERSISTED row id — on a re-install the upsert's RETURNING yields the
+ * existing row's id, not the freshly-generated candidate, so callers must
+ * use this value (not their own UUID) for {@link InstallRecord.id}.
  *
  * Extracted from {@link persistFormInstall} (#3362 review) so the four
  * OAuth handlers (GitHub App, GitHub single-tenant, Salesforce, Jira)
@@ -285,43 +490,19 @@ export async function persistInstallRecord(params: PersistInstallRecordParams): 
     failureLogFields = {},
   } = params;
 
-  const candidateId = newId();
-  let persistedId: string;
-  try {
-    const rows = await internalQuery<{ id: string }>(
-      buildFormInstallUpsertSql(updateConfigOnConflict, pillar),
-      [candidateId, workspaceId, catalogId, JSON.stringify(config), installedBy],
-    );
-    const returned = rows[0]?.id;
-    if (typeof returned !== "string" || returned.length === 0) {
-      // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed
-      // by Postgres to emit exactly one row on both paths. Reaching
-      // here means a structural anomaly (driver rewrite, RLS hiding
-      // the result, partial-index miss). Falling back to candidateId
-      // would silently return a WRONG id on the DO UPDATE path
-      // (persisted row keeps its existing id, not the candidate),
-      // and downstream lookups would create phantom updates. Fail
-      // loud so the operator sees the invariant break with a 500.
-      log.error(
-        { workspaceId, candidateId },
-        "workspace_plugins upsert returned no id — Postgres invariant violation",
-      );
-      throw new Error(
-        "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-      );
-    }
-    persistedId = returned;
-  } catch (err) {
-    log.error(
-      {
-        workspaceId,
-        ...failureLogFields,
-        err: err instanceof Error ? err.message : String(err),
-      },
-      persistFailureMessage,
-    );
-    throw err;
-  }
+  const persistedId = await persistSingletonInstall({
+    workspaceId,
+    catalogId,
+    displayName,
+    log,
+    config,
+    newId,
+    updateConfigOnConflict,
+    pillar,
+    installedBy,
+    persistFailureMessage,
+    failureLogFields,
+  });
 
   try {
     await lazyPluginLoader.evict(workspaceId, catalogId);

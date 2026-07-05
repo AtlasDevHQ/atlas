@@ -228,6 +228,78 @@ describeIfPg("form-install spine: workspace_plugins upsert against the live sche
     expect(rows[0]?.config.chat_id).toBe(`${stamp}-rotated`);
   }, PG_TEST_TIMEOUT_MS);
 
+  it("all seven singleton-install handlers plan + execute their exact upsert against the live schema (#4352)", async () => {
+    // Every static-bot + OAuth singleton handler now writes through
+    // `persistSingletonInstall` → `buildFormInstallUpsertSql(true, pillar)`
+    // (issue #4352). Seed each platform's real catalog FK target and run the
+    // exact builder output the handler sends, proving the write path plans +
+    // executes for ALL SEVEN — the drift class the pre-spine hand-rolled
+    // copies carried, invisible behind the mock-based handler tests.
+    const PLATFORMS = [
+      // Six chat-pillar handlers (five static-bot + Slack OAuth).
+      { catalogId: "catalog:telegram", pillar: "chat" as const, type: "chat", model: "static-bot" },
+      { catalogId: "catalog:discord", pillar: "chat" as const, type: "chat", model: "static-bot" },
+      { catalogId: "catalog:teams", pillar: "chat" as const, type: "chat", model: "static-bot" },
+      { catalogId: "catalog:gchat", pillar: "chat" as const, type: "chat", model: "static-bot" },
+      { catalogId: "catalog:whatsapp", pillar: "chat" as const, type: "chat", model: "static-bot" },
+      { catalogId: "catalog:slack", pillar: "chat" as const, type: "chat", model: "static-bot" },
+      // Linear OAuth is action-pillar (Atlas writes to Linear, not chat).
+      { catalogId: "catalog:linear", pillar: "action" as const, type: "integration", model: "form" },
+    ];
+
+    const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    // Seed FK targets (catalog-seeder runs at boot, not via migrations, so the
+    // real rows don't exist in this migration-only test schema).
+    for (const p of PLATFORMS) {
+      const slug = p.catalogId.slice("catalog:".length);
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (id) DO NOTHING`,
+        [p.catalogId, slug, `${slug}-${stamp}`, p.type, p.pillar, p.model],
+      );
+    }
+
+    for (const p of PLATFORMS) {
+      const slug = p.catalogId.slice("catalog:".length);
+      const ws = `ws-${slug}-${stamp}`;
+      // `workspace_plugins.id` is globally unique, so each platform needs its
+      // own candidate id.
+      const candA = `cand-a-${slug}-${stamp}`;
+
+      // Fresh INSERT — returns the candidate id, which the handler reads back
+      // as the persisted `InstallRecord.id`.
+      const fresh = await pool.query<{ id: string }>(buildFormInstallUpsertSql(true, p.pillar), [
+        candA,
+        ws,
+        p.catalogId,
+        JSON.stringify({ routing: stamp }),
+        null,
+      ]);
+      expect(fresh.rows[0]?.id).toBe(candA);
+
+      // Re-install (conflict path) — the singleton index collapses it onto the
+      // existing row: same id back, config rotated. The idempotent-reconnect
+      // invariant every singleton handler relies on.
+      const conflict = await pool.query<{ id: string }>(buildFormInstallUpsertSql(true, p.pillar), [
+        `cand-b-${slug}-${stamp}`,
+        ws,
+        p.catalogId,
+        JSON.stringify({ routing: `${stamp}-rot` }),
+        null,
+      ]);
+      expect(conflict.rows[0]?.id).toBe(candA);
+
+      const { rows } = await pool.query<{ pillar: string; config: { routing?: string } }>(
+        `SELECT pillar, config FROM workspace_plugins WHERE workspace_id = $1 AND catalog_id = $2`,
+        [ws, p.catalogId],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.pillar).toBe(p.pillar);
+      expect(rows[0]?.config.routing).toBe(`${stamp}-rot`);
+    }
+  }, PG_TEST_TIMEOUT_MS);
+
   it("salesforce legacy-pillar converge heals a pre-0096 datasource row so the upsert dedupes (#3362)", async () => {
     const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     const ws = `ws-sf-converge-${stamp}`;

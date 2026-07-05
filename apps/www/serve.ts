@@ -313,6 +313,16 @@ export async function handleRequest(req: Request): Promise<Response> {
         if (pathname === "/" || pathname === "/index.html" || suffix === "/index.html") {
           headers["Link"] = HOMEPAGE_LINK_HEADER;
         }
+        // Everything under /_next/static/ is content-hashed by Next's build
+        // (chunks, CSS, `media/*.woff2`), so the URL changes whenever the bytes
+        // do — safe to cache immutably for a year. Without this the origin sends
+        // no Cache-Control and Cloudflare falls back to a 4h default, which
+        // Lighthouse flagged ("Use efficient cache lifetimes", ~170 KiB
+        // re-fetched on repeat visits). HTML is deliberately left uncached so a
+        // new deploy is picked up immediately.
+        if (pathname.startsWith("/_next/static/")) {
+          headers["Cache-Control"] = "public, max-age=31536000, immutable";
+        }
         return new Response(file, { headers });
       }
     }

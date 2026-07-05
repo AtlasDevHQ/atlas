@@ -40,8 +40,13 @@ TypeScript, Hono (API), Next.js (frontend), Effect.ts (backend services), Vercel
 
 ## Links
 
-- Website: https://www.useatlas.dev
-- Documentation: https://docs.useatlas.dev
-- GitHub: https://github.com/AtlasDevHQ/atlas
-- Cloud: https://app.useatlas.dev
-- npm packages: @useatlas/sdk, @useatlas/react, @useatlas/types, @useatlas/plugin-sdk
+- [Website](https://www.useatlas.dev): Product overview and landing page
+- [Documentation](https://docs.useatlas.dev): Guides, API reference, and self-hosting instructions
+- [GitHub](https://github.com/AtlasDevHQ/atlas): Source code, open source under AGPL-3.0
+- [Atlas Cloud](https://app.useatlas.dev): Managed hosting with a 14-day free trial
+
+## Optional
+
+- [npm: @useatlas/sdk](https://www.npmjs.com/package/@useatlas/sdk): TypeScript SDK for the Atlas API
+- [npm: @useatlas/react](https://www.npmjs.com/package/@useatlas/react): Embeddable React chat component and headless hooks
+- [npm: @useatlas/plugin-sdk](https://www.npmjs.com/package/@useatlas/plugin-sdk): Plugin type definitions and definePlugin()

@@ -22,7 +22,11 @@
   --bg-sunken: var(--atlas-paper-sunken);
   --fg: var(--atlas-ink); /* near-black ink, faint forest */
   --fg-muted: var(--atlas-ink-muted);
-  --fg-faint: oklch(0.565 0.02 158);
+  /* L=0.50 keeps this the faintest ink in the ramp while clearing WCAG AA for
+   * normal text on both paper (5.2:1) and raised surfaces (4.7:1). At the prior
+   * 0.565 it was ~3.6–4:1 — below AA — which Lighthouse flagged as a contrast
+   * failure on faint text (footer meta, comparison table). */
+  --fg-faint: oklch(0.5 0.02 158);
   --border: oklch(0.245 0.03 158 / 0.16);
   --border-soft: oklch(0.245 0.03 158 / 0.09);
   --border-strong: oklch(0.245 0.03 158 / 0.3);

@@ -69,11 +69,11 @@ function AnswerCard() {
           <span className="flex items-center gap-1.5 text-brand">
             <span aria-hidden>✓</span> 7 validators
           </span>
-          <span className="text-zinc-700">·</span>
+          <span aria-hidden className="text-zinc-700">·</span>
           <span>read-only</span>
-          <span className="text-zinc-700">·</span>
+          <span aria-hidden className="text-zinc-700">·</span>
           <span>row-limited</span>
-          <span className="text-zinc-700">·</span>
+          <span aria-hidden className="text-zinc-700">·</span>
           <span>audited</span>
         </div>
       </div>
@@ -137,9 +137,20 @@ export function Hero() {
         }}
       />
 
+      {/*
+        The above-the-fold hero text (h1, subhead, CTAs, trial note) paints
+        immediately — no `animate-fade-in-up`. That keyframe starts at
+        `opacity: 0`, and Chrome's LCP algorithm won't register an element
+        painted transparent as an LCP candidate at its paint time. With the
+        headline (the mobile LCP element) fading in, Lighthouse mobile reported
+        `NO_LCP` and an inflated Speed Index (content still settling ~2.6s after
+        FCP). Entrance polish stays on below-the-fold / non-LCP surfaces
+        (PipelineStrip); the decorative AnswerCard also paints immediately so it
+        can't become a late LCP candidate on narrow viewports.
+      */}
       <div className="relative grid gap-10 md:grid-cols-2 md:items-center md:gap-12">
         <div className="max-w-[520px]">
-          <h1 className="animate-fade-in-up m-0 text-[44px] sm:text-[56px] md:text-[64px] font-semibold leading-[1.02] tracking-[-0.035em] text-fg">
+          <h1 className="m-0 text-[44px] sm:text-[56px] md:text-[64px] font-semibold leading-[1.02] tracking-[-0.035em] text-fg">
             {HEADLINE_LINES.map((line, i) => (
               <span key={line} className="block">
                 {i === ITALIC_LINE_INDEX ? (
@@ -150,8 +161,8 @@ export function Hero() {
               </span>
             ))}
           </h1>
-          <p className="animate-fade-in-up delay-100 mt-6 max-w-[460px] text-base leading-[1.6] text-fg-muted">{SUBHEAD}</p>
-          <div className="animate-fade-in-up delay-200 mt-7 flex flex-wrap gap-2.5">
+          <p className="mt-6 max-w-[460px] text-base leading-[1.6] text-fg-muted">{SUBHEAD}</p>
+          <div className="mt-7 flex flex-wrap gap-2.5">
             <a
               href="https://app.useatlas.dev/signup"
               className="inline-flex items-center gap-2 rounded-lg bg-accent px-[18px] py-[11px] text-[13.5px] font-semibold text-accent-ink transition-colors hover:bg-accent-hover"
@@ -165,13 +176,13 @@ export function Hero() {
               Try the live demo →
             </a>
           </div>
-          <p className="animate-fade-in-up delay-300 mt-3.5 text-[13px] text-fg-muted">
+          <p className="mt-3.5 text-[13px] text-fg-muted">
             14-day trial, no credit card. Or self-host — free and open source:{" "}
             <code className="font-mono text-[12px] text-fg">bun create atlas-agent</code>
           </p>
         </div>
 
-        <div className="animate-fade-in-up delay-200 relative">
+        <div className="relative">
           <AnswerCard />
         </div>
       </div>

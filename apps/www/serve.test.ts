@@ -163,3 +163,22 @@ describe("apex agent discovery — markdown twins", () => {
     expect(await html.text()).toContain("<!doctype html>");
   });
 });
+
+describe("static asset caching", () => {
+  beforeAll(() => {
+    mkdirSync(join(fixtureDir, "_next", "static", "chunks"), { recursive: true });
+    writeFileSync(join(fixtureDir, "_next", "static", "chunks", "app.js"), "export const x = 1;");
+  });
+
+  it("caches content-hashed /_next/static/ assets immutably for a year", async () => {
+    const res = await req("/_next/static/chunks/app.js");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+  });
+
+  it("does not long-cache the HTML shell, so a new deploy is picked up", async () => {
+    const res = await req("/");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control") ?? "").not.toContain("immutable");
+  });
+});

@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.44",
+    title: "Search scale & safety hardening",
+    date: "2026-07-05",
+    summary:
+      "A maintenance release. Knowledge-base full-text search now runs on a stored, indexed column, so it stays fast as your knowledge base grows. The suggestion-parsing path was rewritten to run in linear time, removing a pathological slowdown on adversarial input. Under the hood, the executeSQL validation-and-orchestration path and the plugin-install path were each consolidated onto a single shared core.",
+    highlights: [
+      "Knowledge-base search is backed by a stored generated tsvector column with a GIN index, for steady search latency as your knowledge base scales (#4363)",
+      "Suggestion parsing rewritten to run in linear time, closing a polynomial-backtracking slowdown on crafted input (#4364)",
+      "executeSQL parses each query once and runs through one pure planner; singleton installs converge on the shared persist-form-install path (#4357, #4360, #4358)",
+    ],
+  },
+  {
     version: "v0.0.43",
     title: "The Analyst Voice",
     date: "2026-07-04",

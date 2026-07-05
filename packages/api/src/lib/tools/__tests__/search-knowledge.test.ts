@@ -39,9 +39,12 @@ describe("buildSearchQuery", () => {
   it("with a query, emits FTS match, ts_headline snippet, ts_rank, and rank-first ordering", () => {
     const { sql, params } = buildSearchQuery(WS, "published", filters({ query: "replica lag" }));
     expect(sql).toContain("websearch_to_tsquery('english', $2)");
-    expect(sql).toContain("@@");
+    // Match + rank both read the stored generated column (migration 0167),
+    // never an inline to_tsvector — that's what makes the GIN index usable.
+    expect(sql).toContain("kd.fts @@");
+    expect(sql).toContain("ts_rank(kd.fts,");
+    expect(sql).not.toContain("to_tsvector");
     expect(sql).toContain("ts_headline('english', kd.body");
-    expect(sql).toContain("ts_rank(");
     expect(sql).toMatch(/ORDER BY\s+rank DESC NULLS LAST/);
     expect(params).toContain("replica lag");
   });

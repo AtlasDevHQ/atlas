@@ -3196,6 +3196,43 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     );
     expect(after.rowCount).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
+
+  it("0167: knowledge_documents.fts is a stored generated weighted tsvector with a GIN index (#4222)", async () => {
+    const cols = await pool.query<{ is_generated: string; data_type: string }>(
+      `SELECT is_generated, data_type
+         FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'knowledge_documents'
+          AND column_name = 'fts'`,
+    );
+    expect(cols.rows).toHaveLength(1);
+    // STORED, not PG 18's bare VIRTUAL default — a GIN index can't be built
+    // on a virtual column.
+    expect(cols.rows[0].is_generated).toBe("ALWAYS");
+    expect(cols.rows[0].data_type).toBe("tsvector");
+
+    const indexes = await pool.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes
+        WHERE schemaname = current_schema()
+          AND tablename = 'knowledge_documents'
+          AND indexname = 'idx_knowledge_documents_fts'`,
+    );
+    expect(indexes.rows).toHaveLength(1);
+    expect(indexes.rows[0].indexdef).toContain("USING gin");
+
+    // Postgres computes the vector on write with the field weights: a title
+    // lexeme carries A; a body lexeme carries the (undisplayed) default D.
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-fts-${stamp}`;
+    const { rows } = await pool.query<{ fts: string }>(
+      `INSERT INTO knowledge_documents (workspace_id, collection_id, path, title, body)
+       VALUES ($1, 'runbooks', 'fts.md', 'Alpha', 'omega')
+       RETURNING fts::text AS fts`,
+      [ws],
+    );
+    expect(rows[0]?.fts).toContain("'alpha':1A");
+    expect(rows[0]?.fts).toContain("'omega':2");
+  }, PG_TEST_TIMEOUT_MS);
 });
 
 // #2606 — source-level revert guard for the integration-store SQL formatter.

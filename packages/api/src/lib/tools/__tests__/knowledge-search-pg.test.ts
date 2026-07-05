@@ -23,6 +23,7 @@ import { extractBundle } from "@atlas/api/lib/knowledge/bundle-archive";
 import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
 import { ingestBundleIntoCollection, type IngestClient } from "@atlas/api/lib/knowledge/ingest";
 import {
+  buildSearchQuery,
   searchKnowledgeCore,
   type KnowledgeQueryExec,
 } from "@atlas/api/lib/tools/search-knowledge";
@@ -288,5 +289,79 @@ describeIfPg("searchKnowledge against the live schema", () => {
     const shared = res.neighbors.filter((n) => n.path === "hub/shared.md");
     expect(shared).toHaveLength(1);
     expect([...shared[0].via].sort()).toEqual(["hub/a.md", "hub/b.md"]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("weighted ranking (0167): a title hit outranks a body hit for the same term", async () => {
+    // The stored generated `fts` column weights title A / description B /
+    // body D, so ts_rank must sort a title match above a body-only match.
+    // Before 0167 the vector was unweighted (everything D) and this ordering
+    // was undefined — this pins the fold-in.
+    const docs = docsFrom({
+      "weights/title-hit.md":
+        "---\ntype: Document\ntitle: Zephyrite Guide\n---\n# Zephyrite Guide\n\nNothing about the term in the body at all.",
+      "weights/body-hit.md":
+        "---\ntype: Document\ntitle: Unrelated\n---\n# Unrelated\n\nA passing mention of zephyrite deep in the body.",
+    });
+    await ingestBundleIntoCollection({
+      client, workspaceId: ws, collectionId: "weights", source: "upload", docs,
+    });
+    await publish("weights", "weights/title-hit.md");
+    await publish("weights", "weights/body-hit.md");
+
+    const res = await searchKnowledgeCore({
+      workspaceId: ws,
+      mode: "published",
+      filters: { query: "zephyrite", collection: "weights", limit: 10, expand: false },
+      exec,
+    });
+    expect(res.results.map((r) => r.path)).toEqual([
+      "weights/title-hit.md",
+      "weights/body-hit.md",
+    ]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("at trigger-condition scale, lexical queries take the GIN bitmap path over idx_knowledge_documents_fts (0167)", async () => {
+    // EXPLAIN the EXACT SQL buildSearchQuery emits and assert the planner
+    // routes the `kd.fts @@ tsquery` predicate through the 0167 GIN index.
+    // At a handful of rows the (workspace_id, *) btrees always win, so this
+    // seeds a dedicated workspace at the issue's trigger-condition scale
+    // (tens of thousands of documents) — where the GIN bitmap path becomes
+    // the plan of choice with NO GUC forcing. This is what a bare-expression
+    // drift (or dropping the column back to inline to_tsvector) would break.
+    const wsBulk = `ws-bulk-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO knowledge_documents (workspace_id, collection_id, path, title, body, status)
+       SELECT $1, 'bulk', 'filler-' || g || '.md', 'Filler ' || g,
+              'routine filler content nothing special entry number ' || g, 'published'
+         FROM generate_series(1, 30000) g`,
+      [wsBulk],
+    );
+    await pool.query(
+      `INSERT INTO knowledge_documents (workspace_id, collection_id, path, title, body, status)
+       VALUES ($1, 'bulk', 'target.md', 'EU Failover',
+               'when replica lag exceeds the threshold promote the standby', 'published')`,
+      [wsBulk],
+    );
+    await pool.query(`ANALYZE knowledge_documents`);
+
+    const { sql, params } = buildSearchQuery(wsBulk, "published", {
+      query: "replica lag",
+      limit: 10,
+      expand: false,
+    });
+    const explained = await pool.query(`EXPLAIN (FORMAT JSON) ${sql}`, params);
+    const plan = JSON.stringify(explained.rows[0]["QUERY PLAN"]);
+    expect(plan).toContain("Bitmap Index Scan");
+    expect(plan).toContain("idx_knowledge_documents_fts");
+
+    // And the plan is not just chosen but correct: the query itself finds
+    // exactly the one matching document among 3001.
+    const res = await searchKnowledgeCore({
+      workspaceId: wsBulk,
+      mode: "published",
+      filters: { query: "replica lag", limit: 10, expand: false },
+      exec,
+    });
+    expect(res.results.map((r) => r.path)).toEqual(["target.md"]);
   }, PG_TEST_TIMEOUT_MS);
 });

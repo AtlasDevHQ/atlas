@@ -10,7 +10,8 @@
  *
  *   1. Structured frontmatter filter — `type`, `tags` (GIN-backed jsonb
  *      containment), `collection`, and a `since` recency bound.
- *   2. Lexical FTS — Postgres `to_tsvector` over title + description + body with
+ *   2. Lexical FTS — the stored generated `fts` tsvector (title + description +
+ *      body, weighted A/B/D, GIN-indexed — migration 0167) matched with
  *      `websearch_to_tsquery` (user-friendly, never throws on arbitrary agent
  *      input) and `ts_headline` snippets, ranked by `ts_rank`.
  *   3. 1-hop graph expansion — the seed docs' neighbors via `knowledge_links`
@@ -162,11 +163,11 @@ function toResult(row: DocRow): KnowledgeSearchResult {
 /** Shared projection (lib/knowledge/queries) — same shape drives seed + neighbor mapping. */
 const DOC_COLUMNS = knowledgeDocColumns("kd");
 
-// Full-text vector over the human-readable fields (title + description + body),
-// all terms equally weighted — no setweight()/A-B-C ranking, so ts_rank treats a
-// title hit and a body hit the same. (Field weighting is a possible follow-up.)
-const TS_VECTOR = `to_tsvector('english',
-  coalesce(kd.title, '') || ' ' || coalesce(kd.description, '') || ' ' || coalesce(kd.body, ''))`;
+// Full-text vector over the human-readable fields (title + description + body).
+// `fts` is a stored generated column (migration 0167, mirrored in db/schema.ts)
+// weighted title A / description B / body D, GIN-indexed — lexical queries take
+// the bitmap-index path instead of recomputing the vector per row (#4222).
+const TS_VECTOR = `kd.fts`;
 
 /**
  * Build the seed-search query. Every dynamic value is a bind parameter; the

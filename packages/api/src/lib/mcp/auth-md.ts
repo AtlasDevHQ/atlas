@@ -21,6 +21,20 @@
  * Scope; the WorkOS-verified flow is a deliberately deferred future
  * direction noted as prose only.)
  *
+ * Decision (#4314): Atlas DECLINES the WorkOS `agent_auth` block and folds
+ * any future agent-verified registration into #2058's Agent Auth Protocol
+ * — not this WorkOS flow. Rationale: the two are distinct protocols on
+ * distinct discovery surfaces (WorkOS puts `agent_auth` inside
+ * `/.well-known/oauth-authorization-server` with an id-jag/claim/events
+ * build; the Agent Auth Protocol uses a separate `/.well-known/agent-configuration`).
+ * Only the latter has a real library path (`@better-auth/agent-auth`), so
+ * serving the WorkOS block would mean a from-scratch, per-region
+ * id-jag/claim/`event/notify` build with no library support, purely to
+ * satisfy an agent-readiness scanner — advertising exactly the endpoints
+ * this file (and the parity guard) deliberately withhold. The scanner
+ * finding is accepted as intentional non-conformance until/unless #2058
+ * ships. The forbidden-fragment guard therefore stays as-is.
+ *
  * Drift safety: this is a PURE builder. It hard-codes no host and no scope.
  * The route feeds it the SAME resolved auth-server issuer URI and MCP
  * resource host that back the `.well-known` discovery documents

@@ -97,6 +97,13 @@ const HOST_FIXTURES = [
  * backstop unit tests (`lib/mcp/__tests__/auth-md.test.ts`) as defense in
  * depth — the parity guard fails the build in the SAME job as the other drift
  * gates, independent of the per-file test shard running.
+ *
+ * These stay forbidden by decision #4314: Atlas declined the WorkOS
+ * `agent_auth` flow (no `@better-auth/agent-auth`-style library path for the
+ * WorkOS id-jag/claim/events surface, which overlaps #2058's Agent Auth
+ * Protocol — the chosen vehicle if Atlas ever ships agent-verified
+ * registration). See the decision note in `lib/mcp/auth-md.ts`. Do not relax
+ * this list to appease an agent-readiness scanner.
  */
 export const FORBIDDEN_FRAGMENTS = [
   "/agent/identity",

@@ -154,6 +154,9 @@ describe("buildAuthMd — content contract", () => {
     // The required backstop (#3824 § Testing): the doc must never advertise an
     // endpoint Atlas does not serve. `/agent/identity`, `identity_assertion`,
     // and the `urn:workos:*` grant types are explicitly Out of Scope.
+    // #4314 formally kept it that way: the WorkOS `agent_auth` flow was
+    // declined in favor of #2058's Agent Auth Protocol (see the decision note
+    // in `../auth-md.ts`), so these fragments remain asserted-absent.
     const md = buildAuthMd(BASE_OPTS);
     expect(md).not.toContain("/agent/identity");
     expect(md).not.toContain("identity_assertion");

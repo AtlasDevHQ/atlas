@@ -27,7 +27,8 @@ import { InvalidPagePathError } from "./errors";
 /** Reserved OKF basenames the ingest parser skips (compared case-insensitively). */
 export const RESERVED_OKF_BASENAMES: ReadonlySet<string> = new Set(["index.md", "log.md"]);
 
-/** The archive path a folded ROOT `index` page lands on (`index.mdx` at the collection root). */
+/** The archive-path STEM a folded ROOT `index` page lands on — `index.mdx`
+ *  at the collection root becomes `<prefix>/overview.md`. */
 export const ROOT_INDEX_STEM = "overview";
 
 /** Page extensions a Fumadocs collection can contain. */

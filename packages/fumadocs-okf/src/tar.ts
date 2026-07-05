@@ -15,6 +15,8 @@
 
 import { gzipSync } from "fflate";
 
+import { InvalidPagePathError } from "./errors";
+
 const BLOCK = 512;
 const NAME_FIELD = 100;
 const PREFIX_FIELD = 155;
@@ -43,8 +45,8 @@ export function splitUstarPath(path: string): { name: string; prefix: string } {
   const bytes = encoder.encode(path);
   if (bytes.length <= NAME_FIELD) return { name: path, prefix: "" };
 
-  // Find the split point closest to the start that keeps name ≤ 100 — i.e.
-  // the LAST '/' whose right side fits in the name field.
+  // Scan left to right and take the FIRST '/' whose right side fits the
+  // 100-byte name field (longest name, shortest prefix).
   for (let i = 0; i < path.length; i++) {
     if (path[i] !== "/") continue;
     const prefix = path.slice(0, i);
@@ -56,9 +58,10 @@ export function splitUstarPath(path: string): { name: string; prefix: string } {
       return { name, prefix };
     }
   }
-  throw new Error(
-    `Archive path "${path}" cannot be stored in a ustar header (a segment exceeds 100 bytes ` +
-      `or the path exceeds 255 bytes) — shorten the page path or prefix.`,
+  throw new InvalidPagePathError(
+    path,
+    `cannot be stored in a ustar header (a segment exceeds 100 bytes ` +
+      `or the path exceeds 255 bytes) — shorten the page path or prefix`,
   );
 }
 

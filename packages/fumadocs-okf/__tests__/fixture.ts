@@ -73,6 +73,12 @@ export function acmeSource(): FumadocsOkfSource {
     page("ops/log.mdx", "How Acme writes an audit log entry for every query.", {
       title: "Audit log",
     }),
+    // Hostile frontmatter: quotes, colons, and a backslash must survive the
+    // OKF serialization round-trip (the JSON-encoded-scalar claim in okf.ts).
+    page("faq.mdx", 'Q: does `"SELECT *"` count? A: yes\\no, it depends.', {
+      title: 'FAQ: "gotchas", edge: cases',
+      description: 'Answers to: "why?", "how?" — and C:\\paths too',
+    }),
     // Auto-generated API-reference stub (built-in skip).
     page("api-reference/create-widget.mdx", "<APIPage operations={[1]} />", {
       title: "POST /widgets",

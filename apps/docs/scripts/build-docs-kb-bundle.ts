@@ -36,7 +36,7 @@ import {
   deployedSource,
   localSectionSource,
   parseLlmsIndex,
-  portalAudienceTransform,
+  portalSectionCollectOptions,
   sectionsFor,
 } from "./kb-bundle-sources";
 
@@ -70,7 +70,9 @@ function parseArgs(argv: string[]): Args {
       }
       audience = v;
     } else if (a === "--out") {
-      out = argv[++i];
+      const v = argv[++i];
+      if (!v) throw new Error("--out needs a file path");
+      out = v;
     } else if (a === "--include-api-reference") {
       includeApiReference = true;
     } else if (a === "--from-deployed") {
@@ -87,23 +89,21 @@ function parseArgs(argv: string[]): Args {
 }
 
 /** LOCAL mode: one adapter collect per section (prefix = section name), packed
- * as ONE archive so the caps are validated over the merged set. */
+ * as ONE archive so the caps + cross-section path uniqueness are validated
+ * over the merged set. Every section's options come from
+ * `portalSectionCollectOptions`, so the audience transform cannot be
+ * forgotten for one section. */
 async function buildLocal(args: Args): Promise<BuildResult> {
-  const transform = portalAudienceTransform(args.audience, (pagePath, reason) => {
-    console.warn(`  skip (audience strip) ${pagePath}: ${reason}`);
-  });
-
   const collects: CollectResult[] = [];
   for (const section of sectionsFor(args.audience)) {
     const source = await localSectionSource(join(CONTENT_DIR, section));
     collects.push(
-      await collectFumadocsPages(source, {
-        prefix: section,
-        transform,
-        // Provenance tags make the bundle's origin legible in the review UI.
-        tags: ["docs-portal", section],
-        skipApiReference: !args.includeApiReference,
-      }),
+      await collectFumadocsPages(
+        source,
+        portalSectionCollectOptions(section, args.audience, {
+          includeApiReference: args.includeApiReference,
+        }),
+      ),
     );
   }
   const merged = mergeCollectResults(collects);
@@ -136,7 +136,8 @@ async function buildDeployed(args: Args, base: string): Promise<BuildResult> {
   }
   const entries = parseLlmsIndex(await res.text()).filter(
     // The bare site root ("/") is skipped as in #4366: its twin URL shape is
-    // not a page twin. The docs landing content still arrives via local mode.
+    // not a page twin, so deployed-mode bundles simply do not include the
+    // site-root landing page (local mode does, as <section>/overview.md).
     (entry) => entry.path !== "/" && entry.path !== indexPath,
   );
   if (entries.length === 0) throw new Error(`No pages parsed from ${indexUrl}`);

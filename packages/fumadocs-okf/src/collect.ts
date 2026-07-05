@@ -11,6 +11,7 @@
 
 import {
   ArchivePathCollisionError,
+  PageLoadError,
   ProcessedTextUnavailableError,
 } from "./errors";
 import { isContentlessBody, pageTags, renderOkfDocument } from "./okf";
@@ -40,13 +41,16 @@ async function processedBody(page: FumadocsOkfPage): Promise<string> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (FUMADOCS_MISSING_PROCESSED.test(message)) {
+      // The config case — prescribe the one-line source.config.ts fix.
       throw new ProcessedTextUnavailableError(page.path);
     }
-    // Any other load failure still fails the build — with the page named.
-    throw new ProcessedTextUnavailableError(page.path, message);
+    // Any other failure (a shim's HTTP fetch, a file read) is a LOAD error:
+    // still fail-loud with the page named, but without misdiagnosing it as
+    // the missing-config case.
+    throw new PageLoadError(page.path, message, err);
   }
   if (typeof body !== "string") {
-    throw new ProcessedTextUnavailableError(page.path, "getText(\"processed\") returned a non-string");
+    throw new PageLoadError(page.path, 'getText("processed") returned a non-string');
   }
   return body;
 }
@@ -59,32 +63,35 @@ function tagsFor(
   return [...new Set([...configured, ...pageTags(page.data.tags)])];
 }
 
-interface PageOutcome {
-  readonly doc?: CollectedDoc;
-  readonly rename?: ReservedRename;
-  readonly skip?: "filtered" | "apiReference" | "contentless" | "transformSkipped";
-}
+/** One page's outcome — a doc or a counted skip, never neither/both. */
+type PageOutcome =
+  | { readonly kind: "skip"; readonly reason: keyof CollectResult["skipped"] }
+  | { readonly kind: "doc"; readonly doc: CollectedDoc; readonly rename?: ReservedRename };
 
 async function collectPage(
   page: FumadocsOkfPage,
   prefixSegments: readonly string[],
   options: CollectOptions,
 ): Promise<PageOutcome> {
+  // Filters run BEFORE the body resolves — a skipped page must never cost a
+  // twin fetch / file read (473 api-reference stubs are a directory listing,
+  // not 473 reads), and a skipped page with a broken body must not fail the
+  // build.
   if ((options.skipApiReference ?? true) && isApiReferencePage(page.path)) {
-    return { skip: "apiReference" };
+    return { kind: "skip", reason: "apiReference" };
   }
   if (options.filter && !(await options.filter(page))) {
-    return { skip: "filtered" };
+    return { kind: "skip", reason: "filtered" };
   }
 
   let body = await processedBody(page);
   if (options.transform) {
     const transformed = await options.transform(body, page);
-    if (transformed === null) return { skip: "transformSkipped" };
+    if (transformed === null) return { kind: "skip", reason: "transformSkipped" };
     body = transformed;
   }
   if ((options.skipContentless ?? true) && isContentlessBody(body)) {
-    return { skip: "contentless" };
+    return { kind: "skip", reason: "contentless" };
   }
 
   const derived = deriveArchivePath(page.path);
@@ -95,6 +102,7 @@ async function collectPage(
     body,
   );
   return {
+    kind: "doc",
     doc: {
       path,
       content,
@@ -107,9 +115,10 @@ async function collectPage(
 
 /**
  * Collect every eligible page of a source into OKF documents. Throws
- * {@link ProcessedTextUnavailableError} / {@link ArchivePathCollisionError} /
- * `InvalidPagePathError` — a bundle is either right or refused, never
- * silently partial (skips are counted and returned, not hidden).
+ * {@link ProcessedTextUnavailableError} / {@link PageLoadError} /
+ * {@link ArchivePathCollisionError} / `InvalidPagePathError` — a bundle is
+ * either right or refused, never silently partial (skips are counted and
+ * returned, not hidden).
  */
 export async function collectFumadocsPages(
   source: FumadocsOkfSource,
@@ -120,7 +129,13 @@ export async function collectFumadocsPages(
   const outcomes: PageOutcome[] = new Array<PageOutcome>(pages.length);
 
   // Bounded-concurrency pool; outcomes land by index so ordering is stable.
-  const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
+  // A non-finite/sub-1 concurrency value clamps to the default rather than
+  // producing zero workers (Array.from({length: NaN}) is empty).
+  const requested = options.concurrency;
+  const concurrency =
+    typeof requested === "number" && Number.isFinite(requested) && requested >= 1
+      ? Math.floor(requested)
+      : DEFAULT_CONCURRENCY;
   let cursor = 0;
   const worker = async (): Promise<void> => {
     for (let i = cursor++; i < pages.length; i = cursor++) {
@@ -134,12 +149,19 @@ export async function collectFumadocsPages(
   const skipped = { filtered: 0, apiReference: 0, contentless: 0, transformSkipped: 0 };
   const byPath = new Map<string, string>();
 
-  for (const outcome of outcomes) {
-    if (outcome.skip) {
-      skipped[outcome.skip]++;
+  for (let i = 0; i < outcomes.length; i++) {
+    const outcome: PageOutcome | undefined = outcomes[i];
+    if (outcome === undefined) {
+      // A hole here means the worker pool skipped an index — an internal bug
+      // that must never read as a silently smaller bundle.
+      throw new Error(
+        `internal: page ${i} ("${pages[i]?.path}") produced no outcome — collect-pool index bug`,
+      );
+    }
+    if (outcome.kind === "skip") {
+      skipped[outcome.reason]++;
       continue;
     }
-    if (!outcome.doc) continue; // unreachable: every outcome is a skip or a doc
     const existing = byPath.get(outcome.doc.path);
     if (existing !== undefined) {
       throw new ArchivePathCollisionError(outcome.doc.path, existing, outcome.doc.sourcePath);

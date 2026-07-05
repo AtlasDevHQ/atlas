@@ -8,9 +8,12 @@ import {
   IngestCapExceededError,
   InvalidPagePathError,
   isContentlessBody,
+  mergeCollectResults,
   packOkfBundle,
+  PageLoadError,
   ProcessedTextUnavailableError,
   splitUstarPath,
+  type FumadocsOkfPage,
 } from "../src/index";
 import { acmeSource, page, sourceOf } from "./fixture";
 
@@ -64,6 +67,7 @@ describe("collectFumadocsPages", () => {
     const result = await collectFumadocsPages(acmeSource(), { prefix: "acme" });
 
     expect(result.docs.map((d) => d.path).toSorted()).toEqual([
+      "acme/faq.md",
       "acme/guides.md", // guides/index.mdx folded
       "acme/guides/dashboards.md",
       "acme/ops/log-doc.md", // reserved basename renamed
@@ -136,6 +140,52 @@ describe("collectFumadocsPages", () => {
     );
   });
 
+  test("a non-config load failure is a PageLoadError — no misdirected config guidance", async () => {
+    const flaky: FumadocsOkfPage = {
+      path: "guides/net.mdx",
+      data: {
+        title: "Net",
+        getText: async () => {
+          throw new Error("Fetch https://docs.example.com/guides/net.mdx → 404 Not Found");
+        },
+      },
+    };
+    const promise = collectFumadocsPages(sourceOf([flaky]), { prefix: "acme" });
+    await expect(promise).rejects.toThrow(PageLoadError);
+    try {
+      await collectFumadocsPages(sourceOf([flaky]), { prefix: "acme" });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      expect(message).toContain("404 Not Found");
+      expect(message).not.toContain("includeProcessedMarkdown");
+    }
+  });
+
+  test("filters run before body resolution — a skipped page never loads its body", async () => {
+    let loads = 0;
+    const counting = (path: string): FumadocsOkfPage => ({
+      path,
+      data: {
+        title: path,
+        getText: async () => {
+          loads++;
+          return "A real prose body that would count as content.";
+        },
+      },
+    });
+    const source = sourceOf([
+      counting("api-reference/stub.mdx"), // built-in skip
+      counting("internal/notes.mdx"), // caller filter skip
+      counting("kept.mdx"),
+    ]);
+    const result = await collectFumadocsPages(source, {
+      prefix: "acme",
+      filter: (p) => !p.path.startsWith("internal/"),
+    });
+    expect(result.docs.map((d) => d.path)).toEqual(["acme/kept.md"]);
+    expect(loads).toBe(1);
+  });
+
   test("archive-path collision is a hard error naming both pages", async () => {
     const colliding = sourceOf([
       page("guide.mdx", "a standalone page with plenty of prose", { title: "A" }),
@@ -144,6 +194,21 @@ describe("collectFumadocsPages", () => {
     await expect(collectFumadocsPages(colliding, { prefix: "acme" })).rejects.toThrow(
       ArchivePathCollisionError,
     );
+  });
+
+  test("cross-collect collisions are refused at pack — merge never last-write-wins", async () => {
+    // Two collects with the SAME prefix producing the same archive path:
+    // within-collect checks can't see this; packOkfBundle must.
+    const a = await collectFumadocsPages(
+      sourceOf([page("setup.mdx", "prose from the first section collect")]),
+      { prefix: "kb" },
+    );
+    const b = await collectFumadocsPages(
+      sourceOf([page("setup.mdx", "prose from the second section collect")]),
+      { prefix: "kb" },
+    );
+    const merged = mergeCollectResults([a, b]);
+    expect(() => packOkfBundle(merged.docs)).toThrow(ArchivePathCollisionError);
   });
 
   test("skipApiReference: false keeps the stubs (and contentless still applies)", async () => {
@@ -201,7 +266,7 @@ describe("deterministic packing", () => {
   test("stats reconcile: documents == emitted docs, skips accounted", async () => {
     const result = await buildFumadocsOkfBundle(acmeSource(), { prefix: "acme" });
     expect(result.stats.documents).toBe(result.docs.length);
-    expect(result.stats.documents).toBe(5);
+    expect(result.stats.documents).toBe(6);
     expect(result.stats.skipped.apiReference + result.stats.skipped.contentless).toBe(2);
     expect(result.stats.totalDocBytes).toBe(result.docs.reduce((n, d) => n + d.bytes, 0));
     expect(result.stats.archiveBytes).toBe(result.bytes.length);
@@ -220,7 +285,8 @@ describe("splitUstarPath", () => {
     expect(split.name).toBe(`${"f".repeat(60)}.md`);
   });
 
-  test("an unsplittable path throws instead of truncating", () => {
+  test("an unsplittable path throws typed instead of truncating", () => {
+    expect(() => splitUstarPath("x".repeat(160))).toThrow(InvalidPagePathError);
     expect(() => splitUstarPath("x".repeat(160))).toThrow(/ustar/);
   });
 });

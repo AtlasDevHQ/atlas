@@ -60,8 +60,9 @@ it, and so does a hand-built shim where the bundler-generated source isn't
 loadable (see `apps/docs/scripts/kb-bundle-sources.ts` for both a filesystem
 shim and a deployed-site shim).
 
-Multi-section sites compose collects and pack once, so the ingest caps are
-validated over the merged set:
+Multi-section sites compose collects and pack once — the ingest caps AND
+cross-section path uniqueness are validated over the merged set at pack (a
+duplicate archive path is refused, never silently last-write-wins):
 
 ```ts
 import { collectFumadocsPages, mergeCollectResults, packOkfBundle } from "@atlas/fumadocs-okf";
@@ -183,8 +184,9 @@ the endpoint through its SSRF egress guard:
 Protect the route — compare against a long random token you mint:
 
 ```ts
-// app/kb-bundle/route.ts
+// app/kb-bundle/route.ts  (plain Node APIs — works on any Next.js host)
 import { timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 export async function GET(req: Request) {
   const token = process.env.KB_BUNDLE_TOKEN!;
@@ -195,8 +197,8 @@ export async function GET(req: Request) {
   if (a.length !== b.length || !timingSafeEqual(a, b)) {
     return new Response("unauthorized", { status: 401 });
   }
-  const bytes = await Bun.file("./artifacts/site-kb.tar.gz").arrayBuffer();
-  return new Response(bytes, {
+  const bytes = await readFile("./artifacts/site-kb.tar.gz");
+  return new Response(new Uint8Array(bytes), {
     headers: { "content-type": "application/gzip" },
   });
 }

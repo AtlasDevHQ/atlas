@@ -96,7 +96,13 @@ export interface CollectSkips {
   readonly transformSkipped: number;
 }
 
-/** A reserved-basename rename applied on the way out (e.g. `docs/index.mdx` → `docs.md`). */
+/**
+ * A `-doc` suffix rename applied because a page would otherwise land on a
+ * reserved OKF basename the ingest parser silently skips (e.g. `ops/log.mdx`
+ * → `docs/ops/log-doc.md`). Ordinary `index` folds (`guides/index.mdx` →
+ * `guides.md`) are the NORMAL mapping and are not reported here. `from` is
+ * the source `page.path`; `to` is the full archive path (prefix included).
+ */
 export interface ReservedRename {
   readonly from: string;
   readonly to: string;
@@ -106,10 +112,12 @@ export interface CollectResult {
   readonly docs: readonly CollectedDoc[];
   readonly skipped: CollectSkips;
   /**
-   * Every emitted path that had to move off a reserved OKF basename
-   * (`index.md` / `log.md` — the ingest parser silently skips those, issue
-   * #4367 comment: 8 of 165 portal docs vanished this way). Emitting them
-   * renamed means built-count == ingested-count by construction.
+   * The `-doc` suffix renames applied so no emitted path lands on a reserved
+   * OKF basename (`index.md` / `log.md` — the ingest parser silently skips
+   * those; issue #4367: 8 of 165 portal docs vanished that way). Together
+   * with the ordinary `index` fold, this makes built-count == ingested-count
+   * by construction. Folds are not listed here — only the rarer suffix
+   * renames, which a site owner may want to know about.
    */
   readonly renamedReserved: readonly ReservedRename[];
 }

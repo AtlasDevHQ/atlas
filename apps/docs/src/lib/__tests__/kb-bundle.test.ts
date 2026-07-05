@@ -14,14 +14,20 @@
  *      bodies with zero opposite-audience content.
  */
 
-import { describe, expect, test } from "bun:test";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, test } from "bun:test";
 
-import { buildFumadocsOkfBundle } from "@atlas/fumadocs-okf";
+import { buildFumadocsOkfBundle, collectFumadocsPages } from "@atlas/fumadocs-okf";
 import type { FumadocsOkfPage, FumadocsOkfSource } from "@atlas/fumadocs-okf";
 import {
   deployedPagePath,
+  localSectionSource,
   parseLlmsIndex,
   portalAudienceTransform,
+  portalSectionCollectOptions,
+  sectionsFor,
   splitFrontmatter,
   stripMdxModuleLines,
   stripTwinHeading,
@@ -94,6 +100,76 @@ describe("portalAudienceTransform (leak safety)", () => {
     const guide = sh.docs.find((d) => d.path === "docs/guide.md");
     expect(guide?.content).toContain("docker-compose");
     expect(guide?.content).not.toContain("hosted console");
+  });
+});
+
+describe("section composition (leak-safety leg 2)", () => {
+  test("a SaaS bundle mounts only docs + shared — never the self-hosted tree", () => {
+    expect(sectionsFor("saas")).toEqual(["docs", "shared"]);
+    expect(sectionsFor("self-hosted")).toEqual(["self-hosted", "shared"]);
+  });
+
+  test("every section's collect options carry the audience transform (wiring pin)", async () => {
+    for (const audience of ["saas", "self-hosted"] as const) {
+      for (const section of sectionsFor(audience)) {
+        const options = portalSectionCollectOptions(section, audience);
+        expect(options.prefix).toBe(section);
+        expect(options.skipApiReference).toBe(true);
+        // The transform must actually strip: run the forked body through it.
+        const out = await options.transform?.(FORKED_BODY, pageOf("x.mdx", FORKED_BODY));
+        if (audience === "saas") {
+          expect(out).toContain("hosted console");
+          expect(out).not.toContain("docker-compose");
+        } else {
+          expect(out).toContain("docker-compose");
+          expect(out).not.toContain("hosted console");
+        }
+      }
+    }
+  });
+});
+
+describe("localSectionSource", () => {
+  let dir: string | null = null;
+  afterAll(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  test("walks a content tree: frontmatter into data, ESM-stripped body from getText", async () => {
+    dir = await mkdtemp(join(tmpdir(), "kb-shim-"));
+    await mkdir(join(dir, "guides"), { recursive: true });
+    await writeFile(
+      join(dir, "guides", "setup.mdx"),
+      [
+        "---",
+        'title: "Setup"',
+        "description: Getting started",
+        "tags: [install]",
+        "---",
+        'import { Callout } from "fumadocs-ui/components/callout";',
+        "",
+        "Real setup prose that survives.",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const source = await localSectionSource(dir);
+    const pages = source.getPages();
+    expect(pages.map((p) => p.path)).toEqual(["guides/setup.mdx"]);
+    expect(pages[0].data.title).toBe("Setup");
+    expect(pages[0].data.description).toBe("Getting started");
+    expect(pages[0].data.tags).toEqual(["install"]);
+    const body = await pages[0].data.getText?.("processed");
+    expect(body).toContain("Real setup prose");
+    expect(body).not.toContain("fumadocs-ui/components");
+
+    // And through the adapter with the portal options: one doc, tagged, prefixed.
+    const collected = await collectFumadocsPages(
+      source,
+      portalSectionCollectOptions("docs", "saas"),
+    );
+    expect(collected.docs.map((d) => d.path)).toEqual(["docs/guides/setup.md"]);
+    expect(collected.docs[0].content).toContain('tags: ["docs-portal", "docs", "install"]');
   });
 });
 

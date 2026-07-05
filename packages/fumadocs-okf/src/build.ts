@@ -3,13 +3,13 @@
  *
  * `validateIngestCaps` + `packOkfBundle` are exported separately so a
  * multi-section site (like the Atlas docs portal) can run several collects
- * with different prefixes and pack them as ONE archive — caps are then
- * validated once, over the merged document set, exactly as the ingest seam
- * will see it.
+ * with different prefixes and pack them as ONE archive — caps AND path
+ * uniqueness are then validated once, over the merged document set, exactly
+ * as the ingest seam will see it.
  */
 
 import { collectFumadocsPages } from "./collect";
-import { IngestCapExceededError } from "./errors";
+import { ArchivePathCollisionError, IngestCapExceededError } from "./errors";
 import { createDeterministicTarGz } from "./tar";
 import {
   DEFAULT_INGEST_CAPS,
@@ -64,11 +64,26 @@ export function validateIngestCaps(
  * Pack collected documents into a deterministic `.tar.gz`, validating the
  * caps over the full set first (including the compressed-size cap the ingest
  * route applies to the raw upload body).
+ *
+ * This is ALSO where the path-uniqueness invariant is enforced over the
+ * whole set: `collectFumadocsPages` catches collisions within one collect,
+ * but merged multi-section sets (overlapping prefixes, the same collect
+ * passed twice) would otherwise pack two tar entries at one path and let
+ * the ingest upsert silently last-write-win. Every pack path goes through
+ * here, so a bundle is either collision-free or refused.
  */
 export function packOkfBundle(
   docs: readonly CollectedDoc[],
   caps: IngestCaps = DEFAULT_INGEST_CAPS,
 ): { bytes: Uint8Array; totalDocBytes: number } {
+  const byPath = new Map<string, string>();
+  for (const doc of docs) {
+    const existing = byPath.get(doc.path);
+    if (existing !== undefined) {
+      throw new ArchivePathCollisionError(doc.path, existing, doc.sourcePath);
+    }
+    byPath.set(doc.path, doc.sourcePath);
+  }
   const { totalDocBytes } = validateIngestCaps(docs, caps);
   const bytes = createDeterministicTarGz(docs);
   if (bytes.length > caps.maxBundleBytes) {
@@ -82,7 +97,11 @@ export function packOkfBundle(
   return { bytes, totalDocBytes };
 }
 
-/** Merge per-collect results for multi-section packing (portal dogfood path). */
+/**
+ * Merge per-collect results for multi-section packing (portal dogfood path).
+ * Merging itself does not re-check path collisions across collects —
+ * `packOkfBundle` does, so a cross-section duplicate is refused at pack.
+ */
 export function mergeCollectResults(results: readonly CollectResult[]): CollectResult {
   return {
     docs: results.flatMap((r) => r.docs),

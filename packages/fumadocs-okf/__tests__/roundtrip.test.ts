@@ -19,9 +19,14 @@ import { describe, expect, test } from "bun:test";
 
 import { extractBundle } from "@atlas/api/lib/knowledge/bundle-archive";
 import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
+import { RESERVED_BASENAMES } from "@atlas/api/lib/semantic/okf/md-utils";
 
-import { buildFumadocsOkfBundle, DEFAULT_INGEST_CAPS } from "../src/index";
-import { acmeSource } from "./fixture";
+import {
+  buildFumadocsOkfBundle,
+  DEFAULT_INGEST_CAPS,
+  RESERVED_OKF_BASENAMES,
+} from "../src/index";
+import { acmeSource, page, sourceOf } from "./fixture";
 
 describe("bundle-sync round-trip (no packages/api changes)", () => {
   test("every built doc survives extract + lenient parse — zero silent drops", async () => {
@@ -76,6 +81,42 @@ describe("bundle-sync round-trip (no packages/api changes)", () => {
     expect(guides?.title).toBe("Guides");
     // The reserved-named page ingests under its -doc rename.
     expect(parsed.docs.some((d) => d.path === "acme/ops/log-doc.md")).toBe(true);
+  });
+
+  test("hostile frontmatter (quotes/colons/backslashes) survives the round-trip byte-faithfully", async () => {
+    const built = await buildFumadocsOkfBundle(acmeSource(), { prefix: "acme" });
+    const parsed = parseLenientBundle(
+      extractBundle(built.bytes, {
+        maxDocBytes: DEFAULT_INGEST_CAPS.maxDocBytes,
+        maxTotalBytes: DEFAULT_INGEST_CAPS.maxBundleBytes,
+      }).files,
+    );
+    const faq = parsed.docs.find((d) => d.path === "acme/faq.md");
+    expect(faq).toBeDefined();
+    expect(faq?.title).toBe('FAQ: "gotchas", edge: cases');
+    expect(faq?.description).toBe('Answers to: "why?", "how?" — and C:\\paths too');
+    expect(faq?.body.trim()).toBe('Q: does `"SELECT *"` count? A: yes\\no, it depends.');
+  });
+
+  test("a prefix-split (>100-byte) archive path round-trips intact through the real USTAR reader", async () => {
+    const deepDir = `${"section-".repeat(8)}nested`; // 71 chars
+    const longStem = `${"page-".repeat(10)}leaf`; // 54 chars → full path > 100
+    const source = sourceOf([
+      page(`${deepDir}/${longStem}.mdx`, "Deeply nested prose that must keep its path."),
+    ]);
+    const built = await buildFumadocsOkfBundle(source, { prefix: "acme" });
+    const extracted = extractBundle(built.bytes, {
+      maxDocBytes: DEFAULT_INGEST_CAPS.maxDocBytes,
+      maxTotalBytes: DEFAULT_INGEST_CAPS.maxBundleBytes,
+    });
+    expect(extracted.errors).toEqual([]);
+    expect(extracted.files.map((f) => f.path)).toEqual([`acme/${deepDir}/${longStem}.md`]);
+  });
+
+  test("reserved-basename set stays equal to the server's RESERVED_BASENAMES", () => {
+    // A drift here (e.g. the API side reserving a new basename) would
+    // reintroduce the silent-drop class this package exists to close.
+    expect([...RESERVED_OKF_BASENAMES].toSorted()).toEqual([...RESERVED_BASENAMES].toSorted());
   });
 
   test("adapter default caps stay equal to the server ingest-limit defaults", async () => {

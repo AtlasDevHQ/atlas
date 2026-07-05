@@ -30,8 +30,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Glob } from "bun";
-import type { FumadocsOkfPage, FumadocsOkfSource } from "@atlas/fumadocs-okf";
-import { stripInactiveAudienceBlocks } from "../src/lib/audience-markdown";
+import type {
+  CollectOptions,
+  FumadocsOkfPage,
+  FumadocsOkfSource,
+} from "@atlas/fumadocs-okf";
+import {
+  ResidualAudienceTagError,
+  stripInactiveAudienceBlocks,
+} from "../src/lib/audience-markdown";
 import type { Audience } from "../src/lib/audience";
 
 // ---------------------------------------------------------------------------
@@ -151,29 +158,58 @@ export function stripMdxModuleLines(body: string): string {
 /**
  * The adapter body-transform resolving audience conditionals for one mount.
  * Fail-SOFT per page, fail-CLOSED per body: `stripInactiveAudienceBlocks`
- * throws when any raw audience construct survives, and this hook maps that
- * throw to `null` (skip the page, count it, log it) — the page is dropped
- * from the bundle rather than ever emitted with an unresolved branch.
+ * throws `ResidualAudienceTagError` when any raw audience construct survives,
+ * and this hook maps EXACTLY that throw to `null` (skip the page, count it,
+ * log it) — the page is dropped from the bundle rather than ever emitted
+ * with an unresolved branch. Any OTHER throw is a bug in the strip itself
+ * and is rethrown: a systemic failure must abort the build, not quietly thin
+ * the bundle page by page (a thinner bundle fed to bundle-sync would archive
+ * the missing pages' documents via the subtractive diff).
  */
 export function portalAudienceTransform(
   audience: Audience,
   onSkip?: (pagePath: string, reason: string) => void,
 ): (body: string, page: FumadocsOkfPage) => string | null {
+  const reportSkip =
+    onSkip ??
+    ((pagePath: string, reason: string) => {
+      console.warn(`  skip (audience strip) ${pagePath}: ${reason}`);
+    });
   return (body, page) => {
     try {
       return stripInactiveAudienceBlocks(body, audience);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      onSkip?.(page.path, msg);
+      if (!(err instanceof ResidualAudienceTagError)) throw err;
+      reportSkip(page.path, err.message);
       return null;
     }
   };
 }
 
-/** The content collections composing each audience's surface (mirrors
- * `buildSectionSource` in `src/lib/source.ts`). `shared` is mounted into both. */
+/** The content collections composing each audience's surface — mirrors the
+ * `buildSectionSource` (`src/lib/compose.ts`) compositions in
+ * `src/lib/source.ts`. `shared` is mounted into both. */
 export function sectionsFor(audience: Audience): string[] {
   return audience === "saas" ? ["docs", "shared"] : ["self-hosted", "shared"];
+}
+
+/**
+ * The adapter options every LOCAL-mode section collect uses — one function so
+ * the audience transform cannot be forgotten for a section (the leak-safety
+ * wiring is pinned by `src/lib/__tests__/kb-bundle.test.ts` through here).
+ */
+export function portalSectionCollectOptions(
+  section: string,
+  audience: Audience,
+  opts: { includeApiReference?: boolean; onSkip?: (pagePath: string, reason: string) => void } = {},
+): CollectOptions {
+  return {
+    prefix: section,
+    transform: portalAudienceTransform(audience, opts.onSkip),
+    // Provenance tags make the bundle's origin legible in the review UI.
+    tags: ["docs-portal", section],
+    skipApiReference: !(opts.includeApiReference ?? false),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +288,8 @@ export function parseLlmsIndex(indexText: string): DeployedIndexEntry[] {
     try {
       path = new URL(url).pathname;
     } catch {
+      // intentionally ignored: not an absolute URL — treat it as a
+      // site-relative path; a garbage path fails loud at the twin fetch.
       path = url.startsWith("/") ? url : `/${url}`;
     }
     out.push({ title: title.trim(), path, description: description?.trim() || undefined });

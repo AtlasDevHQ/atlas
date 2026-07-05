@@ -11,11 +11,14 @@
  */
 
 /**
- * A page has no `getText("processed")` body — the site's `source.config.ts`
- * hasn't enabled `postprocess: { includeProcessedMarkdown: true }` on the
- * collection (or the page failed to load). Raw MDX is NOT an acceptable
- * fallback: it carries unstripped `import`/`export` module lines and
- * un-expanded component content — quietly worse documents.
+ * A page has no `getText("processed")` body because the site's
+ * `source.config.ts` hasn't enabled `postprocess: { includeProcessedMarkdown:
+ * true }` on the collection (the method is missing, or fumadocs reported the
+ * config as absent). Raw MDX is NOT an acceptable fallback: it carries
+ * unstripped `import`/`export` module lines and un-expanded component
+ * content — quietly worse documents. A body that fails to LOAD for some
+ * other reason is a {@link PageLoadError} instead — same fail-loud posture,
+ * without misprescribing the config fix.
  */
 export class ProcessedTextUnavailableError extends Error {
   readonly pagePath: string;
@@ -28,6 +31,27 @@ export class ProcessedTextUnavailableError extends Error {
         `(a raw body would carry unstripped import/export lines and un-expanded component content).`,
     );
     this.name = "ProcessedTextUnavailableError";
+    this.pagePath = pagePath;
+  }
+}
+
+/**
+ * A page's processed body failed to load for a non-config reason — a shim's
+ * HTTP twin fetch failed, a file read errored, or `getText` returned a
+ * non-string. Fail-loud with the page named: a silently partial bundle fed
+ * to a bundle-sync collection would archive the missing pages' documents via
+ * the subtractive diff. The original failure rides `cause`.
+ */
+export class PageLoadError extends Error {
+  readonly pagePath: string;
+
+  constructor(pagePath: string, detail: string, cause?: unknown) {
+    super(
+      `Failed to load the processed markdown for page "${pagePath}": ${detail}. ` +
+        `The adapter never falls back to raw MDX — fix the load failure and rebuild.`,
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = "PageLoadError";
     this.pagePath = pagePath;
   }
 }
@@ -90,7 +114,7 @@ export class IngestCapExceededError extends Error {
         `${actual} ${unit} > ${limit} ${unit}` +
         (docPath ? ` (document "${docPath}")` : "") +
         (detail ? ` — ${detail}` : "") +
-        `. Trim the bundle (filter hook), or have the workspace operator raise the ` +
+        `. Trim the bundle (filter hook), or have the Atlas platform operator raise the ` +
         `${CAP_SETTING[cap]} setting and pass the raised value via the caps option.`,
     );
     this.name = "IngestCapExceededError";

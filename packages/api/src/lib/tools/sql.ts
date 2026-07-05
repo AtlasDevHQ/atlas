@@ -149,31 +149,32 @@ const parser = new Parser();
 
 // ── Parse-once seam (#4349) ─────────────────────────────────────────
 //
-// `validateSQL` used to feed the same query string to node-sql-parser up to
-// five times per call — `astify`, plus a `tableList` for the ONLY-guard, the
-// whitelist, and the classifier (which also runs `columnList`), and a fifth
-// `tableList` in RLS injection. Each recomputed the dialect and discarded the
-// prior parse, so the whitelist bucket and the classifier's table set matched
-// only because two re-parses of the same string can't disagree — an
-// undocumented "these parses can't diverge" invariant rather than a structural
-// guarantee. That mattered because `extractClassification` fails open to an
-// empty table set, and that set drives the approval gate and PII masking: a
-// classifier that could diverge from the whitelist could silently un-gate a
-// query.
+// The validate-then-execute path used to parse the same query string ~5–6
+// times: `astify` for the statement shape; a `tableList` each for the
+// ONLY-guard, the whitelist, and the classifier (which also ran `columnList`);
+// and a final `tableList` inside `applyRLSEffect`. Each recomputed the dialect
+// and discarded the prior parse, so the whitelist bucket and the classifier's
+// table set matched only because re-parses of the same string can't disagree —
+// an undocumented "these parses can't diverge" invariant rather than a
+// structural guarantee. That mattered because `extractClassification` fails
+// open to an empty table set, and that set drives the approval gate and PII
+// masking: a classifier that could diverge from the whitelist could silently
+// un-gate a query.
 //
 // `parseOnce` collapses all of it: `parser.parse` returns `{ ast, tableList,
 // columnList }` from a SINGLE parse. Every consumer (statement-shape guard,
 // ONLY-guard, whitelist, classifier) reads from this one result, so they share
-// one table set by construction. `parser.parse` throws exactly when `astify`
-// would, so the reject-on-unparseable behavior is unchanged.
+// one table set by construction. In node-sql-parser 5.x `astify` is defined AS
+// `parse(...).ast`, so `parser.parse` throws exactly when `astify` would and
+// the reject-on-unparseable behavior is unchanged.
 
 interface ParsedQuery {
   /** Statement AST (array for multi-statement input — rejected downstream). */
   readonly ast: AST | AST[];
   /** Raw table refs in node-sql-parser's `select::schema::table` format. */
-  readonly tables: string[];
+  readonly tables: readonly string[];
   /** Raw column refs in node-sql-parser's `select::table::column` format. */
-  readonly columns: string[];
+  readonly columns: readonly string[];
 }
 
 /** Parse `sql` exactly once, returning the shared `{ ast, tables, columns }`. */
@@ -204,6 +205,10 @@ interface SQLClassification {
  * that was parsed; a downstream consumer reuses `tables` only when it is about
  * to operate on that same string (a plugin `beforeQuery` rewrite or a MySQL
  * executable-comment unwrap makes them diverge, and the consumer re-parses).
+ *
+ * `tables` is valid only for the connection/dialect that produced it — every
+ * reuse site here shares the same `connId`, so the dialect is stable and is
+ * deliberately NOT part of the reuse key (string identity suffices).
  */
 interface ValidatedParse {
   readonly sql: string;
@@ -211,7 +216,9 @@ interface ValidatedParse {
 }
 
 type SQLValidationResult =
-  | { valid: true; error?: undefined; classification: SQLClassification; parsed?: ValidatedParse }
+  // `parsed` is always present on the valid standard-SQL path (validateSQL sets
+  // it at its single return). It stays absent only for the invalid arm.
+  | { valid: true; error?: undefined; classification: SQLClassification; parsed: ValidatedParse }
   | { valid: false; error: string; classification?: undefined; parsed?: undefined };
 
 /**
@@ -692,9 +699,8 @@ export async function validateSQL(
   // Security rationale: if the regex guard (layer 1) passed but the parser
   // cannot parse the query, we REJECT it rather than allowing it through — a
   // query that passes regex but confuses the parser could be a crafted bypass.
-  // The single {@link ParsedQuery} produced here feeds the ONLY-guard, the
-  // table whitelist below, and the classifier, so their table sets cannot
-  // diverge (#4349).
+  // The single parse produced here feeds the ONLY-guard, the table whitelist
+  // below, and the classifier, so their table sets cannot diverge (#4349).
   const shape = parseAndGuardShape(trimmed, dialect);
   if (!shape.ok) {
     return { valid: false, error: shape.error };
@@ -1126,8 +1132,12 @@ function applyRLSEffect(
     const ctx = getRequestContext();
     const user = ctx?.user;
 
-    // Extract tables — reuse the shared parse when it matches this exact SQL
-    // (the common case: no plugin rewrite, non-MySQL), else re-parse (#4349).
+    // Extract tables — reuse the shared parse when the executed string is
+    // byte-identical to what was validated (the common case: no plugin rewrite
+    // and no MySQL executable-comment unwrap actually changed it), else
+    // re-parse (#4349). The reuse branch's refs came from the workspace-scoped
+    // dialect and the fallback uses the connection dialect; table-NAME
+    // extraction is dialect-invariant, so the asymmetry is intentional.
     const queriedTables = yield* Effect.try({
       try: () => {
         const tableRefs =

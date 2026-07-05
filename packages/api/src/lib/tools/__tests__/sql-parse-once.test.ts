@@ -34,26 +34,34 @@ const whitelist = new Set([
   "public.companies",
 ]);
 
+// Mirror every value export of the `@atlas/api/lib/semantic` barrel
+// (lib/semantic/index.ts) — mock-all-exports so no consumer silently reads an
+// undefined. The `_resetOrg*` helpers live in whitelist.ts, not the barrel.
 mock.module("@atlas/api/lib/semantic", () => ({
-  getOrgWhitelistedTables: () => whitelist,
-  loadOrgWhitelist: async () => new Map(),
-  invalidateOrgWhitelist: () => {},
-  getOrgSemanticIndex: async () => "",
-  invalidateOrgSemanticIndex: () => {},
-  _resetOrgWhitelists: () => {},
-  _resetOrgSemanticIndexes: () => {},
   getWhitelistedTables: () => whitelist,
+  getWhitelistedTablesStrict: () => whitelist,
+  SemanticLayerScanError: class SemanticLayerScanError extends Error {},
+  getCrossSourceJoins: () => [],
+  registerPluginEntities: () => {},
   _resetWhitelists: () => {},
+  loadOrgWhitelist: async () => new Map(),
+  getOrgWhitelistedTables: () => whitelist,
+  invalidateOrgWhitelist: () => {},
+  invalidateOrgSemanticIndex: () => {},
+  getOrgSemanticIndex: async () => "",
 }));
+
+// Mutable so the MySQL case can flip the resolved dialect for one test.
+let dbTypeForTest = "postgres";
 
 mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
-    connections: { getDBType: () => "postgres" },
-    detectDBType: () => "postgres",
+    connections: { getDBType: () => dbTypeForTest },
+    detectDBType: () => dbTypeForTest,
   }),
 );
 
-const { validateSQL } = await import("@atlas/api/lib/tools/sql");
+const { validateSQL, extractClassification } = await import("@atlas/api/lib/tools/sql");
 
 process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test";
 
@@ -67,6 +75,7 @@ describe("parse-once seam (#4349)", () => {
   let columnListSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
+    dbTypeForTest = "postgres";
     parseSpy = spyOn(Parser.prototype, "parse");
     astifySpy = spyOn(Parser.prototype, "astify");
     tableListSpy = spyOn(Parser.prototype, "tableList");
@@ -154,8 +163,53 @@ describe("parse-once seam (#4349)", () => {
     const result = await validateSQL("SELECT id FROM companies;");
     expect(result.valid).toBe(true);
     if (result.valid) {
-      expect(result.parsed?.sql).toBe("SELECT id FROM companies");
-      expect(result.parsed?.tables).toEqual(["select::null::companies"]);
+      expect(result.parsed.sql).toBe("SELECT id FROM companies");
+      expect(result.parsed.tables).toEqual(["select::null::companies"]);
     }
+  });
+
+  it("schema-qualified query: whitelist reads raw refs, classifier reads table names, one parse (AC4)", async () => {
+    // `public.companies` is whitelisted (qualified). The whitelist matches on
+    // the raw `select::public::companies` ref while the classifier reduces to
+    // `companies` via tableNameFromRef — the one spot the two derivations
+    // transform differently, yet both read the SAME single parse.
+    const result = await validateSQL("SELECT id FROM public.companies");
+    expect(result.valid).toBe(true);
+    expect(parseSpy).toHaveBeenCalledTimes(1);
+    if (result.valid) {
+      expect(result.classification.tablesAccessed).toEqual(["companies"]);
+    }
+  });
+
+  it("classifies an accepted MySQL query through the shared parse (dialect flows into parseOnce)", async () => {
+    dbTypeForTest = "mysql";
+    const result = await validateSQL(
+      "SELECT c.name, p.email FROM companies c JOIN people p ON c.id = p.company_id",
+    );
+    expect(result.valid).toBe(true);
+    expect(parseSpy).toHaveBeenCalledTimes(1);
+    expect(tableListSpy).not.toHaveBeenCalled();
+    if (result.valid) {
+      expect(new Set(result.classification.tablesAccessed)).toEqual(
+        new Set(["companies", "people"]),
+      );
+    }
+  });
+
+  // ── standalone extractClassification (the retained re-parsing entry point) ──
+  it("extractClassification fails open to empty arrays on unparseable SQL", () => {
+    // The standalone export still parses, so its best-effort catch is live and
+    // asserted directly against the REAL function (not a mirror). In the
+    // pipeline this fail-open is unreachable — parseAndGuardShape rejects
+    // unparseable SQL first — so the empty set can't silently un-gate a query.
+    const result = extractClassification("THIS IS NOT SQL", "PostgresQL", new Set());
+    expect(result.tablesAccessed).toEqual([]);
+    expect(result.columnsAccessed).toEqual([]);
+  });
+
+  it("extractClassification derives tables/columns for parseable SQL", () => {
+    const result = extractClassification("SELECT id, name FROM companies", "PostgresQL", new Set());
+    expect(result.tablesAccessed).toEqual(["companies"]);
+    expect(new Set(result.columnsAccessed)).toEqual(new Set(["id", "name"]));
   });
 });

@@ -129,11 +129,18 @@ mock.module("@atlas/api/lib/config", () => ({
 // Captures the filter groups the pipeline passes into injection so the RLS
 // test asserts propagation (resolved filters → injector), not just plumbing.
 let rlsGroupsSeen: unknown[] = [];
+// Captures the queried-table set RLS resolves against (#4349). The table set
+// now comes from the SHARED validation parse reused in `applyRLSEffect`; this
+// pins that the reuse branch surfaces the right tables — a stale/wrong set
+// would resolve the wrong RLS filters (an RLS-bypass class bug).
+let rlsTablesSeen: Set<string>[] = [];
 mock.module("@atlas/api/lib/rls", () => ({
-  resolveRLSFilters: () =>
-    rlsConfigEnabled
+  resolveRLSFilters: (_user: unknown, queriedTables: Set<string>) => {
+    rlsTablesSeen.push(queriedTables);
+    return rlsConfigEnabled
       ? { groups: [{ filters: [{ table: "companies", column: "tenant_id", value: "tenant-42" }] }], combineWith: "and" }
-      : { groups: [], combineWith: "and" },
+      : { groups: [], combineWith: "and" };
+  },
   injectRLSConditions: (sql: string, groups: unknown) => {
     rlsGroupsSeen.push(groups);
     return rlsConfigEnabled ? `${sql} WHERE tenant_id = 'tenant-42'` : sql;
@@ -276,6 +283,7 @@ describe("unified SQL pipeline seam (#4185)", () => {
     executedQueries = [];
     hookSqlSeen = [];
     rlsGroupsSeen = [];
+    rlsTablesSeen = [];
     mockDbType = "postgres";
     mockDBConnection.query.mockClear();
     cacheIsEnabled = false;
@@ -389,6 +397,12 @@ describe("unified SQL pipeline seam (#4185)", () => {
     expect(rlsGroupsSeen[0]).toEqual([
       { filters: [{ table: "companies", column: "tenant_id", value: "tenant-42" }] },
     ]);
+    // #4349 — the table set RLS resolves against comes from the SHARED
+    // validation parse (reused in applyRLSEffect), so it must be exactly the
+    // query's tables. A regression in the reuse guard or ref parsing would
+    // surface a wrong/empty set here.
+    expect(rlsTablesSeen).toHaveLength(1);
+    expect(rlsTablesSeen[0]).toEqual(new Set(["companies"]));
   });
 
   it("RLS applies identically under the agent pre-step", async () => {

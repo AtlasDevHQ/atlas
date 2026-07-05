@@ -81,7 +81,7 @@ export function KnowledgeBase() {
     >
       <div className="grid gap-10 md:grid-cols-2 md:items-center">
         <div>
-          <p className="mb-3 font-mono text-[11px] tracking-[0.06em] text-brand">
+          <p className="mb-3 font-mono text-[11px] tracking-[0.06em] text-accent">
             // knowledge base
           </p>
           <h2 className="m-0 mb-4 text-[36px] md:text-[46px] font-semibold leading-[1.05] tracking-[-0.03em] text-fg">

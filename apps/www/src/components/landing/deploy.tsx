@@ -175,7 +175,7 @@ function CloudCard() {
       </ul>
 
       <a
-        href="https://app.useatlas.dev"
+        href="https://app.useatlas.dev/signup"
         className="mt-auto inline-flex items-center justify-center rounded-lg bg-accent px-4 py-3 text-[13.5px] font-semibold text-accent-ink transition-colors hover:bg-accent-hover"
       >
         start free trial →

@@ -29,7 +29,7 @@
 
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname, relative } from "node:path";
+import { join, dirname } from "node:path";
 import { Glob } from "bun";
 import { stripInactiveAudienceBlocks } from "../src/lib/audience-markdown";
 import type { Audience } from "../src/lib/audience";

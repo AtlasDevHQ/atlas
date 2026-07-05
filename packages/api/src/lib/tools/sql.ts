@@ -44,11 +44,9 @@ import {
 } from "@atlas/api/lib/effect/errors";
 import { EXECUTE_SQL_TOOL_DESCRIPTION } from "./descriptions";
 import { appendRowLimit, hasLimitClause } from "./auto-limit";
-import { resolveRoutingPlan, type RoutingMode, type RoutingReason } from "@atlas/api/lib/env-routing";
-import { loadGroupRoutingContext } from "@atlas/api/lib/env-routing/lookup";
-import { resolveReach, isReachable, reachStateFromColumn } from "@atlas/api/lib/group-reach";
-import { loadVisibleGroups } from "@atlas/api/lib/group-reach/lookup";
+import { type RoutingMode, type RoutingReason } from "@atlas/api/lib/env-routing";
 import { resolveExecutionTarget, type ExecutionTarget } from "@atlas/api/lib/group-reach/execution-target";
+import { resolveSqlExecutionPlan } from "./sql-execution-plan";
 import { mergeMemberResults } from "@atlas/api/lib/multi-env-merger";
 import {
   ApprovalGate,
@@ -2347,7 +2345,14 @@ async function executeSqlForConnection({
 async function executeSqlFanout(args: {
   readonly sql: string;
   readonly explanation: string;
-  readonly connectionIds: readonly string[];
+  /**
+   * Per-leg execution targets, pre-resolved by {@link resolveSqlExecutionPlan}
+   * from EACH member's own connection id (never a single broadcast target —
+   * that would leak one leg's whitelist bucket onto the others, #3961). Order
+   * is the fanout output order. A leg's `connectionId` is the member to run
+   * against; its `unpinned` flag feeds the leg's table whitelist.
+   */
+  readonly legs: readonly ExecutionTarget[];
   /**
    * Planner reason that picked this fanout (one of `agent-all` /
    * `picker-all`). Threaded into each leg's OTel span as
@@ -2357,7 +2362,8 @@ async function executeSqlFanout(args: {
    */
   readonly fanoutReason: RoutingReason;
 }): Promise<Record<string, unknown>> {
-  const { sql, explanation, connectionIds, fanoutReason } = args;
+  const { sql, explanation, legs, fanoutReason } = args;
+  const connectionIds = legs.map((leg) => leg.connectionId);
 
   // Write the parent audit row up front so each leg's audit insert can
   // reference it. The parent carries no per-environment metadata
@@ -2402,25 +2408,25 @@ async function executeSqlFanout(args: {
     );
   }
 
-  // Per-leg execution target: each fanout leg resolves its OWN target from
-  // ITS connection id — NEVER a single broadcast target across legs (that
-  // would leak one leg's whitelist bucket onto the others, a regression). A
-  // leg whose id IS the conversation's own connection under All-sources reach
-  // derives `unpinned: true`; sibling legs derive `false` — exactly the
-  // current per-leg re-derivation `validateSQL` did via its fallback.
-  const fanoutReqCtx = getRequestContext();
+  // Per-leg execution target: each leg carries its OWN target (pre-resolved by
+  // the planner from ITS connection id) — NEVER a single broadcast target
+  // across legs (that would leak one leg's whitelist bucket onto the others, a
+  // regression). A leg whose id IS the conversation's own connection under
+  // All-sources reach derives `unpinned: true`; sibling legs derive `false`.
+  // The request context was read ONCE in `execute` and folded into these legs
+  // there — this function re-reads nothing (#4350).
   const startTimes = new Map<string, number>();
   const settled = await Promise.allSettled(
-    connectionIds.map((connId) => {
-      startTimes.set(connId, performance.now());
+    legs.map((leg) => {
+      startTimes.set(leg.connectionId, performance.now());
       return executeSqlForConnection({
         sql,
         explanation,
-        connId,
+        connId: leg.connectionId,
         parentAuditId,
         routingMode: "all",
         routingReason: fanoutReason,
-        executionTarget: resolveExecutionTarget(fanoutReqCtx, connId),
+        executionTarget: leg,
       });
     }),
   );
@@ -2521,154 +2527,57 @@ export const executeSQL = tool({
   }),
 
   execute: async ({ sql, explanation, group, connectionId, scope }) => {
-    // Chat routes stamp the user-selected per-turn connection into
-    // RequestContext. The model normally omits `connectionId`, so fall back to
-    // that routed context before the legacy default to avoid executing against
-    // the wrong environment while conversation metadata says otherwise.
+    // Read the request context ONCE and hand it to the planner (#4350). The
+    // planner folds the whole cascade — reach gate (ADR-0022) → group-target
+    // member → current member → routing-mode fast-path → routing plan →
+    // per-leg execution target — into a discriminated plan; this closure only
+    // runs the leg(s) and merges. The composition-order bugs this surface has
+    // shipped (#3961 fanout bucket-leak, #3867(b) no-substitution) now live,
+    // tested, inside `resolveSqlExecutionPlan`.
     const reqCtx = getRequestContext();
-    const requestContextConnectionId = reqCtx?.connectionId;
+    const { plan, logs } = await resolveSqlExecutionPlan(reqCtx, { group, connectionId, scope });
+    // The planner is pure — it returns operational signals (reach warnings, the
+    // out-of-reach rejection, routing fallbacks) rather than logging itself, so
+    // the one log seam stays here (per CLAUDE.md "never silently swallow").
+    for (const l of logs) {
+      log.warn(l.fields, l.message);
+    }
 
-    // Cross-group reach (ADR-0022). The conversation's persisted Group-reach
-    // state (slice (c) #3895, stamped into RequestContext by the chat route)
-    // bounds which Connection groups this query may reach — the axis ABOVE
-    // member routing. `all` (the default) → every visible group reachable;
-    // `focus` → exactly one. A target outside the reachable set is REJECTED
-    // here — a hard error, never a silent re-route to a different source (the
-    // #3867(b) fix at the execution layer).
-    //
-    // Resolve reach when the agent names a `group` (validate the named target)
-    // OR the conversation is Focused (bound the implicit default to the focused
-    // group, never a stale `connectionId` outside it). Under `all` with no
-    // named group we skip the lookup entirely — every group is reachable, so
-    // there is nothing to bound and the legacy single-connection path stands
-    // (no per-query DB cost added to the common default case).
-    const reachState = reachStateFromColumn(reqCtx?.groupReach);
-    let groupTargetMember: string | undefined;
-    if (group !== undefined || reachState.kind === "focus") {
-      const reachOrgId = reqCtx?.user?.activeOrganizationId;
-      const visibleGroups = await loadVisibleGroups(reachOrgId, reqCtx?.atlasMode);
-      const reach = resolveReach(reachState, visibleGroups);
-      // A `focus`-on-invisible resolution explains (via a warning) why reach is
-      // empty rather than substituting another source; surface it so the
-      // divergence is observable. Under `all` warnings is always [].
-      for (const w of reach.warnings) {
-        log.warn({ group, groupReach: reqCtx?.groupReach, orgId: reachOrgId }, w);
+    switch (plan.kind) {
+      case "reject":
+        // Out-of-reach target — a hard error, never a silent re-route to a
+        // different source (the #3867(b) no-substitution invariant).
+        return { success: false, explanation, error: plan.error, executionMs: 0 };
+      case "single": {
+        // Wraps the leaf result with a 1-element `envContributions` array so
+        // SDK consumers see the same wire shape for single-env and fanout
+        // responses (#2519). The leaf result already carries `success`,
+        // `columns`, `rows`, etc. — we only attach the contribution.
+        // The execution target's `connectionId` IS the resolved member id —
+        // the single source for the leg's id (no separate `connId` to drift).
+        const connId = plan.executionTarget.connectionId;
+        const result = await executeSqlForConnection({
+          sql,
+          explanation,
+          connId,
+          routingMode: plan.routingMode,
+          routingReason: plan.routingReason,
+          executionTarget: plan.executionTarget,
+        });
+        return attachSingleEnvContribution(result, connId);
       }
-      // The group this query targets: the agent's explicit `group`, else — under
-      // Focus — the single focused group. (Under `all` with no explicit group we
-      // don't enter this branch.)
-      const targetGroupId =
-        group ?? (reachState.kind === "focus" ? reach.reachableGroups[0]?.id : undefined);
-      if (targetGroupId === undefined || !isReachable(reach, targetGroupId)) {
-        const reachable = reach.reachableGroups.map((g) => g.id);
-        log.warn(
-          { group, groupReach: reqCtx?.groupReach, orgId: reachOrgId, reachable },
-          "executeSQL rejected an out-of-reach group target — not re-routing",
-        );
-        // Two shapes: the agent named an out-of-reach group, OR the conversation
-        // is Focused on a group that isn't currently reachable (content-mode hid
-        // it, or it was removed). Either way we refuse to substitute another
-        // source — the no-substitution invariant the whole feature rests on.
-        const error =
-          group === undefined && reachState.kind === "focus"
-            ? `This conversation is focused on group "${reachState.groupId}", which is not ` +
-              `currently reachable (visible groups: ${reachable.join(", ") || "none"}). ` +
-              `The focused source may be unpublished or removed — I will not query a ` +
-              `different source instead. Widen the conversation's scope to All sources to query elsewhere.`
-            : `Connection group "${group}" is not within this conversation's reach ` +
-              `(reachable groups: ${reachable.join(", ") || "none"}). ` +
-              `I will not query a different source instead — re-run against a reachable ` +
-              `group, or omit \`group\` to use the conversation's current source.`;
-        return { success: false, explanation, error, executionMs: 0 };
+      case "fanout":
+        return executeSqlFanout({
+          sql,
+          explanation,
+          legs: plan.legs,
+          fanoutReason: plan.fanoutReason,
+        });
+      default: {
+        const _exhaustive: never = plan;
+        return _exhaustive;
       }
-      // Resolve the group to a connection to execute against: the group's
-      // primary member (a group-of-one resolves to its own connection id).
-      // `connectionId`, if also supplied, may pin a specific member of THIS
-      // group; otherwise the group's primary is used. The per-group whitelist
-      // resolves via this connection id (members register their group's tables).
-      const target = reach.reachableGroups.find((g) => g.id === targetGroupId);
-      groupTargetMember =
-        connectionId && target?.members.includes(connectionId)
-          ? connectionId
-          : target?.primary;
     }
-
-    const currentMember =
-      groupTargetMember ?? connectionId ?? requestContextConnectionId ?? "default";
-
-    // #2518 — three-state picker. `routingMode` reaches us via
-    // `RequestContext` (stamped by the chat route from the conversation
-    // row). The chat route applies the NULL→"pin" back-compat default
-    // before stamping; reaching this code with `routingMode === undefined`
-    // means the caller never went through the chat route (tools / MCP /
-    // scheduler / unit tests), and the legacy "agent decides" semantics
-    // are the right answer there.
-    const routingMode = reqCtx?.routingMode ?? "auto";
-
-    // Fast path — only valid when EVERY override path collapses to
-    // "single execution against currentMember". That is true when:
-    //   - the agent emitted no scope (or scope === "this"), AND
-    //   - the picker is NOT pinning the fanout case ('all').
-    // The 'pin' picker case ALSO collapses to single — pin always
-    // routes to `currentMember` regardless of the agent's hint — so we
-    // keep the fast path for it (no DB lookup needed). 'auto' with no
-    // agent scope is the same shape as legacy single-env execution.
-    //
-    // Wraps the leaf result with a 1-element `envContributions` array so
-    // SDK consumers see the same wire shape for single-env and fanout
-    // responses (#2519). The leaf result already carries `success`,
-    // `columns`, `rows`, etc. — we only attach the contribution.
-    if ((scope === undefined || scope === "this") && routingMode !== "all") {
-      const result = await executeSqlForConnection({
-        sql,
-        explanation,
-        connId: currentMember,
-        routingMode,
-        // Resolve the target from the POST-reach/post-routing member id
-        // (`currentMember`) — NEVER the raw `connectionId` arg — so the
-        // whitelist bucket matches what we execute against (risk guard #1).
-        executionTarget: resolveExecutionTarget(reqCtx, currentMember),
-      });
-      return attachSingleEnvContribution(result, currentMember);
-    }
-
-    // Routing path: either the agent asked for fanout / a specific
-    // member, or the picker is pinning 'all' (which overrides the
-    // agent's scope regardless of value). Resolve the active group's
-    // members + primary, then run the pure routing module. Failures
-    // collapse to a 1×1 fallback so the tool call still returns a
-    // useful result.
-    const orgId = reqCtx?.user?.activeOrganizationId;
-    const ctx = await loadGroupRoutingContext(orgId, currentMember);
-    const { plan, warnings } = resolveRoutingPlan({
-      agentScope: scope,
-      currentMember: ctx.currentMember,
-      members: ctx.members,
-      primaryMember: ctx.primaryMember,
-      pickerMode: routingMode,
-    });
-    for (const w of warnings) {
-      log.warn({ connectionId: currentMember, scope, plan: plan.kind }, w);
-    }
-
-    if (plan.kind === "single") {
-      const result = await executeSqlForConnection({
-        sql,
-        explanation,
-        connId: plan.connectionId,
-        routingMode,
-        routingReason: plan.reason,
-        // Post-routing member id (`plan.connectionId`), not the raw arg.
-        executionTarget: resolveExecutionTarget(reqCtx, plan.connectionId),
-      });
-      return attachSingleEnvContribution(result, plan.connectionId);
-    }
-    return executeSqlFanout({
-      sql,
-      explanation,
-      connectionIds: plan.connectionIds,
-      fanoutReason: plan.reason,
-    });
   },
 });
 

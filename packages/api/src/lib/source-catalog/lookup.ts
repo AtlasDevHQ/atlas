@@ -27,8 +27,8 @@
 
 import * as yaml from "js-yaml";
 import { createLogger } from "@atlas/api/lib/logger";
-import { loadVisibleGroups } from "@atlas/api/lib/group-reach/lookup";
-import { resolveReach, type ReachState } from "@atlas/api/lib/group-reach";
+import { resolveReachableGroups } from "@atlas/api/lib/group-reach/resolve";
+import { type ReachState } from "@atlas/api/lib/group-reach";
 import {
   getGroupDescriptionMap,
   upsertAutoGroupDescription,
@@ -89,17 +89,21 @@ export async function loadSourceCatalog(
 
   let sqlSources: CatalogSource[] = [];
   try {
-    const [visibleGroups, descriptions, entityNamesByGroup] = await Promise.all([
-      loadVisibleGroups(orgId, mode),
-      getGroupDescriptionMap(orgId),
-      loadEntityNamesByGroup(orgId, mode),
-    ]);
-
     // #3895 — narrow to the reachable groups: under Focus the catalog lists only
     // the focused group (a `focus`-on-invisible reach resolves to none, so the
     // catalog drops the SQL half entirely rather than listing an unreachable
     // group). Under `all` this is every visible group, unchanged.
-    const reachableGroups = resolveReach(reach, visibleGroups).reachableGroups;
+    //
+    // #4350 — the menu and `executeSQL`'s execution gate resolve reach through
+    // the SAME `resolveReachableGroups` (visible-groups lookup ⊕ pure
+    // `resolveReach`), so "advertised == enforceable" holds by construction: a
+    // group the catalog lists is exactly a group the gate will let a query run
+    // against.
+    const [{ reachableGroups }, descriptions, entityNamesByGroup] = await Promise.all([
+      resolveReachableGroups(orgId, mode, reach),
+      getGroupDescriptionMap(orgId),
+      loadEntityNamesByGroup(orgId, mode),
+    ]);
 
     sqlSources = reachableGroups.map((grp) => ({
       kind: "sql",

@@ -5,7 +5,16 @@ end in **staging**, using the docs portal as a realistic prose corpus.
 
 `build-docs-kb-bundle.ts` turns the portal content into a `.tar.gz` OKF tree of
 clean markdown (one file = one document, `title`/`description`/`tags`
-frontmatter) that the upload-ingest seam accepts directly.
+frontmatter) that the upload-ingest seam accepts directly. It has two modes:
+
+- **local** (default) — build from the repo `content/` tree. No network, no
+  build; approximates the processed surface (fence-aware ESM strip + audience
+  strip). Best for a reproducible, offline bundle.
+- **`--from-deployed <base-url>`** — build from a *deployed* docs site's
+  `llms.txt` index + per-page `.mdx` twins over HTTP. Bodies are byte-faithful to
+  fumadocs' `getText("processed")` (the same content the on-page "copy markdown"
+  button yields), titles/descriptions come from the index, and no local build is
+  needed. Use it to A/B the body fidelity against the local bundle.
 
 ## What it produces
 
@@ -35,12 +44,21 @@ the lightweight, reproducible stand-in.
 
 ```bash
 cd apps/docs
+# local (default): build from the repo content/ tree
 bun run scripts/build-docs-kb-bundle.ts --out /tmp/docs-kb-saas.tar.gz
 # self-hosted surface (content/self-hosted + content/shared):
 bun run scripts/build-docs-kb-bundle.ts --audience self-hosted --out /tmp/docs-kb-sh.tar.gz
 # keep the api-reference stubs (usually don't — they're empty <APIPage> shells):
 bun run scripts/build-docs-kb-bundle.ts --include-api-reference
+
+# from a deployed site: fetch llms.txt + .mdx twins (byte-faithful bodies, no build)
+bun run scripts/build-docs-kb-bundle.ts --from-deployed https://docs.useatlas.dev --out /tmp/docs-kb-deployed.tar.gz
 ```
+
+`--from-deployed` reads each page's URL *path* from the index and re-roots it onto
+the base URL you pass, so it works against staging or a preview deployment, not
+just prod. It filters `api-reference/` and contentless pages the same way local
+mode does.
 
 ## 2. Create an upload collection (staging)
 

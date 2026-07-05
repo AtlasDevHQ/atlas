@@ -41,12 +41,17 @@ interface Args {
   audience: Audience;
   out: string;
   includeApiReference: boolean;
+  /** When set, build from a DEPLOYED docs site's `llms.txt` + `.mdx` twins over
+   * HTTP instead of the local `content/` tree — no build, bodies byte-faithful
+   * to `getText("processed")`. Value is the site base URL. */
+  fromDeployed?: string;
 }
 
 function parseArgs(argv: string[]): Args {
   let audience: Audience = "saas";
   let out = join(process.cwd(), "docs-kb-bundle.tar.gz");
   let includeApiReference = false;
+  let fromDeployed: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--audience") {
@@ -59,11 +64,17 @@ function parseArgs(argv: string[]): Args {
       out = argv[++i];
     } else if (a === "--include-api-reference") {
       includeApiReference = true;
+    } else if (a === "--from-deployed") {
+      const v = argv[++i];
+      if (!v || !/^https?:\/\//.test(v)) {
+        throw new Error(`--from-deployed needs an http(s) base URL, got "${v}"`);
+      }
+      fromDeployed = v.replace(/\/$/, "");
     } else {
       throw new Error(`Unknown argument: ${a}`);
     }
   }
-  return { audience, out, includeApiReference };
+  return { audience, out, includeApiReference, fromDeployed };
 }
 
 /** The content collections composing each audience's surface (mirrors
@@ -207,86 +218,210 @@ function renderOkf(fm: Frontmatter, tags: string[], body: string): string {
   return lines.join("\n");
 }
 
+interface Summary {
+  written: number;
+  skippedApiRef: number;
+  skippedEmpty: number;
+  skippedAudience: number;
+}
+
+function emptySummary(): Summary {
+  return { written: 0, skippedApiRef: 0, skippedEmpty: 0, skippedAudience: 0 };
+}
+
+/** Should this content path be excluded from the bundle? The 473 auto-generated
+ * OpenAPI stubs are `<APIPage>` shells with no prose — worthless as KB content
+ * and a waste of the doc-count cap. Shared across both modes. */
+function isApiReference(path: string): boolean {
+  return path.startsWith("api-reference/") || path.startsWith("/api-reference/");
+}
+
+/** LOCAL mode: build from the repo `content/` tree, approximating the processed
+ * surface (fence-aware ESM strip + audience strip). */
+async function collectLocal(staging: string, args: Args): Promise<Summary> {
+  const summary = emptySummary();
+  for (const section of sectionsFor(args.audience)) {
+    const sectionDir = join(CONTENT_DIR, section);
+    const glob = new Glob("**/*.mdx");
+    for await (const rel of glob.scan(sectionDir)) {
+      if (!args.includeApiReference && section === "docs" && isApiReference(rel)) {
+        summary.skippedApiRef++;
+        continue;
+      }
+
+      const raw = await Bun.file(join(sectionDir, rel)).text();
+      const { fm, body } = splitFrontmatter(raw);
+
+      let processed: string;
+      try {
+        // Fail-soft per file (mirrors `renderLlmsFullText`): a residual
+        // audience tag throws; skip rather than abort the whole bundle.
+        processed = stripInactiveAudienceBlocks(stripMdxModuleLines(body), args.audience);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`  skip (audience strip) ${section}/${rel}: ${msg}`);
+        summary.skippedAudience++;
+        continue;
+      }
+
+      if (isContentless(processed)) {
+        summary.skippedEmpty++;
+        continue;
+      }
+
+      // Provenance tags make the bundle's origin legible in the review UI.
+      const tags = [...new Set(["docs-portal", section, ...(fm.tags ?? [])])];
+      const outRel = join(section, rel.replace(/\.mdx$/, ".md"));
+      await writeDoc(staging, outRel, renderOkf(fm, tags, processed));
+      summary.written++;
+    }
+  }
+  return summary;
+}
+
+const FETCH_CONCURRENCY = 8;
+
+interface IndexEntry {
+  title: string;
+  path: string;
+  description?: string;
+}
+
+/**
+ * Parse a deployed `llms.txt` index (`- [Title](url): description` lines) into
+ * page entries. Reads each link's URL PATH — not the host — because the index
+ * absolutizes every URL to the hardcoded `docs.useatlas.dev` regardless of which
+ * deployment served it, so we re-root the path onto the `--from-deployed` base.
+ */
+function parseLlmsIndex(indexText: string): IndexEntry[] {
+  const out: IndexEntry[] = [];
+  for (const line of indexText.split("\n")) {
+    const m = /^\s*-\s*\[([^\]]+)\]\(([^)]+)\)\s*(?::\s*(.*\S))?\s*$/.exec(line);
+    if (!m) continue;
+    const [, title, url, description] = m;
+    let path: string;
+    try {
+      path = new URL(url).pathname;
+    } catch {
+      path = url.startsWith("/") ? url : `/${url}`;
+    }
+    out.push({ title: title.trim(), path, description: description?.trim() || undefined });
+  }
+  return out;
+}
+
+/** `getLLMText` prepends `# Title (url)` to every twin; drop that leading H1
+ * (the title goes into OKF frontmatter) so the body starts at real content. */
+function stripTwinHeading(body: string): string {
+  return body.replace(/^#\s+.*(?:\r?\n)+/, "");
+}
+
+/** Map a deployed page path to a bundle-relative `.md` path. A section-index
+ * path (trailing slash) becomes `<section>/index.md`. */
+function deployedOutRel(path: string): string {
+  return `${path.replace(/^\//, "").replace(/\/$/, "/index")}.md`;
+}
+
+/** DEPLOYED mode: build from a live site's `llms.txt` index + per-page `.mdx`
+ * twins over HTTP. Twins are already audience-resolved by `getLLMText`, so no
+ * re-strip; descriptions come from the index (the twins carry none). */
+async function collectDeployed(staging: string, args: Args, base: string): Promise<Summary> {
+  const indexPath = args.audience === "saas" ? "/llms.txt" : "/self-hosted/llms.txt";
+  const indexUrl = `${base}${indexPath}`;
+
+  const res = await fetch(indexUrl);
+  if (!res.ok) {
+    throw new Error(`Fetch ${indexUrl} → ${res.status} ${res.statusText}`);
+  }
+  const index = parseLlmsIndex(await res.text());
+  if (index.length === 0) throw new Error(`No pages parsed from ${indexUrl}`);
+
+  const summary = emptySummary();
+  const pages = index.filter((p) => {
+    if (p.path === "/" || p.path === indexPath) return false;
+    if (!args.includeApiReference && isApiReference(p.path)) {
+      summary.skippedApiRef++;
+      return false;
+    }
+    return true;
+  });
+
+  // Bounded-concurrency fetch pool. `cursor++` and the `summary` mutations are
+  // safe under Bun's single-threaded event loop (no interleaving mid-statement).
+  let cursor = 0;
+  const worker = async () => {
+    for (let i = cursor++; i < pages.length; i = cursor++) {
+      const p = pages[i];
+      const twinUrl = `${base}${p.path}.mdx`;
+      let body: string;
+      try {
+        const r = await fetch(twinUrl);
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        body = stripTwinHeading(await r.text());
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`  skip (fetch) ${p.path}.mdx: ${msg}`);
+        continue;
+      }
+      if (isContentless(body)) {
+        summary.skippedEmpty++;
+        continue;
+      }
+      const okf = renderOkf(
+        { title: p.title, description: p.description },
+        ["docs-portal", "deployed"],
+        body,
+      );
+      await writeDoc(staging, deployedOutRel(p.path), okf);
+      summary.written++;
+    }
+  };
+  await Promise.all(Array.from({ length: FETCH_CONCURRENCY }, worker));
+  return summary;
+}
+
+/** Write one staged doc, creating parent dirs. */
+async function writeDoc(staging: string, outRel: string, okf: string): Promise<void> {
+  const outAbs = join(staging, outRel);
+  await mkdir(dirname(outAbs), { recursive: true });
+  await writeFile(outAbs, okf, "utf8");
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const sections = sectionsFor(args.audience);
-
   const staging = await mkdtemp(join(tmpdir(), "docs-kb-"));
-  let written = 0;
-  let skippedApiRef = 0;
-  let skippedAudience = 0;
-  let skippedEmpty = 0;
 
   try {
-    for (const section of sections) {
-      const sectionDir = join(CONTENT_DIR, section);
-      const glob = new Glob("**/*.mdx");
-      for await (const rel of glob.scan(sectionDir)) {
-        // The 473 auto-generated OpenAPI stubs are `<APIPage>` shells with no
-        // prose — worthless as KB content and a waste of the doc-count cap.
-        if (
-          !args.includeApiReference &&
-          section === "docs" &&
-          rel.startsWith("api-reference/")
-        ) {
-          skippedApiRef++;
-          continue;
-        }
+    const summary = args.fromDeployed
+      ? await collectDeployed(staging, args, args.fromDeployed)
+      : await collectLocal(staging, args);
 
-        const abs = join(sectionDir, rel);
-        const raw = await Bun.file(abs).text();
-        const { fm, body } = splitFrontmatter(raw);
-
-        let processed: string;
-        try {
-          // Fail-soft per file (mirrors `renderLlmsFullText`): a residual
-          // audience tag throws; skip rather than abort the whole bundle.
-          processed = stripInactiveAudienceBlocks(
-            stripMdxModuleLines(body),
-            args.audience,
-          );
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`  skip (audience strip) ${section}/${rel}: ${msg}`);
-          skippedAudience++;
-          continue;
-        }
-
-        if (isContentless(processed)) {
-          skippedEmpty++;
-          continue;
-        }
-
-        // Provenance tags make the bundle's origin legible in the review UI.
-        const tags = [...new Set(["docs-portal", section, ...(fm.tags ?? [])])];
-        const okf = renderOkf(fm, tags, processed);
-
-        const outRel = join(section, rel.replace(/\.mdx$/, ".md"));
-        const outAbs = join(staging, outRel);
-        await mkdir(dirname(outAbs), { recursive: true });
-        await writeFile(outAbs, okf, "utf8");
-        written++;
-      }
+    if (summary.written === 0) {
+      throw new Error("No documents collected — nothing to bundle.");
     }
 
-    // Tar the staged tree so archive paths are `docs/…`, `shared/…` at the root.
+    // Tar the staged tree so archive paths are the OKF tree at the root.
     await mkdir(dirname(args.out), { recursive: true });
-    const proc = Bun.spawn(
-      ["tar", "-czf", args.out, "-C", staging, "."],
-      { stdout: "inherit", stderr: "inherit" },
-    );
+    const proc = Bun.spawn(["tar", "-czf", args.out, "-C", staging, "."], {
+      stdout: "inherit",
+      stderr: "inherit",
+    });
     const code = await proc.exited;
     if (code !== 0) throw new Error(`tar exited with code ${code}`);
 
     const bytes = (await Bun.file(args.out).stat()).size;
     console.log("");
     console.log(`Bundle:    ${args.out}`);
-    console.log(`Audience:  ${args.audience}  (sections: ${sections.join(", ")})`);
-    console.log(`Documents: ${written}`);
+    console.log(
+      args.fromDeployed
+        ? `Source:    ${args.fromDeployed}  (deployed llms.txt + .mdx twins, ${args.audience})`
+        : `Source:    local content/  (${args.audience}: ${sectionsFor(args.audience).join(", ")})`,
+    );
+    console.log(`Documents: ${summary.written}`);
     console.log(`Size:      ${(bytes / 1_000_000).toFixed(2)} MB`);
-    if (skippedApiRef > 0) console.log(`Skipped:   ${skippedApiRef} api-reference stubs`);
-    if (skippedEmpty > 0) console.log(`Skipped:   ${skippedEmpty} contentless (component-only) pages`);
-    if (skippedAudience > 0) console.log(`Skipped:   ${skippedAudience} files (audience strip)`);
+    if (summary.skippedApiRef > 0) console.log(`Skipped:   ${summary.skippedApiRef} api-reference stubs`);
+    if (summary.skippedEmpty > 0) console.log(`Skipped:   ${summary.skippedEmpty} contentless (component-only) pages`);
+    if (summary.skippedAudience > 0) console.log(`Skipped:   ${summary.skippedAudience} files (audience strip)`);
     console.log("");
     console.log("Caps: 1000 docs / 1 MB per doc / 25 MB per bundle.");
   } finally {

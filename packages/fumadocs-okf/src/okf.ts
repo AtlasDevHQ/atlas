@@ -41,7 +41,11 @@ export function renderOkfDocument(
 export function isContentlessBody(body: string): boolean {
   if (/```[\s\S]*?```/.test(body)) return false; // a code-only page is content
   const text = body
-    .replace(/<[^>]+>/g, " ") // drop JSX / HTML tags
+    // Drop JSX / HTML tags. The character class excludes `<` (not just `>`)
+    // so a run of unclosed `<<<<` can't be re-scanned from every position —
+    // that overlap is what makes the naive `<[^>]+>` quadratic (js/polynomial-redos)
+    // on library-supplied bodies. A real tag never contains a literal `<`.
+    .replace(/<[^<>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   return text.length < 16;

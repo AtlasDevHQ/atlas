@@ -297,4 +297,14 @@ describe("isContentlessBody", () => {
     expect(isContentlessBody("Real prose that should be kept for the KB.")).toBe(false);
     expect(isContentlessBody("```sql\nSELECT 1;\n```")).toBe(false);
   });
+
+  test("a long run of unclosed '<' resolves in linear time (no polynomial ReDoS)", () => {
+    // Guards the js/polynomial-redos fix: the tag-strip regex must not blow up
+    // on a pathological body of many `<` with no closing `>`. The strip leaves
+    // the literal `<` run intact, so the body reads as content — the property
+    // under test is that it returns *quickly*, not what it returns.
+    const start = performance.now();
+    expect(isContentlessBody("<".repeat(200_000))).toBe(false);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
 });

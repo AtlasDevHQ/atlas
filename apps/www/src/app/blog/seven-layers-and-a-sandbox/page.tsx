@@ -278,7 +278,7 @@ export default function SevenLayersAndASandbox() {
           that cannot be written. None of these depend on the model behaving,
           on a prompt staying clean, or on anyone staying careful. The model
           gets to be brilliant. The pipeline assumes it might not be. The
-          plain-language version of this whole model lives on the{" "}
+          plain-language version of all of this lives on the{" "}
           <a href="https://www.useatlas.dev/security" className="link-accent">
             security page
           </a>

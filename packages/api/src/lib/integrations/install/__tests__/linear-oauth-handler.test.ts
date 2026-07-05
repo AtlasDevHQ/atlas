@@ -35,6 +35,10 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   async (sql: string): Promise<unknown[]> => {
     if (sql.includes("INSERT INTO workspace_plugins")) {
       callOrder.push("workspace_plugins.insert");
+      // The install now writes through `persistSingletonInstall`, whose SQL
+      // carries `RETURNING id`; the spine's returned-id invariant reads
+      // `rows[0].id`, so the upsert mock must surface a row (#4352).
+      return [{ id: "linear-install-row" }];
     }
     return [];
   },
@@ -141,6 +145,8 @@ beforeEach(() => {
   mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
     if (sql.includes("INSERT INTO workspace_plugins")) {
       callOrder.push("workspace_plugins.insert");
+      // The spine's `RETURNING id` invariant reads `rows[0].id` (#4352).
+      return [{ id: "linear-install-row" }];
     }
     return [];
   });
@@ -223,6 +229,12 @@ describe("LinearOAuthInstallHandler.handleCallback — happy path", () => {
     expect(result!.workspaceId).toBe(WSID);
     expect(result!.catalogId).toBe("linear");
     expect(result!.credentialResult).toEqual({ written: true });
+    // #4352: the install id now comes from the spine's `RETURNING id`
+    // read-back — NOT the handler's own candidate UUID. The mock returns a
+    // fixed row id that can't equal any freshly-minted candidate, so this
+    // pins that the handler propagates the persisted row id (on reconnect the
+    // existing row keeps its original id; the old candidate would mismatch).
+    expect(result!.installRecord.id).toBe("linear-install-row");
 
     expect(mockFetch).toHaveBeenCalledTimes(2);
     const [tokenUrl, tokenInit] = mockFetch.mock.calls[0] as [string, RequestInit];

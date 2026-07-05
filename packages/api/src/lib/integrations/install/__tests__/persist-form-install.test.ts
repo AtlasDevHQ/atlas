@@ -107,7 +107,7 @@ function makeLog() {
           : {},
       });
     };
-  return { log: { error: record("error"), warn: record("warn") }, calls };
+  return { log: { error: record("error"), warn: record("warn"), info: record("info") }, calls };
 }
 
 function baseParams(overrides: Partial<Parameters<typeof persistFormInstall>[0]> = {}) {

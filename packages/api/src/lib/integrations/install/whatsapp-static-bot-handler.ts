@@ -65,19 +65,18 @@ import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
-  BillingCheckFailedError,
-  ChatIntegrationLimitError,
   WhatsAppApiUnavailableError,
   WhatsAppPhoneNumberIdInvalidError,
   WhatsAppReachabilityError,
 } from "@atlas/api/lib/effect/errors";
-import { checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
   CatalogId,
   InstallRecord,
   StaticBotInstallHandler,
 } from "./types";
+import { persistSingletonInstall } from "./persist-form-install";
+import { makeChatIntegrationCapGate } from "./chat-integration-cap-gate";
 import { isRoutingIdUniqueViolation } from "./routing-id-conflict";
 
 const log = createLogger("integrations.install.whatsapp");
@@ -371,53 +370,34 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
     await assertPhoneNumberUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─
-    // Mirrors the email-form-handler / discord-static-bot-handler /
-    // teams-static-bot-handler pattern: candidate id on INSERT,
-    // RETURNING id so a CONFLICT lands on the existing row's id
-    // (idempotent re-install).
-    const candidateId = this.newId();
+    // The upsert SQL, the cap-result → error mapping, the concurrent
+    // routing-conflict re-surface, and the RETURNING invariant all live in
+    // `persistSingletonInstall` (issue #4352) — the one tested spine every
+    // singleton (chat/action) install writes through. The cap gate (#3144)
+    // wraps the UPSERT in a per-workspace advisory-locked transaction so
+    // concurrent net-new installs can't both slip past the chat-integration
+    // cap; reconnect is grandfathered inside the gate.
     const configPayload: WhatsAppInstallConfig = {
       phone_number_id: routingIdentifier,
       ...extractDisplayPhone(extras, apiFallback, workspaceId),
     };
 
-    let capCheck;
-    try {
-      // Schema notes:
-      //   - `pillar` + `install_id` became NOT NULL in migration 0092
-      //     (#2739) and the auto-fill trigger was dropped in 0096
-      //     (#2744). Every writer must name both columns explicitly.
-      //   - Chat-pillar installs are singletons per (workspace, catalog),
-      //     enforced by the `workspace_plugins_singleton` partial unique
-      //     index (`WHERE pillar IN ('chat','action')` from migration
-      //     0092). We target it via the inference clause
-      //     `ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat','action')`
-      //     so re-install lands on the existing row (idempotent UPSERT).
-      //   - For chat-pillar there's only one install per (workspace,
-      //     catalog), so `install_id` mirrors `id` — WorkspaceInstaller's
-      //     datasource path uses a caller-supplied installId; static-bot
-      //     chat installs don't have that surface, so we reuse the row id.
-      //   - The cap gate (#3144) wraps the UPSERT in a per-workspace
-      //     advisory-locked transaction so concurrent net-new installs
-      //     can't both slip past the chat-integration cap; reconnect is
-      //     grandfathered inside the gate.
-      capCheck = await checkChatIntegrationLimitAndInstall<{ id: string }>(
-        workspaceId,
-        WHATSAPP_CATALOG_ID,
-        {
-          sql: `INSERT INTO workspace_plugins
-           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
-         DO UPDATE
-           SET config = EXCLUDED.config,
-               enabled = true
-         RETURNING id`,
-          params: [candidateId, workspaceId, WHATSAPP_CATALOG_ID, JSON.stringify(configPayload)],
-        },
-      );
-    } catch (err) {
-      if (isRoutingIdUniqueViolation(err)) {
+    const persistedId = await persistSingletonInstall({
+      workspaceId,
+      catalogId: WHATSAPP_CATALOG_ID,
+      displayName: "WhatsApp",
+      log,
+      config: { ...configPayload },
+      newId: this.newId,
+      pillar: "chat",
+      capGate: makeChatIntegrationCapGate({
+        orgId: workspaceId,
+        catalogId: WHATSAPP_CATALOG_ID,
+        displayName: "WhatsApp",
+        log,
+      }),
+      routingConflictClassifier: (err) => {
+        if (!isRoutingIdUniqueViolation(err)) return null;
         // Another workspace claimed this phone_number_id between our pre-check
         // and our UPSERT; the migration-0120 partial unique index rejected us
         // (#3167). Surface the same actionable error the pre-check returns
@@ -426,56 +406,11 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
           { workspaceId },
           "WhatsApp install rejected — phone_number_id claimed by another workspace concurrently (unique index)",
         );
-        throw new WhatsAppPhoneNumberIdInvalidError({
+        return new WhatsAppPhoneNumberIdInvalidError({
           message: WHATSAPP_ROUTING_CONFLICT_MESSAGE,
         });
-      }
-      log.error(
-        {
-          workspaceId,
-          err: err instanceof Error ? err : new Error(String(err)),
-        },
-        "Failed to persist WhatsApp install record — aborting install",
-      );
-      throw err;
-    }
-    if (!capCheck.allowed) {
-      if (capCheck.reason === "check_failed") {
-        // Count couldn't be determined — fail closed, but as a transient
-        // 503 "try again", not a misleading 429 "upgrade your plan".
-        log.error(
-          { workspaceId },
-          "WhatsApp install blocked — chat-integration count check failed (failing closed)",
-        );
-        throw new BillingCheckFailedError({
-          message: capCheck.errorMessage,
-          workspaceId,
-        });
-      }
-      log.info(
-        { workspaceId, limit: capCheck.limit },
-        "WhatsApp install blocked — workspace at chat-integration cap",
-      );
-      throw new ChatIntegrationLimitError({
-        message: capCheck.errorMessage,
-        workspaceId,
-        limit: capCheck.limit,
-      });
-    }
-
-    const returned = capCheck.rows[0]?.id;
-    if (typeof returned !== "string" || returned.length === 0) {
-      // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING` returns
-      // the row on both insert and update. Empty here means a driver /
-      // wrapper regression — fail loudly rather than ship a stale id back (on
-      // re-install the DB row has the existing id; falling back to the fresh
-      // candidateId would strand subsequent lookups). #2807 cemented this
-      // no-fallback posture across the static-bot family.
-      throw new Error(
-        `workspace_plugins UPSERT returned no id for WhatsApp install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
-      );
-    }
-    const persistedId: string = returned;
+      },
+    });
 
     log.info(
       {

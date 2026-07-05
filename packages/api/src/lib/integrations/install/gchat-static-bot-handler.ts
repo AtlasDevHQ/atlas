@@ -62,13 +62,10 @@ import crypto from "crypto";
 import { SignJWT, importPKCS8 } from "jose";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
-  BillingCheckFailedError,
-  ChatIntegrationLimitError,
   GchatApiUnavailableError,
   GchatReachabilityError,
   GchatWorkspaceIdInvalidError,
 } from "@atlas/api/lib/effect/errors";
-import { checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
@@ -76,6 +73,8 @@ import type {
   InstallRecord,
   StaticBotInstallHandler,
 } from "./types";
+import { persistSingletonInstall } from "./persist-form-install";
+import { makeChatIntegrationCapGate } from "./chat-integration-cap-gate";
 import { isRoutingIdUniqueViolation } from "./routing-id-conflict";
 
 const log = createLogger("integrations.install.gchat");
@@ -467,35 +466,31 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
     // *distinct* net-new platforms installing concurrently can't both slip
     // past the cap. Reconnecting gchat (already installed) is never blocked
     // — the gate excludes gchat's own row from the count, and the UPSERT
-    // collapses the duplicate. Identical schema + UPSERT shape to the rest
-    // of the static-bot family (see telegram/discord-static-bot-handler.ts
-    // for the full rationale on the NOT NULL columns from 0092/0096 and the
-    // singleton-index conflict target).
-    const candidateId = this.newId();
+    // collapses the duplicate. The upsert SQL, the cap-result → error
+    // mapping, the concurrent-routing-conflict re-surface, and the RETURNING
+    // invariant all live in `persistSingletonInstall` (issue #4352) — the one
+    // tested spine every singleton (chat/action) install writes through.
     const configPayload: GchatInstallConfig = {
       workspace_id: routingIdentifier,
       ...extractWorkspaceDomain(extras, workspaceId),
     };
 
-    let capCheck;
-    try {
-      capCheck = await checkChatIntegrationLimitAndInstall<{ id: string }>(
-        workspaceId,
-        GCHAT_CATALOG_ID,
-        {
-          sql: `INSERT INTO workspace_plugins
-           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
-         DO UPDATE
-           SET config = EXCLUDED.config,
-               enabled = true
-         RETURNING id`,
-          params: [candidateId, workspaceId, GCHAT_CATALOG_ID, JSON.stringify(configPayload)],
-        },
-      );
-    } catch (err) {
-      if (isRoutingIdUniqueViolation(err)) {
+    const persistedId = await persistSingletonInstall({
+      workspaceId,
+      catalogId: GCHAT_CATALOG_ID,
+      displayName: "Google Chat",
+      log,
+      config: { ...configPayload },
+      newId: this.newId,
+      pillar: "chat",
+      capGate: makeChatIntegrationCapGate({
+        orgId: workspaceId,
+        catalogId: GCHAT_CATALOG_ID,
+        displayName: "Google Chat",
+        log,
+      }),
+      routingConflictClassifier: (err) => {
+        if (!isRoutingIdUniqueViolation(err)) return null;
         // Another workspace claimed this customer id between our pre-check and
         // our UPSERT; the migration-0120 partial unique index rejected us
         // (#3167). Surface the same actionable error the pre-check returns
@@ -504,55 +499,11 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
           { workspaceId },
           "Google Chat install rejected — workspace_id claimed by another workspace concurrently (unique index)",
         );
-        throw new GchatWorkspaceIdInvalidError({
+        return new GchatWorkspaceIdInvalidError({
           message: GCHAT_ROUTING_CONFLICT_MESSAGE,
         });
-      }
-      log.error(
-        {
-          workspaceId,
-          err: err instanceof Error ? err : new Error(String(err)),
-        },
-        "Failed to persist Google Chat install record — aborting install",
-      );
-      throw err;
-    }
-    if (!capCheck.allowed) {
-      if (capCheck.reason === "check_failed") {
-        // Count couldn't be determined — fail closed, but as a transient
-        // 503 "try again", not a misleading 429 "upgrade your plan".
-        log.error(
-          { workspaceId },
-          "Google Chat install blocked — chat-integration count check failed (failing closed)",
-        );
-        throw new BillingCheckFailedError({
-          message: capCheck.errorMessage,
-          workspaceId,
-        });
-      }
-      log.info(
-        { workspaceId, limit: capCheck.limit },
-        "Google Chat install blocked — workspace at chat-integration cap",
-      );
-      throw new ChatIntegrationLimitError({
-        message: capCheck.errorMessage,
-        workspaceId,
-        limit: capCheck.limit,
-      });
-    }
-
-    const returned = capCheck.rows[0]?.id;
-    if (typeof returned !== "string" || returned.length === 0) {
-      // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING` returns
-      // the row on both insert and update. Empty here means a driver /
-      // wrapper regression — fail loudly rather than ship a stale id back (on
-      // re-install the DB row has the existing id; falling back to the fresh
-      // candidateId would strand subsequent lookups).
-      throw new Error(
-        `workspace_plugins UPSERT returned no id for Google Chat install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
-      );
-    }
-    const persistedId: string = returned;
+      },
+    });
 
     log.info(
       {

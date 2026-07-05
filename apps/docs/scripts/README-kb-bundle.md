@@ -1,44 +1,33 @@
-# Docs → Knowledge Base staging-ingestion test
+# Docs → Knowledge Base bundle
 
-A throwaway helper for exercising the KB upload-ingest pipeline (ADR-0028) end to
-end in **staging**, using the docs portal as a realistic prose corpus.
+Builds the docs portal's Knowledge Base bundle — a `.tar.gz` OKF tree of clean
+markdown (one file = one document, `title`/`description`/`tags` frontmatter)
+for the KB ingest seam (ADR-0028).
 
-`build-docs-kb-bundle.ts` turns the portal content into a `.tar.gz` OKF tree of
-clean markdown (one file = one document, `title`/`description`/`tags`
-frontmatter) that the upload-ingest seam accepts directly. It has two modes:
+Since #4367 this script is the **dogfood consumer of `@atlas/fumadocs-okf`**
+(`packages/fumadocs-okf` — see its README for the adapter contract and the
+bundle-sync hosting recipe). The adapter owns OKF rendering, deterministic
+archive paths, generation-time ingest-cap validation, and deterministic
+packing; this script supplies only the portal-specific parts:
 
-- **local** (default) — build from the repo `content/` tree. No network, no
-  build; approximates the processed surface (fence-aware ESM strip + audience
-  strip). Best for a reproducible, offline bundle.
-- **`--from-deployed <base-url>`** — build from a *deployed* docs site's
-  `llms.txt` index + per-page `.mdx` twins over HTTP. Bodies are byte-faithful to
-  fumadocs' `getText("processed")` (the same content the on-page "copy markdown"
-  button yields), titles/descriptions come from the index, and no local build is
-  needed. Use it to A/B the body fidelity against the local bundle.
+- **source shims** (`kb-bundle-sources.ts`): the portal's real Fumadocs loader
+  lives behind the Next bundler (`.source/server.ts` imports
+  `*.mdx?collection=…` modules bun can't resolve), so local mode walks
+  `content/` and approximates the processed surface (fence-aware ESM strip),
+  and deployed mode reads the live site's `llms.txt` + `.mdx` twins
+  (byte-faithful bodies);
+- the **audience transform** via the adapter's body-transform hook: the
+  portal's own `stripInactiveAudienceBlocks` resolves
+  `<WhenSaaS>`/`<WhenSelfHosted>`/`<AudienceLink>` per mount and fails closed,
+  so a SaaS bundle is structurally incapable of carrying self-hosted branches
+  (pinned by `src/lib/__tests__/kb-bundle.test.ts`). A page the strip can't
+  fully resolve is skipped, never emitted.
 
-## What it produces
-
-Mirrors the SaaS `source` composition (`src/lib/source.ts`): `content/docs`
-(minus the 473 auto-generated `api-reference/` stubs) + `content/shared`, scoped
-to the `saas` audience. ~165 documents, ~0.7 MB — comfortably under the ingest
-caps (1000 docs / 1 MB per doc / 25 MB per bundle).
-
-Pages whose content is entirely component-rendered at build time (e.g.
-`changelog.mdx` is just `<ChangelogTimeline />`) carry no static prose, so they
-ingest as contentless KB docs and are skipped. MDX `import`/`export` module
-lines are stripped fence-aware — an `import` inside a ``` code block is a code
-*example* and is preserved, only the top-of-file component imports are removed.
-
-Faithfulness: the leak-safety-critical transform — resolving
-`<WhenSaaS>` / `<WhenSelfHosted>` / `<AudienceLink>` for the target audience — is
-done by importing the portal's own pure `stripInactiveAudienceBlocks` (the same
-function `getLLMText` uses), so a SaaS bundle is structurally incapable of
-carrying self-hosted branches. It does **not** run fumadocs' `getText("processed")`
-MDX pass; since that preserves component tags verbatim anyway the gap is minor
-(the odd leftover `<Callout>` tag), and MDX `import`/`export` module lines are
-stripped here so the body reads as prose. For a byte-faithful bundle instead,
-harvest the `.md` twins a full `next build` emits under `out/` — this script is
-the lightweight, reproducible stand-in.
+Reserved-basename fix (#4367): the ingest parser silently skips `index.md` /
+`log.md`, which used to drop all 8 section-landing pages (165 built → 157
+ingested, `rejected=0`). The adapter now folds `…/index.mdx` onto the section
+slug (`shared/comparisons/index.mdx` → `shared/comparisons.md`) in BOTH modes,
+so built count == ingested count; the summary prints any reserved renames.
 
 ## 1. Generate the bundle
 
@@ -55,10 +44,18 @@ bun run scripts/build-docs-kb-bundle.ts --include-api-reference
 bun run scripts/build-docs-kb-bundle.ts --from-deployed https://docs.useatlas.dev --out /tmp/docs-kb-deployed.tar.gz
 ```
 
-`--from-deployed` reads each page's URL *path* from the index and re-roots it onto
-the base URL you pass, so it works against staging or a preview deployment, not
-just prod. It filters `api-reference/` and contentless pages the same way local
-mode does.
+`--from-deployed` reads each page's URL *path* from the index and re-roots it
+onto the base URL you pass, so it works against staging or a preview
+deployment. It is **surface-dependent**: it only works on a site that has
+opted into the hand-authored `llms.txt` + `.mdx`-twin routes (ours has). Local
+mode's archive paths are prefixed per section (`docs/…`, `shared/…`,
+`self-hosted/…`); deployed mode uses a single `portal/…` prefix. Twin-fetch
+failures are fail-loud (unlike the #4366 spike): a silently partial bundle fed
+to a bundle-sync collection would archive the missing pages' documents via the
+subtractive diff.
+
+The summary line `Documents: N` is a reconcile contract — expect the SAME
+count ingested. A smaller ingest count means silent drops; investigate.
 
 ## 2. Create an upload collection (staging)
 
@@ -106,9 +103,11 @@ Published docs are mirrored to the agent's sandboxed `explore` view
 (`.orgs/{orgId}/modes/published/knowledge/...`); drafts appear only in developer
 mode. A good final check is asking the agent something only these docs answer.
 
-## 5. (Fast follow) bundle-sync instead of upload
+## 5. bundle-sync instead of upload
 
-The portal already publishes `https://docs.useatlas.dev/llms-full.txt` and
-per-page `.mdx` twins. Once the upload path looks right, a `bundle-sync`
-collection pointed at that surface tests the scheduled-pull path — synced content
-always queues for review (no publish shortcut, enforced at the seam).
+For the scheduled-pull path (synced content always queues for review — no
+publish shortcut, enforced at the seam), host the generated archive at an
+endpoint and point a `bundle-sync` collection at it. The full recipe — static
+artifact vs route handler, the bearer-protected variant, the SSRF egress-guard
+reachability constraints, and the cap-settings knobs — lives in
+`packages/fumadocs-okf/README.md`.

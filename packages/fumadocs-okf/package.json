@@ -1,0 +1,31 @@
+{
+  "name": "@atlas/fumadocs-okf",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "description": "Fumadocs → OKF knowledge-bundle generator: turns any Fumadocs content-source loader into an Atlas Knowledge Base .tar.gz for the bundle-sync connector. Internal-only — not published to npm (promote only after the API survives a real non-Atlas consumer).",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./errors": "./src/errors.ts",
+    "./paths": "./src/paths.ts",
+    "./okf": "./src/okf.ts",
+    "./tar": "./src/tar.ts",
+    "./collect": "./src/collect.ts",
+    "./build": "./src/build.ts"
+  },
+  "scripts": {
+    "test": "bun test __tests__/"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "@atlas/api": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "packages/fumadocs-okf"
+  }
+}

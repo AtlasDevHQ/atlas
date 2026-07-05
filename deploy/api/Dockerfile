@@ -22,6 +22,7 @@ COPY packages/react/package.json packages/react/package.json
 COPY packages/types/package.json packages/types/package.json
 COPY packages/schemas/package.json packages/schemas/package.json
 COPY packages/webhook-publisher/package.json packages/webhook-publisher/package.json
+COPY packages/fumadocs-okf/package.json packages/fumadocs-okf/package.json
 COPY apps/docs/package.json apps/docs/package.json
 COPY apps/www/package.json apps/www/package.json
 COPY examples/nextjs-standalone/package.json examples/nextjs-standalone/package.json

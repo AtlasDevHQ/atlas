@@ -55,6 +55,24 @@ export function resolveAudienceLinks(
   });
 }
 
+/**
+ * The fail-closed post-condition failure: a raw `<When…>` / `<AudienceLink>`
+ * construct survived the strip (malformed/unclosed block, unsupported inline
+ * form, or a future MDX-emit change). A TYPED class so callers that must
+ * distinguish "this page has an unresolvable audience construct" from an
+ * unexpected bug in the strip itself (e.g. the KB bundle transform, which
+ * skips the former and rethrows the latter) can use `instanceof` instead of
+ * message matching.
+ */
+export class ResidualAudienceTagError extends Error {
+  constructor(audience: string) {
+    super(
+      `[docs] audience strip left a residual <When…> / <AudienceLink> tag while resolving "${audience}" — a branch or cross-link was not resolved. <When…> conditionals must be BLOCK-form (opening/closing tags each on their own line); <AudienceLink> must be a single well-formed element. Also check for malformed/unclosed tags.`,
+    );
+    this.name = "ResidualAudienceTagError";
+  }
+}
+
 /** Mask fenced and inline code spans (their raw tag MENTIONS must be spared) so
  * the residual check only sees real tags. Returns text safe to scan, not to emit. */
 function maskCodeSpans(markdown: string): string {
@@ -138,9 +156,7 @@ export function stripInactiveAudienceBlocks(
   // the inline resolver could not close — any must fail the build/page rather
   // than silently leak the other audience's prose or link target.
   if (RESIDUAL_AUDIENCE_TAG.test(maskCodeSpans(out))) {
-    throw new Error(
-      `[docs] audience strip left a residual <When…> / <AudienceLink> tag while resolving "${audience}" — a branch or cross-link was not resolved. <When…> conditionals must be BLOCK-form (opening/closing tags each on their own line); <AudienceLink> must be a single well-formed element. Also check for malformed/unclosed tags.`,
-    );
+    throw new ResidualAudienceTagError(audience);
   }
   return out;
 }

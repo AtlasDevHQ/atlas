@@ -30,8 +30,18 @@ import {
   foreignKey,
   primaryKey,
   varchar,
+  customType,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+
+// Postgres `tsvector` — no drizzle built-in. Only used for generated
+// full-text-search columns; the value is never read or written from JS
+// (Postgres computes it), so `string` is a fine wire type.
+const tsvector = customType<{ data: string }>({
+  dataType() {
+    return "tsvector";
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Core tables
@@ -1798,6 +1808,18 @@ export const knowledgeDocuments = pgTable(
     atlasIngestedAt: timestamp("atlas_ingested_at", { withTimezone: true }),
     // Content-mode lifecycle — defaults `draft` (the review gate).
     status: text("status").notNull().default("draft"),
+    // Stored generated FTS vector for the searchKnowledge lexical tier
+    // (#4222, migration 0167). Weighted title A / description B / body D;
+    // STORED (not VIRTUAL — PG 18's bare default) so the GIN index below
+    // can be built on it. Expression mirrors 0167 (same tokens — keep the
+    // two in lockstep; Postgres stores the normalized form).
+    fts: tsvector("fts")
+      .notNull()
+      .generatedAlwaysAs(
+        sql`setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(description, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(body, '')), 'D')`,
+      ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1808,6 +1830,8 @@ export const knowledgeDocuments = pgTable(
     index("idx_knowledge_documents_status").on(t.workspaceId, t.status),
     // GIN over the OKF `tags` array for the frontmatter-filter search tier.
     index("idx_knowledge_documents_tags").using("gin", t.tags),
+    // GIN over the generated FTS vector for the lexical search tier (0167).
+    index("idx_knowledge_documents_fts").using("gin", t.fts),
     // `path` unique per collection, not per workspace (ADR-0028 §2).
     uniqueIndex("uq_knowledge_documents_collection_path").on(
       t.workspaceId,

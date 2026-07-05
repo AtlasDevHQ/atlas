@@ -466,6 +466,10 @@ describe("migrateAuthTables", () => {
             // 0166 (#4302) — conversations.answer_style. Atlas-internal column,
             // no FK to a Better Auth table, so it runs in every auth mode.
             { name: "0166_conversations_answer_style.sql" },
+            // 0167 (#4222) — knowledge_documents.fts stored generated tsvector
+            // + GIN index. Atlas-internal table, no FK to a Better Auth table,
+            // so it runs in every auth mode.
+            { name: "0167_knowledge_documents_fts.sql" },
           ],
         };
       }

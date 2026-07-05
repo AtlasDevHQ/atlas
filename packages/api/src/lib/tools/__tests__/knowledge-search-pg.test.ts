@@ -5,10 +5,10 @@
  * bundles, and executes the REAL search + 1-hop expansion SQL against the live
  * `knowledge_documents` / `knowledge_links` schema.
  *
- * Catches the drift a mock-exec unit test can't: `websearch_to_tsquery` /
- * `to_tsvector` / `ts_headline`, `tags @> …::jsonb` against the GIN index, the
- * quoted `"timestamp"` column, the `array_agg` edge aggregation, and content-mode
- * status gating in both directions.
+ * Catches the drift a mock-exec unit test can't: `websearch_to_tsquery` against
+ * the stored generated `fts` column (0167) / `ts_headline`, `tags @> …::jsonb`
+ * against the GIN index, the quoted `"timestamp"` column, the `array_agg` edge
+ * aggregation, and content-mode status gating in both directions.
  *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
@@ -23,6 +23,7 @@ import { extractBundle } from "@atlas/api/lib/knowledge/bundle-archive";
 import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
 import { ingestBundleIntoCollection, type IngestClient } from "@atlas/api/lib/knowledge/ingest";
 import {
+  buildSearchQuery,
   searchKnowledgeCore,
   type KnowledgeQueryExec,
 } from "@atlas/api/lib/tools/search-knowledge";
@@ -289,4 +290,90 @@ describeIfPg("searchKnowledge against the live schema", () => {
     expect(shared).toHaveLength(1);
     expect([...shared[0].via].sort()).toEqual(["hub/a.md", "hub/b.md"]);
   }, PG_TEST_TIMEOUT_MS);
+
+  it("weighted ranking (0167): title > description > body for the same term", async () => {
+    // The stored generated `fts` column weights title A / description B /
+    // body D, so ts_rank must sort title > description > body matches.
+    // Discrimination matters: the body-only doc mentions the term MORE times
+    // (3) than the title doc's total occurrences (title + its H1 in body = 2),
+    // so the pre-0167 unweighted vector — where ts_rank is frequency-driven —
+    // would rank body-hit FIRST. Only the A/B/D weighting produces this order,
+    // so dropping any setweight() (or the description term) fails here.
+    const docs = docsFrom({
+      "weights/title-hit.md":
+        "---\ntype: Document\ntitle: Zephyrite Guide\n---\n# Zephyrite Guide\n\nNothing about the term in the body prose.",
+      "weights/description-hit.md":
+        "---\ntype: Document\ntitle: Unrelated Minerals\ndescription: All about zephyrite deposits\n---\n# Unrelated Minerals\n\nBody prose without the term.",
+      "weights/body-hit.md":
+        "---\ntype: Document\ntitle: Unrelated\n---\n# Unrelated\n\nzephyrite appears here, then zephyrite again, and zephyrite once more.",
+    });
+    await ingestBundleIntoCollection({
+      client, workspaceId: ws, collectionId: "weights", source: "upload", docs,
+    });
+    await publish("weights", "weights/title-hit.md");
+    await publish("weights", "weights/description-hit.md");
+    await publish("weights", "weights/body-hit.md");
+
+    const res = await searchKnowledgeCore({
+      workspaceId: ws,
+      mode: "published",
+      filters: { query: "zephyrite", collection: "weights", limit: 10, expand: false },
+      exec,
+    });
+    expect(res.results.map((r) => r.path)).toEqual([
+      "weights/title-hit.md",
+      "weights/description-hit.md",
+      "weights/body-hit.md",
+    ]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("at trigger-condition scale, lexical queries take the GIN bitmap path over idx_knowledge_documents_fts (0167)", async () => {
+    // EXPLAIN the EXACT SQL buildSearchQuery emits and assert the planner
+    // routes the `kd.fts @@ tsquery` predicate through the 0167 GIN index.
+    // At a handful of rows the (workspace_id, *) btrees always win, so this
+    // seeds a dedicated workspace at the issue's trigger-condition scale
+    // (tens of thousands of documents) — where the GIN bitmap path becomes
+    // the plan of choice with NO GUC forcing. This is what a bare-expression
+    // drift (or dropping the column back to inline to_tsvector) would break.
+    const wsBulk = `ws-bulk-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO knowledge_documents (workspace_id, collection_id, path, title, body, status)
+       SELECT $1, 'bulk', 'filler-' || g || '.md', 'Filler ' || g,
+              'routine filler content nothing special entry number ' || g, 'published'
+         FROM generate_series(1, 30000) g`,
+      [wsBulk],
+    );
+    await pool.query(
+      `INSERT INTO knowledge_documents (workspace_id, collection_id, path, title, body, status)
+       VALUES ($1, 'bulk', 'target.md', 'EU Failover',
+               'when replica lag exceeds the threshold promote the standby', 'published')`,
+      [wsBulk],
+    );
+    await pool.query(`ANALYZE knowledge_documents`);
+
+    const { sql, params } = buildSearchQuery(wsBulk, "published", {
+      query: "replica lag",
+      limit: 10,
+      expand: false,
+    });
+    const explained = await pool.query<{ "QUERY PLAN": unknown }>(
+      `EXPLAIN (FORMAT JSON) ${sql}`,
+      params,
+    );
+    const plan = JSON.stringify(explained.rows[0]["QUERY PLAN"]);
+    expect(plan).toContain("Bitmap Index Scan");
+    expect(plan).toContain("idx_knowledge_documents_fts");
+
+    // And the plan is not just chosen but correct: the query itself finds
+    // exactly the one matching document among 30,001.
+    const res = await searchKnowledgeCore({
+      workspaceId: wsBulk,
+      mode: "published",
+      filters: { query: "replica lag", limit: 10, expand: false },
+      exec,
+    });
+    expect(res.results.map((r) => r.path)).toEqual(["target.md"]);
+    // 30k generated-column inserts + ANALYZE can be slow on CI Postgres —
+    // double the standard budget.
+  }, PG_TEST_TIMEOUT_MS * 2);
 });

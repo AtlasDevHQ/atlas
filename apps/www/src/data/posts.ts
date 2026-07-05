@@ -16,6 +16,16 @@ export interface Post {
 
 export const POSTS: Post[] = [
   {
+    slug: "seven-layers-and-a-sandbox",
+    title: "Seven layers and a sandbox",
+    description:
+      "Every query Atlas runs was written by a language model. Here is each layer between that output and your database — the innocent-looking query that defeats a whitelist, the MySQL comment that executes, the one shared parse — and why the shell tools get the opposite treatment.",
+    isoDate: "2026-07-05",
+    dateLabel: "July 5, 2026",
+    readingTime: "6 min read",
+    tag: "How it works",
+  },
+  {
     slug: "atlas-speaks-okf",
     title: "Atlas speaks OKF",
     description:

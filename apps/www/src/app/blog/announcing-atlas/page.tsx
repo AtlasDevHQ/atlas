@@ -159,7 +159,13 @@ export default function AnnouncingAtlas() {
           <Step n={7} title="Statement timeout">kills runaway queries</Step>
         </Steps>
         <P>
-          Reads only. No writes, no shell escapes, no surprises. I also made
+          Reads only. No writes, no shell escapes, no surprises. I&apos;ve
+          since written the full deep dive on how those layers work, and why
+          the shell tools get the opposite treatment, in{" "}
+          <a href="/blog/seven-layers-and-a-sandbox" className="link-accent">
+            Seven layers and a sandbox
+          </a>
+          . I also made
           that story easy to check for anyone evaluating Atlas: there&apos;s now
           a public{" "}
           <a href="https://www.useatlas.dev/security" className="link-accent">

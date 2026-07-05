@@ -41,7 +41,7 @@ export function DocumentsSheet({
     <Sheet open={open} onOpenChange={(next) => !next && onOpenChange(false)}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-lg">
         <SheetHeader>
-          <SheetTitle>{collectionSlug ?? "Documents"}</SheetTitle>
+          <SheetTitle className="font-mono text-base">{collectionSlug ?? "Documents"}</SheetTitle>
           <SheetDescription>
             Documents in this collection. Drafts are visible only to admins (and to the agent in
             developer mode) until published.

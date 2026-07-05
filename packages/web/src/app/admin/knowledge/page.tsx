@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { useQueryStates } from "nuqs";
 import { toast } from "sonner";
-import { BookText, FileUp, FolderPlus, Library, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { BookText, FileUp, FolderPlus, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -58,6 +59,14 @@ export default function KnowledgePage() {
   const [syncingSlug, setSyncingSlug] = useState<string | null>(null);
 
   const collections = data?.collections ?? [];
+  // Hero readout: published-vs-total across every collection. The gap (total −
+  // published) is the review backlog — surfacing it up top mirrors the way
+  // Connections leads with its live/total count.
+  const totalPublished = collections.reduce((n, c) => n + c.documents.published, 0);
+  const totalDocuments = collections.reduce(
+    (n, c) => n + c.documents.published + c.documents.draft,
+    0,
+  );
 
   async function handleSyncNow(slug: string) {
     setSyncingSlug(slug);
@@ -106,68 +115,83 @@ export default function KnowledgePage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-semibold">
-            <Library className="size-6 text-muted-foreground" aria-hidden />
-            Knowledge Base
-          </h1>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Host OKF knowledge collections the agent reads as descriptive context. Content is never
-            queried as data or treated as authoritative — uploads land as drafts for review before
-            they reach the agent.
-          </p>
+    <div className="mx-auto max-w-4xl px-6 py-10">
+      {/* Hero — the shared admin header shape (eyebrow · title · readout ·
+          description · primary action), matching Connections and the other
+          revamped admin surfaces. */}
+      <header className="mb-10 flex flex-col gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+          Atlas · Admin
+        </p>
+        <div className="flex items-baseline justify-between gap-6">
+          <h1 className="text-3xl font-semibold tracking-tight">Knowledge Base</h1>
+          {totalDocuments > 0 ? (
+            <p className="shrink-0 font-mono text-sm tabular-nums text-muted-foreground">
+              <span className={cn(totalPublished > 0 ? "text-primary" : "text-muted-foreground")}>
+                {totalPublished}
+              </span>
+              <span className="opacity-50">{" / "}</span>
+              {totalDocuments} published
+            </p>
+          ) : null}
         </div>
-        <Button onClick={() => setCreateOpen(true)} data-testid="new-collection">
-          <FolderPlus className="mr-1.5 size-4" />
-          New collection
-        </Button>
+        <div className="flex items-end justify-between gap-6">
+          <p className="max-w-xl text-sm text-muted-foreground">
+            Host OKF knowledge collections the agent reads as descriptive context, never as
+            queryable data. Uploads land as drafts for review before they reach the agent.
+          </p>
+          <Button onClick={() => setCreateOpen(true)} size="sm" data-testid="new-collection">
+            <FolderPlus className="mr-1.5 size-4" />
+            New collection
+          </Button>
+        </div>
+      </header>
+
+      <div className="space-y-6">
+        {uninstallMutation.error ? (
+          <MutationErrorSurface
+            feature="Knowledge Base"
+            error={uninstallMutation.error}
+            variant="banner"
+          />
+        ) : null}
+        {syncMutation.error ? (
+          <MutationErrorSurface
+            feature="Knowledge Base"
+            error={syncMutation.error}
+            variant="banner"
+          />
+        ) : null}
+
+        <AdminContentWrapper
+          feature="Knowledge Base"
+          loading={loading}
+          error={error}
+          onRetry={refetch}
+          isEmpty={collections.length === 0}
+          emptyIcon={BookText}
+          emptyTitle="No collections yet"
+          emptyDescription="Create a collection, then upload an OKF bundle to give the agent descriptive context."
+          emptyAction={{ label: "New collection", onClick: () => setCreateOpen(true) }}
+        >
+          <TooltipProvider delayDuration={250}>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {collections.map((collection) => (
+                <CollectionCard
+                  key={collection.slug}
+                  collection={collection}
+                  syncing={syncingSlug === collection.slug}
+                  onView={() => void setParams({ collection: collection.slug })}
+                  onUpload={() => setUploadTarget(collection.slug)}
+                  onSync={() => void handleSyncNow(collection.slug)}
+                  onEdit={() => setEditTarget(collection)}
+                  onUninstall={() => setUninstallTarget(collection)}
+                />
+              ))}
+            </div>
+          </TooltipProvider>
+        </AdminContentWrapper>
       </div>
-
-      {uninstallMutation.error ? (
-        <MutationErrorSurface
-          feature="Knowledge Base"
-          error={uninstallMutation.error}
-          variant="banner"
-        />
-      ) : null}
-      {syncMutation.error ? (
-        <MutationErrorSurface
-          feature="Knowledge Base"
-          error={syncMutation.error}
-          variant="banner"
-        />
-      ) : null}
-
-      <AdminContentWrapper
-        feature="Knowledge Base"
-        loading={loading}
-        error={error}
-        onRetry={refetch}
-        isEmpty={collections.length === 0}
-        emptyIcon={BookText}
-        emptyTitle="No collections yet"
-        emptyDescription="Create a collection, then upload an OKF bundle to give the agent descriptive context."
-        emptyAction={{ label: "New collection", onClick: () => setCreateOpen(true) }}
-      >
-        <TooltipProvider delayDuration={250}>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {collections.map((collection) => (
-              <CollectionCard
-                key={collection.slug}
-                collection={collection}
-                syncing={syncingSlug === collection.slug}
-                onView={() => void setParams({ collection: collection.slug })}
-                onUpload={() => setUploadTarget(collection.slug)}
-                onSync={() => void handleSyncNow(collection.slug)}
-                onEdit={() => setEditTarget(collection)}
-                onUninstall={() => setUninstallTarget(collection)}
-              />
-            ))}
-          </div>
-        </TooltipProvider>
-      </AdminContentWrapper>
 
       <CreateCollectionDialog
         open={createOpen}

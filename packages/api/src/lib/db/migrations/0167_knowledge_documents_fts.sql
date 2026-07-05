@@ -35,12 +35,14 @@
 -- Mirrored in db/schema.ts (same commit) so a later `drizzle-kit
 -- generate` can't emit a DROP.
 
+-- NOT NULL: every input is coalesced, so the expression is provably never
+-- NULL — declare the invariant rather than implying it.
 ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS fts tsvector
   GENERATED ALWAYS AS (
     setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
     setweight(to_tsvector('english', coalesce(description, '')), 'B') ||
     setweight(to_tsvector('english', coalesce(body, '')), 'D')
-  ) STORED;
+  ) STORED NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_documents_fts
   ON knowledge_documents USING gin (fts);

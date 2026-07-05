@@ -1811,12 +1811,15 @@ export const knowledgeDocuments = pgTable(
     // Stored generated FTS vector for the searchKnowledge lexical tier
     // (#4222, migration 0167). Weighted title A / description B / body D;
     // STORED (not VIRTUAL — PG 18's bare default) so the GIN index below
-    // can be built on it. Expression mirrors 0167 byte-for-byte.
-    fts: tsvector("fts").generatedAlwaysAs(
-      sql`setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+    // can be built on it. Expression mirrors 0167 (same tokens — keep the
+    // two in lockstep; Postgres stores the normalized form).
+    fts: tsvector("fts")
+      .notNull()
+      .generatedAlwaysAs(
+        sql`setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
     setweight(to_tsvector('english', coalesce(description, '')), 'B') ||
     setweight(to_tsvector('english', coalesce(body, '')), 'D')`,
-    ),
+      ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

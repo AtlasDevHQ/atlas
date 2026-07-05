@@ -5,10 +5,10 @@
  * bundles, and executes the REAL search + 1-hop expansion SQL against the live
  * `knowledge_documents` / `knowledge_links` schema.
  *
- * Catches the drift a mock-exec unit test can't: `websearch_to_tsquery` /
- * `to_tsvector` / `ts_headline`, `tags @> …::jsonb` against the GIN index, the
- * quoted `"timestamp"` column, the `array_agg` edge aggregation, and content-mode
- * status gating in both directions.
+ * Catches the drift a mock-exec unit test can't: `websearch_to_tsquery` against
+ * the stored generated `fts` column (0167) / `ts_headline`, `tags @> …::jsonb`
+ * against the GIN index, the quoted `"timestamp"` column, the `array_agg` edge
+ * aggregation, and content-mode status gating in both directions.
  *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
@@ -291,21 +291,27 @@ describeIfPg("searchKnowledge against the live schema", () => {
     expect([...shared[0].via].sort()).toEqual(["hub/a.md", "hub/b.md"]);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("weighted ranking (0167): a title hit outranks a body hit for the same term", async () => {
+  it("weighted ranking (0167): title > description > body for the same term", async () => {
     // The stored generated `fts` column weights title A / description B /
-    // body D, so ts_rank must sort a title match above a body-only match.
-    // Before 0167 the vector was unweighted (everything D) and this ordering
-    // was undefined — this pins the fold-in.
+    // body D, so ts_rank must sort title > description > body matches.
+    // Discrimination matters: the body-only doc mentions the term MORE times
+    // (3) than the title doc's total occurrences (title + its H1 in body = 2),
+    // so the pre-0167 unweighted vector — where ts_rank is frequency-driven —
+    // would rank body-hit FIRST. Only the A/B/D weighting produces this order,
+    // so dropping any setweight() (or the description term) fails here.
     const docs = docsFrom({
       "weights/title-hit.md":
-        "---\ntype: Document\ntitle: Zephyrite Guide\n---\n# Zephyrite Guide\n\nNothing about the term in the body at all.",
+        "---\ntype: Document\ntitle: Zephyrite Guide\n---\n# Zephyrite Guide\n\nNothing about the term in the body prose.",
+      "weights/description-hit.md":
+        "---\ntype: Document\ntitle: Unrelated Minerals\ndescription: All about zephyrite deposits\n---\n# Unrelated Minerals\n\nBody prose without the term.",
       "weights/body-hit.md":
-        "---\ntype: Document\ntitle: Unrelated\n---\n# Unrelated\n\nA passing mention of zephyrite deep in the body.",
+        "---\ntype: Document\ntitle: Unrelated\n---\n# Unrelated\n\nzephyrite appears here, then zephyrite again, and zephyrite once more.",
     });
     await ingestBundleIntoCollection({
       client, workspaceId: ws, collectionId: "weights", source: "upload", docs,
     });
     await publish("weights", "weights/title-hit.md");
+    await publish("weights", "weights/description-hit.md");
     await publish("weights", "weights/body-hit.md");
 
     const res = await searchKnowledgeCore({
@@ -316,6 +322,7 @@ describeIfPg("searchKnowledge against the live schema", () => {
     });
     expect(res.results.map((r) => r.path)).toEqual([
       "weights/title-hit.md",
+      "weights/description-hit.md",
       "weights/body-hit.md",
     ]);
   }, PG_TEST_TIMEOUT_MS);
@@ -349,13 +356,16 @@ describeIfPg("searchKnowledge against the live schema", () => {
       limit: 10,
       expand: false,
     });
-    const explained = await pool.query(`EXPLAIN (FORMAT JSON) ${sql}`, params);
+    const explained = await pool.query<{ "QUERY PLAN": unknown }>(
+      `EXPLAIN (FORMAT JSON) ${sql}`,
+      params,
+    );
     const plan = JSON.stringify(explained.rows[0]["QUERY PLAN"]);
     expect(plan).toContain("Bitmap Index Scan");
     expect(plan).toContain("idx_knowledge_documents_fts");
 
     // And the plan is not just chosen but correct: the query itself finds
-    // exactly the one matching document among 3001.
+    // exactly the one matching document among 30,001.
     const res = await searchKnowledgeCore({
       workspaceId: wsBulk,
       mode: "published",
@@ -363,5 +373,7 @@ describeIfPg("searchKnowledge against the live schema", () => {
       exec,
     });
     expect(res.results.map((r) => r.path)).toEqual(["target.md"]);
-  }, PG_TEST_TIMEOUT_MS);
+    // 30k generated-column inserts + ANALYZE can be slow on CI Postgres —
+    // double the standard budget.
+  }, PG_TEST_TIMEOUT_MS * 2);
 });

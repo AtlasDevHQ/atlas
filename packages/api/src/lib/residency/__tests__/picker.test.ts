@@ -9,6 +9,7 @@ import {
   buildAvailableRegions,
   buildSignupRegions,
   isRegionSelectable,
+  selectDeployRegionEntries,
   type RegionPickerOptions,
 } from "@atlas/api/lib/residency/picker";
 import type { ResidencyConfig } from "@atlas/api/lib/config";
@@ -121,6 +122,32 @@ describe("buildAvailableRegions — home-region override (#4131)", () => {
     // genuinely reaches here.)
     const ids = buildAvailableRegions(REGIONS, "us", { apiRegion: "nope" }).map((r) => r.id);
     expect(ids.toSorted()).toEqual(["apac", "eu", "us"]);
+  });
+});
+
+describe("selectDeployRegionEntries — the shared SSOT (#3958)", () => {
+  // The single home-arm-vs-selectable decision behind BOTH the signup picker
+  // (buildAvailableRegions) and the login region-map (projectRegionMap). Pinning
+  // it directly documents the seam the two funnels share so they can't re-drift
+  // (login had lost the #4131 collapse the picker already had → #3958).
+  it("collapses to the sole home arm when this deploy's region is non-selectable (staging)", () => {
+    const { entries, collapsedToHome } = selectDeployRegionEntries(REGIONS, "staging");
+    expect(collapsedToHome).toBe(true);
+    expect(entries.map(([id]) => id)).toEqual(["staging"]);
+  });
+
+  it("returns the full selectable set (no collapse) on a selectable-home / unset deploy", () => {
+    for (const apiRegion of ["us", "eu", undefined, null]) {
+      const { entries, collapsedToHome } = selectDeployRegionEntries(REGIONS, apiRegion);
+      expect(collapsedToHome).toBe(false);
+      expect(entries.map(([id]) => id).toSorted()).toEqual(["apac", "eu", "us"]);
+    }
+  });
+
+  it("falls through to the selectable set for an unknown (typo'd) home region id", () => {
+    const { entries, collapsedToHome } = selectDeployRegionEntries(REGIONS, "nope");
+    expect(collapsedToHome).toBe(false);
+    expect(entries.map(([id]) => id).toSorted()).toEqual(["apac", "eu", "us"]);
   });
 });
 

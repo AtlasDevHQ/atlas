@@ -21,22 +21,26 @@
  * `lib/residency/picker.ts` + its test), NOT removing the region. Existence ≠
  * selectability.
  *
- * Why parse the source rather than import the config: the deploy configs use
+ * Why parse the source rather than import the config: the deploy config uses
  * container-root-relative imports (`./packages/api/src/lib/config`) that only
- * resolve from `/app/` inside the SaaS image, so they cannot be `import()`-ed
+ * resolve from `/app/` inside the SaaS image, so it cannot be `import()`-ed
  * from a unit test. We extract the `residency.regions` shape from the source
  * text instead — comments are stripped first so prose mentioning "staging" (the
  * load-bearing tombstone comment) never counts as a region entry.
  *
- * Invariants pinned:
+ * Invariant pinned:
  *   - prod  (`deploy/api/atlas.config.ts`):  regions == { us, eu, apac, staging },
  *       and EXACTLY the staging arm carries `selectable: false` (us/eu/apac stay
  *       selectable).
- *   - staging (`deploy/api-staging/atlas.config.ts`): regions == { staging }.
  *
- * The api-eu / api-apac Railway services reuse `deploy/api/atlas.config.ts`
- * (only their `railway.json` differs), so this one prod assertion covers all
- * three production regions plus the staging soak service.
+ * There is no separate staging config to pin: the half-built
+ * `deploy/api-staging/atlas.config.ts` was retired in #3958 in favour of the
+ * shared-config-+-env-vars model — api-staging builds from THIS file and claims
+ * `ATLAS_API_REGION=staging`, so the one `staging` arm here is its sole region
+ * declaration. The api-eu / api-apac Railway services likewise reuse
+ * `deploy/api/atlas.config.ts` (only their `railway.json` differs), so this one
+ * prod assertion covers all three production regions plus the staging soak
+ * service.
  */
 
 import { describe, it, expect } from "bun:test";
@@ -45,7 +49,6 @@ import { resolve } from "path";
 
 const REPO_ROOT = resolve(__dirname, "../../../../..");
 const PROD_CONFIG = resolve(REPO_ROOT, "deploy/api/atlas.config.ts");
-const STAGING_CONFIG = resolve(REPO_ROOT, "deploy/api-staging/atlas.config.ts");
 
 interface ParsedRegions {
   /** Region-id keys declared inline under `residency.regions`. */
@@ -198,10 +201,5 @@ describe("deploy config residency regions (#3948)", () => {
     // Exactly one region in the whole map is non-selectable (staging).
     const count = (parsed.body.match(/selectable\s*:\s*false/g) ?? []).length;
     expect(count).toBe(1);
-  });
-
-  it("staging config keeps the single staging region (scoped to the staging deploy)", () => {
-    const parsed = parseResidencyRegions(STAGING_CONFIG);
-    expect(parsed.keys).toEqual(["staging"]);
   });
 });

@@ -132,7 +132,7 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
 
 ### Configuration file
 
-- New `deploy/api-staging/atlas.config.ts`, structurally identical to `deploy/api/atlas.config.ts`. Same plugin set, same proactive runtime wiring. Per-service env vars carry the staging-specific OAuth credentials and the `ATLAS_API_REGION=staging` discriminator. Justification for not just reusing the prod file: prod config imports from absolute `/app/` paths in the SaaS container and embeds prod-only assumptions; a separate file keeps regional drift explicit and reviewable.
+- ~~New `deploy/api-staging/atlas.config.ts`, structurally identical to `deploy/api/atlas.config.ts`.~~ **Superseded ([#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)):** the separate config was retired. `api-staging` builds from the **shared** `deploy/api/atlas.config.ts` (`RAILWAY_DOCKERFILE_PATH=deploy/api/Dockerfile`) and differs only by env vars — chiefly the `ATLAS_API_REGION=staging` + `ATLAS_DEPLOY_ENV=staging` discriminators and the staging OAuth/DB secrets. This maximizes soak fidelity (staging runs the byte-identical prod config) and makes config drift structurally impossible. The original drift concern (prod-only `/app/` assumptions) proved a non-issue: the prod config's `eu`/`apac` arms carry an **optional** `databaseUrl`, so they're harmlessly `undefined` on staging, and the login + signup funnels collapse to the lone `staging` home arm via `selectDeployRegionEntries` (`lib/residency/picker.ts`) so staging never advertises the prod arms.
 
 ### Credentials hard wall
 

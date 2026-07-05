@@ -24,8 +24,9 @@
  * 2. Adapter-only — pass no `url`/`path` and the plugin registers purely as an
  *    adapter (DB-stored per-workspace connections via `createFromConfig`). This
  *    mode exists for self-host parity with the other datasource plugins; DuckDB
- *    is deliberately NOT registered in the hosted SaaS deploy configs
- *    (deploy/api and deploy/api-staging) because it is file-path based and a
+ *    is deliberately NOT registered in the hosted SaaS deploy config
+ *    (deploy/api — staging runs the same shared config) because it is file-path
+ *    based and a
  *    local filesystem path is not a safe multi-tenant datasource. On self-host:
  * ```typescript
  * export default defineConfig({

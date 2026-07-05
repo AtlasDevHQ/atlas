@@ -192,22 +192,31 @@ export async function downloadExcel(
   }
 }
 
-const SUGGESTIONS_RE = /<suggestions>\s*([\s\S]*?)\s*<\/suggestions>/g;
+const SUGGESTIONS_OPEN = "<suggestions>";
+const SUGGESTIONS_CLOSE = "</suggestions>";
 
 /** Extract follow-up suggestions from assistant message content and return the cleaned text + suggestions.
- *  All `<suggestions>` blocks are stripped; suggestions from all blocks are merged. */
+ *  All `<suggestions>` blocks are stripped; suggestions from all blocks are merged.
+ *  Scanned with indexOf rather than a regex: content is model/library input, and the previous
+ *  regex backtracked polynomially on an unclosed tag followed by long whitespace runs
+ *  (CodeQL js/polynomial-redos). */
 export function parseSuggestions(content: string): { text: string; suggestions: string[] } {
   const suggestions: string[] = [];
-  let match;
-  while ((match = SUGGESTIONS_RE.exec(content)) !== null) {
-    const lines = match[1].split("\n").map((l) => l.trim()).filter(Boolean);
-    suggestions.push(...lines);
+  let text = "";
+  let cursor = 0;
+  for (;;) {
+    const open = content.indexOf(SUGGESTIONS_OPEN, cursor);
+    if (open === -1) break;
+    const close = content.indexOf(SUGGESTIONS_CLOSE, open + SUGGESTIONS_OPEN.length);
+    if (close === -1) break; // unclosed block (streaming partial) — leave it in the text
+    const inner = content.slice(open + SUGGESTIONS_OPEN.length, close);
+    suggestions.push(...inner.split("\n").map((l) => l.trim()).filter(Boolean));
+    text += content.slice(cursor, open);
+    cursor = close + SUGGESTIONS_CLOSE.length;
   }
-  SUGGESTIONS_RE.lastIndex = 0;
   if (suggestions.length === 0) return { text: content, suggestions: [] };
-  const text = content.replace(SUGGESTIONS_RE, "").trimEnd();
-  SUGGESTIONS_RE.lastIndex = 0;
-  return { text, suggestions: suggestions.slice(0, 5) };
+  text += content.slice(cursor);
+  return { text: text.trimEnd(), suggestions: suggestions.slice(0, 5) };
 }
 
 /**

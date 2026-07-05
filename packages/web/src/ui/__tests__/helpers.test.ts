@@ -280,6 +280,18 @@ describe("parseSuggestions", () => {
     expect(result.suggestions[0]).toBe("Question 1?");
     expect(result.suggestions[4]).toBe("Question 5?");
   });
+
+  // CodeQL js/polynomial-redos regression: the old regex
+  // /<suggestions>\s*([\s\S]*?)\s*<\/suggestions>/g backtracked quadratically on
+  // an unclosed tag followed by a long whitespace run (minutes at this size).
+  test("unclosed tag followed by a long whitespace run stays linear", () => {
+    const content = "<suggestions>" + "\t".repeat(100_000);
+    const start = performance.now();
+    const result = parseSuggestions(content);
+    expect(performance.now() - start).toBeLessThan(1_000);
+    expect(result.text).toBe(content);
+    expect(result.suggestions).toEqual([]);
+  });
 });
 
 /* ------------------------------------------------------------------ */

@@ -135,15 +135,63 @@ function parseTags(inline: string, lines: string[], idx: number): string[] {
   return tags;
 }
 
-/** Drop MDX module syntax (`import …`, `export …`) so the body is prose. The
- * audience-strip runs after, on the same shape it expects (processed markdown
- * keeps component tags but not imports). */
+/**
+ * Drop MDX module syntax (top-level `import …` / `export …`) so the body reads
+ * as prose — mirroring what fumadocs' `getText("processed")` removes. Must be
+ * FENCE-AWARE: `import`/`export` lines inside a ``` code block are code
+ * *examples* (e.g. the SDK reference's `import type { AtlasClient } …`), not
+ * module syntax — stripping them corrupts the example, and a multi-line one
+ * would leave a dangling `} from "…"`. So only column-0 ESM statements OUTSIDE a
+ * fence are removed, consuming continuation lines of a multi-line statement.
+ */
 function stripMdxModuleLines(body: string): string {
-  return body
-    .split("\n")
-    .filter((l) => !/^\s*(import|export)\s/.test(l))
-    .join("\n")
-    .replace(/^\n+/, "");
+  const lines = body.split("\n");
+  const out: string[] = [];
+  let fence: string | null = null; // the opening fence's marker while open
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1];
+      if (fence === null) fence = marker[0].repeat(3); // open (track char)
+      else if (marker.startsWith(fence)) fence = null; // close on same char
+      out.push(line);
+      continue;
+    }
+    // A real MDX ESM statement is at column 0 and outside any fence.
+    if (fence === null && /^(import|export)\s/.test(line)) {
+      // Consume continuation lines ONLY when the line clearly opens a multi-line
+      // construct (trailing `{`/`(`/`[`/`,`) — so a single-line `export default
+      // Foo` with no terminator can never run the scan away into the prose that
+      // follows. The corpus has no top-level multi-line ESM today (all such
+      // statements live inside fences, handled above); this stays correct if one
+      // is added later.
+      if (/[{([,]\s*$/.test(line)) {
+        i++;
+        while (i < lines.length && !/([)}\]]|["'`]|;)\s*;?\s*$/.test(lines[i])) i++;
+      }
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n").replace(/^\n+/, "");
+}
+
+/**
+ * True when the processed body carries no ingestable prose — a page whose
+ * content is entirely component-rendered at build time (e.g. `changelog.mdx` is
+ * just `<ChangelogTimeline />`). Such a page ingests as a contentless KB doc, so
+ * we skip it. Conservative: any fenced code block counts as content, and only a
+ * body with almost no text once JSX/HTML tags are removed is treated as empty.
+ */
+function isContentless(body: string): boolean {
+  if (/```[\s\S]*?```/.test(body)) return false; // a code-only page is content
+  const text = body
+    .replace(/<[^>]+>/g, " ") // drop JSX / HTML tags
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length < 16;
 }
 
 /** Serialize OKF frontmatter. String values are JSON-encoded (valid YAML
@@ -167,6 +215,7 @@ async function main() {
   let written = 0;
   let skippedApiRef = 0;
   let skippedAudience = 0;
+  let skippedEmpty = 0;
 
   try {
     for (const section of sections) {
@@ -203,6 +252,11 @@ async function main() {
           continue;
         }
 
+        if (isContentless(processed)) {
+          skippedEmpty++;
+          continue;
+        }
+
         // Provenance tags make the bundle's origin legible in the review UI.
         const tags = [...new Set(["docs-portal", section, ...(fm.tags ?? [])])];
         const okf = renderOkf(fm, tags, processed);
@@ -231,6 +285,7 @@ async function main() {
     console.log(`Documents: ${written}`);
     console.log(`Size:      ${(bytes / 1_000_000).toFixed(2)} MB`);
     if (skippedApiRef > 0) console.log(`Skipped:   ${skippedApiRef} api-reference stubs`);
+    if (skippedEmpty > 0) console.log(`Skipped:   ${skippedEmpty} contentless (component-only) pages`);
     if (skippedAudience > 0) console.log(`Skipped:   ${skippedAudience} files (audience strip)`);
     console.log("");
     console.log("Caps: 1000 docs / 1 MB per doc / 25 MB per bundle.");

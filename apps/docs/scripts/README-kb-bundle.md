@@ -11,8 +11,14 @@ frontmatter) that the upload-ingest seam accepts directly.
 
 Mirrors the SaaS `source` composition (`src/lib/source.ts`): `content/docs`
 (minus the 473 auto-generated `api-reference/` stubs) + `content/shared`, scoped
-to the `saas` audience. ~166 documents, ~0.7 MB — comfortably under the ingest
+to the `saas` audience. ~165 documents, ~0.7 MB — comfortably under the ingest
 caps (1000 docs / 1 MB per doc / 25 MB per bundle).
+
+Pages whose content is entirely component-rendered at build time (e.g.
+`changelog.mdx` is just `<ChangelogTimeline />`) carry no static prose, so they
+ingest as contentless KB docs and are skipped. MDX `import`/`export` module
+lines are stripped fence-aware — an `import` inside a ``` code block is a code
+*example* and is preserved, only the top-of-file component imports are removed.
 
 Faithfulness: the leak-safety-critical transform — resolving
 `<WhenSaaS>` / `<WhenSelfHosted>` / `<AudienceLink>` for the target audience — is

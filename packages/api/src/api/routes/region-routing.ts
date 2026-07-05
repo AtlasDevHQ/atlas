@@ -38,7 +38,8 @@ import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { ResidencyResolver } from "@atlas/api/lib/effect/services";
 import { ResidencyError } from "@atlas/api/lib/residency/errors";
-import { isRegionSelectable } from "@atlas/api/lib/residency/picker";
+import { selectDeployRegionEntries } from "@atlas/api/lib/residency/picker";
+import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { validationHook } from "./validation-hook";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -94,22 +95,53 @@ export function _resetRegionProbeRateLimit(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Project the configured regions to the front-door's routing map: selectable
- * regions (excludes the internal `staging` arm, #3948) that also carry a
- * configured `apiUrl` (a region with no apiUrl can't be probed or routed to).
- * Single-pass `flatMap` so the apiUrl-present guard and use share one scope —
- * the `apiUrl` narrows to `string` with no cast.
+ * Project the configured regions to the front-door's routing map.
+ *
+ * The advertised set is chosen by {@link selectDeployRegionEntries} — the SAME
+ * home-arm-collapse-or-selectable decision the signup picker uses — so the login
+ * map and the signup picker can't drift: on the api-staging soak deploy
+ * (`ATLAS_API_REGION=staging`, a non-selectable home arm) this collapses to the
+ * lone `staging` arm, so the front-door short-circuits to `single` instead of
+ * probing the prod edges where the staging-only account exists nowhere (#3958 —
+ * the login-map half of the picker's #4131). On prod (selectable home / unset)
+ * it's the full selectable set (the internal `staging` arm excluded, #3948).
+ *
+ * Entries without a configured `apiUrl` are dropped (a region with no apiUrl
+ * can't be probed or routed to). Single-pass `flatMap` so the apiUrl-present
+ * guard and use share one scope — `apiUrl` narrows to `string` with no cast.
  */
 export function projectRegionMap(
   regions: ResidencyConfig["regions"],
   defaultRegion: string,
+  apiRegion?: string | null,
 ): RegionRoutingMapEntry[] {
-  return Object.entries(regions).flatMap(([id, cfg]) => {
-    if (!isRegionSelectable(cfg) || typeof cfg.apiUrl !== "string" || cfg.apiUrl.length === 0) {
+  const { entries, collapsedToHome } = selectDeployRegionEntries(regions, apiRegion);
+  return entries.flatMap(([id, cfg]) => {
+    if (typeof cfg.apiUrl !== "string" || cfg.apiUrl.length === 0) {
       return [];
     }
-    return [{ id, label: cfg.label, apiUrl: cfg.apiUrl, isDefault: id === defaultRegion }];
+    return [
+      { id, label: cfg.label, apiUrl: cfg.apiUrl, isDefault: collapsedToHome ? true : id === defaultRegion },
+    ];
   });
+}
+
+/**
+ * Assemble the region-map wire response for a configured (managed + residency-
+ * available) deploy: the projected regions plus the OFFERED default. On the
+ * staging home-arm collapse the offered default is the sole arm (`staging`), NOT
+ * the config default (`us`) — reporting the config default would name a region
+ * absent from its own list. This mirrors `buildSignupRegions`' offered-default
+ * contract so the login map and the signup picker agree (#3958 / #4131).
+ */
+export function buildRegionMapResponse(
+  configuredRegions: ResidencyConfig["regions"],
+  configDefaultRegion: string,
+  apiRegion: string | null,
+): RegionRoutingMap {
+  const regions = projectRegionMap(configuredRegions, configDefaultRegion, apiRegion);
+  const defaultRegion = regions.find((r) => r.isDefault)?.id ?? regions[0]?.id ?? configDefaultRegion;
+  return { configured: regions.length > 0, defaultRegion, regions };
 }
 
 // ---------------------------------------------------------------------------
@@ -270,9 +302,17 @@ regionRouting.openapi(regionMapRoute, async (c) => {
         return c.json({ configured: false, defaultRegion: "none", regions: [] }, 200);
       }
       try {
-        const defaultRegion = mod.getDefaultRegion();
-        const regions = projectRegionMap(mod.getConfiguredRegions(), defaultRegion);
-        return c.json({ configured: regions.length > 0, defaultRegion, regions }, 200);
+        // `getApiRegion()` (ATLAS_API_REGION, else residency.defaultRegion) drives
+        // the home-arm collapse: the api-staging soak deploy advertises only its
+        // own `staging` arm so the front-door resolves `single` and browser login
+        // works there, instead of fanning a probe at the prod edges (#3958). Prod
+        // deploys (selectable home) get the full map unchanged.
+        const body = buildRegionMapResponse(
+          mod.getConfiguredRegions(),
+          mod.getDefaultRegion(),
+          getApiRegion(),
+        );
+        return c.json(body, 200);
       } catch (err) {
         if (err instanceof ResidencyError && err.code === "not_configured") {
           return c.json({ configured: false, defaultRegion: "none", regions: [] }, 200);

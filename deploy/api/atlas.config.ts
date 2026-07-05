@@ -1142,16 +1142,23 @@ export default defineConfig({
       // and claims `ATLAS_API_REGION=staging`. `RegionGuardLive`
       // (lib/effect/saas-guards.ts) fail-closes boot if the claimed region is
       // absent from this map — so deleting this entry crash-loops api-staging
-      // ("Layer DAG could not initialize"). The separate
-      // `deploy/api-staging/atlas.config.ts` is NOT wired into any image yet, so
-      // it does not cover the staging service's boot. (This exact deletion
-      // already caused an outage: #3948 → PR #3951 → the staging crash loop.)
+      // ("Layer DAG could not initialize"). Staging has NO separate config: the
+      // once-half-built `deploy/api-staging/atlas.config.ts` was retired (#3958)
+      // in favour of this shared-config-+-env-vars model (max soak fidelity), so
+      // this arm is the ONLY declaration of staging's region identity. (Deleting
+      // it already caused an outage once: #3948 → PR #3951 → the staging crash
+      // loop.)
       //
       // `selectable: false` is the actual #3948 fix: existence ≠ selectability.
-      // The region stays present for the boot guard + residency routing, but the
-      // signup picker (GET /api/v1/onboarding/regions → /signup/region) filters
-      // out non-selectable regions, so real prod signups only ever see us/eu/apac
-      // and can never route their workspace metadata to the staging Postgres.
+      // The region stays present for the boot guard + residency routing, but is
+      // filtered out of the customer-facing residency picks. Both funnels read
+      // that flag through ONE seam (`selectDeployRegionEntries`, lib/residency/
+      // picker.ts): the signup picker (GET /api/v1/onboarding/regions) AND the
+      // login region-map (GET /api/v1/auth/region-map) collapse to this lone
+      // `staging` home arm on the api-staging deploy — so real prod signups only
+      // ever see us/eu/apac (never route metadata to staging Postgres), and
+      // staging's OWN browser login resolves onto staging instead of fanning a
+      // probe at the prod edges (#3958, the login-map half of #4131).
       "staging": {
         label: "Staging",
         databaseUrl: process.env.DATABASE_URL!,

@@ -17,8 +17,11 @@ this runbook is the **how**, the PRD is the **why**.
 > **Status (slice 11 of 22 — [milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)).**
 > **All code-side slices are landed** (DeployRegion type, ResidencyResolver
 > staging arm, `StagingClamp` + email-delivery wiring, `StagingSeed` + boot
-> wiring, the `deploy/api-staging/atlas.config.ts` variant, and the web staging
-> banner). The **human-in-the-loop (HITL) infrastructure slices are still open** —
+> wiring, and the web staging banner). **api-staging builds from the shared
+> `deploy/api/atlas.config.ts`** (the once-planned `deploy/api-staging/atlas.config.ts`
+> variant was **retired in [#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)** —
+> shared-config-+-env-vars, max soak fidelity). The **human-in-the-loop (HITL)
+> infrastructure slices are still open** —
 > Railway environment + services, managed Postgres, CNAMEs, the seven provider
 > OAuth apps, env-var population, and the prod cutover — along with the
 > smoke-test workflow (slice 10). Each step below that depends on an unlanded
@@ -36,7 +39,7 @@ this runbook is the **how**, the PRD is the **why**.
 | 5 | [#2913](https://github.com/AtlasDevHQ/atlas/issues/2913) | wire `StagingClamp` into `email/delivery.ts` | ✅ landed |
 | 6 | [#2911](https://github.com/AtlasDevHQ/atlas/issues/2911) | `StagingSeed` deep module | ✅ landed |
 | 7 | [#2914](https://github.com/AtlasDevHQ/atlas/issues/2914) | wire `ensureStagingSeed` into `lib/startup.ts` | ✅ landed |
-| 8 | [#2912](https://github.com/AtlasDevHQ/atlas/issues/2912) | `deploy/api-staging/atlas.config.ts` variant | ✅ landed |
+| 8 | [#2912](https://github.com/AtlasDevHQ/atlas/issues/2912) | ~~`deploy/api-staging/atlas.config.ts` variant~~ — **retired [#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)**; api-staging runs the shared `deploy/api/atlas.config.ts` | ✅ superseded |
 | 9 | [#2915](https://github.com/AtlasDevHQ/atlas/issues/2915) | web staging banner | ✅ landed |
 | 10 | [#2898](https://github.com/AtlasDevHQ/atlas/issues/2898) | `.github/workflows/staging-smoke.yml` | ⏳ pending |
 | 11 | [#2899](https://github.com/AtlasDevHQ/atlas/issues/2899) | this runbook | ✅ in progress |
@@ -200,16 +203,21 @@ from `main` to prod (static `output: export`, like `docs`), so it has no staging
 1. **New** → **GitHub Repo** → `AtlasDevHQ/atlas`.
 2. For each service set:
    - **Root directory / Dockerfile** — match the prod service's build config
-     (the `deploy/<service>` layout). `api-staging` uses its own
-     `deploy/api-staging/atlas.config.ts` — **landed (slice 8,
-     [#2912](https://github.com/AtlasDevHQ/atlas/issues/2912) /
-     [#3087](https://github.com/AtlasDevHQ/atlas/issues/3087))**. Use it; do
-     **not** point `api-staging` at the prod `deploy/api/atlas.config.ts`: that
-     config declares `eu`/`apac` residency entries whose `databaseUrl` resolves
-     from `ATLAS_REGION_EU_DB_URL` / `ATLAS_REGION_APAC_DB_URL` (non-null-asserted),
-     and config validation rejects an empty region URL — so `api-staging`, which
-     starts from an empty Railway environment, would fail to boot. The dedicated
-     staging config avoids that by declaring only the `staging` region.
+     (the `deploy/<service>` layout). `api-staging` builds from the **shared
+     prod config** `deploy/api/atlas.config.ts` (`RAILWAY_DOCKERFILE_PATH=deploy/api/Dockerfile`)
+     and only differs by env vars — chiefly `ATLAS_API_REGION=staging` +
+     `ATLAS_DEPLOY_ENV=staging` + the staging DB/OAuth secrets. The separate
+     `deploy/api-staging/atlas.config.ts` was **retired in
+     [#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)** (shared-config
+     model = max soak fidelity). Pointing `api-staging` at the shared config is
+     safe even though it declares `eu`/`apac` arms: a region's `databaseUrl` is
+     `z.string().optional()`, so the unset `ATLAS_REGION_EU_DB_URL` /
+     `ATLAS_REGION_APAC_DB_URL` simply leave those arms' URLs `undefined`, and
+     `RegionGuardLive` only boot-validates the **claimed** region
+     (`ATLAS_API_REGION=staging` → `DATABASE_URL`). The login + signup funnels
+     then collapse to the lone `staging` home arm (`selectDeployRegionEntries`,
+     `lib/residency/picker.ts`), so staging never advertises or routes to the
+     prod arms.
    - **Watch branch** — `main` (this is what makes every merge auto-deploy to
      staging). Prod services watch `prod`; staging services watch `main`.
    - **Wait for CI** — optional; staging is the soak, so deploying ahead of CI is
@@ -882,7 +890,9 @@ the `staging` region — was reconciled under
 [#3097](https://github.com/AtlasDevHQ/atlas/issues/3097): on the staging deploy
 the EE resolver now treats the boot-required `staging` entry in
 `residency.regions` as legitimate (quiet debug), not dead config (warn). See the
-RESOLVED CONTRACT note in `deploy/api-staging/atlas.config.ts`.
+RESOLVED CONTRACT note on the `staging` arm in `deploy/api/atlas.config.ts` (the
+separate staging config that once held this note was retired in
+[#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)).
 
 ---
 

@@ -175,7 +175,7 @@ railway service logs --service <name> --follow
 | www | www.useatlas.dev | deploy/www/ | `main` (direct) |
 | docs | docs.useatlas.dev | deploy/docs/ | `main` (direct) |
 | sidecar | (internal) | deploy/sidecar/ | sandbox changes |
-| api-staging | api.staging.useatlas.dev | (Railway-side; `deploy/api-staging/` pending #2912) | `main` (auto) |
+| api-staging | api.staging.useatlas.dev | shared `deploy/api/` config, `ATLAS_API_REGION=staging` (separate config retired #3958) | `main` (auto) |
 | web-staging | app.staging.useatlas.dev | deploy/web/ | `main` (auto) |
 
 **Project:** `satisfied-creation` (08fe35c3-d1c7-4e34-b6a4-ec5e51c6f241)

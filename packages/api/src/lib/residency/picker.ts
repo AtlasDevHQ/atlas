@@ -49,19 +49,52 @@ export interface RegionPickerOptions {
 }
 
 /**
- * Project the configured regions to the signup picker, excluding any region
- * that is not selectable (see {@link isRegionSelectable}).
+ * The region entries THIS deploy advertises — the single home-arm-vs-selectable
+ * decision shared by BOTH the signup picker ({@link buildAvailableRegions}) and
+ * the login region-map (`projectRegionMap` in `api/routes/region-routing.ts`), so
+ * the two funnels can never drift again. They HAD drifted: the signup picker got
+ * the #4131 home-arm collapse while the login map kept serving the full prod set,
+ * which dead-ended staging browser login ("no account in any region", #3958).
  *
- * When `apiRegion` (this deploy's own region) names a region that is *not*
- * selectable — the api-staging soak service claims `ATLAS_API_REGION=staging`
- * while building from the shared prod config, so its home arm is the
- * non-selectable `staging` entry — the picker offers ONLY that home arm. Every
- * public arm's `apiUrl` points at a *different* deploy (e.g. `api.useatlas.dev`),
- * so serving them here would cross-origin the account-create POST and dead-end
- * signup (#4131 — the inverse of #3948, where a staging arm leaked INTO the prod
- * picker; here the staging deploy was serving the prod arms instead of its own).
- * For any other case (`apiRegion` selectable, unset, or an unknown id) the full
- * selectable set is returned, unchanged.
+ * When `apiRegion` (this deploy's own region — `getApiRegion()`) names a region
+ * that is *not* selectable — the api-staging soak service claims
+ * `ATLAS_API_REGION=staging` while building from the shared prod config, so its
+ * home arm is the non-selectable `staging` entry — ONLY that home arm is
+ * advertised (`collapsedToHome: true`). Every public arm's `apiUrl` points at a
+ * *different* deploy (e.g. `api.useatlas.dev`), so advertising them here would
+ * cross-origin the follow-up request and dead-end the funnel (signup's #4131,
+ * login's #3958). For any other case (`apiRegion` selectable, unset, or an
+ * unknown id) the full selectable set is returned, in config order.
+ */
+export function selectDeployRegionEntries(
+  regions: ResidencyConfig["regions"],
+  apiRegion: string | null | undefined,
+): { entries: Array<[string, RegionConfig]>; collapsedToHome: boolean } {
+  // `regions[apiRegion]` types as a non-undefined `RegionConfig` (the repo's
+  // tsconfig has `noUncheckedIndexedAccess` off) but is `undefined` at runtime
+  // for an unknown id — the `homeCfg &&` guard is LOAD-BEARING (a typo'd
+  // `ATLAS_API_REGION` must fall through, not throw on `homeCfg.label`). The
+  // `apiRegion &&` guard is also required: it narrows `apiRegion` to `string`.
+  const homeCfg = apiRegion ? regions[apiRegion] : undefined;
+  if (apiRegion && homeCfg && !isRegionSelectable(homeCfg)) {
+    return { entries: [[apiRegion, homeCfg]], collapsedToHome: true };
+  }
+  return {
+    entries: Object.entries(regions).filter(([, cfg]) => isRegionSelectable(cfg)),
+    collapsedToHome: false,
+  };
+}
+
+/**
+ * Project the configured regions to the signup picker via
+ * {@link selectDeployRegionEntries} (the shared home-arm-collapse-or-selectable
+ * decision), mapping each advertised entry to a `RegionPickerItem`.
+ *
+ * On the home-arm collapse the sole arm is the default (the picker pre-selects
+ * it); otherwise the config `defaultRegion` marks the default. `apiUrl` carries
+ * the region→base map so the browser can point its API base at the chosen region
+ * before the first identity write (ADR-0024 §4) — passed through verbatim,
+ * `undefined` when the region config omits it (single-region / local dev).
  *
  * NOTE: this returns the picker *list* only. The route must pair it with the
  * matching offered default via {@link buildSignupRegions} — see the cross-field
@@ -72,24 +105,13 @@ export function buildAvailableRegions(
   defaultRegion: string,
   opts?: RegionPickerOptions,
 ): RegionPickerItem[] {
-  const apiRegion = opts?.apiRegion;
-  // `regions[apiRegion]` types as a non-undefined `RegionConfig` (the repo's
-  // tsconfig has `noUncheckedIndexedAccess` off) but is `undefined` at runtime
-  // for an unknown id — the `homeCfg &&` guard is LOAD-BEARING (a typo'd
-  // `ATLAS_API_REGION` must fall through, not throw on `homeCfg.label`). The
-  // `apiRegion &&` guard is also required: it narrows `apiRegion` to `string`.
-  const homeCfg = apiRegion ? regions[apiRegion] : undefined;
-  if (apiRegion && homeCfg && !isRegionSelectable(homeCfg)) {
-    // Sole option, so mark it default — the picker pre-selects the default arm.
-    return [{ id: apiRegion, label: homeCfg.label, isDefault: true, apiUrl: homeCfg.apiUrl }];
-  }
-  return Object.entries(regions)
-    .filter(([, cfg]) => isRegionSelectable(cfg))
-    // `apiUrl` carries the region→base map to the signup picker so the browser
-    // can point its API base at the chosen region before the first identity
-    // write (ADR-0024 §4). Passed through verbatim — `undefined` when the region
-    // config omits it (single-region / local dev), where no repoint is possible.
-    .map(([id, cfg]) => ({ id, label: cfg.label, isDefault: id === defaultRegion, apiUrl: cfg.apiUrl }));
+  const { entries, collapsedToHome } = selectDeployRegionEntries(regions, opts?.apiRegion);
+  return entries.map(([id, cfg]) => ({
+    id,
+    label: cfg.label,
+    isDefault: collapsedToHome ? true : id === defaultRegion,
+    apiUrl: cfg.apiUrl,
+  }));
 }
 
 /**

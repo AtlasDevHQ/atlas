@@ -35,9 +35,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 // Import AFTER the mocks so the route binds to the mocked modules.
-const { regionRouting, projectRegionMap, _resetRegionProbeRateLimit } = await import(
-  "../region-routing"
-);
+const { regionRouting, projectRegionMap, buildRegionMapResponse, _resetRegionProbeRateLimit } =
+  await import("../region-routing");
 
 const HASH = "a".repeat(64); // a valid 64-char lowercase hex sha256
 
@@ -83,6 +82,88 @@ describe("projectRegionMap", () => {
       "us",
     );
     expect(map.some((r) => r.id === "ghost")).toBe(false);
+  });
+
+  // ── Home-arm collapse (#3958 — the login-map half of #4131) ──────────────
+  // The api-staging soak service builds from the shared prod config (us/eu/apac +
+  // a non-selectable `staging` arm) but claims ATLAS_API_REGION=staging. Its
+  // login region-map must advertise ONLY its own arm — the same collapse the
+  // signup picker already does (buildAvailableRegions, #4131) — so the front-door
+  // short-circuits to `single` instead of fanning a probe at the PROD edges,
+  // where the staging-only account exists nowhere → the "no account in any
+  // region" login break this fixes.
+  it("collapses to the home arm when this deploy's region is non-selectable (staging soak, #3958)", () => {
+    const map = projectRegionMap(regions, "us", "staging");
+    expect(map).toEqual([
+      { id: "staging", label: "Staging", apiUrl: "https://api.staging.useatlas.dev", isDefault: true },
+    ]);
+  });
+
+  it("serves NO prod region on the staging deploy (#3958)", () => {
+    const ids = projectRegionMap(regions, "us", "staging").map((r) => r.id);
+    expect(ids).toEqual(["staging"]);
+    expect(ids).not.toContain("us");
+  });
+
+  it("offers the full selectable set on a prod deploy whose home region is selectable (apiRegion=us)", () => {
+    const ids = projectRegionMap(regions, "us", "us").map((r) => r.id).toSorted();
+    expect(ids).toEqual(["apac", "eu", "us"]);
+  });
+
+  it("is unchanged (full selectable set) when no api region is given — back-compat", () => {
+    const ids = projectRegionMap(regions, "us").map((r) => r.id).toSorted();
+    expect(ids).toEqual(["apac", "eu", "us"]);
+  });
+
+  it("falls through to the selectable set when ATLAS_API_REGION is a typo (unknown id)", () => {
+    const ids = projectRegionMap(regions, "us", "nope").map((r) => r.id).toSorted();
+    expect(ids).toEqual(["apac", "eu", "us"]);
+  });
+});
+
+describe("buildRegionMapResponse", () => {
+  const regions = {
+    us: { label: "United States", databaseUrl: "postgres://us", apiUrl: "https://api.useatlas.dev" },
+    eu: { label: "Europe", databaseUrl: "postgres://eu", apiUrl: "https://api-eu.useatlas.dev" },
+    apac: { label: "Asia Pacific", databaseUrl: "postgres://apac", apiUrl: "https://api-apac.useatlas.dev" },
+    staging: {
+      label: "Staging",
+      databaseUrl: "postgres://staging",
+      apiUrl: "https://api.staging.useatlas.dev",
+      selectable: false as const,
+    },
+  };
+
+  it("reports the collapsed staging arm as the offered default on the staging deploy (#3958)", () => {
+    // The key contract: on staging the response advertises a SINGLE region, so the
+    // front-door's `resolveRegion` short-circuits to `single` and browser login
+    // resolves onto staging (no fan-out at the prod edges). The offered default is
+    // `staging`, NOT the config default `us` (which is absent from the list).
+    const res = buildRegionMapResponse(regions, "us", "staging");
+    expect(res.configured).toBe(true);
+    expect(res.defaultRegion).toBe("staging");
+    expect(res.regions.map((r) => r.id)).toEqual(["staging"]);
+  });
+
+  it("reports the full prod map with the config default on a prod deploy", () => {
+    const res = buildRegionMapResponse(regions, "us", "us");
+    expect(res.configured).toBe(true);
+    expect(res.defaultRegion).toBe("us");
+    expect(res.regions.map((r) => r.id).toSorted()).toEqual(["apac", "eu", "us"]);
+  });
+
+  it("reports the full prod map when no api region is given — back-compat", () => {
+    const res = buildRegionMapResponse(regions, "us", null);
+    expect(res.configured).toBe(true);
+    expect(res.defaultRegion).toBe("us");
+    expect(res.regions.map((r) => r.id).toSorted()).toEqual(["apac", "eu", "us"]);
+  });
+
+  it("reports configured:false with an empty selectable set", () => {
+    const res = buildRegionMapResponse({}, "us", null);
+    expect(res.configured).toBe(false);
+    expect(res.regions).toEqual([]);
+    expect(res.defaultRegion).toBe("us");
   });
 });
 

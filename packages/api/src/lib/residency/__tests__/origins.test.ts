@@ -33,8 +33,10 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 const { deriveRegionApiUrl, deriveRegionWebOrigin } = await import("../origins");
 
-// The prod residency map mirrors deploy/api/atlas.config.ts. Staging ships its
-// own single-region map in deploy/api-staging/atlas.config.ts.
+// The prod residency map mirrors deploy/api/atlas.config.ts. The api-staging
+// soak service runs this SAME shared config (no separate config — the half-built
+// one was retired in #3958); its funnels collapse to the `staging` home arm via
+// lib/residency/picker.ts (`selectDeployRegionEntries`).
 const PROD_RESIDENCY = {
   defaultRegion: "us",
   regions: {

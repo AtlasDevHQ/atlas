@@ -1,0 +1,46 @@
+---
+title: The Chat Surface
+description: What the web chat looks like as you use it — the live working phase, answer-first finished turns, the composer, and how failures surface.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The web chat is built around one idea: **the answer is what you came for, so the answer is what dominates.** Everything the agent did to get there stays visible but out of the way. This guide walks through what you actually see as a turn runs and finishes.
+
+## While the agent works
+
+The moment you send a message, the **working phase** begins — there is no dead air. Atlas shows a live **activity** feed: one compact line per step, updating as the agent reads your semantic layer, runs a query, or executes Python ("Reading semantic layer", "Running query", …). Results stay collapsed while the work is in flight, and the agent's narration appears at a quieter weight than an answer.
+
+A **Stop** button replaces Send while a turn is streaming. Press it to end the turn early; the composer unlocks and you can send a new message.
+
+## When the turn finishes
+
+Once the answer begins, the turn settles into its answer-first shape, top to bottom:
+
+1. **A collapsed receipt.** The activity feed condenses to a single muted summary line — for example, *"Explored schema · 2 queries."* Click it to expand the full activity: the tool cards, the "Show SQL" affordance, the result views, and the agent's narration. The work is inspectable on demand, never ambient.
+2. **The answer.** The final text streams in as the visually dominant element of the turn.
+3. **At most one promoted artifact.** If the turn produced an answer-bearing artifact — the chart or table that *is* the answer — it appears once, directly below the answer. Intermediate queries and results stay tucked inside the receipt.
+
+<Callout type="info" title="Answer styles">
+  The editorial voice of the answer — plain, analyst, or executive — is set by the answer-style picker in the chat header. See [Answer Styles](/guides/answer-styles).
+</Callout>
+
+## The composer
+
+The composer is a multiline text box that grows with your message up to a cap, then scrolls:
+
+- **Enter** sends the message.
+- **Shift + Enter** inserts a newline — use it to draft a multi-line question without sending.
+- On mobile, the on-screen Send button is the affordance; the return key sends there too.
+
+The composer locks while a turn streams (Send becomes Stop) and while a conversation's history is loading, so a send can't race the load.
+
+## Copying an answer
+
+Every finished answer carries a **Copy** button that puts the answer text on your clipboard. It confirms with "Copied!" and reverts after a couple of seconds.
+
+## When something fails
+
+Failures surface as a **banner** rather than silently vanishing. A failed send, load, pin, or resume shows a titled banner with the server-provided detail and, when the failure is retryable, a button to re-run the action. On a 500, the banner carries a request ID you can quote to an operator for log correlation.
+
+The banner persists until you act on it — a fresh attempt supersedes it — so a failure you haven't seen yet is never erased by an unrelated one.

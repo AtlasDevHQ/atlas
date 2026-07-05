@@ -1,0 +1,46 @@
+---
+title: Answer Styles
+description: The four answer styles — the editorial voice Atlas answers in — plus surface defaults and how a style is resolved for each turn.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+An **answer style** is the editorial voice of Atlas's answer — the final, user-facing text of a turn. It tunes the prose only: the workflow, the SQL it runs, the provenance it carries, and the follow-up suggestions are identical across styles. The same figure can be delivered as a plain sentence, an answer-first analyst paragraph, or a forwardable executive headline; the style decides which.
+
+Every style resolves to exactly one voice. Nothing else about the turn changes — so switching styles never changes *what* Atlas found, only *how it reads*.
+
+## The four styles
+
+| Style | Sounds like | Best for |
+|-------|-------------|----------|
+| **Plain English** | A few short sentences of plain prose. States the figure directly with just enough context, no headings, no jargon, no SQL. | A business user who wants the answer, not an analyst's report. |
+| **Analyst** | Answer-first: leads with the result, then the supporting detail. Length scales to the question; headings only earn their place on genuinely multi-part analyses. Tables and inline SQL stay when they carry the answer. | The default analyst-grade voice for the web chat, SDK, MCP, and the query API. |
+| **Executive** | The first line is the headline number, followed by at most three or four tight supporting points and a one-line source note ("Source: orders (Postgres), 2 queries."). Forwardable without editing. | An executive who may pass the answer along untouched. |
+| **Conversational** | One or two sentences of plain prose for a chat thread, with a closing offer to surface the SQL or full breakdown on tap. | Chat platforms (Slack, Teams). Applied automatically per turn — see below. |
+
+<Callout type="info" title="Where the voices are defined">
+  The exact wording of each style lives in the answer-style registry (`packages/api/src/lib/answer-styles.ts`) — the single source of truth. Each style there resolves to one prompt addendum appended to the agent's system prompt.
+</Callout>
+
+## Surface defaults
+
+When no one picks a style, the surface a request came from decides:
+
+- **Analyst** is the default for the web chat, the SDK, MCP, and `POST /api/v1/query` — the analyst-grade surfaces.
+- **Conversational** is the default on chat platforms (Slack `@mention`, proactive chat). Chat platforms choose it per turn — it is never persisted onto a conversation, and it is not offered as a workspace default because its voice references chat-only affordances (the "Show SQL" button).
+
+Because Conversational is applied per turn by the chat surface itself, it is not something a web user or admin selects — the web answer-style picker offers Plain English, Analyst, and Executive only.
+
+## How a style is resolved
+
+For any given turn, Atlas resolves the style through three tiers, highest precedence first:
+
+1. **Per-conversation pick.** The answer-style picker in the chat header sets the voice for *this* conversation. It rides every subsequent turn and persists on the conversation, restoring when you reopen it. An explicit pick always wins.
+2. **Workspace default (the "house voice").** Admins set a workspace-wide default under **Admin → Settings → Agent → Default Answer Style** (or the `ATLAS_DEFAULT_ANSWER_STYLE` environment variable). It applies to web conversations without a per-conversation pick and to SDK / MCP / query-API calls that send no style. See <AudienceLink saas="/guides/workspace-settings">Workspace Settings</AudienceLink> for the admin knob and [Environment Variables](/reference/environment-variables) for the env var.
+3. **Surface default.** If neither of the above applies, the surface default kicks in — Analyst for analyst-grade surfaces, Conversational for chat platforms.
+
+Chat platforms sit outside this chain: they pass their own voice (Conversational, in practice) explicitly per turn, so the workspace default never reaches them.
+
+## Choosing a style from the API
+
+API, SDK, and MCP callers set the voice per request with the `answerStyle` field on the chat request body. Accepted values are `plain-english`, `analyst`, `executive`, and `conversational`; omit the field to fall back to the workspace default, then the surface default. The full request schema, including `answerStyle`, is in the <AudienceLink saas="/api-reference/chat/postChat">interactive API Reference</AudienceLink>.

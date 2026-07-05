@@ -4,6 +4,8 @@
   "icon": "BookOpen",
   "pages": [
     "choosing-an-integration",
+    "chat-surface",
+    "answer-styles",
     "mcp",
     "slack",
     "proactive-chat",

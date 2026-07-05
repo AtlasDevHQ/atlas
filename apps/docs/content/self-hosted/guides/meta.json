@@ -3,6 +3,8 @@
   "description": "Operator walkthroughs for self-hosted Atlas",
   "icon": "BookOpen",
   "pages": [
+    "chat-surface",
+    "answer-styles",
     "multi-tenancy",
     "plugin-marketplace",
     "onboarding-emails",

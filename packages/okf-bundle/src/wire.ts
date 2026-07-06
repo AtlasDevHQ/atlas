@@ -47,10 +47,19 @@ export const RESERVED_BASENAMES: ReadonlySet<string> = new Set([
 // ---------------------------------------------------------------------------
 
 /**
- * The OKF frontmatter fields Atlas reads and writes on concept documents —
- * `type` is the one spec-required key; the rest are the spec's recommended
- * keys. `okf_version` (root index only) and the {@link ATLAS_EXTENSION_KEY}
- * extension ride alongside; unknown keys are spec-legal and preserved.
+ * The shared FIELD VOCABULARY for OKF concept-document frontmatter — the names
+ * and value shapes Atlas reads and writes. `type` is the one spec-required key;
+ * the rest are the spec's recommended keys. `okf_version` (root index only) and
+ * the {@link ATLAS_EXTENSION_KEY} extension ride alongside; unknown keys are
+ * spec-legal and preserved.
+ *
+ * This is a documentation/derivation type, not the parsers' output type: the
+ * strict parser yields `OkfConcept` (frontmatter `ParsedFrontmatter` — only
+ * `type` is verified; every other key stays `unknown` to narrow) and the lenient
+ * ingest parser yields `LenientDoc` (non-null `title`/`type`) — each carries its
+ * own per-side invariants, neither structurally derived from this type. Consumers
+ * that emit or enumerate the field set DO derive from this (e.g.
+ * `OkfFrontmatter = Pick<OkfWireFrontmatter, …>`, {@link OKF_FRONTMATTER_FIELDS}).
  */
 export interface OkfWireFrontmatter {
   readonly type: string;
@@ -62,15 +71,36 @@ export interface OkfWireFrontmatter {
   readonly timestamp?: string;
 }
 
+// A `true` per key so adding a field to OkfWireFrontmatter without listing it
+// here is a COMPILE error — the enumeration below can't silently fall behind
+// the interface (a plain `keyof[]` array would accept any subset).
+const OKF_FRONTMATTER_FIELD_SET: Record<keyof OkfWireFrontmatter, true> = {
+  type: true,
+  title: true,
+  description: true,
+  resource: true,
+  tags: true,
+  timestamp: true,
+};
+
 /** The field set as a value, for consumers that enumerate the contract. */
-export const OKF_FRONTMATTER_FIELDS: readonly (keyof OkfWireFrontmatter)[] = [
-  "type",
-  "title",
-  "description",
-  "resource",
-  "tags",
-  "timestamp",
-];
+export const OKF_FRONTMATTER_FIELDS: readonly (keyof OkfWireFrontmatter)[] = Object.keys(
+  OKF_FRONTMATTER_FIELD_SET,
+) as (keyof OkfWireFrontmatter)[];
+
+/**
+ * Narrow an unknown frontmatter `tags` value to a clean, order-preserving
+ * `string[]`: non-array → `[]`, drop non-strings, trim, drop empties. Shared by
+ * the bundle builder (generation) and the lenient ingest parser so the two
+ * sides of the generate↔ingest seam can't drift on what a tag list is.
+ */
+export function normalizeFrontmatterTags(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((t): t is string => typeof t === "string")
+    .map((t) => t.trim())
+    .filter((t) => t !== "");
+}
 
 /** Default OKF `type` stamped on a document that arrived without one, and the
  *  `type` every bundle builder emits. */

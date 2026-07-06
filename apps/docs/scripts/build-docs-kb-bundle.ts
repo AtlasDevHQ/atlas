@@ -184,6 +184,10 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err instanceof Error ? err.message : String(err));
+  // Domain failures (PageLoadError, IngestCapExceededError, EmptyBundleError, …)
+  // carry a self-sufficient message; an unexpected bug (a TypeError in a shim)
+  // needs its stack. Print the stack when there is one — its first line IS the
+  // message, so domain errors stay readable and real bugs keep their trace.
+  console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
   process.exit(1);
 });

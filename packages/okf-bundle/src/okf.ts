@@ -5,7 +5,7 @@
  * shared field vocabulary is the wire module's `OkfWireFrontmatter`).
  */
 
-import { DEFAULT_OKF_TYPE, type OkfWireFrontmatter } from "./wire";
+import { DEFAULT_OKF_TYPE, normalizeFrontmatterTags, type OkfWireFrontmatter } from "./wire";
 
 /** The header fields a bundle builder renders per document (`type` is always
  *  the wire module's `DEFAULT_OKF_TYPE`; tags are passed separately). */
@@ -52,11 +52,6 @@ export function isContentlessBody(body: string): boolean {
   return text.length < 16;
 }
 
-/** Narrow a page's frontmatter `tags` value to a clean string list. */
-export function pageTags(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((t): t is string => typeof t === "string")
-    .map((t) => t.trim())
-    .filter((t) => t !== "");
-}
+/** Narrow a page's frontmatter `tags` value to a clean string list — the
+ *  shared generate↔ingest narrower ({@link normalizeFrontmatterTags}). */
+export const pageTags = normalizeFrontmatterTags;

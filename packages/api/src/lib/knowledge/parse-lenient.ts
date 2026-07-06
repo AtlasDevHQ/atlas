@@ -34,6 +34,7 @@
 import {
   DEFAULT_OKF_TYPE,
   mdBasename,
+  normalizeFrontmatterTags,
   RESERVED_BASENAMES,
   topLevelHeading,
 } from "@atlas/okf-bundle/wire";
@@ -124,11 +125,9 @@ function stringField(value: unknown): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
-/** OKF `tags` → a clean `string[]` (drops non-strings), preserving order. */
-function tagsField(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((t): t is string => typeof t === "string").map((t) => t.trim()).filter((t) => t !== "");
-}
+/** OKF `tags` → a clean `string[]` (drops non-strings, trims, preserves order)
+ *  — the shared generate↔ingest narrower ({@link normalizeFrontmatterTags}). */
+const tagsField = normalizeFrontmatterTags;
 
 /**
  * Normalize an OKF `timestamp` to ISO-8601, or null. js-yaml parses an ISO

@@ -33,13 +33,14 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
-import { ATLAS_EXTENSION_KEY, OKF_INDEX_BASENAME } from "@atlas/okf-bundle/wire";
+import { ATLAS_EXTENSION_KEY, DEFAULT_OKF_TYPE, OKF_INDEX_BASENAME } from "@atlas/okf-bundle/wire";
 import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { atomicWriteFile, isSafePathSegment } from "@atlas/api/lib/semantic/mirror-fs";
 import { KNOWLEDGE_TRUST_FRAMING } from "./framing";
+import { positiveIntSetting } from "./ingest-limits";
 import {
   buildCollectionsQuery,
   normTags,
@@ -53,7 +54,7 @@ const log = createLogger("knowledge-mirror");
 /** Subtree name under the per-mode semantic root that holds hosted OKF collections. */
 export const KNOWLEDGE_SUBTREE = "knowledge";
 
-/** Reserved OKF navigation basename, regenerated per directory (never a concept doc). */
+// Local short alias for the wire module's OKF_INDEX_BASENAME (used a few times below).
 const INDEX_BASENAME = OKF_INDEX_BASENAME;
 
 /**
@@ -229,7 +230,7 @@ export function rowToDoc(row: KnowledgeDocRowWithBody): MirrorDoc {
     path: row.path,
     // Defense-in-depth: ingest always stamps a non-empty type/title, but a
     // direct DB write could leave them null — keep the mirror conformant.
-    type: row.type && row.type.trim() !== "" ? row.type : "Document",
+    type: row.type && row.type.trim() !== "" ? row.type : DEFAULT_OKF_TYPE,
     title: row.title && row.title.trim() !== "" ? row.title : row.path,
     description: row.description,
     resource: row.resource,
@@ -396,15 +397,13 @@ export async function exportCollectionBundle(
  * override falls back to the default (logged, never a silent swallow).
  */
 export function getKnowledgeTocMaxBytes(): number {
-  const raw = getSettingAuto("ATLAS_KNOWLEDGE_TOC_MAX_BYTES");
-  if (raw === undefined) return DEFAULT_KNOWLEDGE_TOC_MAX_BYTES;
-  const parsed = Number.parseInt(raw, 10);
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  log.warn(
-    { key: "ATLAS_KNOWLEDGE_TOC_MAX_BYTES", raw, fallback: DEFAULT_KNOWLEDGE_TOC_MAX_BYTES },
-    "Knowledge ToC cap override is non-positive or unparseable — using the default",
+  // Shares the ingest-cap reader so a unit-suffixed value ("512KB") warns and
+  // falls back rather than silently parsing to a tiny cap.
+  return positiveIntSetting(
+    "ATLAS_KNOWLEDGE_TOC_MAX_BYTES",
+    getSettingAuto("ATLAS_KNOWLEDGE_TOC_MAX_BYTES"),
+    DEFAULT_KNOWLEDGE_TOC_MAX_BYTES,
   );
-  return DEFAULT_KNOWLEDGE_TOC_MAX_BYTES;
 }
 
 /**

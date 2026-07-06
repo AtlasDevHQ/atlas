@@ -112,3 +112,26 @@ export class InvalidPagePathError extends Error {
     this.pagePath = pagePath;
   }
 }
+
+/**
+ * A bundle would be packed with ZERO documents. Fail-loud by default because a
+ * zero-doc bundle handed to the bundle-sync connector's subtractive diff
+ * (ADR-0028 §5) archives the collection's ENTIRE existing document set — and
+ * the common cause is accidental (a glob that matched nothing, every page
+ * filtered out, a transform that skipped them all), not a deliberate wipe. A
+ * caller that genuinely intends to empty a collection opts in explicitly via
+ * `allowEmpty` — the difference between "I have nothing to sync" and "my source
+ * broke" must be a decision, not a silent side effect.
+ */
+export class EmptyBundleError extends Error {
+  constructor() {
+    super(
+      "Refusing to pack a bundle with zero documents — a zero-doc bundle fed to " +
+        "the bundle-sync subtractive diff would archive every existing document in " +
+        "the collection. If the source really is empty on purpose, pass allowEmpty; " +
+        "otherwise check the source, filter, and transform hooks (a glob matching " +
+        "nothing or an over-eager filter is the usual cause).",
+    );
+    this.name = "EmptyBundleError";
+  }
+}

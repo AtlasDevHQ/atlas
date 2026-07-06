@@ -6,10 +6,19 @@
     "dockerfileContext": "../..",
     "watchPatterns": [
       "bun.lock",
+      "package.json",
       "brand.css",
       "apps/docs/**",
       "deploy/docs/**",
-      "scripts/check-docs-canary.sh"
+      "scripts/check-docs-canary.sh",
+      "packages/**/package.json",
+      "apps/**/package.json",
+      "examples/**/package.json",
+      "plugins/**/package.json",
+      "create-atlas-plugin/package.json",
+      "ee/package.json",
+      "packages/fumadocs-okf/**",
+      "packages/okf-bundle/**"
     ]
   },
   "deploy": {

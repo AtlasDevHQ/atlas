@@ -39,11 +39,20 @@ export { DEFAULT_INGEST_MAX_DOCS, DEFAULT_INGEST_MAX_DOC_BYTES, DEFAULT_INGEST_M
  */
 export function positiveIntSetting(key: string, raw: string | undefined, fallback: number): number {
   if (raw === undefined) return fallback;
-  const parsed = Number.parseInt(raw, 10);
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  // `Number.parseInt("25MB")` is 25 — it reads the leading digits and drops the
+  // rest, silently turning a unit-suffixed or separator-laden value ("25MB",
+  // "25_000_000") into a tiny cap that then fails every ingest with no clue why.
+  // Require the whole trimmed string to be digits so those take the warn+fallback
+  // path the docblock promises; `Number.isSafeInteger` additionally rejects an
+  // all-digit overflow (`"9".repeat(20)` → 1e20).
+  const trimmed = raw.trim();
+  const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : Number.NaN;
+  if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+  // Shared by the ingest caps AND the ToC cap (mirror.ts) — keep the wording
+  // setting-agnostic; the `key` field says which one.
   log.warn(
     { key, raw, fallback },
-    "Knowledge ingest cap override is non-positive or unparseable — using the default",
+    "Knowledge numeric setting override is non-positive or unparseable — using the default",
   );
   return fallback;
 }

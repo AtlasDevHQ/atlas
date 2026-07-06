@@ -25,6 +25,7 @@ export {
 export { collectPages } from "./collect";
 export {
   ArchivePathCollisionError,
+  EmptyBundleError,
   IngestCapExceededError,
   InvalidPagePathError,
   PageLoadError,
@@ -56,6 +57,7 @@ export {
   type DocSource,
   type DocSourcePage,
   type IngestCaps,
+  type PackOptions,
   type ReservedRename,
 } from "./types";
 export {
@@ -65,6 +67,7 @@ export {
   DEFAULT_INGEST_MAX_DOCS,
   DEFAULT_OKF_TYPE,
   mdBasename,
+  normalizeFrontmatterTags,
   OKF_FRONTMATTER_FIELDS,
   OKF_INDEX_BASENAME,
   OKF_LOG_BASENAME,

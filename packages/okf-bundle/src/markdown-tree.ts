@@ -71,17 +71,49 @@ const DEFAULT_EXTENSIONS = [".md", ".mdx"] as const;
  *  lines; prose runs long. */
 const MAX_ESM_CONTINUATION_LINES = 24;
 
-/** A line that MIGHT end a multi-line ESM statement (bracket/quote/semicolon
- *  tail). Deliberately loose — every candidate is then validated against
- *  {@link ESM_CLOSER_LINE} so prose that merely ends in `)` can't quietly
- *  terminate (and truncate) the scan. */
-const ESM_TERMINATOR_CANDIDATE = /([)}\]]|["'`]|;)\s*;?\s*$/;
+const CLOSING_BRACKETS = ")]}";
+const TERMINATOR_TAILS = `)]}"'\`;`;
 
-/** A line that actually LOOKS like the end of an ESM statement: closing
- *  brackets, an optional `from "specifier"` tail, an optional semicolon —
- *  nothing else. `} from "pkg";`, `)`, `];` match; `see the survey (Fig 2)`
- *  and `  title: "Hello"` do not. */
-const ESM_CLOSER_LINE = /^\s*[)\]}]+\s*(?:from\s+(["'])[^"']*\1)?\s*;?\s*$/;
+/**
+ * A line that MIGHT end a multi-line ESM statement (bracket/quote/semicolon
+ * tail, optionally followed by one `;`). Deliberately loose — every candidate
+ * is then validated by {@link isEsmCloserLine} so prose that merely ends in
+ * `)` can't quietly terminate (and truncate) the scan. String ops instead of
+ * a regex: the tail pattern's adjacent optional-whitespace runs backtrack
+ * polynomially on hostile whitespace, and this runs on library-supplied page
+ * bodies (CodeQL js/polynomial-redos — same posture as the wire module's
+ * `topLevelHeading`).
+ */
+function isEsmTerminatorCandidate(line: string): boolean {
+  let s = line.trimEnd();
+  if (s.endsWith(";")) s = s.slice(0, -1).trimEnd();
+  return s !== "" && TERMINATOR_TAILS.includes(s.charAt(s.length - 1));
+}
+
+/**
+ * A line that actually LOOKS like the end of an ESM statement: closing
+ * brackets, an optional `from "specifier"` tail, an optional semicolon —
+ * nothing else. `} from "pkg";`, `)`, `];` match; `see the survey (Fig 2)`
+ * and `  title: "Hello"` do not. String ops, not a regex (see
+ * {@link isEsmTerminatorCandidate}).
+ */
+function isEsmCloserLine(line: string): boolean {
+  let s = line.trim();
+  let brackets = 0;
+  while (brackets < s.length && CLOSING_BRACKETS.includes(s.charAt(brackets))) brackets++;
+  if (brackets === 0) return false;
+  s = s.slice(brackets).trim();
+  if (s.endsWith(";")) s = s.slice(0, -1).trimEnd();
+  if (s === "") return true;
+  // Only a `from <quoted specifier>` tail may follow the brackets.
+  if (!s.startsWith("from") || s.length < 5 || !/\s/.test(s.charAt(4))) return false;
+  const spec = s.slice(5).trim();
+  if (spec.length < 2) return false;
+  const quote = spec.charAt(0);
+  if (quote !== '"' && quote !== "'") return false;
+  if (spec.charAt(spec.length - 1) !== quote) return false;
+  return !spec.slice(1, -1).includes(quote);
+}
 
 /**
  * Drop MDX module syntax (top-level `import …` / `export …`) so the body reads
@@ -129,7 +161,7 @@ export function stripMdxModuleLines(body: string): string {
       if (/[{([,]\s*$/.test(line)) {
         const start = i;
         i++;
-        while (i < lines.length && !ESM_TERMINATOR_CANDIDATE.test(lines[i])) {
+        while (i < lines.length && !isEsmTerminatorCandidate(lines[i])) {
           if (i - start > MAX_ESM_CONTINUATION_LINES) {
             throw new Error(
               `unterminated top-level ESM statement starting at line ${start + 1} ` +
@@ -146,7 +178,7 @@ export function stripMdxModuleLines(body: string): string {
               `silently swallow the rest of the page); fix the statement or disable stripMdxModules`,
           );
         }
-        if (!ESM_CLOSER_LINE.test(lines[i])) {
+        if (!isEsmCloserLine(lines[i])) {
           // The candidate ends in a bracket/quote but doesn't LOOK like an
           // ESM closer (`see the survey (Fig 2)`, `  title: "Hello"`). Either
           // the opener was prose (stripping to here swallows a paragraph) or

@@ -133,6 +133,33 @@ describe("field validation", () => {
     expect(await fieldErrorOf(handler().validateConfig(WORKSPACE, { ...VALID, api_token: "" }), "api_token")).toMatch(/token is required/i);
     expect(insertCalls).toHaveLength(0);
   });
+
+  it("rejects credentials embedded in the base URL (the token belongs in the encrypted field)", async () => {
+    const msg = await fieldErrorOf(
+      handler().validateConfig(WORKSPACE, { ...VALID, base_url: "https://user:pass@acme.atlassian.net/wiki" }),
+      "base_url",
+    );
+    expect(msg).toMatch(/Remove the credentials from the URL/i);
+    expect(insertCalls).toHaveLength(0);
+    expect(saveSyncCredential).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed base URL", async () => {
+    const msg = await fieldErrorOf(
+      handler().validateConfig(WORKSPACE, { ...VALID, base_url: "not a url" }),
+      "base_url",
+    );
+    expect(msg).toMatch(/well-formed/i);
+  });
+
+  it("rejects a slug already taken by another knowledge catalog, before any write", async () => {
+    CROSS_CATALOG_ROWS = [{ catalog_id: "catalog:bundle-sync" }];
+    await expect(
+      handler(verifyFetch() as unknown as typeof fetch).validateConfig(WORKSPACE, VALID),
+    ).rejects.toBeInstanceOf(FormInstallValidationError);
+    expect(saveSyncCredential).not.toHaveBeenCalled();
+    expect(insertCalls).toHaveLength(0);
+  });
 });
 
 describe("credential verification + persistence", () => {
@@ -168,5 +195,16 @@ describe("credential verification + persistence", () => {
     expect(msg).toMatch(/space "ENG" was not found or is not visible/i);
     expect(saveSyncCredential).not.toHaveBeenCalled();
     expect(insertCalls).toHaveLength(0);
+  });
+
+  it("rolls back the just-written credential when the install-row upsert returns no id", async () => {
+    INSERT_RETURNS_ID = false;
+    await expect(
+      handler(verifyFetch() as unknown as typeof fetch).validateConfig(WORKSPACE, VALID),
+    ).rejects.toThrow(/returned no id/i);
+    // The credential was written, then rolled back so no secret outlives the
+    // failed install (its install row never landed).
+    expect(saveSyncCredential).toHaveBeenCalledTimes(1);
+    expect(deleteSyncCredential).toHaveBeenCalledWith(WORKSPACE, "confluence");
   });
 });

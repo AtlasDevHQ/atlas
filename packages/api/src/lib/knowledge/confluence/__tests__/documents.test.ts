@@ -130,6 +130,8 @@ describe("assembleConfluenceDocuments", () => {
     );
     const paths = result.documents.map((d) => d.path).toSorted();
     expect(paths).toEqual(["kb/a-b-11.md", "kb/a-b.md"]);
+    // The collision is surfaced (the client logs it) rather than silent.
+    expect(result.collisionsRenamed).toBe(1);
   });
 
   it("aggregates macro degradations across pages", () => {

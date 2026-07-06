@@ -8,7 +8,6 @@
 
 import { describe, expect, it } from "bun:test";
 import { EgressBlockedError } from "@atlas/api/lib/openapi/egress-guard";
-import { ConnectorRateLimitError } from "@atlas/api/lib/knowledge/connectors";
 import {
   createConfluenceVendorClient,
   parseRetryAfter,
@@ -184,6 +183,44 @@ describe("failure handling", () => {
     ).rejects.toBeInstanceOf(EgressBlockedError);
     // The guard blocks BEFORE any request is made.
     expect(calls).toHaveLength(0);
+  });
+
+  it("maps a generic non-2xx (500) to an actionable, host-redacted error", async () => {
+    const { impl } = makeFetch({ failFirst: { status: 500 } });
+    await expect(client({}, impl as unknown as typeof fetch).fetchAll()).rejects.toThrow(/HTTP 500/);
+  });
+
+  it("treats a 403 as a credential/permission error (token can't read the space)", async () => {
+    const { impl } = makeFetch({ failFirst: { status: 403 } });
+    await expect(client({}, impl as unknown as typeof fetch).fetchAll()).rejects.toThrow(
+      /rejected the credentials \(403\)/i,
+    );
+  });
+
+  it("maps a non-JSON response to an actionable, host-redacted error", async () => {
+    const impl = async (): Promise<Response> =>
+      new Response("<html>not json</html>", { status: 200, headers: { "content-type": "text/html" } });
+    await expect(client({}, impl as unknown as typeof fetch).fetchAll()).rejects.toThrow(/non-JSON response/i);
+  });
+
+  it("silently drops a malformed page (no version) from the ingest set — the good page still syncs", async () => {
+    const impl = async (input: string | URL | Request): Promise<Response> => {
+      const url = new URL(typeof input === "string" ? input : input.toString());
+      if (url.pathname.endsWith("/api/v2/spaces")) {
+        return jsonResponse({ results: [{ id: SPACE_ID, key: "ENG" }] });
+      }
+      // One good page + one malformed (missing version) — the malformed one is
+      // dropped (logged), never emitted as a document.
+      return jsonResponse({
+        results: [
+          pageObject(PAGES[0], true),
+          { id: "999", title: "Broken", parentId: null, _links: { webui: "/x", base: BASE }, body: { storage: { value: "<p>x</p>" } } },
+        ],
+        _links: { base: BASE },
+      });
+    };
+    const changes = await client({}, impl as unknown as typeof fetch).fetchAll();
+    expect(changes.documents.map((d) => d.path)).toEqual(["confluence-eng/engineering.md"]);
   });
 });
 

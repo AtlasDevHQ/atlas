@@ -1,14 +1,16 @@
 /**
  * Boot-time registration of the built-in Knowledge Sync Connectors (#4377,
  * ADR-0030). Confluence is the first real connector — before this, the registry
- * had no non-test callers. Called from the same boot seams as
- * `registerBuiltinInstallHandlers` (`api/index.ts`, `mcp-lifecycle.ts`).
+ * had no non-test callers. Invoked from `startKnowledgeBundleSyncScheduler`
+ * (scheduler boot, before the first sync cycle) and defensively re-invoked by
+ * the `/admin/knowledge` list + sync routes so a connector is recognized even in
+ * a process whose scheduler hasn't started.
  *
  * Idempotent by construction: it registers a connector only when the registry
- * doesn't already have its catalog id, so double-invocation (two boot seams in
- * one process) can't hit `registerKnowledgeSyncConnector`'s duplicate-id throw,
- * and a test that `_resetKnowledgeSyncConnectors()` between runs re-registers
- * cleanly on the next boot call.
+ * doesn't already have its catalog id, so repeated invocation (scheduler +
+ * routes in one process) can't hit `registerKnowledgeSyncConnector`'s
+ * duplicate-id throw, and a test that `_resetKnowledgeSyncConnectors()` between
+ * runs re-registers cleanly on the next call.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";

@@ -186,13 +186,22 @@ export class ConfluenceFormInstallHandler implements FormBasedInstallHandler {
       }
       persistedId = returned;
     } catch (err) {
-      // A stale credential from a half-completed prior install would linger if we
-      // don't clean up when the install-row write fails; the credential write is
-      // idempotent, but re-running the install heals the pair either way.
+      // Roll back the just-written credential so a secret can't outlive a failed
+      // install (its install row never landed, so uninstall would never reach
+      // it). Best-effort — a re-install overwrites it either way; a cleanup
+      // failure is logged, never masks the original error.
       this.log.error(
         { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
-        "Failed to persist confluence collection install — aborting install (retrying the install is safe)",
+        "Failed to persist confluence collection install — rolling back the orphaned credential (retrying the install is safe)",
       );
+      try {
+        await deleteSyncCredential(workspaceId, collectionSlug);
+      } catch (cleanupErr) {
+        this.log.error(
+          { workspaceId, collectionSlug, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
+          "Failed to roll back the orphaned credential after an install-row failure — a re-install overwrites it",
+        );
+      }
       throw err;
     }
 

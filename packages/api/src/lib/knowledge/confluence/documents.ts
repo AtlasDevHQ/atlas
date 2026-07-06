@@ -16,12 +16,14 @@
  *      (`atlas_source = connector:confluence`, `atlas_ingested_at`) and
  *      regenerated on the mirror's `atlas:` block.
  *
- * Paths are a pure function of ancestor + own titles (no page ids, no ordering)
- * so the reconciliation subtractive diff stays stable: a title rename reads as
- * "old path archived + new path drafted", the documented rename-churn posture.
- * Two pages that slugify to the same path (rare — Confluence enforces unique
- * titles per space, but slugification can still collide) are disambiguated with
- * the numeric page id rather than one silently overwriting the other.
+ * In the common case, paths are a pure function of ancestor + own titles (no
+ * page ids, no ordering) so the reconciliation subtractive diff stays stable: a
+ * title rename reads as "old path archived + new path drafted", the documented
+ * rename-churn posture. The one exception: two pages that slugify to the same
+ * path (rare — Confluence enforces unique titles per space, but slugification
+ * can still collide) are disambiguated with the numeric page id rather than one
+ * silently overwriting the other. The count of such renames is returned so the
+ * client can surface it (the module itself stays pure).
  */
 
 import {
@@ -57,6 +59,8 @@ export interface AssembleResult {
   readonly degradations: readonly MacroDegradation[];
   /** Pages skipped because they carried no ingestable prose (empty containers). */
   readonly skippedContentless: number;
+  /** Pages whose path collided and were disambiguated with the page id. */
+  readonly collisionsRenamed: number;
 }
 
 /** The `tags` stamped on every Confluence document (provenance; survives ingest). */
@@ -124,6 +128,7 @@ export function assembleConfluenceDocuments(
   const degradationTotals = new Map<string, number>();
   const usedPaths = new Map<string, string>();
   let skippedContentless = 0;
+  let collisionsRenamed = 0;
 
   for (const page of pages) {
     const { markdown, degradations } = convertStorageToMarkdown(page.storageBody, {
@@ -144,6 +149,7 @@ export function assembleConfluenceDocuments(
       // page silently clobber another's document at ingest.
       const withoutExt = path.replace(/\.md$/i, "");
       path = `${withoutExt}-${page.id}.md`;
+      collisionsRenamed++;
     }
     usedPaths.set(path, page.id);
 
@@ -159,5 +165,5 @@ export function assembleConfluenceDocuments(
     .map(([name, count]) => ({ name, count }))
     .toSorted((a, b) => a.name.localeCompare(b.name));
 
-  return { documents, degradations, skippedContentless };
+  return { documents, degradations, skippedContentless, collisionsRenamed };
 }

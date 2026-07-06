@@ -123,6 +123,9 @@ describe("admonition macros", () => {
     expect(
       md('<ac:structured-macro ac:name="note"><ac:rich-text-body><p>Heads up.</p></ac:rich-text-body></ac:structured-macro>'),
     ).toBe("> **Note**\n>\n> Heads up.");
+    expect(
+      md('<ac:structured-macro ac:name="warning"><ac:rich-text-body><p>Careful.</p></ac:rich-text-body></ac:structured-macro>'),
+    ).toBe("> **Warning**\n>\n> Careful.");
   });
 
   it("includes the panel/admonition title when present", () => {
@@ -183,6 +186,15 @@ describe("macro policy — counted degradations, never silent drops", () => {
     expect(md('<p>Diagram: <ac:image><ri:attachment ri:filename="diagram.png"/></ac:image></p>')).toBe(
       `Diagram: [Image: diagram.png — view on the original page](${PAGE_URL})`,
     );
+  });
+
+  it("links an attachment ac:link back to the vendor page and counts it under #attachment", () => {
+    const result = convertStorageToMarkdown(
+      '<p>See <ac:link><ri:attachment ri:filename="spec.pdf"/><ac:link-body>the spec</ac:link-body></ac:link></p>',
+      { pageUrl: PAGE_URL },
+    );
+    expect(result.markdown).toBe(`See [the spec (attachment — view on the original page)](${PAGE_URL})`);
+    expect(result.degradations).toEqual([{ name: "#attachment", count: 1 }]);
   });
 
   it("renders a status macro inline as code", () => {

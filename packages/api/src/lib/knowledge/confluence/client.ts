@@ -76,9 +76,11 @@ const MAX_PAGES = 100_000;
 // Raw v2 response shapes (only the fields we read)
 // ---------------------------------------------------------------------------
 
+// Every field is optional: this is untrusted vendor JSON, so `id`/`title`/
+// `version.createdAt` are narrowed at the use sites (`normalizePage`,
+// `ensureSpaceId`) rather than asserted here.
 interface V2Version {
   readonly createdAt?: string;
-  readonly number?: number;
 }
 interface V2Links {
   readonly webui?: string;
@@ -86,7 +88,7 @@ interface V2Links {
   readonly next?: string;
 }
 interface V2Page {
-  readonly id: string;
+  readonly id?: string;
   readonly title?: string;
   readonly parentId?: string | null;
   readonly version?: V2Version;
@@ -98,8 +100,7 @@ interface V2PageList {
   readonly _links?: V2Links;
 }
 interface V2Space {
-  readonly id: string;
-  readonly key?: string;
+  readonly id?: string;
 }
 interface V2SpaceList {
   readonly results?: readonly V2Space[];
@@ -163,7 +164,8 @@ class ConfluenceApi {
   ) {
     this.base = config.baseUrl.replace(/\/+$/, "");
     this.siteBase = this.base;
-    // Basic auth: email:token, base64. `btoa` is fine — inputs are ASCII creds.
+    // Basic auth header: base64("email:token"). Buffer.from handles any UTF-8 in
+    // the email (unlike btoa, which throws on non-ASCII).
     this.authHeader = `Basic ${Buffer.from(`${config.email}:${config.apiToken}`).toString("base64")}`;
   }
 
@@ -204,7 +206,11 @@ class ConfluenceApi {
     const assembled = assembleConfluenceDocuments(pages, byId, {
       collectionSlug: this.config.collectionSlug,
     });
-    if (assembled.degradations.length > 0 || assembled.skippedContentless > 0) {
+    if (
+      assembled.degradations.length > 0 ||
+      assembled.skippedContentless > 0 ||
+      assembled.collisionsRenamed > 0
+    ) {
       log.info(
         {
           host: hostForLog(this.base),
@@ -212,6 +218,7 @@ class ConfluenceApi {
           mode: reconciliation ? "reconciliation" : "incremental",
           degradations: assembled.degradations,
           skippedContentless: assembled.skippedContentless,
+          collisionsRenamed: assembled.collisionsRenamed,
         },
         "Confluence conversion completed with degradations/skips",
       );
@@ -236,6 +243,13 @@ class ConfluenceApi {
         `Confluence space "${this.config.spaceKey}" was not found or is not visible to this token on ${hostForLog(this.base)} — check the space key and the token's permissions.`,
       );
     }
+    // Fail loud rather than propagate `undefined`/garbage into the pages URL if
+    // the vendor response is malformed (untrusted JSON — `id` is optional here).
+    if (typeof space.id !== "string" || space.id === "") {
+      throw new Error(
+        `Confluence returned a space for "${this.config.spaceKey}" with no id from ${hostForLog(this.base)} — unexpected vendor response.`,
+      );
+    }
     this.spaceId = space.id;
     return space.id;
   }
@@ -248,6 +262,7 @@ class ConfluenceApi {
     let nextUrl: string | null = `${this.base}/api/v2/spaces/${encodeURIComponent(spaceId)}/pages?${params}`;
 
     const pages: EnumeratedPage[] = [];
+    let skippedMalformed = 0;
     while (nextUrl !== null) {
       // Annotate `body` explicitly: `nextUrl` is reassigned below from a value
       // derived from `body`, which is fetched with `nextUrl` — an inference cycle
@@ -257,6 +272,7 @@ class ConfluenceApi {
       for (const raw of body.results ?? []) {
         const normalized = this.normalizePage(raw, opts.withBody);
         if (normalized !== null) pages.push(normalized);
+        else skippedMalformed++;
       }
       if (pages.length > MAX_PAGES) {
         throw new Error(
@@ -265,6 +281,15 @@ class ConfluenceApi {
       }
       const rel: string | undefined = body._links?.next;
       nextUrl = rel ? new URL(rel, this.base).toString() : null;
+    }
+    if (skippedMalformed > 0) {
+      // Never a silent drop: a page missing id/title/version isn't ingested, and
+      // if it was an ancestor its descendants' paths shorten — surface it loudly
+      // so an operator can see the hole rather than infer it from a smaller tree.
+      log.warn(
+        { host: hostForLog(this.base), space: this.config.spaceKey, skippedMalformed },
+        "Skipped Confluence pages missing id/title/version — not ingested (unexpected for current pages)",
+      );
     }
     return pages;
   }
@@ -321,6 +346,7 @@ class ConfluenceApi {
       if (err instanceof EgressBlockedError) throw err; // host-redacted + actionable
       throw new Error(
         `Confluence request to ${hostForLog(this.base)} failed: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
       );
     }
 
@@ -345,6 +371,7 @@ class ConfluenceApi {
     } catch (err) {
       throw new Error(
         `Confluence returned a non-JSON response from ${hostForLog(this.base)}: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
       );
     }
   }

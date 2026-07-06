@@ -29,6 +29,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
+import { CONFLUENCE_CATALOG_ID, CONFLUENCE_SLUG } from "@atlas/api/lib/knowledge/confluence/config";
 
 const log = createLogger("db.seed-builtin-knowledge-catalog");
 
@@ -146,12 +147,13 @@ export const BUILTIN_BUNDLE_SYNC_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
  * `api_token` is `secret: true` but is NOT stored in `workspace_plugins.config`
  * — the install handler routes it to `knowledge_sync_credentials` (encrypted).
  * The base URL is customer-supplied, so every fetch goes through the SSRF egress
- * guard. The id/slug must match `lib/knowledge/confluence/config.ts`
- * (`CONFLUENCE_CATALOG_ID` / `CONFLUENCE_SLUG`).
+ * guard. The id/slug are the config SSOT (`CONFLUENCE_CATALOG_ID` /
+ * `CONFLUENCE_SLUG`) — the load-bearing link `plugin_catalog.id` →
+ * `workspace_plugins.catalog_id` → `sourceOf` → the connector registry key.
  */
 export const BUILTIN_CONFLUENCE_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
-  id: "catalog:confluence",
-  slug: "confluence",
+  id: CONFLUENCE_CATALOG_ID,
+  slug: CONFLUENCE_SLUG,
   name: "Knowledge Base (Confluence Cloud)",
   description:
     "Mirror a Confluence Cloud space into a review-gated knowledge collection; Atlas syncs pages on a schedule (incremental + reconciliation) and queues changes for review.",

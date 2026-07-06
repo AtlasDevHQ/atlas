@@ -64,7 +64,7 @@ Each collection card shows the last sync's status and time, with a **Sync now** 
 
 ### Paths, and what a rename does
 
-A page becomes a markdown document at a **hierarchy path** built from its ancestor page titles — so the agent's `explore` view reads as a readable tree (`confluence-eng/engineering/runbooks/oncall.md`). Because the path is derived from titles, **renaming a page (or moving it) archives the old path and re-drafts the new one** for re-review. That churn is expected and safe — nothing is ever hard-deleted. Stable vendor page ids and versions ride in each document's provenance, not in its path.
+A page becomes a markdown document at a **hierarchy path** built from its ancestor page titles — so the agent's `explore` view reads as a readable tree (`confluence-eng/engineering/runbooks/oncall.md`). Because the path is derived from titles, **renaming a page (or moving it) archives the old path and re-drafts the new one** for re-review. That churn is expected and safe — nothing is ever hard-deleted. The page id (via its canonical URL) and the current version's modification time ride in each document's provenance, not in its path.
 
 ### Macros, images, and honest conversion
 

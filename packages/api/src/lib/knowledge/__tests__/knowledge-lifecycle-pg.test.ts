@@ -36,6 +36,7 @@ import {
   BUNDLE_SYNC_INSTALL_UPSERT_SQL,
 } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 import { SYNC_CYCLE_INSTALLS_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
+import { CONFLUENCE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/confluence-form-handler";
 import {
   CONNECTOR_SYNC_STATE_SELECT_SQL,
   CONNECTOR_SYNC_STATE_UPSERT_SQL,
@@ -452,6 +453,31 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     expect(projection.rows).toHaveLength(1);
     expect(projection.rows[0]?.collection_id).toBe("synced-docs");
     expect(projection.rows[0]?.last_sync_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("installs a Confluence connector collection: the exported upsert runs against the live schema (#4377)", async () => {
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+       VALUES ('catalog:confluence', 'Knowledge Base (Confluence Cloud)', 'confluence', 'context', 'knowledge', 'form')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    const installed = await pool.query<{ id: string }>(CONFLUENCE_INSTALL_UPSERT_SQL, [
+      "row-confluence",
+      ws,
+      "catalog:confluence",
+      "confluence-eng",
+      JSON.stringify({ base_url: "https://acme.atlassian.net/wiki", email: "bot@acme.com", space_key: "ENG" }),
+    ]);
+    expect(installed.rows[0]?.id).toBe("row-confluence");
+    const row = await pool.query<{ pillar: string; status: string; config: Record<string, unknown> }>(
+      `SELECT pillar, status, config FROM workspace_plugins
+        WHERE workspace_id = $1 AND install_id = 'confluence-eng'`,
+      [ws],
+    );
+    expect(row.rows[0]).toMatchObject({ pillar: "knowledge", status: "published" });
+    // The token is NEVER persisted in the install config.
+    expect(row.rows[0]?.config).not.toHaveProperty("api_token");
+    expect(row.rows[0]?.config).toMatchObject({ space_key: "ENG" });
   }, PG_TEST_TIMEOUT_MS);
 
   it("the cycle's install listing returns ONLY enabled, non-archived bundle-sync installs (#4211)", async () => {

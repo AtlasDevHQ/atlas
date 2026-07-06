@@ -518,6 +518,28 @@ describe("connector collections — Confluence (#4377)", () => {
     expect(syncCollection).not.toHaveBeenCalled();
   });
 
+  it("returns a connector error outcome as 200 with status error and null format", async () => {
+    useConnectorCollection();
+    syncConnectorCollection.mockImplementationOnce(async (params: { collectionSlug: string }) => ({
+      collection: params.collectionSlug,
+      status: "error" as const,
+      mode: "reconciliation" as const,
+      syncedAt: "2026-07-02T02:00:00.000Z",
+      error: "Confluence rate-limited the request to acme.atlassian.net (backoff exhausted).",
+      documents: null,
+      archivedAbsent: null,
+      rejected: [],
+      highWaterMark: null,
+    }));
+    const res = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; error: string; format: unknown; documents: unknown };
+    expect(body.status).toBe("error");
+    expect(body.error).toMatch(/rate-limited/i);
+    expect(body.format).toBeNull();
+    expect(body.documents).toBeNull();
+  });
+
   it("lists a connector collection with source 'connector' and its sync state", async () => {
     useConnectorCollection();
     SYNC_STATES = [

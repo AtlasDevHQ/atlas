@@ -28,6 +28,10 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { CONFLUENCE_CATALOG_ID, CONFLUENCE_SLUG } from "@atlas/api/lib/knowledge/confluence/config";
+import {
+  NOTION_KNOWLEDGE_CATALOG_ID,
+  NOTION_KNOWLEDGE_SLUG,
+} from "@atlas/api/lib/knowledge/notion/connector";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
@@ -149,11 +153,12 @@ export const BUILTIN_BUNDLE_SYNC_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
  * The `integration_token` field is `secret: true` but is NOT stored in
  * `workspace_plugins.config` — the install handler routes it to the dedicated
  * `knowledge_sync_credentials` table (encrypted). The flag tells the admin form
- * to render a password input and never echo the value back.
+ * to render a password input and never echo the value back. The id/slug are the
+ * connector-module SSOT (`NOTION_KNOWLEDGE_CATALOG_ID` / `NOTION_KNOWLEDGE_SLUG`).
  */
 export const BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
-  id: "catalog:notion-knowledge",
-  slug: "notion-knowledge",
+  id: NOTION_KNOWLEDGE_CATALOG_ID,
+  slug: NOTION_KNOWLEDGE_SLUG,
   name: "Knowledge Base (Notion)",
   description:
     "Connect a Notion workspace with an internal-integration token; the pages you share with the integration sync as review-gated knowledge documents. Share a parent page to include its whole subtree.",

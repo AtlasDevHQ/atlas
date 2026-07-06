@@ -66,6 +66,11 @@ import { ingestBundle } from "./ingest-bundle";
 import { getIngestMaxBundleBytes, positiveIntSetting } from "./ingest-limits";
 import { readSyncCredential } from "./sync-credentials";
 import {
+  getKnowledgeSyncConnector,
+  listKnowledgeSyncConnectorCatalogIds,
+} from "./connectors";
+import { syncConnectorCollection } from "./connector-sync";
+import {
   BUNDLE_SYNC_CATALOG_ID,
   parseBundleSyncConfig,
   type BundleSyncAuthScheme,
@@ -501,11 +506,17 @@ async function recordSyncState(
 }
 
 // ---------------------------------------------------------------------------
-// Cycle — walk every enabled synced collection (the scheduler tick body)
+// Cycle — walk every enabled synced collection (the scheduler tick body).
+// Dispatch is keyed on catalog id (#4376): `bundle-sync` installs pull their
+// endpoint through this module's fetch path; installs of a REGISTERED
+// Knowledge Sync Connector catalog row go through the connector engine
+// (`connector-sync.ts` — incremental/reconciliation cadence, high-water
+// marks, 429 backoff). Both engines isolate per-collection failures, so one
+// bad endpoint/vendor never blocks the cycle's remaining collections.
 // ---------------------------------------------------------------------------
 
 export interface KnowledgeSyncCycleResult {
-  /** Enabled bundle-sync installs inspected this cycle. */
+  /** Enabled synced installs (bundle-sync + connector) inspected this cycle. */
   readonly inspected: number;
   readonly succeeded: number;
   readonly failed: number;
@@ -520,24 +531,27 @@ export interface KnowledgeSyncCycleResult {
 interface SyncInstallRow extends Record<string, unknown> {
   workspace_id: string;
   install_id: string;
+  catalog_id: string;
   config: Record<string, unknown> | null;
 }
 
 /**
- * The cycle's install listing — every enabled, non-archived `bundle-sync`
- * install, ordered for deterministic walks. Exported for the real-Postgres
- * test so the WHERE predicates are executed, not just asserted as a string.
+ * The cycle's install listing — every enabled, non-archived install of a
+ * synced catalog row (`bundle-sync` + registered connectors), ordered for
+ * deterministic walks. Exported for the real-Postgres test so the WHERE
+ * predicates are executed, not just asserted as a string.
  */
-export const SYNC_CYCLE_INSTALLS_SQL = `SELECT workspace_id, install_id, config
+export const SYNC_CYCLE_INSTALLS_SQL = `SELECT workspace_id, install_id, catalog_id, config
          FROM workspace_plugins
-        WHERE catalog_id = $1 AND pillar = 'knowledge'
+        WHERE catalog_id = ANY($1::text[]) AND pillar = 'knowledge'
           AND enabled = true AND status <> 'archived'
         ORDER BY workspace_id ASC, install_id ASC`;
 
 /**
- * Run one sync pass over every enabled, non-archived `bundle-sync` install.
- * Sequential (one endpoint at a time — a slow tenant can't starve another's
- * connection pool slot), per-collection failures isolated. Never throws.
+ * Run one sync pass over every enabled, non-archived synced install.
+ * Sequential (one endpoint/vendor at a time — a slow tenant can't starve
+ * another's connection pool slot), per-collection failures isolated. Never
+ * throws.
  */
 export async function runKnowledgeSyncCycle(options?: {
   readonly fetchImpl?: typeof globalThis.fetch;
@@ -546,15 +560,14 @@ export async function runKnowledgeSyncCycle(options?: {
     return { inspected: 0, succeeded: 0, failed: 0, queryFailed: false };
   }
 
+  const catalogIds = [BUNDLE_SYNC_CATALOG_ID, ...listKnowledgeSyncConnectorCatalogIds()];
   let installs: SyncInstallRow[];
   try {
-    installs = await internalQuery<SyncInstallRow>(SYNC_CYCLE_INSTALLS_SQL, [
-      BUNDLE_SYNC_CATALOG_ID,
-    ]);
+    installs = await internalQuery<SyncInstallRow>(SYNC_CYCLE_INSTALLS_SQL, [catalogIds]);
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err) },
-      "Knowledge sync cycle: failed to query bundle-sync installs",
+      "Knowledge sync cycle: failed to query synced installs",
     );
     return { inspected: 0, succeeded: 0, failed: 0, queryFailed: true };
   }
@@ -562,16 +575,11 @@ export async function runKnowledgeSyncCycle(options?: {
   let succeeded = 0;
   let failed = 0;
   for (const install of installs) {
-    // `syncCollection` never throws; the belt-and-braces catch keeps a future
+    // Neither engine throws; the belt-and-braces catch keeps a future
     // regression from sinking the remaining collections in the cycle.
     try {
-      const outcome = await syncCollection({
-        workspaceId: install.workspace_id,
-        collectionSlug: install.install_id,
-        config: install.config,
-        ...(options?.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-      });
-      if (outcome.status === "success") succeeded++;
+      const status = await dispatchInstall(install, options);
+      if (status === "success") succeeded++;
       else failed++;
     } catch (err) {
       failed++;
@@ -579,9 +587,10 @@ export async function runKnowledgeSyncCycle(options?: {
         {
           workspaceId: install.workspace_id,
           collectionSlug: install.install_id,
+          catalogId: install.catalog_id,
           err: err instanceof Error ? err.message : String(err),
         },
-        "Knowledge sync cycle: syncCollection threw past its internal catch",
+        "Knowledge sync cycle: a sync engine threw past its internal catch",
       );
     }
   }
@@ -590,5 +599,39 @@ export async function runKnowledgeSyncCycle(options?: {
     log.info({ inspected: installs.length, succeeded, failed }, "Knowledge sync cycle complete");
   }
   return { inspected: installs.length, succeeded, failed, queryFailed: false };
+}
+
+/** Route one install to its engine by catalog id. */
+async function dispatchInstall(
+  install: SyncInstallRow,
+  options?: { readonly fetchImpl?: typeof globalThis.fetch },
+): Promise<"success" | "error"> {
+  if (install.catalog_id === BUNDLE_SYNC_CATALOG_ID) {
+    const outcome = await syncCollection({
+      workspaceId: install.workspace_id,
+      collectionSlug: install.install_id,
+      config: install.config,
+      ...(options?.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    });
+    return outcome.status;
+  }
+  const connector = getKnowledgeSyncConnector(install.catalog_id);
+  if (connector === undefined) {
+    // Unreachable through this walk (the install filter is built FROM the
+    // registry) — but a registry mutation racing the cycle must be a counted,
+    // visible failure, never a silent skip.
+    log.error(
+      { workspaceId: install.workspace_id, collectionSlug: install.install_id, catalogId: install.catalog_id },
+      "Knowledge sync cycle: install's catalog id has no registered connector — skipping",
+    );
+    return "error";
+  }
+  const outcome = await syncConnectorCollection({
+    connector,
+    workspaceId: install.workspace_id,
+    collectionSlug: install.install_id,
+    config: install.config,
+  });
+  return outcome.status;
 }
 

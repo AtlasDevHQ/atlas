@@ -1900,11 +1900,14 @@ export const knowledgeSyncCredentials = pgTable(
   ],
 );
 
-// knowledge_sync_state (0164, #4211) — last-sync bookkeeping per bundle-sync
+// knowledge_sync_state (0164, #4211) — last-sync bookkeeping per synced
 // collection (time, outcome, error, compact ingest report), surfaced on
 // /admin/knowledge. Deliberately NOT in workspace_plugins.config (a re-install
 // upserts config = EXCLUDED.config, which would wipe it). Operational state,
-// not a content-mode participant. Mirrors migration 0164.
+// not a content-mode participant. Mirrors migration 0164; the connector-spine
+// columns (high_water_mark / sync_cursor / last_reconciled_at — incremental
+// cycles + reconciliation cadence, #4376, ADR-0030) mirror migration 0168 and
+// stay NULL for bundle-sync collections.
 export const knowledgeSyncState = pgTable(
   "knowledge_sync_state",
   {
@@ -1914,6 +1917,9 @@ export const knowledgeSyncState = pgTable(
     status: text("status").notNull(),
     error: text("error"),
     report: jsonb("report"),
+    highWaterMark: timestamp("high_water_mark", { withTimezone: true }),
+    syncCursor: text("sync_cursor"),
+    lastReconciledAt: timestamp("last_reconciled_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

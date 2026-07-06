@@ -37,6 +37,10 @@ import {
 } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 import { SYNC_CYCLE_INSTALLS_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
 import {
+  CONNECTOR_SYNC_STATE_SELECT_SQL,
+  CONNECTOR_SYNC_STATE_UPSERT_SQL,
+} from "@atlas/api/lib/knowledge/connector-sync";
+import {
   ARCHIVE_COLLECTION_DOCS_SQL,
   INSTALL_RECHECK_SQL,
 } from "@atlas/api/lib/knowledge/collection-lifecycle";
@@ -479,11 +483,93 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
       [ws],
     );
 
-    const installs = await pool.query<{ install_id: string; config: unknown }>(
+    const installs = await pool.query<{ install_id: string; catalog_id: string; config: unknown }>(
       SYNC_CYCLE_INSTALLS_SQL,
-      [BUNDLE_SYNC_CATALOG_ID],
+      [[BUNDLE_SYNC_CATALOG_ID]],
     );
     expect(installs.rows.map((r) => r.install_id)).toEqual(["synced-docs"]);
+    expect(installs.rows[0]?.catalog_id).toBe(BUNDLE_SYNC_CATALOG_ID);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("connector sync-state bookkeeping: 0168 columns + COALESCE-forward upsert semantics (#4376)", async () => {
+    // A fresh connector collection has no state row — the engine's read
+    // normalizes that to all-null bookkeeping (first sync reconciles).
+    const none = await pool.query(CONNECTOR_SYNC_STATE_SELECT_SQL, [ws, "connector-docs"]);
+    expect(none.rows).toHaveLength(0);
+
+    // Seed a live connector install (any knowledge-pillar catalog row works —
+    // the upsert's EXISTS guard checks pillar + status, not catalog identity).
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+       VALUES ('catalog:fixture-vendor', 'Fixture Vendor', 'fixture-vendor', 'context', 'knowledge', 'form')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await pool.query(BUNDLE_SYNC_INSTALL_UPSERT_SQL, [
+      "row-connector",
+      ws,
+      "catalog:fixture-vendor",
+      "connector-docs",
+      JSON.stringify({}),
+    ]);
+
+    // First successful reconciliation: seeds mark + cursor + reconciled-at.
+    await pool.query(CONNECTOR_SYNC_STATE_UPSERT_SQL, [
+      ws,
+      "connector-docs",
+      "success",
+      null,
+      JSON.stringify({ mode: "reconciliation" }),
+      "2026-07-01T00:00:00.000Z",
+      "cursor-1",
+      "2026-07-01T00:00:00.000Z",
+    ]);
+    // A later FAILED attempt records status+error but passes null bookkeeping —
+    // COALESCE must carry the previous mark/cursor/reconciled-at forward.
+    await pool.query(CONNECTOR_SYNC_STATE_UPSERT_SQL, [
+      ws,
+      "connector-docs",
+      "error",
+      "vendor exploded",
+      JSON.stringify({ mode: "incremental" }),
+      null,
+      null,
+      null,
+    ]);
+    const afterError = await pool.query<{
+      status: string;
+      high_water_mark: Date | null;
+      sync_cursor: string | null;
+      last_reconciled_at: Date | null;
+    }>(
+      `SELECT status, high_water_mark, sync_cursor, last_reconciled_at
+         FROM knowledge_sync_state WHERE workspace_id = $1 AND collection_id = 'connector-docs'`,
+      [ws],
+    );
+    expect(afterError.rows[0]?.status).toBe("error");
+    expect(afterError.rows[0]?.high_water_mark?.toISOString()).toBe("2026-07-01T00:00:00.000Z");
+    expect(afterError.rows[0]?.sync_cursor).toBe("cursor-1");
+    expect(afterError.rows[0]?.last_reconciled_at?.toISOString()).toBe("2026-07-01T00:00:00.000Z");
+
+    // A later successful incremental advances the mark without touching the
+    // reconciliation clock (the engine passes reconciledAt only on reconciliation).
+    await pool.query(CONNECTOR_SYNC_STATE_UPSERT_SQL, [
+      ws,
+      "connector-docs",
+      "success",
+      null,
+      JSON.stringify({ mode: "incremental" }),
+      "2026-07-02T12:00:00.000Z",
+      null,
+      null,
+    ]);
+    const engineRead = await pool.query<{
+      high_water_mark: Date | null;
+      sync_cursor: string | null;
+      last_reconciled_at: Date | null;
+    }>(CONNECTOR_SYNC_STATE_SELECT_SQL, [ws, "connector-docs"]);
+    expect(engineRead.rows[0]?.high_water_mark?.toISOString()).toBe("2026-07-02T12:00:00.000Z");
+    expect(engineRead.rows[0]?.sync_cursor).toBe("cursor-1");
+    expect(engineRead.rows[0]?.last_reconciled_at?.toISOString()).toBe("2026-07-01T00:00:00.000Z");
   }, PG_TEST_TIMEOUT_MS);
 
   it("the uninstall × sync race guards hold against the live schema", async () => {

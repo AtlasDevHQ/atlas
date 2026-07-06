@@ -40,13 +40,18 @@ export type IngestClient = Pick<InternalPoolClient, "query">;
 
 /**
  * How the documents arrived: `upload` is the explicit admin bundle upload;
- * `bundle-sync` is the scheduled endpoint pull (#4211). Per ADR-0028 §4,
- * connector-synced content NEVER gets an "upload & publish" option; it always
- * queues for review. The publish path keys off this: only `upload` may be
- * paired with an atomic publish (enforced in the route — the sync engine in
- * `lib/knowledge/sync.ts` has no publish path at all).
+ * `bundle-sync` is the scheduled endpoint pull (#4211); `connector:<vendor>`
+ * is a Knowledge Sync Connector's scheduled vendor pull (#4376, ADR-0030 —
+ * e.g. `connector:confluence`, `connector:notion`; the vendor slug comes from
+ * the registered connector, so `atlas_source` records which vendor wrote each
+ * row). Per ADR-0028 §4, connector-synced content NEVER gets an "upload &
+ * publish" option; it always queues for review. The publish path keys off
+ * this: only `upload` may be paired with an atomic publish — the guard in
+ * `ingest-bundle.ts` rejects `publish` for every other source, so widening
+ * this union can never widen the publish surface.
  */
-export type IngestSource = "upload" | "bundle-sync";
+export type ConnectorIngestSource = `connector:${string}`;
+export type IngestSource = "upload" | "bundle-sync" | ConnectorIngestSource;
 
 export interface IngestParams {
   readonly client: IngestClient;

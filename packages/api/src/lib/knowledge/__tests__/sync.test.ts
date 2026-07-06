@@ -80,7 +80,12 @@ const txControl: string[] = [];
 let TX_INSERT_THROWS = false;
 // When set, the state upsert throws — exercises recordSyncState resilience.
 let STATE_WRITE_THROWS = false;
-let INSTALL_ROWS: Array<{ workspace_id: string; install_id: string; config: unknown }> = [];
+let INSTALL_ROWS: Array<{
+  workspace_id: string;
+  install_id: string;
+  catalog_id: string;
+  config: unknown;
+}> = [];
 const stateWrites: { params: unknown[] }[] = [];
 // What the in-transaction install re-check (FOR UPDATE) sees. `null` = the row
 // is gone; "archived" = an uninstall landed mid-sync (the race under test).
@@ -741,8 +746,8 @@ describe("syncCollection — endpoint auth", () => {
 describe("runKnowledgeSyncCycle", () => {
   it("walks every enabled install, isolating per-collection failures", async () => {
     INSTALL_ROWS = [
-      { workspace_id: ORG, install_id: "good", config: baseConfig() },
-      { workspace_id: ORG, install_id: "bad", config: { endpoint_url: "" } },
+      { workspace_id: ORG, install_id: "good", catalog_id: "catalog:bundle-sync", config: baseConfig() },
+      { workspace_id: ORG, install_id: "bad", catalog_id: "catalog:bundle-sync", config: { endpoint_url: "" } },
     ];
     const bundle = zipBundle({ "a.md": "# a" });
     const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));

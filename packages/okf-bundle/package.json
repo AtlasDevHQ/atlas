@@ -1,0 +1,26 @@
+{
+  "name": "@atlas/okf-bundle",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "description": "Source-neutral OKF knowledge-bundle builder + the single-homed OKF wire contract. Implement the doc-source seam (enumerate pages, resolve a body); collect, cap validation, collision guard, and deterministic packing come for free. Internal-only — not published to npm (promote only after the API survives a real non-Atlas consumer). Never depends on @atlas/api, not even for tests (the round-trip test lives in @atlas/fumadocs-okf).",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./wire": "./src/wire.ts"
+  },
+  "scripts": {
+    "test": "bun test __tests__/"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "js-yaml": "^5.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "packages/okf-bundle"
+  }
+}

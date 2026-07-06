@@ -10,8 +10,13 @@
  * for the spike doc.
  */
 
+import {
+  ATLAS_EXTENSION_KEY,
+  mdBasename as basename,
+  RESERVED_BASENAMES,
+  topLevelHeading,
+} from "@atlas/okf-bundle/wire";
 import { parseFrontmatter } from "./frontmatter";
-import { mdBasename as basename, RESERVED_BASENAMES, topLevelHeading } from "./md-utils";
 import type {
   AtlasDimensionType,
   MappingReport,
@@ -52,7 +57,7 @@ function tagsOf(concept: OkfConcept): string[] {
 
 /** The `atlas:` extension block, when present and a mapping (narrowed from unknown). */
 export function atlasExtension(concept: OkfConcept): Record<string, unknown> | undefined {
-  const ext = concept.frontmatter.atlas;
+  const ext = concept.frontmatter[ATLAS_EXTENSION_KEY];
   return typeof ext === "object" && ext !== null && !Array.isArray(ext)
     ? (ext as Record<string, unknown>)
     : undefined;

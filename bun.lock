@@ -199,6 +199,7 @@
         "@ai-sdk/openai": "^3.0.74",
         "@atlas/ee": "workspace:*",
         "@atlas/mcp": "workspace:*",
+        "@atlas/okf-bundle": "workspace:*",
         "@aws-sdk/client-bedrock": "^3.1075.0",
         "@better-auth/api-key": "^1.6.20",
         "@better-auth/oauth-provider": "^1.6.20",
@@ -299,7 +300,7 @@
       "name": "@atlas/fumadocs-okf",
       "version": "0.0.0",
       "dependencies": {
-        "fflate": "^0.8.2",
+        "@atlas/okf-bundle": "workspace:*",
       },
       "devDependencies": {
         "@atlas/api": "workspace:*",
@@ -333,6 +334,16 @@
     "packages/oauth-helper": {
       "name": "@atlas/oauth-helper",
       "version": "0.0.0",
+    },
+    "packages/okf-bundle": {
+      "name": "@atlas/okf-bundle",
+      "version": "0.0.0",
+      "dependencies": {
+        "fflate": "^0.8.2",
+      },
+      "devDependencies": {
+        "js-yaml": "^5.1.0",
+      },
     },
     "packages/plugin-sdk": {
       "name": "@useatlas/plugin-sdk",
@@ -962,6 +973,8 @@
     "@atlas/nextjs-standalone": ["@atlas/nextjs-standalone@workspace:examples/nextjs-standalone"],
 
     "@atlas/oauth-helper": ["@atlas/oauth-helper@workspace:packages/oauth-helper"],
+
+    "@atlas/okf-bundle": ["@atlas/okf-bundle@workspace:packages/okf-bundle"],
 
     "@atlas/sandbox-sidecar": ["@atlas/sandbox-sidecar@workspace:packages/sandbox-sidecar"],
 

@@ -14,6 +14,16 @@ needs an explicit `fumadocs-core` peerDependency range pinned to the majors
 actually tested, and the `0.0.x` exact-pin publish sequencing from the root
 CLAUDE.md applies.
 
+**Adapter-only since #4373.** The source-neutral bundle machinery —
+deterministic archive paths, the reserved-basename fold/rename, cap
+validation, the collision guard, deterministic packing — lives in
+[`@atlas/okf-bundle`](../okf-bundle/README.md) behind its doc-source seam;
+this package maps the Fumadocs loader surface onto that seam and keeps only
+what is Fumadocs: `getText("processed")` resolution, the
+`includeProcessedMarkdown` prescription, and the default `api-reference/`
+stub skip. Everything documented below still imports from
+`@atlas/fumadocs-okf` — the core surface is re-exported unchanged.
+
 ## Requirements
 
 The site's `source.config.ts` must enable processed-markdown output on each

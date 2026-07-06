@@ -30,17 +30,19 @@
  * documents' `path` (ADR-0028 §5 / migration 0163).
  */
 
-import type { InteropFile } from "@atlas/api/lib/semantic/okf";
 import {
+  DEFAULT_OKF_TYPE,
   mdBasename,
   RESERVED_BASENAMES,
-  splitFrontmatterBlock,
   topLevelHeading,
-} from "@atlas/api/lib/semantic/okf/md-utils";
+} from "@atlas/okf-bundle/wire";
+import type { InteropFile } from "@atlas/api/lib/semantic/okf";
+import { splitFrontmatterBlock } from "@atlas/api/lib/semantic/okf/md-utils";
 import type { BundleEntryError } from "./bundle-archive";
 
-/** Default OKF `type` stamped on a document that arrived without one. */
-export const DEFAULT_OKF_TYPE = "Document";
+/** Default OKF `type` stamped on a document that arrived without one —
+ *  single-homed in the wire module, re-exported for this parser's consumers. */
+export { DEFAULT_OKF_TYPE };
 
 /** One extracted intra-bundle markdown link. */
 export interface LenientLink {

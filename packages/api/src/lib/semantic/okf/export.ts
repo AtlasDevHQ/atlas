@@ -20,6 +20,7 @@
  */
 
 import * as yaml from "js-yaml";
+import { OKF_VERSION } from "@atlas/okf-bundle/wire";
 import { serializeDocument } from "./frontmatter";
 import {
   emptyReport,
@@ -512,7 +513,10 @@ export function exportToOkf(
     ),
   ].join("\n");
   // Root index.md is the one index allowed to carry frontmatter (okf_version).
-  out.push({ path: "index.md", content: `---\nokf_version: "0.1"\n---\n\n${rootBody}\n` });
+  out.push({
+    path: "index.md",
+    content: `---\nokf_version: ${JSON.stringify(OKF_VERSION)}\n---\n\n${rootBody}\n`,
+  });
 
   report.lossy.push(
     "table whitelist enforcement has no OKF equivalent — entity existence survives, runtime enforcement does not",

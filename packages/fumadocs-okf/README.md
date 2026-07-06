@@ -4,11 +4,14 @@ Turn any [Fumadocs](https://fumadocs.dev) site into an OKF `.tar.gz` the Atlas
 Knowledge Base ingests — through the **existing** `bundle-sync` connector (pull
 on a schedule) or the admin upload route. No `packages/api` changes, no new
 connector: the adapter's whole job is producing an archive the ingest seam
-already accepts (issue #4367; ADR-0028 §5 deliberately defers any
-connector/adapter framework).
+already accepts (issue #4367). ADR-0028 §5's connector deferral has since been
+executed — server-side Knowledge Sync Connectors are ADR-0030's seam — but
+generation-side adapters like this one remain deliberately connector-free.
 
-**Unpublished by design.** This package is internal (`private: true`), consumed
-in-repo by the docs portal and by third parties via copy. Publishing to npm is
+**Unpublished by design.** This package is internal (`private: true`),
+exercised in-repo by its round-trip test suite (see [In-repo
+consumers](#in-repo-consumers)) and consumed by third parties via copy.
+Publishing to npm is
 deferred until the API survives a real non-Atlas consumer — at which point it
 needs an explicit `fumadocs-core` peerDependency range pinned to the majors
 actually tested, and the `0.0.x` exact-pin publish sequencing from the root
@@ -67,8 +70,11 @@ The input is typed **structurally** against the loader surface
 (`getPages()`, `page.path`, `page.data.{title,description,getText}`), so this
 package has no `fumadocs-core` dependency — a real `loader()` output satisfies
 it, and so does a hand-built shim where the bundler-generated source isn't
-loadable (see `apps/docs/scripts/kb-bundle-sources.ts` for both a filesystem
-shim and a deployed-site shim).
+loadable (see `__tests__/fixture.ts` for a complete shim mirroring what
+`loader()` + fumadocs-mdx produce; a site whose real loader isn't importable
+outside the Next bundler can instead skip this adapter and feed
+`@atlas/okf-bundle`'s markdown-tree adapter directly, as the Atlas docs portal
+does — `apps/docs/scripts/kb-bundle-sources.ts`).
 
 Multi-section sites compose collects and pack once — the ingest caps AND
 cross-section path uniqueness are validated over the merged set at pack (a
@@ -200,7 +206,8 @@ import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 export async function GET(req: Request) {
-  const token = process.env.KB_BUNDLE_TOKEN!;
+  const token = process.env.KB_BUNDLE_TOKEN;
+  if (!token) return new Response("KB_BUNDLE_TOKEN is not configured", { status: 500 });
   const got = req.headers.get("authorization") ?? "";
   const want = `Bearer ${token}`;
   const a = Buffer.from(got);
@@ -234,11 +241,20 @@ documents: the ingested count should **equal** `stats.documents` from your
 build, and every synced doc sits in `draft` awaiting review. If the counts
 differ, something dropped — see the reconcile guardrail above.
 
-## Dogfood consumer
+## In-repo consumers
 
-`apps/docs/scripts/build-docs-kb-bundle.ts` builds the Atlas docs portal's own
-bundle through this adapter — including a leak-safety-critical body transform
-(audience stripping) supplied via the `transform` hook, and shims for both a
-local content walk and a deployed `llms.txt` + `.mdx`-twin surface. It's the
-reference for adapting sites whose real loader isn't importable outside the
-Next bundler.
+The Atlas docs portal is **no longer a consumer of this package**: since the
+markdown-tree adapter promotion (#4374, after the #4373 core split),
+`apps/docs/scripts/build-docs-kb-bundle.ts` imports `@atlas/okf-bundle`
+directly — its local mode is the core's own markdown-tree adapter, because
+the portal's bundler-generated Fumadocs source isn't loadable from a plain
+CLI script.
+
+What exercises this adapter in-repo is its test suite:
+`__tests__/roundtrip.test.ts` drives a generated archive through the REAL
+Atlas ingest stages (`extractBundle` → `parseLenientBundle`, dev-dep on
+`@atlas/api`) and pins the zero-silent-drops guardrail, against the synthetic
+non-Atlas Fumadocs site in `__tests__/fixture.ts`. For adapting a real site,
+the [Usage](#usage) `loader()` example above is canonical — this adapter is
+for sites that can run `buildFumadocsOkfBundle` where their real loader is
+importable.

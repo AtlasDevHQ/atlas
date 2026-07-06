@@ -68,8 +68,8 @@ rather than persisted.
 
 **5. Rate limiting is engine property.** A vendor client throws
 `ConnectorRateLimitError` (parsed 429/`Retry-After`); the engine waits
-min(`Retry-After`, 60s) and retries up to 3 attempts, then records an error
-outcome for that collection. Per-collection failure isolation is unchanged
+min(`Retry-After`, 60s) and retries up to 3 **total** attempts (the initial
+try + 2 retries), then records an error outcome for that collection. Per-collection failure isolation is unchanged
 from bundle-sync: the cycle walk continues past any single failure.
 
 **6. Dispatch is keyed on catalog id.** The sync cycle lists installs of

@@ -203,8 +203,9 @@ export class NotionHttpClient {
 
 /**
  * Parse a `Retry-After` header (integer seconds per Notion's docs) into a
- * bounded number, or null when absent/unparseable (the engine then picks its
- * default wait). A negative / pathological value clamps rather than wedging.
+ * bounded number, or null when absent, unparseable, zero, or negative (the
+ * engine then picks its default wait). Only a positive hour-plus value clamps
+ * (to {@link RETRY_AFTER_MAX_SECONDS}) rather than wedging the sync.
  */
 function parseRetryAfter(raw: string | null): number | null {
   if (raw === null) return null;

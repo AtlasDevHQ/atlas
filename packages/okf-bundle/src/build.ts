@@ -9,9 +9,11 @@
  *
  * Recorded invariant (PRD #4372): collect (documents) and pack (transport)
  * stay SEPARATE. Tar is the remote-transport adapter for the upload route and
- * bundle-sync; a future server-side connector (ADR-0028 §5) consumes
- * collected documents at the ingest seam directly, without packing an
- * archive just to unpack it in the same process. Don't fuse the stages.
+ * bundle-sync; the server-side Knowledge Sync Connector engine (ADR-0030,
+ * #4376 — the executed ADR-0028 §5 follow-up) consumes collected documents at
+ * the document-level ingest seam (`ingestDocuments`) directly, without packing
+ * an archive just to unpack it in the same process — this invariant is what
+ * made that entry point possible. Don't fuse the stages.
  */
 
 import { collectPages } from "./collect";

@@ -114,23 +114,26 @@ export class InvalidPagePathError extends Error {
 }
 
 /**
- * A bundle would be packed with ZERO documents. Fail-loud by default because a
- * zero-doc bundle handed to the bundle-sync connector's subtractive diff
- * (ADR-0028 §5) archives the collection's ENTIRE existing document set — and
+ * A bundle would be packed with ZERO documents. Fail-loud by default because
  * the common cause is accidental (a glob that matched nothing, every page
- * filtered out, a transform that skipped them all), not a deliberate wipe. A
- * caller that genuinely intends to empty a collection opts in explicitly via
- * `allowEmpty` — the difference between "I have nothing to sync" and "my source
- * broke" must be a decision, not a silent side effect.
+ * filtered out, a transform that skipped them all), not a deliberate empty
+ * source. Atlas's ingest seam refuses a doc-less bundle before any write (the
+ * `no_documents` guard — emptying a collection requires uninstalling it), so
+ * an empty artifact served to a bundle-sync collection produces a RECURRING
+ * sync error on the Atlas side, invisible from the build that caused it —
+ * failing here puts the error where the site owner can act on it.
+ * `allowEmpty` only permits *packing* the empty archive (useful in tests); it
+ * cannot make the server accept one.
  */
 export class EmptyBundleError extends Error {
   constructor() {
     super(
-      "Refusing to pack a bundle with zero documents — a zero-doc bundle fed to " +
-        "the bundle-sync subtractive diff would archive every existing document in " +
-        "the collection. If the source really is empty on purpose, pass allowEmpty; " +
-        "otherwise check the source, filter, and transform hooks (a glob matching " +
-        "nothing or an over-eager filter is the usual cause).",
+      "Refusing to pack a bundle with zero documents — Atlas's ingest seam rejects " +
+        "a doc-less bundle (emptying a collection requires uninstalling it), so an " +
+        "empty artifact just produces a recurring sync error on the Atlas side. " +
+        "Check the source, filter, and transform hooks (a glob matching nothing or " +
+        "an over-eager filter is the usual cause); pass allowEmpty only if you " +
+        "genuinely need to pack an empty archive (e.g. in a test).",
     );
     this.name = "EmptyBundleError";
   }

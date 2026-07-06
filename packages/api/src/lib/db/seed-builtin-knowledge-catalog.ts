@@ -27,9 +27,9 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { CONFLUENCE_CATALOG_ID, CONFLUENCE_SLUG } from "@atlas/api/lib/knowledge/confluence/config";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
-import { CONFLUENCE_CATALOG_ID, CONFLUENCE_SLUG } from "@atlas/api/lib/knowledge/confluence/config";
 
 const log = createLogger("db.seed-builtin-knowledge-catalog");
 
@@ -139,6 +139,47 @@ export const BUILTIN_BUNDLE_SYNC_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
 };
 
 /**
+ * The Notion Knowledge Sync Connector catalog row (#4378, PRD #4375). A form
+ * install whose only inputs are an internal-integration token and an optional
+ * description — Notion's scope IS the set of pages the customer shares with the
+ * integration (one collection per authorization), so there is no space/endpoint
+ * field. Atlas syncs on the Scheduler via the shared connector engine; every
+ * synced page lands `draft` behind the review gate.
+ *
+ * The `integration_token` field is `secret: true` but is NOT stored in
+ * `workspace_plugins.config` — the install handler routes it to the dedicated
+ * `knowledge_sync_credentials` table (encrypted). The flag tells the admin form
+ * to render a password input and never echo the value back.
+ */
+export const BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: "catalog:notion-knowledge",
+  slug: "notion-knowledge",
+  name: "Knowledge Base (Notion)",
+  description:
+    "Connect a Notion workspace with an internal-integration token; the pages you share with the integration sync as review-gated knowledge documents. Share a parent page to include its whole subtree.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "integration_token",
+      type: "string",
+      secret: true,
+      label: "Internal-integration token",
+      required: true,
+      description:
+        "A Notion internal-integration token (notion.so/my-integrations). Share the pages you want synced with this integration. Stored encrypted; never returned.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this knowledge collection.",
+    },
+  ],
+};
+
+/**
  * The Confluence Cloud connector Knowledge Base catalog row (#4377, PRD #4375).
  * A form install that mirrors ONE Confluence space into a review-gated
  * collection; the Scheduler dispatches the registered Confluence connector on a
@@ -148,8 +189,7 @@ export const BUILTIN_BUNDLE_SYNC_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
  * — the install handler routes it to `knowledge_sync_credentials` (encrypted).
  * The base URL is customer-supplied, so every fetch goes through the SSRF egress
  * guard. The id/slug are the config SSOT (`CONFLUENCE_CATALOG_ID` /
- * `CONFLUENCE_SLUG`) — the load-bearing link `plugin_catalog.id` →
- * `workspace_plugins.catalog_id` → `sourceOf` → the connector registry key.
+ * `CONFLUENCE_SLUG`).
  */
 export const BUILTIN_CONFLUENCE_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
   id: CONFLUENCE_CATALOG_ID,
@@ -205,6 +245,7 @@ export const BUILTIN_CONFLUENCE_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
 export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatalogRow> = [
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
   BUILTIN_BUNDLE_SYNC_CATALOG_ROW,
+  BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW,
   BUILTIN_CONFLUENCE_CATALOG_ROW,
 ];
 

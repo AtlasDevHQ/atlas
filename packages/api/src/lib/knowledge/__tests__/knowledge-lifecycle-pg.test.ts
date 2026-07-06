@@ -35,8 +35,9 @@ import {
   BUNDLE_SYNC_CATALOG_ID,
   BUNDLE_SYNC_INSTALL_UPSERT_SQL,
 } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
-import { SYNC_CYCLE_INSTALLS_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
+import { NOTION_KNOWLEDGE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/notion-knowledge-form-handler";
 import { CONFLUENCE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/confluence-form-handler";
+import { SYNC_CYCLE_INSTALLS_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
 import {
   CONNECTOR_SYNC_STATE_SELECT_SQL,
   CONNECTOR_SYNC_STATE_UPSERT_SQL,
@@ -455,7 +456,33 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     expect(projection.rows[0]?.last_sync_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("installs a Confluence connector collection: the exported upsert runs against the live schema (#4377)", async () => {
+  it("installs a notion-knowledge connector collection against the live schema (#4378)", async () => {
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+       VALUES ('catalog:notion-knowledge', 'Knowledge Base (Notion)', 'notion-knowledge', 'context', 'knowledge', 'form')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    // The exported upsert string runs against real Postgres — a future divergence
+    // from the shared knowledge-install shape fails here, not silently at deploy.
+    const installed = await pool.query<{ id: string }>(NOTION_KNOWLEDGE_INSTALL_UPSERT_SQL, [
+      "row-notion",
+      ws,
+      "catalog:notion-knowledge",
+      "notion-docs",
+      JSON.stringify({ description: "Product knowledge from Notion" }),
+    ]);
+    expect(installed.rows[0]?.id).toBe("row-notion");
+    // The connector's token rides the same credential store as bundle-sync.
+    await pool.query(SYNC_CREDENTIAL_UPSERT_SQL, [ws, "notion-docs", "enc:v1:ntn", 1]);
+    const creds = await pool.query<{ collection_id: string }>(
+      `SELECT collection_id FROM knowledge_sync_credentials
+        WHERE workspace_id = $1 AND collection_id = 'notion-docs'`,
+      [ws],
+    );
+    expect(creds.rows).toHaveLength(1);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("installs a Confluence connector collection against the live schema (#4377)", async () => {
     await pool.query(
       `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
        VALUES ('catalog:confluence', 'Knowledge Base (Confluence Cloud)', 'confluence', 'context', 'knowledge', 'form')

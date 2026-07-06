@@ -35,6 +35,12 @@ import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
 import { OkfUploadFormInstallHandler, OKF_UPLOAD_SLUG } from "./okf-upload-form-handler";
 import { BundleSyncFormInstallHandler, BUNDLE_SYNC_SLUG } from "./bundle-sync-form-handler";
 import { ConfluenceFormInstallHandler, CONFLUENCE_SLUG } from "./confluence-form-handler";
+import { registerConfluenceKnowledgeConnector } from "@atlas/api/lib/knowledge/confluence/connector";
+import { NotionKnowledgeFormInstallHandler } from "./notion-knowledge-form-handler";
+import {
+  NOTION_KNOWLEDGE_SLUG,
+  registerNotionKnowledgeConnector,
+} from "@atlas/api/lib/knowledge/notion/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -226,10 +232,24 @@ export function registerBuiltinInstallHandlers(): void {
   // (one collection per space). Config = site base URL + email + space key; the
   // API token lands in `knowledge_sync_credentials` (encrypted), never in
   // `workspace_plugins.config`. The base URL is customer-supplied → SSRF gated.
-  // The registered connector is dispatched by the sync cycle walk (registered at
-  // scheduler start via `registerBuiltinKnowledgeConnectors`). No env gate.
+  // Registering the FORM handler + the CONNECTOR together (as with Notion) keeps
+  // a half-wired deploy from having an installable card whose scheduled sync has
+  // no registered vendor client. No env gate.
   registerFormHandler(CONFLUENCE_SLUG, new ConfluenceFormInstallHandler());
-  log.info("Registered ConfluenceFormInstallHandler");
+  registerConfluenceKnowledgeConnector();
+  log.info("Registered ConfluenceFormInstallHandler + knowledge sync connector");
+  // Knowledge Base (Notion) — the built-in `notion-knowledge` synced-collection
+  // install (#4378, PRD #4375). Knowledge-pillar, multi-instance. Config = an
+  // optional description; the internal-integration token lands in the dedicated
+  // `knowledge_sync_credentials` table (encrypted), never in
+  // `workspace_plugins.config`. Registering the FORM handler and the CONNECTOR
+  // together keeps a half-wired deploy from having an installable card whose
+  // scheduled sync has no registered vendor client (the connector is what the
+  // sync cycle dispatches on). No env gate — the customer admin supplies the
+  // token at install time.
+  registerFormHandler(NOTION_KNOWLEDGE_SLUG, new NotionKnowledgeFormInstallHandler());
+  registerNotionKnowledgeConnector();
+  log.info("Registered NotionKnowledgeFormInstallHandler + knowledge sync connector");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

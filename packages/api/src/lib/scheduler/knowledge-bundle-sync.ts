@@ -35,7 +35,6 @@ import {
   runKnowledgeSyncCycle,
   type KnowledgeSyncCycleResult,
 } from "@atlas/api/lib/knowledge/sync";
-import { registerBuiltinKnowledgeConnectors } from "@atlas/api/lib/knowledge/register-connectors";
 
 const log = createLogger("knowledge-bundle-sync-scheduler");
 
@@ -219,10 +218,6 @@ export function startKnowledgeBundleSyncScheduler(intervalMs?: number): void {
       ? intervalMs
       : null;
   _running = true;
-  // Register the built-in Knowledge Sync Connectors (Confluence, …) before the
-  // first cycle — the cycle walk dispatches installs of registered connector
-  // catalog ids, so registration must precede it. Idempotent + guarded.
-  registerBuiltinKnowledgeConnectors();
   log.info(
     { intervalMs: _intervalOverrideMs ?? getKnowledgeSyncIntervalMs() },
     "Starting knowledge bundle sync scheduler (interval re-read each tick)",

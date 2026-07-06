@@ -39,6 +39,11 @@ import type { KnowledgeCollectionSource, KnowledgeSyncAuthScheme } from "@/ui/li
  *      server-side (never echoed back). Atlas pulls the endpoint on a schedule
  *      (daily by default, operator-tunable) and queues changes for review;
  *      "Sync now" runs a pull on demand.
+ *    - Notion (`notion-knowledge`, #4378): config carries only an optional
+ *      description; the internal-integration token is encrypted at rest
+ *      server-side (never echoed back). The pages the customer shares with the
+ *      integration ARE the scope — Atlas pulls them on the same schedule and
+ *      queues changes for review.
  *
  *  Edit mode (`edit` prop) re-drives the SAME install pipeline with the
  *  existing slug — the server upserts the container config in place and
@@ -88,6 +93,7 @@ export function CreateCollectionDialog({
   const [endpointUrl, setEndpointUrl] = useState("");
   const [authScheme, setAuthScheme] = useState<AuthScheme>("none");
   const [authSecret, setAuthSecret] = useState("");
+  const [integrationToken, setIntegrationToken] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -99,6 +105,7 @@ export function CreateCollectionDialog({
       setEndpointUrl(edit?.endpointUrl ?? "");
       setAuthScheme(edit?.authScheme ?? "none");
       setAuthSecret("");
+      setIntegrationToken("");
       setError(null);
     }
   }, [open, edit]);
@@ -108,8 +115,10 @@ export function CreateCollectionDialog({
   // Editing targets an existing slug by design; only creation rejects dupes.
   const isDuplicate = !isEdit && existingSlugs.includes(trimmedSlug);
   const isSync = source === "bundle-sync";
+  const isNotion = source === "notion";
   const endpointValid = !isSync || endpointUrl.trim().length > 0;
   const secretValid = !isSync || authScheme === "none" || authSecret.trim().length > 0;
+  const tokenValid = !isNotion || integrationToken.trim().length > 0;
 
   async function handleSubmit() {
     if (!slugValid) {
@@ -128,6 +137,10 @@ export function CreateCollectionDialog({
       setError("An auth secret is required for bearer/basic authentication.");
       return;
     }
+    if (isNotion && !tokenValid) {
+      setError("A Notion internal-integration token is required.");
+      return;
+    }
     setSaving(true);
     setError(null);
 
@@ -138,7 +151,10 @@ export function CreateCollectionDialog({
       body.auth_scheme = authScheme;
       if (authScheme !== "none") body.auth_secret = authSecret.trim();
     }
-    const catalogSlug = isSync ? "bundle-sync" : "okf-upload";
+    if (isNotion) {
+      body.integration_token = integrationToken.trim();
+    }
+    const catalogSlug = isSync ? "bundle-sync" : isNotion ? "notion-knowledge" : "okf-upload";
 
     try {
       const res = await fetch(`${getApiUrl()}/api/v1/integrations/${catalogSlug}/install-form`, {
@@ -187,13 +203,21 @@ export function CreateCollectionDialog({
 
         <div className="space-y-3">
           {!isEdit ? (
-            <Tabs value={source} onValueChange={(v) => setSource(v === "bundle-sync" ? "bundle-sync" : "upload")}>
-              <TabsList className="grid w-full grid-cols-2">
+            <Tabs
+              value={source}
+              onValueChange={(v) =>
+                setSource(v === "bundle-sync" ? "bundle-sync" : v === "notion" ? "notion" : "upload")
+              }
+            >
+              <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="upload" data-testid="source-upload">
                   Upload
                 </TabsTrigger>
                 <TabsTrigger value="bundle-sync" data-testid="source-bundle-sync">
-                  Sync from endpoint
+                  Endpoint
+                </TabsTrigger>
+                <TabsTrigger value="notion" data-testid="source-notion">
+                  Notion
                 </TabsTrigger>
               </TabsList>
             </Tabs>
@@ -278,6 +302,27 @@ export function CreateCollectionDialog({
             </>
           ) : null}
 
+          {isNotion ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="collection-notion-token">Internal-integration token</Label>
+              <Input
+                id="collection-notion-token"
+                type="password"
+                autoComplete="off"
+                placeholder="ntn_…"
+                value={integrationToken}
+                onChange={(e) => setIntegrationToken(e.target.value)}
+                data-testid="collection-notion-token"
+              />
+              <p className="text-xs text-muted-foreground">
+                Create an internal integration at notion.so/my-integrations, then{" "}
+                <strong>share the pages you want synced with it</strong> — only pages shared with the
+                integration sync. Share a parent page to include its whole subtree. Stored encrypted;
+                never shown again. Synced changes always land as drafts for review.
+              </p>
+            </div>
+          ) : null}
+
           <div className="space-y-1.5">
             <Label htmlFor="collection-description">Description (optional)</Label>
             <Textarea
@@ -298,7 +343,7 @@ export function CreateCollectionDialog({
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={saving || !slugValid || isDuplicate || !endpointValid || !secretValid}
+            disabled={saving || !slugValid || isDuplicate || !endpointValid || !secretValid || !tokenValid}
             data-testid="create-collection-submit"
           >
             {saving ? (

@@ -1,0 +1,80 @@
+---
+title: Connect Notion
+description: Sync a Notion workspace into a review-gated Knowledge Base collection — the pages you share with an integration become knowledge documents the agent reads alongside your semantic layer.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Connecting Notion turns the pages you share with a Notion integration into a [Knowledge Base](/guides/knowledge-base) collection: Atlas pulls them on a schedule, converts each to markdown, and queues every change as a **draft** for review before it can reach the agent. It is one of the Knowledge Base's synced sources — like the endpoint sync, but the source is a Notion workspace instead of a bundle URL.
+
+<Callout title="What syncs — and what doesn't">
+**Only the pages you explicitly share with the integration sync.** Notion integrations start with access to *nothing*; you grant access page by page. Sharing a parent page includes its whole subtree. This is the model to internalize before you connect — see [The sharing model](#the-sharing-model) below.
+</Callout>
+
+---
+
+## Create a Notion integration
+
+1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations) and create a new **internal integration** in the workspace whose pages you want to sync.
+2. Give it read access — Atlas never writes to Notion. **Read content** capability is all it needs.
+3. Copy the integration's **internal-integration token** (it looks like `ntn_…`). You'll paste it into Atlas once.
+
+An internal integration is scoped to a single Notion workspace, which is why each Atlas connection maps to **one workspace per authorization**.
+
+---
+
+## Share the pages you want synced
+
+This is the step people miss. Creating the integration grants it access to nothing. In Notion, open each page (or the top of each subtree) you want in Atlas, use the page's **•••** menu → **Connections** → **Connect to**, and pick your integration.
+
+- **Share a parent to include its subtree.** Sharing the "Engineering" page shares every page nested under it. You do not need to share children individually.
+- **Databases work too.** Sharing a database shares its rows (each row is a page).
+- **Nothing else is visible.** A page you didn't share — even one linked from a shared page — will not sync.
+
+---
+
+## Connect it in Atlas
+
+Navigate to **Admin → Knowledge Base** (`/admin/knowledge`), choose **New collection**, and pick the **Notion** tab. Give the collection a slug, paste the internal-integration token, and (optionally) a description. The token is encrypted at rest and never shown again.
+
+Creating the collection kicks off the first sync immediately. Every page lands as a **draft** — see [Review and publish](/guides/knowledge-base#review-and-publish); nothing a connector pulls is ever auto-published.
+
+---
+
+## The sharing model
+
+Notion's permission model is *opt-in per subtree*, and Atlas mirrors it exactly: the set of pages shared with the integration **is** the collection's scope. There is no space picker or path filter — you curate what syncs by curating what you share in Notion.
+
+Two consequences follow, and both are intentional:
+
+- **To add pages,** share them (or their parent) with the integration in Notion. They appear on the next sync — no change in Atlas.
+- **To remove pages,** unshare them in Notion. On the next full reconciliation, the pages that are no longer reachable are **archived** in Atlas (never hard-deleted; a re-share brings them back as drafts for re-review).
+
+### "Why is my page missing?"
+
+Nine times out of ten, a page that didn't sync was never shared with the integration. Notion's own **search is deliberately non-exhaustive**, so Atlas doesn't rely on it alone — every scheduled full reconciliation also walks the tree of shared pages to find children that search misses. But a page that is not shared at all (directly or via an ancestor) is invisible to the integration, and therefore to Atlas. If a page is missing:
+
+1. Open it in Notion and confirm the integration appears under **•••** → **Connections**. If not, share it (or a parent).
+2. Give it until the next sync, or press **Sync now** on the collection card.
+
+Newly shared pages appear on the next **full reconciliation** (which also handles removals), not necessarily the next incremental cycle — reconciliation is the connector's correctness anchor.
+
+---
+
+## How syncing behaves
+
+- **Incremental cycles** run often and cheaply: they pick up pages edited since the last sync.
+- **Full reconciliation** runs on a slower cadence (weekly by default) and is authoritative: it enumerates the entire shared set, so it's where newly-shared pages are discovered and unshared pages are archived.
+- **Rate limits** are respected automatically — Atlas throttles to Notion's ~3 requests/second per token and backs off on `429`s, so a large workspace can't burn your API budget.
+- **Content is text-first.** Page bodies are converted to markdown via Notion's official page-markdown endpoint. Images and file attachments are **not** mirrored (their Notion URLs expire within the hour); each is replaced with a link back to the Notion page.
+- **Every change is review-gated.** New and changed pages land as drafts; an already-published page whose Notion content changed is demoted back to draft so the edit is re-reviewed. Connectors structurally cannot publish.
+
+<Callout type="info" title="Provenance">
+Every synced document carries an `atlas:` provenance block — the vendor (`notion`), the Notion page id, its `last_edited_time`, and the sync time — plus a `resource` link to the source page, so any answer traces back to the Notion page it came from.
+</Callout>
+
+---
+
+## Uninstalling
+
+Uninstalling a Notion collection **archives** its documents (never hard-deletes them) and removes the stored token. Re-connecting and syncing restores the shared pages as drafts for re-review. See [Uninstalling a collection](/guides/knowledge-base#uninstalling-a-collection).

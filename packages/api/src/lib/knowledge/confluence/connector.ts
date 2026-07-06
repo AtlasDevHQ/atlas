@@ -12,14 +12,19 @@
  * message.
  */
 
+import { createLogger } from "@atlas/api/lib/logger";
 import { readSyncCredential } from "../sync-credentials";
-import type {
-  ConnectorInstallContext,
-  ConnectorVendorClient,
-  KnowledgeSyncConnector,
+import {
+  getKnowledgeSyncConnector,
+  registerKnowledgeSyncConnector,
+  type ConnectorInstallContext,
+  type ConnectorVendorClient,
+  type KnowledgeSyncConnector,
 } from "../connectors";
 import { createConfluenceVendorClient, type ConfluenceClientDeps } from "./client";
 import { CONFLUENCE_CATALOG_ID, CONFLUENCE_VENDOR, parseConfluenceConfig } from "./config";
+
+const log = createLogger("knowledge.confluence.connector");
 
 export interface ConfluenceConnectorDeps {
   /** Injected fetch for tests — threaded into the vendor client. */
@@ -58,4 +63,16 @@ export function createConfluenceConnector(
       );
     },
   };
+}
+
+/**
+ * Register the Confluence connector idempotently — called from the boot seam
+ * that also registers install handlers (`registerBuiltinInstallHandlers`), and
+ * from tests. `registerKnowledgeSyncConnector` throws on a duplicate catalog id,
+ * so gate on the registry first.
+ */
+export function registerConfluenceKnowledgeConnector(): void {
+  if (getKnowledgeSyncConnector(CONFLUENCE_CATALOG_ID) !== undefined) return;
+  registerKnowledgeSyncConnector(createConfluenceConnector());
+  log.info({ catalogId: CONFLUENCE_CATALOG_ID }, "Registered Confluence knowledge sync connector");
 }

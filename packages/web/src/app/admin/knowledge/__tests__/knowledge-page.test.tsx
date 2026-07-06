@@ -62,7 +62,7 @@ function syncedCollection(partial: Partial<KnowledgeCollection> = {}): Knowledge
 function connectorCollection(partial: Partial<KnowledgeCollection> = {}): KnowledgeCollection {
   return collection({
     slug: "confluence-eng",
-    source: "connector",
+    source: "confluence",
     // Connectors carry no bundle endpoint / auth scheme.
     endpointUrl: null,
     authScheme: null,

@@ -179,66 +179,50 @@ mock.module("@atlas/api/lib/integrations/install/bundle-sync-form-handler", () =
   parseBundleSyncConfig: () => ({ ok: true, endpointUrl: "https://kb.example.com/bundle.zip", authScheme: "none" }),
 }));
 
-// Partial mock, justified (#4377): the router consults `getKnowledgeSyncConnector`
-// to recognize connector catalogs, calls `registerBuiltinKnowledgeConnectors`
-// (idempotent) on the list/sync paths, and dispatches manual sync through
-// `syncConnectorCollection`. Nothing else in this file's graph reaches these
-// modules' other exports, so the confluence connector's heavier import graph
-// (client/egress) stays out. The connector engine is pinned in
-// lib/knowledge/__tests__/connector-sync.test.ts.
-const FIXTURE_CONNECTOR = {
-  catalogId: "catalog:confluence",
-  vendor: "confluence",
-  createClient: () => ({
-    fetchChanges: async () => ({ documents: [], highWaterMark: null }),
-    fetchAll: async () => ({ documents: [], highWaterMark: null }),
-  }),
+// Notion connector dispatch (#4378). Stub the heavier notion client stack out
+// (only the catalog-id constant is consumed), and spy the registry +
+// connector engine so the route tests assert dispatch + the fail-closed
+// `connector_unavailable` branch only. `NOTION_CONNECTOR` is read live by the
+// registry mock so a test can null it to simulate a missing registration.
+let NOTION_CONNECTOR: unknown = {
+  catalogId: "catalog:notion-knowledge",
+  vendor: "notion",
+  createClient: () => ({}),
 };
-mock.module("@atlas/api/lib/knowledge/register-connectors", () => ({
-  registerBuiltinKnowledgeConnectors: () => {},
+mock.module("@atlas/api/lib/knowledge/notion/connector", () => ({
+  NOTION_KNOWLEDGE_CATALOG_ID: "catalog:notion-knowledge",
+  NOTION_KNOWLEDGE_SLUG: "notion-knowledge",
+  NOTION_VENDOR: "notion",
+  notionKnowledgeConnector: NOTION_CONNECTOR,
+  registerNotionKnowledgeConnector: () => {},
 }));
+const getKnowledgeSyncConnector = mock((_id: string) => NOTION_CONNECTOR);
+class ConnectorRateLimitError extends Error {}
 mock.module("@atlas/api/lib/knowledge/connectors", () => ({
-  getKnowledgeSyncConnector: (id: string) => (id === "catalog:confluence" ? FIXTURE_CONNECTOR : undefined),
+  getKnowledgeSyncConnector,
   registerKnowledgeSyncConnector: () => {},
-  listKnowledgeSyncConnectorCatalogIds: () => ["catalog:confluence"],
+  listKnowledgeSyncConnectorCatalogIds: () => ["catalog:notion-knowledge"],
   _resetKnowledgeSyncConnectors: () => {},
-  ConnectorRateLimitError: class ConnectorRateLimitError extends Error {},
+  ConnectorRateLimitError,
 }));
-// Explicit union return type so a `mockImplementationOnce` returning the
-// `status:"error"` variant (documents/highWaterMark null) still type-checks
-// against the base success fixture.
-type FakeConnectorOutcome = {
-  collection: string;
-  status: "success" | "error";
-  mode: "reconciliation" | "incremental";
-  syncedAt: string;
-  error: string | null;
-  documents: {
-    created: number;
-    updated: number;
-    demoted: number;
-    resurrected: number;
-    unchanged: number;
-    total: number;
-  } | null;
-  archivedAbsent: number | null;
-  rejected: unknown[];
-  highWaterMark: string | null;
-};
-const syncConnectorCollection = mock(
-  async (params: { collectionSlug: string }): Promise<FakeConnectorOutcome> => ({
-    collection: params.collectionSlug,
-    status: "success",
-    mode: "reconciliation",
-    syncedAt: "2026-07-02T02:00:00.000Z",
-    error: null,
-    documents: { created: 2, updated: 0, demoted: 0, resurrected: 0, unchanged: 0, total: 2 },
-    archivedAbsent: 0,
-    rejected: [],
-    highWaterMark: "2026-07-01T00:00:00.000Z",
-  }),
-);
-mock.module("@atlas/api/lib/knowledge/connector-sync", () => ({ syncConnectorCollection }));
+const syncConnectorCollection = mock(async (params: { collectionSlug: string }) => ({
+  collection: params.collectionSlug,
+  status: "success" as const,
+  mode: "reconciliation" as const,
+  syncedAt: "2026-07-02T02:00:00.000Z",
+  error: null,
+  documents: { created: 3, updated: 0, demoted: 0, resurrected: 0, unchanged: 0, total: 3 },
+  archivedAbsent: 1,
+  rejected: [],
+  highWaterMark: "2026-07-01T00:00:00.000Z",
+}));
+// Partial mock, justified: the router reaches exactly one symbol from
+// connector-sync (`syncConnectorCollection`); the isolated per-file runner
+// prevents cross-file leaks, and any other export reached later would fail
+// loudly as `undefined is not a function`.
+mock.module("@atlas/api/lib/knowledge/connector-sync", () => ({
+  syncConnectorCollection,
+}));
 
 // Partial mock, justified: this file's import graph reaches only the exports
 // stubbed below; the isolated per-file runner prevents cross-file leaks, and an
@@ -295,8 +279,20 @@ beforeEach(() => {
   internalQuery.mockClear();
   syncCollection.mockClear();
   syncConnectorCollection.mockClear();
+  getKnowledgeSyncConnector.mockClear();
+  NOTION_CONNECTOR = { catalogId: "catalog:notion-knowledge", vendor: "notion", createClient: () => ({}) };
 });
 afterEach(() => internalQuery.mockClear());
+
+/** Switch the resolved collection to a Notion connector install (#4378). */
+function useNotionCollection(): void {
+  COLLECTION = {
+    install_id: "runbooks",
+    catalog_id: "catalog:notion-knowledge",
+    status: "published",
+    config: {},
+  };
+}
 
 /** Switch the resolved collection to a bundle-sync install (#4211). */
 function useSyncedCollection(): void {
@@ -305,16 +301,6 @@ function useSyncedCollection(): void {
     catalog_id: "catalog:bundle-sync",
     status: "published",
     config: { endpoint_url: "https://kb.example.com/bundle.zip", auth_scheme: "none" },
-  };
-}
-
-/** Switch the resolved collection to a connector (Confluence) install (#4377). */
-function useConnectorCollection(): void {
-  COLLECTION = {
-    install_id: "runbooks",
-    catalog_id: "catalog:confluence",
-    status: "published",
-    config: { base_url: "https://acme.atlassian.net/wiki", email: "bot@acme.com", space_key: "ENG" },
   };
 }
 
@@ -523,62 +509,85 @@ describe("POST /{collectionSlug}/sync — manual Sync now (#4211)", () => {
   });
 });
 
-describe("connector collections — Confluence (#4377)", () => {
-  it("dispatches manual 'Sync now' to the connector engine, not the bundle-sync engine", async () => {
-    useConnectorCollection();
+describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => {
+  it("dispatches a Notion collection to the connector engine, not the bundle engine", async () => {
+    useNotionCollection();
     const res = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string; format: unknown; documents: { total: number } };
-    expect(body.status).toBe("success");
-    expect(body.documents.total).toBe(2);
-    // A connector sync has no container format / link count.
-    expect(body.format).toBeNull();
     expect(syncConnectorCollection).toHaveBeenCalledTimes(1);
-    expect(syncConnectorCollection.mock.calls[0]?.[0]).toMatchObject({
-      workspaceId: CURRENT_ORG,
-      collectionSlug: "runbooks",
-    });
     expect(syncCollection).not.toHaveBeenCalled();
+    const body = (await res.json()) as {
+      collection: string;
+      status: string;
+      format: string | null;
+      linksWritten: number | null;
+      archivedAbsent: number | null;
+      documents: { total: number };
+    };
+    // The connector outcome maps to the shared wire shape — no bundle `format`
+    // or `linksWritten`, but the ingest counts + archivedAbsent carry through.
+    expect(body).toMatchObject({
+      collection: "runbooks",
+      status: "success",
+      format: null,
+      linksWritten: null,
+      archivedAbsent: 1,
+    });
+    expect(body.documents.total).toBe(3);
   });
 
-  it("returns a connector error outcome as 200 with status error and null format", async () => {
-    useConnectorCollection();
-    syncConnectorCollection.mockImplementationOnce(async (params: { collectionSlug: string }) => ({
-      collection: params.collectionSlug,
-      status: "error" as const,
-      mode: "reconciliation" as const,
-      syncedAt: "2026-07-02T02:00:00.000Z",
-      error: "Confluence rate-limited the request to acme.atlassian.net (backoff exhausted).",
-      documents: null,
-      archivedAbsent: null,
-      rejected: [],
-      highWaterMark: null,
-    }));
+  it("500s connector_unavailable when the catalog has no registered connector", async () => {
+    useNotionCollection();
+    NOTION_CONNECTOR = undefined; // getKnowledgeSyncConnector → undefined
     const res = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string; error: string; format: unknown; documents: unknown };
-    expect(body.status).toBe("error");
-    expect(body.error).toMatch(/rate-limited/i);
-    expect(body.format).toBeNull();
-    expect(body.documents).toBeNull();
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; requestId: string };
+    expect(body.error).toBe("connector_unavailable");
+    expect(body.requestId).toBeDefined();
+    expect(syncConnectorCollection).not.toHaveBeenCalled();
   });
 
-  it("lists a connector collection with source 'connector' and its sync state", async () => {
-    useConnectorCollection();
+  it("lists a Notion collection as source 'notion' with sync bookkeeping", async () => {
+    useNotionCollection();
     SYNC_STATES = [
       { collection_id: "runbooks", last_sync_at: "2026-07-02T02:00:00.000Z", status: "success", error: null },
     ];
     const res = await adminKnowledge.request("/", { method: "GET" });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      collections: Array<{ slug: string; source: string; sync: unknown; endpointUrl: unknown; authScheme: unknown }>;
+      collections: Array<{ slug: string; source: string; endpointUrl: string | null; sync: unknown }>;
     };
-    const coll = body.collections.find((c) => c.slug === "runbooks");
-    expect(coll?.source).toBe("connector");
-    expect(coll?.sync).toMatchObject({ status: "success" });
-    // Connectors have no bundle endpoint / auth scheme.
-    expect(coll?.endpointUrl).toBeNull();
-    expect(coll?.authScheme).toBeNull();
+    const notion = body.collections.find((c) => c.slug === "runbooks");
+    expect(notion?.source).toBe("notion");
+    expect(notion?.endpointUrl).toBeNull(); // connector has a token, not an endpoint
+    expect(notion?.sync).not.toBeNull();
+  });
+
+  // Confluence rides the SAME generic connector dispatch as Notion; these two
+  // cases just pin that its distinct catalog id classifies as source 'confluence'.
+  it("dispatches a Confluence collection to the connector engine and lists it as source 'confluence' (#4377)", async () => {
+    COLLECTION = {
+      install_id: "runbooks",
+      catalog_id: "catalog:confluence",
+      status: "published",
+      config: { base_url: "https://acme.atlassian.net/wiki", email: "b@a.com", space_key: "ENG" },
+    };
+    SYNC_STATES = [
+      { collection_id: "runbooks", last_sync_at: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    ];
+    const syncRes = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
+    expect(syncRes.status).toBe(200);
+    expect(syncConnectorCollection).toHaveBeenCalledTimes(1);
+    expect(syncCollection).not.toHaveBeenCalled();
+
+    const listRes = await adminKnowledge.request("/", { method: "GET" });
+    const body = (await listRes.json()) as {
+      collections: Array<{ slug: string; source: string; endpointUrl: string | null; sync: unknown }>;
+    };
+    const conf = body.collections.find((c) => c.slug === "runbooks");
+    expect(conf?.source).toBe("confluence");
+    expect(conf?.endpointUrl).toBeNull();
+    expect(conf?.sync).not.toBeNull();
   });
 });
 

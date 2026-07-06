@@ -53,10 +53,11 @@ import {
   BUNDLE_SYNC_AUTH_SCHEMES,
   BUNDLE_SYNC_CATALOG_ID,
 } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
+import { NOTION_KNOWLEDGE_CATALOG_ID } from "@atlas/api/lib/knowledge/notion/connector";
+import { CONFLUENCE_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/config";
 import { syncCollection } from "@atlas/api/lib/knowledge/sync";
 import { getKnowledgeSyncConnector } from "@atlas/api/lib/knowledge/connectors";
 import { syncConnectorCollection } from "@atlas/api/lib/knowledge/connector-sync";
-import { registerBuiltinKnowledgeConnectors } from "@atlas/api/lib/knowledge/register-connectors";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -100,21 +101,27 @@ async function loadCollection(
   return rows[0] ?? null;
 }
 
+/** A synced-collection source discriminator + whether it is a connector. */
+type KnowledgeSource = "upload" | "bundle-sync" | "notion" | "confluence" | "unknown";
+
 /**
- * Map a knowledge catalog id to the wire `source` discriminator — matching each
- * KNOWN catalog explicitly so a future third knowledge catalog can never default
+ * Map a knowledge catalog id to the wire `source` discriminator — matching
+ * each KNOWN catalog explicitly so a future knowledge catalog can never default
  * into a privileged branch (`upload` is the source that inherits the
- * upload-&-publish ingest route, ADR-0028 §4). Any catalog id with a registered
- * Knowledge Sync Connector (#4377 — Confluence, …) resolves to `"connector"`.
- * Both gated routes reject `"unknown"` outright; only the list rendering maps it
- * to a wire label. Callers must ensure the connector registry is populated
- * (`registerBuiltinKnowledgeConnectors`) before relying on the connector branch.
+ * upload-&-publish ingest route, ADR-0028 §4). The gated routes reject
+ * `"unknown"` outright; only the list rendering maps it to a wire label.
  */
-function sourceOf(catalogId: string): "upload" | "bundle-sync" | "connector" | "unknown" {
+function sourceOf(catalogId: string): KnowledgeSource {
   if (catalogId === OKF_UPLOAD_CATALOG_ID) return "upload";
   if (catalogId === BUNDLE_SYNC_CATALOG_ID) return "bundle-sync";
-  if (getKnowledgeSyncConnector(catalogId) !== undefined) return "connector";
+  if (catalogId === NOTION_KNOWLEDGE_CATALOG_ID) return "notion";
+  if (catalogId === CONFLUENCE_CATALOG_ID) return "confluence";
   return "unknown";
+}
+
+/** True for a synced source (endpoint or connector) — has sync bookkeeping. */
+function isSyncedSource(source: KnowledgeSource): boolean {
+  return source === "bundle-sync" || source === "notion" || source === "confluence";
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +141,7 @@ const CollectionListResponseSchema = z.object({
   collections: z.array(
     z.object({
       slug: z.string(),
-      source: z.enum(["upload", "bundle-sync", "connector"]),
+      source: z.enum(["upload", "bundle-sync", "notion", "confluence"]),
       description: z.string().nullable(),
       installedAt: z.string().nullable(),
       endpointUrl: z.string().nullable(),
@@ -306,11 +313,12 @@ const syncRoute = createRoute({
   method: "post",
   path: "/{collectionSlug}/sync",
   tags: ["Admin — Knowledge"],
-  summary: "Sync a bundle-sync collection now",
+  summary: "Sync a synced collection now",
   description:
-    "Manually pull a synced collection's bundle endpoint and apply the diff immediately (the same " +
-    "run the scheduled sync performs — daily by default, operator-tunable). Changed and new documents land as `draft` for review — " +
-    "synced content has no publish shortcut; paths absent from the fetched bundle are archived, " +
+    "Manually pull a synced collection's source (a bundle endpoint, or a connector like Notion) and " +
+    "apply the diff immediately (the same run the scheduled sync performs — daily by default, " +
+    "operator-tunable). Changed and new documents land as `draft` for review — synced content has no " +
+    "publish shortcut; on a full reconciliation, paths absent from the fetched set are archived, " +
     "never hard-deleted. Returns the attempt's outcome; a failed fetch/ingest is reported as " +
     "`status: \"error\"` with an actionable message (also recorded on the collection's sync status).",
   request: {
@@ -324,7 +332,7 @@ const syncRoute = createRoute({
       content: { "application/json": { schema: SyncRunResponseSchema } },
     },
     400: {
-      description: "Not a synced collection (upload collections have no endpoint to sync)",
+      description: "Not a synced collection (upload collections have no source to pull)",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -378,11 +386,6 @@ adminKnowledge.use(requireOrgContext());
 adminKnowledge.openapi(listRoute, async (c) =>
   runHandler(c, "list knowledge collections", async () => {
     const { orgId } = c.get("orgContext");
-    // Ensure the connector registry is populated so `sourceOf` recognizes
-    // connector collections (idempotent — a no-op once the scheduler registered
-    // them at boot). Without this a connector install lists as "unknown" and is
-    // skipped, hiding it from /admin/knowledge.
-    registerBuiltinKnowledgeConnectors();
     const countsQuery = buildDocumentStatusCountsQuery(orgId);
     const [installs, counts, syncStates] = await Promise.all([
       internalQuery<{
@@ -472,8 +475,6 @@ adminKnowledge.openapi(listRoute, async (c) =>
               // The scheme (not the secret) pre-fills the edit-sync-settings
               // dialog. An unrecognized stored value renders as "none" — the
               // sync engine itself rejects it with an actionable error.
-              // Connectors have no endpoint auth scheme (they carry their own
-              // credential type), so it stays null for them.
               authScheme:
                 source === "bundle-sync"
                   ? typeof rawAuthScheme === "string" &&
@@ -481,12 +482,9 @@ adminKnowledge.openapi(listRoute, async (c) =>
                     ? (rawAuthScheme as (typeof BUNDLE_SYNC_AUTH_SCHEMES)[number])
                     : ("none" as const)
                   : null,
-              // Both bundle-sync and connector collections carry last-sync
-              // bookkeeping in knowledge_sync_state.
-              sync:
-                source === "bundle-sync" || source === "connector"
-                  ? syncBySlug.get(r.install_id) ?? null
-                  : null,
+              // Every synced source (endpoint or connector) carries last-sync
+              // bookkeeping; only upload collections have none.
+              sync: isSyncedSource(source) ? syncBySlug.get(r.install_id) ?? null : null,
               documents: countsBySlug.get(r.install_id) ?? { draft: 0, published: 0, archived: 0 },
             },
           ];
@@ -724,10 +722,6 @@ adminKnowledge.openapi(syncRoute, async (c) =>
     const { orgId, requestId } = c.get("orgContext");
     const { collectionSlug } = c.req.valid("param");
 
-    // Populate the connector registry so a connector collection is recognized
-    // even in a process where the scheduler hasn't started (idempotent).
-    registerBuiltinKnowledgeConnectors();
-
     const collection = await loadCollection(orgId, collectionSlug);
     if (!collection || collection.status === "archived") {
       return c.json(
@@ -736,67 +730,33 @@ adminKnowledge.openapi(syncRoute, async (c) =>
       );
     }
     const source = sourceOf(collection.catalog_id);
-    if (source !== "bundle-sync" && source !== "connector") {
+    if (!isSyncedSource(source)) {
       return c.json(
         {
           error: "not_synced_collection",
-          message: `"${collectionSlug}" is not a synced collection — only synced collections can be pulled on demand.`,
+          message: `"${collectionSlug}" is not a synced collection — only synced collections (endpoint or connector) have a source to pull.`,
           requestId,
         },
         400,
       );
     }
 
-    // Both engines are non-throwing: fetch hardening, ingest, archive-absent, and
-    // the knowledge_sync_state upsert happen inside; a failed attempt comes back
-    // as `status: "error"` with a host-redacted, actionable message. The wire
-    // response is the shared `KnowledgeSyncRunResponse` — a connector sync has no
-    // container `format` / link count, so both are null there.
-    // Typed to the route's zod schema (mutable arrays) so `c.json` accepts it;
-    // the `_SyncRunProducerDrift` guard proves it stays assignable to the wire
-    // `KnowledgeSyncRunResponse`.
-    let response: z.infer<typeof SyncRunResponseSchema>;
-    let auditFormat: string | null;
-    if (source === "connector") {
-      const connector = getKnowledgeSyncConnector(collection.catalog_id);
-      if (connector === undefined) {
-        // Registry race (a connector unregistered between sourceOf and here) —
-        // never in practice; report it rather than silently 200.
-        return c.json(
-          {
-            error: "connector_unavailable",
-            message: `The connector for "${collectionSlug}" is not registered — retry, or check the server logs.`,
-            requestId,
-          },
-          400,
-        );
-      }
-      const outcome = await syncConnectorCollection({
-        connector,
-        workspaceId: orgId,
-        collectionSlug,
-        config: collection.config,
-      });
-      auditFormat = null;
-      response = {
-        collection: outcome.collection,
-        status: outcome.status,
-        syncedAt: outcome.syncedAt,
-        error: outcome.error,
-        format: null,
-        documents: outcome.documents,
-        archivedAbsent: outcome.archivedAbsent,
-        linksWritten: null,
-        rejected: [...outcome.rejected],
-      };
-    } else {
+    // Both engines never throw: fetch hardening, ingest, archive-absent, and the
+    // knowledge_sync_state upsert all happen inside. A failed attempt comes back
+    // as `status: "error"` with a host-redacted, actionable message. Bundle-sync
+    // pulls an endpoint; a connector (Notion) drives its registered vendor
+    // client. Both map to the one sync-run wire shape — connectors carry no
+    // bundle `format` / `linksWritten`, so those are null. Typed as the route
+    // schema's inferred (mutable) shape; the module-level producer-drift guard
+    // keeps it assignable to `KnowledgeSyncRunResponse`.
+    let wire: z.infer<typeof SyncRunResponseSchema>;
+    if (source === "bundle-sync") {
       const outcome = await syncCollection({
         workspaceId: orgId,
         collectionSlug,
         config: collection.config,
       });
-      auditFormat = outcome.format;
-      response = {
+      wire = {
         collection: outcome.collection,
         status: outcome.status,
         syncedAt: outcome.syncedAt,
@@ -807,6 +767,42 @@ adminKnowledge.openapi(syncRoute, async (c) =>
         linksWritten: outcome.linksWritten,
         rejected: [...outcome.rejected],
       };
+    } else {
+      const connector = getKnowledgeSyncConnector(collection.catalog_id);
+      if (connector === undefined) {
+        // The source came from the same catalog-id map the connector registers
+        // under, so this is only reachable if boot registration failed — a real
+        // server misconfig, surfaced (not a silent success).
+        log.error(
+          { requestId, orgId, collectionSlug, catalogId: collection.catalog_id },
+          "Synced collection has no registered connector — the boot registration did not run",
+        );
+        return c.json(
+          {
+            error: "connector_unavailable",
+            message: `"${collectionSlug}" cannot sync — its connector is not registered on this server. Contact your operator.`,
+            requestId,
+          },
+          500,
+        );
+      }
+      const outcome = await syncConnectorCollection({
+        connector,
+        workspaceId: orgId,
+        collectionSlug,
+        config: collection.config,
+      });
+      wire = {
+        collection: outcome.collection,
+        status: outcome.status,
+        syncedAt: outcome.syncedAt,
+        error: outcome.error,
+        format: null,
+        documents: outcome.documents,
+        archivedAbsent: outcome.archivedAbsent,
+        linksWritten: null,
+        rejected: [...outcome.rejected],
+      };
     }
 
     logAdminAction({
@@ -814,25 +810,25 @@ adminKnowledge.openapi(syncRoute, async (c) =>
       targetType: "knowledge",
       targetId: collectionSlug,
       scope: "workspace",
-      status: response.status === "success" ? "success" : "failure",
+      status: wire.status === "success" ? "success" : "failure",
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
       metadata: {
         collectionSlug,
-        status: response.status,
-        error: response.error,
-        format: auditFormat,
-        ...(response.documents ?? {}),
-        archivedAbsent: response.archivedAbsent,
-        rejected: response.rejected.length,
+        source,
+        status: wire.status,
+        error: wire.error,
+        ...(wire.documents ?? {}),
+        archivedAbsent: wire.archivedAbsent,
+        rejected: wire.rejected.length,
       },
     });
 
     log.info(
-      { requestId, orgId, collectionSlug, source, status: response.status, error: response.error },
+      { requestId, orgId, collectionSlug, source, status: wire.status, error: wire.error },
       "Knowledge collection manual sync completed",
     );
 
-    return c.json(response satisfies KnowledgeSyncRunResponse, 200);
+    return c.json(wire satisfies KnowledgeSyncRunResponse, 200);
   }),
 );
 

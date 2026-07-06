@@ -33,7 +33,8 @@ Navigate to **Admin → Knowledge Base** (`/admin/knowledge`) and choose **New c
 
 - **Upload** — you push bundles by hand. No credentials; just a slug and an optional description.
 - **Sync from endpoint** — Atlas pulls a bundle from a URL on a schedule. Provide the endpoint URL and an auth scheme (`none`, `bearer`, or `basic`); the secret is encrypted at rest and never shown again. Credentials embedded in the URL itself (`user:pass@`) are rejected — use the auth fields.
-- **Connect a vendor** — a server-side connector mirrors a vendor portal directly. [Confluence Cloud](/guides/connect-confluence) is available today (one space per collection, API-token install); more vendors follow. Installed from **Admin → Integrations** rather than the New-collection dialog.
+- **Notion** — Atlas pulls the pages you share with a Notion integration, on the same schedule. Provide an internal-integration token; the pages shared with the integration *are* the scope. See [Connect Notion](/guides/connect-notion) for the sharing model and its one gotcha.
+- **Confluence** — Atlas mirrors one Confluence Cloud space, on the same schedule. Provide the site URL, your email, and an API token; the space's pages sync as review-gated drafts. See [Connect Confluence](/guides/connect-confluence) for token creation, the per-space scope, and the macro/rename expectations.
 
 The endpoint can be anything that serves a tarball or zip, including git-forge repository-archive URLs (e.g. a GitHub `archive/refs/heads/main.tar.gz` link), so "sync my docs repo" needs no dedicated connector. Prefer a **branch** archive URL: tag and commit archives change their top-level folder name on every release, which makes every document path look new on each pull. Creating a synced collection in the admin console kicks off the first sync immediately; collections installed through the API wait for the schedule or a manual sync trigger.
 

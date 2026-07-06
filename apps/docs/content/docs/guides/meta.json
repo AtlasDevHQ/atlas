@@ -21,6 +21,7 @@
     "semantic-editor",
     "semantic-expert",
     "knowledge-base",
+    "connect-notion",
     "developer-mode",
     "demo-mode",
     "guided-tour",

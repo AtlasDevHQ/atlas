@@ -200,9 +200,10 @@ export default function KnowledgePage() {
         onCreated={(slug, source) => {
           setCreateOpen(false);
           void refetch();
-          if (source === "bundle-sync") {
-            // Initial full ingest: kick the first pull right away rather than
-            // waiting for the scheduled sync (daily by default).
+          if (source !== "upload") {
+            // Initial full ingest for any synced source (endpoint or connector):
+            // kick the first pull right away rather than waiting for the
+            // scheduled sync (daily by default).
             void handleSyncNow(slug);
           } else {
             setUploadTarget(slug);
@@ -260,8 +261,8 @@ export default function KnowledgePage() {
               {uninstallTarget
                 ? describeArchive(uninstallTarget)
                 : ""}{" "}
-              {uninstallTarget?.source === "bundle-sync"
-                ? "Documents are archived, never deleted — but re-installing this synced collection pulls its endpoint again, which restores them as drafts for re-review."
+              {uninstallTarget && uninstallTarget.source !== "upload"
+                ? "Documents are archived, never deleted — but re-installing this synced collection pulls its source again, which restores them as drafts for re-review."
                 : "Documents are archived, never deleted — re-installing alone does not resurrect them; only re-uploading a bundle with the same paths brings them back, as drafts."}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -305,7 +306,9 @@ export function describeArchive(collection: KnowledgeCollection): string {
  * attempt, else the last attempt's outcome. Exported for tests.
  */
 export function describeSync(collection: KnowledgeCollection): "synced" | "sync-failed" | "never-synced" | null {
-  if (collection.source !== "bundle-sync") return null;
+  // Every non-upload source is synced (endpoint or connector) and carries
+  // last-sync bookkeeping; only upload collections have no sync footer.
+  if (collection.source === "upload") return null;
   if (!collection.sync) return "never-synced";
   return collection.sync.status === "success" ? "synced" : "sync-failed";
 }
@@ -328,7 +331,11 @@ function CollectionCard({
   onUninstall: () => void;
 }) {
   const { draft, published } = collection.documents;
-  const isSynced = collection.source === "bundle-sync";
+  const isSynced = collection.source !== "upload";
+  // Endpoint / auth are editable only for bundle-sync; a connector collection
+  // (Notion) has a token, not an endpoint, so it gets "Sync now" but no
+  // endpoint-edit dialog.
+  const isEndpointEditable = collection.source === "bundle-sync";
   const syncState = describeSync(collection);
   return (
     <Card>
@@ -390,10 +397,11 @@ function CollectionCard({
                 <RefreshCw className={`mr-1 size-3.5 ${syncing ? "animate-spin" : ""}`} />
                 {syncing ? "Syncing…" : "Sync now"}
               </Button>
-              {collection.authScheme !== undefined ? (
-                // Hidden during a web-before-API deploy-overlap window (an
-                // older API omits authScheme): pre-filling "None" there would
-                // delete the stored credential on a routine save.
+              {isEndpointEditable && collection.authScheme !== undefined ? (
+                // Endpoint/auth edit is bundle-sync-only (a connector has no
+                // endpoint). Also hidden during a web-before-API deploy-overlap
+                // window (an older API omits authScheme): pre-filling "None"
+                // there would delete the stored credential on a routine save.
                 <Button
                   variant="ghost"
                   size="sm"

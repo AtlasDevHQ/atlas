@@ -150,6 +150,37 @@ describe("wire: constants and leaf helpers", () => {
     const fieldSet: readonly string[] = OKF_FRONTMATTER_FIELDS;
     for (const key of Object.keys(result.data)) expect(fieldSet).toContain(key);
   });
+
+  test("renders an extension block after the wire fields as a nested string mapping", () => {
+    // The connector provenance path (`atlas:` blocks) — extension keys are
+    // spec-legal unknown frontmatter, outside the wire field set.
+    const doc = renderOkfDocument(
+      { title: "T", timestamp: "2026-07-01T00:00:00.000Z" },
+      [],
+      "Body prose.",
+      {
+        key: "atlas",
+        fields: { connector: "notion", page_id: "11111111-2222-3333-4444-555555555555" },
+      },
+    );
+    const result = split(doc);
+    if (result.kind !== "ok" || result.data === null) {
+      throw new Error(`expected an ok mapping split, got ${result.kind}`);
+    }
+    expect(result.data.atlas).toEqual({
+      connector: "notion",
+      page_id: "11111111-2222-3333-4444-555555555555",
+    });
+    // Extension follows every wire field; values are JSON-encoded scalars, so
+    // a colon/quote in a field value can't break the YAML.
+    expect(doc.indexOf("timestamp:")).toBeLessThan(doc.indexOf("atlas:"));
+    expect(doc).toContain('connector: "notion"');
+    // No extension / empty fields render nothing extra.
+    expect(renderOkfDocument({ title: "T" }, [], "b")).not.toContain("atlas:");
+    expect(renderOkfDocument({ title: "T" }, [], "b", { key: "atlas", fields: {} })).not.toContain(
+      "atlas:",
+    );
+  });
 });
 
 describe("splitUstarPath", () => {

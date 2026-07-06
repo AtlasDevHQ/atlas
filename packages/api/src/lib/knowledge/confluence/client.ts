@@ -33,6 +33,7 @@ import {
 } from "@atlas/api/lib/openapi/egress-guard";
 import {
   ConnectorRateLimitError,
+  toIsoInstant,
   type ConnectorChanges,
   type ConnectorFetchSince,
   type ConnectorVendorClient,
@@ -108,6 +109,7 @@ interface V2SpaceList {
 
 /** One enumerated page, normalized. `storageBody` is present only when fetched. */
 interface EnumeratedPage extends ConfluencePageNode {
+  /** Canonical ISO instant (`toIsoInstant`) — never the raw vendor string. */
   readonly modifiedAt: string;
   readonly webui: string;
   readonly storageBody: string | null;
@@ -177,10 +179,14 @@ class ConfluenceApi {
    */
   async fetch(opts: { since: string | null }): Promise<ConnectorChanges> {
     const reconciliation = opts.since === null;
-    const enumerated = await this.enumeratePages({ withBody: reconciliation });
+    const { pages: enumerated, skippedMalformed } = await this.enumeratePages({
+      withBody: reconciliation,
+    });
 
     const byId = new Map<string, ConfluencePageNode>();
     let highWaterMark: string | null = null;
+    // `modifiedAt` is normalized to an ISO instant at `normalizePage`, and the
+    // engine's `since` is a toISOString — string comparisons are chronological.
     for (const p of enumerated) {
       byId.set(p.id, { id: p.id, title: p.title, parentId: p.parentId });
       if (highWaterMark === null || p.modifiedAt > highWaterMark) highWaterMark = p.modifiedAt;
@@ -224,7 +230,15 @@ class ConfluenceApi {
       );
     }
 
-    return { documents: assembled.documents, highWaterMark, cursor: null };
+    // A warn-skipped malformed page is a KNOWN hole in the set: its document
+    // would otherwise be archived by a reconciliation off this partial crawl.
+    // The flag makes the engine upsert-only and hold the reconcile clock.
+    return {
+      documents: assembled.documents,
+      highWaterMark,
+      cursor: null,
+      coverageIncomplete: skippedMalformed > 0,
+    };
   }
 
   /** Install-time reachability + credential check (resolves the space by key). */
@@ -255,7 +269,9 @@ class ConfluenceApi {
   }
 
   /** Paginate the space's pages; include storage bodies when `withBody`. */
-  private async enumeratePages(opts: { withBody: boolean }): Promise<EnumeratedPage[]> {
+  private async enumeratePages(opts: {
+    withBody: boolean;
+  }): Promise<{ pages: EnumeratedPage[]; skippedMalformed: number }> {
     const spaceId = await this.ensureSpaceId();
     const params = new URLSearchParams({ status: "current", limit: String(PAGE_LIMIT) });
     if (opts.withBody) params.set("body-format", "storage");
@@ -286,12 +302,13 @@ class ConfluenceApi {
       // Never a silent drop: a page missing id/title/version isn't ingested, and
       // if it was an ancestor its descendants' paths shorten — surface it loudly
       // so an operator can see the hole rather than infer it from a smaller tree.
+      // The count also flags the fetch's coverage as incomplete (see `fetch`).
       log.warn(
         { host: hostForLog(this.base), space: this.config.spaceKey, skippedMalformed },
         "Skipped Confluence pages missing id/title/version — not ingested (unexpected for current pages)",
       );
     }
-    return pages;
+    return { pages, skippedMalformed };
   }
 
   /** Fetch one page's storage body (incremental path — changed pages only). */
@@ -304,8 +321,11 @@ class ConfluenceApi {
   private normalizePage(raw: V2Page, withBody: boolean): EnumeratedPage | null {
     // A page with no id/title/version is unusable — skip defensively rather than
     // emit a malformed document (v2 always populates these for a current page).
-    const modifiedAt = raw.version?.createdAt;
-    if (!raw.id || !raw.title || !modifiedAt) return null;
+    // The timestamp is normalized to a canonical ISO instant so an offset-format
+    // `createdAt` can't compare wrong in the since-filter / high-water reduce;
+    // an unparseable one counts as malformed (same skip, same coverage flag).
+    const modifiedAt = toIsoInstant(raw.version?.createdAt);
+    if (!raw.id || !raw.title || modifiedAt === null) return null;
     return {
       id: raw.id,
       title: raw.title,

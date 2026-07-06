@@ -2,9 +2,11 @@
  * Unit tests for `NotionKnowledgeFormInstallHandler` (#4378) — the Notion
  * synced-collection install.
  *
- * Focus: token validation, the credential routing (token →
- * `knowledge_sync_credentials` via the store, NEVER into
- * `workspace_plugins.config`), the multi-instance `pillar='knowledge'` upsert
+ * Focus: token validation, loud install-time token verification (one
+ * `GET /users/me` against an injected fixture fetch — no test calls Notion),
+ * the credential routing (token → `knowledge_sync_credentials` via the store,
+ * NEVER into `workspace_plugins.config`), the orphaned-credential rollback on
+ * an install-row failure, the multi-instance `pillar='knowledge'` upsert
  * shape, and the cross-catalog slug guard. The internal DB is a
  * SQL-string-dispatching mock; the live INSERT is pinned against real Postgres
  * in the shared install `-pg` smoke.
@@ -15,6 +17,7 @@ import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 import type { WorkspaceId } from "@useatlas/types";
 
 let CATALOG_ROWS: { id: string }[] = [{ id: "catalog:notion-knowledge" }];
+let INSERT_RETURNS_ID = true;
 let CROSS_CATALOG_ROWS: { catalog_id: string }[] = [];
 const insertCalls: { sql: string; params: unknown[] }[] = [];
 
@@ -23,7 +26,7 @@ const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<
   if (sql.includes("catalog_id <> $3")) return CROSS_CATALOG_ROWS;
   if (sql.includes("INSERT INTO workspace_plugins")) {
     insertCalls.push({ sql, params });
-    return [{ id: params[0] }];
+    return INSERT_RETURNS_ID ? [{ id: params[0] }] : [];
   }
   throw new Error(`unexpected SQL: ${sql.slice(0, 50)}`);
 });
@@ -54,16 +57,49 @@ const { FormInstallValidationError } = await import(
 
 const WORKSPACE = "org-1" as WorkspaceId;
 
-function handler() {
-  return new NotionKnowledgeFormInstallHandler({ idGenerator: () => "fixed-id" });
+const verifyCalls: { url: string; headers: Record<string, string> }[] = [];
+
+/** A fixture verify-fetch: `GET /users/me` returns the bot user (or a status). */
+function verifyFetch(opts: { status?: number; code?: string; reject?: Error } = {}) {
+  return (async (input: unknown, init?: RequestInit): Promise<Response> => {
+    const url = String(input);
+    verifyCalls.push({ url, headers: (init?.headers ?? {}) as Record<string, string> });
+    if (opts.reject) throw opts.reject;
+    if (!url.endsWith("/users/me")) throw new Error(`fixture: unexpected URL ${url}`);
+    if (opts.status !== undefined && opts.status !== 200) {
+      return new Response(
+        JSON.stringify({
+          object: "error",
+          status: opts.status,
+          code: opts.code ?? "unauthorized",
+          message: "API token is invalid.",
+        }),
+        { status: opts.status, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ object: "user", id: "bot-user" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+}
+
+function handler(fetchImpl: typeof fetch = verifyFetch()) {
+  return new NotionKnowledgeFormInstallHandler({
+    idGenerator: () => "fixed-id",
+    clientOptions: { fetchImpl },
+  });
 }
 
 beforeEach(() => {
   CATALOG_ROWS = [{ id: "catalog:notion-knowledge" }];
+  INSERT_RETURNS_ID = true;
   CROSS_CATALOG_ROWS = [];
   insertCalls.length = 0;
+  verifyCalls.length = 0;
   internalQuery.mockClear();
   saveSyncCredential.mockClear();
+  deleteSyncCredential.mockClear();
 });
 
 async function fieldErrorOf(promise: Promise<unknown>, field: string): Promise<string | undefined> {
@@ -71,6 +107,16 @@ async function fieldErrorOf(promise: Promise<unknown>, field: string): Promise<s
     await promise;
   } catch (err) {
     if (err instanceof FormInstallValidationError) return err.fieldErrors[field]?.[0];
+    throw err;
+  }
+  return undefined;
+}
+
+async function formErrorOf(promise: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await promise;
+  } catch (err) {
+    if (err instanceof FormInstallValidationError) return err.formErrors[0];
     throw err;
   }
   return undefined;
@@ -102,6 +148,46 @@ describe("NotionKnowledgeFormInstallHandler — token validation", () => {
       "integration_token",
     );
     expect(err).toMatch(/characters or fewer/i);
+  });
+});
+
+describe("NotionKnowledgeFormInstallHandler — token verification", () => {
+  it("verifies the token with one GET /users/me before persisting", async () => {
+    await handler().validateConfig(WORKSPACE, {
+      __install_id__: "runbooks",
+      integration_token: "ntn_secret-token",
+    });
+
+    expect(verifyCalls).toHaveLength(1);
+    expect(verifyCalls[0].url).toContain("/users/me");
+    expect(verifyCalls[0].headers.Authorization).toBe("Bearer ntn_secret-token");
+  });
+
+  it("fails the install loudly on a bad token (401), persisting nothing", async () => {
+    const msg = await fieldErrorOf(
+      handler(verifyFetch({ status: 401 })).validateConfig(WORKSPACE, {
+        __install_id__: "runbooks",
+        integration_token: "ntn_revoked",
+      }),
+      "integration_token",
+    );
+    expect(msg).toMatch(/rejected the integration token/i);
+    expect(saveSyncCredential).not.toHaveBeenCalled();
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it("maps a transport failure to a form-level error (not the token field), persisting nothing", async () => {
+    const promise = handler(
+      verifyFetch({ reject: new Error("getaddrinfo ENOTFOUND api.notion.com") }),
+    ).validateConfig(WORKSPACE, {
+      __install_id__: "runbooks",
+      integration_token: "ntn_fine",
+    });
+    const msg = await formErrorOf(promise);
+    // Transport is not a credential rejection — never blame the token field.
+    expect(msg).toMatch(/could not be reached/i);
+    expect(saveSyncCredential).not.toHaveBeenCalled();
+    expect(insertCalls).toHaveLength(0);
   });
 });
 
@@ -167,5 +253,19 @@ describe("NotionKnowledgeFormInstallHandler — install", () => {
     // Credential-first write order: a failed credential means NO workspace_plugins
     // row (no installable card whose scheduled sync then 401s).
     expect(insertCalls).toHaveLength(0);
+  });
+
+  it("rolls back the just-written credential when the install-row upsert returns no id", async () => {
+    INSERT_RETURNS_ID = false;
+    await expect(
+      handler().validateConfig(WORKSPACE, {
+        __install_id__: "runbooks",
+        integration_token: "ntn_x",
+      }),
+    ).rejects.toThrow(/returned no id/i);
+    // The credential was written, then rolled back so no secret outlives the
+    // failed install (its install row never landed, so uninstall can't reach it).
+    expect(saveSyncCredential).toHaveBeenCalledTimes(1);
+    expect(deleteSyncCredential).toHaveBeenCalledWith(WORKSPACE, "runbooks");
   });
 });

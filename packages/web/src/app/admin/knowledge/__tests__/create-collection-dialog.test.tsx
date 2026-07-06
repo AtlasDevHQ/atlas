@@ -5,8 +5,9 @@ import { render, cleanup, screen, fireEvent, waitFor } from "@testing-library/re
  * Pins the install payloads the create-collection dialog builds (#4211): the
  * upload source posts to `okf-upload`, the sync source posts to `bundle-sync`
  * with `endpoint_url` + `auth_scheme` (and no stray `auth_secret` when the
- * scheme is none) — a typo'd field key or path would otherwise 400 in
- * production with zero test failures.
+ * scheme is none), the notion source posts to `notion-knowledge` with
+ * `integration_token` (and no other source carries a stray token) — a typo'd
+ * field key or path would otherwise 400 in production with zero test failures.
  */
 
 mock.module("@/lib/api-url", () => ({ getApiUrl: () => "" }));
@@ -36,12 +37,14 @@ afterEach(() => {
 });
 
 /** Radix Tabs activate on mousedown/focus (roving focus), not plain click. */
-function switchToSync() {
-  const trigger = screen.getByTestId("source-bundle-sync");
+function switchToTab(testId: "source-upload" | "source-bundle-sync" | "source-notion") {
+  const trigger = screen.getByTestId(testId);
   fireEvent.mouseDown(trigger);
   fireEvent.focus(trigger);
   fireEvent.click(trigger);
 }
+const switchToSync = () => switchToTab("source-bundle-sync");
+const switchToNotion = () => switchToTab("source-notion");
 
 function renderDialog(onCreated = mock(() => {})) {
   render(
@@ -92,6 +95,49 @@ describe("CreateCollectionDialog install payloads", () => {
     fireEvent.change(screen.getByTestId("collection-slug"), { target: { value: "synced-docs" } });
     const submit = screen.getByTestId("create-collection-submit") as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
+  });
+
+  test("notion source posts integration_token to the notion-knowledge install-form", async () => {
+    const onCreated = renderDialog();
+    switchToNotion();
+    fireEvent.change(screen.getByTestId("collection-slug"), { target: { value: "wiki" } });
+    fireEvent.change(screen.getByTestId("collection-notion-token"), {
+      target: { value: "ntn_secret-token" },
+    });
+    fireEvent.click(screen.getByTestId("create-collection-submit"));
+
+    await waitFor(() => expect(fetchCalls).toHaveLength(1));
+    expect(fetchCalls[0].url).toContain("/api/v1/integrations/notion-knowledge/install-form");
+    expect(fetchCalls[0].body).toEqual({
+      __install_id__: "wiki",
+      integration_token: "ntn_secret-token",
+    });
+    expect(onCreated).toHaveBeenCalledWith("wiki", "notion");
+  });
+
+  test("notion source requires a token before submitting", () => {
+    renderDialog();
+    switchToNotion();
+    fireEvent.change(screen.getByTestId("collection-slug"), { target: { value: "wiki" } });
+    const submit = screen.getByTestId("create-collection-submit") as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+  });
+
+  test("a token typed on the notion tab never leaks into another source's payload", async () => {
+    const onCreated = renderDialog();
+    switchToNotion();
+    fireEvent.change(screen.getByTestId("collection-slug"), { target: { value: "wiki" } });
+    fireEvent.change(screen.getByTestId("collection-notion-token"), {
+      target: { value: "ntn_secret-token" },
+    });
+    // Switch back to upload — the submitted payload must carry NO stray token.
+    switchToTab("source-upload");
+    fireEvent.click(screen.getByTestId("create-collection-submit"));
+
+    await waitFor(() => expect(fetchCalls).toHaveLength(1));
+    expect(fetchCalls[0].url).toContain("/api/v1/integrations/okf-upload/install-form");
+    expect(fetchCalls[0].body).toEqual({ __install_id__: "wiki" });
+    expect(onCreated).toHaveBeenCalledWith("wiki", "upload");
   });
 
   test("duplicate slugs stay blocked on both sources", () => {

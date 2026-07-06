@@ -211,9 +211,12 @@ export interface BuildResult {
 export interface PackOptions {
   /**
    * Permit packing a bundle with zero documents. Default `false` — an empty
-   * bundle is refused (`EmptyBundleError`) because the bundle-sync subtractive
-   * diff would archive the collection's entire existing document set from it.
-   * Set only when emptying a collection is the deliberate intent.
+   * bundle is refused (`EmptyBundleError`) because zero docs usually means the
+   * source/filter/transform broke, and Atlas's ingest seam rejects a doc-less
+   * bundle anyway (its `no_documents` guard; emptying a collection requires
+   * uninstalling it), turning the mistake into a recurring sync error on the
+   * Atlas side. Set only when packing an empty archive is genuinely intended
+   * (e.g. tests) — it does not make the server accept one.
    */
   readonly allowEmpty?: boolean;
 }

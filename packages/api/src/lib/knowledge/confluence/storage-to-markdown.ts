@@ -11,10 +11,12 @@
  * counted placeholders, never silent drops"):
  *   - a set of known macros are converted structurally (code fences, admonition
  *     blockquotes, expand, task lists, status/emoji inline, no-format);
- *   - every OTHER macro degrades to a VISIBLE placeholder line pointing at the
- *     vendor page — and its inner prose (`ac:rich-text-body` /
- *     `ac:plain-text-body`) is still rendered, so content is never lost — and
- *     the degradation is COUNTED by macro name in {@link ConversionResult.degradations};
+ *   - every OTHER macro degrades to a VISIBLE placeholder pointing at the
+ *     vendor page, COUNTED by macro name in {@link ConversionResult.degradations}.
+ *     In BLOCK position the inner prose (`ac:rich-text-body` /
+ *     `ac:plain-text-body`) is still rendered under the placeholder, so block
+ *     content is never lost; an unknown macro in INLINE position degrades to
+ *     the placeholder link alone (its inner body is not rendered);
  *   - attachments/images are text-first v1: not mirrored, replaced by a link to
  *     the vendor page and counted under the synthetic `#image` / `#attachment`
  *     buckets.
@@ -53,9 +55,12 @@ export interface ConvertOptions {
 }
 
 /**
- * Macros converted structurally (never degraded). Everything else becomes a
- * counted placeholder. Kept small and explicit — a macro earns a place here
- * only when it has a faithful markdown shape.
+ * Macros converted structurally. Everything else becomes a counted
+ * placeholder. Kept small and explicit — a macro earns a place here only when
+ * it has a faithful markdown shape. Position matters: `status` is converted
+ * only INLINE (`renderMacroInline`); in block position it has no structural
+ * branch in `renderMacroBlock` and degrades like any unknown macro. The
+ * block-shaped members used inline fall back to their plain text.
  */
 const CONVERTED_MACROS = new Set([
   "code",
@@ -105,7 +110,7 @@ export function convertStorageToMarkdown(
   // double-decode of a literal `&amp;nbsp;`; CDATA payloads are never decoded.
   const doc = parseDocument(storage, { xmlMode: true, decodeEntities: false });
   const ctx: Ctx = { degradations, pageUrl: options.pageUrl };
-  const markdown = renderBlocks(doc.children as ChildNode[], ctx);
+  const markdown = renderBlocks(doc.children, ctx);
   return {
     markdown: normalizeBlankLines(markdown),
     degradations: degradations.list(),
@@ -160,7 +165,7 @@ function textOf(node: ChildNode | Element): string {
   if (isText(node)) return decodeHTML(node.data);
   if (isCDATA(node)) {
     // A CDATA node wraps text children carrying the verbatim payload — no decode.
-    return (node.children as ChildNode[]).map((c) => (isText(c) ? c.data : "")).join("");
+    return node.children.map((c) => (isText(c) ? c.data : "")).join("");
   }
   if (isElement(node)) {
     return node.children.map((c) => textOf(c)).join("");
@@ -193,19 +198,19 @@ function renderBlock(node: ChildNode, ctx: Ctx): string {
 
   const name = node.name;
   if (name in HEADINGS) {
-    return `${"#".repeat(HEADINGS[name])} ${renderInline(node.children as ChildNode[], ctx).trim()}`;
+    return `${"#".repeat(HEADINGS[name])} ${renderInline(node.children, ctx).trim()}`;
   }
   switch (name) {
     case "p":
     case "div":
-      return renderInline(node.children as ChildNode[], ctx).trim();
+      return renderInline(node.children, ctx).trim();
     case "ul":
     case "ol":
       return renderList(node, ctx, 0);
     case "table":
       return renderTable(node, ctx);
     case "blockquote":
-      return blockquote(renderBlocks(node.children as ChildNode[], ctx));
+      return blockquote(renderBlocks(node.children, ctx));
     case "pre":
       return fence("", textOf(node).replace(/\n$/, ""));
     case "hr":
@@ -224,12 +229,12 @@ function renderBlock(node: ChildNode, ctx: Ctx): string {
     case "ac:rich-text-body":
     case "ac:confluence-content":
       // Structural wrappers — recurse into their block children.
-      return renderBlocks(node.children as ChildNode[], ctx);
+      return renderBlocks(node.children, ctx);
     case "ac:task-list":
       return renderTaskList(node, ctx);
     default:
       // Unknown block element: render its children so prose is never dropped.
-      return renderBlocks(node.children as ChildNode[], ctx);
+      return renderBlocks(node.children, ctx);
   }
 }
 
@@ -245,7 +250,7 @@ function renderMacroBlock(el: Element, ctx: Ctx): string {
 
   if (macroName in ADMONITION_LABEL) {
     const richBody = childByName(el, "ac:rich-text-body");
-    const inner = richBody ? renderBlocks(richBody.children as ChildNode[], ctx) : "";
+    const inner = richBody ? renderBlocks(richBody.children, ctx) : "";
     const title = macroParam(el, "title");
     const label = title ? `${ADMONITION_LABEL[macroName]}: ${title}` : ADMONITION_LABEL[macroName];
     return blockquote(inner === "" ? `**${label}**` : `**${label}**\n\n${inner}`);
@@ -253,7 +258,7 @@ function renderMacroBlock(el: Element, ctx: Ctx): string {
 
   if (macroName === "expand") {
     const richBody = childByName(el, "ac:rich-text-body");
-    const inner = richBody ? renderBlocks(richBody.children as ChildNode[], ctx) : "";
+    const inner = richBody ? renderBlocks(richBody.children, ctx) : "";
     const title = macroParam(el, "title") ?? "Details";
     return inner === "" ? `**${title}**` : `**${title}**\n\n${inner}`;
   }
@@ -271,7 +276,7 @@ function degradeMacro(el: Element, macroName: string, ctx: Ctx): string {
   const placeholder = `> ⚠️ Unsupported Confluence macro \`${macroName}\` — [view on the original page](${ctx.pageUrl})`;
   const richBody = childByName(el, "ac:rich-text-body");
   if (richBody) {
-    const inner = renderBlocks(richBody.children as ChildNode[], ctx);
+    const inner = renderBlocks(richBody.children, ctx);
     return inner === "" ? placeholder : `${placeholder}\n\n${inner}`;
   }
   const plainBody = childByName(el, "ac:plain-text-body");
@@ -291,7 +296,7 @@ function renderList(listEl: Element, ctx: Ctx, depth: number): string {
     // Split the <li> into inline lead content and any nested lists.
     const nested: Element[] = [];
     const leadNodes: ChildNode[] = [];
-    for (const child of li.children as ChildNode[]) {
+    for (const child of li.children) {
       if (isElement(child) && (child.name === "ul" || child.name === "ol")) {
         nested.push(child);
       } else {
@@ -312,7 +317,7 @@ function renderTaskList(listEl: Element, ctx: Ctx): string {
     const status = childByName(task, "ac:task-status");
     const done = status ? textOf(status).trim() === "complete" : false;
     const body = childByName(task, "ac:task-body");
-    const text = body ? renderInline(body.children as ChildNode[], ctx).trim() : "";
+    const text = body ? renderInline(body.children, ctx).trim() : "";
     lines.push(`- [${done ? "x" : " "}] ${text}`);
   }
   return lines.join("\n");
@@ -363,8 +368,14 @@ function renderTable(tableEl: Element, ctx: Ctx): string {
 
 /** A table cell: inline markdown with pipes escaped and newlines flattened. */
 function cellText(cell: Element, ctx: Ctx): string {
-  return renderInline(cell.children as ChildNode[], ctx)
+  return renderInline(cell.children, ctx)
     .replace(/\r?\n+/g, "<br>")
+    // Escape backslashes FIRST: text nodes are emitted raw (see renderInlineNode),
+    // so a source `\` reaches here unescaped. Escaping only `|` lets `a\|b` become
+    // `a\\|b` — a literal backslash + a LIVE pipe that splits/injects a table column.
+    // GFM undoes `\\`→`\` and `\|`→`|` before inline/code-span parsing, so escaping
+    // both (backslash before pipe) is the structurally-correct, composable transform.
+    .replace(/\\/g, "\\\\")
     .replace(/\|/g, "\\|")
     .trim();
 }
@@ -384,7 +395,7 @@ function renderInlineNode(node: ChildNode, ctx: Ctx): string {
   if (isCDATA(node)) return textOf(node);
   if (!isElement(node)) return "";
 
-  const inner = () => renderInline(node.children as ChildNode[], ctx);
+  const inner = () => renderInline(node.children, ctx);
   switch (node.name) {
     case "strong":
     case "b":
@@ -444,7 +455,7 @@ function renderMacroInline(el: Element, ctx: Ctx): string {
 function renderAcLink(el: Element, ctx: Ctx): string {
   const bodyEl =
     childByName(el, "ac:link-body") ?? childByName(el, "ac:plain-text-link-body");
-  const bodyText = bodyEl ? renderInline(bodyEl.children as ChildNode[], ctx).trim() : "";
+  const bodyText = bodyEl ? renderInline(bodyEl.children, ctx).trim() : "";
 
   const page = childByName(el, "ri:page");
   if (page) {

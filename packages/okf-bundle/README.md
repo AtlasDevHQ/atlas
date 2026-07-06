@@ -3,8 +3,10 @@
 Source-neutral OKF knowledge-bundle builder + the single-homed **OKF wire
 contract**. This is the core behind every Atlas Knowledge Base importer:
 `@atlas/fumadocs-okf` is the first named adapter, the built-in
-[markdown-tree adapter](#the-markdown-tree-adapter) the second;
-Confluence/Mintlify later are one adapter each. Private
+[markdown-tree adapter](#the-markdown-tree-adapter) the second; a Mintlify
+importer later is one adapter more. (Confluence shipped as a *server-side*
+Knowledge Sync Connector instead — ADR-0030, #4376 — consuming collected
+documents at the ingest seam, not as a generation-side adapter here.) Private
 workspace package — not published to npm (promote to a `@useatlas/*` name only
 after the API survives a real non-Atlas consumer).
 

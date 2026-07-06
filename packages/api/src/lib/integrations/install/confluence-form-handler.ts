@@ -37,6 +37,7 @@ import {
   saveSyncCredential,
   deleteSyncCredential,
 } from "@atlas/api/lib/knowledge/sync-credentials";
+import { ConnectorRateLimitError } from "@atlas/api/lib/knowledge/connectors";
 import {
   verifyConfluenceAccess,
   type ConfluenceClientDeps,
@@ -232,11 +233,20 @@ export class ConfluenceFormInstallHandler implements FormBasedInstallHandler {
           formErrors: [],
         });
       }
-      // Auth / space-not-found / transport — actionable, already host-redacted.
+      const message = err instanceof Error ? err.message : String(err);
+      // Non-credential failures — a 429 (ConnectorRateLimitError) or a
+      // transport error (DNS/timeout/non-JSON; the client marks those with
+      // `cause`) — are form-level: blaming the api_token field would send the
+      // admin re-entering a token that may be fine. All host-redacted.
+      if (err instanceof ConnectorRateLimitError || (err instanceof Error && err.cause !== undefined)) {
+        throw new FormInstallValidationError({
+          fieldErrors: {},
+          formErrors: [message],
+        });
+      }
+      // Auth (401/403) / space-not-found — actionable, already host-redacted.
       throw new FormInstallValidationError({
-        fieldErrors: {
-          api_token: [err instanceof Error ? err.message : String(err)],
-        },
+        fieldErrors: { api_token: [message] },
         formErrors: [],
       });
     }

@@ -99,6 +99,16 @@ describe("tables", () => {
       "| H |\n| --- |\n| a\\|b<br>c |",
     );
   });
+
+  it("escapes a backslash before the pipe so source text can't inject a column", () => {
+    // Source cell text is `a\|b` (backslash then pipe). Escaping only the pipe
+    // yields `a\\|b` — an escaped backslash + a LIVE pipe that GFM reads as a
+    // column separator (js/incomplete-sanitization). Escaping the backslash
+    // first makes both inert: `a\\\|b`.
+    expect(md("<table><tbody><tr><th>H</th></tr><tr><td>a\\|b</td></tr></tbody></table>")).toBe(
+      "| H |\n| --- |\n| a\\\\\\|b |",
+    );
+  });
 });
 
 describe("code macros", () => {

@@ -27,6 +27,7 @@
  * so content stays a pure function of the page version.
  */
 
+import { ATLAS_EXTENSION_KEY, renderOkfDocument } from "@atlas/okf-bundle";
 import type { ConnectorDocument } from "../connectors";
 
 /** The vendor-neutral projection of a Notion page the document layer consumes. */
@@ -70,33 +71,33 @@ export function notionArchivePath(id: string, title: string): string {
   return `${slugifyTitle(title)}-${compactPageId(id)}.md`;
 }
 
-/** Encode a YAML double-quoted scalar (JSON strings are valid YAML scalars). */
-function yamlScalar(value: string): string {
-  return JSON.stringify(value);
-}
-
 /**
- * Render the full OKF document for a page: conformant frontmatter (with `atlas:`
- * provenance) + the normalized body. String scalars are JSON-encoded so a
- * title/URL containing a colon or quote can't break the YAML.
+ * Render the full OKF document for a page via the shared `renderOkfDocument`
+ * (the single frontmatter encoder every bundle builder + connector uses), with
+ * the `atlas:` provenance carried as its extension block. No provenance `tags`:
+ * `tags` is a mirrored column in the lenient parser's change comparison, so
+ * stamping one would re-draft every already-ingested Notion document; the
+ * extension block stays outside the comparison.
  */
 export function renderNotionOkfDocument(page: NotionPageDocument): string {
-  const lines = [
-    "---",
-    "type: Document",
-    ...(page.title.trim() !== "" ? [`title: ${yamlScalar(page.title.trim())}`] : []),
-    `resource: ${yamlScalar(page.url)}`,
-    `timestamp: ${yamlScalar(page.lastEditedTime)}`,
-    "atlas:",
-    "  connector: notion",
-    `  page_id: ${yamlScalar(page.id)}`,
-    `  last_edited_time: ${yamlScalar(page.lastEditedTime)}`,
-    "---",
-    "",
-    page.body.trimEnd(),
-    "",
-  ];
-  return lines.join("\n");
+  const title = page.title.trim();
+  return renderOkfDocument(
+    {
+      ...(title !== "" ? { title } : {}),
+      resource: page.url,
+      timestamp: page.lastEditedTime,
+    },
+    [],
+    page.body,
+    {
+      key: ATLAS_EXTENSION_KEY,
+      fields: {
+        connector: "notion",
+        page_id: page.id,
+        last_edited_time: page.lastEditedTime,
+      },
+    },
+  );
 }
 
 /** Assemble the `ConnectorDocument` (path + content) for one page. */

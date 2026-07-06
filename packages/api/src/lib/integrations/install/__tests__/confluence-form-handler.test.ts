@@ -187,6 +187,41 @@ describe("credential verification + persistence", () => {
     expect(insertCalls).toHaveLength(0);
   });
 
+  it("routes a rate-limit (429) verification failure to a form-level error, not the api_token field", async () => {
+    let caught: unknown;
+    try {
+      await handler(verifyFetch({ status: 429 }) as unknown as typeof fetch).validateConfig(WORKSPACE, VALID);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(FormInstallValidationError);
+    const validation = caught as InstanceType<typeof FormInstallValidationError>;
+    // A 429 is not a credential rejection — blaming the api_token field would
+    // send the admin re-entering a token that may be fine.
+    expect(validation.formErrors[0]).toMatch(/rate-limited/i);
+    expect(validation.fieldErrors.api_token).toBeUndefined();
+    expect(saveSyncCredential).not.toHaveBeenCalled();
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it("routes a transport (DNS/timeout) verification failure to a form-level error, not the api_token field", async () => {
+    const dnsFailure = (async () => {
+      throw new Error("getaddrinfo ENOTFOUND acme.atlassian.net");
+    }) as unknown as typeof fetch;
+    let caught: unknown;
+    try {
+      await handler(dnsFailure).validateConfig(WORKSPACE, VALID);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(FormInstallValidationError);
+    const validation = caught as InstanceType<typeof FormInstallValidationError>;
+    expect(validation.formErrors[0]).toMatch(/failed/i);
+    expect(validation.fieldErrors.api_token).toBeUndefined();
+    expect(saveSyncCredential).not.toHaveBeenCalled();
+    expect(insertCalls).toHaveLength(0);
+  });
+
   it("fails the install when the space key is not visible to the token", async () => {
     const msg = await fieldErrorOf(
       handler(verifyFetch({ spaceResults: [] }) as unknown as typeof fetch).validateConfig(WORKSPACE, VALID),

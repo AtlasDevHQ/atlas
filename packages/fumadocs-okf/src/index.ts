@@ -5,8 +5,9 @@
  * shim) onto `@atlas/okf-bundle`'s doc-source seam, producing an OKF
  * `.tar.gz` the Atlas Knowledge Base ingests via the existing `bundle-sync`
  * connector or the upload route — zero `packages/api` changes required to
- * consume the output (issue #4367; ADR-0028 §5's connectors-are-deliberate-
- * follow-ups posture).
+ * consume the output (issue #4367). ADR-0028 §5's connector deferral has
+ * since been executed as the server-side Knowledge Sync Connector seam
+ * (ADR-0030); generation-side adapters like this one stay connector-free.
  *
  * Since #4373 this package is adapter-only: what lives here is the loader
  * mapping, `getText("processed")` resolution with the

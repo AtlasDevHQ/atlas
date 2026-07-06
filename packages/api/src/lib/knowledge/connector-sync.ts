@@ -18,7 +18,9 @@
  *     hard-deleted) and the ingest caps are validated over the full set with
  *     real numbers. Incremental-only sync is unsound for both launch vendors
  *     (Notion's search is officially non-exhaustive; Confluence's
- *     last-modified queries have edges) — hence the split.
+ *     last-modified queries have edges) — hence the split. A crawl the client
+ *     flags `coverageIncomplete` still upserts, but archives NOTHING and does
+ *     not advance the reconcile clock: deletions wait for a clean crawl.
  *
  * Rate limiting is ENGINE property (not per-vendor discipline): a client
  * throws `ConnectorRateLimitError` (parsed 429/`Retry-After`) and the engine
@@ -223,13 +225,22 @@ export type ConnectorSyncMode = "incremental" | "reconciliation";
 export interface ConnectorSyncOutcome {
   readonly collection: string;
   readonly status: "success" | "error";
-  readonly mode: ConnectorSyncMode;
+  /** `"unknown"` only when the attempt failed before the mode was decided
+   *  (e.g. the sync-state read threw) — never a guessed label. */
+  readonly mode: ConnectorSyncMode | "unknown";
   /** ISO-8601 completion time of this attempt. */
   readonly syncedAt: string;
   readonly error: string | null;
   readonly documents: KnowledgeIngestDocumentCounts | null;
   /** Previously-ingested docs archived by a reconciliation crawl; null otherwise. */
   readonly archivedAbsent: number | null;
+  /**
+   * True when the vendor client flagged the enumeration as knowingly
+   * incomplete: upserts landed, but subtractive archiving was skipped and the
+   * reconcile clock did not advance. Recorded in the state report so the admin
+   * surface is never silently green about skipped deletions.
+   */
+  readonly coverageIncomplete: boolean;
   /** Per-file rejections (oversize, malformed frontmatter). */
   readonly rejected: readonly BundleEntryError[];
   /** The high-water mark persisted by this attempt (null = unchanged). */
@@ -280,9 +291,15 @@ export async function syncConnectorCollection(
   const { connector, workspaceId, collectionSlug } = params;
   const now = params.now ?? (() => new Date());
 
+  // The attempt reports its mode as soon as it is decided, so the catch-all
+  // below can record the REAL mode — or an honest "unknown" when the failure
+  // happened before the decision (e.g. the sync-state read threw).
+  let decidedMode: ConnectorSyncMode | "unknown" = "unknown";
   let attempt: ConnectorAttempt;
   try {
-    attempt = await runConnectorAttempt(params, now);
+    attempt = await runConnectorAttempt(params, now, (mode) => {
+      decidedMode = mode;
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error(
@@ -291,7 +308,7 @@ export async function syncConnectorCollection(
     );
     attempt = {
       kind: "error",
-      mode: "incremental",
+      mode: decidedMode,
       error: `Sync failed unexpectedly: ${msg}. Retry "Sync now"; if it persists, check the API logs.`,
       rejected: [],
     };
@@ -308,6 +325,7 @@ export async function syncConnectorCollection(
           error: null,
           documents: attempt.documents,
           archivedAbsent: attempt.archivedAbsent,
+          coverageIncomplete: attempt.coverageIncomplete,
           rejected: attempt.rejected,
           highWaterMark: attempt.highWaterMark,
         }
@@ -319,13 +337,19 @@ export async function syncConnectorCollection(
           error: attempt.error,
           documents: null,
           archivedAbsent: null,
+          coverageIncomplete: false,
           rejected: attempt.rejected,
           highWaterMark: null,
         };
 
   await recordConnectorSyncState(workspaceId, collectionSlug, outcome, {
     cursor: attempt.kind === "ok" ? attempt.cursor : null,
-    reconciledAt: attempt.kind === "ok" && attempt.mode === "reconciliation" ? syncedAt : null,
+    // An incomplete crawl must not satisfy the reconcile clock — the next
+    // cycle stays due, so the skipped deletions get a clean crawl soon.
+    reconciledAt:
+      attempt.kind === "ok" && attempt.mode === "reconciliation" && !attempt.coverageIncomplete
+        ? syncedAt
+        : null,
   });
 
   if (outcome.status === "success") {
@@ -337,6 +361,7 @@ export async function syncConnectorCollection(
         mode: outcome.mode,
         ...outcome.documents,
         archivedAbsent: outcome.archivedAbsent,
+        coverageIncomplete: outcome.coverageIncomplete,
         rejected: outcome.rejected.length,
         highWaterMark: outcome.highWaterMark,
       },
@@ -357,13 +382,14 @@ type ConnectorAttempt =
       readonly mode: ConnectorSyncMode;
       readonly documents: KnowledgeIngestDocumentCounts;
       readonly archivedAbsent: number | null;
+      readonly coverageIncomplete: boolean;
       readonly rejected: readonly BundleEntryError[];
       readonly highWaterMark: string | null;
       readonly cursor: string | null;
     }
   | {
       readonly kind: "error";
-      readonly mode: ConnectorSyncMode;
+      readonly mode: ConnectorSyncMode | "unknown";
       readonly error: string;
       readonly rejected: readonly BundleEntryError[];
     };
@@ -371,6 +397,7 @@ type ConnectorAttempt =
 async function runConnectorAttempt(
   params: SyncConnectorCollectionParams,
   now: () => Date,
+  onModeDecided: (mode: ConnectorSyncMode) => void,
 ): Promise<ConnectorAttempt> {
   const { connector, workspaceId, collectionSlug, config } = params;
 
@@ -389,6 +416,7 @@ async function runConnectorAttempt(
   // A collection with no high-water mark can't fetch incrementally (and a
   // vendor that returns none reconciles every cycle — correct, just not cheap).
   const mode: ConnectorSyncMode = due || sinceIso === null ? "reconciliation" : "incremental";
+  onModeDecided(mode);
 
   // ── Vendor client ──────────────────────────────────────────────────────────
   let client: ConnectorVendorClient;
@@ -433,6 +461,13 @@ async function runConnectorAttempt(
 
   const highWaterMark = validVendorTimestamp(changes.highWaterMark, { workspaceId, collectionSlug });
   const cursor = changes.cursor ?? null;
+  const coverageIncomplete = changes.coverageIncomplete === true;
+  if (coverageIncomplete && mode === "reconciliation") {
+    log.warn(
+      { workspaceId, collectionSlug, vendor: connector.vendor },
+      "Connector reported an incomplete enumeration — skipping subtractive archiving and holding the reconcile clock this cycle",
+    );
+  }
 
   // ── Incremental quiet cycle: nothing changed — advance the mark, no ingest ─
   if (mode === "incremental" && changes.documents.length === 0) {
@@ -441,6 +476,7 @@ async function runConnectorAttempt(
       mode,
       documents: { created: 0, updated: 0, demoted: 0, resurrected: 0, unchanged: 0, total: 0 },
       archivedAbsent: null,
+      coverageIncomplete,
       rejected: [],
       highWaterMark,
       cursor,
@@ -448,10 +484,12 @@ async function runConnectorAttempt(
   }
 
   // ── Ingest through the document-level seam ─────────────────────────────────
-  // Subtractive archiving happens ONLY on reconciliation (`archiveAbsent`);
-  // the seam's no_documents guard keeps an empty reconciliation from archiving
-  // the entire collection off one bad vendor response, and the full-set doc
-  // cap falls out of the seam's too_many_documents with real numbers.
+  // Subtractive archiving happens ONLY on a coverage-complete reconciliation
+  // (`archiveAbsent`) — a knowingly-partial set must never archive the pages
+  // the client missed. The seam's no_documents guard keeps an empty
+  // reconciliation from archiving the entire collection off one bad vendor
+  // response, and the full-set doc cap falls out of the seam's
+  // too_many_documents with real numbers.
   let outcome: Awaited<ReturnType<typeof ingestDocuments>>;
   try {
     outcome = await ingestDocuments({
@@ -459,7 +497,7 @@ async function runConnectorAttempt(
       collectionId: collectionSlug,
       source: `connector:${connector.vendor}`,
       files: changes.documents.map((d) => ({ path: d.path, content: d.content })),
-      archiveAbsent: mode === "reconciliation",
+      archiveAbsent: mode === "reconciliation" && !coverageIncomplete,
     });
   } catch (err) {
     log.error(
@@ -488,6 +526,7 @@ async function runConnectorAttempt(
           total: outcome.report.documents,
         },
         archivedAbsent: outcome.archivedAbsent,
+        coverageIncomplete,
         rejected: outcome.rejected,
         highWaterMark,
         cursor,
@@ -542,6 +581,9 @@ async function recordConnectorSyncState(
           mode: outcome.mode,
           documents: outcome.documents,
           archivedAbsent: outcome.archivedAbsent,
+          // Persisted so the admin surface can show that deletions were
+          // deferred — a coverage-incomplete "success" is not silently green.
+          coverageIncomplete: outcome.coverageIncomplete,
           rejected: outcome.rejected.slice(0, REPORT_REJECTED_CAP),
         }
       : outcome.rejected.length > 0

@@ -121,6 +121,8 @@ describe("fetchAll (reconciliation)", () => {
       "confluence-eng/engineering/oncall.md",
     ]);
     expect(changes.highWaterMark).toBe("2026-07-06T09:00:00.000Z");
+    // A clean crawl never flags its coverage — the engine may archive off it.
+    expect(changes.coverageIncomplete).toBe(false);
     // Bodies came from the enumeration pass — no per-page body fetch.
     expect(calls.some((c) => /\/api\/v2\/pages\/\d+/.test(c))).toBe(false);
     // The oncall doc carries provenance + converted body.
@@ -203,7 +205,7 @@ describe("failure handling", () => {
     await expect(client({}, impl as unknown as typeof fetch).fetchAll()).rejects.toThrow(/non-JSON response/i);
   });
 
-  it("silently drops a malformed page (no version) from the ingest set — the good page still syncs", async () => {
+  it("warn-skips a malformed page (no version) and flags the crawl's coverage incomplete", async () => {
     const impl = async (input: string | URL | Request): Promise<Response> => {
       const url = new URL(typeof input === "string" ? input : input.toString());
       if (url.pathname.endsWith("/api/v2/spaces")) {
@@ -221,6 +223,25 @@ describe("failure handling", () => {
     };
     const changes = await client({}, impl as unknown as typeof fetch).fetchAll();
     expect(changes.documents.map((d) => d.path)).toEqual(["confluence-eng/engineering.md"]);
+    // The skipped page's document must not be archived off this partial set —
+    // the flag makes the engine defer deletions to a clean crawl.
+    expect(changes.coverageIncomplete).toBe(true);
+  });
+
+  it("normalizes an offset-format version timestamp to a canonical ISO instant", async () => {
+    // Raw offset strings compare lexicographically wrong against the engine's
+    // toISOString `since`; normalization happens at page construction.
+    const offsetPage: FixturePage = {
+      id: "7",
+      title: "Offset",
+      parentId: null,
+      modifiedAt: "2026-07-06T11:00:00+05:00",
+      body: "<p>Offset prose here.</p>",
+    };
+    const { impl } = makeFetch({ pages: [offsetPage] });
+    const changes = await client({}, impl as unknown as typeof fetch).fetchAll();
+    expect(changes.highWaterMark).toBe("2026-07-06T06:00:00.000Z");
+    expect(changes.documents[0].content).toContain('timestamp: "2026-07-06T06:00:00.000Z"');
   });
 });
 

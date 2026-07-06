@@ -235,6 +235,8 @@ let fetchCalls: Array<{ kind: "changes" | "all"; since?: string | null; cursor?:
 let vendorMarkOverride: string | null | undefined;
 /** The cursor the fixture vendor returns from each fetch (persisted on success). */
 let vendorCursor: string | null = null;
+/** When true, the fixture vendor flags its enumeration as knowingly partial. */
+let vendorCoverageIncomplete = false;
 /** The install status the in-transaction re-check sees — flip to simulate an
  *  uninstall landing mid-sync (#4229). */
 let installStatusInTx = "published";
@@ -285,6 +287,7 @@ const fixtureConnector: KnowledgeSyncConnector = {
         documents: await collectFixtureDocs(changed),
         highWaterMark: vendorMark(vendorPages),
         cursor: vendorCursor,
+        coverageIncomplete: vendorCoverageIncomplete,
       };
     },
     async fetchAll(): Promise<ConnectorChanges> {
@@ -294,6 +297,7 @@ const fixtureConnector: KnowledgeSyncConnector = {
         documents: await collectFixtureDocs(vendorPages),
         highWaterMark: vendorMark(vendorPages),
         cursor: vendorCursor,
+        coverageIncomplete: vendorCoverageIncomplete,
       };
     },
   }),
@@ -354,6 +358,7 @@ beforeEach(() => {
   retryAfterSeconds = null;
   vendorMarkOverride = undefined;
   vendorCursor = null;
+  vendorCoverageIncomplete = false;
   installStatusInTx = "published";
   internalQueryThrowOn = null;
   txThrowOn = null;
@@ -462,6 +467,46 @@ describe("reconciliation crawls", () => {
     expect(outcome.rejected).toHaveLength(1);
     expect(store.get("fixture/precious.md")?.status).toBe("published");
     expect(state()).toMatchObject({ status: "error", last_reconciled_at: null });
+  });
+
+  it("a coverage-incomplete reconciliation upserts but archives NOTHING and holds the reconcile clock", async () => {
+    // First a clean reconciliation seeds two docs; a reviewer publishes one.
+    vendorPages = [
+      { path: "keep.md", body: md("Keep"), lastModified: "2026-07-01T00:00:00.000Z" },
+      { path: "missed.md", body: md("Missed"), lastModified: "2026-07-01T00:00:00.000Z" },
+    ];
+    await runSync();
+    const missed = store.get("fixture/missed.md");
+    if (!missed) throw new Error("first sync did not seed the store");
+    missed.status = "published";
+    // The vendor's next crawl KNOWS it skipped pages (depth cap, malformed
+    // entries): `missed.md` is absent from the partial set, and the weekly
+    // cadence is due again.
+    vendorPages = [
+      { path: "keep.md", body: md("Keep v2"), lastModified: "2026-07-06T00:00:00.000Z" },
+    ];
+    vendorCoverageIncomplete = true;
+    seedState({ last_reconciled_at: "2026-06-01T00:00:00.000Z" });
+
+    const outcome = await runSync();
+    expect(outcome).toMatchObject({
+      status: "success",
+      mode: "reconciliation",
+      coverageIncomplete: true,
+      // archiveAbsent was skipped entirely — null, not 0.
+      archivedAbsent: null,
+    });
+    // The upsert still landed; the absent doc survived the partial crawl.
+    expect(store.get("fixture/keep.md")?.body).toContain("Keep v2");
+    expect(store.get("fixture/missed.md")?.status).toBe("published");
+    // The reconcile clock did NOT advance (the next cycle stays due), the mark
+    // did, and the report records the deferred deletions for the admin surface.
+    expect(state()).toMatchObject({
+      status: "success",
+      last_reconciled_at: "2026-06-01T00:00:00.000Z",
+      high_water_mark: "2026-07-06T00:00:00.000Z",
+    });
+    expect(state()?.report).toMatchObject({ coverageIncomplete: true });
   });
 
   it("validates the ingest caps over the FULL set with real numbers", async () => {
@@ -696,6 +741,9 @@ describe("failure handling", () => {
     const outcome = await runSync();
     expect(outcome.status).toBe("error");
     expect(outcome.error).toMatch(/Sync failed unexpectedly/);
+    // The failure happened BEFORE the mode decision — the synthesized attempt
+    // says so honestly rather than labeling it "incremental".
+    expect(outcome.mode).toBe("unknown");
     // The error is still persisted (the state WRITE succeeds; only the READ threw).
     expect(state()).toMatchObject({ status: "error" });
   });

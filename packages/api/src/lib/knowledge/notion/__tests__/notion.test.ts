@@ -294,8 +294,11 @@ describe("notion document builder", () => {
     expect(doc).toContain('resource: "https://www.notion.so/runbook"');
     expect(doc).toContain('timestamp: "2026-07-01T00:00:00.000Z"');
     expect(doc).toContain("atlas:");
-    expect(doc).toContain("connector: notion");
+    expect(doc).toContain('connector: "notion"');
     expect(doc).toContain(`page_id: "${idA}"`);
+    // No provenance tags — `tags` is a mirrored change-comparison column, so
+    // stamping one would re-draft every already-ingested Notion document.
+    expect(doc).not.toContain("tags:");
     // Body is a pure function of the page version — no per-sync timestamp that
     // would flip the change comparison and force needless re-review.
     expect(doc).not.toContain("synced_at");
@@ -348,6 +351,8 @@ describe("NotionVendorClient.fetchAll (reconciliation)", () => {
     expect(paths.some((p) => p.startsWith("child-runbook-"))).toBe(true);
     // High-water mark is the newest last_edited_time across the full set.
     expect(changes.highWaterMark).toBe("2026-07-02T00:00:00.000Z");
+    // A clean crawl never flags its coverage — the engine may archive off it.
+    expect(changes.coverageIncomplete).toBe(false);
   });
 
   it("skips archived/trashed pages", async () => {
@@ -386,7 +391,7 @@ describe("NotionVendorClient.fetchAll (reconciliation)", () => {
     });
     const changes = await vendor.fetchAll();
     expect(changes.documents[0].content).toContain("> Note");
-    expect(changes.documents[0].content).toContain("connector: notion");
+    expect(changes.documents[0].content).toContain('connector: "notion"');
   });
 
   it("enumerates pages of a shared database via the data-source query path", async () => {
@@ -458,6 +463,65 @@ describe("NotionVendorClient.fetchAll (reconciliation)", () => {
     const vendor = new NotionVendorClient({ http, maxDocs: 1000 });
     await expect(vendor.fetchAll()).rejects.toThrow(/incomplete/i);
   });
+
+  it("throws on a 2xx /search body that is null or an array (never 'no more pages')", async () => {
+    // The archive-protection class: a body we can't understand must never be
+    // read as an empty, complete page list.
+    for (const body of ["null", "[]"]) {
+      const fetchImpl = asFetch(async () => new Response(body, { status: 200 }));
+      const http = new NotionHttpClient({ token: "ntn_x", fetchImpl, now: () => 0, sleep: async () => {} });
+      const vendor = new NotionVendorClient({ http, maxDocs: 1000 });
+      await expect(vendor.fetchAll()).rejects.toThrow(
+        /refusing to treat enumeration as complete/i,
+      );
+    }
+  });
+
+  it("flags coverageIncomplete (still succeeding) when the block descent hits the depth cap", async () => {
+    // A container chain deeper than the walk cap, with a child page buried at
+    // the bottom: the crawl completes with what it reached, but must tell the
+    // engine the set is partial so the buried page is never archived off it.
+    const blocks: Record<string, Array<Record<string, unknown>>> = {};
+    let parent = "root";
+    for (let i = 1; i <= 7; i++) {
+      blocks[parent] = [{ object: "block", id: `c${i}`, type: "toggle", has_children: true }];
+      parent = `c${i}`;
+    }
+    blocks[parent] = [
+      {
+        object: "block",
+        id: "deep-page",
+        type: "child_page",
+        has_children: false,
+        last_edited_time: "2026-07-02T00:00:00.000Z",
+        child_page: { title: "Deep" },
+      },
+    ];
+    const { vendor } = client({
+      searchPages: [pageObject({ id: "root", title: "Root", lastEditedTime: "2026-07-01T00:00:00.000Z" })],
+      blocks,
+      markdown: { root: { markdown: "root body" } },
+    });
+    const changes = await vendor.fetchAll();
+    expect(changes.coverageIncomplete).toBe(true);
+    expect(changes.documents).toHaveLength(1);
+    expect(changes.documents[0].path).toContain("root-");
+  });
+
+  it("normalizes an offset-format last_edited_time to a canonical ISO instant", async () => {
+    const { vendor } = client({
+      searchPages: [
+        pageObject({ id: "p", title: "P", lastEditedTime: "2026-07-01T02:00:00+02:00" }),
+      ],
+      blocks: { p: [] },
+      markdown: { p: { markdown: "body" } },
+    });
+    const changes = await vendor.fetchAll();
+    // Raw offset strings compare lexicographically wrong; the normalized
+    // instant is what reaches the high-water mark and the frontmatter.
+    expect(changes.highWaterMark).toBe("2026-07-01T00:00:00.000Z");
+    expect(changes.documents[0].content).toContain('timestamp: "2026-07-01T00:00:00.000Z"');
+  });
 });
 
 describe("NotionVendorClient.fetchChanges (incremental)", () => {
@@ -477,6 +541,82 @@ describe("NotionVendorClient.fetchChanges (incremental)", () => {
     expect(calls.some((c) => c.path === "/pages/old/markdown")).toBe(false);
     // Incremental does NOT descend block trees (that's reconciliation's job).
     expect(calls.some((c) => c.path.endsWith("/children"))).toBe(false);
+  });
+
+  it("echoes next_cursor into start_cursor and collects both pages of a listing", async () => {
+    const pageA = pageObject({ id: "a", title: "A", lastEditedTime: "2026-07-05T00:00:00.000Z" });
+    const pageB = pageObject({ id: "b", title: "B", lastEditedTime: "2026-07-04T00:00:00.000Z" });
+    const { fetchImpl } = makeFakeNotion({
+      markdown: { a: { markdown: "a body" }, b: { markdown: "b body" } },
+    });
+    const searchBodies: Array<Record<string, unknown> | undefined> = [];
+    const pagedFetch = asFetch(async (input, init) => {
+      const path = new URL(String(input)).pathname.replace(/^\/v1/, "");
+      if (path === "/search") {
+        const body = init?.body
+          ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+          : undefined;
+        searchBodies.push(body);
+        const first = body?.start_cursor === undefined;
+        return new Response(
+          JSON.stringify(
+            first
+              ? { object: "list", results: [pageA], has_more: true, next_cursor: "CUR" }
+              : { object: "list", results: [pageB], has_more: false, next_cursor: null },
+          ),
+          { status: 200 },
+        );
+      }
+      return fetchImpl(input, init);
+    });
+    const http = new NotionHttpClient({ token: "ntn_x", fetchImpl: pagedFetch, now: () => 0, sleep: async () => {} });
+    const vendor = new NotionVendorClient({ http, maxDocs: 1000 });
+    const changes = await vendor.fetchChanges({ since: "2026-07-01T00:00:00.000Z", cursor: null });
+    // The second request carried the first response's cursor; both pages landed.
+    expect(searchBodies).toHaveLength(2);
+    expect(searchBodies[1]?.start_cursor).toBe("CUR");
+    expect(changes.documents.map((d) => d.path).toSorted()).toEqual([
+      expect.stringContaining("a-"),
+      expect.stringContaining("b-"),
+    ]);
+  });
+
+  it("throws (never hangs) when the vendor echoes the same cursor forever", async () => {
+    // A vendor/proxy glitch replaying one listing page would otherwise spin —
+    // the id-dedup means the enumeration cap never fires on repeated results,
+    // and one wedged fetch starves the whole sequential sync cycle.
+    const page = pageObject({ id: "a", title: "A", lastEditedTime: "2026-07-05T00:00:00.000Z" });
+    const stuckFetch = asFetch(async () =>
+      new Response(
+        JSON.stringify({ object: "list", results: [page], has_more: true, next_cursor: "CUR" }),
+        { status: 200 },
+      ),
+    );
+    const http = new NotionHttpClient({ token: "ntn_x", fetchImpl: stuckFetch, now: () => 0, sleep: async () => {} });
+    const vendor = new NotionVendorClient({ http, maxDocs: 1000 });
+    await expect(
+      vendor.fetchChanges({ since: "2026-07-01T00:00:00.000Z", cursor: null }),
+    ).rejects.toThrow(/cursor it already served/i);
+  });
+
+  it("warn-skips a page with an unparseable last_edited_time without stopping the walk", async () => {
+    // One malformed page mid-stream must not read as older-than-since ("") and
+    // end the walk — the newer pages after it still collect; the skip flags
+    // coverage so the engine defers deletions to a clean crawl.
+    const { vendor } = client({
+      searchPages: [
+        pageObject({ id: "new", title: "New", lastEditedTime: "2026-07-05T00:00:00.000Z" }),
+        pageObject({ id: "bad", title: "Bad", lastEditedTime: "not-a-timestamp" }),
+        pageObject({ id: "mid", title: "Mid", lastEditedTime: "2026-07-04T00:00:00.000Z" }),
+      ],
+      markdown: { new: { markdown: "n" }, mid: { markdown: "m" } },
+    });
+    const changes = await vendor.fetchChanges({ since: "2026-07-03T00:00:00.000Z", cursor: null });
+    expect(changes.documents.map((d) => d.path).toSorted()).toEqual([
+      expect.stringContaining("mid-"),
+      expect.stringContaining("new-"),
+    ]);
+    expect(changes.coverageIncomplete).toBe(true);
   });
 });
 

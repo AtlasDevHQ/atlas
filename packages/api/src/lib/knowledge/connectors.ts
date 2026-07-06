@@ -28,10 +28,11 @@ export interface ConnectorDocument {
   /**
    * Collection-relative archive path (e.g. `docs/runbooks/oncall.md`).
    * Deterministic per vendor page — the upsert-by-path diff and the
-   * reconciliation subtractive archive both key on it. Derive it via
-   * `@atlas/okf-bundle`'s path machinery so reserved OKF basenames
-   * (`index.md`/`log.md`) are folded/renamed at collect time, never silently
-   * skipped at ingest.
+   * reconciliation subtractive archive both key on it. INVARIANT: the basename
+   * is never a reserved OKF name (`index.md`/`log.md`) — the ingest parsers
+   * silently skip those, so a reserved path would vanish instead of ingesting.
+   * How a vendor guarantees that is its own choice (`@atlas/okf-bundle`'s
+   * collect-time fold/rename, an id-suffixed basename, …).
    */
   readonly path: string;
   /** Full OKF document (frontmatter + markdown body). */
@@ -55,6 +56,30 @@ export interface ConnectorChanges {
    * cursor-shaped rather than timestamp-shaped. Omit / null when unused.
    */
   readonly cursor?: string | null;
+  /**
+   * True when the client KNOWS this enumeration skipped pages (a depth-capped
+   * descent, warn-skipped malformed pages) but the documents it DID fetch are
+   * sound. The engine still upserts them, but skips subtractive archiving and
+   * holds `last_reconciled_at` for the cycle — deletions wait for a clean
+   * crawl, and the reconcile clock stays due. Omit / false on a complete
+   * enumeration. (An enumeration that can't vouch even for what it fetched
+   * must throw instead.)
+   */
+  readonly coverageIncomplete?: boolean;
+}
+
+/**
+ * Normalize a vendor timestamp to a canonical ISO-8601 instant (UTC,
+ * millisecond precision), or null when it doesn't parse. Vendor clients build
+ * page refs and high-water marks from this, never raw vendor strings — raw
+ * strings compare lexicographically only by luck (an offset-format timestamp
+ * orders wrong with no error), and `""` must never reach a walk-until-older
+ * stop decision.
+ */
+export function toIsoInstant(value: unknown): string | null {
+  if (typeof value !== "string" || value === "") return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
 }
 
 /** What the engine hands a client for an incremental fetch. */

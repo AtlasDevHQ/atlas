@@ -204,6 +204,7 @@ mock.module("@atlas/api/lib/knowledge/connectors", () => ({
   listKnowledgeSyncConnectorCatalogIds: () => ["catalog:notion-knowledge"],
   _resetKnowledgeSyncConnectors: () => {},
   ConnectorRateLimitError,
+  toIsoInstant: (value: unknown) => (typeof value === "string" ? value : null),
 }));
 const syncConnectorCollection = mock(async (params: { collectionSlug: string }) => ({
   collection: params.collectionSlug,

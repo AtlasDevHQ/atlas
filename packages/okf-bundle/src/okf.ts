@@ -22,15 +22,29 @@ export type OkfFrontmatter = Pick<
 >;
 
 /**
+ * An extension block rendered after the wire fields — one nested string
+ * mapping under `key` (e.g. the `atlas:` provenance block a vendor connector
+ * stamps, key = the wire module's `ATLAS_EXTENSION_KEY`). Extension keys are
+ * spec-legal unknown frontmatter: the lenient ingest parser preserves them
+ * outside the mirrored columns, so they never drive change comparison.
+ */
+export interface OkfExtensionBlock {
+  readonly key: string;
+  readonly fields: Readonly<Record<string, string>>;
+}
+
+/**
  * Serialize an OKF document: `type: Document` frontmatter, then any of
  * title/description/resource/tags/timestamp that are set (wire field order),
- * then the body. String values are JSON-encoded (valid YAML double-quoted
- * scalars) so colons/quotes can't break parsing.
+ * then an optional {@link OkfExtensionBlock}, then the body. String values are
+ * JSON-encoded (valid YAML double-quoted scalars) so colons/quotes can't break
+ * parsing.
  */
 export function renderOkfDocument(
   fm: OkfFrontmatter,
   tags: readonly string[],
   body: string,
+  extension?: OkfExtensionBlock,
 ): string {
   const lines = ["---", `type: ${DEFAULT_OKF_TYPE}`];
   if (fm.title) lines.push(`title: ${JSON.stringify(fm.title)}`);
@@ -40,6 +54,12 @@ export function renderOkfDocument(
     lines.push(`tags: [${tags.map((t) => JSON.stringify(t)).join(", ")}]`);
   }
   if (fm.timestamp) lines.push(`timestamp: ${JSON.stringify(fm.timestamp)}`);
+  if (extension !== undefined && Object.keys(extension.fields).length > 0) {
+    lines.push(`${extension.key}:`);
+    for (const [key, value] of Object.entries(extension.fields)) {
+      lines.push(`  ${key}: ${JSON.stringify(value)}`);
+    }
+  }
   lines.push("---", "", body.trimEnd(), "");
   return lines.join("\n");
 }

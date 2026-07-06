@@ -36,7 +36,13 @@ export {
   stripMdxModuleLines,
   type MarkdownTreeSourceOptions,
 } from "./markdown-tree";
-export { isContentlessBody, pageTags, renderOkfDocument, type OkfFrontmatter } from "./okf";
+export {
+  isContentlessBody,
+  pageTags,
+  renderOkfDocument,
+  type OkfExtensionBlock,
+  type OkfFrontmatter,
+} from "./okf";
 export {
   deriveArchivePath,
   firstPathSegment,

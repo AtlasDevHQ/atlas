@@ -11,9 +11,11 @@
  *       only by inheritance (its parent was shared, but search never returned
  *       it) is still found via its parent's `child_page`/`child_database`
  *       blocks. Deletions/unshares surface here as paths absent from the full
- *       set; the engine archives them. An INCOMPLETE enumeration must THROW
- *       (never return a partial set) — a silent under-count would let the engine
- *       archive live pages.
+ *       set; the engine archives them. An enumeration that can't vouch for the
+ *       set it fetched must THROW (never return a partial set); one that
+ *       KNOWINGLY skipped pages (depth cap, malformed timestamps) returns
+ *       `coverageIncomplete` so the engine upserts but skips archiving — either
+ *       way, a silent under-count can never archive live pages.
  *     - `fetchChanges` (INCREMENTAL, cheap) walks SEARCH sorted by
  *       `last_edited_time` descending and stops once older than `since`. The
  *       engine's overlap window absorbs Notion's minute-granularity timestamps;
@@ -33,7 +35,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { getIngestMaxDocs } from "../ingest-limits";
-import { ConnectorRateLimitError } from "../connectors";
+import { ConnectorRateLimitError, toIsoInstant } from "../connectors";
 import type {
   ConnectorChanges,
   ConnectorDocument,
@@ -59,11 +61,17 @@ const MAX_TRUNCATION_CONTINUATIONS = 50;
 
 /**
  * Bound block-walk recursion depth — governs BOTH the enumeration
- * container-descent (`walkBlocks`, where exceeding it is logged, since a missed
- * subpage could be archived) and the fallback content render
- * (`blockWalkMarkdown`). Tune with both in mind.
+ * container-descent (`walkBlocks`, where exceeding it flags the fetch's
+ * coverage as incomplete, since a missed subpage must never be archived) and
+ * the fallback content render (`blockWalkMarkdown`). Tune with both in mind.
  */
 const MAX_BLOCK_WALK_DEPTH = 6;
+
+/**
+ * Hard bound on continuation requests per pagination loop — well above any
+ * legitimate listing at `page_size: 100` under {@link MAX_ENUMERATED_PAGES}.
+ */
+const MAX_PAGINATION_REQUESTS = 5_000;
 
 // ---------------------------------------------------------------------------
 // Narrowing helpers for the untyped Notion JSON (the read sites own the shape)
@@ -116,6 +124,33 @@ function advancePageCursor(res: Record<string, unknown>, what: string): string |
   return next;
 }
 
+/**
+ * A per-loop cursor advancer with hang protection: a vendor/proxy glitch that
+ * echoes an already-served cursor (or paginates without end) would otherwise
+ * spin forever — `refs` dedupes by id, so {@link MAX_ENUMERATED_PAGES} never
+ * fires on repeated results, and one wedged fetch starves the whole sequential
+ * sync cycle. Throwing turns the glitch into this collection's sync error.
+ */
+function createPageCursorAdvancer(what: string): (res: Record<string, unknown>) => string | null {
+  const served = new Set<string>();
+  return (res) => {
+    const next = advancePageCursor(res, what);
+    if (next === null) return null;
+    if (served.has(next)) {
+      throw new Error(
+        `Notion ${what} returned a pagination cursor it already served — aborting a glitched listing instead of looping forever.`,
+      );
+    }
+    served.add(next);
+    if (served.size > MAX_PAGINATION_REQUESTS) {
+      throw new Error(
+        `Notion ${what} exceeded ${MAX_PAGINATION_REQUESTS} pagination requests — aborting a runaway listing.`,
+      );
+    }
+    return next;
+  };
+}
+
 /** A page's title from its `properties` (the one `type: "title"` property). */
 function extractTitle(properties: unknown): string {
   const props = asRecord(properties);
@@ -141,6 +176,8 @@ function pageUrl(pageObject: Record<string, unknown>, id: string): string {
 interface NotionPageRef {
   readonly id: string;
   readonly title: string;
+  /** Normalized ISO-8601 instant (`toIsoInstant`) — never a raw vendor string,
+   *  so lexicographic comparisons are chronological by construction. */
   readonly lastEditedTime: string;
   readonly url: string;
 }
@@ -148,6 +185,17 @@ interface NotionPageRef {
 /** True for a page object that is trashed/archived (treat as absent). */
 function isArchived(pageObject: Record<string, unknown>): boolean {
   return pageObject.archived === true || pageObject.in_trash === true;
+}
+
+/**
+ * Mutable per-fetch coverage record — flipped whenever enumeration KNOWINGLY
+ * skipped a page (the block-descent depth cap, an unparseable
+ * `last_edited_time`). Surfaced as `ConnectorChanges.coverageIncomplete`, which
+ * makes the engine skip subtractive archiving and hold the reconcile clock for
+ * the cycle — a skipped page must never be archived off the partial set.
+ */
+interface CoverageState {
+  incomplete: boolean;
 }
 
 export interface NotionVendorClientOptions {
@@ -173,9 +221,13 @@ export class NotionVendorClient implements ConnectorVendorClient {
     const since = params.since;
     const changed: NotionPageRef[] = [];
     let newestSeen: string | null = null;
+    const coverage: CoverageState = { incomplete: false };
 
+    // `since` is the engine's toISOString and ref times are normalized
+    // instants, so these string comparisons are chronological.
     await this.searchPages({
       direction: "descending",
+      coverage,
       onPage: (ref) => {
         if (newestSeen === null || ref.lastEditedTime > newestSeen) newestSeen = ref.lastEditedTime;
         if (since === null || ref.lastEditedTime >= since) {
@@ -189,12 +241,18 @@ export class NotionVendorClient implements ConnectorVendorClient {
     });
 
     const documents = await this.buildDocuments(changed);
-    return { documents, highWaterMark: newestSeen, cursor: null };
+    return {
+      documents,
+      highWaterMark: newestSeen,
+      cursor: null,
+      coverageIncomplete: coverage.incomplete,
+    };
   }
 
   /** RECONCILIATION: search ∪ recursive descent — the exhaustive set. */
   async fetchAll(): Promise<ConnectorChanges> {
     const refs = new Map<string, NotionPageRef>();
+    const coverage: CoverageState = { incomplete: false };
     const addRef = (ref: NotionPageRef): void => {
       if (!refs.has(ref.id)) refs.set(ref.id, ref);
       if (refs.size > MAX_ENUMERATED_PAGES) {
@@ -211,14 +269,15 @@ export class NotionVendorClient implements ConnectorVendorClient {
     const roots: string[] = [];
     await this.searchPages({
       direction: "descending",
+      coverage,
       onPage: (ref) => {
         addRef(ref);
         roots.push(ref.id);
         return "continue";
       },
     });
-    await this.enumerateDataSources(addRef, roots);
-    await this.descend(roots, addRef);
+    await this.enumerateDataSources(addRef, roots, coverage);
+    await this.descend(roots, addRef, coverage);
 
     const highWaterMark = [...refs.values()].reduce<string | null>(
       (max, ref) => (max === null || ref.lastEditedTime > max ? ref.lastEditedTime : max),
@@ -234,7 +293,7 @@ export class NotionVendorClient implements ConnectorVendorClient {
     }
 
     const documents = await this.buildDocuments([...refs.values()]);
-    return { documents, highWaterMark, cursor: null };
+    return { documents, highWaterMark, cursor: null, coverageIncomplete: coverage.incomplete };
   }
 
   // ── Enumeration ────────────────────────────────────────────────────────────
@@ -246,9 +305,11 @@ export class NotionVendorClient implements ConnectorVendorClient {
    */
   private async searchPages(opts: {
     readonly direction: "ascending" | "descending";
+    readonly coverage: CoverageState;
     readonly onPage: (ref: NotionPageRef) => "continue" | "stop";
   }): Promise<void> {
     let cursor: string | null = null;
+    const advance = createPageCursorAdvancer("page search");
     for (;;) {
       const body: Record<string, unknown> = {
         filter: { property: "object", value: "page" },
@@ -262,15 +323,24 @@ export class NotionVendorClient implements ConnectorVendorClient {
         if (obj === null || obj.object !== "page" || isArchived(obj)) continue;
         const id = asString(obj.id);
         if (id === "") continue;
+        const lastEditedTime = toIsoInstant(obj.last_edited_time);
+        if (lastEditedTime === null) {
+          // Warn-skip + flag coverage (Confluence's normalizePage posture): a
+          // raw "" would wrongly stop the incremental walk-until-older, and a
+          // skipped page must never be archived off the partial set.
+          opts.coverage.incomplete = true;
+          log.warn({ pageId: id }, "Notion page has an unparseable last_edited_time — skipped this cycle");
+          continue;
+        }
         const ref: NotionPageRef = {
           id,
           title: extractTitle(obj.properties),
-          lastEditedTime: asString(obj.last_edited_time),
+          lastEditedTime,
           url: pageUrl(obj, id),
         };
         if (opts.onPage(ref) === "stop") return;
       }
-      const next = advancePageCursor(res, "page search");
+      const next = advance(res);
       if (next === null) return;
       cursor = next;
     }
@@ -284,8 +354,10 @@ export class NotionVendorClient implements ConnectorVendorClient {
   private async enumerateDataSources(
     addRef: (ref: NotionPageRef) => void,
     roots: string[],
+    coverage: CoverageState,
   ): Promise<void> {
     let cursor: string | null = null;
+    const advance = createPageCursorAdvancer("data-source search");
     for (;;) {
       const body: Record<string, unknown> = {
         filter: { property: "object", value: "data_source" },
@@ -296,9 +368,9 @@ export class NotionVendorClient implements ConnectorVendorClient {
       for (const raw of asArray(res.results)) {
         const ds = asRecord(raw);
         const dsId = asString(ds?.id);
-        if (dsId !== "") await this.queryDataSourcePages(dsId, addRef, roots);
+        if (dsId !== "") await this.queryDataSourcePages(dsId, addRef, roots, coverage);
       }
-      const next = advancePageCursor(res, "data-source search");
+      const next = advance(res);
       if (next === null) return;
       cursor = next;
     }
@@ -309,8 +381,10 @@ export class NotionVendorClient implements ConnectorVendorClient {
     dataSourceId: string,
     addRef: (ref: NotionPageRef) => void,
     roots: string[],
+    coverage: CoverageState,
   ): Promise<void> {
     let cursor: string | null = null;
+    const advance = createPageCursorAdvancer("data-source query");
     for (;;) {
       const body: Record<string, unknown> = {
         page_size: 100,
@@ -325,15 +399,24 @@ export class NotionVendorClient implements ConnectorVendorClient {
         if (obj === null || obj.object !== "page" || isArchived(obj)) continue;
         const id = asString(obj.id);
         if (id === "") continue;
+        const lastEditedTime = toIsoInstant(obj.last_edited_time);
+        if (lastEditedTime === null) {
+          coverage.incomplete = true;
+          log.warn(
+            { pageId: id, dataSourceId },
+            "Notion data-source page has an unparseable last_edited_time — skipped this cycle",
+          );
+          continue;
+        }
         addRef({
           id,
           title: extractTitle(obj.properties),
-          lastEditedTime: asString(obj.last_edited_time),
+          lastEditedTime,
           url: pageUrl(obj, id),
         });
         roots.push(id);
       }
-      const next = advancePageCursor(res, "data-source query");
+      const next = advance(res);
       if (next === null) return;
       cursor = next;
     }
@@ -349,6 +432,7 @@ export class NotionVendorClient implements ConnectorVendorClient {
   private async descend(
     roots: readonly string[],
     addRef: (ref: NotionPageRef) => void,
+    coverage: CoverageState,
   ): Promise<void> {
     const visited = new Set<string>();
     const queue = [...roots];
@@ -356,7 +440,7 @@ export class NotionVendorClient implements ConnectorVendorClient {
       const pageId = queue.shift()!;
       if (visited.has(pageId)) continue;
       visited.add(pageId);
-      await this.walkBlocks(pageId, addRef, queue, 0);
+      await this.walkBlocks(pageId, addRef, queue, 0, coverage);
     }
   }
 
@@ -366,8 +450,10 @@ export class NotionVendorClient implements ConnectorVendorClient {
     addRef: (ref: NotionPageRef) => void,
     pageQueue: string[],
     depth: number,
+    coverage: CoverageState,
   ): Promise<void> {
     let cursor: string | null = null;
+    const advance = createPageCursorAdvancer(`block children of ${blockId}`);
     for (;;) {
       const path =
         `/blocks/${blockId}/children?page_size=100` +
@@ -380,34 +466,46 @@ export class NotionVendorClient implements ConnectorVendorClient {
         const id = asString(block.id);
         if (type === "child_page" && id !== "") {
           const child = asRecord(block.child_page);
-          addRef({
-            id,
-            title: asString(child?.title),
-            lastEditedTime: asString(block.last_edited_time),
-            url: `https://www.notion.so/${compactPageId(id)}`,
-          });
+          const lastEditedTime = toIsoInstant(block.last_edited_time);
+          if (lastEditedTime === null) {
+            coverage.incomplete = true;
+            log.warn(
+              { pageId: id, blockId },
+              "Notion child page has an unparseable last_edited_time — skipped this cycle",
+            );
+          } else {
+            addRef({
+              id,
+              title: asString(child?.title),
+              lastEditedTime,
+              url: `https://www.notion.so/${compactPageId(id)}`,
+            });
+          }
           // Enqueue unconditionally — the `descend` visited-set dedupes; a page
-          // already in `refs` may still have un-walked subpages of its own.
+          // already in `refs` (or skipped itself) may still have un-walked
+          // subpages of its own.
           pageQueue.push(id);
         } else if (type === "child_database" && id !== "") {
-          await this.enumerateDatabaseBlock(id, addRef, pageQueue);
+          await this.enumerateDatabaseBlock(id, addRef, pageQueue, coverage);
         } else if (block.has_children === true && id !== "") {
           if (depth < MAX_BLOCK_WALK_DEPTH) {
             // A container block (toggle, column, callout, …) may hold a subpage —
             // recurse into it, bounded by depth.
-            await this.walkBlocks(id, addRef, pageQueue, depth + 1);
+            await this.walkBlocks(id, addRef, pageQueue, depth + 1, coverage);
           } else {
-            // Counted, never silent (matches the truncation/fallback logging): a
-            // subpage buried past the depth cap could be an inheritance-only page
-            // the reconciliation would then archive — surface the coverage gap.
+            // A subpage buried past the depth cap could be an inheritance-only
+            // page — flagging coverage keeps the engine from archiving it off
+            // this partial set (upserts still land; deletions wait for a clean
+            // crawl). Logged so an operator can find the too-deep nesting.
+            coverage.incomplete = true;
             log.warn(
               { blockId: id, depth },
-              "Notion block descent hit the depth cap — a subpage nested this deep in one page is not enumerated",
+              "Notion block descent hit the depth cap — a subpage nested this deep in one page is not enumerated; subtractive archiving is skipped this cycle",
             );
           }
         }
       }
-      const next = advancePageCursor(res, `block children of ${blockId}`);
+      const next = advance(res);
       if (next === null) return;
       cursor = next;
     }
@@ -418,6 +516,7 @@ export class NotionVendorClient implements ConnectorVendorClient {
     databaseId: string,
     addRef: (ref: NotionPageRef) => void,
     pageQueue: string[],
+    coverage: CoverageState,
   ): Promise<void> {
     const db = requireResponseObject(
       await this.http.get(`/databases/${databaseId}`),
@@ -427,7 +526,7 @@ export class NotionVendorClient implements ConnectorVendorClient {
     if (dataSources.length === 0) return;
     for (const raw of dataSources) {
       const dsId = asString(asRecord(raw)?.id);
-      if (dsId !== "") await this.queryDataSourcePages(dsId, addRef, pageQueue);
+      if (dsId !== "") await this.queryDataSourcePages(dsId, addRef, pageQueue, coverage);
     }
   }
 
@@ -534,12 +633,22 @@ export class NotionVendorClient implements ConnectorVendorClient {
     if (depth > MAX_BLOCK_WALK_DEPTH) return "";
     const out: string[] = [];
     let cursor: string | null = null;
+    const advance = createPageCursorAdvancer(`block children of ${blockId} (fallback render)`);
     for (;;) {
       const path =
         `/blocks/${blockId}/children?page_size=100` +
         (cursor !== null ? `&start_cursor=${encodeURIComponent(cursor)}` : "");
       const res = asRecord(await this.http.get(path));
-      for (const raw of asArray(res?.results)) {
+      if (res === null) {
+        // Content render stays lenient (only enumeration feeds the subtractive
+        // diff) — but a truncated body is logged, never silent.
+        log.warn(
+          { blockId },
+          "Notion block children returned a non-object body during the fallback render — body truncated",
+        );
+        break;
+      }
+      for (const raw of asArray(res.results)) {
         const block = asRecord(raw);
         if (block === null) continue;
         const rendered = renderBlock(block);
@@ -549,9 +658,11 @@ export class NotionVendorClient implements ConnectorVendorClient {
           if (nested.trim() !== "") out.push(indent(nested));
         }
       }
-      if (res?.has_more !== true) break;
-      const next = asString(res.next_cursor);
-      if (next === "") break;
+      // Same fail-loud pagination as enumeration (has_more without a cursor,
+      // repeated cursors): a glitch throws instead of hanging or silently
+      // shortening the rendered body.
+      const next = advance(res);
+      if (next === null) break;
       cursor = next;
     }
     return out.join("\n\n");

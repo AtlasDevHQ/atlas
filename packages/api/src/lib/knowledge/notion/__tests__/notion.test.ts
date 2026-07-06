@@ -35,10 +35,11 @@ interface FakeNotionState {
   readonly databases?: Record<string, Record<string, unknown>>;
   /** `GET /blocks/:id/children` → block list. */
   readonly blocks?: Record<string, Array<Record<string, unknown>>>;
-  /** `GET /pages/:id/markdown` → response, or "throw" to fail the endpoint. */
+  /** `GET /pages/:id/markdown` → response, "throw" (endpoint failure → block-walk
+   *  fallback), or "throw-429" (rate limit on the content path). */
   readonly markdown?: Record<
     string,
-    { markdown?: string; truncated?: boolean; unknown_block_ids?: string[] } | "throw"
+    { markdown?: string; truncated?: boolean; unknown_block_ids?: string[] } | "throw" | "throw-429"
   >;
   /** Number of leading requests that answer 429 before succeeding. */
   rateLimit?: number;
@@ -110,6 +111,12 @@ function makeFakeNotion(state: FakeNotionState) {
     const md = path.match(/^\/pages\/([^/]+)\/markdown$/);
     if (md) {
       const entry = state.markdown?.[md[1]];
+      if (entry === "throw-429") {
+        return new Response(JSON.stringify({ object: "error", code: "rate_limited" }), {
+          status: 429,
+          headers: { "Retry-After": "3" },
+        });
+      }
       if (entry === "throw" || entry === undefined) {
         return json({ object: "error", code: "object_not_found", message: "not served" }, 400);
       }
@@ -294,6 +301,19 @@ describe("notion document builder", () => {
     expect(doc).not.toContain("synced_at");
     expect(doc.endsWith("Body text\n")).toBe(true);
   });
+
+  it("keeps frontmatter valid YAML when the title/URL contain colons and quotes", () => {
+    const doc = renderNotionOkfDocument({
+      id: idA,
+      title: 'Q3: "Revenue" — plan',
+      lastEditedTime: "2026-07-01T00:00:00.000Z",
+      url: 'https://www.notion.so/x?q="a:b"',
+      body: "b",
+    });
+    // JSON-encoded scalars keep the colon/quote from breaking the YAML block.
+    expect(doc).toContain('title: "Q3: \\"Revenue\\" — plan"');
+    expect(doc).toContain('resource: "https://www.notion.so/x?q=\\"a:b\\""');
+  });
 });
 
 // ── Vendor client: enumeration + content ───────────────────────────────────────
@@ -368,6 +388,76 @@ describe("NotionVendorClient.fetchAll (reconciliation)", () => {
     expect(changes.documents[0].content).toContain("> Note");
     expect(changes.documents[0].content).toContain("connector: notion");
   });
+
+  it("enumerates pages of a shared database via the data-source query path", async () => {
+    const { vendor } = client({
+      searchPages: [], // no loose pages — everything lives in the database
+      dataSources: [{ object: "data_source", id: "ds-1" }],
+      dataSourcePages: {
+        "ds-1": [pageObject({ id: "row-1", title: "DB Row", lastEditedTime: "2026-07-03T00:00:00.000Z" })],
+      },
+      blocks: { "row-1": [] },
+      markdown: { "row-1": { markdown: "row body" } },
+    });
+    const changes = await vendor.fetchAll();
+    expect(changes.documents).toHaveLength(1);
+    expect(changes.documents[0].path).toContain("db-row-");
+  });
+
+  it("descends a child_database block into its data source's pages", async () => {
+    const { vendor } = client({
+      searchPages: [pageObject({ id: "parent", title: "Parent", lastEditedTime: "2026-07-01T00:00:00.000Z" })],
+      blocks: {
+        parent: [{ object: "block", id: "db-1", type: "child_database", has_children: false, child_database: { title: "Tasks" } }],
+        "row-x": [],
+      },
+      databases: { "db-1": { object: "database", id: "db-1", data_sources: [{ id: "ds-x" }] } },
+      dataSourcePages: {
+        "ds-x": [pageObject({ id: "row-x", title: "Task One", lastEditedTime: "2026-07-04T00:00:00.000Z" })],
+      },
+      markdown: { parent: { markdown: "p" }, "row-x": { markdown: "task" } },
+    });
+    const changes = await vendor.fetchAll();
+    const paths = changes.documents.map((d) => d.path);
+    expect(paths.some((p) => p.startsWith("task-one-"))).toBe(true);
+  });
+
+  it("de-duplicates a page reachable via BOTH search and descent (one document)", async () => {
+    const dupId = "dupdupdup-1111-2222-3333-444444444444";
+    const { vendor } = client({
+      // Same page id appears in search AND as a child_page under itself's parent.
+      searchPages: [
+        pageObject({ id: "root", title: "Root", lastEditedTime: "2026-07-01T00:00:00.000Z" }),
+        pageObject({ id: dupId, title: "Dup", lastEditedTime: "2026-07-01T00:00:00.000Z" }),
+      ],
+      blocks: {
+        root: [{ object: "block", id: dupId, type: "child_page", has_children: false, last_edited_time: "2026-07-01T00:00:00.000Z", child_page: { title: "Dup" } }],
+        [dupId]: [],
+      },
+      markdown: { root: { markdown: "r" }, [dupId]: { markdown: "d" } },
+    });
+    const changes = await vendor.fetchAll();
+    const dupPaths = changes.documents.filter((d) => d.path.startsWith("dup-"));
+    expect(dupPaths).toHaveLength(1);
+  });
+
+  it("throws when the vendor reports more pages but omits the next cursor (never a partial set)", async () => {
+    const { fetchImpl } = makeFakeNotion({});
+    // Override: a search response that claims has_more but returns no cursor.
+    const badFetch = asFetch(async (input) => {
+      const path = new URL(String(input)).pathname.replace(/^\/v1/, "");
+      if (path === "/search") {
+        return new Response(
+          JSON.stringify({ object: "list", results: [], has_more: true, next_cursor: null }),
+          { status: 200 },
+        );
+      }
+      return fetchImpl(input);
+    });
+    const http = new NotionHttpClient({ token: "ntn_x", fetchImpl: badFetch, now: () => 0, sleep: async () => {} });
+    const vendor = new NotionVendorClient({ http, maxDocs: 1000 });
+    await expect(vendor.fetchAll()).rejects.toThrow(/incomplete/i);
+  });
 });
 
 describe("NotionVendorClient.fetchChanges (incremental)", () => {
@@ -423,6 +513,15 @@ describe("NotionVendorClient content edge cases", () => {
 
   it("propagates a 429 during enumeration (the engine owns the backoff)", async () => {
     const { vendor } = client({ searchPages: [], rateLimit: 1 });
+    await expect(vendor.fetchAll()).rejects.toBeInstanceOf(ConnectorRateLimitError);
+  });
+
+  it("propagates a 429 from the CONTENT path (never swallowed into a fallback)", async () => {
+    const { vendor } = client({
+      searchPages: [pageObject({ id: "p", title: "P", lastEditedTime: "2026-07-01T00:00:00.000Z" })],
+      blocks: { p: [] },
+      markdown: { p: "throw-429" },
+    });
     await expect(vendor.fetchAll()).rejects.toBeInstanceOf(ConnectorRateLimitError);
   });
 });

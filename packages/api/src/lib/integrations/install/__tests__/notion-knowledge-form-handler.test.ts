@@ -153,4 +153,19 @@ describe("NotionKnowledgeFormInstallHandler — install", () => {
     ).rejects.toBeDefined();
     expect(insertCalls).toHaveLength(0);
   });
+
+  it("aborts (no install row) when the credential write fails — never a half-install", async () => {
+    saveSyncCredential.mockImplementationOnce(async () => {
+      throw new Error("encryption keyset unavailable");
+    });
+    await expect(
+      handler().validateConfig(WORKSPACE, {
+        __install_id__: "runbooks",
+        integration_token: "ntn_x",
+      }),
+    ).rejects.toThrow(/encryption keyset unavailable/);
+    // Credential-first write order: a failed credential means NO workspace_plugins
+    // row (no installable card whose scheduled sync then 401s).
+    expect(insertCalls).toHaveLength(0);
+  });
 });

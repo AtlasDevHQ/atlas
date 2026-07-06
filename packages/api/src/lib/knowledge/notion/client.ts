@@ -57,7 +57,12 @@ const MAX_ENUMERATED_PAGES = 10_000;
 /** Bound the truncation continuation so a pathological page can't fan out unboundedly. */
 const MAX_TRUNCATION_CONTINUATIONS = 50;
 
-/** Bound block-walk recursion depth (the fallback render). */
+/**
+ * Bound block-walk recursion depth — governs BOTH the enumeration
+ * container-descent (`walkBlocks`, where exceeding it is logged, since a missed
+ * subpage could be archived) and the fallback content render
+ * (`blockWalkMarkdown`). Tune with both in mind.
+ */
 const MAX_BLOCK_WALK_DEPTH = 6;
 
 // ---------------------------------------------------------------------------
@@ -74,6 +79,41 @@ function asArray(value: unknown): unknown[] {
 }
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+/**
+ * A Notion list/query response must be a JSON object — a 2xx body that isn't
+ * (proxy HTML, an edge hiccup, a contract violation) is NOT "no more pages". In
+ * an enumeration loop, treating "couldn't understand the response" as "done"
+ * returns a partial set, and a partial reconciliation set makes the engine
+ * archive the pages we never reached. Throw instead — the engine turns it into
+ * the collection's sync error (exactly as {@link MAX_ENUMERATED_PAGES} does).
+ */
+function requireResponseObject(value: unknown, what: string): Record<string, unknown> {
+  const obj = asRecord(value);
+  if (obj === null) {
+    throw new Error(
+      `Notion ${what} returned an unexpected non-object response — refusing to treat enumeration as complete (a partial set would archive live pages).`,
+    );
+  }
+  return obj;
+}
+
+/**
+ * Advance a Notion pagination cursor, or return null when the vendor says the
+ * listing is complete (`has_more !== true`). THROWS when the vendor reports
+ * more pages (`has_more === true`) but returns no usable `next_cursor` — that is
+ * a known-incomplete listing, and stopping silently would archive live pages.
+ */
+function advancePageCursor(res: Record<string, unknown>, what: string): string | null {
+  if (res.has_more !== true) return null;
+  const next = asString(res.next_cursor);
+  if (next === "") {
+    throw new Error(
+      `Notion ${what} reported more results (has_more) but returned no next_cursor — enumeration is incomplete; refusing to archive on a partial set.`,
+    );
+  }
+  return next;
 }
 
 /** A page's title from its `properties` (the one `type: "title"` property). */
@@ -216,9 +256,8 @@ export class NotionVendorClient implements ConnectorVendorClient {
         page_size: 100,
         ...(cursor !== null ? { start_cursor: cursor } : {}),
       };
-      const res = asRecord(await this.http.post("/search", body));
-      const results = asArray(res?.results);
-      for (const raw of results) {
+      const res = requireResponseObject(await this.http.post("/search", body), "page search");
+      for (const raw of asArray(res.results)) {
         const obj = asRecord(raw);
         if (obj === null || obj.object !== "page" || isArchived(obj)) continue;
         const id = asString(obj.id);
@@ -231,9 +270,8 @@ export class NotionVendorClient implements ConnectorVendorClient {
         };
         if (opts.onPage(ref) === "stop") return;
       }
-      if (res?.has_more !== true) return;
-      const next = asString(res.next_cursor);
-      if (next === "") return;
+      const next = advancePageCursor(res, "page search");
+      if (next === null) return;
       cursor = next;
     }
   }
@@ -254,15 +292,14 @@ export class NotionVendorClient implements ConnectorVendorClient {
         page_size: 100,
         ...(cursor !== null ? { start_cursor: cursor } : {}),
       };
-      const res = asRecord(await this.http.post("/search", body));
-      for (const raw of asArray(res?.results)) {
+      const res = requireResponseObject(await this.http.post("/search", body), "data-source search");
+      for (const raw of asArray(res.results)) {
         const ds = asRecord(raw);
         const dsId = asString(ds?.id);
         if (dsId !== "") await this.queryDataSourcePages(dsId, addRef, roots);
       }
-      if (res?.has_more !== true) return;
-      const next = asString(res.next_cursor);
-      if (next === "") return;
+      const next = advancePageCursor(res, "data-source search");
+      if (next === null) return;
       cursor = next;
     }
   }
@@ -279,8 +316,11 @@ export class NotionVendorClient implements ConnectorVendorClient {
         page_size: 100,
         ...(cursor !== null ? { start_cursor: cursor } : {}),
       };
-      const res = asRecord(await this.http.post(`/data_sources/${dataSourceId}/query`, body));
-      for (const raw of asArray(res?.results)) {
+      const res = requireResponseObject(
+        await this.http.post(`/data_sources/${dataSourceId}/query`, body),
+        "data-source query",
+      );
+      for (const raw of asArray(res.results)) {
         const obj = asRecord(raw);
         if (obj === null || obj.object !== "page" || isArchived(obj)) continue;
         const id = asString(obj.id);
@@ -293,9 +333,8 @@ export class NotionVendorClient implements ConnectorVendorClient {
         });
         roots.push(id);
       }
-      if (res?.has_more !== true) return;
-      const next = asString(res.next_cursor);
-      if (next === "") return;
+      const next = advancePageCursor(res, "data-source query");
+      if (next === null) return;
       cursor = next;
     }
   }
@@ -333,8 +372,8 @@ export class NotionVendorClient implements ConnectorVendorClient {
       const path =
         `/blocks/${blockId}/children?page_size=100` +
         (cursor !== null ? `&start_cursor=${encodeURIComponent(cursor)}` : "");
-      const res = asRecord(await this.http.get(path));
-      for (const raw of asArray(res?.results)) {
+      const res = requireResponseObject(await this.http.get(path), `block children of ${blockId}`);
+      for (const raw of asArray(res.results)) {
         const block = asRecord(raw);
         if (block === null) continue;
         const type = asString(block.type);
@@ -352,15 +391,24 @@ export class NotionVendorClient implements ConnectorVendorClient {
           pageQueue.push(id);
         } else if (type === "child_database" && id !== "") {
           await this.enumerateDatabaseBlock(id, addRef, pageQueue);
-        } else if (block.has_children === true && id !== "" && depth < MAX_BLOCK_WALK_DEPTH) {
-          // A container block (toggle, column, callout, …) may hold a subpage —
-          // recurse into it, bounded by depth.
-          await this.walkBlocks(id, addRef, pageQueue, depth + 1);
+        } else if (block.has_children === true && id !== "") {
+          if (depth < MAX_BLOCK_WALK_DEPTH) {
+            // A container block (toggle, column, callout, …) may hold a subpage —
+            // recurse into it, bounded by depth.
+            await this.walkBlocks(id, addRef, pageQueue, depth + 1);
+          } else {
+            // Counted, never silent (matches the truncation/fallback logging): a
+            // subpage buried past the depth cap could be an inheritance-only page
+            // the reconciliation would then archive — surface the coverage gap.
+            log.warn(
+              { blockId: id, depth },
+              "Notion block descent hit the depth cap — a subpage nested this deep in one page is not enumerated",
+            );
+          }
         }
       }
-      if (res?.has_more !== true) return;
-      const next = asString(res.next_cursor);
-      if (next === "") return;
+      const next = advancePageCursor(res, `block children of ${blockId}`);
+      if (next === null) return;
       cursor = next;
     }
   }
@@ -371,8 +419,11 @@ export class NotionVendorClient implements ConnectorVendorClient {
     addRef: (ref: NotionPageRef) => void,
     pageQueue: string[],
   ): Promise<void> {
-    const db = asRecord(await this.http.get(`/databases/${databaseId}`));
-    const dataSources = asArray(db?.data_sources);
+    const db = requireResponseObject(
+      await this.http.get(`/databases/${databaseId}`),
+      `database ${databaseId}`,
+    );
+    const dataSources = asArray(db.data_sources);
     if (dataSources.length === 0) return;
     for (const raw of dataSources) {
       const dsId = asString(asRecord(raw)?.id);

@@ -156,7 +156,8 @@ function isExpiringMediaUrl(rawUrl: string): boolean {
   try {
     url = new URL(rawUrl);
   } catch {
-    // A relative or malformed target is not an expiring absolute media URL.
+    // intentionally ignored: a relative or malformed target is not an expiring
+    // absolute media URL — the parse failure IS the negative signal.
     return false;
   }
   const host = url.hostname.toLowerCase();

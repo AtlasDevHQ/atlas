@@ -62,7 +62,8 @@ export interface NotionHttpClientOptions {
   readonly token: string;
   /** Injected for tests; defaults to the global fetch. */
   readonly fetchImpl?: FetchImpl;
-  /** Injected monotonic clock (ms) for the throttle; defaults to `Date.now`. */
+  /** Injected clock (ms) for the throttle; defaults to `Date.now`. Only the
+   *  elapsed-since-last-request delta is used, so a wall clock is fine. */
   readonly now?: Now;
   /** Injected sleep for the throttle; defaults to a real timer. */
   readonly sleep?: Sleep;
@@ -177,16 +178,22 @@ export class NotionHttpClient {
   /** Read Notion's error envelope for an actionable, secret-free suffix. */
   private async readErrorDetail(res: Response): Promise<string> {
     try {
-      const parsed = (await res.json()) as NotionErrorBody;
-      const code = typeof parsed.code === "string" ? parsed.code : null;
-      const message = typeof parsed.message === "string" ? parsed.message : null;
+      // `res.json()` is `any` and a vendor error body could be a primitive /
+      // array / null — narrow to an object before reading fields.
+      const parsed: unknown = await res.json();
+      const body: NotionErrorBody =
+        typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+          ? (parsed as NotionErrorBody)
+          : {};
+      const code = typeof body.code === "string" ? body.code : null;
+      const message = typeof body.message === "string" ? body.message : null;
       if (code && message) return `: ${code} — ${message}`;
       if (code) return `: ${code}`;
       if (message) return `: ${message}`;
       return "";
     } catch {
-      // A non-JSON error body (proxy HTML, empty) carries no safe detail worth
-      // surfacing — the status code above is the signal.
+      // intentionally ignored: a non-JSON error body (proxy HTML, empty) carries
+      // no safe detail worth surfacing — the status code above is the signal.
       return "";
     }
   }

@@ -1,17 +1,18 @@
 /**
  * Build a Knowledge Base ingest bundle from the docs portal content — the
- * dogfood consumer of the `@atlas/fumadocs-okf` adapter (issue #4367; the
- * #4366 spike, refit). The adapter owns everything bundle-shaped: OKF
- * rendering, deterministic archive paths (including the reserved-basename
- * fold that used to silently drop every `index.md` section landing at
- * ingest), generation-time ingest-cap validation, and the deterministic
- * `.tar.gz` packing. This script only supplies the portal-specific parts:
+ * dogfood consumer of the `@atlas/okf-bundle` builder (issue #4367; the
+ * #4366 spike, refit; core split #4373; markdown-tree promotion #4374). The
+ * core owns everything bundle-shaped: OKF rendering, deterministic archive
+ * paths (including the reserved-basename fold that used to silently drop
+ * every `index.md` section landing at ingest), generation-time ingest-cap
+ * validation, and the deterministic `.tar.gz` packing — and local mode's
+ * content walk is the core's own markdown-tree adapter. This script only
+ * supplies the portal-specific parts (`kb-bundle-sources.ts`):
  *
- *   - the two source shims (`kb-bundle-sources.ts`) — the local `content/`
- *     walk and the deployed `llms.txt` + `.mdx`-twin fetch — because the
- *     portal's real Fumadocs loader lives behind the Next bundler;
+ *   - the section/prefix list, and the deployed `llms.txt` + `.mdx`-twin
+ *     source (portal-local: it depends on this site's hand-authored routes);
  *   - the leak-safety-critical audience transform, passed through the
- *     adapter's body-transform hook: a SaaS bundle is structurally incapable
+ *     builder's body-transform hook: a SaaS bundle is structurally incapable
  *     of carrying self-hosted branches (`stripInactiveAudienceBlocks` fails
  *     closed; an unresolved page is skipped, never emitted).
  *
@@ -24,18 +25,20 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
-  buildFumadocsOkfBundle,
-  collectFumadocsPages,
+  buildOkfBundle,
+  collectPages,
   mergeCollectResults,
   packOkfBundle,
   type BuildResult,
   type CollectResult,
-} from "@atlas/fumadocs-okf";
+} from "@atlas/okf-bundle";
 import type { Audience } from "../src/lib/audience";
 import {
   deployedSource,
-  localSectionSource,
+  fetchWithTimeout,
+  isApiReferencePage,
   parseLlmsIndex,
+  portalLocalSource,
   portalSectionCollectOptions,
   sectionsFor,
 } from "./kb-bundle-sources";
@@ -88,23 +91,32 @@ function parseArgs(argv: string[]): Args {
   return { audience, out, includeApiReference, fromDeployed };
 }
 
-/** LOCAL mode: one adapter collect per section (prefix = section name), packed
- * as ONE archive so the caps + cross-section path uniqueness are validated
- * over the merged set. Every section's options come from
+/** LOCAL mode: one markdown-tree collect per section (prefix = section name),
+ * packed as ONE archive so the caps + cross-section path uniqueness are
+ * validated over the merged set. Every section's options come from
  * `portalSectionCollectOptions`, so the audience transform cannot be
  * forgotten for one section. */
 async function buildLocal(args: Args): Promise<BuildResult> {
   const collects: CollectResult[] = [];
   for (const section of sectionsFor(args.audience)) {
-    const source = await localSectionSource(join(CONTENT_DIR, section));
-    collects.push(
-      await collectFumadocsPages(
-        source,
-        portalSectionCollectOptions(section, args.audience, {
-          includeApiReference: args.includeApiReference,
-        }),
-      ),
+    const source = await portalLocalSource(join(CONTENT_DIR, section));
+    const collected = await collectPages(
+      source,
+      portalSectionCollectOptions(section, args.audience, {
+        includeApiReference: args.includeApiReference,
+      }),
     );
+    if (collected.docs.length === 0) {
+      // Every portal section is expected non-empty; a zero here is a walk or
+      // filter regression. Refuse per SECTION — merged-set guards would let a
+      // silently empty section ride into the bundle, and the subtractive
+      // bundle-sync diff would then archive that whole section's documents.
+      throw new Error(
+        `Section "${section}" collected zero documents — refusing to build a bundle ` +
+          `missing an entire section (check content/${section} and the filters).`,
+      );
+    }
+    collects.push(collected);
   }
   const merged = mergeCollectResults(collects);
   const { bytes, totalDocBytes } = packOkfBundle(merged.docs);
@@ -130,7 +142,7 @@ async function buildDeployed(args: Args, base: string): Promise<BuildResult> {
   const indexPath = args.audience === "saas" ? "/llms.txt" : "/self-hosted/llms.txt";
   const indexUrl = `${base}${indexPath}`;
 
-  const res = await fetch(indexUrl);
+  const res = await fetchWithTimeout(indexUrl);
   if (!res.ok) {
     throw new Error(`Fetch ${indexUrl} → ${res.status} ${res.statusText}`);
   }
@@ -142,10 +154,12 @@ async function buildDeployed(args: Args, base: string): Promise<BuildResult> {
   );
   if (entries.length === 0) throw new Error(`No pages parsed from ${indexUrl}`);
 
-  return buildFumadocsOkfBundle(deployedSource(base, entries), {
+  return buildOkfBundle(deployedSource(base, entries), {
     prefix: DEPLOYED_PREFIX,
     tags: ["docs-portal", "deployed"],
-    skipApiReference: !args.includeApiReference,
+    isApiReferenceStub: args.includeApiReference
+      ? undefined
+      : (page) => isApiReferencePage(page.path),
   });
 }
 

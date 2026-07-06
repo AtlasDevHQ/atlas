@@ -12,6 +12,7 @@
 
 import {
   collectPages,
+  firstPathSegment,
   PageLoadError,
   type CollectOptions as CoreCollectOptions,
   type CollectResult,
@@ -50,12 +51,11 @@ async function processedBody(page: FumadocsOkfPage): Promise<string> {
   return body;
 }
 
-/** First path segment of a normalized page path, lower-cased ("" when invalid). */
-export function firstSegment(pagePath: string): string {
-  const unified = pagePath.replace(/\\/g, "/").trim().replace(/^\.?\//, "");
-  const idx = unified.indexOf("/");
-  return (idx === -1 ? unified : unified.slice(0, idx)).toLowerCase();
-}
+/** First path segment of a normalized page path, lower-cased ("" when
+ *  invalid) — the core's shared mechanics (`firstPathSegment`), re-exported
+ *  under the adapter's historical name so both consumers of the
+ *  `api-reference` rule read one implementation. */
+export const firstSegment = firstPathSegment;
 
 /**
  * True for auto-generated API-reference stub pages (`api-reference/…`) — the

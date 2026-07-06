@@ -4,19 +4,22 @@ Builds the docs portal's Knowledge Base bundle — a `.tar.gz` OKF tree of clean
 markdown (one file = one document, `title`/`description`/`tags` frontmatter)
 for the KB ingest seam (ADR-0028).
 
-Since #4367 this script is the **dogfood consumer of `@atlas/fumadocs-okf`**
-(`packages/fumadocs-okf` — see its README for the adapter contract and the
-bundle-sync hosting recipe). The adapter owns OKF rendering, deterministic
-archive paths, generation-time ingest-cap validation, and deterministic
-packing; this script supplies only the portal-specific parts:
+Since #4367 this script is the **dogfood consumer of the OKF bundle builder**
+— `@atlas/okf-bundle` since the #4373 core split (see `packages/okf-bundle`'s
+README for the doc-source seam and the bundle-sync hosting recipe). The core
+owns OKF rendering, deterministic archive paths, generation-time ingest-cap
+validation, and deterministic packing; this script supplies only the
+portal-specific parts (`kb-bundle-sources.ts`):
 
-- **source shims** (`kb-bundle-sources.ts`): the portal's real Fumadocs loader
-  lives behind the Next bundler (`.source/server.ts` imports
-  `*.mdx?collection=…` modules bun can't resolve), so local mode walks
-  `content/` and approximates the processed surface (fence-aware ESM strip),
-  and deployed mode reads the live site's `llms.txt` + `.mdx` twins
-  (byte-faithful bodies);
-- the **audience transform** via the adapter's body-transform hook: the
+- **sources**: the portal's real Fumadocs loader lives behind the Next bundler
+  (`.source/server.ts` imports `*.mdx?collection=…` modules bun can't
+  resolve), so local mode walks `content/` with the core's **markdown-tree
+  adapter** (#4374 — wire-module frontmatter split, fence-aware ESM strip
+  approximating the processed surface), and deployed mode reads the live
+  site's `llms.txt` + `.mdx` twins (byte-faithful bodies, 30s per-fetch
+  timeout) via a portal-local shim — that shim depends on this site's
+  hand-authored routes and stays here;
+- the **audience transform** via the builder's body-transform hook: the
   portal's own `stripInactiveAudienceBlocks` resolves
   `<WhenSaaS>`/`<WhenSelfHosted>`/`<AudienceLink>` per mount and fails closed,
   so a SaaS bundle is structurally incapable of carrying self-hosted branches
@@ -25,7 +28,7 @@ packing; this script supplies only the portal-specific parts:
 
 Reserved-basename fix (#4367): the ingest parser silently skips `index.md` /
 `log.md`, which used to drop all 8 section-landing pages (165 built → 157
-ingested, `rejected=0`). The adapter now folds `…/index.mdx` onto the section
+ingested, `rejected=0`). The builder now folds `…/index.mdx` onto the section
 slug (`shared/comparisons/index.mdx` → `shared/comparisons.md`) in BOTH modes,
 so built count == ingested count; the summary prints any reserved renames.
 
@@ -110,4 +113,5 @@ publish shortcut, enforced at the seam), host the generated archive at an
 endpoint and point a `bundle-sync` collection at it. The full recipe — static
 artifact vs route handler, the bearer-protected variant, the SSRF egress-guard
 reachability constraints, and the cap-settings knobs — lives in
-`packages/fumadocs-okf/README.md`.
+`packages/fumadocs-okf/README.md` (linked from `packages/okf-bundle/README.md`;
+the recipes apply to any bundle the core produces).

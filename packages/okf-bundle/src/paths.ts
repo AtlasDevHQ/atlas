@@ -62,6 +62,21 @@ export function normalizePrefix(prefix: string): string[] {
   return toSegments(prefix, "prefix");
 }
 
+/**
+ * First path segment of a page path, lower-cased (`""` when invalid) — the
+ * shared MECHANICS behind adapter stub predicates (e.g. a top-level
+ * `api-reference/` rule). The predicate POLICY — which segment marks a stub,
+ * and whether skipping is on by default — stays in each adapter/consumer;
+ * single-homing the segment extraction just keeps two consumers of the same
+ * rule (e.g. the Fumadocs adapter's built-in default and the docs portal's
+ * predicate) from drifting apart.
+ */
+export function firstPathSegment(pagePath: string): string {
+  const unified = pagePath.replace(/\\/g, "/").trim().replace(/^\.?\//, "");
+  const idx = unified.indexOf("/");
+  return (idx === -1 ? unified : unified.slice(0, idx)).toLowerCase();
+}
+
 export interface DerivedArchivePath {
   /** Archive-relative `.md` path (prefix NOT included). */
   readonly path: string;

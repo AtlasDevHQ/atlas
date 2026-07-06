@@ -470,6 +470,11 @@ describe("migrateAuthTables", () => {
             // + GIN index. Atlas-internal table, no FK to a Better Auth table,
             // so it runs in every auth mode.
             { name: "0167_knowledge_documents_fts.sql" },
+            // 0168 (#4376, ADR-0030) — additive high_water_mark / sync_cursor /
+            // last_reconciled_at columns on knowledge_sync_state for the sync
+            // connector spine. Atlas-internal table, no FK to a Better Auth
+            // table, so it runs in every auth mode — must be listed.
+            { name: "0168_knowledge_sync_state_high_water.sql" },
           ],
         };
       }

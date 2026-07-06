@@ -1547,6 +1547,23 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+  {
+    // Knowledge Sync Connector reconciliation cadence (#4376, ADR-0030) — how
+    // often a connector collection runs a FULL enumeration crawl (subtractive
+    // archiving of vendor-deleted pages + full-set cap validation) instead of
+    // the cheap incremental change fetch. Read per collection per cycle by
+    // `lib/knowledge/connector-sync.ts::getKnowledgeSyncReconcileIntervalMs`.
+    key: "ATLAS_KNOWLEDGE_SYNC_RECONCILE_INTERVAL_HOURS",
+    section: "Knowledge Base",
+    label: "Connector Reconciliation Interval (hours)",
+    description:
+      "How often a connector-synced knowledge collection runs a full reconciliation crawl — the pass that archives vendor-deleted pages and validates ingest caps over the full set (default 168 — weekly; incremental change syncs run every cycle). Hot-reloaded; non-positive values fall back to the default.",
+    type: "number",
+    default: "168",
+    envVar: "ATLAS_KNOWLEDGE_SYNC_RECONCILE_INTERVAL_HOURS",
+    scope: "platform",
+    saasVisible: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -27,6 +27,8 @@ let lastTxVerb: string | null = null;
 let publishRanInTx = false;
 let archiveRanInTx = false;
 let archivedPathsParam: unknown = null;
+/** `atlas_source` values the ingest INSERT stamped, in write order. */
+let insertedSources: unknown[] = [];
 let nextId = 1;
 
 // What the seam's in-transaction install re-check sees. `null` = row gone.
@@ -53,6 +55,7 @@ function fakeTxClient() {
       }
       if (sql.includes("INSERT INTO knowledge_documents")) {
         const id = `doc-${nextId++}`;
+        insertedSources.push(params[10]);
         store.set(params[2] as string, {
           id,
           status: "draft",
@@ -126,7 +129,7 @@ mock.module("@atlas/api/lib/knowledge/mirror-invalidation", () => ({
   },
 }));
 
-const { ingestBundle } = await import("@atlas/api/lib/knowledge/ingest-bundle");
+const { ingestBundle, ingestDocuments } = await import("@atlas/api/lib/knowledge/ingest-bundle");
 
 const WS = "org-1";
 const COLL = "runbooks";
@@ -156,6 +159,7 @@ beforeEach(() => {
   publishRanInTx = false;
   archiveRanInTx = false;
   archivedPathsParam = null;
+  insertedSources = [];
   nextId = 1;
   invalidations = [];
 });
@@ -244,6 +248,20 @@ describe("the committed write", () => {
     expect(store.size).toBe(0);
   });
 
+  it("rejects publish for a connector source — connectors structurally cannot publish (#4376)", async () => {
+    await expect(
+      ingestDocuments({
+        workspaceId: WS,
+        collectionId: COLL,
+        source: "connector:fixture",
+        files: [{ path: "a.md", content: "# A" }],
+        publish: true,
+      }),
+    ).rejects.toThrow(/ADR-0028/);
+    expect(publishRan).toBe(false);
+    expect(store.size).toBe(0);
+  });
+
   it("aborts with install_gone (ROLLBACK, no writes, no invalidation) when the install vanished mid-ingest", async () => {
     TX_INSTALL_STATUS = "archived";
     const outcome = await run(zipSync({ "a.md": strToU8("# A") }));
@@ -261,5 +279,93 @@ describe("the committed write", () => {
     const second = await run(bytes);
     expect(second).toMatchObject({ kind: "ok", report: { unchanged: 1 } });
     expect(invalidations).toEqual([]);
+  });
+});
+
+describe("the document-level entry — ingestDocuments (#4376)", () => {
+  it("ingests connector documents at draft, stamping connector:<vendor> as atlas_source", async () => {
+    const outcome = await ingestDocuments({
+      workspaceId: WS,
+      collectionId: COLL,
+      source: "connector:fixture",
+      files: [
+        { path: "runbooks/oncall.md", content: "---\ntitle: Oncall\n---\n\n# Oncall" },
+        { path: "runbooks/deploy.md", content: "# Deploy" },
+      ],
+    });
+    expect(outcome).toMatchObject({
+      kind: "ok",
+      published: false,
+      archivedAbsent: null,
+      report: { created: 2, documents: 2 },
+    });
+    expect(store.get("runbooks/oncall.md")?.status).toBe("draft");
+    expect(insertedSources).toEqual(["connector:fixture", "connector:fixture"]);
+    expect(invalidations).toEqual([{ orgId: WS, scope: "knowledge" }]);
+  });
+
+  it("rejects an oversized document per-file, ingesting the rest (the extract-stage cap, applied at the doc seam)", async () => {
+    MAX_DOC_BYTES = 32;
+    const outcome = await ingestDocuments({
+      workspaceId: WS,
+      collectionId: COLL,
+      source: "connector:fixture",
+      files: [
+        { path: "small.md", content: "# Small" },
+        { path: "big.md", content: `# Big\n\n${"x".repeat(100)}` },
+      ],
+    });
+    expect(outcome).toMatchObject({ kind: "ok", report: { created: 1 } });
+    if (outcome.kind === "ok") {
+      expect(outcome.rejected).toHaveLength(1);
+      expect(outcome.rejected[0]?.path).toBe("big.md");
+      expect(outcome.rejected[0]?.reason).toMatch(/32-byte per-document limit/);
+    }
+    expect(store.has("big.md")).toBe(false);
+  });
+
+  it("archiveAbsent keeps rejected (present-but-broken) paths out of the absent set", async () => {
+    MAX_DOC_BYTES = 32;
+    const outcome = await ingestDocuments({
+      workspaceId: WS,
+      collectionId: COLL,
+      source: "connector:fixture",
+      files: [
+        { path: "good.md", content: "# Good" },
+        { path: "broken.md", content: `# Broken\n\n${"x".repeat(100)}` },
+      ],
+      archiveAbsent: true,
+    });
+    expect(outcome).toMatchObject({ kind: "ok", archivedAbsent: 1 });
+    expect(archiveRanInTx).toBe(true);
+    expect(archivedPathsParam).toEqual(["good.md", "broken.md"]);
+  });
+
+  it("zero ingestable documents → no_documents, nothing archived even with archiveAbsent", async () => {
+    const outcome = await ingestDocuments({
+      workspaceId: WS,
+      collectionId: COLL,
+      source: "connector:fixture",
+      files: [],
+      archiveAbsent: true,
+    });
+    expect(outcome.kind).toBe("no_documents");
+    expect(archiveRanInTx).toBe(false);
+    expect(invalidations).toEqual([]);
+  });
+
+  it("doc cap exceeded → too_many_documents with real numbers (reconciliation's full-set validation)", async () => {
+    MAX_DOCS = 1;
+    const outcome = await ingestDocuments({
+      workspaceId: WS,
+      collectionId: COLL,
+      source: "connector:fixture",
+      files: [
+        { path: "a.md", content: "# A" },
+        { path: "b.md", content: "# B" },
+      ],
+    });
+    expect(outcome).toMatchObject({ kind: "too_many_documents", count: 2, maxDocs: 1 });
+    expect(store.size).toBe(0);
   });
 });

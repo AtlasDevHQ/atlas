@@ -56,11 +56,12 @@ hooks typed on the Fumadocs loader page while delegating collection here.
 
 **Collect produces documents; pack produces transport.** Tar is the
 remote-transport adapter for the upload route and the bundle-sync connector.
-A future *server-side* connector (ADR-0028 §5 — deliberately deferred, no
-`IngestSource` framework) consumes **collected documents** at the ingest seam
-directly; it must never have to pack an archive just to unpack it in the same
-process. Don't fuse the stages, and don't let pack grow document-shaping
-behavior.
+A *server-side* Knowledge Sync Connector (ADR-0030, #4376 — the executed
+ADR-0028 §5 follow-up) consumes **collected documents** at the document-level
+ingest seam (`ingestDocuments`) directly; it never has to pack an archive
+just to unpack it in the same process — this invariant is what made that
+entry point possible. Don't fuse the stages, and don't let pack grow
+document-shaping behavior.
 
 ## The wire module (`@atlas/okf-bundle/wire`)
 

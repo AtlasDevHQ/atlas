@@ -26,6 +26,8 @@ A second question rode along: what does "hosting OKF" mean for the documents the
 
 **5. v0 lifecycle.** One built-in catalog row, `okf-upload`: an **explicit, degenerate form install** — no credentials, minimal `config_schema`; installing creates the collection, ingest is a separate admin act (bundle upload → the spike's fs-free parser → `knowledge_documents` + `knowledge_links` rows, frontmatter and links extracted at ingest, caps via the settings registry). Uninstall archives the collection's documents (content-mode `archived`), never hard-deletes. Notion/Confluence connectors (OAuth installs, `INTEGRATION_TABLES` credentials, Scheduler sync), `searchKnowledge` (frontmatter filter / Postgres FTS / 1-hop link-graph), and embeddings are deliberate follow-ups; v0 search is grep-native, per the format.
 
+> **Amendment (2026-07-06, #4376):** The connector deferral above is closed. PRD #4375 (Confluence Cloud + Notion — two real vendors at once) is the "second example" this section anticipated; [ADR-0030](./0030-knowledge-sync-connector-seam.md) names the **Knowledge Sync Connector** seam, splits the ingest seam at document level, widens `IngestSource` (publish guard unchanged — connectors structurally cannot publish, per §4), and adds the high-water-mark + reconciliation engine. Everything else in this section stands.
+
 ## Alternatives considered
 
 ### Shoehorn into the Datasource pillar (rejected)

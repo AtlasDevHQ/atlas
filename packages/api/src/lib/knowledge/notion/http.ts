@@ -133,9 +133,10 @@ export class NotionHttpClient {
       });
     } catch (err) {
       // Network / DNS / abort — a transport failure, not a vendor rejection.
-      // The path (not the token) is safe context.
+      // The path (not the token) is safe context; `cause` preserves the original.
       throw new Error(
         `Notion API ${method} ${path} could not be reached: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
       );
     }
 
@@ -156,6 +157,7 @@ export class NotionHttpClient {
     } catch (err) {
       throw new Error(
         `Notion API ${method} ${path} returned a non-JSON body: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
       );
     }
   }

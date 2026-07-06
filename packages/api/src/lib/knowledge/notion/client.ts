@@ -483,10 +483,21 @@ export class NotionVendorClient implements ConnectorVendorClient {
       return { markdown: await this.blockWalkMarkdown(pageId, 0), truncated: false, usedFallback: true };
     }
 
-    const parts = [asString(root?.markdown)];
-    let truncated = root?.truncated === true;
+    // A 2xx body that isn't an object (contract violation) would otherwise
+    // narrow to an empty, uncounted body — treat it as an endpoint failure and
+    // fall back to the block-walk (counted), never a silently blank page.
+    if (root === null) {
+      log.warn(
+        { pageId },
+        "Notion page-markdown endpoint returned a non-object body — falling back to block-walk",
+      );
+      return { markdown: await this.blockWalkMarkdown(pageId, 0), truncated: false, usedFallback: true };
+    }
+
+    const parts = [asString(root.markdown)];
+    let truncated = root.truncated === true;
     const seen = new Set<string>([pageId]);
-    let queue = uniqueStrings(root?.unknown_block_ids).filter((id) => !seen.has(id));
+    let queue = uniqueStrings(root.unknown_block_ids).filter((id) => !seen.has(id));
     let continuations = 0;
 
     while (truncated && queue.length > 0 && continuations < MAX_TRUNCATION_CONTINUATIONS) {

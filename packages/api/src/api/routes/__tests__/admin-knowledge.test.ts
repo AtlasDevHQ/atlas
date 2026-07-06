@@ -216,6 +216,10 @@ const syncConnectorCollection = mock(async (params: { collectionSlug: string }) 
   rejected: [],
   highWaterMark: "2026-07-01T00:00:00.000Z",
 }));
+// Partial mock, justified: the router reaches exactly one symbol from
+// connector-sync (`syncConnectorCollection`); the isolated per-file runner
+// prevents cross-file leaks, and any other export reached later would fail
+// loudly as `undefined is not a function`.
 mock.module("@atlas/api/lib/knowledge/connector-sync", () => ({
   syncConnectorCollection,
 }));

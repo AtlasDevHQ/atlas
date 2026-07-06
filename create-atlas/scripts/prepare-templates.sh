@@ -256,6 +256,18 @@ for tpl in docker nextjs-standalone; do
   find "$TEMPLATES/$tpl/src/schemas" -name '*.test.ts' -delete 2>/dev/null || true
 done
 
+# ── Step 5f: Copy @atlas/okf-bundle source into ALL templates ────────
+# API source imports the OKF wire contract from "@atlas/okf-bundle/wire"
+# (parse-lenient, mirror, ingest-limits, semantic/okf — #4373). The package
+# is private and unpublished, so templates vendor it exactly like
+# @useatlas/schemas: tsconfig paths alias @atlas/okf-bundle[/wire] →
+# src/okf-bundle/. Must happen AFTER Steps 2-4 wipe and rebuild src/.
+OKF_BUNDLE_SRC="$MONOREPO/packages/okf-bundle/src"
+for tpl in docker nextjs-standalone; do
+  rm -rf "$TEMPLATES/$tpl/src/okf-bundle"
+  cp -r "$OKF_BUNDLE_SRC" "$TEMPLATES/$tpl/src/okf-bundle"
+done
+
 # ── Step 6: Sync dependency versions into templates ───────────────
 # Skip syncpack when SKIP_SYNCPACK=1 (used by CI drift check and sync-starter)
 if [[ "${SKIP_SYNCPACK:-}" != "1" ]]; then

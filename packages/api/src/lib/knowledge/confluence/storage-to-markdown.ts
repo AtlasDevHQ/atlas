@@ -370,6 +370,12 @@ function renderTable(tableEl: Element, ctx: Ctx): string {
 function cellText(cell: Element, ctx: Ctx): string {
   return renderInline(cell.children, ctx)
     .replace(/\r?\n+/g, "<br>")
+    // Escape backslashes FIRST: text nodes are emitted raw (see renderInlineNode),
+    // so a source `\` reaches here unescaped. Escaping only `|` lets `a\|b` become
+    // `a\\|b` — a literal backslash + a LIVE pipe that splits/injects a table column.
+    // GFM undoes `\\`→`\` and `\|`→`|` before inline/code-span parsing, so escaping
+    // both (backslash before pipe) is the structurally-correct, composable transform.
+    .replace(/\\/g, "\\\\")
     .replace(/\|/g, "\\|")
     .trim();
 }

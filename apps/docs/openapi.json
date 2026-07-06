@@ -56647,7 +56647,8 @@
                             "enum": [
                               "upload",
                               "bundle-sync",
-                              "notion"
+                              "notion",
+                              "confluence"
                             ]
                           },
                           "description": {

@@ -27,6 +27,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { CONFLUENCE_CATALOG_ID, CONFLUENCE_SLUG } from "@atlas/api/lib/knowledge/confluence/config";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
@@ -178,11 +179,74 @@ export const BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW: BuiltinKnowledgeCatalogRow = 
   ],
 };
 
+/**
+ * The Confluence Cloud connector Knowledge Base catalog row (#4377, PRD #4375).
+ * A form install that mirrors ONE Confluence space into a review-gated
+ * collection; the Scheduler dispatches the registered Confluence connector on a
+ * cadence (incremental + reconciliation) and every synced page lands `draft`.
+ *
+ * `api_token` is `secret: true` but is NOT stored in `workspace_plugins.config`
+ * — the install handler routes it to `knowledge_sync_credentials` (encrypted).
+ * The base URL is customer-supplied, so every fetch goes through the SSRF egress
+ * guard. The id/slug are the config SSOT (`CONFLUENCE_CATALOG_ID` /
+ * `CONFLUENCE_SLUG`).
+ */
+export const BUILTIN_CONFLUENCE_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: CONFLUENCE_CATALOG_ID,
+  slug: CONFLUENCE_SLUG,
+  name: "Knowledge Base (Confluence Cloud)",
+  description:
+    "Mirror a Confluence Cloud space into a review-gated knowledge collection; Atlas syncs pages on a schedule (incremental + reconciliation) and queues changes for review.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "base_url",
+      type: "string",
+      label: "Confluence site URL",
+      required: true,
+      description:
+        "Your Confluence Cloud site URL, e.g. https://your-team.atlassian.net/wiki. Fetched server-side through the SSRF egress guard.",
+    },
+    {
+      key: "email",
+      type: "string",
+      label: "Atlassian account email",
+      required: true,
+      description: "The account email paired with the API token for Basic authentication.",
+    },
+    {
+      key: "space_key",
+      type: "string",
+      label: "Space key",
+      required: true,
+      description: "The key of the space to mirror (one collection per space), e.g. ENG.",
+    },
+    {
+      key: "api_token",
+      type: "string",
+      secret: true,
+      label: "API token",
+      required: true,
+      description:
+        "An Atlassian API token (id.atlassian.com → Security → API tokens). Stored encrypted; never returned.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this knowledge collection.",
+    },
+  ],
+};
+
 /** Every built-in Knowledge Base catalog row, in seed order. */
 export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatalogRow> = [
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
   BUILTIN_BUNDLE_SYNC_CATALOG_ROW,
   BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW,
+  BUILTIN_CONFLUENCE_CATALOG_ROW,
 ];
 
 /**

@@ -562,6 +562,33 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     expect(notion?.endpointUrl).toBeNull(); // connector has a token, not an endpoint
     expect(notion?.sync).not.toBeNull();
   });
+
+  // Confluence rides the SAME generic connector dispatch as Notion; these two
+  // cases just pin that its distinct catalog id classifies as source 'confluence'.
+  it("dispatches a Confluence collection to the connector engine and lists it as source 'confluence' (#4377)", async () => {
+    COLLECTION = {
+      install_id: "runbooks",
+      catalog_id: "catalog:confluence",
+      status: "published",
+      config: { base_url: "https://acme.atlassian.net/wiki", email: "b@a.com", space_key: "ENG" },
+    };
+    SYNC_STATES = [
+      { collection_id: "runbooks", last_sync_at: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    ];
+    const syncRes = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
+    expect(syncRes.status).toBe(200);
+    expect(syncConnectorCollection).toHaveBeenCalledTimes(1);
+    expect(syncCollection).not.toHaveBeenCalled();
+
+    const listRes = await adminKnowledge.request("/", { method: "GET" });
+    const body = (await listRes.json()) as {
+      collections: Array<{ slug: string; source: string; endpointUrl: string | null; sync: unknown }>;
+    };
+    const conf = body.collections.find((c) => c.slug === "runbooks");
+    expect(conf?.source).toBe("confluence");
+    expect(conf?.endpointUrl).toBeNull();
+    expect(conf?.sync).not.toBeNull();
+  });
 });
 
 describe("knowledge mirror invalidation (#4208)", () => {

@@ -59,6 +59,18 @@ function syncedCollection(partial: Partial<KnowledgeCollection> = {}): Knowledge
   });
 }
 
+function connectorCollection(partial: Partial<KnowledgeCollection> = {}): KnowledgeCollection {
+  return collection({
+    slug: "confluence-eng",
+    source: "confluence",
+    // Connectors carry no bundle endpoint / auth scheme.
+    endpointUrl: null,
+    authScheme: null,
+    sync: { lastSyncAt: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    ...partial,
+  });
+}
+
 describe("describeArchive", () => {
   test("surfaces the active document breakdown", () => {
     expect(describeArchive(collection())).toBe(
@@ -140,6 +152,27 @@ describe("KnowledgePage", () => {
     expect(screen.getByTestId("upload-runbooks")).toBeDefined();
     expect(screen.queryByTestId("sync-runbooks")).toBeNull();
   });
+
+  test("a connector collection shows Sync now + synced badge, but no endpoint-edit dialog (#4377)", () => {
+    fetchState = {
+      data: {
+        collections: [
+          connectorCollection({
+            sync: { lastSyncAt: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+          }),
+        ],
+      },
+      loading: false,
+      error: null,
+    };
+    render(<KnowledgePage />);
+    expect(screen.getByTestId("sync-confluence-eng")).toBeDefined();
+    expect(screen.queryByTestId("upload-confluence-eng")).toBeNull();
+    // Connectors are re-configured via their integration install, not the
+    // bundle-sync endpoint dialog.
+    expect(screen.queryByTestId("edit-confluence-eng")).toBeNull();
+    expect(screen.getByText("synced")).toBeDefined();
+  });
 });
 
 describe("describeSync", () => {
@@ -158,5 +191,9 @@ describe("describeSync", () => {
         }),
       ),
     ).toBe("sync-failed");
+  });
+  test("classifies connector collections too (#4377)", () => {
+    expect(describeSync(connectorCollection())).toBe("synced");
+    expect(describeSync(connectorCollection({ sync: null }))).toBe("never-synced");
   });
 });

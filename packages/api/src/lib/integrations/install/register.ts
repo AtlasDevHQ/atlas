@@ -34,6 +34,8 @@ import { DatasourceFormInstallHandler } from "./datasource-form-handler";
 import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
 import { OkfUploadFormInstallHandler, OKF_UPLOAD_SLUG } from "./okf-upload-form-handler";
 import { BundleSyncFormInstallHandler, BUNDLE_SYNC_SLUG } from "./bundle-sync-form-handler";
+import { ConfluenceFormInstallHandler, CONFLUENCE_SLUG } from "./confluence-form-handler";
+import { registerConfluenceKnowledgeConnector } from "@atlas/api/lib/knowledge/confluence/connector";
 import { NotionKnowledgeFormInstallHandler } from "./notion-knowledge-form-handler";
 import {
   NOTION_KNOWLEDGE_SLUG,
@@ -225,6 +227,17 @@ export function registerBuiltinInstallHandlers(): void {
   // gate — the customer admin supplies the endpoint at install time.
   registerFormHandler(BUNDLE_SYNC_SLUG, new BundleSyncFormInstallHandler());
   log.info("Registered BundleSyncFormInstallHandler");
+  // Knowledge Base (Confluence Cloud) — the built-in `confluence` connector
+  // install (#4377, ADR-0030 vendor slice). Knowledge-pillar, multi-instance
+  // (one collection per space). Config = site base URL + email + space key; the
+  // API token lands in `knowledge_sync_credentials` (encrypted), never in
+  // `workspace_plugins.config`. The base URL is customer-supplied → SSRF gated.
+  // Registering the FORM handler + the CONNECTOR together (as with Notion) keeps
+  // a half-wired deploy from having an installable card whose scheduled sync has
+  // no registered vendor client. No env gate.
+  registerFormHandler(CONFLUENCE_SLUG, new ConfluenceFormInstallHandler());
+  registerConfluenceKnowledgeConnector();
+  log.info("Registered ConfluenceFormInstallHandler + knowledge sync connector");
   // Knowledge Base (Notion) — the built-in `notion-knowledge` synced-collection
   // install (#4378, PRD #4375). Knowledge-pillar, multi-instance. Config = an
   // optional description; the internal-integration token lands in the dedicated

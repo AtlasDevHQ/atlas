@@ -7,15 +7,25 @@
 
 import { DEFAULT_OKF_TYPE, normalizeFrontmatterTags, type OkfWireFrontmatter } from "./wire";
 
-/** The header fields a bundle builder renders per document (`type` is always
- *  the wire module's `DEFAULT_OKF_TYPE`; tags are passed separately). */
-export type OkfFrontmatter = Pick<OkfWireFrontmatter, "title" | "description">;
+/**
+ * The header fields a bundle builder renders per document (`type` is always the
+ * wire module's `DEFAULT_OKF_TYPE`; tags are passed separately). `resource` (a
+ * source URL) and `timestamp` (source last-modified) are optional — filesystem
+ * doc sources omit them; a vendor connector (e.g. Confluence, #4377) sets them
+ * so the mirrored document carries a live link back to, and the modification
+ * time of, its source page. Every field stays inside the wire vocabulary
+ * ({@link OkfWireFrontmatter}), so the lenient ingest parser persists them.
+ */
+export type OkfFrontmatter = Pick<
+  OkfWireFrontmatter,
+  "title" | "description" | "resource" | "timestamp"
+>;
 
 /**
- * Serialize an OKF document: `type: Document` frontmatter, optional
- * title/description, tags, then the body. String values are JSON-encoded
- * (valid YAML double-quoted scalars) so colons/quotes in descriptions can't
- * break parsing.
+ * Serialize an OKF document: `type: Document` frontmatter, then any of
+ * title/description/resource/tags/timestamp that are set (wire field order),
+ * then the body. String values are JSON-encoded (valid YAML double-quoted
+ * scalars) so colons/quotes can't break parsing.
  */
 export function renderOkfDocument(
   fm: OkfFrontmatter,
@@ -25,9 +35,11 @@ export function renderOkfDocument(
   const lines = ["---", `type: ${DEFAULT_OKF_TYPE}`];
   if (fm.title) lines.push(`title: ${JSON.stringify(fm.title)}`);
   if (fm.description) lines.push(`description: ${JSON.stringify(fm.description)}`);
+  if (fm.resource) lines.push(`resource: ${JSON.stringify(fm.resource)}`);
   if (tags.length > 0) {
     lines.push(`tags: [${tags.map((t) => JSON.stringify(t)).join(", ")}]`);
   }
+  if (fm.timestamp) lines.push(`timestamp: ${JSON.stringify(fm.timestamp)}`);
   lines.push("---", "", body.trimEnd(), "");
   return lines.join("\n");
 }

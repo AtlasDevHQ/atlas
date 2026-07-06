@@ -22,6 +22,7 @@
     "semantic-expert",
     "knowledge-base",
     "connect-notion",
+    "connect-confluence",
     "developer-mode",
     "demo-mode",
     "guided-tour",

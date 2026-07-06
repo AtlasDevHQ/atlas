@@ -250,7 +250,8 @@ export interface SyncConnectorCollectionParams {
 }
 
 /** A vendor timestamp is persisted only when it actually parses — a garbage
- *  high-water mark must fail visibly here, not as a state-row INSERT error. */
+ *  high-water mark must be caught visibly (warn) here, not surface as an opaque
+ *  state-row INSERT error. */
 function validVendorTimestamp(
   value: string | null,
   context: { workspaceId: string; collectionSlug: string },
@@ -260,7 +261,7 @@ function validVendorTimestamp(
   if (Number.isNaN(ms)) {
     log.warn(
       { ...context, value },
-      "Connector returned an unparseable high-water mark — not persisting it (the next cycle reconciles)",
+      "Connector returned an unparseable high-water mark — not persisting it (the previous mark, if any, carries forward via COALESCE)",
     );
     return null;
   }

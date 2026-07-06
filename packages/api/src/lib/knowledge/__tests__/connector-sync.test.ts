@@ -69,8 +69,9 @@ function fakeTxClient() {
   return {
     async query(sql: string, params: unknown[] = []): Promise<{ rows: Record<string, unknown>[] }> {
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+      if (txThrowOn && sql.includes(txThrowOn)) throw new Error("tx infra failure");
       if (sql.includes("FROM workspace_plugins")) {
-        return { rows: [{ status: "published" }] };
+        return { rows: [{ status: installStatusInTx }] };
       }
       if (sql.includes("SELECT id, status, body")) {
         const existing = store.get(params[2] as string);
@@ -140,6 +141,7 @@ let INSTALL_ROWS: Array<{
 let installsQueryParams: unknown[] | null = null;
 
 const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<unknown[]> => {
+  if (internalQueryThrowOn && sql.includes(internalQueryThrowOn)) throw new Error("internal DB unavailable");
   if (sql.includes("INSERT INTO knowledge_sync_state")) {
     const key = stateKey(params[0] as string, params[1] as string);
     const prev = syncState.get(key);
@@ -201,6 +203,7 @@ const {
   SYNC_OVERLAP_WINDOW_MS,
   RATE_LIMIT_MAX_ATTEMPTS,
   RATE_LIMIT_MAX_WAIT_MS,
+  RATE_LIMIT_DEFAULT_WAIT_MS,
 } = await import("@atlas/api/lib/knowledge/connector-sync");
 const {
   registerKnowledgeSyncConnector,
@@ -230,6 +233,17 @@ let retryAfterSeconds: number | null = null;
 let fetchCalls: Array<{ kind: "changes" | "all"; since?: string | null; cursor?: string | null }>;
 /** Overrides the vendor-reported high-water mark (e.g. garbage timestamps). */
 let vendorMarkOverride: string | null | undefined;
+/** The cursor the fixture vendor returns from each fetch (persisted on success). */
+let vendorCursor: string | null = null;
+/** The install status the in-transaction re-check sees — flip to simulate an
+ *  uninstall landing mid-sync (#4229). */
+let installStatusInTx = "published";
+/** When set, the internal-DB mock throws on any query whose SQL contains this
+ *  substring — exercises the "sync never throws" isolation against DB failures. */
+let internalQueryThrowOn: string | null = null;
+/** When set, the fake transactional client throws on any query whose SQL
+ *  contains this substring — simulates a mid-ingest infra failure. */
+let txThrowOn: string | null = null;
 
 async function collectFixtureDocs(pages: FixturePage[]): Promise<ConnectorDocument[]> {
   const result = await collectPages(
@@ -270,6 +284,7 @@ const fixtureConnector: KnowledgeSyncConnector = {
       return {
         documents: await collectFixtureDocs(changed),
         highWaterMark: vendorMark(vendorPages),
+        cursor: vendorCursor,
       };
     },
     async fetchAll(): Promise<ConnectorChanges> {
@@ -278,6 +293,7 @@ const fixtureConnector: KnowledgeSyncConnector = {
       return {
         documents: await collectFixtureDocs(vendorPages),
         highWaterMark: vendorMark(vendorPages),
+        cursor: vendorCursor,
       };
     },
   }),
@@ -337,6 +353,10 @@ beforeEach(() => {
   rateLimits = 0;
   retryAfterSeconds = null;
   vendorMarkOverride = undefined;
+  vendorCursor = null;
+  installStatusInTx = "published";
+  internalQueryThrowOn = null;
+  txThrowOn = null;
   INSTALL_ROWS = [];
   installsQueryParams = null;
   _resetKnowledgeSyncConnectors();
@@ -414,6 +434,32 @@ describe("reconciliation crawls", () => {
     const outcome = await runSync();
     expect(outcome.status).toBe("error");
     expect(outcome.error).toMatch(/returned no documents/i);
+    expect(store.get("fixture/precious.md")?.status).toBe("published");
+    expect(state()).toMatchObject({ status: "error", last_reconciled_at: null });
+  });
+
+  it("a reconciliation where every document is rejected is a distinct all-rejected error, still archiving nothing", async () => {
+    // One oversized page → zero eligible docs but a non-empty rejection list:
+    // the no_documents guard must fire with the all-rejected wording (not the
+    // empty-vendor wording) and, crucially, still refuse to archive.
+    store.set("fixture/precious.md", {
+      id: "doc-p",
+      status: "published",
+      body: "# P",
+      type: "Document",
+      title: "P",
+      description: null,
+      resource: null,
+      tags: [],
+      timestamp: null,
+    });
+    vendorPages = [
+      { path: "huge.md", body: md("Huge") + "x".repeat(MAX_DOC_BYTES), lastModified: "2026-07-01T00:00:00.000Z" },
+    ];
+    const outcome = await runSync();
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/every document the vendor returned was rejected/i);
+    expect(outcome.rejected).toHaveLength(1);
     expect(store.get("fixture/precious.md")?.status).toBe("published");
     expect(state()).toMatchObject({ status: "error", last_reconciled_at: null });
   });
@@ -517,6 +563,20 @@ describe("incremental cycles", () => {
     // COALESCE kept the previous mark rather than poisoning the row.
     expect(state()?.high_water_mark).toBe("2026-07-05T00:00:00.000Z");
   });
+
+  it("threads the persisted cursor into fetchChanges and persists the vendor's returned cursor", async () => {
+    // Cursor-shaped vendors (ADR-0030): the last cursor is threaded back in, and
+    // the new one is persisted on success — the round-trip the COALESCE upsert
+    // is there to support.
+    seedState({ high_water_mark: "2026-07-05T00:00:00.000Z", sync_cursor: "cursor-1" });
+    vendorPages = [{ path: "new.md", body: md("New"), lastModified: "2026-07-06T09:00:00.000Z" }];
+    vendorCursor = "cursor-2";
+    const outcome = await runSync();
+    expect(outcome.status).toBe("success");
+    expect(outcome.mode).toBe("incremental");
+    expect(fetchCalls[0]).toMatchObject({ kind: "changes", cursor: "cursor-1" });
+    expect(state()?.sync_cursor).toBe("cursor-2");
+  });
 });
 
 // ── Rate limiting (engine property) ─────────────────────────────────────────
@@ -541,6 +601,15 @@ describe("429 / Retry-After backoff", () => {
     const outcome = await runSync();
     expect(outcome.status).toBe("success");
     expect(sleeps).toEqual([RATE_LIMIT_MAX_WAIT_MS]);
+  });
+
+  it("backs off the default wait when the vendor sends no Retry-After", async () => {
+    vendorPages = [{ path: "a.md", body: md("A"), lastModified: "2026-07-01T00:00:00.000Z" }];
+    rateLimits = 1;
+    retryAfterSeconds = null;
+    const outcome = await runSync();
+    expect(outcome.status).toBe("success");
+    expect(sleeps).toEqual([RATE_LIMIT_DEFAULT_WAIT_MS]);
   });
 
   it("exhausted backoff is a bounded error outcome — not a throw, not an unbounded wait", async () => {
@@ -611,6 +680,45 @@ describe("failure handling", () => {
       last_reconciled_at: "2026-07-04T00:00:00.000Z",
     });
   });
+
+  it("an ingest-transaction infra failure after a successful fetch is an error outcome, never a throw", async () => {
+    vendorPages = [{ path: "a.md", body: md("A"), lastModified: "2026-07-01T00:00:00.000Z" }];
+    txThrowOn = "INSERT INTO knowledge_documents";
+    const outcome = await runSync();
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/Ingest failed after a successful vendor fetch/);
+    expect(state()).toMatchObject({ status: "error" });
+  });
+
+  it("an internal-DB failure reading sync state is an isolated error outcome, never a throw", async () => {
+    vendorPages = [{ path: "a.md", body: md("A"), lastModified: "2026-07-01T00:00:00.000Z" }];
+    internalQueryThrowOn = "SELECT high_water_mark";
+    const outcome = await runSync();
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/Sync failed unexpectedly/);
+    // The error is still persisted (the state WRITE succeeds; only the READ threw).
+    expect(state()).toMatchObject({ status: "error" });
+  });
+
+  it("a sync-state WRITE failure is swallowed — the committed sync still returns success", async () => {
+    // recordConnectorSyncState must not fail a sync that already committed.
+    vendorPages = [{ path: "a.md", body: md("A"), lastModified: "2026-07-01T00:00:00.000Z" }];
+    internalQueryThrowOn = "INSERT INTO knowledge_sync_state";
+    const outcome = await runSync();
+    expect(outcome.status).toBe("success");
+    expect(store.get("fixture/a.md")?.status).toBe("draft");
+    // The write threw before landing a row, but the sync did not throw.
+    expect(state()).toBeUndefined();
+  });
+
+  it("an uninstall landing mid-sync (install re-check archived) is an error outcome with no writes", async () => {
+    vendorPages = [{ path: "a.md", body: md("A"), lastModified: "2026-07-01T00:00:00.000Z" }];
+    installStatusInTx = "archived";
+    const outcome = await runSync();
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/uninstalled while the sync was running/);
+    expect(store.size).toBe(0);
+  });
 });
 
 // ── The cycle walk dispatches on catalog id ──────────────────────────────────
@@ -622,7 +730,9 @@ describe("runKnowledgeSyncCycle dispatch", () => {
       { path: "a.md", body: md("A"), lastModified: "2026-07-01T00:00:00.000Z" },
     ];
     INSTALL_ROWS = [
-      // A broken install of the SAME connector (createClient reads config).
+      // An install whose catalog id has no registered connector (a registry
+      // mutation racing the cycle) — the walk must COUNT it as a failure via the
+      // undefined-connector branch, never silently skip it.
       { workspace_id: ORG, install_id: "broken-docs", catalog_id: "catalog:unregistered", config: {} },
       { workspace_id: ORG, install_id: COLLECTION, catalog_id: FIXTURE_CATALOG_ID, config: {} },
     ];

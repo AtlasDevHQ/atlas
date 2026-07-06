@@ -30,7 +30,8 @@ never pack a tar just to unpack it in the same process.
 files: size caps, archive extraction) now delegates to `ingestDocuments()`
 (documents → rows: per-doc byte cap, lenient parse, doc-count cap, the
 uninstall-race re-check, upsert-by-path, optional archive-absent, optional
-publish, mirror invalidation — all in ONE transaction). Upload and bundle-sync
+publish — all in ONE transaction — then a post-commit mirror invalidation).
+Upload and bundle-sync
 are unchanged consumers of the same transaction; connectors enter at
 `ingestDocuments` with collected documents. This deliberately opens the seam
 PRD #4372 kept closed ("api changes are imports only" applied to *its* slices,

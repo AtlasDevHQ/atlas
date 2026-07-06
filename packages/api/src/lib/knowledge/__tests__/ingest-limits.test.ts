@@ -46,9 +46,17 @@ describe("positiveIntSetting", () => {
     expect(positiveIntSetting("K", "abc", 42)).toBe(42);
     expect(positiveIntSetting("K", "", 42)).toBe(42);
   });
-  it("parses the leading integer of a mixed string (parseInt semantics)", () => {
-    // "25MB" parses to 25 via Number.parseInt — a positive int, so it's honored.
-    expect(positiveIntSetting("K", "25MB", 42)).toBe(25);
+  it("rejects unit-suffixed / separator-laden / overflow values instead of silent parseInt truncation", () => {
+    // Number.parseInt("25MB") is 25 — a fat-fingered cap that would then fail
+    // every ingest for a reason no log explains. Require all-digits so these
+    // take the warn+fallback path the docblock promises.
+    expect(positiveIntSetting("K", "25MB", 42)).toBe(42);
+    expect(positiveIntSetting("K", "25_000_000", 42)).toBe(42);
+    expect(positiveIntSetting("K", "1e6", 42)).toBe(42);
+    expect(positiveIntSetting("K", "9".repeat(20), 42)).toBe(42); // all-digit overflow → fallback
+  });
+  it("honors a clean integer with surrounding whitespace", () => {
+    expect(positiveIntSetting("K", " 50 ", 42)).toBe(50);
   });
 });
 

@@ -197,6 +197,30 @@ describe("kb-bundle source shims", () => {
     expect(out).toContain('import type { AtlasClient } from "@useatlas/sdk";');
   });
 
+  test("stripMdxModuleLines consumes a multi-line top-level import without eating the prose after it", () => {
+    const input = [
+      "import {",
+      "  Callout,",
+      "  Tabs,",
+      '} from "fumadocs-ui/components";',
+      "",
+      "Prose that must survive the multi-line strip.",
+    ].join("\n");
+    const out = stripMdxModuleLines(input);
+    expect(out).toBe("Prose that must survive the multi-line strip.");
+  });
+
+  test("stripMdxModuleLines does NOT run a terminator-less single-line export away into the prose", () => {
+    // `export default Foo` has no trailing {/(/[/, — it must drop only its own
+    // line, never the continuation-consuming scan (which would swallow the body).
+    const input = [
+      "export default MyComponent",
+      "",
+      "This prose must NOT be consumed.",
+    ].join("\n");
+    expect(stripMdxModuleLines(input)).toBe("This prose must NOT be consumed.");
+  });
+
   test("deployedPagePath folds section landings so the adapter can dodge index.md", () => {
     expect(deployedPagePath("/quickstart")).toBe("quickstart.mdx");
     expect(deployedPagePath("/guides/")).toBe("guides/index.mdx");

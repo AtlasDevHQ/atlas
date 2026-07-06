@@ -5,11 +5,14 @@ import {
   buildOkfBundle,
   collectPages,
   deriveArchivePath,
+  EmptyBundleError,
   IngestCapExceededError,
   InvalidPagePathError,
   isContentlessBody,
   mergeCollectResults,
+  normalizePrefix,
   packOkfBundle,
+  pageTags,
   PageLoadError,
   type DocSourcePage,
 } from "../src/index";
@@ -313,6 +316,88 @@ describe("caps validation", () => {
     await expect(
       buildOkfBundle(many, { prefix: "acme", caps: { maxDocs: 2, maxDocBytes: undefined } }),
     ).rejects.toThrow(/maxDocs: 3 documents > 2 documents/);
+  });
+});
+
+describe("empty-bundle guard", () => {
+  test("packOkfBundle refuses a zero-document set — it would archive the whole collection", () => {
+    // A zero-doc bundle fed to the bundle-sync subtractive diff archiveAbsents
+    // every existing document; refuse rather than emit a valid empty archive.
+    expect(() => packOkfBundle([])).toThrow(EmptyBundleError);
+  });
+
+  test("allowEmpty opts into a valid terminator-only archive", () => {
+    const { bytes, totalDocBytes } = packOkfBundle([], undefined, { allowEmpty: true });
+    expect(totalDocBytes).toBe(0);
+    expect(bytes.length).toBeGreaterThan(0); // real gzip of the two-block terminator
+  });
+
+  test("buildOkfBundle fails loud when every page is filtered out (a broken glob's shape)", async () => {
+    const allFiltered = sourceOf([page("a.mdx", "prose"), page("b.mdx", "more prose")]);
+    await expect(
+      buildOkfBundle(allFiltered, { prefix: "kb", filter: () => false }),
+    ).rejects.toThrow(EmptyBundleError);
+  });
+
+  test("buildOkfBundle with allowEmpty tolerates an empty source", async () => {
+    const built = await buildOkfBundle(sourceOf([]), { prefix: "kb", allowEmpty: true });
+    expect(built.stats.documents).toBe(0);
+  });
+});
+
+describe("concurrency clamp", () => {
+  test("a non-finite / sub-1 concurrency still collects every page (never zero workers)", async () => {
+    // Array.from({length: NaN}) is empty → zero workers → a silently empty
+    // bundle; the clamp must fall back to the default instead.
+    for (const concurrency of [0, -1, Number.NaN, 0.5]) {
+      const result = await collectPages(acmeSource(), {
+        prefix: "acme",
+        concurrency,
+        isApiReferenceStub: isAcmeApiReferenceStub,
+      });
+      expect(result.docs.length).toBe(6);
+    }
+  });
+
+  test("concurrency 1 produces a byte-identical archive to the default", async () => {
+    const opts = { prefix: "acme", isApiReferenceStub: isAcmeApiReferenceStub };
+    const serial = await buildOkfBundle(acmeSource(), { ...opts, concurrency: 1 });
+    const parallel = await buildOkfBundle(acmeSource(), opts);
+    expect(Buffer.from(serial.bytes).equals(Buffer.from(parallel.bytes))).toBe(true);
+  });
+});
+
+describe("normalizePrefix", () => {
+  test("rejects traversal, absolute, and empty prefixes at generation time", () => {
+    // The prefix prepends EVERY archive entry path (collect.ts), so a bad
+    // prefix must fail loud, not smuggle a traversal into the extract tree.
+    expect(() => normalizePrefix("../evil")).toThrow(InvalidPagePathError);
+    expect(() => normalizePrefix("/abs")).toThrow(InvalidPagePathError);
+    expect(() => normalizePrefix("")).toThrow(InvalidPagePathError);
+    expect(() => normalizePrefix("   ")).toThrow(InvalidPagePathError);
+  });
+
+  test("a bad prefix fails the whole collect", async () => {
+    await expect(collectPages(acmeSource(), { prefix: "../escape" })).rejects.toThrow(
+      InvalidPagePathError,
+    );
+  });
+
+  test("accepts multi-segment prefixes, normalizing separators", () => {
+    expect(normalizePrefix("kb/site")).toEqual(["kb", "site"]);
+    expect(normalizePrefix("docs")).toEqual(["docs"]);
+  });
+});
+
+describe("pageTags (shared frontmatter-tag narrower)", () => {
+  test("drops non-strings, trims, and drops empties, preserving order", () => {
+    expect(pageTags([1, "ok", null, "  x  ", "", true, "y"])).toEqual(["ok", "x", "y"]);
+  });
+
+  test("a non-array value is an empty list", () => {
+    expect(pageTags("nope")).toEqual([]);
+    expect(pageTags(undefined)).toEqual([]);
+    expect(pageTags({ a: 1 })).toEqual([]);
   });
 });
 

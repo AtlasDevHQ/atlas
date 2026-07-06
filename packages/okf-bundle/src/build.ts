@@ -15,7 +15,7 @@
  */
 
 import { collectPages } from "./collect";
-import { ArchivePathCollisionError, IngestCapExceededError } from "./errors";
+import { ArchivePathCollisionError, EmptyBundleError, IngestCapExceededError } from "./errors";
 import { createDeterministicTarGz } from "./tar";
 import {
   DEFAULT_INGEST_CAPS,
@@ -26,6 +26,7 @@ import {
   type DocSource,
   type DocSourcePage,
   type IngestCaps,
+  type PackOptions,
 } from "./types";
 
 /**
@@ -78,11 +79,19 @@ export function validateIngestCaps(
  * twice) would otherwise pack two tar entries at one path and let the ingest
  * upsert silently last-write-win. Every pack path goes through here, so a
  * bundle is either collision-free or refused.
+ *
+ * A zero-document set is refused ({@link EmptyBundleError}) unless
+ * `options.allowEmpty` is set — see the error's rationale (an accidental empty
+ * bundle would archive the whole collection through the subtractive diff).
  */
 export function packOkfBundle(
   docs: readonly CollectedDoc[],
   caps: IngestCaps = DEFAULT_INGEST_CAPS,
+  options?: PackOptions,
 ): { bytes: Uint8Array; totalDocBytes: number } {
+  if (docs.length === 0 && !options?.allowEmpty) {
+    throw new EmptyBundleError();
+  }
   const byPath = new Map<string, string>();
   for (const doc of docs) {
     const existing = byPath.get(doc.path);
@@ -148,7 +157,9 @@ export async function buildOkfBundle<P extends DocSourcePage>(
 ): Promise<BuildResult> {
   const collected = await collectPages(source, options);
   const caps = resolveIngestCaps(options.caps);
-  const { bytes, totalDocBytes } = packOkfBundle(collected.docs, caps);
+  const { bytes, totalDocBytes } = packOkfBundle(collected.docs, caps, {
+    allowEmpty: options.allowEmpty,
+  });
   return {
     bytes,
     docs: collected.docs,

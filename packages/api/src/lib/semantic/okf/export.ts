@@ -20,7 +20,7 @@
  */
 
 import * as yaml from "js-yaml";
-import { OKF_VERSION } from "@atlas/okf-bundle/wire";
+import { OKF_INDEX_BASENAME, OKF_VERSION } from "@atlas/okf-bundle/wire";
 import { serializeDocument } from "./frontmatter";
 import {
   emptyReport,
@@ -514,7 +514,7 @@ export function exportToOkf(
   ].join("\n");
   // Root index.md is the one index allowed to carry frontmatter (okf_version).
   out.push({
-    path: "index.md",
+    path: OKF_INDEX_BASENAME,
     content: `---\nokf_version: ${JSON.stringify(OKF_VERSION)}\n---\n\n${rootBody}\n`,
   });
 

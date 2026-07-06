@@ -86,6 +86,21 @@ describe("parseLenientBundle — rejection + skipping", () => {
     expect(errors[0].reason).toContain("unterminated");
   });
 
+  it("rejects a scalar-timestamp frontmatter (js-yaml Date) rather than stamping a doc", () => {
+    // `---\n2020-01-01\n---` parses to a Date via js-yaml — typeof "object" but
+    // NOT a mapping. The wire prototype check must reject it at ingest, not let
+    // it ride through as an "ok" split and stamp a default-typed document over
+    // what the author clearly intended as frontmatter.
+    const { docs, errors } = parseLenientBundle([
+      doc("real.md", "# real"),
+      doc("stamp.md", "---\n2020-01-01\n---\nbody"),
+    ]);
+    expect(docs.map((d) => d.path)).toEqual(["real.md"]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].path).toBe("stamp.md");
+    expect(errors[0].reason).toContain("not a YAML mapping");
+  });
+
   it("skips reserved basenames (index.md / log.md) and non-markdown files", () => {
     const { docs } = parseLenientBundle([
       doc("index.md", "# nav"),
@@ -111,6 +126,10 @@ describe("splitLenientFrontmatter", () => {
   });
   it("rejects a non-mapping frontmatter", () => {
     const r = splitLenientFrontmatter("---\n- just\n- a\n- list\n---\nbody");
+    expect(r.ok).toBe(false);
+  });
+  it("rejects a scalar-timestamp (js-yaml Date) frontmatter as a non-mapping", () => {
+    const r = splitLenientFrontmatter("---\n2020-01-01\n---\nbody");
     expect(r.ok).toBe(false);
   });
 });

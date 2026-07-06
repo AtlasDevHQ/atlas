@@ -207,8 +207,20 @@ export interface BuildResult {
   readonly stats: BuildStats;
 }
 
+/** Pack-time options shared by `packOkfBundle` and `buildOkfBundle`. */
+export interface PackOptions {
+  /**
+   * Permit packing a bundle with zero documents. Default `false` — an empty
+   * bundle is refused (`EmptyBundleError`) because the bundle-sync subtractive
+   * diff would archive the collection's entire existing document set from it.
+   * Set only when emptying a collection is the deliberate intent.
+   */
+  readonly allowEmpty?: boolean;
+}
+
 export interface BuildOptions<P extends DocSourcePage = DocSourcePage>
-  extends CollectOptions<P> {
+  extends CollectOptions<P>,
+    PackOptions {
   /**
    * Generation-time ingest-cap overrides. Defaults to Atlas's server
    * defaults ({@link DEFAULT_INGEST_CAPS}); pass the raised values when the

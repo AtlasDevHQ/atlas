@@ -4,6 +4,7 @@ import * as yaml from "js-yaml";
 import {
   InvalidPagePathError,
   mdBasename,
+  normalizeFrontmatterTags,
   OKF_FRONTMATTER_FIELDS,
   renderOkfDocument,
   RESERVED_BASENAMES,
@@ -90,6 +91,24 @@ describe("wire: constants and leaf helpers", () => {
     expect(topLevelHeading("## Sub")).toBeNull();
     expect(topLevelHeading("#NoSpace")).toBeNull();
     expect(topLevelHeading("# ")).toBeNull();
+  });
+
+  test("OKF_FRONTMATTER_FIELDS enumerates the whole wire field set", () => {
+    expect([...OKF_FRONTMATTER_FIELDS].toSorted()).toEqual(
+      ["description", "resource", "tags", "timestamp", "title", "type"],
+    );
+  });
+
+  test("normalizeFrontmatterTags drops non-strings, trims, drops empties, keeps order", () => {
+    // The shared generate↔ingest narrower (pageTags on the build side,
+    // tagsField on the ingest side both delegate here).
+    expect(normalizeFrontmatterTags([1, "ok", null, "  x  ", "", true, "y"])).toEqual([
+      "ok",
+      "x",
+      "y",
+    ]);
+    expect(normalizeFrontmatterTags("not-an-array")).toEqual([]);
+    expect(normalizeFrontmatterTags(undefined)).toEqual([]);
   });
 
   test("rendered documents stay inside the wire frontmatter field set", () => {

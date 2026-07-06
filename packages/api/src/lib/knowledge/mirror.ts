@@ -33,6 +33,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
+import { ATLAS_EXTENSION_KEY, OKF_INDEX_BASENAME } from "@atlas/okf-bundle/wire";
 import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -53,7 +54,7 @@ const log = createLogger("knowledge-mirror");
 export const KNOWLEDGE_SUBTREE = "knowledge";
 
 /** Reserved OKF navigation basename, regenerated per directory (never a concept doc). */
-const INDEX_BASENAME = "index.md";
+const INDEX_BASENAME = OKF_INDEX_BASENAME;
 
 /**
  * Default cap on the system-prompt collection ToC (bytes). Tuned via the
@@ -130,7 +131,7 @@ export function serializeMirrorDocument(doc: MirrorDoc, collectionId: string): s
   const atlas: Record<string, unknown> = { collection: collectionId };
   if (doc.atlasIngestedAt) atlas.ingested = doc.atlasIngestedAt;
   if (doc.atlasSource) atlas.source = doc.atlasSource;
-  frontmatter.atlas = atlas;
+  frontmatter[ATLAS_EXTENSION_KEY] = atlas;
 
   const fm = yaml.dump(frontmatter, { lineWidth: 120, noRefs: true });
   // Body appended verbatim after the frontmatter block + one blank line. We do

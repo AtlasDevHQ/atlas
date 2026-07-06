@@ -48,6 +48,7 @@
     "@ai-sdk/gateway": "^3.0.133",
     "@ai-sdk/openai": "^3.0.74",
     "@atlas/ee": "workspace:*",
+    "@atlas/okf-bundle": "workspace:*",
     "@atlas/mcp": "workspace:*",
     "@aws-sdk/client-bedrock": "^3.1075.0",
     "@better-auth/api-key": "^1.6.20",

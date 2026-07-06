@@ -16,14 +16,20 @@
  * (a `/ci` gate) sees a real runtime consumer.
  */
 
+import {
+  DEFAULT_INGEST_MAX_BUNDLE_BYTES,
+  DEFAULT_INGEST_MAX_DOC_BYTES,
+  DEFAULT_INGEST_MAX_DOCS,
+} from "@atlas/okf-bundle/wire";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("knowledge.ingest-limits");
 
-export const DEFAULT_INGEST_MAX_DOCS = 1000;
-export const DEFAULT_INGEST_MAX_DOC_BYTES = 1_000_000; // 1 MB per document
-export const DEFAULT_INGEST_MAX_BUNDLE_BYTES = 25_000_000; // 25 MB per upload
+// The default constants single-homed into the wire module (#4373) — bundle
+// builders validate against the SAME values at generation time. Re-exported
+// so this module remains the api-side home of the ingest-cap surface.
+export { DEFAULT_INGEST_MAX_DOCS, DEFAULT_INGEST_MAX_DOC_BYTES, DEFAULT_INGEST_MAX_BUNDLE_BYTES };
 
 /**
  * Coerce a settings string to a positive int, falling back to `fallback`. An

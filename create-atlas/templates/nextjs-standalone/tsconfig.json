@@ -19,6 +19,8 @@
       "@atlas/api/app": ["./src/api/index.ts"],
       "@atlas/api/*": ["./src/*"],
       "@atlas/ee/*": ["./ee/src/*"],
+      "@atlas/okf-bundle": ["./src/okf-bundle/index.ts"],
+      "@atlas/okf-bundle/wire": ["./src/okf-bundle/wire.ts"],
       "@useatlas/schemas": ["./src/schemas/index.ts"],
       "@useatlas/schemas/*": ["./src/schemas/*"]
     }

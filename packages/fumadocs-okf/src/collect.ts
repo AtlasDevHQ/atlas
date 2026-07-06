@@ -1,31 +1,26 @@
 /**
- * Walk a Fumadocs source and collect OKF documents — the adapter's core.
+ * Map the Fumadocs loader surface onto `@atlas/okf-bundle`'s doc-source seam
+ * — the whole of what this adapter IS after #4373.
  *
- * Per page: filter hooks (built-in + caller) → `getText("processed")`
- * (fail-loud when unavailable, never a raw-MDX fallback) → body-transform
- * hook → contentless check → OKF render → deterministic archive path.
- * Bodies resolve under bounded concurrency (a shim's `getText` may be an
- * HTTP fetch), but the result is ordered by the source's page order and the
- * packer sorts by path, so output never depends on completion timing.
+ * What stays here is exactly what is Fumadocs: resolving a page body via
+ * `getText("processed")` (fail-loud when unavailable, never a raw-MDX
+ * fallback), telling the missing-`includeProcessedMarkdown` config case apart
+ * from a generic load failure, the default top-level `api-reference/` stub
+ * skip, and wrapping the Fumadocs page shape (`data.*`) onto the seam.
+ * Collection, path derivation, caps, collisions, and packing are the core's.
  */
 
 import {
-  ArchivePathCollisionError,
+  collectPages,
   PageLoadError,
-  ProcessedTextUnavailableError,
-} from "./errors";
-import { isContentlessBody, pageTags, renderOkfDocument } from "./okf";
-import { deriveArchivePath, isApiReferencePage, normalizePrefix } from "./paths";
-import type {
-  CollectedDoc,
-  CollectOptions,
-  CollectResult,
-  FumadocsOkfPage,
-  FumadocsOkfSource,
-  ReservedRename,
-} from "./types";
+  type CollectOptions as CoreCollectOptions,
+  type CollectResult,
+  type DocSource,
+  type DocSourcePage,
+} from "@atlas/okf-bundle";
 
-const DEFAULT_CONCURRENCY = 8;
+import { ProcessedTextUnavailableError } from "./errors";
+import type { CollectOptions, FumadocsOkfPage, FumadocsOkfSource } from "./types";
 
 /** fumadocs-mdx's own error message when `includeProcessedMarkdown` is off. */
 const FUMADOCS_MISSING_PROCESSED = /includeProcessedMarkdown/;
@@ -55,121 +50,84 @@ async function processedBody(page: FumadocsOkfPage): Promise<string> {
   return body;
 }
 
-function tagsFor(
-  page: FumadocsOkfPage,
-  option: CollectOptions["tags"],
-): string[] {
-  const configured = typeof option === "function" ? option(page) : (option ?? []);
-  return [...new Set([...configured, ...pageTags(page.data.tags)])];
+/** First path segment of a normalized page path, lower-cased ("" when invalid). */
+export function firstSegment(pagePath: string): string {
+  const unified = pagePath.replace(/\\/g, "/").trim().replace(/^\.?\//, "");
+  const idx = unified.indexOf("/");
+  return (idx === -1 ? unified : unified.slice(0, idx)).toLowerCase();
 }
 
-/** One page's outcome — a doc or a counted skip, never neither/both. */
-type PageOutcome =
-  | { readonly kind: "skip"; readonly reason: keyof CollectResult["skipped"] }
-  | { readonly kind: "doc"; readonly doc: CollectedDoc; readonly rename?: ReservedRename };
+/**
+ * True for auto-generated API-reference stub pages (`api-reference/…`) — the
+ * adapter's built-in stub predicate behind `skipApiReference`.
+ */
+export function isApiReferencePage(pagePath: string): boolean {
+  return firstSegment(pagePath) === "api-reference";
+}
 
-async function collectPage(
-  page: FumadocsOkfPage,
-  prefixSegments: readonly string[],
-  options: CollectOptions,
-): Promise<PageOutcome> {
-  // Filters run BEFORE the body resolves — a skipped page must never cost a
-  // twin fetch / file read (473 api-reference stubs are a directory listing,
-  // not 473 reads), and a skipped page with a broken body must not fail the
-  // build.
-  if ((options.skipApiReference ?? true) && isApiReferencePage(page.path)) {
-    return { kind: "skip", reason: "apiReference" };
-  }
-  if (options.filter && !(await options.filter(page))) {
-    return { kind: "skip", reason: "filtered" };
-  }
+/** A doc-source page wrapping one Fumadocs page (hooks unwrap `.page`). */
+interface FumadocsDocPage extends DocSourcePage {
+  readonly page: FumadocsOkfPage;
+}
 
-  let body = await processedBody(page);
-  if (options.transform) {
-    const transformed = await options.transform(body, page);
-    if (transformed === null) return { kind: "skip", reason: "transformSkipped" };
-    body = transformed;
-  }
-  if ((options.skipContentless ?? true) && isContentlessBody(body)) {
-    return { kind: "skip", reason: "contentless" };
-  }
-
-  const derived = deriveArchivePath(page.path);
-  const path = [...prefixSegments, derived.path].join("/");
-  const content = renderOkfDocument(
-    { title: page.data.title, description: page.data.description },
-    tagsFor(page, options.tags),
-    body,
-  );
+function toDocPage(page: FumadocsOkfPage): FumadocsDocPage {
   return {
-    kind: "doc",
-    doc: {
-      path,
-      content,
-      bytes: new TextEncoder().encode(content).length,
-      sourcePath: page.path,
+    page,
+    path: page.path,
+    url: page.url,
+    // Metadata stays LAZY, mirroring the loader surface: a structural shim
+    // may back `data.title` with a getter that reads/parses the file (the
+    // docs portal does exactly that), and the core only touches these after
+    // a page survives the filters — an eager read here would cost the 473
+    // skipped api-reference stubs a file read each.
+    get title() {
+      return page.data.title;
     },
-    rename: derived.renamedFromReserved ? { from: page.path, to: path } : undefined,
+    get description() {
+      return page.data.description;
+    },
+    get tags() {
+      return page.data.tags;
+    },
+    loadBody: () => processedBody(page),
   };
 }
 
 /**
- * Collect every eligible page of a source into OKF documents. Throws
- * {@link ProcessedTextUnavailableError} / {@link PageLoadError} /
- * {@link ArchivePathCollisionError} / `InvalidPagePathError` — a bundle is
- * either right or refused, never silently partial (skips are counted and
- * returned, not hidden).
+ * Map a Fumadocs source + Fumadocs-typed options onto the core's doc-source
+ * seam — the single bridge both `collectFumadocsPages` and
+ * `buildFumadocsOkfBundle` go through, so the hook unwrapping and the
+ * `skipApiReference` default cannot diverge between the two entries.
+ */
+export function bridgeFumadocsSource(
+  source: FumadocsOkfSource,
+  options: CollectOptions,
+): { source: DocSource<FumadocsDocPage>; options: CoreCollectOptions<FumadocsDocPage> } {
+  const { filter, transform, tags, skipApiReference, ...rest } = options;
+  return {
+    source: { getPages: () => source.getPages().map(toDocPage) },
+    options: {
+      ...rest,
+      isApiReferenceStub:
+        (skipApiReference ?? true) ? (p) => isApiReferencePage(p.page.path) : undefined,
+      filter: filter && ((p) => filter(p.page)),
+      transform: transform && ((body, p) => transform(body, p.page)),
+      tags: typeof tags === "function" ? (p) => tags(p.page) : tags,
+    },
+  };
+}
+
+/**
+ * Collect every eligible page of a Fumadocs source into OKF documents via
+ * the core pipeline. Throws {@link ProcessedTextUnavailableError} and the
+ * core's `PageLoadError` / `ArchivePathCollisionError` /
+ * `InvalidPagePathError` — a bundle is either right or refused, never
+ * silently partial (skips are counted and returned, not hidden).
  */
 export async function collectFumadocsPages(
   source: FumadocsOkfSource,
   options: CollectOptions,
 ): Promise<CollectResult> {
-  const prefixSegments = normalizePrefix(options.prefix);
-  const pages = source.getPages();
-  const outcomes: PageOutcome[] = new Array<PageOutcome>(pages.length);
-
-  // Bounded-concurrency pool; outcomes land by index so ordering is stable.
-  // A non-finite/sub-1 concurrency value clamps to the default rather than
-  // producing zero workers (Array.from({length: NaN}) is empty).
-  const requested = options.concurrency;
-  const concurrency =
-    typeof requested === "number" && Number.isFinite(requested) && requested >= 1
-      ? Math.floor(requested)
-      : DEFAULT_CONCURRENCY;
-  let cursor = 0;
-  const worker = async (): Promise<void> => {
-    for (let i = cursor++; i < pages.length; i = cursor++) {
-      outcomes[i] = await collectPage(pages[i], prefixSegments, options);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, pages.length || 1) }, worker));
-
-  const docs: CollectedDoc[] = [];
-  const renamedReserved: ReservedRename[] = [];
-  const skipped = { filtered: 0, apiReference: 0, contentless: 0, transformSkipped: 0 };
-  const byPath = new Map<string, string>();
-
-  for (let i = 0; i < outcomes.length; i++) {
-    const outcome: PageOutcome | undefined = outcomes[i];
-    if (outcome === undefined) {
-      // A hole here means the worker pool skipped an index — an internal bug
-      // that must never read as a silently smaller bundle.
-      throw new Error(
-        `internal: page ${i} ("${pages[i]?.path}") produced no outcome — collect-pool index bug`,
-      );
-    }
-    if (outcome.kind === "skip") {
-      skipped[outcome.reason]++;
-      continue;
-    }
-    const existing = byPath.get(outcome.doc.path);
-    if (existing !== undefined) {
-      throw new ArchivePathCollisionError(outcome.doc.path, existing, outcome.doc.sourcePath);
-    }
-    byPath.set(outcome.doc.path, outcome.doc.sourcePath);
-    docs.push(outcome.doc);
-    if (outcome.rename) renamedReserved.push(outcome.rename);
-  }
-
-  return { docs, skipped, renamedReserved };
+  const bridged = bridgeFumadocsSource(source, options);
+  return collectPages(bridged.source, bridged.options);
 }

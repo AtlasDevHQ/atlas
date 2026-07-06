@@ -1,14 +1,15 @@
 /**
- * OKF document rendering + the contentless-page heuristic — ported from the
- * #4366 portal prototype so every consumer of the adapter emits the same
- * conformant shape the KB lenient ingest parser expects
- * (`packages/api/src/lib/knowledge/parse-lenient.ts`).
+ * OKF document rendering + the contentless-page heuristic — every consumer of
+ * the bundle builder emits the same conformant shape the KB lenient ingest
+ * parser expects (`packages/api/src/lib/knowledge/parse-lenient.ts`; the
+ * shared field vocabulary is the wire module's `OkfWireFrontmatter`).
  */
 
-export interface OkfFrontmatter {
-  readonly title?: string;
-  readonly description?: string;
-}
+import { DEFAULT_OKF_TYPE, type OkfWireFrontmatter } from "./wire";
+
+/** The header fields a bundle builder renders per document (`type` is always
+ *  the wire module's `DEFAULT_OKF_TYPE`; tags are passed separately). */
+export type OkfFrontmatter = Pick<OkfWireFrontmatter, "title" | "description">;
 
 /**
  * Serialize an OKF document: `type: Document` frontmatter, optional
@@ -21,7 +22,7 @@ export function renderOkfDocument(
   tags: readonly string[],
   body: string,
 ): string {
-  const lines = ["---", "type: Document"];
+  const lines = ["---", `type: ${DEFAULT_OKF_TYPE}`];
   if (fm.title) lines.push(`title: ${JSON.stringify(fm.title)}`);
   if (fm.description) lines.push(`description: ${JSON.stringify(fm.description)}`);
   if (tags.length > 0) {

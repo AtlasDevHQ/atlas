@@ -1,68 +1,24 @@
+/**
+ * Fumadocs-SPECIFIC adapter behavior: the loader mapping, the
+ * `getText("processed")` prescription vs. generic load errors, and the
+ * default `api-reference/` stub skip. The source-neutral core surface
+ * (path derivation, caps, collisions, deterministic packing, contentless
+ * heuristic) is covered in `@atlas/okf-bundle`'s own tests through the
+ * doc-source seam.
+ */
+
 import { describe, expect, test } from "bun:test";
 
 import {
-  ArchivePathCollisionError,
   buildFumadocsOkfBundle,
   collectFumadocsPages,
-  deriveArchivePath,
-  IngestCapExceededError,
-  InvalidPagePathError,
-  isContentlessBody,
-  mergeCollectResults,
-  packOkfBundle,
   PageLoadError,
   ProcessedTextUnavailableError,
-  splitUstarPath,
   type FumadocsOkfPage,
 } from "../src/index";
 import { acmeSource, page, sourceOf } from "./fixture";
 
-describe("deriveArchivePath", () => {
-  test("plain page maps 1:1 with .md extension", () => {
-    expect(deriveArchivePath("guides/setup.mdx")).toEqual({
-      path: "guides/setup.md",
-      renamedFromReserved: false,
-    });
-  });
-
-  test("section landing folds onto the section slug (reserved-basename trap)", () => {
-    expect(deriveArchivePath("plugins/index.mdx").path).toBe("plugins.md");
-    expect(deriveArchivePath("plugins/datasources/index.mdx").path).toBe(
-      "plugins/datasources.md",
-    );
-  });
-
-  test("root landing becomes overview.md", () => {
-    expect(deriveArchivePath("index.mdx").path).toBe("overview.md");
-    expect(deriveArchivePath("INDEX.mdx").path).toBe("overview.md");
-  });
-
-  test("a page literally named log gets -doc so ingest can never silently drop it", () => {
-    const derived = deriveArchivePath("ops/log.mdx");
-    expect(derived.path).toBe("ops/log-doc.md");
-    expect(derived.renamedFromReserved).toBe(true);
-  });
-
-  test("an index that survives folding still moves off the reserved basename", () => {
-    // `a/index/index.mdx` folds to `a/index.md` — reserved, so renamed.
-    const derived = deriveArchivePath("a/index/index.mdx");
-    expect(derived.path).toBe("a/index-doc.md");
-    expect(derived.renamedFromReserved).toBe(true);
-  });
-
-  test("deterministic: same input, same output, no ordering dependence", () => {
-    expect(deriveArchivePath("guides/setup.mdx")).toEqual(deriveArchivePath("guides/setup.mdx"));
-  });
-
-  test("rejects traversal, absolute, and non-page paths", () => {
-    expect(() => deriveArchivePath("../escape.mdx")).toThrow(InvalidPagePathError);
-    expect(() => deriveArchivePath("/abs/page.mdx")).toThrow(InvalidPagePathError);
-    expect(() => deriveArchivePath("image.png")).toThrow(InvalidPagePathError);
-    expect(() => deriveArchivePath("")).toThrow(InvalidPagePathError);
-  });
-});
-
-describe("collectFumadocsPages", () => {
+describe("collectFumadocsPages (loader mapping)", () => {
   test("collects the Acme fixture with built-in skips and reserved renames", async () => {
     const result = await collectFumadocsPages(acmeSource(), { prefix: "acme" });
 
@@ -81,7 +37,7 @@ describe("collectFumadocsPages", () => {
     ]);
   });
 
-  test("frontmatter carries title/description/tags; body is byte-faithful", async () => {
+  test("page.data frontmatter carries through: title/description/tags; body is byte-faithful", async () => {
     const result = await collectFumadocsPages(acmeSource(), {
       prefix: "acme",
       tags: ["acme-docs"],
@@ -104,26 +60,65 @@ describe("collectFumadocsPages", () => {
     );
   });
 
-  test("filter hook drops pages and is counted, not silent", async () => {
+  test("hooks receive the ORIGINAL Fumadocs page (not the internal doc-source wrapper)", async () => {
+    const seen: string[] = [];
     const result = await collectFumadocsPages(acmeSource(), {
       prefix: "acme",
-      filter: (p) => !p.path.startsWith("guides/"),
+      filter: (p) => {
+        // `data` only exists on the Fumadocs page shape.
+        expect(typeof p.data).toBe("object");
+        return true;
+      },
+      transform: (body, p) => {
+        // The wrapper has no `data` — a regression that passes it through
+        // would break every transform that reads page frontmatter.
+        expect(typeof p.data).toBe("object");
+        seen.push(p.path);
+        return p.data.title === "Quickstart" ? `${body}\n\ntransform saw the real page` : body;
+      },
+      tags: (p) => (p.data.title ? [p.data.title.toLowerCase()] : []),
     });
-    expect(result.docs.some((d) => d.path.startsWith("acme/guides"))).toBe(false);
-    expect(result.skipped.filtered).toBe(2);
+    expect(seen.length).toBeGreaterThan(0);
+    const quickstart = result.docs.find((d) => d.path === "acme/quickstart.md");
+    expect(quickstart?.content).toContain('"quickstart"');
+    expect(quickstart?.content).toContain("transform saw the real page");
   });
 
-  test("transform hook rewrites bodies; returning null skips fail-soft", async () => {
-    const result = await collectFumadocsPages(acmeSource(), {
-      prefix: "acme",
-      transform: (body, p) =>
-        p.path === "quickstart.mdx" ? null : body.replaceAll("Acme", "ACME"),
-    });
-    expect(result.docs.some((d) => d.path === "acme/quickstart.md")).toBe(false);
-    expect(result.skipped.transformSkipped).toBe(1);
-    expect(result.docs.find((d) => d.path === "acme/overview.md")?.content).toContain(
-      "ACME turns your warehouse",
+  test('a non-string getText("processed") result is a PageLoadError naming the page', async () => {
+    const odd: FumadocsOkfPage = {
+      path: "guides/odd.mdx",
+      data: {
+        title: "Odd",
+        getText: async () => undefined as unknown as string,
+      },
+    };
+    await expect(collectFumadocsPages(sourceOf([odd]), { prefix: "acme" })).rejects.toThrow(
+      PageLoadError,
     );
+    await expect(collectFumadocsPages(sourceOf([odd]), { prefix: "acme" })).rejects.toThrow(
+      /guides\/odd\.mdx.*non-string/,
+    );
+  });
+
+  test("page metadata resolves lazily — a skipped page never reads data.title/description/tags", async () => {
+    // Structural shims may back the data fields with getters that read and
+    // parse the file (the docs portal does); the 473 filtered api-reference
+    // stubs must cost a directory entry, not a read each.
+    let metadataReads = 0;
+    const lazy = (path: string): FumadocsOkfPage => ({
+      path,
+      data: {
+        get title(): string {
+          metadataReads++;
+          return path;
+        },
+        getText: async () => "A real prose body that would count as content.",
+      },
+    });
+    await collectFumadocsPages(sourceOf([lazy("api-reference/stub.mdx"), lazy("kept.mdx")]), {
+      prefix: "acme",
+    });
+    expect(metadataReads).toBe(1); // only the kept page's title was rendered
   });
 
   test("missing processed text fails loud, naming the config — never raw-MDX fallback", async () => {
@@ -161,7 +156,7 @@ describe("collectFumadocsPages", () => {
     }
   });
 
-  test("filters run before body resolution — a skipped page never loads its body", async () => {
+  test("filters run before body resolution — a skipped page never calls getText", async () => {
     let loads = 0;
     const counting = (path: string): FumadocsOkfPage => ({
       path,
@@ -186,31 +181,6 @@ describe("collectFumadocsPages", () => {
     expect(loads).toBe(1);
   });
 
-  test("archive-path collision is a hard error naming both pages", async () => {
-    const colliding = sourceOf([
-      page("guide.mdx", "a standalone page with plenty of prose", { title: "A" }),
-      page("guide/index.mdx", "a landing that folds onto guide.md", { title: "B" }),
-    ]);
-    await expect(collectFumadocsPages(colliding, { prefix: "acme" })).rejects.toThrow(
-      ArchivePathCollisionError,
-    );
-  });
-
-  test("cross-collect collisions are refused at pack — merge never last-write-wins", async () => {
-    // Two collects with the SAME prefix producing the same archive path:
-    // within-collect checks can't see this; packOkfBundle must.
-    const a = await collectFumadocsPages(
-      sourceOf([page("setup.mdx", "prose from the first section collect")]),
-      { prefix: "kb" },
-    );
-    const b = await collectFumadocsPages(
-      sourceOf([page("setup.mdx", "prose from the second section collect")]),
-      { prefix: "kb" },
-    );
-    const merged = mergeCollectResults([a, b]);
-    expect(() => packOkfBundle(merged.docs)).toThrow(ArchivePathCollisionError);
-  });
-
   test("skipApiReference: false keeps the stubs (and contentless still applies)", async () => {
     const result = await collectFumadocsPages(acmeSource(), {
       prefix: "acme",
@@ -222,89 +192,27 @@ describe("collectFumadocsPages", () => {
   });
 });
 
-describe("caps validation", () => {
-  test("doc-count overflow reports the actual numbers and the settings knob", async () => {
+describe("buildFumadocsOkfBundle", () => {
+  test("stats reconcile and packing stays deterministic through the adapter entry", async () => {
+    const pages = acmeSource().getPages();
+    const a = await buildFumadocsOkfBundle(sourceOf(pages), { prefix: "acme" });
+    const b = await buildFumadocsOkfBundle(sourceOf([...pages].reverse()), { prefix: "acme" });
+    expect(Buffer.from(a.bytes).equals(Buffer.from(b.bytes))).toBe(true);
+    expect(a.stats.documents).toBe(a.docs.length);
+    expect(a.stats.documents).toBe(6);
+    expect(a.stats.archiveBytes).toBe(a.bytes.length);
+    expect(a.stats.totalDocBytes).toBe(a.docs.reduce((n, d) => n + d.bytes, 0));
+    expect(a.stats.skipped.apiReference).toBe(1);
+    expect(a.stats.skipped.contentless).toBe(1);
+    expect(a.stats.renamedReserved).toEqual([{ from: "ops/log.mdx", to: "acme/ops/log-doc.md" }]);
+  });
+
+  test("caps overrides flow through to the core validation", async () => {
     const many = sourceOf(
       Array.from({ length: 5 }, (_, i) => page(`p${i}.mdx`, `Body of page number ${i}.`)),
     );
     await expect(
       buildFumadocsOkfBundle(many, { prefix: "acme", caps: { maxDocs: 3 } }),
-    ).rejects.toThrow(/maxDocs: 5 documents > 3 documents.*ATLAS_KNOWLEDGE_INGEST_MAX_DOCS/s);
-  });
-
-  test("per-doc byte overflow names the document", async () => {
-    const big = sourceOf([page("big.mdx", "x".repeat(2000), { title: "Big" })]);
-    await expect(
-      buildFumadocsOkfBundle(big, { prefix: "acme", caps: { maxDocBytes: 100 } }),
-    ).rejects.toThrow(IngestCapExceededError);
-    await expect(
-      buildFumadocsOkfBundle(big, { prefix: "acme", caps: { maxDocBytes: 100 } }),
-    ).rejects.toThrow(/acme\/big\.md/);
-  });
-
-  test("decoded-total overflow trips maxBundleBytes", async () => {
-    const docs = Array.from({ length: 4 }, (_, i) => ({
-      path: `acme/p${i}.md`,
-      content: "y".repeat(400),
-      bytes: 400,
-      sourcePath: `p${i}.mdx`,
-    }));
-    expect(() =>
-      packOkfBundle(docs, { maxDocs: 100, maxDocBytes: 1000, maxBundleBytes: 1000 }),
-    ).toThrow(/maxBundleBytes: 1600 bytes > 1000 bytes/);
-  });
-});
-
-describe("deterministic packing", () => {
-  test("same source builds byte-identical archives, regardless of page order", async () => {
-    const pages = acmeSource().getPages();
-    const a = await buildFumadocsOkfBundle(sourceOf(pages), { prefix: "acme" });
-    const b = await buildFumadocsOkfBundle(sourceOf([...pages].reverse()), { prefix: "acme" });
-    expect(Buffer.from(a.bytes).equals(Buffer.from(b.bytes))).toBe(true);
-  });
-
-  test("stats reconcile: documents == emitted docs, skips accounted", async () => {
-    const result = await buildFumadocsOkfBundle(acmeSource(), { prefix: "acme" });
-    expect(result.stats.documents).toBe(result.docs.length);
-    expect(result.stats.documents).toBe(6);
-    expect(result.stats.skipped.apiReference + result.stats.skipped.contentless).toBe(2);
-    expect(result.stats.totalDocBytes).toBe(result.docs.reduce((n, d) => n + d.bytes, 0));
-    expect(result.stats.archiveBytes).toBe(result.bytes.length);
-  });
-});
-
-describe("splitUstarPath", () => {
-  test("short paths stay in name", () => {
-    expect(splitUstarPath("docs/a.md")).toEqual({ name: "docs/a.md", prefix: "" });
-  });
-
-  test("long paths split at a slash boundary", () => {
-    const dir = "d".repeat(90);
-    const split = splitUstarPath(`${dir}/${"f".repeat(60)}.md`);
-    expect(split.prefix).toBe(dir);
-    expect(split.name).toBe(`${"f".repeat(60)}.md`);
-  });
-
-  test("an unsplittable path throws typed instead of truncating", () => {
-    expect(() => splitUstarPath("x".repeat(160))).toThrow(InvalidPagePathError);
-    expect(() => splitUstarPath("x".repeat(160))).toThrow(/ustar/);
-  });
-});
-
-describe("isContentlessBody", () => {
-  test("component-only body is contentless; prose and code are content", () => {
-    expect(isContentlessBody("<ChangelogTimeline />")).toBe(true);
-    expect(isContentlessBody("Real prose that should be kept for the KB.")).toBe(false);
-    expect(isContentlessBody("```sql\nSELECT 1;\n```")).toBe(false);
-  });
-
-  test("a long run of unclosed '<' resolves in linear time (no polynomial ReDoS)", () => {
-    // Guards the js/polynomial-redos fix: the tag-strip regex must not blow up
-    // on a pathological body of many `<` with no closing `>`. The strip leaves
-    // the literal `<` run intact, so the body reads as content — the property
-    // under test is that it returns *quickly*, not what it returns.
-    const start = performance.now();
-    expect(isContentlessBody("<".repeat(200_000))).toBe(false);
-    expect(performance.now() - start).toBeLessThan(1000);
+    ).rejects.toThrow(/maxDocs: 5 documents > 3 documents/);
   });
 });

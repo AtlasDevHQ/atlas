@@ -19,8 +19,9 @@
  *     parse the author clearly intended.
  *
  * Reserved OKF basenames (`index.md`, `log.md`) are navigation / history, not
- * concepts — skipped, mirroring the spike's `RESERVED_BASENAMES` name set (here
- * compared case-insensitively, a deliberate slight superset). They carry no
+ * concepts — skipped, using the wire module's `RESERVED_BASENAMES` set (here
+ * compared case-insensitively, a deliberate slight superset of the strict
+ * parser's exact match). They carry no
  * `knowledge_documents` row; the tree's navigation is regenerable. Non-`.md`
  * entries (assets) are skipped too.
  *
@@ -30,17 +31,19 @@
  * documents' `path` (ADR-0028 §5 / migration 0163).
  */
 
-import type { InteropFile } from "@atlas/api/lib/semantic/okf";
 import {
+  DEFAULT_OKF_TYPE,
   mdBasename,
   RESERVED_BASENAMES,
-  splitFrontmatterBlock,
   topLevelHeading,
-} from "@atlas/api/lib/semantic/okf/md-utils";
+} from "@atlas/okf-bundle/wire";
+import type { InteropFile } from "@atlas/api/lib/semantic/okf";
+import { splitFrontmatterBlock } from "@atlas/api/lib/semantic/okf/md-utils";
 import type { BundleEntryError } from "./bundle-archive";
 
-/** Default OKF `type` stamped on a document that arrived without one. */
-export const DEFAULT_OKF_TYPE = "Document";
+/** Default OKF `type` stamped on a document that arrived without one —
+ *  single-homed in the wire module, re-exported for this parser's consumers. */
+export { DEFAULT_OKF_TYPE };
 
 /** One extracted intra-bundle markdown link. */
 export interface LenientLink {
@@ -145,7 +148,7 @@ function timestampField(value: unknown): string | null {
 }
 
 /** First top-level `# Heading` text, or null — the shared CodeQL-safe line
- *  scanner (`semantic/okf/md-utils`) applied to a whole body. */
+ *  scanner (`@atlas/okf-bundle/wire`) applied to a whole body. */
 function firstHeading(body: string): string | null {
   for (const line of body.split("\n")) {
     const text = topLevelHeading(line);

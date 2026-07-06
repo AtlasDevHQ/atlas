@@ -23,6 +23,7 @@ COPY packages/types/package.json packages/types/package.json
 COPY packages/schemas/package.json packages/schemas/package.json
 COPY packages/webhook-publisher/package.json packages/webhook-publisher/package.json
 COPY packages/fumadocs-okf/package.json packages/fumadocs-okf/package.json
+COPY packages/okf-bundle/package.json packages/okf-bundle/package.json
 COPY apps/docs/package.json apps/docs/package.json
 COPY apps/www/package.json apps/www/package.json
 COPY examples/nextjs-standalone/package.json examples/nextjs-standalone/package.json
@@ -131,6 +132,11 @@ COPY --from=builder --chown=atlas:atlas /app/packages/plugin-sdk ./packages/plug
 COPY --from=builder --chown=atlas:atlas /app/packages/webhook-publisher ./packages/webhook-publisher
 # Widget bundle — built from @useatlas/react (referenced by widget route)
 COPY --from=builder --chown=atlas:atlas /app/packages/react/dist ./packages/react/dist
+# OKF wire contract + bundle core — the api's ingest parsers import
+# @atlas/okf-bundle/wire at runtime (#4373); without this COPY the
+# node_modules/@atlas/okf-bundle workspace symlink dangles and the first
+# knowledge ingest / mirror touch ENOENTs.
+COPY --from=builder --chown=atlas:atlas /app/packages/okf-bundle ./packages/okf-bundle
 # Hono API server source + dependencies
 COPY --from=builder --chown=atlas:atlas /app/packages/api ./packages/api
 # packages/mcp is the hosted-MCP edge — `api/index.ts` does

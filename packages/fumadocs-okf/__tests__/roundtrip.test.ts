@@ -19,13 +19,8 @@ import { describe, expect, test } from "bun:test";
 
 import { extractBundle } from "@atlas/api/lib/knowledge/bundle-archive";
 import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
-import { RESERVED_BASENAMES } from "@atlas/api/lib/semantic/okf/md-utils";
 
-import {
-  buildFumadocsOkfBundle,
-  DEFAULT_INGEST_CAPS,
-  RESERVED_OKF_BASENAMES,
-} from "../src/index";
+import { buildFumadocsOkfBundle, DEFAULT_INGEST_CAPS } from "../src/index";
 import { acmeSource, page, sourceOf } from "./fixture";
 
 describe("bundle-sync round-trip (no packages/api changes)", () => {
@@ -113,18 +108,9 @@ describe("bundle-sync round-trip (no packages/api changes)", () => {
     expect(extracted.files.map((f) => f.path)).toEqual([`acme/${deepDir}/${longStem}.md`]);
   });
 
-  test("reserved-basename set stays equal to the server's RESERVED_BASENAMES", () => {
-    // A drift here (e.g. the API side reserving a new basename) would
-    // reintroduce the silent-drop class this package exists to close.
-    expect([...RESERVED_OKF_BASENAMES].toSorted()).toEqual([...RESERVED_BASENAMES].toSorted());
-  });
-
-  test("adapter default caps stay equal to the server ingest-limit defaults", async () => {
-    // Import lazily: ingest-limits pulls the settings/logger modules, which is
-    // fine to load but kept out of the shared top-level imports above.
-    const limits = await import("@atlas/api/lib/knowledge/ingest-limits");
-    expect(DEFAULT_INGEST_CAPS.maxDocs).toBe(limits.DEFAULT_INGEST_MAX_DOCS);
-    expect(DEFAULT_INGEST_CAPS.maxDocBytes).toBe(limits.DEFAULT_INGEST_MAX_DOC_BYTES);
-    expect(DEFAULT_INGEST_CAPS.maxBundleBytes).toBe(limits.DEFAULT_INGEST_MAX_BUNDLE_BYTES);
-  });
+  // The reserved-basename and cap-default drift pins that used to live here
+  // retired with #4373: both sides now import the same wire module
+  // (`@atlas/okf-bundle/wire`), so equality holds by construction. The
+  // behavioral pin that matters — built N == parsed N, zero silent drops —
+  // is the first test above.
 });

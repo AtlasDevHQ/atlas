@@ -9,29 +9,28 @@
  *
  * Two OKF realities shape the mapping:
  *   1. The ingest parser SILENTLY skips reserved basenames (`index.md`,
- *      `log.md` — navigation/history in a hand-authored OKF tree). Fumadocs
- *      uses `index.mdx` for real section-landing content, so a naive mapping
- *      drops a site's biggest overview pages without even a rejection row
- *      (issue #4367: 8 of 165 portal docs vanished this way). A section
- *      landing is therefore FOLDED onto its section's own slug
- *      (`plugins/index.mdx` → `plugins.md`) — collision-free by construction
- *      for a valid Fumadocs site, because `plugins/index.mdx` and
- *      `plugins.mdx` already collide at the same URL there.
+ *      `log.md` — navigation/history in a hand-authored OKF tree; the wire
+ *      module's `RESERVED_BASENAMES`). Docs trees use `index.mdx` for real
+ *      section-landing content, so a naive mapping drops a site's biggest
+ *      overview pages without even a rejection row (issue #4367: 8 of 165
+ *      portal docs vanished this way). A section landing is therefore FOLDED
+ *      onto its section's own slug (`plugins/index.mdx` → `plugins.md`) —
+ *      collision-free by construction for a valid docs site, because
+ *      `plugins/index.mdx` and `plugins.mdx` already collide at the same URL
+ *      there.
  *   2. Anything else that still lands on a reserved basename (a page
  *      literally named `log.mdx`, or an `index` that survives folding) gets a
  *      `-doc` suffix so it can never be silently dropped.
  */
 
 import { InvalidPagePathError } from "./errors";
-
-/** Reserved OKF basenames the ingest parser skips (compared case-insensitively). */
-export const RESERVED_OKF_BASENAMES: ReadonlySet<string> = new Set(["index.md", "log.md"]);
+import { RESERVED_BASENAMES } from "./wire";
 
 /** The archive-path STEM a folded ROOT `index` page lands on — `index.mdx`
  *  at the collection root becomes `<prefix>/overview.md`. */
 export const ROOT_INDEX_STEM = "overview";
 
-/** Page extensions a Fumadocs collection can contain. */
+/** Page extensions a doc source can contain. */
 const PAGE_EXTENSION = /\.(mdx|md)$/i;
 
 /**
@@ -85,7 +84,7 @@ export function deriveArchivePath(pagePath: string): DerivedArchivePath {
   if (!PAGE_EXTENSION.test(last)) {
     throw new InvalidPagePathError(
       pagePath,
-      `expected a .mdx/.md page file, got "${last}" — is this a page from a Fumadocs source loader?`,
+      `expected a .mdx/.md page file, got "${last}" — is this a page from a doc-source adapter?`,
     );
   }
   const stem = last.replace(PAGE_EXTENSION, "");
@@ -93,7 +92,7 @@ export function deriveArchivePath(pagePath: string): DerivedArchivePath {
     throw new InvalidPagePathError(pagePath, "page filename has no stem");
   }
 
-  // Fold a section landing onto the section's own slug — matches Fumadocs URL
+  // Fold a section landing onto the section's own slug — matches docs-site URL
   // semantics (`plugins/index.mdx` and `plugins.mdx` share a slug there, so
   // the fold target cannot belong to another page on a valid site).
   let outSegments: string[];
@@ -109,25 +108,10 @@ export function deriveArchivePath(pagePath: string): DerivedArchivePath {
   // ingest parser can never silently skip it.
   let renamedFromReserved = false;
   const basename = `${outSegments[outSegments.length - 1]}.md`;
-  if (RESERVED_OKF_BASENAMES.has(basename.toLowerCase())) {
+  if (RESERVED_BASENAMES.has(basename.toLowerCase())) {
     outSegments[outSegments.length - 1] = `${outSegments[outSegments.length - 1]}-doc`;
     renamedFromReserved = true;
   }
 
   return { path: `${outSegments.join("/")}.md`, renamedFromReserved };
-}
-
-/** First path segment of a normalized page path, lower-cased ("" when invalid). */
-export function firstSegment(pagePath: string): string {
-  const unified = pagePath.replace(/\\/g, "/").trim().replace(/^\.?\//, "");
-  const idx = unified.indexOf("/");
-  return (idx === -1 ? unified : unified.slice(0, idx)).toLowerCase();
-}
-
-/**
- * True for auto-generated API-reference stub pages (`api-reference/…`) — the
- * built-in page-filter predicate behind `skipApiReference`.
- */
-export function isApiReferencePage(pagePath: string): boolean {
-  return firstSegment(pagePath) === "api-reference";
 }

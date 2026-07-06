@@ -18,6 +18,7 @@ import type {
   AbuseRestoreStatus,
   PlanTier,
   KnowledgeCollectionListResponse,
+  KnowledgeCollectionSource,
   KnowledgeDocumentListResponse,
   KnowledgeIngestSummary,
   KnowledgeSyncRunResponse,
@@ -751,14 +752,27 @@ export const KnowledgeSyncRunResponseSchema = z.object({
 });
 
 // Compile-time drift guards. `_Expect<T extends true>` rejects any check that
-// resolves to `false`, so if a schema's inferred output stops being assignable
-// to its `@useatlas/types` wire interface (a dropped field, a widened enum),
-// this file fails to type-check. This is the actual SSOT bridge referenced in
-// the block header — and it keeps the otherwise consumer-less uninstall
-// shape honest.
+// resolves to `false`. The `*Drift` guards check ONE direction — schema output
+// stays assignable to the `@useatlas/types` wire interface — which catches a
+// dropped field or a schema enum widened past the wire union, and keeps the
+// otherwise consumer-less uninstall shape honest. They can NOT catch the wire
+// union widening past a closed schema enum (a narrower enum is always
+// assignable to a wider union), so closed enums here need a paired
+// reverse-direction guard like `_KnowledgeSourceExhaustive` below.
 type _Expect<T extends true> = T;
 export type _KnowledgeCollectionListDrift = _Expect<
   z.infer<typeof KnowledgeCollectionListResponseSchema> extends KnowledgeCollectionListResponse
+    ? true
+    : false
+>;
+// Reverse direction for the closed `source` enum: every member of the wire
+// union must be parseable by the schema. Without this, adding a fifth
+// `KnowledgeCollectionSource` in `@useatlas/types` (which the API's
+// `satisfies KnowledgeCollectionListResponse` guarantees gets emitted)
+// type-checks green here and hard-fails `/admin/knowledge` at Zod-parse time —
+// including during a deploy-overlap window.
+export type _KnowledgeSourceExhaustive = _Expect<
+  KnowledgeCollectionSource extends z.infer<typeof KnowledgeCollectionSchema>["source"]
     ? true
     : false
 >;

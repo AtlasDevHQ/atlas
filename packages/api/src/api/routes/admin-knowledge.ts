@@ -449,10 +449,11 @@ adminKnowledge.openapi(listRoute, async (c) =>
           const description = r.config?.description;
           const source = sourceOf(r.catalog_id);
           // An install from an unrecognized knowledge catalog (unreachable
-          // today — only the two built-in catalogs can create knowledge
-          // installs) has no admin affordances: painting it as an "upload"
-          // collection would offer actions its route gates reject. Skip it
-          // loudly instead of mislabeling it.
+          // today — only the four built-in catalogs, okf-upload / bundle-sync /
+          // notion-knowledge / confluence, can create knowledge installs) has
+          // no admin affordances: painting it as an "upload" collection would
+          // offer actions its route gates reject. Skip it loudly instead of
+          // mislabeling it.
           if (source === "unknown") {
             log.warn(
               { orgId, installId: r.install_id, catalogId: r.catalog_id },

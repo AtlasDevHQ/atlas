@@ -771,6 +771,7 @@ describe("registerPluginMcpTools — mcp:write gate for mutating plugin tools (#
     const env = JSON.parse(res.content[0].text);
     expect(env.code).toBe("forbidden");
     expect(env.message).toContain("mcp:write");
+    expect(env.request_id).toMatch(/^mcp-plugin-/);
     // The gate runs BEFORE the rate-limit gate — a forbidden call must not
     // consume the client's rate budget.
     expect(rateLimitState.calls).toHaveLength(0);
@@ -829,6 +830,186 @@ describe("registerPluginMcpTools — mcp:write gate for mutating plugin tools (#
     });
     const handler = server.registered.get("infra.createThing")!.handler;
     const res = await handler({ value: "x" });
+    expect(res.isError).toBeFalsy();
+    expect(called).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4355 — fail closed when the ADR-0016 dispatch-gate runner is unwired.
+// Production (packages/mcp/src/plugin-tools.ts) always injects
+// `runMcpDispatchGate`, which runs gates 1 (action-policy), 3 (RBAC minRole)
+// and 4 (approval). When that runner is ABSENT (a mis-wired injector, or a
+// caller that never wired it), those gates cannot run — so the fallback must
+// DENY any tool that declares governance they would enforce: an elevated
+// `minRole` (above member), `destructive`, or a non-default `actionCategory`
+// (datasource/policy). Member-level, non-destructive, default-category tools
+// keep flowing through the inline gate-2 (mcp:write) check, so read-only
+// member tools are unaffected.
+// ---------------------------------------------------------------------------
+describe("registerPluginMcpTools — fail-closed when dispatch-gate runner is unwired (#4355)", () => {
+  let registry: PluginMcpToolRegistry;
+  let server: FakeMcpServer;
+
+  beforeEach(() => {
+    registry = new PluginMcpToolRegistry();
+    server = new FakeMcpServer();
+    rateLimitState.outcome = { kind: "ok" };
+    rateLimitState.calls = [];
+  });
+
+  function actor() {
+    return { id: "user-1", label: "user-1", mode: "simple-key" as const, activeOrganizationId: "org-1" };
+  }
+
+  /** Hosted opts WITHOUT a `runDispatchGate` injector — exercises the fallback. */
+  function noRunnerOpts(over: Record<string, unknown> = {}) {
+    return {
+      registry,
+      actor: actor(),
+      transport: "sse" as const,
+      workspaceId: "org-1",
+      deployMode: "saas" as const,
+      clientId: "claude-desktop",
+      scopes: ["mcp:read", "mcp:write"],
+      ...over,
+    };
+  }
+
+  it("denies an admin-role tool when no gate runner is wired (RBAC gate can't run)", async () => {
+    let called = false;
+    registry.register(
+      "infra",
+      makeTool({ name: "adminOp", minRole: "admin", handler: async () => { called = true; return { ok: true }; } }),
+    );
+    registerPluginMcpTools(server, noRunnerOpts());
+    const res = await server.registered.get("infra.adminOp")!.handler({ value: "x" });
+    expect(res.isError).toBe(true);
+    const env = JSON.parse(res.content[0].text);
+    expect(env.code).toBe("forbidden");
+    // The denial carries request_id for log correlation (distinguishes it from
+    // the gate-2 mcp:write denial, which has none).
+    expect(env.request_id).toMatch(/^mcp-plugin-/);
+    expect(called).toBe(false);
+    // Fail-closed denial runs BEFORE the rate limiter — no quota consumed.
+    expect(rateLimitState.calls).toHaveLength(0);
+  });
+
+  it("denies an owner-role tool when no gate runner is wired", async () => {
+    let called = false;
+    registry.register(
+      "infra",
+      makeTool({ name: "ownerOp", minRole: "owner", handler: async () => { called = true; return { ok: true }; } }),
+    );
+    registerPluginMcpTools(server, noRunnerOpts());
+    const res = await server.registered.get("infra.ownerOp")!.handler({ value: "x" });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).code).toBe("forbidden");
+    expect(called).toBe(false);
+  });
+
+  it("denies a governed-category (datasource/policy) tool when no gate runner is wired (gate 1 can't run)", async () => {
+    let called = false;
+    registry.register(
+      "infra",
+      makeTool({
+        name: "policyOp",
+        actionCategory: "policy",
+        handler: async () => { called = true; return { ok: true }; },
+      }),
+    );
+    registerPluginMcpTools(server, noRunnerOpts());
+    const res = await server.registered.get("infra.policyOp")!.handler({ value: "x" });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).code).toBe("forbidden");
+    expect(called).toBe(false);
+  });
+
+  it("leaves a default 'integration'-category member tool unaffected (residual gate-1 limitation is documented)", async () => {
+    let called = false;
+    registry.register(
+      "infra",
+      makeTool({
+        name: "integrationOp",
+        actionCategory: "integration",
+        handler: async () => { called = true; return { ok: true }; },
+      }),
+    );
+    registerPluginMcpTools(server, noRunnerOpts());
+    const res = await server.registered.get("infra.integrationOp")!.handler({ value: "x" });
+    expect(res.isError).toBeFalsy();
+    expect(called).toBe(true);
+  });
+
+  it("denies a destructive tool when no gate runner is wired (approval gate can't run)", async () => {
+    let called = false;
+    registry.register(
+      "infra",
+      makeTool({ name: "wipe", destructive: true, handler: async () => { called = true; return { ok: true }; } }),
+    );
+    registerPluginMcpTools(server, noRunnerOpts());
+    const res = await server.registered.get("infra.wipe")!.handler({ value: "x" });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).code).toBe("forbidden");
+    expect(called).toBe(false);
+  });
+
+  it("denies an elevated tool even on stdio (no clientId) — isolation is not a substitute for RBAC", async () => {
+    registry.register("infra", makeTool({ name: "adminOp", minRole: "admin" }));
+    registerPluginMcpTools(server, {
+      registry,
+      actor: actor(),
+      transport: "stdio",
+      workspaceId: "org-1",
+      deployMode: "self-hosted",
+    });
+    const res = await server.registered.get("infra.adminOp")!.handler({ value: "x" });
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).code).toBe("forbidden");
+  });
+
+  it("leaves a member-level, read-only tool unaffected (still runs under gate 2)", async () => {
+    let called = false;
+    registry.register(
+      "infra",
+      makeTool({
+        name: "read",
+        minRole: "member",
+        annotations: { readOnlyHint: true },
+        handler: async () => { called = true; return { ok: true }; },
+      }),
+    );
+    registerPluginMcpTools(server, noRunnerOpts());
+    const res = await server.registered.get("infra.read")!.handler({ value: "x" });
+    expect(res.isError).toBeFalsy();
+    expect(called).toBe(true);
+  });
+
+  it("an un-declared tool (no minRole, non-destructive) still proceeds — no over-broad denial", async () => {
+    let called = false;
+    registry.register(
+      "infra",
+      makeTool({ name: "legacy", handler: async () => { called = true; return { ok: true }; } }),
+    );
+    registerPluginMcpTools(server, noRunnerOpts());
+    const res = await server.registered.get("infra.legacy")!.handler({ value: "x" });
+    expect(res.isError).toBeFalsy();
+    expect(called).toBe(true);
+  });
+
+  it("with a runner wired, an admin tool is governed by the runner, not the fallback deny", async () => {
+    let called = false;
+    let gateSaw = false;
+    registry.register(
+      "infra",
+      makeTool({ name: "adminOp", minRole: "admin", handler: async () => { called = true; return { ok: true }; } }),
+    );
+    registerPluginMcpTools(
+      server,
+      noRunnerOpts({ runDispatchGate: async () => { gateSaw = true; return null; } }),
+    );
+    const res = await server.registered.get("infra.adminOp")!.handler({ value: "x" });
+    expect(gateSaw).toBe(true);
     expect(res.isError).toBeFalsy();
     expect(called).toBe(true);
   });

@@ -19,7 +19,7 @@
  */
 
 import { createLogger, getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
-import type { AtlasUser } from "@atlas/api/lib/auth/types";
+import type { AtlasUser, OrgRole } from "@atlas/api/lib/auth/types";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 import {
   type McpToolAnnotationsShape,
@@ -130,7 +130,7 @@ export interface AtlasMcpToolLike<TInput = unknown, TOutput = unknown> {
    * Safe defaults: actionCategory 'integration', minRole 'member', destructive false.
    */
   readonly actionCategory?: "datasource" | "integration" | "policy";
-  readonly minRole?: "member" | "admin" | "owner";
+  readonly minRole?: OrgRole;
   readonly destructive?: boolean;
   handler(args: TInput, ctx: McpToolContextShape): Promise<TOutput>;
 }
@@ -158,7 +158,7 @@ export interface RegisteredPluginMcpTool {
   readonly annotations?: McpToolAnnotationsShape;
   /** ADR-0016 governance declarations (#3571) carried from the authored tool. */
   readonly actionCategory?: "datasource" | "integration" | "policy";
-  readonly minRole?: "member" | "admin" | "owner";
+  readonly minRole?: OrgRole;
   readonly destructive?: boolean;
   handler(args: unknown, ctx: McpToolContextShape): Promise<unknown>;
 }
@@ -448,9 +448,15 @@ export interface RegisterPluginMcpToolsOptions {
    * #3571 — ADR-0016 gate runner (gates 1, 3, 4). Injected by
    * `packages/mcp/src/plugin-tools.ts` which imports `runMcpDispatchGate`
    * from `dispatch-gate.ts`. Tests inject a stub. When undefined (no injector
-   * provided), gates 1/3/4 are skipped and the tool proceeds — this preserves
-   * backward-compat for callers that only wire gate 2 (mcp:write check above).
-   * Production callers (plugin-tools.ts) MUST inject this.
+   * provided), gates 1/3/4 cannot run, so the fallback FAILS CLOSED (#4355):
+   * a tool declaring an elevated `minRole` (above `member`), `destructive`, or
+   * a non-default `actionCategory` (`datasource`/`policy`) is DENIED rather than
+   * run ungoverned. The one residual the fallback can't cover is the gate-1
+   * kill-switch on the default `integration` category (a per-workspace policy
+   * read only the runner performs); member-level, non-destructive,
+   * default-category tools still flow through the inline gate-2 (mcp:write)
+   * check. Production callers (plugin-tools.ts) MUST inject this so all four
+   * gates fire.
    */
   runDispatchGate?: PluginDispatchGateRunner;
 }
@@ -577,8 +583,9 @@ export function registerPluginMcpTools(
           //   gate 3 — RBAC minRole (defaults 'member')
           //   gate 4 — approval for destructive actions (defaults false)
           // Runs BEFORE the rate-limit gate so denied calls don't consume quota.
-          // When no runner is injected (backward-compat callers / unit tests that
-          // don't wire the gate), we fall back to the inline gate-2 check below.
+          // When no runner is injected (unit tests / a mis-wired injector), the
+          // fallback below fails closed on any governance-declaring tool (#4355)
+          // and runs the inline gate-2 check for the rest.
           if (runDispatchGate) {
             const gateBlock = await runDispatchGate(
               {
@@ -611,16 +618,61 @@ export function registerPluginMcpTools(
             );
             if (gateBlock) return gateBlock;
           } else {
-            // ── fallback: inline gate 2 only (#3520, backward-compat) ──
-            // Only reached when NO gate runner is injected (unit tests /
-            // legacy callers); production wires `runMcpDispatchGate` above, so
-            // this is the documented no-runner fallback, NOT a parallel gate
-            // implementation. It reuses the SHARED gate-2 primitive
-            // (`mcpToolMutates` + `writeScopeDenied`, #3599) so the `mcp:write`
-            // decision has one source of truth: a mutating plugin tool on a
-            // HOSTED dispatch (clientId set) needs the `mcp:write` scope; stdio
-            // (no clientId) is exempt. Runs BEFORE the rate-limit gate so a
-            // forbidden call doesn't consume the client's rate budget.
+            // ── fallback: NO gate runner injected ──
+            // Production ALWAYS wires `runMcpDispatchGate` (packages/mcp/src/
+            // plugin-tools.ts, both stdio + hosted transports), so this branch is
+            // reached only by unit tests that don't wire it OR by a mis-wired
+            // injector — the exact regression #4355 exists to contain. It is a
+            // fail-safe net, NOT a parallel gate implementation.
+            //
+            // #4355 — FAIL CLOSED, don't fail open. Gates 1 (action-policy),
+            // 3 (RBAC minRole) and 4 (approval) can only run through the injected
+            // runner, so we DENY any tool that declares governance those gates
+            // would enforce rather than run it ungoverned (per CLAUDE.md: prefer
+            // errors over silent fallbacks — a denial, not a false negative):
+            //   - gate 3: an elevated `minRole` (anything above `member` — coded
+            //     as "not member" so a future role tier fails CLOSED, not open),
+            //   - gate 4: a `destructive` declaration,
+            //   - gate 1: a non-default `actionCategory` (`datasource`/`policy`).
+            // Sandbox isolation is not a substitute for RBAC, so this denies on
+            // stdio too. What this fallback CANNOT compensate: the gate-1
+            // kill-switch on the DEFAULT `integration` category — that needs a
+            // per-workspace policy read only the runner performs, so an
+            // integration-category member tool under an active kill-switch still
+            // runs here. Production MUST wire the runner for full gate-1
+            // enforcement. Member-level, non-destructive, default-category tools
+            // fall through to the inline gate-2 (mcp:write) check below.
+            const requiresElevatedRole = tool.minRole !== undefined && tool.minRole !== "member";
+            const declaresGovernedCategory =
+              tool.actionCategory !== undefined && tool.actionCategory !== "integration";
+            if (requiresElevatedRole || tool.destructive === true || declaresGovernedCategory) {
+              log.warn(
+                {
+                  qualifiedName: tool.qualifiedName,
+                  clientId,
+                  requestId,
+                  minRole: tool.minRole,
+                  destructive: tool.destructive === true,
+                  actionCategory: tool.actionCategory,
+                },
+                "Plugin MCP dispatch-gate runner unwired — denying governed tool (fail-closed, #4355)",
+              );
+              return envelopeResult(
+                "forbidden",
+                "This tool requires role, approval, or action-policy checks that are unavailable in this MCP server configuration.",
+                {
+                  hint: "This server is missing its dispatch-gate runner; role-gated, destructive, and policy-category plugin tools are denied until an operator wires it.",
+                  request_id: requestId,
+                },
+              );
+            }
+            // ── inline gate 2 only (#3520, backward-compat) ──
+            // Reuses the SHARED gate-2 primitive (`mcpToolMutates` +
+            // `writeScopeDenied`, #3599) so the `mcp:write` decision has one
+            // source of truth: a mutating plugin tool on a HOSTED dispatch
+            // (clientId set) needs the `mcp:write` scope; stdio (no clientId) is
+            // exempt. Runs BEFORE the rate-limit gate so a forbidden call
+            // doesn't consume the client's rate budget.
             if (mcpToolMutates(tool.annotations) && writeScopeDenied({ clientId, scopes })) {
               log.warn(
                 { qualifiedName: tool.qualifiedName, clientId, requestId },
@@ -631,6 +683,7 @@ export function registerPluginMcpTools(
                 "This tool mutates data and requires the 'mcp:write' OAuth scope, which this token does not carry.",
                 {
                   hint: "Re-authorize the MCP client with the mcp:write scope (the workspace admin controls which scopes a client may request).",
+                  request_id: requestId,
                 },
               );
             }

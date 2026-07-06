@@ -54,11 +54,12 @@ export const RESERVED_BASENAMES: ReadonlySet<string> = new Set([
  * spec-legal and preserved.
  *
  * This is a documentation/derivation type, not the parsers' output type: the
- * strict parser yields `OkfConcept` and the lenient ingest parser yields
- * `LenientDoc`, both independently declared and STRONGER (non-null `title`/
- * `type`). Consumers that emit or enumerate the field set derive from this
- * (e.g. `OkfFrontmatter = Pick<OkfWireFrontmatter, …>`, {@link OKF_FRONTMATTER_FIELDS});
- * the parsers deliberately do not, so their per-side invariants stay explicit.
+ * strict parser yields `OkfConcept` (frontmatter `ParsedFrontmatter` — only
+ * `type` is verified; every other key stays `unknown` to narrow) and the lenient
+ * ingest parser yields `LenientDoc` (non-null `title`/`type`) — each carries its
+ * own per-side invariants, neither structurally derived from this type. Consumers
+ * that emit or enumerate the field set DO derive from this (e.g.
+ * `OkfFrontmatter = Pick<OkfWireFrontmatter, …>`, {@link OKF_FRONTMATTER_FIELDS}).
  */
 export interface OkfWireFrontmatter {
   readonly type: string;

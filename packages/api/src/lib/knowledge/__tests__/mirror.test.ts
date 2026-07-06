@@ -365,6 +365,13 @@ describe("buildKnowledgeToc", () => {
     SETTINGS.ATLAS_KNOWLEDGE_TOC_MAX_BYTES = "not-a-number";
     expect(getKnowledgeTocMaxBytes()).toBe(DEFAULT_KNOWLEDGE_TOC_MAX_BYTES);
   });
+
+  it("falls back on a unit-suffixed override instead of silently truncating (shared positiveIntSetting)", () => {
+    // The reader now delegates to positiveIntSetting, so "512KB" no longer
+    // parseInt-truncates to a 512-byte cap — it warns and falls back.
+    SETTINGS.ATLAS_KNOWLEDGE_TOC_MAX_BYTES = "512KB";
+    expect(getKnowledgeTocMaxBytes()).toBe(DEFAULT_KNOWLEDGE_TOC_MAX_BYTES);
+  });
 });
 
 describe("exportCollectionBundle", () => {

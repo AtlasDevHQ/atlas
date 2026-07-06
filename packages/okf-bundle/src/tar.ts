@@ -32,10 +32,11 @@ function writeString(block: Uint8Array, offset: number, value: string): void {
 /**
  * Write a tar octal numeric field: zero-padded octal + trailing NUL. Throws
  * when the octal doesn't fit the field's digit budget (`length - 1`, the last
- * byte is the NUL terminator) — an over-length write would silently run past
- * the field and corrupt the adjacent header bytes (e.g. a >8 GB `size` would
- * overwrite `mtime`/`typeflag`). Loud beats a silently malformed archive,
- * matching {@link splitUstarPath}'s fail-loud posture on oversized paths.
+ * byte is the NUL terminator) — an over-length write would silently run past the
+ * field's NUL (a `size` past the 11-octal-digit budget clobbers its own
+ * terminator first; a far larger one spills into `mtime`/beyond), corrupting the
+ * header. Loud beats a silently malformed archive, matching {@link splitUstarPath}'s
+ * fail-loud posture on oversized paths.
  */
 function writeOctal(block: Uint8Array, offset: number, length: number, value: number): void {
   const octal = value.toString(8).padStart(length - 1, "0");

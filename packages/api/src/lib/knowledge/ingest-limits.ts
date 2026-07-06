@@ -48,9 +48,11 @@ export function positiveIntSetting(key: string, raw: string | undefined, fallbac
   const trimmed = raw.trim();
   const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : Number.NaN;
   if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+  // Shared by the ingest caps AND the ToC cap (mirror.ts) — keep the wording
+  // setting-agnostic; the `key` field says which one.
   log.warn(
     { key, raw, fallback },
-    "Knowledge ingest cap override is non-positive or unparseable — using the default",
+    "Knowledge numeric setting override is non-positive or unparseable — using the default",
   );
   return fallback;
 }

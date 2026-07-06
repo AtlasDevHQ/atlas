@@ -398,8 +398,7 @@ export async function exportCollectionBundle(
  */
 export function getKnowledgeTocMaxBytes(): number {
   // Shares the ingest-cap reader so a unit-suffixed value ("512KB") warns and
-  // falls back rather than silently parsing to a tiny cap (the key literal stays
-  // on the getSettingAuto line for check-settings-readers.sh).
+  // falls back rather than silently parsing to a tiny cap.
   return positiveIntSetting(
     "ATLAS_KNOWLEDGE_TOC_MAX_BYTES",
     getSettingAuto("ATLAS_KNOWLEDGE_TOC_MAX_BYTES"),

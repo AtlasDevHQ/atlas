@@ -343,6 +343,14 @@ describe("empty-bundle guard", () => {
     const built = await buildOkfBundle(sourceOf([]), { prefix: "kb", allowEmpty: true });
     expect(built.stats.documents).toBe(0);
   });
+
+  test("mergeCollectResults of empty collects packs to EmptyBundleError (the portal dogfood path)", async () => {
+    // apps/docs build path is mergeCollectResults(sections) → packOkfBundle(merged.docs)
+    // with no allowEmpty — an all-empty multi-section collect must still fail loud.
+    const a = await collectPages(sourceOf([]), { prefix: "kb" });
+    const b = await collectPages(sourceOf([]), { prefix: "kb" });
+    expect(() => packOkfBundle(mergeCollectResults([a, b]).docs)).toThrow(EmptyBundleError);
+  });
 });
 
 describe("concurrency clamp", () => {

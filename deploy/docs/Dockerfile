@@ -8,8 +8,9 @@
 # cannot resolve the `workspace:` protocol ("@atlas/fumadocs-okf@workspace:*
 # failed to resolve") — the whole build fails. So we install from the workspace
 # ROOT, mirroring deploy/api + deploy/web. The heavy install is confined to the
-# throwaway builder stage; the runtime image stays the lean ~25 MB Caddy static
-# server (the docs site has no DB/API runtime path, #docs-cost).
+# throwaway builder stage; the runtime image stays the lean Caddy static server
+# (the docs site has no DB/API runtime path — ~25 MB *resident*, per the runner
+# note below).
 
 FROM oven/bun:1.3.13@sha256:87416c977a612a204eb54ab9f3927023c2a3c971f4f345a01da08ea6262ae30e AS base
 

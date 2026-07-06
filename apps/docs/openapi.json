@@ -56646,7 +56646,8 @@
                             "type": "string",
                             "enum": [
                               "upload",
-                              "bundle-sync"
+                              "bundle-sync",
+                              "notion"
                             ]
                           },
                           "description": {
@@ -57231,8 +57232,8 @@
         "tags": [
           "Admin — Knowledge"
         ],
-        "summary": "Sync a bundle-sync collection now",
-        "description": "Manually pull a synced collection's bundle endpoint and apply the diff immediately (the same run the scheduled sync performs — daily by default, operator-tunable). Changed and new documents land as `draft` for review — synced content has no publish shortcut; paths absent from the fetched bundle are archived, never hard-deleted. Returns the attempt's outcome; a failed fetch/ingest is reported as `status: \"error\"` with an actionable message (also recorded on the collection's sync status).",
+        "summary": "Sync a synced collection now",
+        "description": "Manually pull a synced collection's source (a bundle endpoint, or a connector like Notion) and apply the diff immediately (the same run the scheduled sync performs — daily by default, operator-tunable). Changed and new documents land as `draft` for review — synced content has no publish shortcut; on a full reconciliation, paths absent from the fetched set are archived, never hard-deleted. Returns the attempt's outcome; a failed fetch/ingest is reported as `status: \"error\"` with an actionable message (also recorded on the collection's sync status).",
         "parameters": [
           {
             "schema": {
@@ -57372,7 +57373,7 @@
             }
           },
           "400": {
-            "description": "Not a synced collection (upload collections have no endpoint to sync)",
+            "description": "Not a synced collection (upload collections have no source to pull)",
             "content": {
               "application/json": {
                 "schema": {

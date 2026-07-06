@@ -23,6 +23,7 @@ import {
   seedBuiltinKnowledgeCatalog,
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
   BUILTIN_BUNDLE_SYNC_CATALOG_ROW,
+  BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW,
   BUILTIN_KNOWLEDGE_CATALOG_ROWS,
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
@@ -89,6 +90,27 @@ describe("BUILTIN_BUNDLE_SYNC_CATALOG_ROW (#4211)", () => {
   });
 });
 
+describe("BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW (#4378)", () => {
+  it("is the `notion-knowledge` form install: required token (secret), optional description", () => {
+    const row = BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW;
+    expect(row.slug).toBe("notion-knowledge");
+    expect(row.id).toBe("catalog:notion-knowledge");
+    expect(row.installModel).toBe("form");
+    expect(row.autoInstall).toBe(false);
+    const keys = row.configSchema.map((f) => f.key);
+    expect(keys).toContain("integration_token");
+    expect(keys).toContain("description");
+    // No endpoint/auth-scheme fields — the shared pages ARE the scope.
+    expect(keys).not.toContain("endpoint_url");
+    // Exactly one secret field: the integration token (password input, never
+    // echoed), and it is required.
+    expect(row.configSchema.filter((f) => f.secret === true).map((f) => f.key)).toEqual([
+      "integration_token",
+    ]);
+    expect(row.configSchema.find((f) => f.key === "integration_token")?.required).toBe(true);
+  });
+});
+
 describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
   it("issues one INSERT per built-in row with type 'context' and pillar 'knowledge'", async () => {
     const { db, captured } = captureDb();
@@ -104,7 +126,11 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       expect(q.sql).not.toContain("ON CONFLICT (slug)");
       expect(q.sql).toContain("RETURNING slug");
     }
-    expect(captured.map((q) => q.params[2])).toEqual(["okf-upload", "bundle-sync"]);
+    expect(captured.map((q) => q.params[2])).toEqual([
+      "okf-upload",
+      "bundle-sync",
+      "notion-knowledge",
+    ]);
   });
 
   it("binds each row's 8 params and serializes config_schema as JSON", async () => {
@@ -123,7 +149,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
   it("reports inserted slugs on a fresh catalog and none on a re-boot", async () => {
     const fresh = await seedBuiltinKnowledgeCatalog(captureDb().db);
     expect(fresh.inserted).toBe(true);
-    expect(fresh.insertedSlugs).toEqual(["okf-upload", "bundle-sync"]);
+    expect(fresh.insertedSlugs).toEqual(["okf-upload", "bundle-sync", "notion-knowledge"]);
     // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).
     const reboot = await seedBuiltinKnowledgeCatalog(captureDb(false).db);
     expect(reboot.inserted).toBe(false);

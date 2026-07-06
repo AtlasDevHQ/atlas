@@ -20,11 +20,20 @@ export interface KnowledgeDocumentCounts {
 }
 
 /**
- * How a collection's content arrives: `upload` (the `okf-upload` catalog row —
- * explicit admin bundle uploads) or `bundle-sync` (the #4211 catalog row — a
- * scheduled pull of a configured bundle endpoint).
+ * How a collection's content arrives:
+ *   - `upload` — the `okf-upload` catalog row (explicit admin bundle uploads);
+ *   - `bundle-sync` — the #4211 catalog row (a scheduled pull of a configured
+ *     bundle endpoint);
+ *   - `notion` — the #4378 Knowledge Sync Connector (a scheduled pull of a
+ *     Notion workspace via an internal-integration token).
+ *
+ * Every value except `upload` is a "synced" collection: its content is owned by
+ * an external source, it has last-sync bookkeeping, and it can be re-pulled with
+ * "Sync now". Only `bundle-sync` additionally exposes an `endpointUrl` /
+ * `authScheme`; connector collections (`notion`) carry neither (their credential
+ * is a token, not an endpoint).
  */
-export type KnowledgeCollectionSource = "upload" | "bundle-sync";
+export type KnowledgeCollectionSource = "upload" | "bundle-sync" | "notion";
 
 /**
  * Bundle-endpoint auth schemes for `bundle-sync` collections — the one wire

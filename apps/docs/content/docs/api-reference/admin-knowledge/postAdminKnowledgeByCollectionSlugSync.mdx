@@ -1,5 +1,5 @@
 ---
-title: Sync a bundle-sync collection now
+title: Sync a synced collection now
 full: true
 _openapi:
   method: POST
@@ -9,11 +9,12 @@ _openapi:
     headings: []
     contents:
       - content: >-
-          Manually pull a synced collection's bundle endpoint and apply the diff
-          immediately (the same run the scheduled sync performs — daily by
-          default, operator-tunable). Changed and new documents land as `draft`
-          for review — synced content has no publish shortcut; paths absent from
-          the fetched bundle are archived, never hard-deleted. Returns the
+          Manually pull a synced collection's source (a bundle endpoint, or a
+          connector like Notion) and apply the diff immediately (the same run
+          the scheduled sync performs — daily by default, operator-tunable).
+          Changed and new documents land as `draft` for review — synced content
+          has no publish shortcut; on a full reconciliation, paths absent from
+          the fetched set are archived, never hard-deleted. Returns the
           attempt's outcome; a failed fetch/ingest is reported as `status:
           "error"` with an actionable message (also recorded on the collection's
           sync status).

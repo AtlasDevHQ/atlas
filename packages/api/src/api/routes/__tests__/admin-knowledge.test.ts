@@ -204,17 +204,40 @@ mock.module("@atlas/api/lib/knowledge/connectors", () => ({
   _resetKnowledgeSyncConnectors: () => {},
   ConnectorRateLimitError: class ConnectorRateLimitError extends Error {},
 }));
-const syncConnectorCollection = mock(async (params: { collectionSlug: string }) => ({
-  collection: params.collectionSlug,
-  status: "success" as const,
-  mode: "reconciliation" as const,
-  syncedAt: "2026-07-02T02:00:00.000Z",
-  error: null,
-  documents: { created: 2, updated: 0, demoted: 0, resurrected: 0, unchanged: 0, total: 2 },
-  archivedAbsent: 0,
-  rejected: [],
-  highWaterMark: "2026-07-01T00:00:00.000Z",
-}));
+// Explicit union return type so a `mockImplementationOnce` returning the
+// `status:"error"` variant (documents/highWaterMark null) still type-checks
+// against the base success fixture.
+type FakeConnectorOutcome = {
+  collection: string;
+  status: "success" | "error";
+  mode: "reconciliation" | "incremental";
+  syncedAt: string;
+  error: string | null;
+  documents: {
+    created: number;
+    updated: number;
+    demoted: number;
+    resurrected: number;
+    unchanged: number;
+    total: number;
+  } | null;
+  archivedAbsent: number | null;
+  rejected: unknown[];
+  highWaterMark: string | null;
+};
+const syncConnectorCollection = mock(
+  async (params: { collectionSlug: string }): Promise<FakeConnectorOutcome> => ({
+    collection: params.collectionSlug,
+    status: "success",
+    mode: "reconciliation",
+    syncedAt: "2026-07-02T02:00:00.000Z",
+    error: null,
+    documents: { created: 2, updated: 0, demoted: 0, resurrected: 0, unchanged: 0, total: 2 },
+    archivedAbsent: 0,
+    rejected: [],
+    highWaterMark: "2026-07-01T00:00:00.000Z",
+  }),
+);
 mock.module("@atlas/api/lib/knowledge/connector-sync", () => ({ syncConnectorCollection }));
 
 // Partial mock, justified: this file's import graph reaches only the exports

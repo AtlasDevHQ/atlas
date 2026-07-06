@@ -56646,7 +56646,8 @@
                             "type": "string",
                             "enum": [
                               "upload",
-                              "bundle-sync"
+                              "bundle-sync",
+                              "connector"
                             ]
                           },
                           "description": {

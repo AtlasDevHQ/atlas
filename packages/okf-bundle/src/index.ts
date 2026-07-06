@@ -31,9 +31,15 @@ export {
   PageLoadError,
   type IngestCapKind,
 } from "./errors";
+export {
+  createMarkdownTreeSource,
+  stripMdxModuleLines,
+  type MarkdownTreeSourceOptions,
+} from "./markdown-tree";
 export { isContentlessBody, pageTags, renderOkfDocument, type OkfFrontmatter } from "./okf";
 export {
   deriveArchivePath,
+  firstPathSegment,
   normalizePrefix,
   ROOT_INDEX_STEM,
   type DerivedArchivePath,

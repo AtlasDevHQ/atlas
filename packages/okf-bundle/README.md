@@ -2,8 +2,9 @@
 
 Source-neutral OKF knowledge-bundle builder + the single-homed **OKF wire
 contract**. This is the core behind every Atlas Knowledge Base importer:
-`@atlas/fumadocs-okf` is the first named adapter, the markdown-tree adapter
-(#4374) the second; Confluence/Mintlify later are one adapter each. Private
+`@atlas/fumadocs-okf` is the first named adapter, the built-in
+[markdown-tree adapter](#the-markdown-tree-adapter) the second;
+Confluence/Mintlify later are one adapter each. Private
 workspace package — not published to npm (promote to a `@useatlas/*` name only
 after the API survives a real non-Atlas consumer).
 
@@ -80,6 +81,36 @@ Dependency direction is one-way by construction: `packages/api` → this
 package. `@atlas/okf-bundle` never depends on `@atlas/api` — not even as a
 devDependency (the round-trip test through the real ingest stages lives in
 `@atlas/fumadocs-okf`, which may dev-dep the api).
+
+## The markdown-tree adapter
+
+`createMarkdownTreeSource` (in this package — the doc source every file-based
+docs corpus needs) walks a tree of `.md`/`.mdx` files into a `DocSource`:
+deterministic sorted enumeration (hidden dot-segments excluded), frontmatter
+(`title`/`description`/`tags`) split via the wire module's
+`splitFrontmatterBlock` (a malformed block fails LOUD with the page named),
+and an optional fence-aware strip of top-level MDX module lines from `.mdx`
+bodies (`stripMdxModules`, default on — `import`/`export` inside code fences
+are examples and survive). Frontmatter parsing resolves lazily per page, so a
+page a filter skips never costs a read.
+
+```ts
+import { buildOkfBundle, createMarkdownTreeSource } from "@atlas/okf-bundle";
+import { load } from "js-yaml"; // or Bun.YAML.parse — the parser is injected
+
+const source = await createMarkdownTreeSource({
+  root: "content/docs",
+  parseYaml: load,
+});
+const { bytes, stats } = await buildOkfBundle(source, { prefix: "docs" });
+```
+
+"Any docs folder" works out of the box. A **Mintlify importer is this adapter
+plus a nav filter**: point `root` at the MDX tree and pass a `filter` hook
+that keeps only pages reachable from `docs.json`'s navigation (the importer
+itself is follow-up work per PRD #4372 — this adapter is the reusable part).
+The Atlas docs portal's local mode is this adapter plus portal policy
+(`apps/docs/scripts/kb-bundle-sources.ts`).
 
 ## Hosting / ingest recipes
 

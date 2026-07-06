@@ -1,17 +1,23 @@
 /**
- * The docs → KB bundle refit (issue #4367): the portal script consumes the
- * `@atlas/fumadocs-okf` adapter, supplying audience stripping via the
- * body-transform hook. These tests PIN the leak-safety property PR #4366
- * carried — a SaaS bundle is structurally incapable of carrying self-hosted
- * branches — now expressed through the adapter pipeline:
+ * The docs → KB bundle leak-safety regression net (issue #4367; refit onto
+ * the core builder in #4374): the portal script consumes `@atlas/okf-bundle`
+ * (local mode via the core's markdown-tree adapter), supplying audience
+ * stripping via the body-transform hook. These tests PIN the leak-safety
+ * property PR #4366 carried — a SaaS bundle is structurally incapable of
+ * carrying self-hosted branches — expressed through the real portal wiring:
  *
  *   1. the transform resolves `<WhenSaaS>`/`<WhenSelfHosted>`/`<AudienceLink>`
  *      for the target audience (inactive branch REMOVED, active branch
  *      unwrapped);
  *   2. a page the strip cannot fully resolve is SKIPPED (transform → null),
  *      never emitted with a residual branch;
- *   3. a full adapter build over an audience-forked fixture yields bundle
- *      bodies with zero opposite-audience content.
+ *   3. a full build over an audience-forked fixture yields bundle bodies
+ *      with zero opposite-audience content.
+ *
+ * The walk/frontmatter/ESM-strip mechanics that used to live in the portal
+ * shims are the markdown-tree adapter's now — tested in
+ * `packages/okf-bundle/__tests__/markdown-tree.test.ts`; only portal policy
+ * (audience transform, section list, deployed-shim parsing) is pinned here.
  */
 
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -19,17 +25,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
 
-import { buildFumadocsOkfBundle, collectFumadocsPages } from "@atlas/fumadocs-okf";
-import type { FumadocsOkfPage, FumadocsOkfSource } from "@atlas/fumadocs-okf";
+import { buildOkfBundle, collectPages } from "@atlas/okf-bundle";
+import type { DocSource, DocSourcePage } from "@atlas/okf-bundle";
 import {
   deployedPagePath,
-  localSectionSource,
+  isApiReferencePage,
   parseLlmsIndex,
   portalAudienceTransform,
+  portalLocalSource,
   portalSectionCollectOptions,
   sectionsFor,
-  splitFrontmatter,
-  stripMdxModuleLines,
   stripTwinHeading,
 } from "../../../scripts/kb-bundle-sources";
 
@@ -45,14 +50,15 @@ const FORKED_BODY = [
   "</WhenSelfHosted>",
 ].join("\n");
 
-function pageOf(path: string, body: string, title = "Page"): FumadocsOkfPage {
+function pageOf(path: string, body: string, title = "Page"): DocSourcePage {
   return {
     path,
-    data: { title, getText: async () => body },
+    title,
+    loadBody: async () => body,
   };
 }
 
-function sourceOf(pages: readonly FumadocsOkfPage[]): FumadocsOkfSource {
+function sourceOf(pages: readonly DocSourcePage[]): DocSource {
   return { getPages: () => pages };
 }
 
@@ -78,12 +84,12 @@ describe("portalAudienceTransform (leak safety)", () => {
     expect(skips).toEqual(["broken.mdx"]);
   });
 
-  test("adapter build over a forked fixture: SaaS bundle carries zero self-hosted content", async () => {
+  test("core build over a forked fixture: SaaS bundle carries zero self-hosted content", async () => {
     const source = sourceOf([
       pageOf("guide.mdx", FORKED_BODY, "Guide"),
       pageOf("plain.mdx", "Plain shared prose, no conditionals at all.", "Plain"),
     ]);
-    const result = await buildFumadocsOkfBundle(source, {
+    const result = await buildOkfBundle(source, {
       prefix: "docs",
       transform: portalAudienceTransform("saas"),
     });
@@ -93,7 +99,7 @@ describe("portalAudienceTransform (leak safety)", () => {
       expect(doc.content).not.toContain("WhenSelfHosted");
     }
     // And the inverse mount: the self-hosted bundle carries no SaaS branch.
-    const sh = await buildFumadocsOkfBundle(source, {
+    const sh = await buildOkfBundle(source, {
       prefix: "docs",
       transform: portalAudienceTransform("self-hosted"),
     });
@@ -114,7 +120,11 @@ describe("section composition (leak-safety leg 2)", () => {
       for (const section of sectionsFor(audience)) {
         const options = portalSectionCollectOptions(section, audience);
         expect(options.prefix).toBe(section);
-        expect(options.skipApiReference).toBe(true);
+        // API-reference stubs are skipped by default (the wiring pin the old
+        // `skipApiReference: true` flag carried, now the portal predicate
+        // through the core's `isApiReferenceStub` hook).
+        expect(options.isApiReferenceStub?.(pageOf("api-reference/x.mdx", ""))).toBe(true);
+        expect(options.isApiReferenceStub?.(pageOf("guides/x.mdx", ""))).toBe(false);
         // The transform must actually strip: run the forked body through it.
         const out = await options.transform?.(FORKED_BODY, pageOf("x.mdx", FORKED_BODY));
         if (audience === "saas") {
@@ -127,15 +137,21 @@ describe("section composition (leak-safety leg 2)", () => {
       }
     }
   });
+
+  test("isApiReferencePage matches only a top-level api-reference segment", () => {
+    expect(isApiReferencePage("api-reference/create-widget.mdx")).toBe(true);
+    expect(isApiReferencePage("./API-Reference/x.mdx")).toBe(true);
+    expect(isApiReferencePage("guides/api-reference-notes.mdx")).toBe(false);
+  });
 });
 
-describe("localSectionSource", () => {
+describe("portalLocalSource (markdown-tree adapter wiring)", () => {
   let dir: string | null = null;
   afterAll(async () => {
     if (dir) await rm(dir, { recursive: true, force: true });
   });
 
-  test("walks a content tree: frontmatter into data, ESM-stripped body from getText", async () => {
+  test("walks a content tree through the core adapter with the portal options", async () => {
     dir = await mkdtemp(join(tmpdir(), "kb-shim-"));
     await mkdir(join(dir, "guides"), { recursive: true });
     await writeFile(
@@ -153,75 +169,25 @@ describe("localSectionSource", () => {
       "utf8",
     );
 
-    const source = await localSectionSource(dir);
+    const source = await portalLocalSource(dir);
     const pages = source.getPages();
     expect(pages.map((p) => p.path)).toEqual(["guides/setup.mdx"]);
-    expect(pages[0].data.title).toBe("Setup");
-    expect(pages[0].data.description).toBe("Getting started");
-    expect(pages[0].data.tags).toEqual(["install"]);
-    const body = await pages[0].data.getText?.("processed");
-    expect(body).toContain("Real setup prose");
-    expect(body).not.toContain("fumadocs-ui/components");
+    expect(pages[0].title).toBe("Setup");
+    expect(pages[0].description).toBe("Getting started");
+    expect(pages[0].tags).toEqual(["install"]);
 
-    // And through the adapter with the portal options: one doc, tagged, prefixed.
-    const collected = await collectFumadocsPages(
-      source,
-      portalSectionCollectOptions("docs", "saas"),
-    );
+    // Through the core with the portal options: one doc, tagged, prefixed,
+    // ESM-stripped.
+    const collected = await collectPages(source, portalSectionCollectOptions("docs", "saas"));
     expect(collected.docs.map((d) => d.path)).toEqual(["docs/guides/setup.md"]);
     expect(collected.docs[0].content).toContain('tags: ["docs-portal", "docs", "install"]');
+    expect(collected.docs[0].content).toContain("Real setup prose");
+    expect(collected.docs[0].content).not.toContain("fumadocs-ui/components");
   });
 });
 
-describe("kb-bundle source shims", () => {
-  test("splitFrontmatter pulls title/description/tags and leaves the body intact", () => {
-    const { fm, body } = splitFrontmatter(
-      '---\ntitle: "Quickstart"\ndescription: Zero to one\ntags: [a, b]\n---\n# Hello\n',
-    );
-    expect(fm).toEqual({ title: "Quickstart", description: "Zero to one", tags: ["a", "b"] });
-    expect(body).toBe("# Hello\n");
-  });
-
-  test("stripMdxModuleLines removes top-level ESM but preserves fenced examples", () => {
-    const input = [
-      'import { Callout } from "fumadocs-ui/components/callout";',
-      "",
-      "Prose here.",
-      "",
-      "```ts",
-      'import type { AtlasClient } from "@useatlas/sdk";',
-      "```",
-    ].join("\n");
-    const out = stripMdxModuleLines(input);
-    expect(out).not.toContain("fumadocs-ui/components");
-    expect(out).toContain('import type { AtlasClient } from "@useatlas/sdk";');
-  });
-
-  test("stripMdxModuleLines consumes a multi-line top-level import without eating the prose after it", () => {
-    const input = [
-      "import {",
-      "  Callout,",
-      "  Tabs,",
-      '} from "fumadocs-ui/components";',
-      "",
-      "Prose that must survive the multi-line strip.",
-    ].join("\n");
-    const out = stripMdxModuleLines(input);
-    expect(out).toBe("Prose that must survive the multi-line strip.");
-  });
-
-  test("stripMdxModuleLines does NOT run a terminator-less single-line export away into the prose", () => {
-    // `export default Foo` has no trailing {/(/[/, — it must drop only its own
-    // line, never the continuation-consuming scan (which would swallow the body).
-    const input = [
-      "export default MyComponent",
-      "",
-      "This prose must NOT be consumed.",
-    ].join("\n");
-    expect(stripMdxModuleLines(input)).toBe("This prose must NOT be consumed.");
-  });
-
-  test("deployedPagePath folds section landings so the adapter can dodge index.md", () => {
+describe("deployed-mode shim (portal-local)", () => {
+  test("deployedPagePath folds section landings so the builder can dodge index.md", () => {
     expect(deployedPagePath("/quickstart")).toBe("quickstart.mdx");
     expect(deployedPagePath("/guides/")).toBe("guides/index.mdx");
   });

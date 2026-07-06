@@ -70,15 +70,55 @@ describe("collectFumadocsPages (loader mapping)", () => {
         return true;
       },
       transform: (body, p) => {
+        // The wrapper has no `data` — a regression that passes it through
+        // would break every transform that reads page frontmatter.
+        expect(typeof p.data).toBe("object");
         seen.push(p.path);
-        return body;
+        return p.data.title === "Quickstart" ? `${body}\n\ntransform saw the real page` : body;
       },
       tags: (p) => (p.data.title ? [p.data.title.toLowerCase()] : []),
     });
     expect(seen.length).toBeGreaterThan(0);
-    expect(result.docs.find((d) => d.path === "acme/quickstart.md")?.content).toContain(
-      '"quickstart"',
+    const quickstart = result.docs.find((d) => d.path === "acme/quickstart.md");
+    expect(quickstart?.content).toContain('"quickstart"');
+    expect(quickstart?.content).toContain("transform saw the real page");
+  });
+
+  test('a non-string getText("processed") result is a PageLoadError naming the page', async () => {
+    const odd: FumadocsOkfPage = {
+      path: "guides/odd.mdx",
+      data: {
+        title: "Odd",
+        getText: async () => undefined as unknown as string,
+      },
+    };
+    await expect(collectFumadocsPages(sourceOf([odd]), { prefix: "acme" })).rejects.toThrow(
+      PageLoadError,
     );
+    await expect(collectFumadocsPages(sourceOf([odd]), { prefix: "acme" })).rejects.toThrow(
+      /guides\/odd\.mdx.*non-string/,
+    );
+  });
+
+  test("page metadata resolves lazily — a skipped page never reads data.title/description/tags", async () => {
+    // Structural shims may back the data fields with getters that read and
+    // parse the file (the docs portal does); the 473 filtered api-reference
+    // stubs must cost a directory entry, not a read each.
+    let metadataReads = 0;
+    const lazy = (path: string): FumadocsOkfPage => ({
+      path,
+      data: {
+        get title(): string {
+          metadataReads++;
+          return path;
+        },
+        getText: async () => "A real prose body that would count as content.",
+      },
+    });
+    await collectFumadocsPages(sourceOf([lazy("api-reference/stub.mdx"), lazy("kept.mdx")]), {
+      prefix: "acme",
+    });
+    expect(metadataReads).toBe(1); // only the kept page's title was rendered
   });
 
   test("missing processed text fails loud, naming the config — never raw-MDX fallback", async () => {
@@ -161,6 +201,10 @@ describe("buildFumadocsOkfBundle", () => {
     expect(a.stats.documents).toBe(a.docs.length);
     expect(a.stats.documents).toBe(6);
     expect(a.stats.archiveBytes).toBe(a.bytes.length);
+    expect(a.stats.totalDocBytes).toBe(a.docs.reduce((n, d) => n + d.bytes, 0));
+    expect(a.stats.skipped.apiReference).toBe(1);
+    expect(a.stats.skipped.contentless).toBe(1);
+    expect(a.stats.renamedReserved).toEqual([{ from: "ops/log.mdx", to: "acme/ops/log-doc.md" }]);
   });
 
   test("caps overrides flow through to the core validation", async () => {

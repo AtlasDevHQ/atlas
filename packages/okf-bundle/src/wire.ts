@@ -6,8 +6,9 @@
  * tests: the ingest parsers (`packages/api`'s strict `semantic/okf/parse.ts`
  * and lenient `knowledge/parse-lenient.ts`), the knowledge mirror, the ingest
  * caps, and every bundle importer. `packages/api` imports THIS module; no
- * importer ever depends on `@atlas/api` — the dependency direction is
- * api → wire, one-way by construction.
+ * importer ever depends on `@atlas/api` at runtime (the adapter package's
+ * round-trip test dev-deps it) — the dependency direction is api → wire,
+ * one-way by construction.
  *
  * Deliberately ZERO imports (a leaf): a doc-source adapter — including one
  * vendored outside this repo — gets the frontmatter split, heading scan, and
@@ -30,9 +31,11 @@ export const OKF_LOG_BASENAME = "log.md";
 
 /**
  * Reserved OKF filenames — navigation/history, never concept documents. The
- * ingest parsers SILENTLY skip these (compared case-insensitively), which is
- * why the bundle builder's path derivation must never emit one (issue #4367:
- * 8 of 165 portal docs vanished that way before the reserved-rename mapping).
+ * ingest parsers SILENTLY skip these (the lenient parser compares
+ * case-insensitively — a deliberate slight superset; the strict parser
+ * matches exactly), which is why the bundle builder's path derivation must
+ * never emit one (issue #4367: 8 of 165 portal docs vanished that way before
+ * the reserved-rename mapping).
  */
 export const RESERVED_BASENAMES: ReadonlySet<string> = new Set([
   OKF_INDEX_BASENAME,
@@ -184,7 +187,16 @@ export function splitFrontmatterBlock(
   if (data === null || data === undefined) {
     return { kind: "ok", data: null, body };
   }
+  // Only a PLAIN mapping may wear the Record type: js-yaml parses a lone
+  // scalar timestamp (`---\n2020-01-01\n---`) into a `Date`, and an injected
+  // parser could return a `Map` or class instance — all `typeof "object"`,
+  // none of them the mapping the contract promises. Reject rather than let
+  // an "ok" result lie about its shape.
   if (typeof data !== "object" || Array.isArray(data)) {
+    return { kind: "error", reason: "frontmatter is not a YAML mapping" };
+  }
+  const proto: unknown = Object.getPrototypeOf(data);
+  if (proto !== Object.prototype && proto !== null) {
     return { kind: "error", reason: "frontmatter is not a YAML mapping" };
   }
   return { kind: "ok", data: data as Record<string, unknown>, body };

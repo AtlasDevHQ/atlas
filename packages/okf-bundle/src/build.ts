@@ -123,6 +123,21 @@ export function mergeCollectResults(results: readonly CollectResult[]): CollectR
 }
 
 /**
+ * Merge cap overrides over the defaults, treating an explicitly-`undefined`
+ * field as absent — a naive spread would let `caps: { maxDocs: cfg.maxDocs }`
+ * with an undefined value overwrite the default, and every `>` comparison in
+ * `validateIngestCaps` then silently evaluates false (generation-time
+ * validation quietly disabled).
+ */
+export function resolveIngestCaps(overrides?: Partial<IngestCaps>): IngestCaps {
+  return {
+    maxDocs: overrides?.maxDocs ?? DEFAULT_INGEST_CAPS.maxDocs,
+    maxDocBytes: overrides?.maxDocBytes ?? DEFAULT_INGEST_CAPS.maxDocBytes,
+    maxBundleBytes: overrides?.maxBundleBytes ?? DEFAULT_INGEST_CAPS.maxBundleBytes,
+  };
+}
+
+/**
  * Turn a doc source into an OKF `.tar.gz` bundle for the Atlas KB
  * bundle-sync connector (or the upload-ingest route) — collect, validate
  * against the ingest caps, pack.
@@ -132,7 +147,7 @@ export async function buildOkfBundle<P extends DocSourcePage>(
   options: BuildOptions<P>,
 ): Promise<BuildResult> {
   const collected = await collectPages(source, options);
-  const caps: IngestCaps = { ...DEFAULT_INGEST_CAPS, ...options.caps };
+  const caps = resolveIngestCaps(options.caps);
   const { bytes, totalDocBytes } = packOkfBundle(collected.docs, caps);
   return {
     bytes,

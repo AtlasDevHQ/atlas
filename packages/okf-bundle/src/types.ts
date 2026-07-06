@@ -126,7 +126,14 @@ export interface CollectResult {
   readonly renamedReserved: readonly ReservedRename[];
 }
 
-export interface CollectOptions<P extends DocSourcePage = DocSourcePage> {
+/**
+ * The page-type-independent collect options — single-homed so an adapter
+ * that re-types the hooks on its own page shape (e.g. `@atlas/fumadocs-okf`)
+ * extends THIS instead of `Omit`-ing the hook keys: a new `P`-generic hook
+ * added to {@link CollectOptions} then fails the adapter's compile instead
+ * of silently riding through typed on the wrong page surface.
+ */
+export interface CollectBaseOptions {
   /**
    * Stable top-level directory every archive path lives under (the
    * bundle-sync subtractive diff keys on full paths — a per-build prefix
@@ -134,6 +141,20 @@ export interface CollectOptions<P extends DocSourcePage = DocSourcePage> {
    * segments, e.g. `"docs"` or `"kb/site"`.
    */
   readonly prefix: string;
+  /**
+   * Skip pages whose transformed body has no ingestable prose (entirely
+   * component-rendered pages). Default `true`.
+   */
+  readonly skipContentless?: boolean;
+  /**
+   * How many pages resolve their body concurrently (a source's `loadBody`
+   * may be an HTTP fetch). Default 8. Output is deterministic regardless.
+   */
+  readonly concurrency?: number;
+}
+
+export interface CollectOptions<P extends DocSourcePage = DocSourcePage>
+  extends CollectBaseOptions {
   /**
    * Page-filter hook: return `false` to leave a page out of the bundle.
    * Runs before the page's body is resolved. Composes with (does not
@@ -164,16 +185,6 @@ export interface CollectOptions<P extends DocSourcePage = DocSourcePage> {
    * what a stub looks like.
    */
   readonly isApiReferenceStub?: (page: P) => boolean;
-  /**
-   * Skip pages whose transformed body has no ingestable prose (entirely
-   * component-rendered pages). Default `true`.
-   */
-  readonly skipContentless?: boolean;
-  /**
-   * How many pages resolve their body concurrently (a source's `loadBody`
-   * may be an HTTP fetch). Default 8. Output is deterministic regardless.
-   */
-  readonly concurrency?: number;
 }
 
 export interface BuildStats {

@@ -17,11 +17,7 @@
  * terms of the Fumadocs page so site build scripts keep their exact surface.
  */
 
-import type {
-  BuildOptions as CoreBuildOptions,
-  CollectOptions as CoreCollectOptions,
-  IngestCaps,
-} from "@atlas/okf-bundle";
+import type { CollectBaseOptions, IngestCaps } from "@atlas/okf-bundle";
 
 /** The per-page surface the adapter reads. Satisfied by a fumadocs `Page`. */
 export interface FumadocsOkfPage {
@@ -56,10 +52,12 @@ export interface FumadocsOkfSource {
 
 /**
  * The core's collect options with every hook re-typed on the Fumadocs page,
- * plus the adapter's own built-in skip policy.
+ * plus the adapter's own built-in skip policy. Extends the core's
+ * `CollectBaseOptions` (the page-type-independent subset) so a new
+ * `P`-generic core hook can never silently ride through typed on the wrong
+ * page surface.
  */
-export interface CollectOptions
-  extends Omit<CoreCollectOptions, "filter" | "transform" | "tags" | "isApiReferenceStub"> {
+export interface CollectOptions extends CollectBaseOptions {
   /**
    * Page-filter hook: return `false` to leave a page out of the bundle.
    * Runs before the page's body is resolved. Composes with (does not
@@ -99,7 +97,7 @@ export interface BuildOptions extends CollectOptions {
    * defaults (`DEFAULT_INGEST_CAPS`); pass the raised values when the
    * target workspace's operator has tuned `ATLAS_KNOWLEDGE_INGEST_MAX_*`.
    */
-  readonly caps?: CoreBuildOptions["caps"];
+  readonly caps?: Partial<IngestCaps>;
 }
 
 export type { IngestCaps };

@@ -46,6 +46,26 @@ describe("wire: splitFrontmatterBlock (mechanics only — policy stays in each p
     });
   });
 
+  test("CRLF line endings split identically to LF", () => {
+    expect(split("---\r\ntitle: x\r\n---\r\nBody")).toEqual({
+      kind: "ok",
+      data: { title: "x" },
+      body: "Body",
+    });
+  });
+
+  test("a non-plain-object parse result (Date, Map) is an error, never a lying ok", () => {
+    // js-yaml parses a lone scalar timestamp into a Date — `typeof "object"`,
+    // but not the mapping the ok variant's Record type promises.
+    expect(split("---\n2020-01-01\n---\nBody")).toEqual({
+      kind: "error",
+      reason: "frontmatter is not a YAML mapping",
+    });
+    // An injected non-js-yaml parser returning a Map must be refused too.
+    const viaMap = splitFrontmatterBlock("---\nx: y\n---\nBody", () => new Map([["x", "y"]]));
+    expect(viaMap).toEqual({ kind: "error", reason: "frontmatter is not a YAML mapping" });
+  });
+
   test("the injected parser's throw is converted, not propagated", () => {
     const result = splitFrontmatterBlock("---\nx: y\n---\nBody", () => {
       throw new Error("boom");

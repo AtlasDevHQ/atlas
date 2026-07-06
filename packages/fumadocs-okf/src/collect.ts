@@ -6,14 +6,16 @@
  * `getText("processed")` (fail-loud when unavailable, never a raw-MDX
  * fallback), telling the missing-`includeProcessedMarkdown` config case apart
  * from a generic load failure, the default top-level `api-reference/` stub
- * skip, and `.mdx` page handling. Collection, path derivation, caps,
- * collisions, and packing are the core's.
+ * skip, and wrapping the Fumadocs page shape (`data.*`) onto the seam.
+ * Collection, path derivation, caps, collisions, and packing are the core's.
  */
 
 import {
   collectPages,
   PageLoadError,
+  type CollectOptions as CoreCollectOptions,
   type CollectResult,
+  type DocSource,
   type DocSourcePage,
 } from "@atlas/okf-bundle";
 
@@ -73,10 +75,45 @@ function toDocPage(page: FumadocsOkfPage): FumadocsDocPage {
     page,
     path: page.path,
     url: page.url,
-    title: page.data.title,
-    description: page.data.description,
-    tags: page.data.tags,
+    // Metadata stays LAZY, mirroring the loader surface: a structural shim
+    // may back `data.title` with a getter that reads/parses the file (the
+    // docs portal does exactly that), and the core only touches these after
+    // a page survives the filters — an eager read here would cost the 473
+    // skipped api-reference stubs a file read each.
+    get title() {
+      return page.data.title;
+    },
+    get description() {
+      return page.data.description;
+    },
+    get tags() {
+      return page.data.tags;
+    },
     loadBody: () => processedBody(page),
+  };
+}
+
+/**
+ * Map a Fumadocs source + Fumadocs-typed options onto the core's doc-source
+ * seam — the single bridge both `collectFumadocsPages` and
+ * `buildFumadocsOkfBundle` go through, so the hook unwrapping and the
+ * `skipApiReference` default cannot diverge between the two entries.
+ */
+export function bridgeFumadocsSource(
+  source: FumadocsOkfSource,
+  options: CollectOptions,
+): { source: DocSource<FumadocsDocPage>; options: CoreCollectOptions<FumadocsDocPage> } {
+  const { filter, transform, tags, skipApiReference, ...rest } = options;
+  return {
+    source: { getPages: () => source.getPages().map(toDocPage) },
+    options: {
+      ...rest,
+      isApiReferenceStub:
+        (skipApiReference ?? true) ? (p) => isApiReferencePage(p.page.path) : undefined,
+      filter: filter && ((p) => filter(p.page)),
+      transform: transform && ((body, p) => transform(body, p.page)),
+      tags: typeof tags === "function" ? (p) => tags(p.page) : tags,
+    },
   };
 }
 
@@ -91,16 +128,6 @@ export async function collectFumadocsPages(
   source: FumadocsOkfSource,
   options: CollectOptions,
 ): Promise<CollectResult> {
-  const { filter, transform, tags, skipApiReference, ...rest } = options;
-  return collectPages<FumadocsDocPage>(
-    { getPages: () => source.getPages().map(toDocPage) },
-    {
-      ...rest,
-      isApiReferenceStub:
-        (skipApiReference ?? true) ? (p) => isApiReferencePage(p.page.path) : undefined,
-      filter: filter && ((p) => filter(p.page)),
-      transform: transform && ((body, p) => transform(body, p.page)),
-      tags: typeof tags === "function" ? (p) => tags(p.page) : tags,
-    },
-  );
+  const bridged = bridgeFumadocsSource(source, options);
+  return collectPages(bridged.source, bridged.options);
 }

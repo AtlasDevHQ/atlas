@@ -15,7 +15,13 @@
  * collect/pack separation invariant.
  */
 
-export { buildOkfBundle, mergeCollectResults, packOkfBundle, validateIngestCaps } from "./build";
+export {
+  buildOkfBundle,
+  mergeCollectResults,
+  packOkfBundle,
+  resolveIngestCaps,
+  validateIngestCaps,
+} from "./build";
 export { collectPages } from "./collect";
 export {
   ArchivePathCollisionError,
@@ -42,6 +48,7 @@ export {
   type BuildOptions,
   type BuildResult,
   type BuildStats,
+  type CollectBaseOptions,
   type CollectedDoc,
   type CollectOptions,
   type CollectResult,

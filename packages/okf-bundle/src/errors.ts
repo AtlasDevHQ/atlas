@@ -24,8 +24,8 @@ export class PageLoadError extends Error {
 
   constructor(pagePath: string, detail: string, cause?: unknown) {
     super(
-      `Failed to load the processed markdown for page "${pagePath}": ${detail}. ` +
-        `The adapter never falls back to raw MDX — fix the load failure and rebuild.`,
+      `Failed to load the body for page "${pagePath}": ${detail}. ` +
+        `The bundle builder never substitutes a fallback body — fix the load failure and rebuild.`,
       cause === undefined ? undefined : { cause },
     );
     this.name = "PageLoadError";

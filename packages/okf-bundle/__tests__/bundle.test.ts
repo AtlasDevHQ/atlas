@@ -187,6 +187,41 @@ describe("collectPages (through the doc-source seam only)", () => {
     );
   });
 
+  test("mergeCollectResults sums every skip bucket and concatenates renames", async () => {
+    const a = await collectPages(
+      sourceOf([
+        page("api-reference/stub.mdx", "<APIPage />"),
+        page("kept.mdx", "Prose that stays in the bundle."),
+        page("dropped.mdx", "Prose the filter declines."),
+      ]),
+      {
+        prefix: "one",
+        isApiReferenceStub: isAcmeApiReferenceStub,
+        filter: (p) => p.path !== "dropped.mdx",
+      },
+    );
+    const b = await collectPages(
+      sourceOf([
+        page("ops/log.mdx", "A reserved-basename page that gets renamed."),
+        page("empty.mdx", "<OnlyAComponent />"),
+        page("skipped.mdx", "Transform sends this one away."),
+      ]),
+      {
+        prefix: "two",
+        transform: (body, p) => (p.path === "skipped.mdx" ? null : body),
+      },
+    );
+    const merged = mergeCollectResults([a, b]);
+    expect(merged.skipped).toEqual({
+      filtered: 1,
+      apiReference: 1,
+      contentless: 1,
+      transformSkipped: 1,
+    });
+    expect(merged.renamedReserved).toEqual([{ from: "ops/log.mdx", to: "two/ops/log-doc.md" }]);
+    expect(merged.docs.map((d) => d.path)).toEqual(["one/kept.md", "two/ops/log-doc.md"]);
+  });
+
   test("cross-collect collisions are refused at pack — merge never last-write-wins", async () => {
     // Two collects with the SAME prefix producing the same archive path:
     // within-collect checks can't see this; packOkfBundle must.
@@ -243,6 +278,41 @@ describe("caps validation", () => {
     expect(() =>
       packOkfBundle(docs, { maxDocs: 100, maxDocBytes: 1000, maxBundleBytes: 1000 }),
     ).toThrow(/maxBundleBytes: 1600 bytes > 1000 bytes/);
+  });
+
+  test("compressed-archive overflow trips maxBundleBytes with its own detail", () => {
+    // The post-gzip check is defense-in-depth: for ordinary text the archive
+    // compresses BELOW the decoded total, so to reach the branch the decoded
+    // sum must pass while the packed artifact does not. The validator trusts
+    // each doc's `bytes` accounting (collect computes it; this test supplies
+    // it), so a high-entropy body whose recorded `bytes` understates the
+    // content exercises exactly the packed-size refusal.
+    let seed = 42;
+    const content = Array.from({ length: 2000 }, () => {
+      seed = (seed * 48271) % 2147483647; // Lehmer LCG — stays inside 2^53, no precision collapse
+      return String.fromCharCode(33 + (seed % 94));
+    }).join("");
+    const doc = { path: "acme/rand.md", content, bytes: 300, sourcePath: "rand.mdx" };
+    expect(() =>
+      packOkfBundle([doc], { maxDocs: 10, maxDocBytes: 5000, maxBundleBytes: 1000 }),
+    ).toThrow(/compressed archive size/);
+  });
+
+  test("an undefined cap override falls back to the default instead of disabling validation", async () => {
+    // `caps: { maxDocs: cfg.maxDocs }` with an undefined value must not
+    // overwrite the default with undefined (every `>` compare would then be
+    // false and generation-time validation silently vanish).
+    const many = sourceOf(
+      Array.from({ length: 3 }, (_, i) => page(`p${i}.mdx`, `Body of page number ${i}.`)),
+    );
+    const built = await buildOkfBundle(many, {
+      prefix: "acme",
+      caps: { maxDocs: undefined, maxDocBytes: undefined, maxBundleBytes: undefined },
+    });
+    expect(built.stats.documents).toBe(3); // defaults applied, build still validated + succeeded
+    await expect(
+      buildOkfBundle(many, { prefix: "acme", caps: { maxDocs: 2, maxDocBytes: undefined } }),
+    ).rejects.toThrow(/maxDocs: 3 documents > 2 documents/);
   });
 });
 

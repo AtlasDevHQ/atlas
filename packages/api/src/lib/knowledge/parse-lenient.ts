@@ -19,8 +19,9 @@
  *     parse the author clearly intended.
  *
  * Reserved OKF basenames (`index.md`, `log.md`) are navigation / history, not
- * concepts — skipped, mirroring the spike's `RESERVED_BASENAMES` name set (here
- * compared case-insensitively, a deliberate slight superset). They carry no
+ * concepts — skipped, using the wire module's `RESERVED_BASENAMES` set (here
+ * compared case-insensitively, a deliberate slight superset of the strict
+ * parser's exact match). They carry no
  * `knowledge_documents` row; the tree's navigation is regenerable. Non-`.md`
  * entries (assets) are skipped too.
  *
@@ -147,7 +148,7 @@ function timestampField(value: unknown): string | null {
 }
 
 /** First top-level `# Heading` text, or null — the shared CodeQL-safe line
- *  scanner (`semantic/okf/md-utils`) applied to a whole body. */
+ *  scanner (`@atlas/okf-bundle/wire`) applied to a whole body. */
 function firstHeading(body: string): string | null {
   for (const line of body.split("\n")) {
     const text = topLevelHeading(line);

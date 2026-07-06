@@ -146,8 +146,9 @@ error on the Atlas side they can't see into.
 
 The settings are runtime-tunable by a platform operator from the Admin console
 (settings registry — no redeploy). If the target workspace runs raised caps,
-pass the raised values via the `caps` option; the defaults here are pinned to
-the server defaults by this package's round-trip test.
+pass the raised values via the `caps` option; the defaults here ARE the
+server defaults by construction — both sides import them from
+`@atlas/okf-bundle/wire` (the old round-trip drift pin is retired).
 
 ## Hosting recipe — feeding a `bundle-sync` collection
 

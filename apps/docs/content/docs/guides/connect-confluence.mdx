@@ -1,0 +1,94 @@
+---
+title: Connect Confluence
+description: Mirror a Confluence Cloud space into a review-gated Knowledge Base collection — API-token install, per-space scope, and the sync + review model.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+A **Confluence Cloud** connector mirrors one Confluence space into a [Knowledge Base](/guides/knowledge-base) collection. Atlas pulls the space's pages on a schedule, converts each page's storage format to markdown, and queues every page as a **draft** for review — the same review gate as every other knowledge source. Connectors never publish on their own.
+
+<Callout title="Prerequisites">
+The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). Confluence is **Cloud only** in v1 (REST v2, storage format); Data Center / Server is a recorded follow-up. Attachments and images are **not** mirrored in v1 — they are replaced with links back to the source page (text-first).
+</Callout>
+
+---
+
+## Create an API token
+
+Atlas authenticates to Confluence with your Atlassian account email plus an API token (Basic auth).
+
+<Steps>
+<Step>
+Go to [id.atlassian.com → Security → API tokens](https://id.atlassian.com/manage-profile/security/api-tokens) and **Create API token**. Give it a label like `atlas-knowledge`.
+</Step>
+<Step>
+Copy the token immediately — Atlassian shows it once. The token inherits *your* Confluence permissions, so it can read exactly the spaces and pages your account can. Restricted pages your account can't see are simply invisible to the sync (never an error).
+</Step>
+<Step>
+Find the **space key** of the space you want to mirror — it's the short uppercase code in a space's URL (`/wiki/spaces/ENG/...` → `ENG`) or under **Space settings → Space details**.
+</Step>
+</Steps>
+
+<Callout type="warn" title="One space per collection">
+Each Confluence install mirrors exactly one space, and its collection slug derives from the space key. To mirror several spaces, install the connector once per space — each becomes its own independently-searchable collection with its own review queue.
+</Callout>
+
+---
+
+## Install
+
+Navigate to **Admin → Integrations**, choose **Knowledge Base (Confluence Cloud)**, and provide:
+
+- **Confluence site URL** — your Cloud site, e.g. `https://your-team.atlassian.net/wiki`. This is customer-supplied, so every request Atlas makes to it passes through the SSRF egress guard: private, loopback, and non-HTTPS targets are rejected.
+- **Atlassian account email** — the account the API token belongs to.
+- **Space key** — the space to mirror (e.g. `ENG`).
+- **API token** — stored encrypted at rest; never shown again.
+
+Atlas verifies the connection at install time by resolving the space with your credentials. A bad token, an invalid space key, or an unreachable site fails the install **loudly** with an actionable message rather than creating a collection that silently never syncs. On success the collection is created and its first sync is scheduled.
+
+<Callout type="info" title="Self-hosted and SaaS">
+The API-token install works identically on self-hosted and [app.useatlas.dev](https://app.useatlas.dev) — no `/ee` dependency. A one-click OAuth install (no raw tokens) is a planned SaaS follow-up.
+</Callout>
+
+---
+
+## How sync works
+
+Atlas runs two kinds of cycle, decided per collection:
+
+- **Incremental** (the common, cheap cycle) — fetches pages modified since the collection's high-water mark (minus a small overlap window that absorbs clock skew) and upserts the changed ones as drafts. Deletions are invisible here.
+- **Reconciliation** (the correctness anchor, on a weekly cadence by default, and always on the first sync) — enumerates the space's full page tree. This is the only cycle that **archives** pages that were deleted or moved out of the space, and the only one that validates the ingest caps over the full set.
+
+Each collection card shows the last sync's status and time, with a **Sync now** button for an on-demand pull. Rate limits (Confluence's points-based `429` / `Retry-After`) are honored with bounded backoff automatically.
+
+### Paths, and what a rename does
+
+A page becomes a markdown document at a **hierarchy path** built from its ancestor page titles — so the agent's `explore` view reads as a readable tree (`confluence-eng/engineering/runbooks/oncall.md`). Because the path is derived from titles, **renaming a page (or moving it) archives the old path and re-drafts the new one** for re-review. That churn is expected and safe — nothing is ever hard-deleted. Stable vendor page ids and versions ride in each document's provenance, not in its path.
+
+### Macros, images, and honest conversion
+
+Confluence has no markdown export, so Atlas converts the storage format itself: headings, tables, code blocks, links, and lists convert structurally, and common macros (code, info/note/warning/tip panels, expand, task lists) convert to their markdown equivalents. Any macro Atlas can't convert **degrades to a visible placeholder that links back to the source page** and is counted — it is never silently dropped. Images and attachments are replaced with links to the vendor page (text-first v1).
+
+---
+
+## Review and publish
+
+Every synced page lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. A page whose content changes at the vendor and had already been published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, source page URL, sync time) travels with every document so any answer traces back to its Confluence page.
+
+---
+
+## Caps and limits
+
+A very large space can overflow the Knowledge Base ingest caps. When that happens, reconciliation fails with the **actual page count** and names the knob to raise:
+
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` — maximum documents per collection (default 1000).
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` — maximum size of a single document.
+
+Narrow the connector's scope (mirror a smaller space) or raise the cap in the settings registry. The reconciliation cadence itself is the `ATLAS_KNOWLEDGE_SYNC_RECONCILE_INTERVAL_HOURS` knob (weekly default); the incremental cadence is `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` (nightly default).
+
+---
+
+## Uninstall
+
+Uninstalling a Confluence collection **archives** its documents (never hard-deletes) and removes the stored token and sync bookkeeping. Re-installing the same space re-syncs it, which brings the archived pages back as drafts for re-review.

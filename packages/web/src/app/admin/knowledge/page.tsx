@@ -260,8 +260,8 @@ export default function KnowledgePage() {
               {uninstallTarget
                 ? describeArchive(uninstallTarget)
                 : ""}{" "}
-              {uninstallTarget?.source === "bundle-sync"
-                ? "Documents are archived, never deleted — but re-installing this synced collection pulls its endpoint again, which restores them as drafts for re-review."
+              {uninstallTarget && isSyncedSource(uninstallTarget.source)
+                ? "Documents are archived, never deleted — but re-installing this synced collection pulls its source again, which restores them as drafts for re-review."
                 : "Documents are archived, never deleted — re-installing alone does not resurrect them; only re-uploading a bundle with the same paths brings them back, as drafts."}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -305,9 +305,14 @@ export function describeArchive(collection: KnowledgeCollection): string {
  * attempt, else the last attempt's outcome. Exported for tests.
  */
 export function describeSync(collection: KnowledgeCollection): "synced" | "sync-failed" | "never-synced" | null {
-  if (collection.source !== "bundle-sync") return null;
+  if (!isSyncedSource(collection.source)) return null;
   if (!collection.sync) return "never-synced";
   return collection.sync.status === "success" ? "synced" : "sync-failed";
+}
+
+/** Both bundle-sync and connector collections are Atlas-pulled ("Sync now" + sync state). */
+export function isSyncedSource(source: KnowledgeCollection["source"]): boolean {
+  return source === "bundle-sync" || source === "connector";
 }
 
 function CollectionCard({
@@ -328,7 +333,10 @@ function CollectionCard({
   onUninstall: () => void;
 }) {
   const { draft, published } = collection.documents;
-  const isSynced = collection.source === "bundle-sync";
+  const isSynced = isSyncedSource(collection.source);
+  // Only bundle-sync exposes the editable endpoint/auth dialog; a connector is
+  // re-configured through its integration install, not here.
+  const isEndpointEditable = collection.source === "bundle-sync";
   const syncState = describeSync(collection);
   return (
     <Card>
@@ -390,10 +398,11 @@ function CollectionCard({
                 <RefreshCw className={`mr-1 size-3.5 ${syncing ? "animate-spin" : ""}`} />
                 {syncing ? "Syncing…" : "Sync now"}
               </Button>
-              {collection.authScheme !== undefined ? (
-                // Hidden during a web-before-API deploy-overlap window (an
-                // older API omits authScheme): pre-filling "None" there would
-                // delete the stored credential on a routine save.
+              {isEndpointEditable && collection.authScheme !== undefined ? (
+                // bundle-sync only, and hidden during a web-before-API
+                // deploy-overlap window (an older API omits authScheme):
+                // pre-filling "None" there would delete the stored credential on
+                // a routine save. Connectors have no endpoint dialog.
                 <Button
                   variant="ghost"
                   size="sm"

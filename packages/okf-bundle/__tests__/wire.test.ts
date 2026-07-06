@@ -127,6 +127,29 @@ describe("wire: constants and leaf helpers", () => {
     }
     expect(result.data.type).toBe("Document");
   });
+
+  test("renders optional resource + timestamp in wire field order", () => {
+    const doc = renderOkfDocument(
+      {
+        title: "Runbook",
+        resource: "https://acme.atlassian.net/wiki/spaces/ENG/pages/123",
+        timestamp: "2026-07-01T00:00:00.000Z",
+      },
+      ["confluence"],
+      "Body prose.",
+    );
+    const result = split(doc);
+    if (result.kind !== "ok" || result.data === null) {
+      throw new Error(`expected an ok mapping split, got ${result.kind}`);
+    }
+    expect(result.data.resource).toBe("https://acme.atlassian.net/wiki/spaces/ENG/pages/123");
+    expect(result.data.timestamp).toBe("2026-07-01T00:00:00.000Z");
+    // resource precedes tags; timestamp follows them — the wire field order.
+    expect(doc.indexOf("resource:")).toBeLessThan(doc.indexOf("tags:"));
+    expect(doc.indexOf("tags:")).toBeLessThan(doc.indexOf("timestamp:"));
+    const fieldSet: readonly string[] = OKF_FRONTMATTER_FIELDS;
+    for (const key of Object.keys(result.data)) expect(fieldSet).toContain(key);
+  });
 });
 
 describe("splitUstarPath", () => {

@@ -34,6 +34,7 @@ import { DatasourceFormInstallHandler } from "./datasource-form-handler";
 import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
 import { OkfUploadFormInstallHandler, OKF_UPLOAD_SLUG } from "./okf-upload-form-handler";
 import { BundleSyncFormInstallHandler, BUNDLE_SYNC_SLUG } from "./bundle-sync-form-handler";
+import { ConfluenceFormInstallHandler, CONFLUENCE_SLUG } from "./confluence-form-handler";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -220,6 +221,15 @@ export function registerBuiltinInstallHandlers(): void {
   // gate — the customer admin supplies the endpoint at install time.
   registerFormHandler(BUNDLE_SYNC_SLUG, new BundleSyncFormInstallHandler());
   log.info("Registered BundleSyncFormInstallHandler");
+  // Knowledge Base (Confluence Cloud) — the built-in `confluence` connector
+  // install (#4377, ADR-0030 vendor slice). Knowledge-pillar, multi-instance
+  // (one collection per space). Config = site base URL + email + space key; the
+  // API token lands in `knowledge_sync_credentials` (encrypted), never in
+  // `workspace_plugins.config`. The base URL is customer-supplied → SSRF gated.
+  // The registered connector is dispatched by the sync cycle walk (registered at
+  // scheduler start via `registerBuiltinKnowledgeConnectors`). No env gate.
+  registerFormHandler(CONFLUENCE_SLUG, new ConfluenceFormInstallHandler());
+  log.info("Registered ConfluenceFormInstallHandler");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

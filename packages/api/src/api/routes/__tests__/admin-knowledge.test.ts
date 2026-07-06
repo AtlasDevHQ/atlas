@@ -179,6 +179,44 @@ mock.module("@atlas/api/lib/integrations/install/bundle-sync-form-handler", () =
   parseBundleSyncConfig: () => ({ ok: true, endpointUrl: "https://kb.example.com/bundle.zip", authScheme: "none" }),
 }));
 
+// Partial mock, justified (#4377): the router consults `getKnowledgeSyncConnector`
+// to recognize connector catalogs, calls `registerBuiltinKnowledgeConnectors`
+// (idempotent) on the list/sync paths, and dispatches manual sync through
+// `syncConnectorCollection`. Nothing else in this file's graph reaches these
+// modules' other exports, so the confluence connector's heavier import graph
+// (client/egress) stays out. The connector engine is pinned in
+// lib/knowledge/__tests__/connector-sync.test.ts.
+const FIXTURE_CONNECTOR = {
+  catalogId: "catalog:confluence",
+  vendor: "confluence",
+  createClient: () => ({
+    fetchChanges: async () => ({ documents: [], highWaterMark: null }),
+    fetchAll: async () => ({ documents: [], highWaterMark: null }),
+  }),
+};
+mock.module("@atlas/api/lib/knowledge/register-connectors", () => ({
+  registerBuiltinKnowledgeConnectors: () => {},
+}));
+mock.module("@atlas/api/lib/knowledge/connectors", () => ({
+  getKnowledgeSyncConnector: (id: string) => (id === "catalog:confluence" ? FIXTURE_CONNECTOR : undefined),
+  registerKnowledgeSyncConnector: () => {},
+  listKnowledgeSyncConnectorCatalogIds: () => ["catalog:confluence"],
+  _resetKnowledgeSyncConnectors: () => {},
+  ConnectorRateLimitError: class ConnectorRateLimitError extends Error {},
+}));
+const syncConnectorCollection = mock(async (params: { collectionSlug: string }) => ({
+  collection: params.collectionSlug,
+  status: "success" as const,
+  mode: "reconciliation" as const,
+  syncedAt: "2026-07-02T02:00:00.000Z",
+  error: null,
+  documents: { created: 2, updated: 0, demoted: 0, resurrected: 0, unchanged: 0, total: 2 },
+  archivedAbsent: 0,
+  rejected: [],
+  highWaterMark: "2026-07-01T00:00:00.000Z",
+}));
+mock.module("@atlas/api/lib/knowledge/connector-sync", () => ({ syncConnectorCollection }));
+
 // Partial mock, justified: this file's import graph reaches only the exports
 // stubbed below; the isolated per-file runner prevents cross-file leaks, and an
 // unmocked export reached later fails loudly as `undefined is not a function`.
@@ -233,6 +271,7 @@ beforeEach(() => {
   invalidateCalls.length = 0;
   internalQuery.mockClear();
   syncCollection.mockClear();
+  syncConnectorCollection.mockClear();
 });
 afterEach(() => internalQuery.mockClear());
 
@@ -243,6 +282,16 @@ function useSyncedCollection(): void {
     catalog_id: "catalog:bundle-sync",
     status: "published",
     config: { endpoint_url: "https://kb.example.com/bundle.zip", auth_scheme: "none" },
+  };
+}
+
+/** Switch the resolved collection to a connector (Confluence) install (#4377). */
+function useConnectorCollection(): void {
+  COLLECTION = {
+    install_id: "runbooks",
+    catalog_id: "catalog:confluence",
+    status: "published",
+    config: { base_url: "https://acme.atlassian.net/wiki", email: "bot@acme.com", space_key: "ENG" },
   };
 }
 
@@ -448,6 +497,43 @@ describe("POST /{collectionSlug}/sync — manual Sync now (#4211)", () => {
     const res = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
     expect(res.status).toBe(404);
     expect(syncCollection).not.toHaveBeenCalled();
+  });
+});
+
+describe("connector collections — Confluence (#4377)", () => {
+  it("dispatches manual 'Sync now' to the connector engine, not the bundle-sync engine", async () => {
+    useConnectorCollection();
+    const res = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; format: unknown; documents: { total: number } };
+    expect(body.status).toBe("success");
+    expect(body.documents.total).toBe(2);
+    // A connector sync has no container format / link count.
+    expect(body.format).toBeNull();
+    expect(syncConnectorCollection).toHaveBeenCalledTimes(1);
+    expect(syncConnectorCollection.mock.calls[0]?.[0]).toMatchObject({
+      workspaceId: CURRENT_ORG,
+      collectionSlug: "runbooks",
+    });
+    expect(syncCollection).not.toHaveBeenCalled();
+  });
+
+  it("lists a connector collection with source 'connector' and its sync state", async () => {
+    useConnectorCollection();
+    SYNC_STATES = [
+      { collection_id: "runbooks", last_sync_at: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    ];
+    const res = await adminKnowledge.request("/", { method: "GET" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      collections: Array<{ slug: string; source: string; sync: unknown; endpointUrl: unknown; authScheme: unknown }>;
+    };
+    const coll = body.collections.find((c) => c.slug === "runbooks");
+    expect(coll?.source).toBe("connector");
+    expect(coll?.sync).toMatchObject({ status: "success" });
+    // Connectors have no bundle endpoint / auth scheme.
+    expect(coll?.endpointUrl).toBeNull();
+    expect(coll?.authScheme).toBeNull();
   });
 });
 

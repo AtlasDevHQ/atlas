@@ -24,7 +24,15 @@ export interface KnowledgeDocumentCounts {
  * explicit admin bundle uploads) or `bundle-sync` (the #4211 catalog row — a
  * scheduled pull of a configured bundle endpoint).
  */
-export type KnowledgeCollectionSource = "upload" | "bundle-sync";
+/**
+ * How a collection ingests: `upload` (admin bundle upload), `bundle-sync` (pull
+ * an archive from an endpoint, #4211), or `connector` (a server-side vendor pull
+ * — Confluence, Notion, … #4377). `bundle-sync` and `connector` collections both
+ * carry last-sync bookkeeping (`sync`); only `bundle-sync` exposes an editable
+ * `endpointUrl` / `authScheme` (connectors are re-configured via their
+ * integration install, not the endpoint dialog).
+ */
+export type KnowledgeCollectionSource = "upload" | "bundle-sync" | "connector";
 
 /**
  * Bundle-endpoint auth schemes for `bundle-sync` collections — the one wire

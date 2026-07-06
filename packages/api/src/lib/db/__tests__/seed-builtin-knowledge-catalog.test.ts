@@ -23,6 +23,7 @@ import {
   seedBuiltinKnowledgeCatalog,
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
   BUILTIN_BUNDLE_SYNC_CATALOG_ROW,
+  BUILTIN_CONFLUENCE_CATALOG_ROW,
   BUILTIN_KNOWLEDGE_CATALOG_ROWS,
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
@@ -89,6 +90,29 @@ describe("BUILTIN_BUNDLE_SYNC_CATALOG_ROW (#4211)", () => {
   });
 });
 
+describe("BUILTIN_CONFLUENCE_CATALOG_ROW (#4377)", () => {
+  it("is the `confluence` form install: base URL + email + space key + secret token", () => {
+    const row = BUILTIN_CONFLUENCE_CATALOG_ROW;
+    expect(row.slug).toBe("confluence");
+    expect(row.id).toBe("catalog:confluence");
+    expect(row.installModel).toBe("form");
+    expect(row.autoInstall).toBe(false);
+    const keys = row.configSchema.map((f) => f.key);
+    expect(keys).toContain("base_url");
+    expect(keys).toContain("email");
+    expect(keys).toContain("space_key");
+    expect(keys).toContain("api_token");
+    // Exactly one secret field: the API token (never echoed). The base URL,
+    // email, and space key are non-secret config.
+    expect(row.configSchema.filter((f) => f.secret === true).map((f) => f.key)).toEqual([
+      "api_token",
+    ]);
+    for (const key of ["base_url", "email", "space_key", "api_token"]) {
+      expect(row.configSchema.find((f) => f.key === key)?.required).toBe(true);
+    }
+  });
+});
+
 describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
   it("issues one INSERT per built-in row with type 'context' and pillar 'knowledge'", async () => {
     const { db, captured } = captureDb();
@@ -104,7 +128,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       expect(q.sql).not.toContain("ON CONFLICT (slug)");
       expect(q.sql).toContain("RETURNING slug");
     }
-    expect(captured.map((q) => q.params[2])).toEqual(["okf-upload", "bundle-sync"]);
+    expect(captured.map((q) => q.params[2])).toEqual(["okf-upload", "bundle-sync", "confluence"]);
   });
 
   it("binds each row's 8 params and serializes config_schema as JSON", async () => {
@@ -123,7 +147,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
   it("reports inserted slugs on a fresh catalog and none on a re-boot", async () => {
     const fresh = await seedBuiltinKnowledgeCatalog(captureDb().db);
     expect(fresh.inserted).toBe(true);
-    expect(fresh.insertedSlugs).toEqual(["okf-upload", "bundle-sync"]);
+    expect(fresh.insertedSlugs).toEqual(["okf-upload", "bundle-sync", "confluence"]);
     // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).
     const reboot = await seedBuiltinKnowledgeCatalog(captureDb(false).db);
     expect(reboot.inserted).toBe(false);

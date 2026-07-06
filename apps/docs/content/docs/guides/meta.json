@@ -21,6 +21,7 @@
     "semantic-editor",
     "semantic-expert",
     "knowledge-base",
+    "connect-confluence",
     "developer-mode",
     "demo-mode",
     "guided-tour",

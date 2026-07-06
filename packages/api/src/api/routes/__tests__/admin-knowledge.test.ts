@@ -238,10 +238,22 @@ mock.module("@atlas/api/lib/content-mode", () => ({
   }),
 }));
 
+// Full mock of every ingest-limits export (mock-all-exports): `mirror.ts` —
+// reachable through this file's import graph — consumes `positiveIntSetting`,
+// so a getters-only partial mock would break at a distance on the next
+// import-graph change. Shape mirrors connector-sync.test.ts.
 mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
+  DEFAULT_INGEST_MAX_DOCS: 1000,
+  DEFAULT_INGEST_MAX_DOC_BYTES: 1_000_000,
+  DEFAULT_INGEST_MAX_BUNDLE_BYTES: 25_000_000,
   getIngestMaxDocs: () => MAX_DOCS,
   getIngestMaxDocBytes: () => MAX_DOC_BYTES,
   getIngestMaxBundleBytes: () => MAX_BUNDLE_BYTES,
+  positiveIntSetting: (_key: string, raw: string | undefined, fallback: number) => {
+    if (raw === undefined) return fallback;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  },
 }));
 
 mock.module("../admin-router", () => ({

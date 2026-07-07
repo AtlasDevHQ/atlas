@@ -106,9 +106,9 @@ export class IngestCapExceededError extends Error {
  * A nav manifest (Mintlify's `docs.json` / legacy `mint.json`) is missing,
  * unparseable, or resolves to zero page paths. Fail-loud at generation time
  * (issue #4391): a broken manifest silently yielding an empty allowed-path
- * set would filter EVERY page out and — via `EmptyBundleError` at pack, or
- * worse via a partial nav — ship a wrong bundle whose cause is invisible from
- * the sync error on the Atlas side.
+ * set would surface as a misattributed `EmptyBundleError` at pack (blaming
+ * the filter, not the manifest) — or, worse, via a partial nav, ship a
+ * silently incomplete bundle nothing downstream can detect.
  */
 export class NavManifestError extends Error {
   /** Manifest path (relative to the source root) the failure is about. */

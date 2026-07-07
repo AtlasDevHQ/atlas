@@ -3,9 +3,9 @@
  * doc-source seam (#4374, PRD #4372), and the one every file-based docs
  * source needs: walk a tree of `.md`/`.mdx` files, split frontmatter via the
  * wire module's shared mechanics, optionally strip MDX module lines
- * fence-aware. "Any docs folder" works out of the box; a Mintlify importer is
- * this adapter plus a `docs.json` nav filter (the importer itself is
- * follow-up work per PRD #4372 — see the README's Mintlify note).
+ * fence-aware. "Any docs folder" works out of the box; the Mintlify importer
+ * (`createMintlifySource` in `./mintlify`, #4391) is this adapter plus a
+ * `docs.json` nav filter.
  *
  * Promoted from the docs portal's `localSectionSource` shim (issue #4374):
  * the portal keeps only portal policy (audience transform, section list);

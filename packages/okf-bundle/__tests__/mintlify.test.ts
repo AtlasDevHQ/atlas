@@ -16,6 +16,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import * as yaml from "js-yaml";
 
 import {
+  ArchivePathCollisionError,
   buildOkfBundle,
   createMintlifySource,
   NavManifestError,
@@ -182,6 +183,48 @@ describe("createMintlifySource → buildOkfBundle", () => {
     expect(result.docs.map((d) => d.path)).toEqual(["docs/v1/en/start.md", "docs/v2/start.md"]);
   });
 
+  test("an explicit manifest override is used exclusively — no docs.json fallback", async () => {
+    const root = await treeOf({
+      "custom.json": JSON.stringify({ navigation: { pages: ["only"] } }),
+      "docs.json": JSON.stringify({ navigation: { pages: ["never"] } }),
+      "only.mdx": "---\ntitle: Only\n---\nThe override manifest's page prose.",
+      "never.mdx": "---\ntitle: Never\n---\nThe default manifest's page prose.",
+    });
+    const { nav } = await createMintlifySource({ root, parseYaml, manifest: "custom.json" });
+    expect(nav.manifestPath).toBe("custom.json");
+    expect(nav.pages.has("only")).toBe(true);
+    expect(nav.pages.has("never")).toBe(false);
+
+    // An ABSENT override fails loud naming the override — it never quietly
+    // falls back to the docs.json sitting right there.
+    await expect(
+      createMintlifySource({ root, parseYaml, manifest: "absent.json" }),
+    ).rejects.toThrow(/absent\.json/);
+  });
+
+  test("nav entries with no backing file are tolerated — dangling entries never count as filtered", async () => {
+    const root = await treeOf({
+      "docs.json": JSON.stringify({ navigation: { pages: ["real", "missing/page"] } }),
+      "real.mdx": "---\ntitle: Real\n---\nThe one page that exists on disk.",
+    });
+    const { source, filter } = await createMintlifySource({ root, parseYaml });
+    const result = await buildOkfBundle(source, { prefix: "docs", filter });
+    expect(result.docs.map((d) => d.path)).toEqual(["docs/real.md"]);
+    expect(result.stats.skipped.filtered).toBe(0);
+  });
+
+  test("intro.md and intro.mdx both matching one nav entry surface as an archive-path collision, never a silent overwrite", async () => {
+    const root = await treeOf({
+      "docs.json": JSON.stringify({ navigation: { pages: ["intro"] } }),
+      "intro.md": "---\ntitle: Intro MD\n---\nMarkdown flavor of the page prose.",
+      "intro.mdx": "---\ntitle: Intro MDX\n---\nMDX flavor of the page prose.",
+    });
+    const { source, filter } = await createMintlifySource({ root, parseYaml });
+    await expect(buildOkfBundle(source, { prefix: "docs", filter })).rejects.toThrow(
+      ArchivePathCollisionError,
+    );
+  });
+
   test("nav entries tolerate a leading slash and an explicit extension", async () => {
     const root = await treeOf({
       "docs.json": JSON.stringify({
@@ -203,6 +246,25 @@ describe("fail-loud manifest handling", () => {
     });
     await expect(createMintlifySource({ root, parseYaml })).rejects.toThrow(NavManifestError);
     await expect(createMintlifySource({ root, parseYaml })).rejects.toThrow(/docs\.json.*mint\.json/);
+  });
+
+  test("an unreadable docs.json (a directory) fails loud — never a silent fallback to a stale mint.json", async () => {
+    const root = await treeOf({
+      "mint.json": JSON.stringify({ navigation: [{ group: "Stale", pages: ["stale"] }] }),
+      "stale.mdx": "---\ntitle: Stale\n---\nStale legacy page prose, long enough.",
+    });
+    await mkdir(join(root, "docs.json")); // present but unreadable (EISDIR)
+    const attempt = createMintlifySource({ root, parseYaml });
+    await expect(attempt).rejects.toThrow(NavManifestError);
+    await expect(createMintlifySource({ root, parseYaml })).rejects.toThrow(
+      /cannot read the manifest/,
+    );
+    const err = await attempt.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(NavManifestError);
+    expect((err as NavManifestError).manifestPath).toBe("docs.json");
   });
 
   test("malformed JSON → NavManifestError naming the manifest", async () => {
@@ -265,10 +327,24 @@ describe("parseMintlifyNav", () => {
   test("external links inside a pages array are ignored, not treated as page paths", () => {
     const nav = parseMintlifyNav(
       JSON.stringify({
-        navigation: { pages: ["real/page", "https://example.com/external"] },
+        navigation: {
+          pages: ["real/page", "https://example.com/external", "//cdn.example.com/protocol-relative"],
+        },
       }),
       "docs.json",
     );
     expect([...nav.pages].sort()).toEqual(["real/page"]);
+  });
+
+  test("a division key the walker has never heard of still yields its pages (no key whitelist)", () => {
+    const nav = parseMintlifyNav(
+      JSON.stringify({
+        navigation: {
+          products: [{ product: "Cloud", groups: [{ group: "Docs", pages: ["cloud/start"] }] }],
+        },
+      }),
+      "docs.json",
+    );
+    expect([...nav.pages].sort()).toEqual(["cloud/start"]);
   });
 });

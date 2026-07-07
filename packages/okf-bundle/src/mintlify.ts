@@ -36,15 +36,14 @@ export interface MintlifyNav {
   /** Manifest path (relative to the source root) the navigation came from. */
   readonly manifestPath: string;
   /**
-   * Nav-reachable page paths, normalized to the tree adapter's shape:
-   * `/`-separated, no leading slash, no `.md`/`.mdx` extension.
+   * Nav-reachable page paths, normalized to the tree adapter's path shape
+   * minus the extension: `/`-separated, no leading slash, no `.md`/`.mdx`
+   * (the filter strips `page.path`'s extension before membership).
    */
   readonly pages: ReadonlySet<string>;
 }
 
-export interface MintlifySourceOptions
-  extends Omit<MarkdownTreeSourceOptions, "root" | "parseYaml">,
-    Pick<MarkdownTreeSourceOptions, "root" | "parseYaml"> {
+export interface MintlifySourceOptions extends MarkdownTreeSourceOptions {
   /**
    * Manifest filename relative to `root`. Default: probe `docs.json`, then
    * legacy `mint.json`; neither present is a {@link NavManifestError}.
@@ -67,19 +66,6 @@ export interface MintlifySource {
   readonly nav: MintlifyNav;
 }
 
-/** Navigation division keys whose values may (transitively) hold `pages`
- *  arrays — the docs.json navigation schema plus the legacy mint.json group
- *  array (which arrives as the `navigation` value itself). */
-const NAV_DIVISION_KEYS = [
-  "languages",
-  "versions",
-  "tabs",
-  "anchors",
-  "dropdowns",
-  "groups",
-  "global",
-] as const;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -88,7 +74,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *  for entries that can never name a tree page (external links, empties). */
 function normalizeNavEntry(entry: string): string | null {
   let path = entry.trim();
-  if (path === "" || path.includes("://")) return null;
+  // External links can never name a tree page: full protocol (`https://…`)
+  // or protocol-relative (`//host/…`).
+  if (path === "" || path.includes("://") || path.startsWith("//")) return null;
   while (path.startsWith("/")) path = path.slice(1);
   path = stripPageExtension(path);
   return path === "" ? null : path;
@@ -103,8 +91,15 @@ function stripPageExtension(path: string): string {
   return path;
 }
 
-/** Recursive walk of one navigation node: collect strings under `pages`,
- *  recurse into nested groups and every known division key. */
+/**
+ * Recursive walk of one navigation node: collect strings under `pages`
+ * arrays, recurse into EVERYTHING else. Deliberately not a division-key
+ * whitelist (tabs/anchors/dropdowns/versions/…): a key Mintlify adds later
+ * would silently drop its pages into `skipped.filtered`, misattributed to
+ * the caller's filter — while the collecting invariant (page paths only ever
+ * appear as string elements of a `pages` array) makes full recursion equally
+ * sound, since strings anywhere else are never collected.
+ */
 function collectNavPages(node: unknown, out: Set<string>): void {
   if (Array.isArray(node)) {
     // The legacy mint.json navigation is a bare array of group objects; a
@@ -113,19 +108,19 @@ function collectNavPages(node: unknown, out: Set<string>): void {
     return;
   }
   if (!isRecord(node)) return;
-  const pages = node.pages;
-  if (Array.isArray(pages)) {
-    for (const entry of pages) {
-      if (typeof entry === "string") {
-        const normalized = normalizeNavEntry(entry);
-        if (normalized !== null) out.add(normalized);
-      } else {
-        collectNavPages(entry, out); // nested group object
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "pages" && Array.isArray(value)) {
+      for (const entry of value) {
+        if (typeof entry === "string") {
+          const normalized = normalizeNavEntry(entry);
+          if (normalized !== null) out.add(normalized);
+        } else {
+          collectNavPages(entry, out); // nested group object
+        }
       }
+    } else {
+      collectNavPages(value, out);
     }
-  }
-  for (const key of NAV_DIVISION_KEYS) {
-    if (key in node) collectNavPages(node[key], out);
   }
 }
 
@@ -163,24 +158,43 @@ export function parseMintlifyNav(raw: string, manifestPath: string): MintlifyNav
   return { manifestPath, pages };
 }
 
+/** A truly ABSENT file — the only read failure the manifest probe may fall
+ *  through. EACCES/EISDIR/EIO on a present `docs.json` must fail loud: falling
+ *  through would silently resolve a stale `mint.json` sitting next to it. */
+function isFileMissing(err: unknown): boolean {
+  return err instanceof Error && "code" in err && err.code === "ENOENT";
+}
+
 /** Read + parse the manifest at the source root: the explicit override, or
  *  `docs.json` falling back to legacy `mint.json`. */
 async function loadNav(root: string, manifest: string | undefined): Promise<MintlifyNav> {
   const candidates = manifest === undefined ? MINTLIFY_MANIFEST_NAMES : [manifest];
+  let lastMissing: unknown;
   for (const candidate of candidates) {
     let raw: string;
     try {
       raw = await readFile(join(root, candidate), "utf8");
-    } catch {
-      // intentionally ignored: a missing candidate falls through to the next
-      // manifest name; running out of candidates fails loud below.
-      continue;
+    } catch (err) {
+      if (isFileMissing(err)) {
+        // intentionally ignored: a missing candidate falls through to the next
+        // manifest name; running out of candidates fails loud below.
+        lastMissing = err;
+        continue;
+      }
+      throw new NavManifestError(
+        candidate,
+        `cannot read the manifest (${err instanceof Error ? err.message : String(err)})`,
+        err,
+      );
     }
     return parseMintlifyNav(raw, candidate);
   }
+  // manifestPath stays a real path (the first candidate) — the message
+  // carries the full probe list.
   throw new NavManifestError(
-    candidates.join(" / "),
-    `no readable manifest at the source root (looked for ${candidates.join(", ")})`,
+    candidates[0],
+    `no manifest at the source root "${root}" (looked for ${candidates.join(", ")})`,
+    lastMissing,
   );
 }
 

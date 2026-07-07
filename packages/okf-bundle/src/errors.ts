@@ -102,6 +102,30 @@ export class IngestCapExceededError extends Error {
   }
 }
 
+/**
+ * A nav manifest (Mintlify's `docs.json` / legacy `mint.json`) is missing,
+ * unreadable, unparseable, or resolves to zero page paths. Fail-loud at generation time
+ * (issue #4391): a broken manifest silently yielding an empty allowed-path
+ * set would surface as a misattributed `EmptyBundleError` at pack (blaming
+ * the filter, not the manifest) — or, worse, via a partial nav, ship a
+ * silently incomplete bundle nothing downstream can detect.
+ */
+export class NavManifestError extends Error {
+  /** Manifest path (relative to the source root) the failure is about. */
+  readonly manifestPath: string;
+
+  constructor(manifestPath: string, detail: string, cause?: unknown) {
+    super(
+      `Cannot resolve the navigation manifest "${manifestPath}": ${detail}. ` +
+        `The importer never falls back to collecting the whole tree — fix the manifest ` +
+        `(or use createMarkdownTreeSource directly for an unfiltered walk) and rebuild.`,
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = "NavManifestError";
+    this.manifestPath = manifestPath;
+  }
+}
+
 /** A `page.path` (or configured prefix) the deterministic mapping can't accept. */
 export class InvalidPagePathError extends Error {
   readonly pagePath: string;

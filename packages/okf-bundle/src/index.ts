@@ -28,6 +28,7 @@ export {
   EmptyBundleError,
   IngestCapExceededError,
   InvalidPagePathError,
+  NavManifestError,
   PageLoadError,
   type IngestCapKind,
 } from "./errors";
@@ -36,6 +37,14 @@ export {
   stripMdxModuleLines,
   type MarkdownTreeSourceOptions,
 } from "./markdown-tree";
+export {
+  createMintlifySource,
+  MINTLIFY_MANIFEST_NAMES,
+  parseMintlifyNav,
+  type MintlifyNav,
+  type MintlifySource,
+  type MintlifySourceOptions,
+} from "./mintlify";
 export {
   isContentlessBody,
   pageTags,

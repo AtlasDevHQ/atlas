@@ -3,8 +3,9 @@
 Source-neutral OKF knowledge-bundle builder + the single-homed **OKF wire
 contract**. This is the core behind every Atlas Knowledge Base importer:
 `@atlas/fumadocs-okf` is the first named adapter, the built-in
-[markdown-tree adapter](#the-markdown-tree-adapter) the second; a Mintlify
-importer later is one adapter more. (Confluence shipped as a *server-side*
+[markdown-tree adapter](#the-markdown-tree-adapter) the second, and the
+built-in [Mintlify importer](#the-mintlify-importer) (the markdown-tree
+adapter plus a `docs.json` nav filter) the third. (Confluence shipped as a *server-side*
 Knowledge Sync Connector instead — ADR-0030, #4376 — consuming collected
 documents at the ingest seam, not as a generation-side adapter here.) Private
 workspace package — not published to npm (promote to a `@useatlas/*` name only
@@ -108,12 +109,41 @@ const source = await createMarkdownTreeSource({
 const { bytes, stats } = await buildOkfBundle(source, { prefix: "docs" });
 ```
 
-"Any docs folder" works out of the box. A **Mintlify importer is this adapter
-plus a nav filter**: point `root` at the MDX tree and pass a `filter` hook
-that keeps only pages reachable from `docs.json`'s navigation (the importer
-itself is follow-up work per PRD #4372 — this adapter is the reusable part).
+"Any docs folder" works out of the box. The
+[Mintlify importer](#the-mintlify-importer) is this adapter plus a nav filter.
 The Atlas docs portal's local mode is this adapter plus portal policy
 (`apps/docs/scripts/kb-bundle-sources.ts`).
+
+## The Mintlify importer
+
+`createMintlifySource` (#4391) points the markdown-tree adapter at a Mintlify
+site and derives a `filter` predicate from the site's nav manifest —
+`docs.json`, falling back to legacy `mint.json` — so only nav-reachable pages
+collect. Pages on disk but absent from navigation (snippets, retired pages,
+drafts) are declined by the filter and land in the counted
+`skipped.filtered` bucket, never silently.
+
+```ts
+import { buildOkfBundle, createMintlifySource } from "@atlas/okf-bundle";
+import { load } from "js-yaml";
+
+const { source, filter, nav } = await createMintlifySource({
+  root: "my-mintlify-site",
+  parseYaml: load,
+});
+const { bytes, stats } = await buildOkfBundle(source, { prefix: "docs", filter });
+// nav.manifestPath — which manifest won; stats.skipped.filtered — off-nav pages
+```
+
+The manifest is parsed structurally as unknown JSON (no Mintlify config-type
+dependency; runtime deps stay `fflate`-only), exploiting the one invariant
+that holds across every navigation shape — tabs, anchors, dropdowns,
+versions, languages, arbitrarily nested groups, and the flat legacy
+`mint.json` group array: **a page path only ever appears as a string element
+of a `pages` array**. `href`/`openapi` strings are never pages. A missing,
+malformed, or zero-page manifest throws `NavManifestError` at generation time
+— the importer never falls back to collecting the whole tree (use
+`createMarkdownTreeSource` directly for an unfiltered walk).
 
 ## Hosting / ingest recipes
 

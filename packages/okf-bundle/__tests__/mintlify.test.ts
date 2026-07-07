@@ -225,6 +225,26 @@ describe("createMintlifySource → buildOkfBundle", () => {
     );
   });
 
+  test("a custom extensions option keeps the filter's strip in sync — failure stays accurately attributed", async () => {
+    const root = await treeOf({
+      "docs.json": JSON.stringify({ navigation: { pages: ["notes"] } }),
+      "notes.markdown": "---\ntitle: Notes\n---\nCustom-extension page prose here.",
+    });
+    const { source, filter } = await createMintlifySource({
+      root,
+      parseYaml,
+      extensions: [".markdown"],
+    });
+    // The filter must PASS the page (extension strip synced to the effective
+    // set), so the build fails downstream as InvalidPagePathError naming the
+    // page — the core's archive mapping accepts only .md/.mdx. Out of sync,
+    // the filter would drop every page and misattribute the failure as
+    // EmptyBundleError blaming the filter.
+    await expect(buildOkfBundle(source, { prefix: "docs", filter })).rejects.toThrow(
+      /notes\.markdown/,
+    );
+  });
+
   test("nav entries tolerate a leading slash and an explicit extension", async () => {
     const root = await treeOf({
       "docs.json": JSON.stringify({

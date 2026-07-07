@@ -63,7 +63,9 @@ export interface MarkdownTreeSourceOptions {
   readonly stripMdxModules?: boolean;
 }
 
-const DEFAULT_EXTENSIONS = [".md", ".mdx"] as const;
+/** Default page extensions — shared with the Mintlify importer so its nav
+ *  filter strips the same set the walk enumerates. */
+export const DEFAULT_EXTENSIONS = [".md", ".mdx"] as const;
 
 /** Longest multi-line ESM statement the strip will consume before deciding
  *  the "statement" is really prose (a hard-wrapped paragraph whose wrap put

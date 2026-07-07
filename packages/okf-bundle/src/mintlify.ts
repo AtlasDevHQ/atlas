@@ -26,7 +26,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { NavManifestError } from "./errors";
-import { createMarkdownTreeSource, type MarkdownTreeSourceOptions } from "./markdown-tree";
+import {
+  createMarkdownTreeSource,
+  DEFAULT_EXTENSIONS,
+  type MarkdownTreeSourceOptions,
+} from "./markdown-tree";
 import type { DocSource, DocSourcePage } from "./types";
 
 /** Manifest filenames probed at the source root, in precedence order. */
@@ -83,12 +87,21 @@ function normalizeNavEntry(entry: string): string | null {
   return path === "" ? null : path;
 }
 
-/** Strip a trailing `.md`/`.mdx` (case-insensitive) — nav entries are
- *  extension-less by convention, tree paths carry the extension. */
-function stripPageExtension(path: string): string {
+/** Strip a trailing page extension (case-insensitive) — nav entries are
+ *  extension-less by convention, tree paths carry the extension. The filter
+ *  strips the EFFECTIVE extension set (a custom `extensions` option would
+ *  otherwise leave every enumerated path unstripped, filter everything out,
+ *  and surface as a misattributed `EmptyBundleError`); nav-entry
+ *  normalization strips the `.md`/`.mdx` convention. */
+function stripPageExtension(
+  path: string,
+  extensions: readonly string[] = DEFAULT_EXTENSIONS,
+): string {
   const lower = path.toLowerCase();
-  if (lower.endsWith(".mdx")) return path.slice(0, -4);
-  if (lower.endsWith(".md")) return path.slice(0, -3);
+  for (const ext of extensions) {
+    const suffix = ext.toLowerCase();
+    if (lower.endsWith(suffix)) return path.slice(0, -suffix.length);
+  }
   return path;
 }
 
@@ -109,6 +122,9 @@ function collectNavPages(node: unknown, out: Set<string>): void {
     return;
   }
   if (!isRecord(node)) return;
+  // A non-array `pages` value is skipped, not an error: Mintlify's schema is
+  // always an array, and throwing would false-positive on unrelated `pages`
+  // keys in arbitrary manifest metadata the full recursion visits.
   for (const [key, value] of Object.entries(node)) {
     if (key === "pages" && Array.isArray(value)) {
       for (const entry of value) {
@@ -218,9 +234,10 @@ export async function createMintlifySource(
   // NavManifestError or readdir's raw ENOENT — same mistake, two errors.
   const nav = await loadNav(options.root, manifest);
   const source = await createMarkdownTreeSource(treeOptions);
+  const extensions = options.extensions ?? DEFAULT_EXTENSIONS;
   return {
     source,
-    filter: (page) => nav.pages.has(stripPageExtension(page.path)),
+    filter: (page) => nav.pages.has(stripPageExtension(page.path, extensions)),
     nav,
   };
 }

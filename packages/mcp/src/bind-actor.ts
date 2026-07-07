@@ -61,15 +61,21 @@ import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
  * REGARDLESS of deploy mode (a copied-off credential file is never the
  * trusted local operator).
  *
- * SCOPE NOTE: the `cli` arm is a forward-declaration — no runtime caller binds
- * `transport: "cli"` yet (only `hosted.ts` calls this, with `"hosted"`). The
- * device-flow credential is a getSession session bearer, so its runtime
- * downgrade happens in `buildCustomSessionPayload` (REST path, keyed on
- * `session.origin === "cli"`), NOT here. This arm reserves the same trust
- * boundary for the day the cli bearer reaches MCP dispatch; `bind-actor.test`
- * proves it resolves org-role-only (it does NOT exercise the gate chain).
+ * SCOPE NOTE: the `cli` and `agent` arms are forward-declarations — no runtime
+ * caller binds `transport: "cli"` or `"agent"` here yet (only `hosted.ts` calls
+ * this, with `"hosted"`). The device-flow credential is a getSession session
+ * bearer, so its runtime downgrade happens in `buildCustomSessionPayload` (REST
+ * path, keyed on `session.origin === "cli"`), NOT here. The `agent` arm's
+ * runtime producer is the Agent Auth verifier
+ * (`@atlas/api/lib/auth/agent-auth-verifier`), which reaches the SAME
+ * `resolveEffectiveRole(undefined, …)` boundary directly (the identical pattern
+ * the stdio path uses through `loadActorUser`) — required because the api
+ * bundle loads `@atlas/mcp` only via lazy dynamic `import()`, so a static call
+ * back into this switch is not available there. Both arms reserve the trust
+ * boundary as the canonical declaration; `bind-actor.test` proves each resolves
+ * org-role-only (it does NOT exercise the gate chain).
  */
-export type McpTransportTrust = "stdio" | "hosted" | "cli";
+export type McpTransportTrust = "stdio" | "hosted" | "cli" | "agent";
 
 export interface ResolveMcpActorRoleArgs {
   /** The trust boundary this binding is happening under. */
@@ -118,6 +124,15 @@ export function resolveMcpActorRole(
       // a stolen `~/.atlas/credentials` can never act past its org/member role
       // for the bound workspace. Distinct case (not a fall-through) so the
       // trust boundary is named, audited, and pinned independently of hosted.
+      return resolveEffectiveRole(undefined, args.userId, args.activeOrganizationId);
+    case "agent":
+      // Agent Auth Protocol identity (#4409): ORG role ONLY, like `hosted`/`cli`.
+      // An agent JWT is a delegated, portable bearer — strictly less trusted
+      // than the local operator — so `platform_admin` is withheld and it acts
+      // with the owning user's member role for the bound (membership-verified)
+      // workspace. Distinct case (not a fall-through) so the boundary is named,
+      // audited, and pinned independently. Canonical declaration of the rule the
+      // Agent Auth verifier reaches via `resolveEffectiveRole` directly.
       return resolveEffectiveRole(undefined, args.userId, args.activeOrganizationId);
     default: {
       // Exhaustiveness guard — a new transport must declare its trust boundary

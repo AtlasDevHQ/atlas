@@ -668,6 +668,31 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS",
     scope: "workspace",
   },
+  // #4409 / #2058 — Agent Auth Protocol spine kill-switch. The `agentAuth()`
+  // plugin is registered UNCONDITIONALLY in buildPlugins() (schema + routes
+  // always present, like twoFactor/passkey), so the ONLY thing this key
+  // controls is whether the reachable HTTP surface answers: when off (the
+  // default), every agent-auth endpoint + `/.well-known/agent-configuration`
+  // returns 404; when on, they become reachable — WITH NO REDEPLOY, because
+  // this is a hot-reloadable settings key (NOT `requiresRestart`, NOT an env
+  // var). The per-request gate reads it via `getSettingLive`/`getSettingAuto`
+  // and fails closed (any resolution error ⇒ off). `scope: "workspace"` gives
+  // the standard four-tier precedence (workspace override > platform > env >
+  // default): an operator flips the platform default, a workspace admin can
+  // override for their own workspace. Kept experimental (upstream spec is a
+  // moving `v1.0-draft`) — default OFF. See ADR-0016 §Agent Auth and the
+  // decision comment on #2058.
+  {
+    key: "ATLAS_AGENT_AUTH_ENABLED",
+    section: "MCP",
+    label: "Enable Agent Auth Protocol",
+    description:
+      "Expose the (experimental) Agent Auth Protocol surface: agent/host/capability endpoints and the `/.well-known/agent-configuration` discovery document. Hot-reloadable — takes effect within seconds, no redeploy. When off (default) the entire surface returns 404. Leave off unless you are piloting agent-identity clients.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_AGENT_AUTH_ENABLED",
+    scope: "workspace",
+  },
 
   // Appearance
   {

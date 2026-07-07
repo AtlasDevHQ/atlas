@@ -435,6 +435,73 @@ wellKnown.get("/oauth-protected-resource/mcp/:workspace_id", async (c) => {
   }
 });
 
+// ── /.well-known/agent-configuration ────────────────────────────────
+// Agent Auth Protocol discovery document (§6.1), gated by #4409's
+// hot-reloadable `ATLAS_AGENT_AUTH_ENABLED` setting. Served FROM THE API
+// (not a packages/web Next.js route) precisely because the gate decision
+// needs `getSettingLive`, which a web route can't reach (#2058 §5's
+// web-route sketch is stale).
+//
+// The document itself is the `agentAuth()` plugin's own canonical
+// `/api/auth/agent-configuration` output, proxied through the Better Auth
+// handler so the discovery doc can never drift from the endpoints the plugin
+// actually serves. When the setting is off (default) — or managed auth is not
+// configured — this returns 404, exactly like every other agent-auth path.
+//
+// Fail-closed: the gate resolves to off on any settings error, and a
+// handler/proxy failure surfaces as 503 with a requestId rather than a
+// misleading 404.
+wellKnown.get("/agent-configuration", async (c) => {
+  const requestId = crypto.randomUUID();
+
+  // Gate first — when off, the surface does not exist. Checked before auth-mode
+  // detection so an off deployment reveals nothing about managed-auth state.
+  const { isAgentAuthEnabled } = await import("@atlas/api/lib/auth/agent-auth-gate");
+  if (!(await isAgentAuthEnabled())) return notFoundAgentConfig();
+
+  const outcome = await loadAuthAndHelpers();
+  if (outcome.kind === "not-managed") return notFoundAgentConfig();
+  if (outcome.kind === "load-failed") {
+    return loadFailedResponse(requestId, outcome.reason);
+  }
+
+  try {
+    // Proxy the plugin's own discovery endpoint. The agent-auth before-hook
+    // only fires for `/agent/ /capability/ /host/` paths carrying a bearer, so
+    // this bare GET reaches the discovery handler directly (public, no auth).
+    const origin = new URL(c.req.url).origin;
+    const upstream = await outcome.helpers.auth.handler(
+      new Request(`${origin}/api/auth/agent-configuration`, { method: "GET" }),
+    );
+    if (!upstream.ok) {
+      log.error(
+        { requestId, status: upstream.status },
+        "agent-configuration proxy returned non-2xx",
+      );
+      return metadataUnavailableResponse(requestId);
+    }
+    return await withMetadataHeaders(upstream);
+  } catch (err) {
+    log.error(
+      { err: errorMessage(err), requestId },
+      "agent-configuration discovery generation failed",
+    );
+    return metadataUnavailableResponse(requestId);
+  }
+});
+
+/** 404 for the agent-configuration surface — shape mirrors `notManagedResponse`. */
+function notFoundAgentConfig(): Response {
+  return new Response(
+    JSON.stringify({
+      error: "not_found",
+      message:
+        "The Agent Auth discovery document is not available on this deployment.",
+    }),
+    { status: 404, headers: { "Content-Type": "application/json" } },
+  );
+}
+
 // CORS preflight — MCP Inspector and some browser MCP UIs probe before
 // fetching. Same shape as the production response, no body.
 wellKnown.options("/*", (c) => {

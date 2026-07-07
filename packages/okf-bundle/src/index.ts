@@ -46,6 +46,24 @@ export {
   type MintlifySourceOptions,
 } from "./mintlify";
 export {
+  createMkDocsSource,
+  MKDOCS_CONFIG_NAMES,
+  MKDOCS_DEFAULT_DOCS_DIR,
+  parseMkDocsConfig,
+  type MkDocsNav,
+  type MkDocsSource,
+  type MkDocsSourceOptions,
+} from "./mkdocs";
+export {
+  createDocusaurusSource,
+  DOCUSAURUS_SIDEBAR_LABEL,
+  resolveDocusaurusSidebar,
+  type DocusaurusSidebar,
+  type DocusaurusSource,
+  type DocusaurusSourceOptions,
+  type ResolveDocusaurusSidebarOptions,
+} from "./docusaurus";
+export {
   isContentlessBody,
   pageTags,
   renderOkfDocument,

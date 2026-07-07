@@ -56,11 +56,23 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: async (opts: { orgId?: string } = {}) => entitiesForOrg(opts.orgId),
 }));
 
+// Spread the real gate and override only the enable check, so onExecute's
+// workspace-override branch can be driven deterministically without an internal
+// DB (the gate's own env/fail-closed behavior is covered in agent-auth-gate.test.ts).
+// Default: enabled for every workspace.
+import * as gateReal from "@atlas/api/lib/auth/agent-auth-gate";
+let enabledForWorkspace: (orgId?: string) => boolean = () => true;
+mock.module("@atlas/api/lib/auth/agent-auth-gate", () => ({
+  ...gateReal,
+  isAgentAuthEnabled: async (orgId?: string) => enabledForWorkspace(orgId),
+}));
+
 // SUT — imported AFTER the mocks are registered.
 import {
   buildAgentAuthPlugin,
   LIST_ENTITIES_CAPABILITY,
   AGENT_WORKSPACE_METADATA_KEY,
+  AGENT_AUTH_CAPABILITIES,
 } from "@atlas/api/lib/auth/agent-auth-plugin";
 
 const BASE = "http://localhost:3000";
@@ -85,18 +97,18 @@ describe("agent-auth plugin contract (#4409)", () => {
   });
 
   it("advertises exactly ONE hand-written capability (Slice 1 scope guard)", () => {
-    // The plugin does not surface its options directly, so assert through the
-    // capabilities the discovery/list path is configured with: build a probe
-    // instance and read the registered capability off the execute path via a
-    // round-trip is overkill — instead pin the exported name + that the plugin
-    // exposes the execute + discovery endpoints.
+    // The real scope guard: exactly one capability, so Slice 2's OpenAPI adapter
+    // can't silently expand the surface here. Reads the exported source list.
+    expect(AGENT_AUTH_CAPABILITIES).toHaveLength(1);
+    expect(AGENT_AUTH_CAPABILITIES[0].name).toBe(LIST_ENTITIES_CAPABILITY);
+    expect(AGENT_AUTH_CAPABILITIES[0].name).toBe("list_semantic_entities");
+    // …and the plugin exposes the execute + discovery endpoints it's built on.
     const plugin = buildAgentAuthPlugin();
     const paths = Object.values(plugin.endpoints ?? {})
       .map((e) => (e as { path?: string }).path)
       .filter(Boolean);
     expect(paths).toContain("/capability/execute");
     expect(paths).toContain("/agent-configuration");
-    expect(LIST_ENTITIES_CAPABILITY).toBe("list_semantic_entities");
   });
 });
 
@@ -118,6 +130,7 @@ describe("agent-auth capability execution (#4409)", () => {
     if (prevEnabled === undefined) delete process.env.ATLAS_AGENT_AUTH_ENABLED;
     else process.env.ATLAS_AGENT_AUTH_ENABLED = prevEnabled;
     workspacesForUser = () => ["wsA"];
+    enabledForWorkspace = () => true;
   });
 
   /**
@@ -198,12 +211,29 @@ describe("agent-auth capability execution (#4409)", () => {
 
   it("happy path: valid aud + granted capability → 200, org-scoped result for the agent's workspace", async () => {
     workspacesForUser = () => ["wsA"];
+    enabledForWorkspace = () => true;
     const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
     const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
     expect(status).toBe(200);
-    // onExecute returned the org-scoped listEntities projection for wsA.
+    // onExecute returned the org-scoped listEntities projection for wsA, with the
+    // exact field mapping (name/table/description ?? null).
     expect(body.data).toMatchObject({ workspaceId: "wsA", count: 1 });
-    expect((body.data as { entities: unknown[] }).entities).toHaveLength(1);
+    expect((body.data as { entities: unknown[] }).entities).toEqual([
+      { name: "orders", table: "public.orders", description: "Orders fact" },
+    ]);
+  });
+
+  it("workspace-override off: a workspace that opted out is denied even with the platform default on", async () => {
+    // Defense-in-depth beyond the raw HTTP gate: onExecute re-checks the setting
+    // for the RESOLVED workspace. wsA has it off (platform on) → denied, and the
+    // org-scoped read is never reached.
+    workspacesForUser = () => ["wsA"];
+    enabledForWorkspace = (orgId) => orgId !== "wsA";
+    const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
+    const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
+    expect(status).toBe(404);
+    expect(body.error).toBe("unauthorized");
+    expect(body.data).toBeUndefined();
   });
 
   it("wrong audience → 401 invalid_jwt (rejected before onExecute)", async () => {

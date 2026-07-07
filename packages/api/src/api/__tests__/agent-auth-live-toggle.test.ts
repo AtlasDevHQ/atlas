@@ -52,6 +52,11 @@ const stubAuthInstance = {
     });
   },
 };
+// Intentional wholesale replace (NOT a spread of the real module, unlike the
+// `detect` mock above): building the real auth singleton is heavy, and both
+// routers consume ONLY `getAuthInstance` from this module — and only via dynamic
+// `import()` inside their handlers — so a light stub is sufficient and nothing
+// else in this test's graph needs the module's other exports.
 mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => stubAuthInstance,
 }));

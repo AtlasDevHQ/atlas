@@ -20,7 +20,7 @@
  * document knowledge lives here — only the on/off decision and the path shape.
  */
 
-import { getSettingAuto, getSettingLive } from "@atlas/api/lib/settings";
+import { getSettingLive } from "@atlas/api/lib/settings";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("auth:agent-auth-gate");
@@ -31,13 +31,17 @@ export const AGENT_AUTH_ENABLED_SETTING = "ATLAS_AGENT_AUTH_ENABLED";
 /**
  * Better Auth mounts every plugin endpoint under `/api/auth`. The agent-auth
  * plugin contributes routes under these three functional prefixes plus the one
- * public discovery endpoint. Kept in lockstep with the plugin's own
- * `AGENT_AUTH_PREFIXES` (`/agent/`, `/capability/`, `/host/`) + the
- * `/agent-configuration` discovery path — a future plugin route outside these
- * would silently escape the gate, so the contract test pins this list against
- * the plugin's advertised paths.
+ * public discovery endpoint. These mirror the plugin's OWN (internal,
+ * non-exported) `AGENT_AUTH_PREFIXES` (`/agent/`, `/capability/`, `/host/`) +
+ * the `/agent-configuration` discovery path — a hand copy with no compile-time
+ * coupling, so a future plugin route outside these would silently escape the
+ * gate and be reachable while the feature is off. The
+ * `agent-auth-gate.test.ts` contract test guards exactly that: it enumerates
+ * every path the real plugin advertises and asserts `isAgentAuthPath` matches
+ * each, so a `@better-auth/agent-auth` bump that adds a new route prefix goes
+ * RED here instead of opening a hole.
  */
-const AGENT_AUTH_MOUNT = "/api/auth";
+export const AGENT_AUTH_MOUNT = "/api/auth";
 const AGENT_AUTH_PREFIXES = [
   `${AGENT_AUTH_MOUNT}/agent/`,
   `${AGENT_AUTH_MOUNT}/capability/`,
@@ -91,22 +95,6 @@ export async function isAgentAuthEnabled(orgId?: string): Promise<boolean> {
     log.warn(
       { err: err instanceof Error ? err.message : String(err), orgId },
       "agent-auth gate: settings resolution failed — failing closed (off)",
-    );
-    return false;
-  }
-}
-
-/**
- * Synchronous variant for hot-path callers that already run inside a warm
- * settings cache (mirrors `getSettingAuto`). Same fail-closed contract.
- */
-export function isAgentAuthEnabledSync(orgId?: string): boolean {
-  try {
-    return isTrue(getSettingAuto(AGENT_AUTH_ENABLED_SETTING, orgId));
-  } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err), orgId },
-      "agent-auth gate (sync): settings resolution failed — failing closed (off)",
     );
     return false;
   }

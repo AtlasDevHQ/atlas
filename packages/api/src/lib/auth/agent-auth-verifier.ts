@@ -9,11 +9,14 @@
  * `AtlasUser` is already produced by five mechanisms (managed session, API key,
  * simple key, hosted OAuth bearer, cli device bearer). Agent Auth plugs in here
  * as the sixth: this module — and the `agentAuth()` plugin's `onExecute` that
- * calls it — are the ONLY places that know about agent sessions, agent JWTs, or
- * the `/.well-known/agent-configuration` surface. Everything downstream sees a
- * plain `AtlasUser`. So a future switch to an OAuth-native (ID-JAG / `auth.md`)
- * agent-identity flow replaces this producer and touches nothing in
- * `dispatch-gate.ts`, `dispatch-gate-contract.ts`, or `permissions.ts`.
+ * calls it — are the ONLY places that know about the agent-session / agent-JWT
+ * *shapes*. Everything downstream sees a plain `AtlasUser`. So a future switch
+ * to an OAuth-native (ID-JAG / `auth.md`) agent-identity flow replaces this
+ * producer and touches nothing in the enforcement core (`dispatch-gate.ts`,
+ * `dispatch-gate-contract.ts`, `permissions.ts`) — the invariant the
+ * `agent-auth-seam-quarantine` test pins. (The discovery route + the gate
+ * naturally know the surface exists; the quarantine is about the *enforcement
+ * core*, not every file.)
  *
  * ── Trust boundary ──────────────────────────────────────────────────────────
  *
@@ -75,7 +78,11 @@ export interface AgentAuthIdentity {
  * the cause.
  */
 export type AgentAuthActorResult =
-  | { readonly kind: "ok"; readonly user: AtlasUser }
+  // `workspaceId` is carried explicitly (not just implied by
+  // `user.activeOrganizationId`, which is typed `string | undefined`) so the
+  // caller reads a guaranteed `string` — encoding "an `ok` always has a bound
+  // workspace" in the type instead of a downstream runtime guard.
+  | { readonly kind: "ok"; readonly user: AtlasUser; readonly workspaceId: string }
   | {
       readonly kind: "denied";
       readonly reason: "missing_workspace" | "not_a_member" | "membership_lookup_failed";
@@ -146,5 +153,5 @@ export async function resolveAgentAuthActor(
     },
   );
 
-  return { kind: "ok", user };
+  return { kind: "ok", user, workspaceId };
 }

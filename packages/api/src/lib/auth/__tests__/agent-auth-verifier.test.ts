@@ -55,6 +55,8 @@ describe("resolveAgentAuthActor (#4409 sixth AtlasUser producer)", () => {
     expect(result.user.id).toBe("user_1");
     expect(result.user.mode).toBe("managed");
     expect(result.user.activeOrganizationId).toBe("wsA");
+    // The `ok` arm carries the bound workspace explicitly (guaranteed string).
+    expect(result.workspaceId).toBe("wsA");
     expect(result.user.role).toBe("member");
     expect(result.user.claims).toMatchObject({ agent_auth: true, agent_id: "agent_1", active_organization_id: "wsA" });
     // Frozen — createAtlasUser hardens the object.

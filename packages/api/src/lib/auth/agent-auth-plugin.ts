@@ -83,6 +83,13 @@ const listEntitiesCapability: Capability = {
 };
 
 /**
+ * The complete capability set the spine advertises. Exported so the contract
+ * test can assert Slice 1 ships EXACTLY one hand-written capability — a guard
+ * against Slice 2's OpenAPI adapter silently expanding the surface here.
+ */
+export const AGENT_AUTH_CAPABILITIES: readonly Capability[] = [listEntitiesCapability];
+
+/**
  * Read the agent-proposed workspace id off the agent session's metadata,
  * coerced to a non-empty string (metadata values are `string|number|boolean|null`).
  */
@@ -136,18 +143,9 @@ const onExecute: NonNullable<AgentAuthOptions["onExecute"]> = async ({
     );
   }
 
-  const user = resolved.user;
-  const workspaceId = user.activeOrganizationId;
-  if (!workspaceId) {
-    // Unreachable: resolveAgentAuthActor only returns `ok` with a bound
-    // workspace. Guard defensively rather than pass `undefined` into the
-    // org-scoped seam (which would hard-fail on a multi-tenant deployment).
-    throw agentError(
-      "FORBIDDEN",
-      AGENT_AUTH_ERROR_CODES.UNAUTHORIZED,
-      "Agent identity resolved without a workspace binding.",
-    );
-  }
+  // `workspaceId` is a guaranteed non-empty string on the `ok` arm (encoded in
+  // AgentAuthActorResult), so no defensive undefined-check is needed.
+  const { user, workspaceId } = resolved;
 
   // Workspace-override precedence (#4409): the raw HTTP gate checks the platform
   // default; here, with the workspace resolved, honor a per-workspace override.
@@ -168,20 +166,43 @@ const onExecute: NonNullable<AgentAuthOptions["onExecute"]> = async ({
   // `orgId` explicitly AND binding the identity is belt-and-suspenders: the call
   // is org-scoped by construction, and any deeper RLS-aware read runs under the
   // same bound actor. No secret material is threaded — only the resolved user.
-  const entities = await withRequestContext(
-    { requestId: crypto.randomUUID(), user },
-    () => listEntities({ orgId: workspaceId, mode: "published", ...(filter ? { filter } : {}) }),
-  );
-
-  return {
-    workspaceId,
-    count: entities.length,
-    entities: entities.map((e) => ({
-      name: e.name,
-      table: e.table,
-      description: e.description ?? null,
-    })),
-  };
+  //
+  // The read is wrapped: an UNEXPECTED failure (internal-DB brownout, semantic
+  // load/parse error, …) must NOT (a) be silent on Atlas's side, nor (b) let the
+  // plugin's default rethrow echo the raw `err.message` back to the agent — the
+  // least-trusted actor. Log with a correlatable ref, then throw a generic,
+  // non-leaking envelope carrying only that ref. (CLAUDE.md: no silent swallow,
+  // no secrets in responses, requestId on 500s.)
+  const requestId = crypto.randomUUID();
+  try {
+    const entities = await withRequestContext({ requestId, user }, () =>
+      listEntities({ orgId: workspaceId, mode: "published", ...(filter ? { filter } : {}) }),
+    );
+    return {
+      workspaceId,
+      count: entities.length,
+      entities: entities.map((e) => ({
+        name: e.name,
+        table: e.table,
+        description: e.description ?? null,
+      })),
+    };
+  } catch (err) {
+    log.error(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        requestId,
+        agentId: identity.agentId,
+        workspaceId,
+      },
+      "agent-auth capability execution failed while listing semantic entities",
+    );
+    throw agentError(
+      "INTERNAL_SERVER_ERROR",
+      AGENT_AUTH_ERROR_CODES.INTERNAL_ERROR,
+      `Failed to list semantic entities (ref ${requestId}). Retry; if it persists, contact your operator.`,
+    );
+  }
 };
 
 /**
@@ -194,7 +215,7 @@ export function buildAgentAuthPlugin(): ReturnType<typeof agentAuth> {
     providerName: "Atlas",
     providerDescription:
       "Atlas — deploy-anywhere text-to-SQL data analyst agent (Agent Auth Protocol, experimental).",
-    capabilities: [listEntitiesCapability],
+    capabilities: [...AGENT_AUTH_CAPABILITIES],
     onExecute,
   });
 }

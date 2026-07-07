@@ -135,6 +135,13 @@ const { bytes, stats } = await buildOkfBundle(source, { prefix: "docs", filter }
 // nav.manifestPath — which manifest won; stats.skipped.filtered — off-nav pages
 ```
 
+The reverse direction — a nav entry with **no backing file** — is tolerated,
+because Mintlify `pages` arrays legitimately carry non-file entries
+(OpenAPI-generated pages). A typo'd or renamed page therefore ships no
+document and lands in no skip bucket; when that matters, diff `nav.pages`
+against the built docs (`nav.pages` minus each doc's extension-less
+`sourcePath`) and warn on the difference.
+
 The manifest is parsed structurally as unknown JSON (no Mintlify config-type
 dependency; runtime deps stay `fflate`-only), exploiting the one invariant
 that holds across every navigation shape — tabs, anchors, dropdowns,

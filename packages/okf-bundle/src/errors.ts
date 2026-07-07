@@ -104,7 +104,7 @@ export class IngestCapExceededError extends Error {
 
 /**
  * A nav manifest (Mintlify's `docs.json` / legacy `mint.json`) is missing,
- * unparseable, or resolves to zero page paths. Fail-loud at generation time
+ * unreadable, unparseable, or resolves to zero page paths. Fail-loud at generation time
  * (issue #4391): a broken manifest silently yielding an empty allowed-path
  * set would surface as a misattributed `EmptyBundleError` at pack (blaming
  * the filter, not the manifest) — or, worse, via a partial nav, ship a

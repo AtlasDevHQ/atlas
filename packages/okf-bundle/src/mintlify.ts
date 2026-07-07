@@ -13,7 +13,8 @@
  * and the flat legacy `mint.json` group array): a page path only ever appears
  * as a STRING ELEMENT OF A `pages` ARRAY. Strings anywhere else (`href`,
  * `openapi`, icons, division titles) are never pages, so the walker recurses
- * through the known division keys and collects strings only under `pages`.
+ * through every object and array unconditionally (no division-key whitelist)
+ * and collects strings only under `pages`.
  *
  * FAIL-LOUD on a missing/malformed/unresolvable manifest
  * ({@link NavManifestError}) — a broken manifest must fail the build where
@@ -212,10 +213,11 @@ export async function createMintlifySource(
   options: MintlifySourceOptions,
 ): Promise<MintlifySource> {
   const { manifest, ...treeOptions } = options;
-  const [nav, source] = await Promise.all([
-    loadNav(options.root, manifest),
-    createMarkdownTreeSource(treeOptions),
-  ]);
+  // Manifest probe FIRST, sequentially: on a nonexistent root, racing the
+  // tree walk would nondeterministically surface either the contextual
+  // NavManifestError or readdir's raw ENOENT — same mistake, two errors.
+  const nav = await loadNav(options.root, manifest);
+  const source = await createMarkdownTreeSource(treeOptions);
   return {
     source,
     filter: (page) => nav.pages.has(stripPageExtension(page.path)),

@@ -28,6 +28,7 @@ import { query } from "./routes/query";
 import { executeSql } from "./routes/execute-sql";
 import { staticPaths, staticTags, securitySchemes } from "./routes/openapi";
 import { registerAtlasOpenApiSource, type AtlasOpenApiSpec } from "@atlas/api/lib/auth/atlas-openapi-source";
+import { registerInProcessApiFetch } from "@atlas/api/lib/auth/in-process-api";
 import { conversations, publicConversations } from "./routes/conversations";
 import { dashboards, publicDashboards } from "./routes/dashboards";
 import { semantic } from "./routes/semantic";
@@ -834,6 +835,16 @@ app.get("/api/v1/openapi.json", (c) => c.json(buildAtlasOpenApiDocument()));
 registerAtlasOpenApiSource(
   () => buildAtlasOpenApiDocument() as unknown as AtlasOpenApiSpec,
 );
+
+// Hand the agent-auth proxy (#4410) an in-process transport to THIS app, so its
+// `onExecute` forwards derived operations through the real middleware stack with
+// no network socket. Registered here (where `app` lives) so `lib/` never imports
+// the `api/` layer.
+registerInProcessApiFetch(async (input, init) => {
+  const request =
+    input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init);
+  return app.fetch(request);
+});
 
 export { app };
 export type AppType = typeof app;

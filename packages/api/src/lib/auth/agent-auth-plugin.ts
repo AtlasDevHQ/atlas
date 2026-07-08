@@ -71,6 +71,7 @@ import {
   getAtlasOpenApiSpec,
   type AtlasOpenApiSpec,
 } from "@atlas/api/lib/auth/atlas-openapi-source";
+import { getInProcessApiFetch } from "@atlas/api/lib/auth/in-process-api";
 import { buildApiKeyMetadata, type StoredApiKeyMetadata } from "@atlas/api/lib/auth/api-key-metadata";
 import { API_KEY_HEADER } from "@atlas/api/lib/auth/managed";
 import { getUserRole, clampToOrgRole } from "@atlas/api/lib/auth/permissions";
@@ -261,13 +262,24 @@ const mintWorkspaceApiKey: MintWorkspaceToken = async ({ user, workspaceId }) =>
  * The proxy transport for `onExecute`: route the derived operation through the
  * in-process Atlas API via `app.fetch` (no network socket), so the real
  * middleware stack — auth, org scoping, RLS, rate limits, the handler — runs
- * exactly as for any client. Dynamic import breaks the `server → app` cycle.
+ * exactly as for any client. The transport is obtained from the
+ * `in-process-api` registry (seeded by `api/index.ts`) rather than importing the
+ * `api/` layer here, keeping `lib/` above the route layer (CLAUDE.md). `null`
+ * only in a non-API process, where the surface is spec-less + gated so this
+ * never runs; fail closed with a ref if it somehow does.
  */
 const inProcessFetch: ProxyFetch = async (input, init) => {
-  const { app } = await import("@atlas/api/api/index");
-  const request =
-    input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init);
-  return app.fetch(request);
+  const fn = getInProcessApiFetch();
+  if (!fn) {
+    const ref = crypto.randomUUID();
+    log.error({ ref }, "in-process API transport unavailable — cannot proxy agent-auth capability");
+    throw agentError(
+      "INTERNAL_SERVER_ERROR",
+      AGENT_AUTH_ERROR_CODES.INTERNAL_ERROR,
+      `The in-process API transport is unavailable (ref ${ref}).`,
+    );
+  }
+  return fn(input, init);
 };
 
 /**

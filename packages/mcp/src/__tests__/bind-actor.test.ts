@@ -112,4 +112,25 @@ describe("resolveMcpActorRole — trust-boundary fork (#3603, ADR-0016)", () => 
     // Mock returns the userRole it was given (undefined for the cli arm).
     expect(role).toBeUndefined();
   });
+
+  it("agent arm withholds the user-level role (org role only — never platform_admin) (#4409)", async () => {
+    const role = await resolveMcpActorRole({
+      transport: "agent",
+      userId: "user-5",
+      activeOrganizationId: "org-5",
+      // An Agent Auth JWT is a delegated, portable bearer — strictly less
+      // trusted than the local operator. Even a wrongly-passed platform_admin
+      // userRole must NOT be forwarded.
+      userRole: "platform_admin",
+    });
+
+    // The invariant: agent forwards `undefined`, never the user-level role —
+    // the canonical declaration of the boundary the Agent Auth verifier reaches
+    // via resolveEffectiveRole directly.
+    expect(resolveCalls).toHaveLength(1);
+    expect(resolveCalls[0].userRole).toBeUndefined();
+    expect(resolveCalls[0].userId).toBe("user-5");
+    expect(resolveCalls[0].activeOrganizationId).toBe("org-5");
+    expect(role).toBeUndefined();
+  });
 });

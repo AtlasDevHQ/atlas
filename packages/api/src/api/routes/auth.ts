@@ -11,6 +11,7 @@ import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { createLogger } from "@atlas/api/lib/logger";
 import { normalizeSignupResponseBody } from "@atlas/api/lib/auth/signup-response";
+import { isAgentAuthPath, isAgentAuthEnabled } from "@atlas/api/lib/auth/agent-auth-gate";
 
 const log = createLogger("auth-route");
 
@@ -83,6 +84,25 @@ auth.all("/*", async (c) => {
           "endpoint is disabled.",
       },
       403,
+    );
+  }
+
+  // #4409 / #2058 — Agent Auth Protocol surface gate. The `agentAuth()` plugin is
+  // registered unconditionally (schema + routes always present), so its endpoints
+  // (`/api/auth/agent/*`, `/api/auth/host/*`, `/api/auth/capability/*`) and the
+  // discovery endpoint (`/api/auth/agent-configuration`) would otherwise be live
+  // by default. Gate them per-request on the hot-reloadable
+  // `ATLAS_AGENT_AUTH_ENABLED` setting so the whole surface returns 404 when off
+  // (the default) and becomes reachable — with NO redeploy — when an operator
+  // flips it on. Fail-closed (any resolution error ⇒ off). Gated on the platform
+  // default here (the workspace isn't known until the agent JWT is verified, and
+  // resolving it at this raw layer would leak token knowledge into the gate);
+  // per-workspace override precedence is honored downstream at capability
+  // execution. Mirrors the native-admin block above and `shouldExposeCanonicalPrompts`.
+  if (isAgentAuthPath(c.req.path) && !(await isAgentAuthEnabled())) {
+    return c.json(
+      { error: "not_found", message: "Not found" },
+      404,
     );
   }
 

@@ -95,6 +95,7 @@ import { getConfig } from "@atlas/api/lib/config";
 import { SaasCrm } from "@atlas/api/lib/effect/services";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { getSignupOrigin } from "@atlas/api/lib/auth/signup-origin";
+import { buildAgentAuthPlugin } from "@atlas/api/lib/auth/agent-auth-plugin";
 import { Effect } from "effect";
 
 /**
@@ -2833,6 +2834,19 @@ export function buildPlugins() {
       schema: {},
     }),
   );
+
+  // Agent Auth Protocol spine (#4409 / #2058, Slice 1) — registered
+  // UNCONDITIONALLY, exactly like twoFactor/passkey above. This keeps the
+  // plugin's routes and its agent/agentHost/agentCapabilityGrant/approvalRequest
+  // schema always present (Better Auth `ctx.runMigrations()` auto-creates the
+  // tables at boot), so the build-once auth singleton never has to be rebuilt to
+  // toggle the feature. Whether the surface is *reachable* is decided per-request
+  // by the hot-reloadable `ATLAS_AGENT_AUTH_ENABLED` gate (agent-auth-gate.ts),
+  // consulted in the catch-all auth router and the discovery route — default OFF,
+  // fail-closed, no redeploy to flip. The `jwt()` plugin pushed above satisfies
+  // the JWT/JWKS dependency. Kept experimental (upstream spec is a moving draft);
+  // scope is ONE hand-written capability, not the OpenAPI adapter (Slice 2).
+  plugins.push(buildAgentAuthPlugin());
 
   // SCIM directory sync — enterprise only.
   // No try/catch: if the plugin fails to initialize (missing dep, bad config),

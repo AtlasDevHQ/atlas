@@ -81,12 +81,33 @@ function isTrue(value: string | undefined): boolean {
  * experimental agent-identity surface on a transient settings-DB blip is
  * strictly worse than a brief false-off, so the error path denies.
  *
- * `orgId` selects the workspace tier of the settings precedence chain
- * (workspace override > platform > env > default). Callers that know the
- * resolved workspace (e.g. capability execution) pass it for workspace-override
- * precedence; the raw HTTP surface, which can't know the workspace before the
- * agent JWT is verified without leaking token knowledge into the gate, omits it
- * and gates on the platform default.
+ * TWO ENFORCEMENT TIERS, not a flat precedence chain (#4419). Although the
+ * underlying settings key is `scope: "workspace"` (mechanically resolvable as
+ * workspace override > platform > env > default), this gate is consulted at two
+ * sites that pass DIFFERENT arguments, and that is what produces the effective
+ * semantics:
+ *
+ *   1. HTTP surface — `isAgentAuthEnabled()` with NO `orgId` (the catch-all auth
+ *      router + `/.well-known/agent-configuration`). With no `orgId` the
+ *      workspace tier is never consulted, so this reads the PLATFORM tier only.
+ *      This is the master kill-switch: platform-off ⇒ every agent-auth path +
+ *      discovery is 404 for EVERYONE, and a workspace CANNOT re-open it (its
+ *      override-on is invisible here). The HTTP layer can't know the workspace
+ *      before the agent JWT is verified, and resolving it here would leak
+ *      token-shape knowledge into the gate — which the #4408/#4409 reversible
+ *      seam forbids — so platform-only is deliberate, not a gap.
+ *
+ *   2. Execution — `isAgentAuthEnabled(workspaceId)` at capability `onExecute`,
+ *      where the workspace is known (membership-verified). Here the workspace
+ *      override is consulted, so a workspace can only ever TIGHTEN: with the
+ *      platform on, a workspace that sets its override to `false` has its data
+ *      sealed (execute 404'd) while other workspaces are unaffected (overrides
+ *      are per-org). It can never LOOSEN a platform-off, because execution is
+ *      only reached after the HTTP surface (tier 1) has already admitted the
+ *      request.
+ *
+ * Net: operator = master on/off for everyone; workspace admin = opt-OUT of
+ * execution only. See the precedence-matrix tests in `agent-auth-gate.test.ts`.
  */
 export async function isAgentAuthEnabled(orgId?: string): Promise<boolean> {
   try {

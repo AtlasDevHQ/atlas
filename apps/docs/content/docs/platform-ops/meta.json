@@ -15,6 +15,7 @@
     "encryption-key-rotation",
     "plugin-config-residue-audit",
     "mcp-load-test-tokens",
-    "byot-catalog-refresh"
+    "byot-catalog-refresh",
+    "agent-auth-enablement"
   ]
 }

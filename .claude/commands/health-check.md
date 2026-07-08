@@ -33,7 +33,7 @@ gh run view <run_id> -R AtlasDevHQ/atlas --log-failed 2>&1 | tail -30
 Run all CI gates locally. If any fail, stop and report — the codebase is broken.
 
 ```bash
-bun run lint           # ESLint (flat config) — 0 warnings
+bun run lint           # oxlint — 0 errors (warnings allowed)
 bun run type           # TypeScript strict mode via tsgo — 0 errors
 bun run test           # Full suite — @atlas/api + all other workspace packages (isolated per-file)
 bun x syncpack lint    # Workspace dependency versions consistent

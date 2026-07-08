@@ -62,6 +62,8 @@ import {
   type AgentAuthIdentity,
 } from "@atlas/api/lib/auth/agent-auth-verifier";
 import { isAgentAuthEnabled } from "@atlas/api/lib/auth/agent-auth-gate";
+import { resolveAgentApprovalPage } from "@atlas/api/lib/auth/agent-approval-page";
+import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import {
   buildAgentAuthOpenApiOptions,
   type AgentAuthOpenApiOptions,
@@ -302,6 +304,13 @@ export interface AgentAuthPluginDeps {
   readonly mintToken: MintWorkspaceToken;
   /** Base URL the proxy prefixes operation paths with. */
   readonly baseUrl: string;
+  /**
+   * The device-authorization approval page (#4411). Absolute WEB-origin URL so
+   * the plugin's `verification_uri` resolves to the page that actually renders
+   * (`packages/web` `src/app/agent/approve/page.tsx`) rather than a 404 on the
+   * API host — see `resolveAgentApprovalPage`.
+   */
+  readonly deviceAuthorizationPage: string;
 }
 
 function resolveDeps(overrides?: Partial<AgentAuthPluginDeps>): AgentAuthPluginDeps {
@@ -310,6 +319,8 @@ function resolveDeps(overrides?: Partial<AgentAuthPluginDeps>): AgentAuthPluginD
     fetch: overrides?.fetch ?? inProcessFetch,
     mintToken: overrides?.mintToken ?? mintWorkspaceApiKey,
     baseUrl: overrides?.baseUrl ?? resolveInternalApiBase(),
+    deviceAuthorizationPage:
+      overrides?.deviceAuthorizationPage ?? resolveAgentApprovalPage(getWebOrigin()),
   };
 }
 
@@ -456,9 +467,16 @@ function buildOptions(deps: AgentAuthPluginDeps): AgentAuthOpenApiOptions {
 export function buildAgentAuthPlugin(
   overrides?: Partial<AgentAuthPluginDeps>,
 ): ReturnType<typeof agentAuth> {
-  const options = buildOptions(resolveDeps(overrides));
+  const deps = resolveDeps(overrides);
+  const options = buildOptions(deps);
   return agentAuth({
     ...options,
+    // Point the device-authorization approval flow (#4411) at the Atlas web
+    // page. Absolute WEB-origin URL — a bare path would resolve against the API
+    // origin and 404 (see `resolveAgentApprovalPage`). Set outside the OpenAPI
+    // `options` spread because it's a top-level plugin option, not an adapter
+    // field; the adapter never touches it, so ordering is immaterial.
+    deviceAuthorizationPage: deps.deviceAuthorizationPage,
     // AFTER the spread: `createFromOpenAPI` derives `providerName`/
     // `providerDescription` from the spec's `info` ("Atlas API" / the API
     // blurb), but the discovery document should carry Atlas's own branding and

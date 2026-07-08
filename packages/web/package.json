@@ -68,7 +68,6 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
-    "@next/eslint-plugin-next": "^16.2.9",
     "@tailwindcss/postcss": "^4.3.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",

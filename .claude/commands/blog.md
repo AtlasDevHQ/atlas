@@ -126,7 +126,7 @@ Converge on the beat structure (Lead → an early stat/visual → H2 sections �
 
 1. **Lint the changed files** (catches `react/no-unescaped-entities` + Tailwind canonical-class hints):
    ```bash
-   cd apps/www && bun x eslint <changed paths>
+   cd apps/www && bun x oxlint <changed paths>
    ```
 2. **Render check.** `apps/www` dev server runs on **:3002** (`cd apps/www && bun run dev`, background). Then:
    ```bash

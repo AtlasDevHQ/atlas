@@ -1,0 +1,95 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "nextjs", "import"],
+  "jsPlugins": [{ "name": "eslint-js", "specifier": "oxlint-plugin-eslint" }],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "@next/next/no-html-link-for-pages": "off",
+    "no-unsafe-optional-chaining": "warn",
+    "no-control-regex": "warn"
+  },
+  "overrides": [
+    {
+      "files": ["packages/schemas/**/*.ts"],
+      "rules": {
+        "eslint-js/no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "@atlas/api",
+                  "@atlas/api/*",
+                  "@atlas/web",
+                  "@atlas/web/*",
+                  "@atlas/ee",
+                  "@atlas/ee/*"
+                ],
+                "message": "@useatlas/schemas must not depend on @atlas/* packages. Wire-format schemas sit below the app layer; keep the dependency direction types -> schemas -> api/web."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["packages/web/**/*.ts", "packages/web/**/*.tsx"],
+      "rules": {
+        "eslint-js/no-restricted-syntax": [
+          "error",
+          {
+            "selector": "ObjectExpression > Property[key.name='message'][value.type='MemberExpression'] MemberExpression[property.name='error']",
+            "message": "Do not flatten a mutation `.error` into `{ message: x.error }` — useAdminMutation surfaces a structured FetchError (status/code/requestId). Pass it straight to setError() / AdminContentWrapper, or convert to a string via friendlyError() / friendlyErrorOrNull()."
+          },
+          {
+            "selector": "ObjectExpression > Property[key.name='message'][value.type='ChainExpression'] MemberExpression[property.name='error']",
+            "message": "Do not flatten a mutation `.error` chain into `{ message: x?.error }` — useAdminMutation surfaces a structured FetchError. Pass it straight to setError() / AdminContentWrapper, or convert to a string via friendlyError() / friendlyErrorOrNull()."
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "packages/web/src/ui/components/admin/**/*.ts",
+        "packages/web/src/ui/components/admin/**/*.tsx",
+        "packages/web/src/app/admin/**/*.ts",
+        "packages/web/src/app/admin/**/*.tsx"
+      ],
+      "rules": {
+        "eslint-js/no-restricted-syntax": [
+          "error",
+          {
+            "selector": "ObjectExpression > Property[key.name='message'][value.type='MemberExpression'] MemberExpression[property.name='error']",
+            "message": "Do not flatten a mutation `.error` into `{ message: x.error }` — useAdminMutation surfaces a structured FetchError (status/code/requestId). Pass it straight to setError() / AdminContentWrapper, or convert to a string via friendlyError() / friendlyErrorOrNull()."
+          },
+          {
+            "selector": "ObjectExpression > Property[key.name='message'][value.type='ChainExpression'] MemberExpression[property.name='error']",
+            "message": "Do not flatten a mutation `.error` chain into `{ message: x?.error }` — useAdminMutation surfaces a structured FetchError. Pass it straight to setError() / AdminContentWrapper, or convert to a string via friendlyError() / friendlyErrorOrNull()."
+          },
+          {
+            "selector": "TSPropertySignature[key.name='feature'] > TSTypeAnnotation > TSStringKeyword",
+            "message": "Admin components must type `feature` as `FeatureName` from @/ui/components/admin/feature-registry, not `string`. A string slot reopens the typo-in-banner-copy regression the registry closes (#1652)."
+          },
+          {
+            "selector": "TSPropertySignature[key.name='feature'] > TSTypeAnnotation > TSUnionType > TSStringKeyword",
+            "message": "Admin components must type `feature` as `FeatureName` from @/ui/components/admin/feature-registry. Widening to `FeatureName | string` collapses to `string` and reopens the typo regression."
+          }
+        ]
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "**/.next/",
+    "**/out/",
+    "plugins/obsidian/main.js",
+    "node_modules/",
+    "**/dist/",
+    "create-atlas/templates/**",
+    "apps/docs/.source/**",
+    "apps/docs/content/docs/api-reference/**"
+  ]
+}

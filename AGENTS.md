@@ -53,7 +53,7 @@ Guidance for Codex when working in this repository.
 - [ ] **No async waterfalls** — Use `Promise.all([a(), b()])` for independent awaits
 - [ ] **Immutable array operations** — Use `toSorted()`, `toReversed()`, `toSpliced()` in React components
 - [ ] **Dynamic imports for heavy components** — Use `next/dynamic` for Monaco, Recharts, syntax highlighters
-- [ ] **Flat ESLint config** — `eslint.config.mjs`, not `.eslintrc`
+- [ ] **oxlint, not ESLint** — Linting is [oxlint](https://oxc.rs) via `.oxlintrc.json`. The three CI-enforced guards (FetchError-flatten, `feature: FeatureName` registry, `@useatlas/schemas` import boundary) run through the `oxlint-plugin-eslint` JS plugin. Type-aware linting (tsgolint) is available but off by default
 - [ ] **`FeatureName` registry for admin surfaces** — `<MutationErrorSurface>`, `<EnterpriseUpsell>`, `<FeatureGate>`, `<AdminContentWrapper>`, and `<ReasonDialog>` type their `feature` prop as `FeatureName` from `@/ui/components/admin/feature-registry`. Adding a new admin surface means appending its canonical name to `FEATURE_NAMES` first — then TS guides every call site into agreement. Casing matches the banner copy ("SSO" not "sso"); consolidate duplicates rather than adding variants. The registry is the `tsgo`-enforced source of truth for user-visible feature labels — skip it and typos render in production upsells
 
 ### Database & Migrations

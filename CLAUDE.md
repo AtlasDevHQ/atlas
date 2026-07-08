@@ -47,7 +47,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **No async waterfalls** — `Promise.all([a(), b()])` for independent awaits
 - [ ] **Immutable array operations** — `toSorted()`, `toReversed()`, `toSpliced()` in React components
 - [ ] **Dynamic imports for heavy components** — `next/dynamic` for Monaco, Recharts, syntax highlighters
-- [ ] **Flat ESLint config** — `eslint.config.mjs`, not `.eslintrc`
+- [ ] **oxlint, not ESLint** — Linting is [oxlint](https://oxc.rs) via `.oxlintrc.json` (Rust core, tsgo-backed). Rule set mirrors the former ESLint baseline (eslint + typescript + nextjs + import correctness). The three CI-enforced guards (FetchError-flatten, `feature: FeatureName` registry, `@useatlas/schemas` import boundary) run as `no-restricted-syntax`/`no-restricted-imports` through the `oxlint-plugin-eslint` JS plugin (`jsPlugins` in `.oxlintrc.json`). Type-aware linting (tsgolint) is available but intentionally off — enabling it is tracked follow-up work
 - [ ] **`FeatureName` registry for admin surfaces** — `<MutationErrorSurface>`, `<EnterpriseUpsell>`, `<FeatureGate>`, `<AdminContentWrapper>`, `<ReasonDialog>` type `feature` as `FeatureName` from `@/ui/components/admin/feature-registry`. Append the canonical name to `FEATURE_NAMES` first (casing matches banner copy — "SSO" not "sso"); consolidate duplicates. `tsgo`-enforced
 
 ### Database & Migrations

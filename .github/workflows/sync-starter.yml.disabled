@@ -72,14 +72,14 @@ jobs:
 
           # Remove files that are regenerated from monorepo
           rm -rf src/ bin/ data/ docs/
-          rm -f eslint.config.mjs next.config.ts postcss.config.mjs tsconfig.json
+          rm -f .oxlintrc.json next.config.ts postcss.config.mjs tsconfig.json
 
           # Copy synced output
           cp -r /tmp/starter-sync/src ./src
           cp -r /tmp/starter-sync/bin ./bin
           cp -r /tmp/starter-sync/data ./data
           cp -r /tmp/starter-sync/docs ./docs
-          cp /tmp/starter-sync/eslint.config.mjs ./
+          cp /tmp/starter-sync/.oxlintrc.json ./
           cp /tmp/starter-sync/next.config.ts ./
           cp /tmp/starter-sync/postcss.config.mjs ./
           cp /tmp/starter-sync/tsconfig.json ./

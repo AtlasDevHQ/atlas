@@ -37,6 +37,7 @@ import {
 } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 import { NOTION_KNOWLEDGE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/notion-knowledge-form-handler";
 import { CONFLUENCE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/confluence-form-handler";
+import { CONFLUENCE_DC_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/confluence-datacenter-form-handler";
 import { GITBOOK_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/gitbook-form-handler";
 import { SYNC_CYCLE_INSTALLS_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
 import {
@@ -506,6 +507,32 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     // The token is NEVER persisted in the install config.
     expect(row.rows[0]?.config).not.toHaveProperty("api_token");
     expect(row.rows[0]?.config).toMatchObject({ space_key: "ENG" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("installs a Confluence Data Center connector collection against the live schema (#4394)", async () => {
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+       VALUES ('catalog:confluence-datacenter', 'Knowledge Base (Confluence Data Center)', 'confluence-datacenter', 'context', 'knowledge', 'form')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    const installed = await pool.query<{ id: string }>(CONFLUENCE_DC_INSTALL_UPSERT_SQL, [
+      "row-confluence-dc",
+      ws,
+      "catalog:confluence-datacenter",
+      "confluence-dc-eng",
+      JSON.stringify({ base_url: "https://confluence.acme.com", space_key: "ENG" }),
+    ]);
+    expect(installed.rows[0]?.id).toBe("row-confluence-dc");
+    const row = await pool.query<{ pillar: string; status: string; config: Record<string, unknown> }>(
+      `SELECT pillar, status, config FROM workspace_plugins
+        WHERE workspace_id = $1 AND install_id = 'confluence-dc-eng'`,
+      [ws],
+    );
+    expect(row.rows[0]).toMatchObject({ pillar: "knowledge", status: "published" });
+    // The token is NEVER persisted in the install config; neither is a Cloud email.
+    expect(row.rows[0]?.config).not.toHaveProperty("api_token");
+    expect(row.rows[0]?.config).not.toHaveProperty("email");
+    expect(row.rows[0]?.config).toMatchObject({ base_url: "https://confluence.acme.com", space_key: "ENG" });
   }, PG_TEST_TIMEOUT_MS);
 
   it("installs a GitBook connector collection against the live schema (#4393)", async () => {

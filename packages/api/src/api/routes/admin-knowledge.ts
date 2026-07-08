@@ -55,6 +55,7 @@ import {
 } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 import { NOTION_KNOWLEDGE_CATALOG_ID } from "@atlas/api/lib/knowledge/notion/connector";
 import { CONFLUENCE_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/config";
+import { CONFLUENCE_DC_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/config-datacenter";
 import { GITBOOK_CATALOG_ID } from "@atlas/api/lib/knowledge/gitbook/config";
 import { syncCollection } from "@atlas/api/lib/knowledge/sync";
 import { getKnowledgeSyncConnector } from "@atlas/api/lib/knowledge/connectors";
@@ -103,7 +104,14 @@ async function loadCollection(
 }
 
 /** A synced-collection source discriminator + whether it is a connector. */
-type KnowledgeSource = "upload" | "bundle-sync" | "notion" | "confluence" | "gitbook" | "unknown";
+type KnowledgeSource =
+  | "upload"
+  | "bundle-sync"
+  | "notion"
+  | "confluence"
+  | "confluence-datacenter"
+  | "gitbook"
+  | "unknown";
 
 /**
  * Map a knowledge catalog id to the wire `source` discriminator — matching
@@ -117,6 +125,7 @@ function sourceOf(catalogId: string): KnowledgeSource {
   if (catalogId === BUNDLE_SYNC_CATALOG_ID) return "bundle-sync";
   if (catalogId === NOTION_KNOWLEDGE_CATALOG_ID) return "notion";
   if (catalogId === CONFLUENCE_CATALOG_ID) return "confluence";
+  if (catalogId === CONFLUENCE_DC_CATALOG_ID) return "confluence-datacenter";
   if (catalogId === GITBOOK_CATALOG_ID) return "gitbook";
   return "unknown";
 }
@@ -127,6 +136,7 @@ function isSyncedSource(source: KnowledgeSource): boolean {
     source === "bundle-sync" ||
     source === "notion" ||
     source === "confluence" ||
+    source === "confluence-datacenter" ||
     source === "gitbook"
   );
 }
@@ -148,7 +158,7 @@ const CollectionListResponseSchema = z.object({
   collections: z.array(
     z.object({
       slug: z.string(),
-      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "gitbook"]),
+      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook"]),
       description: z.string().nullable(),
       installedAt: z.string().nullable(),
       endpointUrl: z.string().nullable(),

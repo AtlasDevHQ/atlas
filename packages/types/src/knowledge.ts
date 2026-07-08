@@ -28,18 +28,23 @@ export interface KnowledgeDocumentCounts {
  *     Notion workspace via an internal-integration token).
  *   - `confluence` — the #4377 Knowledge Sync Connector (a scheduled pull of a
  *     Confluence Cloud space via an API token).
+ *   - `confluence-datacenter` — the #4394 Knowledge Sync Connector (a scheduled
+ *     pull of a self-managed Confluence Data Center/Server space via a Personal
+ *     Access Token; REST v1 instead of Cloud's v2).
  *
  * Every value except `upload` is a "synced" collection: its content is owned by
  * an external source, it has last-sync bookkeeping, and it can be re-pulled with
  * "Sync now". Only `bundle-sync` additionally exposes an `endpointUrl` /
- * `authScheme`; connector collections (`notion`, `confluence`, `gitbook`) carry
- * neither (their credential is a token, not an endpoint).
+ * `authScheme`; connector collections (`notion`, `confluence`,
+ * `confluence-datacenter`, `gitbook`) carry neither (their credential is a
+ * token, not an endpoint).
  */
 export type KnowledgeCollectionSource =
   | "upload"
   | "bundle-sync"
   | "notion"
   | "confluence"
+  | "confluence-datacenter"
   | "gitbook";
 
 /**

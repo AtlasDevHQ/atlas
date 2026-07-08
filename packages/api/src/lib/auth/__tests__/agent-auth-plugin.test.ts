@@ -400,13 +400,10 @@ describe("agent-auth CIBA backchannel approval gating (#4414)", () => {
     expect(opts.approvalMethods).toContain("device_authorization");
   });
 
-  // The advertised method set through a REAL betterAuth() instance: the discovery
-  // document (§6.1) is exactly what an agent reads to learn which approval methods
-  // the server accepts, and the library derives `/agent/ciba/authorize`'s own gate
-  // from the same list — so this is the load-bearing "offered / not offered" proof.
-  async function discoveryApprovalMethods(cibaApproval: boolean): Promise<string[]> {
+  /** A real `betterAuth()` instance with only the agent-auth plugin, CIBA gated by `cibaApproval`. */
+  function makeCibaInstance(cibaApproval: boolean) {
     const plugin = buildAgentAuthPlugin({ spec: FIXTURE_SPEC, cibaApproval });
-    const instance = betterAuth({
+    return betterAuth({
       baseURL: BASE,
       secret: "test-secret-at-least-32-characters-long!!",
       database: memoryAdapter({
@@ -416,12 +413,60 @@ describe("agent-auth CIBA backchannel approval gating (#4414)", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
       plugins: [plugin] as any[],
     });
-    const res = await instance.handler(
+  }
+
+  // The advertised method set through a REAL betterAuth() instance: the discovery
+  // document (§6.1) is exactly what an agent reads to learn which approval methods
+  // the server accepts, and the library derives `/agent/ciba/authorize`'s own gate
+  // from the same list — so this is the load-bearing "offered / not offered" proof.
+  async function discoveryApprovalMethods(cibaApproval: boolean): Promise<string[]> {
+    const res = await makeCibaInstance(cibaApproval).handler(
       new Request(`${ISSUER}/agent-configuration`, { method: "GET" }),
     );
+    // A non-200 here (a regressed discovery endpoint) would otherwise surface as an
+    // empty method list; assert the status so a break reads as "endpoint broke",
+    // not "methods list is empty".
+    expect(res.status).toBe(200);
     const body = (await res.json()) as { approval_methods?: string[] };
     return body.approval_methods ?? [];
   }
+
+  // The ENFORCEMENT endpoint, end-to-end — not just the advertisement. The library
+  // runs `approvalMethods.includes("ciba")` as the FIRST line of
+  // `/agent/ciba/authorize`, before it even checks for a host session, so an
+  // unauthenticated POST cleanly separates the two postures: core rejects with
+  // `invalid_request` (CIBA is not offered), while enterprise passes the method gate
+  // and only THEN demands host auth (`unauthorized`). This pins the actual gate
+  // against a future library bump that might decouple the endpoint from
+  // `approval_methods` — a decoupling that would keep the advertising tests green
+  // while core silently accepted a backchannel approval (an enterprise-gate bypass).
+  async function cibaAuthorize(
+    cibaApproval: boolean,
+  ): Promise<{ status: number; error?: string }> {
+    const res = await makeCibaInstance(cibaApproval).handler(
+      new Request(`${ISSUER}/agent/ciba/authorize`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ login_hint: "user@example.com" }),
+      }),
+    );
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    return { status: res.status, error: body.error };
+  }
+
+  it("core /agent/ciba/authorize is hard-rejected (invalid_request) — enforcement, not just advertising", async () => {
+    const { status, error } = await cibaAuthorize(false);
+    expect(status).toBe(400);
+    expect(error).toBe("invalid_request");
+  });
+
+  it("enterprise /agent/ciba/authorize passes the method gate, then demands host auth (unauthorized)", async () => {
+    // Not `invalid_request`: the CIBA method IS offered, so the library advances
+    // past the gate to the host-auth check — which an unauthenticated request fails.
+    const { status, error } = await cibaAuthorize(true);
+    expect(status).toBe(401);
+    expect(error).toBe("unauthorized");
+  });
 
   it("core discovery document advertises device-authorization only (no ciba) — end-to-end", async () => {
     expect(await discoveryApprovalMethods(false)).toEqual(["device_authorization"]);

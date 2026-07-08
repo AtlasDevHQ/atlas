@@ -71,6 +71,7 @@ import {
   buildAgentAuthOpenApiOptions,
 } from "@atlas/api/lib/auth/agent-auth-openapi";
 import type { AtlasOpenApiSpec } from "@atlas/api/lib/auth/atlas-openapi-source";
+import { fromOpenAPI } from "@better-auth/agent-auth/openapi";
 
 const BASE = "http://localhost:3000";
 const ISSUER = `${BASE}/api/auth`;
@@ -118,6 +119,19 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
     expect(isSensitiveOperation(idx.get("getAdminAudit"))).toBe(true); // admin read
     expect(isSensitiveOperation(idx.get("getPlatformRegions"))).toBe(true); // platform read
     expect(isSensitiveOperation(undefined)).toBe(true); // fail closed
+  });
+
+  it("the operationId join holds against the REAL adapter output (fromOpenAPI)", () => {
+    // buildOperationIndex classifies caps by `cap.name === operationId`. If the
+    // adapter ever renamed/prefixed cap names, EVERY cap would miss the index
+    // and be treated as sensitive (safe, but the feature would offer nothing).
+    // Pin the join against the actual `createFromOpenAPI` capability shape.
+    const index = buildOperationIndex(FIXTURE_SPEC);
+    const derived = fromOpenAPI(FIXTURE_SPEC);
+    expect(derived.length).toBe(index.size);
+    for (const cap of derived) {
+      expect(index.has(cap.name)).toBe(true);
+    }
   });
 
   it("matches sensitive prefixes only on a segment boundary", () => {
@@ -246,16 +260,22 @@ describe("agent-auth capability execution (#4410)", () => {
   // token was minted + forwarded WITHOUT standing up the whole Atlas app.
   let lastForwarded: { url: string; headers: Record<string, string> } | null = null;
   let mintedFor: Array<{ userId: string; workspaceId: string }> = [];
+  // The proxy transport's response is configurable per test: default 200; a test
+  // can point it at a thrown transport error (sanitization branch) or a non-2xx
+  // upstream (client-error branch).
+  const okResponder = (): Response =>
+    new Response(JSON.stringify({ ok: true, from: "upstream" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  let fetchResponder: () => Response | Promise<Response> = okResponder;
   const stubFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const req = input instanceof Request ? input : new Request(String(input), init);
     lastForwarded = {
       url: req.url,
       headers: Object.fromEntries(req.headers.entries()),
     };
-    return new Response(JSON.stringify({ ok: true, from: "upstream" }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    return fetchResponder();
   };
   const stubMint = async ({ user, workspaceId }: { user: { id: string }; workspaceId: string }) => {
     mintedFor.push({ userId: user.id, workspaceId });
@@ -274,6 +294,7 @@ describe("agent-auth capability execution (#4410)", () => {
     enabledForWorkspace = () => true;
     lastForwarded = null;
     mintedFor = [];
+    fetchResponder = okResponder;
   });
 
   afterAll(() => {
@@ -304,6 +325,9 @@ describe("agent-auth capability execution (#4410)", () => {
       deniedBy: null, grantedBy: "user_1", expiresAt: null, status: a.grantStatus,
       constraints: null, createdAt: now, updatedAt: now,
     }));
+    const plugin = buildAgentAuthPlugin({
+      spec: FIXTURE_SPEC, fetch: stubFetch, mintToken: stubMint, baseUrl: "http://internal",
+    });
     return betterAuth({
       baseURL: BASE,
       secret: "test-secret-at-least-32-characters-long!!",
@@ -312,9 +336,7 @@ describe("agent-auth capability execution (#4410)", () => {
         agent: agentRows, agentHost: [host], agentCapabilityGrant: grantRows, approvalRequest: [],
       }),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
-      plugins: [
-        buildAgentAuthPlugin({ spec: FIXTURE_SPEC, fetch: stubFetch, mintToken: stubMint, baseUrl: "http://internal" }),
-      ] as any[],
+      plugins: [plugin] as any[],
     });
   }
 
@@ -441,5 +463,36 @@ describe("agent-auth capability execution (#4410)", () => {
     expect(body.error).toBe("unauthorized");
     expect(mintedFor).toEqual([]);
     expect(lastForwarded).toBeNull();
+  });
+
+  it("error sanitization: an opaque proxy transport failure → 500 internal_error, no raw message leaked", async () => {
+    fetchResponder = () => {
+      throw new Error("connect ECONNREFUSED secret-db-host:5432");
+    };
+    const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
+    const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
+    expect(status).toBe(500);
+    expect(body.error).toBe("internal_error");
+    // The raw upstream/transport detail never reaches the agent; a ref does.
+    const message = JSON.stringify(body);
+    expect(message).not.toContain("ECONNREFUSED");
+    expect(message).not.toContain("secret-db-host");
+    expect(message).toContain("ref ");
+  });
+
+  it("upstream 4xx: a deterministic client error surfaces as a client envelope, no raw body, no retry advice", async () => {
+    fetchResponder = () =>
+      new Response(JSON.stringify({ error: "bad_arg", secret: "leaky-internal-detail" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
+    const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
+    expect(status).toBe(403);
+    expect(body.error).toBe("invalid_request");
+    const message = JSON.stringify(body);
+    expect(message).not.toContain("leaky-internal-detail");
+    expect(message).toContain("HTTP 403");
+    expect(message).not.toContain("Retry"); // not a transient fault
   });
 });

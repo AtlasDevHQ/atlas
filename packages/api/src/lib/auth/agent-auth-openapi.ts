@@ -22,11 +22,13 @@
  *      ONLY, so it would auto-grant admin GETs — we compute the path-aware safe
  *      set ourselves and override it.
  *
- *   2. `resolveCapabilities` — the per-request filter `GET /capability/list` and
- *      `/capability/describe` run. Hides every sensitive capability so an agent
+ *   2. `resolveCapabilities` — the discovery-time filter (`GET /capability/list`,
+ *      `/capability/describe`). Hides every sensitive capability so an agent
  *      never even discovers a write/admin route to ask for. (Visibility only —
- *      the plugin resolves execute/grant against the base `capabilities` array,
- *      not this filtered view, which is why control 3 is also required.)
+ *      the plugin resolves execute/grant against the base `capabilities` array
+ *      and consults `resolveCapabilities` only as a fallback when a cap is
+ *      ABSENT from that array, so it can never REMOVE a base cap from execution,
+ *      which is why control 3 is also required.)
  *
  *   3. `blockedCapabilities` — the hard teeth. The plugin rejects any GRANT for a
  *      blocked capability (`validateCapabilityIds` → `CAPABILITY_BLOCKED`), and

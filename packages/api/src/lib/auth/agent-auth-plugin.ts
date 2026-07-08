@@ -71,7 +71,7 @@ import {
   getAtlasOpenApiSpec,
   type AtlasOpenApiSpec,
 } from "@atlas/api/lib/auth/atlas-openapi-source";
-import { buildApiKeyMetadata } from "@atlas/api/lib/auth/api-key-metadata";
+import { buildApiKeyMetadata, type StoredApiKeyMetadata } from "@atlas/api/lib/auth/api-key-metadata";
 import { API_KEY_HEADER } from "@atlas/api/lib/auth/managed";
 import { getUserRole, clampToOrgRole } from "@atlas/api/lib/auth/permissions";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
@@ -175,8 +175,10 @@ type MintWorkspaceToken = (input: { user: AtlasUser; workspaceId: string }) => P
 export type CreateWorkspaceApiKey = (opts: {
   body: {
     userId: string;
+    // Typed as the exact metadata we build (not a bare `Record`) so the call
+    // site assigns without an `unknown` hop and a shape change is a type error.
+    metadata: StoredApiKeyMetadata;
     name: string;
-    metadata: Record<string, unknown>;
     expiresIn: number;
   };
 }) => Promise<{ id?: string; key?: string } | undefined>;
@@ -187,17 +189,27 @@ export type CreateWorkspaceApiKey = (opts: {
  * workspace-scoped metadata, the org-role ceiling, and fail-closed error
  * envelopes. `createApiKey` is `undefined` on a deployment whose apiKey plugin
  * didn't register it.
+ *
+ * Both failure branches are 500-class. `agentError` builds an `APIError`, so it
+ * bypasses the `onExecute` wrapper's ref injection (the wrapper re-throws
+ * `APIError`s unchanged); each branch therefore logs with its OWN correlatable
+ * `ref` and stamps that `ref` into the agent-facing message, matching the
+ * wrapper's opaque-error path (CLAUDE.md: request IDs on all 500s).
  */
 export async function mintWorkspaceApiKeyVia(
   createApiKey: CreateWorkspaceApiKey | undefined,
   { user, workspaceId }: { user: AtlasUser; workspaceId: string },
 ): Promise<string> {
   if (!createApiKey) {
-    log.error({ workspaceId }, "apiKey plugin createApiKey unavailable — cannot mint per-org agent token");
+    const ref = crypto.randomUUID();
+    log.error(
+      { workspaceId, ref },
+      "apiKey plugin createApiKey unavailable — cannot mint per-org agent token",
+    );
     throw agentError(
       "INTERNAL_SERVER_ERROR",
       AGENT_AUTH_ERROR_CODES.INTERNAL_ERROR,
-      "Per-org token minting is not available on this deployment.",
+      `Per-org token minting is not available on this deployment (ref ${ref}).`,
     );
   }
 
@@ -207,15 +219,20 @@ export async function mintWorkspaceApiKeyVia(
     body: {
       userId: user.id,
       name: `agent-auth:${workspaceId}`,
-      metadata: metadata as unknown as Record<string, unknown>,
+      metadata,
       expiresIn: WORKSPACE_KEY_TTL_SECONDS,
     },
   });
   if (!created?.key) {
+    const ref = crypto.randomUUID();
+    log.error(
+      { workspaceId, ref },
+      "createApiKey returned no key material — cannot mint per-org agent token",
+    );
     throw agentError(
       "INTERNAL_SERVER_ERROR",
       AGENT_AUTH_ERROR_CODES.INTERNAL_ERROR,
-      "Could not mint the per-org agent token. Retry shortly.",
+      `Could not mint the per-org agent token (ref ${ref}). Retry shortly.`,
     );
   }
   return created.key;
@@ -285,9 +302,39 @@ function resolveDeps(overrides?: Partial<AgentAuthPluginDeps>): AgentAuthPluginD
 }
 
 /**
+ * Recover the HTTP status the adapter embedded in its plain-`Error` message
+ * (`Upstream API error <status>: <body>`). Returns `null` for any message that
+ * doesn't match — a transport error, or an adapter message-format change on a
+ * version bump (which safely falls through to the opaque-500 path).
+ */
+function parseUpstreamStatus(err: unknown): number | null {
+  const message = err instanceof Error ? err.message : String(err);
+  const match = /^Upstream API error (\d{3}):/.exec(message);
+  return match ? Number(match[1]) : null;
+}
+
+/** Map a proxied 4xx to the agent-auth error status label that yields the same code. */
+function upstreamClientErrorLabel(
+  status: number,
+): "BAD_REQUEST" | "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" {
+  switch (status) {
+    case 401:
+      return "UNAUTHORIZED";
+    case 403:
+      return "FORBIDDEN";
+    case 404:
+      return "NOT_FOUND";
+    default:
+      return "BAD_REQUEST";
+  }
+}
+
+/**
  * Build the adapter options (or the inert empty-capability set when no spec is
  * available — a non-API process, or a spec-generation failure; the surface is
- * default-off and gated, so zero capabilities is safe).
+ * default-off and gated, so zero capabilities is safe). The inert branch needs
+ * no `resolveCapabilities`/`blockedCapabilities` beyond the empties: with zero
+ * base capabilities there is nothing to hide or block.
  */
 function buildOptions(deps: AgentAuthPluginDeps): AgentAuthOpenApiOptions {
   if (!deps.spec) {
@@ -329,6 +376,26 @@ function buildOptions(deps: AgentAuthPluginDeps): AgentAuthOpenApiOptions {
       // that may be a distinct class identity from this module's import, so a raw
       // `instanceof` would miss it and collapse a 403/404 denial into a 500.
       if (isAPIError(err)) throw err;
+
+      // The adapter throws a PLAIN Error (`Upstream API error <status>: <body>`)
+      // for every non-2xx proxied response, embedding the raw upstream body. A
+      // deterministic 4xx is the agent's own bad request (invalid args / not
+      // permitted), not a transient fault: surface a client-class envelope
+      // WITHOUT the raw body (no leak) and WITHOUT misleading retry guidance. A
+      // 5xx or an unparseable/transport error falls through to the opaque 500.
+      const upstreamStatus = parseUpstreamStatus(err);
+      if (upstreamStatus !== null && upstreamStatus >= 400 && upstreamStatus < 500) {
+        log.warn(
+          { status: upstreamStatus, requestId, capability: ctx.capability },
+          "agent-auth openapi proxy: upstream rejected the request (client error)",
+        );
+        throw agentError(
+          upstreamClientErrorLabel(upstreamStatus),
+          AGENT_AUTH_ERROR_CODES.INVALID_REQUEST,
+          `The Atlas API rejected this capability call (HTTP ${upstreamStatus}). Check the arguments — it will not succeed on retry unchanged (ref ${requestId}).`,
+        );
+      }
+
       log.error(
         { err: err instanceof Error ? err.message : String(err), requestId, capability: ctx.capability },
         "agent-auth openapi proxy execution failed",
@@ -354,9 +421,13 @@ export function buildAgentAuthPlugin(
 ): ReturnType<typeof agentAuth> {
   const options = buildOptions(resolveDeps(overrides));
   return agentAuth({
+    ...options,
+    // AFTER the spread: `createFromOpenAPI` derives `providerName`/
+    // `providerDescription` from the spec's `info` ("Atlas API" / the API
+    // blurb), but the discovery document should carry Atlas's own branding and
+    // the load-bearing "experimental" signal — so these literals must win.
     providerName: "Atlas",
     providerDescription:
       "Atlas — deploy-anywhere text-to-SQL data analyst agent (Agent Auth Protocol, experimental).",
-    ...options,
   });
 }

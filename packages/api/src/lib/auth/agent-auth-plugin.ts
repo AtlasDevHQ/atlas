@@ -62,6 +62,7 @@ import {
   type AgentAuthIdentity,
 } from "@atlas/api/lib/auth/agent-auth-verifier";
 import { isAgentAuthEnabled } from "@atlas/api/lib/auth/agent-auth-gate";
+import { auditAgentAuthEvent } from "@atlas/api/lib/auth/agent-auth-audit";
 import { resolveAgentApprovalPage } from "@atlas/api/lib/auth/agent-approval-page";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import {
@@ -477,6 +478,14 @@ export function buildAgentAuthPlugin(
     // `options` spread because it's a top-level plugin option, not an adapter
     // field; the adapter never touches it, so ordering is immaterial.
     deviceAuthorizationPage: deps.deviceAuthorizationPage,
+    // #4412 Slice 4 — record the grant/approval/execute lifecycle in the admin
+    // audit catalog (`ADMIN_ACTIONS.agent.*`). The bridge fails closed on the
+    // `ATLAS_AGENT_AUTH_ENABLED` master switch, summarizes high-volume executes
+    // (never one row per call), and never records capability args/output. See
+    // `agent-auth-audit.ts`. The plugin's own `onEvent` dispatch is fire-and-forget
+    // (`.catch`-logged), and the bridge additionally never rejects, so a
+    // slow/failing audit write can never break an agent-auth request.
+    onEvent: auditAgentAuthEvent,
     // AFTER the spread: `createFromOpenAPI` derives `providerName`/
     // `providerDescription` from the spec's `info` ("Atlas API" / the API
     // blurb), but the discovery document should carry Atlas's own branding and

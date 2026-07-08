@@ -27,6 +27,8 @@ import { regionRouting } from "./routes/region-routing";
 import { query } from "./routes/query";
 import { executeSql } from "./routes/execute-sql";
 import { staticPaths, staticTags, securitySchemes } from "./routes/openapi";
+import { registerAtlasOpenApiSource, type AtlasOpenApiSpec } from "@atlas/api/lib/auth/atlas-openapi-source";
+import { registerInProcessApiFetch } from "@atlas/api/lib/auth/in-process-api";
 import { conversations, publicConversations } from "./routes/conversations";
 import { dashboards, publicDashboards } from "./routes/dashboards";
 import { semantic } from "./routes/semantic";
@@ -780,41 +782,68 @@ app.onError((err, c) => {
 
 let cachedSpec: Record<string, unknown> | null = null;
 
-app.get("/api/v1/openapi.json", (c) => {
-  if (!cachedSpec) {
-    const auto = app.getOpenAPI31Document({
-      openapi: "3.1.0",
-      info: {
-        title: "Atlas API",
-        version: "1.0.0",
-        description:
-          "Text-to-SQL data analyst agent. Ask natural-language questions about your data and receive structured answers.",
-      },
-      servers: [
-        { url: "http://localhost:3001", description: "Standalone API (development)" },
-        { url: "http://localhost:3000", description: "Same-origin via Next.js rewrites" },
-      ],
-    });
+/**
+ * Build (once, memoized) the merged Atlas OpenAPI 3.1 document from the live
+ * route definitions + the static auth/widget entries. This is the same document
+ * `scripts/extract-openapi.ts` snapshots into `apps/docs/openapi.json`; served
+ * by `/api/v1/openapi.json` AND consumed in-process by the agent-auth OpenAPI
+ * adapter (#4410) via `registerAtlasOpenApiSource` below — the snapshot file is
+ * not copied into the runtime image, so the in-process document is the
+ * always-present source of truth.
+ */
+function buildAtlasOpenApiDocument(): Record<string, unknown> {
+  if (cachedSpec) return cachedSpec;
+  const auto = app.getOpenAPI31Document({
+    openapi: "3.1.0",
+    info: {
+      title: "Atlas API",
+      version: "1.0.0",
+      description:
+        "Text-to-SQL data analyst agent. Ask natural-language questions about your data and receive structured answers.",
+    },
+    servers: [
+      { url: "http://localhost:3001", description: "Standalone API (development)" },
+      { url: "http://localhost:3000", description: "Same-origin via Next.js rewrites" },
+    ],
+  });
 
-    // Merge static paths (auth, widget) into the auto-generated spec
-    const autoPaths = (auto.paths ?? {}) as Record<string, unknown>;
-    const mergedPaths = { ...autoPaths, ...staticPaths };
+  // Merge static paths (auth, widget) into the auto-generated spec
+  const autoPaths = (auto.paths ?? {}) as Record<string, unknown>;
+  const mergedPaths = { ...autoPaths, ...staticPaths };
 
-    // Merge static tags
-    const autoTags = (auto.tags ?? []) as Array<{ name: string; description?: string }>;
-    const autoTagNames = new Set(autoTags.map((t) => t.name));
-    const mergedTags = [...autoTags, ...staticTags.filter((t) => !autoTagNames.has(t.name))];
+  // Merge static tags
+  const autoTags = (auto.tags ?? []) as Array<{ name: string; description?: string }>;
+  const autoTagNames = new Set(autoTags.map((t) => t.name));
+  const mergedTags = [...autoTags, ...staticTags.filter((t) => !autoTagNames.has(t.name))];
 
-    // Add security schemes
-    const autoComponents = (auto.components ?? {}) as Record<string, unknown>;
-    const mergedComponents = {
-      ...autoComponents,
-      securitySchemes: { ...((autoComponents.securitySchemes as Record<string, unknown>) ?? {}), ...securitySchemes },
-    };
+  // Add security schemes
+  const autoComponents = (auto.components ?? {}) as Record<string, unknown>;
+  const mergedComponents = {
+    ...autoComponents,
+    securitySchemes: { ...((autoComponents.securitySchemes as Record<string, unknown>) ?? {}), ...securitySchemes },
+  };
 
-    cachedSpec = { ...auto, paths: mergedPaths, tags: mergedTags, components: mergedComponents };
-  }
-  return c.json(cachedSpec);
+  cachedSpec = { ...auto, paths: mergedPaths, tags: mergedTags, components: mergedComponents };
+  return cachedSpec;
+}
+
+app.get("/api/v1/openapi.json", (c) => c.json(buildAtlasOpenApiDocument()));
+
+// Hand the agent-auth OpenAPI adapter (#4410) the in-process Atlas spec, lazily.
+// The thunk runs at most once, on the first agent-auth plugin build (first
+// authed request), so the ~2.5 MB document is never generated eagerly at boot.
+registerAtlasOpenApiSource(
+  () => buildAtlasOpenApiDocument() as unknown as AtlasOpenApiSpec,
+);
+
+// Hand the agent-auth proxy (#4410) an in-process transport to THIS app, so its
+// `onExecute` forwards derived operations through the real middleware stack with
+// no network socket. Registered here (where `app` lives) so `lib/` never imports
+// the `api/` layer.
+registerInProcessApiFetch(async (input, init) => {
+  const request =
+    input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init);
+  return app.fetch(request);
 });
 
 export { app };

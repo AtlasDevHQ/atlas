@@ -2835,17 +2835,21 @@ export function buildPlugins() {
     }),
   );
 
-  // Agent Auth Protocol spine (#4409 / #2058, Slice 1) — registered
-  // UNCONDITIONALLY, exactly like twoFactor/passkey above. This keeps the
-  // plugin's routes and its agent/agentHost/agentCapabilityGrant/approvalRequest
-  // schema always present (Better Auth `ctx.runMigrations()` auto-creates the
-  // tables at boot), so the build-once auth singleton never has to be rebuilt to
-  // toggle the feature. Whether the surface is *reachable* is decided per-request
-  // by the hot-reloadable `ATLAS_AGENT_AUTH_ENABLED` gate (agent-auth-gate.ts),
+  // Agent Auth Protocol spine (#4409 / #2058) — registered UNCONDITIONALLY,
+  // exactly like twoFactor/passkey above. This keeps the plugin's routes and its
+  // agent/agentHost/agentCapabilityGrant/approvalRequest schema always present
+  // (Better Auth `ctx.runMigrations()` auto-creates the tables at boot), so the
+  // build-once auth singleton never has to be rebuilt to toggle the feature.
+  // Whether the surface is *reachable* is decided per-request by the
+  // hot-reloadable `ATLAS_AGENT_AUTH_ENABLED` gate (agent-auth-gate.ts),
   // consulted in the catch-all auth router and the discovery route — default OFF,
   // fail-closed, no redeploy to flip. The `jwt()` plugin pushed above satisfies
-  // the JWT/JWKS dependency. Kept experimental (upstream spec is a moving draft);
-  // scope is ONE hand-written capability, not the OpenAPI adapter (Slice 2).
+  // the JWT/JWKS dependency. Kept experimental (upstream spec is a moving draft).
+  // Slice 2 (#4410): capabilities are DERIVED from the in-process Atlas OpenAPI
+  // spec via `createFromOpenAPI` (agent-auth-openapi.ts), contained to the
+  // read-only non-admin surface; execution proxies through the in-process API
+  // under a real per-org token. `buildAgentAuthPlugin()` reads the spec through
+  // the `atlas-openapi-source` registry seeded by `api/index.ts`.
   plugins.push(buildAgentAuthPlugin());
 
   // SCIM directory sync — enterprise only.

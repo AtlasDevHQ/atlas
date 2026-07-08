@@ -1,21 +1,22 @@
 /**
- * Agent Auth spine — plugin contract + JWT/grant verification + the Atlas-side
- * `onExecute` per-org binding (#4409, Slice 1).
+ * Agent Auth — OpenAPI adapter contract + JWT/grant verification + the
+ * Atlas-side per-org binding and error hygiene (#4410 Slice 2, building on the
+ * #4409 spine).
  *
- * These drive the REAL `buildAgentAuthPlugin()` through a real `betterAuth()`
- * instance backed by the in-memory adapter (the same harness `server.test.ts`
- * uses). The agent-auth `before` hook does full agent-JWT verification
- * (signature against the registered Ed25519 key, `aud` binding, expiry, jti
- * replay) and the capability grant check before `onExecute` runs — so hitting
- * `/api/auth/capability/execute` with crafted JWTs exercises the actual security
- * surface, not a re-implementation.
+ * These drive the REAL `buildAgentAuthPlugin()` (with injected seams — a fixture
+ * spec, a stub proxy `fetch`, and a stub token minter) through a real
+ * `betterAuth()` instance backed by the in-memory adapter (the same harness
+ * `server.test.ts` uses). The agent-auth `before` hook does full agent-JWT
+ * verification (signature against the registered Ed25519 key, `aud` binding,
+ * expiry, jti replay) and the capability grant check before `onExecute` runs —
+ * so hitting `/api/auth/capability/execute` with crafted JWTs exercises the
+ * actual security surface, not a re-implementation.
  *
- * The two `onExecute` dependencies that need an internal DB — the workspace-
- * membership lookup (`listUserWorkspaceIds`) and the org-scoped read
- * (`listEntities`) — are mocked so the happy and cross-workspace paths run
- * without Postgres; every DENIAL case (wrong aud / expired / revoked / missing
- * capability claim) fails BEFORE `onExecute`, so those assertions exercise the
- * unmocked plugin verification directly.
+ * The one `resolveHeaders` dependency that needs an internal DB — the
+ * workspace-membership lookup (`listUserWorkspaceIds`) — is mocked so the happy
+ * and cross-workspace paths run without Postgres; every DENIAL case (wrong aud /
+ * expired / revoked / missing capability claim) fails BEFORE `onExecute`, so
+ * those assertions exercise the unmocked plugin verification directly.
  *
  * Self-contained: the enable flag is set on `process.env` inside the suite and
  * restored, never at module top level.
@@ -29,7 +30,7 @@ import { generateKeyPair, exportJWK, SignJWT } from "jose";
 /** jose v6 dropped the `KeyLike` alias; infer the key type from generateKeyPair. */
 type AgentPrivateKey = Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
 
-// ── Mocks for the two internal-DB-backed onExecute dependencies ─────────────
+// ── Mocks for the internal-DB-backed resolveHeaders dependency ──────────────
 // `listUserWorkspaceIds` is the authoritative membership check the verifier
 // runs; default it to "user_1 is a member of wsA only" so the cross-workspace
 // case (an agent bound to wsB) is denied.
@@ -44,20 +45,7 @@ mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
   revokeWorkspaceGrant: async () => 0,
 }));
 
-// Spread the real semantic/entities module and override only `listEntities`,
-// so "mock all exports" holds and the org-scoped read is deterministic.
-import * as entitiesReal from "@atlas/api/lib/semantic/entities";
-const defaultEntitiesForOrg = (orgId: string | undefined): entitiesReal.EntityListEntry[] =>
-  orgId === "wsA"
-    ? [{ name: "orders", table: "public.orders", description: "Orders fact", source: "default" }]
-    : [];
-let entitiesForOrg: (orgId: string | undefined) => entitiesReal.EntityListEntry[] = defaultEntitiesForOrg;
-mock.module("@atlas/api/lib/semantic/entities", () => ({
-  ...entitiesReal,
-  listEntities: async (opts: { orgId?: string } = {}) => entitiesForOrg(opts.orgId),
-}));
-
-// Spread the real gate and override only the enable check, so onExecute's
+// Spread the real gate and override only the enable check, so resolveHeaders'
 // workspace-override branch can be driven deterministically without an internal
 // DB (the gate's own env/fail-closed behavior is covered in agent-auth-gate.test.ts).
 // Default: enabled for every workspace.
@@ -71,24 +59,156 @@ mock.module("@atlas/api/lib/auth/agent-auth-gate", () => ({
 // SUT — imported AFTER the mocks are registered.
 import {
   buildAgentAuthPlugin,
-  LIST_ENTITIES_CAPABILITY,
   AGENT_WORKSPACE_METADATA_KEY,
-  AGENT_AUTH_CAPABILITIES,
+  mintWorkspaceApiKeyVia,
+  type CreateWorkspaceApiKey,
 } from "@atlas/api/lib/auth/agent-auth-plugin";
+import { createAtlasUser } from "@atlas/api/lib/auth/types";
+import {
+  buildOperationIndex,
+  isSensitiveOperation,
+  isSensitivePath,
+  buildAgentAuthOpenApiOptions,
+} from "@atlas/api/lib/auth/agent-auth-openapi";
+import type { AtlasOpenApiSpec } from "@atlas/api/lib/auth/atlas-openapi-source";
 
 const BASE = "http://localhost:3000";
 const ISSUER = `${BASE}/api/auth`;
 const EXECUTE_URL = `${ISSUER}/capability/execute`;
 
-// ── Contract pinning ────────────────────────────────────────────────────────
+/**
+ * A minimal fixture spec exercising every classification branch: a safe read
+ * (GET /me), a write (POST /query), a sensitive-path read (GET /admin/audit), a
+ * HEAD read, and a platform read. operationIds mirror the auto-generated
+ * `<method><Path>` shape.
+ */
+const FIXTURE_SPEC = {
+  info: { title: "Atlas API", description: "fixture" },
+  paths: {
+    "/api/v1/me": { get: { operationId: "getMe", description: "current user" } },
+    "/api/v1/query": { post: { operationId: "postQuery", description: "run a query" } },
+    "/api/v1/admin/audit": { get: { operationId: "getAdminAudit", description: "audit log" } },
+    "/api/v1/dashboards": {
+      get: { operationId: "getDashboards", description: "list dashboards" },
+      head: { operationId: "headDashboards", description: "dashboards head" },
+    },
+    "/api/v1/platform/regions": { get: { operationId: "getPlatformRegions", description: "regions" } },
+  },
+} satisfies AtlasOpenApiSpec;
 
-describe("agent-auth plugin contract (#4409)", () => {
+const SAFE_CAP = "getMe";
+
+// ── Pure adapter classification (no plugin, no auth instance) ────────────────
+
+describe("agent-auth OpenAPI adapter classification (#4410)", () => {
+  it("indexes every operationId to its method + path", () => {
+    const index = buildOperationIndex(FIXTURE_SPEC);
+    expect(index.get("getMe")).toEqual({ method: "GET", path: "/api/v1/me" });
+    expect(index.get("postQuery")).toEqual({ method: "POST", path: "/api/v1/query" });
+    expect(index.get("headDashboards")).toEqual({ method: "HEAD", path: "/api/v1/dashboards" });
+    expect(index.size).toBe(6);
+  });
+
+  it("classifies writes, admin, and platform routes as sensitive; read-only non-admin as safe", () => {
+    const idx = buildOperationIndex(FIXTURE_SPEC);
+    expect(isSensitiveOperation(idx.get("getMe"))).toBe(false); // safe read
+    expect(isSensitiveOperation(idx.get("headDashboards"))).toBe(false); // safe HEAD
+    expect(isSensitiveOperation(idx.get("getDashboards"))).toBe(false); // safe read
+    expect(isSensitiveOperation(idx.get("postQuery"))).toBe(true); // write
+    expect(isSensitiveOperation(idx.get("getAdminAudit"))).toBe(true); // admin read
+    expect(isSensitiveOperation(idx.get("getPlatformRegions"))).toBe(true); // platform read
+    expect(isSensitiveOperation(undefined)).toBe(true); // fail closed
+  });
+
+  it("matches sensitive prefixes only on a segment boundary", () => {
+    expect(isSensitivePath("/api/v1/admin")).toBe(true);
+    expect(isSensitivePath("/api/v1/admin/audit")).toBe(true);
+    expect(isSensitivePath("/api/v1/platform/regions")).toBe(true);
+    expect(isSensitivePath("/api/v1/administrators")).toBe(false); // not swept by raw prefix
+    expect(isSensitivePath("/api/v1/me")).toBe(false);
+  });
+
+  it("derives capabilities from the spec, limits defaultHostCapabilities to safe reads, blocks the rest", () => {
+    const opts = buildAgentAuthOpenApiOptions(FIXTURE_SPEC, {
+      baseUrl: "http://internal",
+      resolveHeaders: async () => ({}),
+    });
+    const capNames = (opts.capabilities ?? []).map((c) => c.name).sort();
+    // Every operation is a capability — no hand-rolled list.
+    expect(capNames).toEqual(
+      ["getAdminAudit", "getDashboards", "getMe", "getPlatformRegions", "headDashboards", "postQuery"].sort(),
+    );
+    // Auto-grant only safe reads (GET/HEAD, non-admin) — NOT admin GETs or writes.
+    expect([...(opts.defaultHostCapabilities as string[])].sort()).toEqual(
+      ["getDashboards", "getMe", "headDashboards"].sort(),
+    );
+    // Hard-block every sensitive cap from being granted/executed.
+    expect([...(opts.blockedCapabilities ?? [])].sort()).toEqual(
+      ["getAdminAudit", "getPlatformRegions", "postQuery"].sort(),
+    );
+  });
+
+  it("resolveCapabilities hides sensitive caps from discovery (list/describe)", () => {
+    const opts = buildAgentAuthOpenApiOptions(FIXTURE_SPEC, {
+      baseUrl: "http://internal",
+      resolveHeaders: async () => ({}),
+    });
+    const visible = opts.resolveCapabilities!({
+      capabilities: opts.capabilities ?? [],
+      query: null,
+      agentSession: null,
+      hostSession: null,
+    }) as Array<{ name: string }>;
+    const names = visible.map((c) => c.name).sort();
+    expect(names).toEqual(["getDashboards", "getMe", "headDashboards"].sort());
+    expect(names).not.toContain("postQuery");
+    expect(names).not.toContain("getAdminAudit");
+  });
+});
+
+// ── Per-org token minting core (AC2) ────────────────────────────────────────
+
+describe("agent-auth per-org token minting (#4410)", () => {
+  const user = createAtlasUser("user_1", "managed", "U", { activeOrganizationId: "wsA" });
+
+  it("server-side mints a workspace-scoped key: explicit userId, workspace metadata, short TTL", async () => {
+    let seen: Parameters<CreateWorkspaceApiKey>[0] | undefined;
+    const createApiKey: CreateWorkspaceApiKey = async (opts) => {
+      seen = opts;
+      return { id: "key_1", key: "wskey_secret" };
+    };
+    const token = await mintWorkspaceApiKeyVia(createApiKey, { user, workspaceId: "wsA" });
+    expect(token).toBe("wskey_secret");
+    // No request headers → server-side mint bound to the agent's owning member.
+    expect(seen?.body.userId).toBe("user_1");
+    expect(seen?.body.expiresIn).toBeGreaterThan(0);
+    expect(seen?.body.metadata).toMatchObject({ atlasWorkspaceKey: true, orgId: "wsA" });
+    // No plaintext secrets / RLS claims smuggled into metadata.
+    expect(seen?.body.metadata.claims).toBeUndefined();
+  });
+
+  it("throws a non-leaking internal error when the apiKey plugin is unavailable", async () => {
+    await expect(mintWorkspaceApiKeyVia(undefined, { user, workspaceId: "wsA" })).rejects.toMatchObject({
+      body: { error: "internal_error" },
+    });
+  });
+
+  it("throws when createApiKey returns no key material", async () => {
+    const createApiKey: CreateWorkspaceApiKey = async () => ({ id: "key_1" });
+    await expect(mintWorkspaceApiKeyVia(createApiKey, { user, workspaceId: "wsA" })).rejects.toMatchObject({
+      body: { error: "internal_error" },
+    });
+  });
+});
+
+// ── Plugin contract ─────────────────────────────────────────────────────────
+
+describe("agent-auth plugin contract (#4410)", () => {
   it("registers under id 'agent-auth' with the four spec tables", () => {
-    const plugin = buildAgentAuthPlugin();
+    const plugin = buildAgentAuthPlugin({ spec: FIXTURE_SPEC });
     expect(plugin.id).toBe("agent-auth");
     // The 0.6.2 schema names — pinned so a future bump that renames a table
-    // (docs drifted between agent/host/grant and agentHost/capabilityGrant) goes
-    // RED here rather than silently changing what auto-migrate creates.
+    // goes RED here rather than silently changing what auto-migrate creates.
     expect(Object.keys(plugin.schema ?? {}).sort()).toEqual([
       "agent",
       "agentCapabilityGrant",
@@ -97,28 +217,50 @@ describe("agent-auth plugin contract (#4409)", () => {
     ]);
   });
 
-  it("advertises exactly ONE hand-written capability (Slice 1 scope guard)", () => {
-    // The real scope guard: exactly one capability, so Slice 2's OpenAPI adapter
-    // can't silently expand the surface here. Reads the exported source list.
-    expect(AGENT_AUTH_CAPABILITIES).toHaveLength(1);
-    expect(AGENT_AUTH_CAPABILITIES[0].name).toBe(LIST_ENTITIES_CAPABILITY);
-    expect(AGENT_AUTH_CAPABILITIES[0].name).toBe("list_semantic_entities");
-    // …and the plugin exposes the execute + discovery endpoints it's built on.
-    const plugin = buildAgentAuthPlugin();
+  it("exposes the execute + discovery endpoints the adapter is built on", () => {
+    const plugin = buildAgentAuthPlugin({ spec: FIXTURE_SPEC });
     const paths = Object.values(plugin.endpoints ?? {})
       .map((e) => (e as { path?: string }).path)
       .filter(Boolean);
     expect(paths).toContain("/capability/execute");
     expect(paths).toContain("/agent-configuration");
   });
+
+  it("advertises zero capabilities when no spec is available (inert, gated surface)", () => {
+    // A non-API process (or a spec-generation failure) → null spec → empty
+    // capability set, never a crash. The surface stays default-off + 404-gated.
+    const plugin = buildAgentAuthPlugin({ spec: null });
+    expect(plugin.id).toBe("agent-auth");
+  });
 });
 
-// ── JWT / grant verification + onExecute binding ────────────────────────────
+// ── JWT / grant verification + per-org binding through the proxy ─────────────
 
-describe("agent-auth capability execution (#4409)", () => {
+describe("agent-auth capability execution (#4410)", () => {
   let privateKey: AgentPrivateKey;
   let publicJwk: Record<string, unknown>;
   const prevEnabled = process.env.ATLAS_AGENT_AUTH_ENABLED;
+
+  // The stub proxy transport captures the forwarded request (URL + headers) and
+  // returns a canned upstream response, so the happy path asserts the per-org
+  // token was minted + forwarded WITHOUT standing up the whole Atlas app.
+  let lastForwarded: { url: string; headers: Record<string, string> } | null = null;
+  let mintedFor: Array<{ userId: string; workspaceId: string }> = [];
+  const stubFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const req = input instanceof Request ? input : new Request(String(input), init);
+    lastForwarded = {
+      url: req.url,
+      headers: Object.fromEntries(req.headers.entries()),
+    };
+    return new Response(JSON.stringify({ ok: true, from: "upstream" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const stubMint = async ({ user, workspaceId }: { user: { id: string }; workspaceId: string }) => {
+    mintedFor.push({ userId: user.id, workspaceId });
+    return `wskey_${workspaceId}`;
+  };
 
   beforeAll(async () => {
     process.env.ATLAS_AGENT_AUTH_ENABLED = "true";
@@ -127,13 +269,11 @@ describe("agent-auth capability execution (#4409)", () => {
     publicJwk = (await exportJWK(kp.publicKey)) as Record<string, unknown>;
   });
 
-  // Reset the mutable stubs after EVERY test (not just once in afterAll) so a
-  // test that repoints a stub can't bleed into a later one — the org-scoped read
-  // path is order-sensitive otherwise.
   afterEach(() => {
     workspacesForUser = () => ["wsA"];
     enabledForWorkspace = () => true;
-    entitiesForOrg = defaultEntitiesForOrg;
+    lastForwarded = null;
+    mintedFor = [];
   });
 
   afterAll(() => {
@@ -141,12 +281,6 @@ describe("agent-auth capability execution (#4409)", () => {
     else process.env.ATLAS_AGENT_AUTH_ENABLED = prevEnabled;
   });
 
-  /**
-   * Build a fresh in-memory auth instance seeded with a host, a user, and one
-   * or more agents (each with its own workspace-metadata + grant status). Rows
-   * are pre-seeded in the shape the plugin's read path expects (publicKey /
-   * metadata as JSON strings), which the scratch harness verified round-trips.
-   */
   function makeInstance(
     agents: Array<{ id: string; workspaceId: string; grantStatus: "active" | "revoked" }>,
   ) {
@@ -166,7 +300,7 @@ describe("agent-auth capability execution (#4409)", () => {
       createdAt: now, updatedAt: now,
     }));
     const grantRows = agents.map((a) => ({
-      id: `grant_${a.id}`, agentId: a.id, capability: LIST_ENTITIES_CAPABILITY,
+      id: `grant_${a.id}`, agentId: a.id, capability: SAFE_CAP,
       deniedBy: null, grantedBy: "user_1", expiresAt: null, status: a.grantStatus,
       constraints: null, createdAt: now, updatedAt: now,
     }));
@@ -178,7 +312,9 @@ describe("agent-auth capability execution (#4409)", () => {
         agent: agentRows, agentHost: [host], agentCapabilityGrant: grantRows, approvalRequest: [],
       }),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
-      plugins: [buildAgentAuthPlugin()] as any[],
+      plugins: [
+        buildAgentAuthPlugin({ spec: FIXTURE_SPEC, fetch: stubFetch, mintToken: stubMint, baseUrl: "http://internal" }),
+      ] as any[],
     });
   }
 
@@ -189,7 +325,7 @@ describe("agent-auth capability execution (#4409)", () => {
     expired?: boolean;
   }): Promise<string> {
     const jwt = new SignJWT({
-      ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : { capabilities: [LIST_ENTITIES_CAPABILITY] }),
+      ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : { capabilities: [SAFE_CAP] }),
     })
       .setProtectedHeader({ alg: "EdDSA", typ: "agent+jwt" })
       .setSubject(opts.agentId)
@@ -204,12 +340,13 @@ describe("agent-auth capability execution (#4409)", () => {
   async function execute(
     instance: ReturnType<typeof makeInstance>,
     token: string,
+    capability: string = SAFE_CAP,
   ): Promise<{ status: number; body: { error?: string; data?: unknown } }> {
     const res = await instance.handler(
       new Request(EXECUTE_URL, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify({ capability: LIST_ENTITIES_CAPABILITY, arguments: {} }),
+        body: JSON.stringify({ capability, arguments: {} }),
       }),
     );
     const body = (await res.json().catch(() => ({}))) as { error?: string; data?: unknown };
@@ -217,43 +354,34 @@ describe("agent-auth capability execution (#4409)", () => {
     return { status: res.status, body };
   }
 
-  it("happy path: valid aud + granted capability → 200, org-scoped result for the agent's workspace", async () => {
+  it("happy path: valid aud + granted safe capability → 200, per-org token minted + forwarded", async () => {
     workspacesForUser = () => ["wsA"];
     enabledForWorkspace = () => true;
     const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
     const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
     expect(status).toBe(200);
-    // onExecute returned the org-scoped listEntities projection for wsA, with the
-    // exact field mapping (name/table/description ?? null).
-    expect(body.data).toMatchObject({ workspaceId: "wsA", count: 1 });
-    expect((body.data as { entities: unknown[] }).entities).toEqual([
-      { name: "orders", table: "public.orders", description: "Orders fact" },
-    ]);
+    expect(body.data).toMatchObject({ ok: true, from: "upstream" });
+    // The per-org binding minted a key for the resolved (user_1, wsA) and the
+    // proxy forwarded it as x-api-key to the wsA-scoped operation path.
+    expect(mintedFor).toEqual([{ userId: "user_1", workspaceId: "wsA" }]);
+    expect(lastForwarded?.headers["x-api-key"]).toBe("wskey_wsA");
+    expect(lastForwarded?.url).toContain("/api/v1/me");
   });
 
-  it("workspace-override off: a workspace that opted out is denied even with the platform default on", async () => {
-    // Defense-in-depth beyond the raw HTTP gate: onExecute re-checks the setting
-    // for the RESOLVED workspace. wsA has it off (platform on) → denied, and the
-    // org-scoped read is never reached.
+  it("workspace-override off: a workspace that opted out is denied (404) before minting or forwarding", async () => {
     workspacesForUser = () => ["wsA"];
     enabledForWorkspace = (orgId) => orgId !== "wsA";
     const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
     const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
     expect(status).toBe(404);
     expect(body.error).toBe("unauthorized");
-    expect(body.data).toBeUndefined();
+    expect(mintedFor).toEqual([]);
+    expect(lastForwarded).toBeNull();
   });
 
-  it("workspace-override isolation: with platform on, wsA off but wsB on, wsA is 404'd while wsB executes 200", async () => {
-    // The cross-workspace half of the precedence matrix (#4419): a workspace
-    // override tightens ONLY its own execution. user_1 is a member of both; the
-    // override seals wsA and leaves wsB fully reachable.
+  it("workspace-override isolation: platform on, wsA off but wsB on → wsA 404'd, wsB executes 200", async () => {
     workspacesForUser = () => ["wsA", "wsB"];
     enabledForWorkspace = (orgId) => orgId !== "wsA"; // platform on; wsA opted out
-    entitiesForOrg = (orgId) =>
-      orgId === "wsB"
-        ? [{ name: "events", table: "public.events", description: "Events fact", source: "default" }]
-        : [];
     const instance = makeInstance([
       { id: "agent_a", workspaceId: "wsA", grantStatus: "active" },
       { id: "agent_b", workspaceId: "wsB", grantStatus: "active" },
@@ -262,11 +390,11 @@ describe("agent-auth capability execution (#4409)", () => {
     const a = await execute(instance, await mintJWT({ agentId: "agent_a" }));
     expect(a.status).toBe(404); // wsA sealed by its own override
     expect(a.body.error).toBe("unauthorized");
-    expect(a.body.data).toBeUndefined();
 
     const b = await execute(instance, await mintJWT({ agentId: "agent_b" }));
     expect(b.status).toBe(200); // wsB unaffected — override is per-org
-    expect(b.body.data).toMatchObject({ workspaceId: "wsB", count: 1 });
+    expect(mintedFor).toEqual([{ userId: "user_1", workspaceId: "wsB" }]);
+    expect(lastForwarded?.headers["x-api-key"]).toBe("wskey_wsB");
   });
 
   it("wrong audience → 401 invalid_jwt (rejected before onExecute)", async () => {
@@ -277,6 +405,7 @@ describe("agent-auth capability execution (#4409)", () => {
     );
     expect(status).toBe(401);
     expect(body.error).toBe("invalid_jwt");
+    expect(mintedFor).toEqual([]);
   });
 
   it("expired token → 401 invalid_jwt", async () => {
@@ -295,23 +424,22 @@ describe("agent-auth capability execution (#4409)", () => {
 
   it("missing capability claim (token asserts no capabilities) → 403 capability_not_granted", async () => {
     const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
-    // An empty `capabilities` claim scopes the session to zero grants — the
-    // token does not assert the capability it is trying to execute.
     const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1", capabilities: [] }));
     expect(status).toBe(403);
     expect(body.error).toBe("capability_not_granted");
   });
 
-  it("cross-workspace isolation: an agent bound to a workspace its owner is not a member of is denied", async () => {
+  it("cross-workspace isolation: an agent bound to a workspace its owner is not a member of is denied (403)", async () => {
     // user_1 is a member of wsA only. agent_b's metadata claims wsB.
     workspacesForUser = () => ["wsA"];
     const instance = makeInstance([{ id: "agent_b", workspaceId: "wsB", grantStatus: "active" }]);
     const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_b" }));
     // The JWT + grant are valid, so the plugin admits and calls onExecute; the
-    // Atlas-side membership check is what denies (403), NOT a JWT failure.
+    // Atlas-side membership check in resolveHeaders is what denies (403), and no
+    // token was minted nor request forwarded to wsB.
     expect(status).toBe(403);
     expect(body.error).toBe("unauthorized");
-    // And it never reached the org-scoped read for wsB.
-    expect(body.data).toBeUndefined();
+    expect(mintedFor).toEqual([]);
+    expect(lastForwarded).toBeNull();
   });
 });

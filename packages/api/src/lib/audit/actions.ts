@@ -904,6 +904,46 @@ export const ADMIN_ACTIONS = {
   mcpActionPolicy: {
     update: "mcp_action_policy.update",
   },
+  /**
+   * Agent Auth Protocol lifecycle (#4412 / #2058, Slice 4). The
+   * `@better-auth/agent-auth` plugin emits an `onEvent` for every significant
+   * mutation across the register → enroll → request → approve/deny → execute →
+   * revoke lifecycle; `lib/auth/agent-auth-audit.ts` maps the audited subset onto
+   * these actions so the grant/approval trail is queryable in `admin_action_log`
+   * alongside every other admin surface. `targetType` is the domain prefix
+   * `agent` for all of them (see {@link AdminTargetType}); the sub-domain
+   * (`host` / `capability`) lives in the action verb, not a nested target type.
+   *
+   * `logAdminAction` resolves the `actor_id` / `org_id` COLUMNS only from the
+   * ambient Atlas request context, which is absent on the Better Auth catch-all
+   * these events fire from — so those columns are `unknown`/`null` regardless of
+   * what the event carries. The trustworthy forensic identifiers travel in
+   * `metadata` instead: `actorId` (the owning/approving user), `actorType`,
+   * `agentId`, `hostId`, and `orgId` when the event carries one (execute rows add
+   * `userId`) — exactly as the `mcp_session.*` rows carry `clientId`/`userId`
+   * there. Capability `arguments` / `output` are DELIBERATELY never recorded
+   * (they can carry customer SQL / PII); only the capability name + outcome are.
+   *
+   * `capabilityExecute` is the one high-volume verb, so it is NOT written
+   * per-call: successful executes are SUMMARIZED — one row per
+   * `EXECUTE_SUMMARY_INTERVAL` calls per `(agent, capability)`, with
+   * `metadata.representedExecuteCount` recording how many the row stands for and
+   * `metadata.sampled: true` marking it a summary. Execute FAILURES bypass the
+   * sampler and always emit (`status: failure`) — they are rare and the
+   * load-bearing signal. When `ATLAS_AGENT_AUTH_ENABLED` resolves off (fail
+   * closed), NO agent-auth row is emitted at all.
+   */
+  agent: {
+    register: "agent.register",
+    revoke: "agent.revoke",
+    hostEnroll: "agent.host.enroll",
+    hostRevoke: "agent.host.revoke",
+    capabilityRequest: "agent.capability.request",
+    capabilityApprove: "agent.capability.approve",
+    capabilityDeny: "agent.capability.deny",
+    capabilityRevoke: "agent.capability.revoke",
+    capabilityExecute: "agent.capability.execute",
+  },
 } as const;
 
 /** Union of all admin action type string values. */

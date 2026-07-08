@@ -155,6 +155,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "bundle-sync",
       "notion-knowledge",
       "confluence",
+      "gitbook",
     ]);
   });
 
@@ -174,7 +175,13 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
   it("reports inserted slugs on a fresh catalog and none on a re-boot", async () => {
     const fresh = await seedBuiltinKnowledgeCatalog(captureDb().db);
     expect(fresh.inserted).toBe(true);
-    expect(fresh.insertedSlugs).toEqual(["okf-upload", "bundle-sync", "notion-knowledge", "confluence"]);
+    expect(fresh.insertedSlugs).toEqual([
+      "okf-upload",
+      "bundle-sync",
+      "notion-knowledge",
+      "confluence",
+      "gitbook",
+    ]);
     // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).
     const reboot = await seedBuiltinKnowledgeCatalog(captureDb(false).db);
     expect(reboot.inserted).toBe(false);

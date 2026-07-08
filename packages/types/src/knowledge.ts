@@ -32,10 +32,15 @@ export interface KnowledgeDocumentCounts {
  * Every value except `upload` is a "synced" collection: its content is owned by
  * an external source, it has last-sync bookkeeping, and it can be re-pulled with
  * "Sync now". Only `bundle-sync` additionally exposes an `endpointUrl` /
- * `authScheme`; connector collections (`notion`, `confluence`) carry neither
- * (their credential is a token, not an endpoint).
+ * `authScheme`; connector collections (`notion`, `confluence`, `gitbook`) carry
+ * neither (their credential is a token, not an endpoint).
  */
-export type KnowledgeCollectionSource = "upload" | "bundle-sync" | "notion" | "confluence";
+export type KnowledgeCollectionSource =
+  | "upload"
+  | "bundle-sync"
+  | "notion"
+  | "confluence"
+  | "gitbook";
 
 /**
  * Bundle-endpoint auth schemes for `bundle-sync` collections — the one wire

@@ -43,6 +43,7 @@ import {
 } from "@atlas/api/lib/knowledge/connectors";
 import { CONFLUENCE_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/config";
 import { NOTION_KNOWLEDGE_CATALOG_ID } from "@atlas/api/lib/knowledge/notion/connector";
+import { GITBOOK_CATALOG_ID } from "@atlas/api/lib/knowledge/gitbook/config";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -139,19 +140,21 @@ describe("registerBuiltinInstallHandlers — SQL plugin datasources (#3300)", ()
   });
 });
 
-describe("registerBuiltinInstallHandlers — knowledge sync connector pairing (#4377/#4378)", () => {
+describe("registerBuiltinInstallHandlers — knowledge sync connector pairing (#4377/#4378/#4393)", () => {
   // register.ts documents the FORM handler + CONNECTOR pairing as load-bearing:
   // dropping a registerXxxKnowledgeConnector() call would ship green while every
   // install of that vendor 500s at sync time (connector_unavailable — the cycle
   // walk dispatches on the connector registry, not the form handler). Pin that
-  // one call to registerBuiltinInstallHandlers() registers both vendors'
-  // connectors alongside their form handlers. No env gate on either.
-  it("registers the Confluence and Notion knowledge sync connectors alongside their form handlers", () => {
+  // one call to registerBuiltinInstallHandlers() registers every vendor's
+  // connector alongside its form handler. No env gate on any.
+  it("registers the Confluence, Notion, and GitBook knowledge sync connectors alongside their form handlers", () => {
     registerBuiltinInstallHandlers();
     expect(getKnowledgeSyncConnector(CONFLUENCE_CATALOG_ID)).toBeDefined();
     expect(getKnowledgeSyncConnector(NOTION_KNOWLEDGE_CATALOG_ID)).toBeDefined();
+    expect(getKnowledgeSyncConnector(GITBOOK_CATALOG_ID)).toBeDefined();
     expect(getInstallHandler({ slug: "confluence", install_model: "form" }).kind).toBe("form");
     expect(getInstallHandler({ slug: "notion-knowledge", install_model: "form" }).kind).toBe("form");
+    expect(getInstallHandler({ slug: "gitbook", install_model: "form" }).kind).toBe("form");
   });
 });
 

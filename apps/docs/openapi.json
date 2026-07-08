@@ -56648,7 +56648,8 @@
                               "upload",
                               "bundle-sync",
                               "notion",
-                              "confluence"
+                              "confluence",
+                              "gitbook"
                             ]
                           },
                           "description": {

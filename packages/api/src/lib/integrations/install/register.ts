@@ -41,6 +41,8 @@ import {
   NOTION_KNOWLEDGE_SLUG,
   registerNotionKnowledgeConnector,
 } from "@atlas/api/lib/knowledge/notion/connector";
+import { GitbookFormInstallHandler, GITBOOK_SLUG } from "./gitbook-form-handler";
+import { registerGitbookKnowledgeConnector } from "@atlas/api/lib/knowledge/gitbook/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -250,6 +252,18 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(NOTION_KNOWLEDGE_SLUG, new NotionKnowledgeFormInstallHandler());
   registerNotionKnowledgeConnector();
   log.info("Registered NotionKnowledgeFormInstallHandler + knowledge sync connector");
+  // Knowledge Base (GitBook Cloud) — the built-in `gitbook` connector install
+  // (#4393, ADR-0030 vendor slice). Knowledge-pillar, multi-instance (one
+  // collection per space). Config = space id; the API token lands in
+  // `knowledge_sync_credentials` (encrypted), never in `workspace_plugins.config`.
+  // The API host is a fixed GitBook constant, so there is no customer-supplied
+  // base URL — every request still routes through the SSRF egress guard at fetch
+  // time. Registering the FORM handler + the CONNECTOR together (as with
+  // Confluence/Notion) keeps a half-wired deploy from having an installable card
+  // whose scheduled sync has no registered vendor client. No env gate.
+  registerFormHandler(GITBOOK_SLUG, new GitbookFormInstallHandler());
+  registerGitbookKnowledgeConnector();
+  log.info("Registered GitbookFormInstallHandler + knowledge sync connector");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

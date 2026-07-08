@@ -395,7 +395,12 @@ function buildOptions(deps: AgentAuthPluginDeps): AgentAuthOpenApiOptions {
         );
         throw agentError(
           upstreamStatus === 429 ? "TOO_MANY_REQUESTS" : "REQUEST_TIMEOUT",
-          AGENT_AUTH_ERROR_CODES.INTERNAL_ERROR,
+          // Machine-readable code must let an SDK branch throttle-vs-fault: 429
+          // gets the purpose-built `rate_limited`, not the `internal_error` the
+          // genuine-server-fault path uses. (408 has no dedicated code.)
+          upstreamStatus === 429
+            ? AGENT_AUTH_ERROR_CODES.RATE_LIMITED
+            : AGENT_AUTH_ERROR_CODES.INTERNAL_ERROR,
           `The Atlas API is throttling or timed out (HTTP ${upstreamStatus}). Retry after a short backoff (ref ${requestId}).`,
         );
       }

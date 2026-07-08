@@ -543,6 +543,8 @@ describe("agent-auth capability execution (#4410)", () => {
     const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
     const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
     expect(status).toBe(429);
+    // Machine code distinguishes throttle from a genuine internal fault.
+    expect(body.error).toBe("rate_limited");
     const message = JSON.stringify(body);
     expect(message).toContain("backoff");
     expect(message).not.toContain("will not succeed"); // transient, not a permanent client error

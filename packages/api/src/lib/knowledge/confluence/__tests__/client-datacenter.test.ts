@@ -250,6 +250,39 @@ describe("failure handling", () => {
   });
 });
 
+describe("context path", () => {
+  it("preserves a Server/DC context path in page URLs via `_links.base`", async () => {
+    // Self-managed Confluence commonly lives under a context path
+    // (e.g. …/confluence). `_links.base` reflects it, and `pageUrl`
+    // concatenates (not URL-resolves) so the context path is never dropped.
+    const CTX_BASE = "https://confluence.acme.com/confluence";
+    const impl = async (input: string | URL | Request): Promise<Response> => {
+      const url = new URL(typeof input === "string" ? input : input.toString());
+      if (url.pathname.endsWith("/rest/api/space")) {
+        return jsonResponse({ results: [{ key: "ENG", id: 100 }] });
+      }
+      return jsonResponse({
+        results: [
+          {
+            id: "2",
+            title: "Oncall",
+            type: "page",
+            ancestors: [],
+            version: { when: "2026-07-06T09:00:00.000Z", number: 1 },
+            _links: { webui: "/display/ENG/Oncall", base: CTX_BASE },
+            body: { storage: { value: "<p>Oncall prose here.</p>", representation: "storage" } },
+          },
+        ],
+        _links: { base: CTX_BASE },
+      });
+    };
+    const changes = await client({ baseUrl: CTX_BASE }, impl as unknown as typeof fetch).fetchAll();
+    expect(changes.documents[0].content).toContain(
+      'resource: "https://confluence.acme.com/confluence/display/ENG/Oncall"',
+    );
+  });
+});
+
 describe("auth", () => {
   it("sends the PAT as a Bearer token (never Basic, never in the URL)", async () => {
     const seen: { authorization: string | null; url: string }[] = [];

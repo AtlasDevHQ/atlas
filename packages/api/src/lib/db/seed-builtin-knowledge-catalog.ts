@@ -1,8 +1,8 @@
 /**
  * Boot-time idempotent seed pass for the built-in Knowledge Base catalog rows
- * — the upload/bundle-sync arms plus the vendor connectors (Notion, Confluence,
- * GitBook). `BUILTIN_KNOWLEDGE_CATALOG_ROWS` is the authoritative list; adding a
- * connector is one append there, so this header stays non-enumerating.
+ * — the upload/bundle-sync arms plus the vendor connectors (Notion, Confluence
+ * Cloud + Data Center, GitBook). `BUILTIN_KNOWLEDGE_CATALOG_ROWS` is the
+ * authoritative list; adding a connector is one append there.
  *
  * The Knowledge Base lifecycle (ADR-0028 §5) started as one built-in catalog
  * row — `okf-upload`, an **explicit, degenerate form install** with no

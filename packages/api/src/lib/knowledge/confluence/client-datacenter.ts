@@ -286,6 +286,16 @@ class ConfluenceDcApi {
         `Confluence space "${this.config.spaceKey}" was not found or is not visible to this token on ${hostForLog(this.base)} — check the space key and the token's permissions.`,
       );
     }
+    // Fail loud on a truthy-but-empty element rather than treat a malformed
+    // vendor response as a verified space (untrusted JSON — `key` is optional).
+    // Mirrors the Cloud client's "unexpected vendor response" guard; DC drives
+    // enumeration off the admin-supplied spaceKey, so no garbage reaches a URL,
+    // but the fail-loud posture stays consistent across the two clients.
+    if (typeof space.key !== "string" || space.key === "") {
+      throw new Error(
+        `Confluence returned a space for "${this.config.spaceKey}" with no key from ${hostForLog(this.base)} — unexpected vendor response.`,
+      );
+    }
     this.spaceVerified = true;
   }
 

@@ -602,6 +602,33 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     expect(conf?.endpointUrl).toBeNull();
     expect(conf?.sync).not.toBeNull();
   });
+
+  it("dispatches a Confluence Data Center collection to the connector engine and lists it as source 'confluence-datacenter' (#4394)", async () => {
+    COLLECTION = {
+      install_id: "runbooks",
+      catalog_id: "catalog:confluence-datacenter",
+      status: "published",
+      config: { base_url: "https://confluence.acme.com", space_key: "ENG" },
+    };
+    SYNC_STATES = [
+      { collection_id: "runbooks", last_sync_at: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    ];
+    const syncRes = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
+    expect(syncRes.status).toBe(200);
+    expect(syncConnectorCollection).toHaveBeenCalledTimes(1);
+    expect(syncCollection).not.toHaveBeenCalled();
+
+    const listRes = await adminKnowledge.request("/", { method: "GET" });
+    const body = (await listRes.json()) as {
+      collections: Array<{ slug: string; source: string; endpointUrl: string | null; sync: unknown }>;
+    };
+    const conf = body.collections.find((c) => c.slug === "runbooks");
+    // A future edit dropping this from isSyncedSource would silently strip the
+    // collection's sync bookkeeping / "Sync now" — the wire enum wouldn't catch it.
+    expect(conf?.source).toBe("confluence-datacenter");
+    expect(conf?.endpointUrl).toBeNull();
+    expect(conf?.sync).not.toBeNull();
+  });
 });
 
 describe("knowledge mirror invalidation (#4208)", () => {

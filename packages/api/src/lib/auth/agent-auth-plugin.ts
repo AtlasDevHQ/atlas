@@ -313,6 +313,9 @@ function parseUpstreamStatus(err: unknown): number | null {
   return match ? Number(match[1]) : null;
 }
 
+/** Transient 4xx statuses the agent should retry after a backoff, not treat as a permanent client error. */
+const RETRIABLE_UPSTREAM_STATUS: ReadonlySet<number> = new Set([408, 429]);
+
 /** Map a proxied 4xx to the agent-auth error status label that yields the same code. */
 function upstreamClientErrorLabel(
   status: number,
@@ -378,12 +381,29 @@ function buildOptions(deps: AgentAuthPluginDeps): AgentAuthOpenApiOptions {
       if (isAPIError(err)) throw err;
 
       // The adapter throws a PLAIN Error (`Upstream API error <status>: <body>`)
-      // for every non-2xx proxied response, embedding the raw upstream body. A
-      // deterministic 4xx is the agent's own bad request (invalid args / not
-      // permitted), not a transient fault: surface a client-class envelope
-      // WITHOUT the raw body (no leak) and WITHOUT misleading retry guidance. A
-      // 5xx or an unparseable/transport error falls through to the opaque 500.
+      // for every non-2xx proxied response, embedding the raw upstream body.
       const upstreamStatus = parseUpstreamStatus(err);
+
+      // A RETRIABLE 4xx is transient — the proxy re-enters the full Atlas
+      // middleware stack via `app.fetch`, so `checkRateLimit` can return 429 and
+      // a slow handler 408. Tell the agent to back off and retry, NOT that the
+      // call is permanently bad. (Preserve the throttle/timeout status label.)
+      if (upstreamStatus !== null && RETRIABLE_UPSTREAM_STATUS.has(upstreamStatus)) {
+        log.warn(
+          { status: upstreamStatus, requestId, capability: ctx.capability },
+          "agent-auth openapi proxy: upstream throttled/timed out (retriable)",
+        );
+        throw agentError(
+          upstreamStatus === 429 ? "TOO_MANY_REQUESTS" : "REQUEST_TIMEOUT",
+          AGENT_AUTH_ERROR_CODES.INTERNAL_ERROR,
+          `The Atlas API is throttling or timed out (HTTP ${upstreamStatus}). Retry after a short backoff (ref ${requestId}).`,
+        );
+      }
+
+      // A DETERMINISTIC 4xx is the agent's own bad request (invalid args / not
+      // permitted): surface a client-class envelope WITHOUT the raw body (no
+      // leak) and WITHOUT misleading retry guidance. A 5xx or an unparseable/
+      // transport error falls through to the opaque 500.
       if (upstreamStatus !== null && upstreamStatus >= 400 && upstreamStatus < 500) {
         log.warn(
           { status: upstreamStatus, requestId, capability: ctx.capability },

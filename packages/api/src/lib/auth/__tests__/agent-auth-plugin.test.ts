@@ -26,6 +26,8 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, mock } from "bun:
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 /** jose v6 dropped the `KeyLike` alias; infer the key type from generateKeyPair. */
 type AgentPrivateKey = Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
@@ -160,6 +162,41 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
     expect([...(opts.blockedCapabilities ?? [])].sort()).toEqual(
       ["getAdminAudit", "getPlatformRegions", "postQuery"].sort(),
     );
+  });
+
+  it("containment holds against the REAL Atlas OpenAPI spec (no write/admin auto-grantable)", () => {
+    // The classification tests above use a 6-op fixture; this pins the actual
+    // guarantee against the committed ~460-op spec. `apps/docs/openapi.json` is
+    // a dev artifact (not in the runtime image) but IS in the repo/CI checkout.
+    const specPath = resolve(import.meta.dir, "../../../../../../apps/docs/openapi.json");
+    if (!existsSync(specPath)) {
+      console.warn(`[agent-auth] real-spec containment test skipped — ${specPath} not found`);
+      return;
+    }
+    const realSpec = JSON.parse(readFileSync(specPath, "utf8")) as AtlasOpenApiSpec;
+    const index = buildOperationIndex(realSpec);
+    expect(index.size).toBeGreaterThan(300); // sanity: the real spec loaded
+
+    const opts = buildAgentAuthOpenApiOptions(realSpec, {
+      baseUrl: "http://internal",
+      resolveHeaders: async () => ({}),
+    });
+
+    // EVERY auto-grantable default host capability must be a safe read: a
+    // read-only method AND not under a sensitive prefix. One write or admin op
+    // leaking into this set is the exact capability-explosion risk this fails on.
+    for (const name of opts.defaultHostCapabilities as string[]) {
+      expect(isSensitiveOperation(index.get(name))).toBe(false);
+    }
+    // Symmetrically: every write + every /admin,/platform op is blocked.
+    const blocked = new Set(opts.blockedCapabilities ?? []);
+    for (const [name, meta] of index) {
+      if (isSensitiveOperation(meta)) {
+        expect(blocked.has(name)).toBe(true);
+      }
+    }
+    // And the real spec actually contains sensitive ops (so this isn't vacuous).
+    expect(blocked.size).toBeGreaterThan(0);
   });
 
   it("resolveCapabilities hides sensitive caps from discovery (list/describe)", () => {
@@ -493,6 +530,37 @@ describe("agent-auth capability execution (#4410)", () => {
     const message = JSON.stringify(body);
     expect(message).not.toContain("leaky-internal-detail");
     expect(message).toContain("HTTP 403");
-    expect(message).not.toContain("Retry"); // not a transient fault
+    expect(message).toContain("will not succeed"); // deterministic — correct permanent-fail guidance
+    expect(message).not.toContain("backoff"); // not a transient/throttle envelope
+  });
+
+  it("upstream 429: a throttle is retriable — status preserved, backoff advised, not 'won't succeed'", async () => {
+    fetchResponder = () =>
+      new Response(JSON.stringify({ error: "rate_limited" }), {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      });
+    const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
+    const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
+    expect(status).toBe(429);
+    const message = JSON.stringify(body);
+    expect(message).toContain("backoff");
+    expect(message).not.toContain("will not succeed"); // transient, not a permanent client error
+  });
+
+  it("upstream 5xx: an upstream 500 collapses to a non-leaking opaque 500", async () => {
+    fetchResponder = () =>
+      new Response(JSON.stringify({ error: "boom", stack: "at secretModule.ts:42 leaky-stack" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
+    const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
+    expect(status).toBe(500);
+    expect(body.error).toBe("internal_error");
+    const message = JSON.stringify(body);
+    expect(message).not.toContain("leaky-stack");
+    expect(message).not.toContain("secretModule");
+    expect(message).toContain("ref ");
   });
 });

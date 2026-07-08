@@ -338,6 +338,24 @@ export interface AgentAuthPluginDeps {
    */
   readonly webauthnRpId: string;
   readonly webauthnOrigin: string | null;
+  /**
+   * Enterprise (#4414, Slice 5b): when `true`, the Atlas-internal CIBA
+   * (backchannel) approval method (§9) is advertised in the discovery document
+   * and accepted by `/agent/ciba/authorize`, in addition to the core
+   * device-authorization path. When `false` (core / AGPL) only
+   * `device_authorization` is offered: the library omits `ciba` from
+   * `approval_methods` and hard-rejects `/agent/ciba/authorize`
+   * (`invalid_request`), and `resolveApprovalMethod` falls back to
+   * `device_authorization` even for an agent that asks for
+   * `preferredMethod: "ciba"`. Only Atlas-internal CIBA is in scope — the
+   * library resolves the user from its own internal adapter by email login-hint;
+   * native third-party-IdP CIBA integrations stay out of scope (#2058). Resolved
+   * from the core `enterprise-config.ts` mirror, never a direct `@atlas/ee`
+   * import, so `check-ee-imports.sh` stays green. Orthogonal to
+   * `ATLAS_AGENT_AUTH_ENABLED` (#4409), which gates whether the surface is
+   * reachable at all.
+   */
+  readonly cibaApproval: boolean;
 }
 
 /**
@@ -364,6 +382,11 @@ export function resolveDeps(overrides?: Partial<AgentAuthPluginDeps>): AgentAuth
     webauthnRpId: overrides?.webauthnRpId ?? resolvePasskeyRpId(process.env, getWebOrigin()),
     webauthnOrigin:
       overrides?.webauthnOrigin !== undefined ? overrides.webauthnOrigin : getWebOrigin(),
+    // #4414 Slice 5b — read the same enterprise decision through the core mirror
+    // (never a direct @atlas/ee import). Defaults false whenever config is
+    // unloaded / the env flag is unset, so core offers only device-authorization
+    // unless enterprise is explicitly on.
+    cibaApproval: overrides?.cibaApproval ?? isEnterpriseEnabled(),
   };
 }
 
@@ -524,6 +547,25 @@ export function buildAgentAuthPluginOptions(deps: AgentAuthPluginDeps): AgentAut
     // `options` spread because it's a top-level plugin option, not an adapter
     // field; the adapter never touches it, so ordering is immaterial.
     deviceAuthorizationPage: deps.deviceAuthorizationPage,
+    // #4414 Slice 5b — CIBA (backchannel) approval, ENTERPRISE-ONLY. Core (AGPL)
+    // offers ONLY device-authorization approval; the Atlas-internal CIBA
+    // backchannel (§9.2) is advertised + accepted only when /ee is enabled. The
+    // library gates its own CIBA surface on THIS list: `/agent/ciba/authorize`
+    // hard-rejects (`invalid_request`) and `/agent-configuration` omits `ciba`
+    // from `approval_methods` whenever `"ciba"` is absent — so a core deploy
+    // cannot initiate a backchannel flow even if an agent asks for
+    // `preferredMethod: "ciba"` (`resolveApprovalMethod` falls back to
+    // `device_authorization`). This must be set explicitly: the library default
+    // is `["ciba", "device_authorization"]`, i.e. CIBA-on, so leaving it unset
+    // would offer CIBA in core. Native third-party-IdP CIBA integrations stay out
+    // of scope (#2058) — this is Atlas-internal CIBA only (the library resolves
+    // the user via its own internal adapter by email login-hint, not an external
+    // IdP). The enterprise decision is read via the core `enterprise-config.ts`
+    // mirror (no `@atlas/ee` import here). Orthogonal to `ATLAS_AGENT_AUTH_ENABLED`
+    // (#4409), which gates whether the surface is reachable at all.
+    approvalMethods: deps.cibaApproval
+      ? ["device_authorization", "ciba"]
+      : ["device_authorization"],
     // #4413 Slice 5a — WebAuthn step-up enforcement, ENTERPRISE-ONLY. When /ee is
     // enabled (`stepUpWrites`), write-method capabilities carry
     // `approvalStrength: "webauthn"` (stamped in `buildOptions`) and
@@ -574,17 +616,19 @@ export function buildAgentAuthPlugin(
   overrides?: Partial<AgentAuthPluginDeps>,
 ): ReturnType<typeof agentAuth> {
   const deps = resolveDeps(overrides);
-  // Loud, non-secret signal of the resolved step-up posture (#4413) so an
-  // operator can confirm from logs whether WebAuthn enforcement is active on a
-  // licensed deploy — not infer it. If config loads late (unresolved → false),
-  // this line is the only trace that writes built at the weaker "session"
-  // strength. rpId + booleans are not secrets (CLAUDE.md: no secrets in logs).
+  // Loud, non-secret signal of the resolved enterprise approval posture (#4413
+  // WebAuthn step-up + #4414 CIBA) so an operator can confirm from logs which
+  // enterprise controls are active on a licensed deploy — not infer them. If
+  // config loads late (unresolved → false), this line is the only trace that
+  // writes built at the weaker "session" strength / that CIBA is not offered.
+  // rpId + booleans are not secrets (CLAUDE.md: no secrets in logs).
   log.info(
     {
       stepUpWrites: deps.stepUpWrites,
       webauthnRpId: deps.stepUpWrites ? deps.webauthnRpId : undefined,
+      cibaApproval: deps.cibaApproval,
     },
-    "agent-auth: resolved WebAuthn step-up enforcement posture",
+    "agent-auth: resolved enterprise approval posture (WebAuthn step-up + CIBA)",
   );
   return agentAuth(buildAgentAuthPluginOptions(deps));
 }

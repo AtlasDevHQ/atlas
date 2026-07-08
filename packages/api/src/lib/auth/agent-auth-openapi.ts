@@ -49,7 +49,7 @@
  */
 
 import { createFromOpenAPI } from "@better-auth/agent-auth/openapi";
-import type { AgentAuthOptions } from "@better-auth/agent-auth";
+import type { AgentAuthOptions, ApprovalStrength } from "@better-auth/agent-auth";
 import type { AtlasOpenApiSpec } from "@atlas/api/lib/auth/atlas-openapi-source";
 
 /** Read-only HTTP methods — the only ones a derived capability may be safe on. */
@@ -113,6 +113,20 @@ export function isSensitiveOperation(meta: OperationMeta | undefined): boolean {
   return isSensitivePath(meta.path);
 }
 
+/**
+ * True when `meta` is a WRITE operation — a non-read-only method
+ * (`POST`/`PUT`/`PATCH`/`DELETE`/…). Distinct from {@link isSensitiveOperation},
+ * which ALSO flags admin/platform READS: step-up approval strength (#4413) keys
+ * off the METHOD, so an admin GET is sensitive-but-not-a-write and keeps the
+ * session default. A cap with no recoverable method is NOT treated as a write —
+ * it is already blocked by {@link isSensitiveOperation}, so its approval strength
+ * is moot; leaving it at the default avoids over-claiming a strength it never
+ * exercises.
+ */
+export function isWriteOperation(meta: OperationMeta | undefined): boolean {
+  return meta !== undefined && !READ_ONLY_METHODS.has(meta.method.toUpperCase());
+}
+
 /** The subset of `AgentAuthOptions` this adapter produces, spreadable into `agentAuth()`. */
 export type AgentAuthOpenApiOptions = Pick<
   AgentAuthOptions,
@@ -140,6 +154,18 @@ export interface AgentAuthOpenApiDeps {
   readonly resolveHeaders: NonNullable<Parameters<typeof createFromOpenAPI>[1]["resolveHeaders"]>;
   /** Transport for the proxied call — the in-process `app.fetch` in production, a stub in tests. */
   readonly fetch?: ProxyFetch;
+  /**
+   * When set, stamp this approval strength on every WRITE-method capability
+   * ({@link isWriteOperation}). Enterprise (#4413) passes `"webauthn"` to require
+   * a WebAuthn step-up (physical presence) before a write can be approved —
+   * unbypassable by an autonomous agent with browser control. Core (AGPL) leaves
+   * it unset so writes keep the library default (`"session"`). Read-only caps are
+   * never restamped — they stay at the session default (#4413: `GET → session`).
+   * Orthogonal to the containment controls: writes remain blocked from the
+   * derived surface today, so this stamps the enforcement policy the caps carry
+   * for when they become reachable.
+   */
+  readonly writeApprovalStrength?: ApprovalStrength;
 }
 
 /**
@@ -159,17 +185,36 @@ export function buildAgentAuthOpenApiOptions(
   });
 
   const index = buildOperationIndex(spec);
-  const capabilities = base.capabilities ?? [];
+  const baseCapabilities = base.capabilities ?? [];
 
   const safeNames: string[] = [];
   const sensitiveNames = new Set<string>();
-  for (const cap of capabilities) {
+  for (const cap of baseCapabilities) {
     if (isSensitiveOperation(index.get(cap.name))) sensitiveNames.add(cap.name);
     else safeNames.push(cap.name);
   }
 
+  // Stamp step-up strength on write-method capabilities when requested (#4413,
+  // enterprise). Reads are left untouched so they keep the library default
+  // ("session"). No-op passthrough when `writeApprovalStrength` is unset (core).
+  // Hoisted to a `const` local: TS PRESERVES the truthy-branch narrowing of a
+  // `const` (`ApprovalStrength | undefined` → `ApprovalStrength`) into the nested
+  // `.map` closure, but DROPS narrowing of a property access
+  // (`deps.writeApprovalStrength`) at the closure boundary. The hoist therefore
+  // gives the closure a provably-`ApprovalStrength` value rather than relying on
+  // `Capability.approvalStrength` being optional to swallow a stray `undefined`.
+  const writeStrength = deps.writeApprovalStrength;
+  const capabilities = writeStrength
+    ? baseCapabilities.map((cap) =>
+        isWriteOperation(index.get(cap.name)) ? { ...cap, approvalStrength: writeStrength } : cap,
+      )
+    : baseCapabilities;
+
   return {
     ...base,
+    // Capabilities carrying the step-up strength stamp (#4413) — overrides the
+    // adapter's un-stamped set. Names/inputs are otherwise identical to `base`.
+    capabilities,
     // Auto-grant only the read-only, non-admin surface (control 1). Overrides
     // the adapter's method-only default, which would auto-grant admin GETs.
     defaultHostCapabilities: safeNames,

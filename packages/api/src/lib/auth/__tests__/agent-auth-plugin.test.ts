@@ -61,15 +61,21 @@ mock.module("@atlas/api/lib/auth/agent-auth-gate", () => ({
 // SUT — imported AFTER the mocks are registered.
 import {
   buildAgentAuthPlugin,
+  buildAgentAuthPluginOptions,
+  resolveDeps,
   AGENT_WORKSPACE_METADATA_KEY,
   mintWorkspaceApiKeyVia,
   type CreateWorkspaceApiKey,
+  type AgentAuthPluginDeps,
 } from "@atlas/api/lib/auth/agent-auth-plugin";
+import { resolvePasskeyRpId } from "@atlas/api/lib/auth/rpid";
+import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import {
   buildOperationIndex,
   isSensitiveOperation,
   isSensitivePath,
+  isWriteOperation,
   buildAgentAuthOpenApiOptions,
 } from "@atlas/api/lib/auth/agent-auth-openapi";
 import type { AtlasOpenApiSpec } from "@atlas/api/lib/auth/atlas-openapi-source";
@@ -214,6 +220,186 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
     expect(names).toEqual(["getDashboards", "getMe", "headDashboards"].sort());
     expect(names).not.toContain("postQuery");
     expect(names).not.toContain("getAdminAudit");
+  });
+});
+
+// ── WebAuthn step-up strength gating (#4413, Slice 5a) ──────────────────────
+//
+// The /ee license controls step-up STRENGTH: with enterprise on, write-method
+// capabilities require a WebAuthn assertion (physical presence) before approval
+// and the plugin's `proofOfPresence` is enabled; core (AGPL) leaves writes at the
+// library-default "session" strength with no proof-of-presence. Writes are still
+// contained (blocked from the derived surface), so this asserts the enforcement
+// POLICY the capabilities carry + the plugin option that turns it on — the
+// library enforces the ceremony itself once a webauthn-strength cap is reachable.
+
+describe("agent-auth WebAuthn step-up strength gating (#4413)", () => {
+  /** Full plugin deps with injected seams; enterprise off by default. */
+  function makeStepUpDeps(overrides: Partial<AgentAuthPluginDeps> = {}): AgentAuthPluginDeps {
+    return {
+      spec: FIXTURE_SPEC,
+      fetch: async () => new Response("{}", { status: 200 }),
+      mintToken: async () => "wskey",
+      baseUrl: "http://internal",
+      deviceAuthorizationPage: "https://app.example.com/agent/approve",
+      stepUpWrites: false,
+      webauthnRpId: "app.example.com",
+      webauthnOrigin: "https://app.example.com",
+      ...overrides,
+    };
+  }
+
+  it("isWriteOperation keys off the method — writes true, reads (even admin reads) false, unknown false", () => {
+    const idx = buildOperationIndex(FIXTURE_SPEC);
+    expect(isWriteOperation(idx.get("postQuery"))).toBe(true); // write
+    expect(isWriteOperation(idx.get("getMe"))).toBe(false); // safe read
+    expect(isWriteOperation(idx.get("headDashboards"))).toBe(false); // HEAD read
+    // Admin/platform READS are sensitive (blocked) but NOT writes — they keep the
+    // session default; only the METHOD promotes to webauthn.
+    expect(isWriteOperation(idx.get("getAdminAudit"))).toBe(false);
+    expect(isWriteOperation(idx.get("getPlatformRegions"))).toBe(false);
+    expect(isWriteOperation(undefined)).toBe(false); // unknown → not claimed as a write
+  });
+
+  it("core adapter (no writeApprovalStrength): every capability keeps the default strength (unstamped)", () => {
+    const opts = buildAgentAuthOpenApiOptions(FIXTURE_SPEC, {
+      baseUrl: "http://internal",
+      resolveHeaders: async () => ({}),
+    });
+    for (const cap of opts.capabilities ?? []) {
+      expect(cap.approvalStrength).toBeUndefined(); // library default is "session"
+    }
+  });
+
+  it("enterprise adapter (writeApprovalStrength=webauthn): writes stamped webauthn, reads left at session default", () => {
+    const opts = buildAgentAuthOpenApiOptions(FIXTURE_SPEC, {
+      baseUrl: "http://internal",
+      resolveHeaders: async () => ({}),
+      writeApprovalStrength: "webauthn",
+    });
+    const byName = new Map((opts.capabilities ?? []).map((c) => [c.name, c] as const));
+    // The one write in the fixture is bumped to the strongest step-up.
+    expect(byName.get("postQuery")?.approvalStrength).toBe("webauthn");
+    // Reads — including admin/platform reads — are NOT bumped (GET → session).
+    expect(byName.get("getMe")?.approvalStrength).toBeUndefined();
+    expect(byName.get("getDashboards")?.approvalStrength).toBeUndefined();
+    expect(byName.get("headDashboards")?.approvalStrength).toBeUndefined();
+    expect(byName.get("getAdminAudit")?.approvalStrength).toBeUndefined();
+    expect(byName.get("getPlatformRegions")?.approvalStrength).toBeUndefined();
+    // Stamping the strength does not disturb the containment set — names only.
+    expect((opts.capabilities ?? []).map((c) => c.name).sort()).toEqual(
+      ["getAdminAudit", "getDashboards", "getMe", "getPlatformRegions", "headDashboards", "postQuery"].sort(),
+    );
+  });
+
+  it("enterprise plugin options (AC1): proofOfPresence enabled + write caps require webauthn", () => {
+    const opts = buildAgentAuthPluginOptions(
+      makeStepUpDeps({
+        stepUpWrites: true,
+        webauthnRpId: "app.example.com",
+        webauthnOrigin: "https://app.example.com",
+      }),
+    );
+    // The plugin-level switch that makes the library ENFORCE the webauthn
+    // ceremony (blocks approval until a physical-presence assertion is provided),
+    // with the RP mirroring the passkey plugin's enrollment RP.
+    expect(opts.proofOfPresence).toEqual({
+      enabled: true,
+      rpId: "app.example.com",
+      origin: "https://app.example.com",
+    });
+    const post = (opts.capabilities ?? []).find((c) => c.name === "postQuery");
+    expect(post?.approvalStrength).toBe("webauthn");
+  });
+
+  it("core plugin options (AC2): no proofOfPresence, writes fall back to the core session strength", () => {
+    const opts = buildAgentAuthPluginOptions(makeStepUpDeps({ stepUpWrites: false }));
+    expect(opts.proofOfPresence).toBeUndefined();
+    for (const cap of opts.capabilities ?? []) {
+      expect(cap.approvalStrength).toBeUndefined(); // no webauthn enforcement without /ee
+    }
+  });
+
+  it("enterprise with no configured web origin: origin omitted so the plugin derives it from baseURL", () => {
+    const opts = buildAgentAuthPluginOptions(
+      makeStepUpDeps({ stepUpWrites: true, webauthnRpId: "fallback.rp", webauthnOrigin: null }),
+    );
+    expect(opts.proofOfPresence).toEqual({ enabled: true, rpId: "fallback.rp" });
+  });
+
+  it("containment + stamping hold together against the REAL spec: every write webauthn-stamped, every read left default", () => {
+    // The fixture has one write; pin the write-classification-drives-stamping
+    // guarantee at spec scale (mirrors the containment real-spec test above).
+    const specPath = resolve(import.meta.dir, "../../../../../../apps/docs/openapi.json");
+    if (!existsSync(specPath)) {
+      console.warn(`[agent-auth] real-spec stamping test skipped — ${specPath} not found`);
+      return;
+    }
+    const realSpec = JSON.parse(readFileSync(specPath, "utf8")) as AtlasOpenApiSpec;
+    const index = buildOperationIndex(realSpec);
+    const opts = buildAgentAuthOpenApiOptions(realSpec, {
+      baseUrl: "http://internal",
+      resolveHeaders: async () => ({}),
+      writeApprovalStrength: "webauthn",
+    });
+    const byName = new Map((opts.capabilities ?? []).map((c) => [c.name, c] as const));
+    let stampedWrites = 0;
+    for (const [name, meta] of index) {
+      const cap = byName.get(name);
+      if (!cap) continue;
+      if (isWriteOperation(meta)) {
+        expect(cap.approvalStrength).toBe("webauthn");
+        stampedWrites++;
+      } else {
+        expect(cap.approvalStrength).toBeUndefined(); // reads stay at session default
+      }
+    }
+    expect(stampedWrites).toBeGreaterThan(0); // non-vacuous — the real spec has writes
+  });
+});
+
+// ── resolveDeps default-resolution wiring (#4413 AC3) ───────────────────────
+//
+// The step-up tests above inject `stepUpWrites` directly; these pin the seam
+// that actually connects the enterprise decision to the feature. `resolveDeps`
+// reads the flag through the core `enterprise-config.ts` mirror, which (with
+// config unloaded in unit tests) resolves from `ATLAS_ENTERPRISE_ENABLED` —
+// driven here via env, self-contained (set inside the suite, restored after).
+
+describe("resolveDeps enterprise-flag wiring (#4413 AC3)", () => {
+  const prevEnterprise = process.env.ATLAS_ENTERPRISE_ENABLED;
+  afterEach(() => {
+    if (prevEnterprise === undefined) delete process.env.ATLAS_ENTERPRISE_ENABLED;
+    else process.env.ATLAS_ENTERPRISE_ENABLED = prevEnterprise;
+  });
+
+  it("stepUpWrites resolves true when enterprise is enabled (read via the core mirror, not @atlas/ee)", () => {
+    process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+    expect(resolveDeps({ spec: FIXTURE_SPEC }).stepUpWrites).toBe(true);
+  });
+
+  it("stepUpWrites resolves false when enterprise is disabled — writes stay at the core session strength", () => {
+    process.env.ATLAS_ENTERPRISE_ENABLED = "false";
+    expect(resolveDeps({ spec: FIXTURE_SPEC }).stepUpWrites).toBe(false);
+  });
+
+  it("an explicit stepUpWrites override wins over the enterprise flag", () => {
+    process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+    expect(resolveDeps({ spec: FIXTURE_SPEC, stepUpWrites: false }).stepUpWrites).toBe(false);
+  });
+
+  it("webauthnRpId is resolved from the shared passkey RP resolver (resolvePasskeyRpId + getWebOrigin)", () => {
+    // Pins that `resolveDeps` derives the step-up RP from the SAME exported
+    // helper + args the passkey plugin uses — so the two can only agree by both
+    // calling `resolvePasskeyRpId(process.env, getWebOrigin())`. This guards
+    // internal drift in `resolveDeps` (swapping the resolver/args here goes red);
+    // it does NOT re-verify `server.ts`'s own `passkey({ rpID: ... })` call,
+    // which is the passkey feature's contract. Shared helper = agreement by
+    // construction; a step-up assertion against an enrolled passkey would be
+    // RP-mismatched only if BOTH sites diverged from this helper.
+    expect(resolveDeps({ spec: FIXTURE_SPEC }).webauthnRpId).toBe(
+      resolvePasskeyRpId(process.env, getWebOrigin()),
+    );
   });
 });
 

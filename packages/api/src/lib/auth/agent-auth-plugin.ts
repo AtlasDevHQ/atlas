@@ -65,6 +65,8 @@ import { isAgentAuthEnabled } from "@atlas/api/lib/auth/agent-auth-gate";
 import { auditAgentAuthEvent } from "@atlas/api/lib/auth/agent-auth-audit";
 import { resolveAgentApprovalPage } from "@atlas/api/lib/auth/agent-approval-page";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
+import { resolvePasskeyRpId } from "@atlas/api/lib/auth/rpid";
+import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import {
   buildAgentAuthOpenApiOptions,
   type AgentAuthOpenApiOptions,
@@ -312,9 +314,41 @@ export interface AgentAuthPluginDeps {
    * API host — see `resolveAgentApprovalPage`.
    */
   readonly deviceAuthorizationPage: string;
+  /**
+   * Enterprise (#4413, Slice 5a): when `true`, WRITE-method capabilities are
+   * stamped with `approvalStrength: "webauthn"` and the plugin's
+   * `proofOfPresence` is enabled, so a write requires a WebAuthn step-up
+   * (physical presence) before approval — unbypassable by an autonomous agent
+   * with browser control. When `false` (core / AGPL) writes keep the library
+   * default (`"session"`) and no proof-of-presence is required. Resolved from the
+   * core `enterprise-config.ts` mirror, never a direct `@atlas/ee` import, so
+   * `check-ee-imports.sh` stays green. Orthogonal to `ATLAS_AGENT_AUTH_ENABLED`
+   * (#4409), which gates whether the surface is reachable at all.
+   */
+  readonly stepUpWrites: boolean;
+  /**
+   * WebAuthn RP id + origin for `proofOfPresence`. `webauthnRpId` MUST match the
+   * passkey plugin's enrollment RP — `server.ts` registers
+   * `passkey({ rpID: resolvePasskeyRpId(process.env, getWebOrigin()) })` — or an
+   * assertion made against an enrolled passkey would be rejected as RP-mismatched;
+   * it is always a non-empty string (`resolvePasskeyRpId` falls back to
+   * `DEFAULT_RP_ID`). `webauthnOrigin` is `null` when no web origin is configured,
+   * in which case only the ORIGIN is omitted and the plugin derives it from its
+   * `baseURL` — `rpId` is always supplied.
+   */
+  readonly webauthnRpId: string;
+  readonly webauthnOrigin: string | null;
 }
 
-function resolveDeps(overrides?: Partial<AgentAuthPluginDeps>): AgentAuthPluginDeps {
+/**
+ * Resolve the injected seams to their production defaults, honoring any
+ * overrides. Exported so the flag→feature wiring is directly testable — in
+ * particular that `stepUpWrites` reads the enterprise decision through the core
+ * `enterprise-config.ts` mirror (#4413 AC3) and that `webauthnRpId` matches the
+ * passkey plugin's enrollment RP by construction (same resolver + args as
+ * `server.ts`). Callers that want the plugin should use `buildAgentAuthPlugin`.
+ */
+export function resolveDeps(overrides?: Partial<AgentAuthPluginDeps>): AgentAuthPluginDeps {
   return {
     spec: overrides?.spec !== undefined ? overrides.spec : getAtlasOpenApiSpec(),
     fetch: overrides?.fetch ?? inProcessFetch,
@@ -322,6 +356,14 @@ function resolveDeps(overrides?: Partial<AgentAuthPluginDeps>): AgentAuthPluginD
     baseUrl: overrides?.baseUrl ?? resolveInternalApiBase(),
     deviceAuthorizationPage:
       overrides?.deviceAuthorizationPage ?? resolveAgentApprovalPage(getWebOrigin()),
+    // Read the enterprise flag through the core mirror (getConfig() → env), NOT a
+    // direct @atlas/ee import. Defaults false whenever config is unloaded / the
+    // env flag is unset (e.g. isolated unit tests), keeping core behavior unless
+    // enterprise is explicitly on.
+    stepUpWrites: overrides?.stepUpWrites ?? isEnterpriseEnabled(),
+    webauthnRpId: overrides?.webauthnRpId ?? resolvePasskeyRpId(process.env, getWebOrigin()),
+    webauthnOrigin:
+      overrides?.webauthnOrigin !== undefined ? overrides.webauthnOrigin : getWebOrigin(),
   };
 }
 
@@ -380,6 +422,9 @@ function buildOptions(deps: AgentAuthPluginDeps): AgentAuthOpenApiOptions {
     baseUrl: deps.baseUrl,
     resolveHeaders,
     fetch: deps.fetch,
+    // Enterprise-only (#4413): require a WebAuthn step-up on writes. Omitted in
+    // core, so writes keep the library default ("session").
+    ...(deps.stepUpWrites ? { writeApprovalStrength: "webauthn" as const } : {}),
   });
 
   // Wrap the adapter's proxy `onExecute` so an UNEXPECTED failure (upstream
@@ -461,16 +506,17 @@ function buildOptions(deps: AgentAuthPluginDeps): AgentAuthOpenApiOptions {
 }
 
 /**
- * Build the `agentAuth()` plugin. Kept as a factory (not a module-level
- * singleton) so `buildPlugins()` composes it like every other plugin and tests
- * can construct it in isolation with injected seams.
+ * Assemble the full `agentAuth()` options object from resolved deps — the
+ * capability set + proxy `onExecute` (from {@link buildOptions}) plus the
+ * top-level plugin options (device-authorization page, enterprise step-up,
+ * audit, branding). Extracted from {@link buildAgentAuthPlugin} so the
+ * enterprise-gated `proofOfPresence` + the write-capability strength stamps are
+ * assertable directly (the constructed plugin object hides its options), without
+ * standing up a `betterAuth()` instance.
  */
-export function buildAgentAuthPlugin(
-  overrides?: Partial<AgentAuthPluginDeps>,
-): ReturnType<typeof agentAuth> {
-  const deps = resolveDeps(overrides);
+export function buildAgentAuthPluginOptions(deps: AgentAuthPluginDeps): AgentAuthOptions {
   const options = buildOptions(deps);
-  return agentAuth({
+  return {
     ...options,
     // Point the device-authorization approval flow (#4411) at the Atlas web
     // page. Absolute WEB-origin URL — a bare path would resolve against the API
@@ -478,6 +524,29 @@ export function buildAgentAuthPlugin(
     // `options` spread because it's a top-level plugin option, not an adapter
     // field; the adapter never touches it, so ordering is immaterial.
     deviceAuthorizationPage: deps.deviceAuthorizationPage,
+    // #4413 Slice 5a — WebAuthn step-up enforcement, ENTERPRISE-ONLY. When /ee is
+    // enabled (`stepUpWrites`), write-method capabilities carry
+    // `approvalStrength: "webauthn"` (stamped in `buildOptions`) and
+    // proof-of-presence is REQUIRED before a write is approved — so even an
+    // autonomous agent with browser control cannot self-approve a write; a human
+    // with a physical authenticator must. `rpId` mirrors the passkey plugin's
+    // enrollment RP (`server.ts`) so an assertion made against an enrolled passkey
+    // validates; `origin` is the configured web origin. When the web origin is
+    // unset, `origin` is omitted and the plugin derives it from its `baseURL`
+    // (`rpId` is always supplied). Omitted entirely in core, where writes keep the
+    // library-default "session" strength and no proof-of-presence is required.
+    // The enterprise decision is read via the core `enterprise-config.ts` mirror
+    // (no `@atlas/ee` import here). This is orthogonal to `ATLAS_AGENT_AUTH_ENABLED`
+    // (#4409), which gates whether the surface is reachable at all.
+    ...(deps.stepUpWrites
+      ? {
+          proofOfPresence: {
+            enabled: true,
+            rpId: deps.webauthnRpId,
+            ...(deps.webauthnOrigin ? { origin: deps.webauthnOrigin } : {}),
+          },
+        }
+      : {}),
     // #4412 Slice 4 — record the grant/approval/execute lifecycle in the admin
     // audit catalog (`ADMIN_ACTIONS.agent.*`). The bridge fails closed on the
     // `ATLAS_AGENT_AUTH_ENABLED` master switch, summarizes high-volume executes
@@ -493,5 +562,29 @@ export function buildAgentAuthPlugin(
     providerName: "Atlas",
     providerDescription:
       "Atlas — deploy-anywhere text-to-SQL data analyst agent (Agent Auth Protocol, experimental).",
-  });
+  };
+}
+
+/**
+ * Build the `agentAuth()` plugin. Kept as a factory (not a module-level
+ * singleton) so `buildPlugins()` composes it like every other plugin and tests
+ * can construct it in isolation with injected seams.
+ */
+export function buildAgentAuthPlugin(
+  overrides?: Partial<AgentAuthPluginDeps>,
+): ReturnType<typeof agentAuth> {
+  const deps = resolveDeps(overrides);
+  // Loud, non-secret signal of the resolved step-up posture (#4413) so an
+  // operator can confirm from logs whether WebAuthn enforcement is active on a
+  // licensed deploy — not infer it. If config loads late (unresolved → false),
+  // this line is the only trace that writes built at the weaker "session"
+  // strength. rpId + booleans are not secrets (CLAUDE.md: no secrets in logs).
+  log.info(
+    {
+      stepUpWrites: deps.stepUpWrites,
+      webauthnRpId: deps.stepUpWrites ? deps.webauthnRpId : undefined,
+    },
+    "agent-auth: resolved WebAuthn step-up enforcement posture",
+  );
+  return agentAuth(buildAgentAuthPluginOptions(deps));
 }

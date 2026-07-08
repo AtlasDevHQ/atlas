@@ -37,6 +37,7 @@ import {
 } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 import { NOTION_KNOWLEDGE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/notion-knowledge-form-handler";
 import { CONFLUENCE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/confluence-form-handler";
+import { GITBOOK_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/gitbook-form-handler";
 import { SYNC_CYCLE_INSTALLS_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
 import {
   CONNECTOR_SYNC_STATE_SELECT_SQL,
@@ -505,6 +506,31 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     // The token is NEVER persisted in the install config.
     expect(row.rows[0]?.config).not.toHaveProperty("api_token");
     expect(row.rows[0]?.config).toMatchObject({ space_key: "ENG" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("installs a GitBook connector collection against the live schema (#4393)", async () => {
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+       VALUES ('catalog:gitbook', 'Knowledge Base (GitBook)', 'gitbook', 'context', 'knowledge', 'form')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    const installed = await pool.query<{ id: string }>(GITBOOK_INSTALL_UPSERT_SQL, [
+      "row-gitbook",
+      ws,
+      "catalog:gitbook",
+      "gitbook-docs",
+      JSON.stringify({ space_id: "space-123" }),
+    ]);
+    expect(installed.rows[0]?.id).toBe("row-gitbook");
+    const row = await pool.query<{ pillar: string; status: string; config: Record<string, unknown> }>(
+      `SELECT pillar, status, config FROM workspace_plugins
+        WHERE workspace_id = $1 AND install_id = 'gitbook-docs'`,
+      [ws],
+    );
+    expect(row.rows[0]).toMatchObject({ pillar: "knowledge", status: "published" });
+    // The token is NEVER persisted in the install config.
+    expect(row.rows[0]?.config).not.toHaveProperty("api_token");
+    expect(row.rows[0]?.config).toMatchObject({ space_id: "space-123" });
   }, PG_TEST_TIMEOUT_MS);
 
   it("the cycle's install listing returns ONLY enabled, non-archived bundle-sync installs (#4211)", async () => {

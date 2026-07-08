@@ -25,6 +25,7 @@ import {
   BUILTIN_BUNDLE_SYNC_CATALOG_ROW,
   BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW,
   BUILTIN_CONFLUENCE_CATALOG_ROW,
+  BUILTIN_CONFLUENCE_DC_CATALOG_ROW,
   BUILTIN_KNOWLEDGE_CATALOG_ROWS,
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
@@ -135,6 +136,30 @@ describe("BUILTIN_CONFLUENCE_CATALOG_ROW (#4377)", () => {
   });
 });
 
+describe("BUILTIN_CONFLUENCE_DC_CATALOG_ROW (#4394)", () => {
+  it("is the `confluence-datacenter` form install: base URL + space key + secret PAT, NO email", () => {
+    const row = BUILTIN_CONFLUENCE_DC_CATALOG_ROW;
+    expect(row.slug).toBe("confluence-datacenter");
+    expect(row.id).toBe("catalog:confluence-datacenter");
+    expect(row.installModel).toBe("form");
+    expect(row.autoInstall).toBe(false);
+    const keys = row.configSchema.map((f) => f.key);
+    expect(keys).toContain("base_url");
+    expect(keys).toContain("space_key");
+    expect(keys).toContain("api_token");
+    // A Server/DC PAT is a Bearer credential with no paired username — the
+    // Cloud-only email field must be absent.
+    expect(keys).not.toContain("email");
+    // Exactly one secret field: the PAT (never echoed).
+    expect(row.configSchema.filter((f) => f.secret === true).map((f) => f.key)).toEqual([
+      "api_token",
+    ]);
+    for (const key of ["base_url", "space_key", "api_token"]) {
+      expect(row.configSchema.find((f) => f.key === key)?.required).toBe(true);
+    }
+  });
+});
+
 describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
   it("issues one INSERT per built-in row with type 'context' and pillar 'knowledge'", async () => {
     const { db, captured } = captureDb();
@@ -155,6 +180,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "bundle-sync",
       "notion-knowledge",
       "confluence",
+      "confluence-datacenter",
       "gitbook",
     ]);
   });
@@ -180,6 +206,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "bundle-sync",
       "notion-knowledge",
       "confluence",
+      "confluence-datacenter",
       "gitbook",
     ]);
     // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).

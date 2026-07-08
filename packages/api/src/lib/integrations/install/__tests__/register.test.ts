@@ -42,6 +42,7 @@ import {
   getKnowledgeSyncConnector,
 } from "@atlas/api/lib/knowledge/connectors";
 import { CONFLUENCE_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/config";
+import { CONFLUENCE_DC_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/config-datacenter";
 import { NOTION_KNOWLEDGE_CATALOG_ID } from "@atlas/api/lib/knowledge/notion/connector";
 import { GITBOOK_CATALOG_ID } from "@atlas/api/lib/knowledge/gitbook/config";
 
@@ -147,12 +148,14 @@ describe("registerBuiltinInstallHandlers — knowledge sync connector pairing (#
   // walk dispatches on the connector registry, not the form handler). Pin that
   // one call to registerBuiltinInstallHandlers() registers every vendor's
   // connector alongside its form handler. No env gate on any.
-  it("registers the Confluence, Notion, and GitBook knowledge sync connectors alongside their form handlers", () => {
+  it("registers the Confluence, Confluence DC, Notion, and GitBook knowledge sync connectors alongside their form handlers", () => {
     registerBuiltinInstallHandlers();
     expect(getKnowledgeSyncConnector(CONFLUENCE_CATALOG_ID)).toBeDefined();
+    expect(getKnowledgeSyncConnector(CONFLUENCE_DC_CATALOG_ID)).toBeDefined();
     expect(getKnowledgeSyncConnector(NOTION_KNOWLEDGE_CATALOG_ID)).toBeDefined();
     expect(getKnowledgeSyncConnector(GITBOOK_CATALOG_ID)).toBeDefined();
     expect(getInstallHandler({ slug: "confluence", install_model: "form" }).kind).toBe("form");
+    expect(getInstallHandler({ slug: "confluence-datacenter", install_model: "form" }).kind).toBe("form");
     expect(getInstallHandler({ slug: "notion-knowledge", install_model: "form" }).kind).toBe("form");
     expect(getInstallHandler({ slug: "gitbook", install_model: "form" }).kind).toBe("form");
   });

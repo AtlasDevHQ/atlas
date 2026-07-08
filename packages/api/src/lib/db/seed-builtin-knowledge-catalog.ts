@@ -1,8 +1,8 @@
 /**
  * Boot-time idempotent seed pass for the built-in Knowledge Base catalog rows
- * — the upload/bundle-sync arms plus the vendor connectors (Notion, Confluence,
- * GitBook). `BUILTIN_KNOWLEDGE_CATALOG_ROWS` is the authoritative list; adding a
- * connector is one append there, so this header stays non-enumerating.
+ * — the upload/bundle-sync arms plus the vendor connectors (Notion, Confluence
+ * Cloud + Data Center, GitBook). `BUILTIN_KNOWLEDGE_CATALOG_ROWS` is the
+ * authoritative list; adding a connector is one append there.
  *
  * The Knowledge Base lifecycle (ADR-0028 §5) started as one built-in catalog
  * row — `okf-upload`, an **explicit, degenerate form install** with no
@@ -30,6 +30,10 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { CONFLUENCE_CATALOG_ID, CONFLUENCE_SLUG } from "@atlas/api/lib/knowledge/confluence/config";
+import {
+  CONFLUENCE_DC_CATALOG_ID,
+  CONFLUENCE_DC_SLUG,
+} from "@atlas/api/lib/knowledge/confluence/config-datacenter";
 import {
   NOTION_KNOWLEDGE_CATALOG_ID,
   NOTION_KNOWLEDGE_SLUG,
@@ -250,6 +254,64 @@ export const BUILTIN_CONFLUENCE_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
 };
 
 /**
+ * The Confluence Data Center / Server connector Knowledge Base catalog row
+ * (#4394, PRD #4375). The self-managed sibling of the Cloud row: a form install
+ * that mirrors ONE Confluence Server/DC space into a review-gated collection;
+ * the Scheduler dispatches the registered Confluence DC connector on a cadence
+ * (incremental + reconciliation) and every synced page lands `draft`.
+ *
+ * `api_token` (a Personal Access Token) is `secret: true` but is NOT stored in
+ * `workspace_plugins.config` — the install handler routes it to
+ * `knowledge_sync_credentials` (encrypted). The base URL is customer-supplied,
+ * so every fetch goes through the SSRF egress guard. There is no email field
+ * (unlike Cloud): a Server/DC PAT is a Bearer credential with no paired
+ * username. The id/slug are the config SSOT (`CONFLUENCE_DC_CATALOG_ID` /
+ * `CONFLUENCE_DC_SLUG`).
+ */
+export const BUILTIN_CONFLUENCE_DC_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: CONFLUENCE_DC_CATALOG_ID,
+  slug: CONFLUENCE_DC_SLUG,
+  name: "Knowledge Base (Confluence Data Center)",
+  description:
+    "Mirror a self-managed Confluence Data Center/Server space into a review-gated knowledge collection; Atlas syncs pages on a schedule (incremental + reconciliation) and queues changes for review.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "base_url",
+      type: "string",
+      label: "Confluence base URL",
+      required: true,
+      description:
+        "Your self-managed Confluence base URL, e.g. https://confluence.your-company.com. Fetched server-side through the SSRF egress guard.",
+    },
+    {
+      key: "space_key",
+      type: "string",
+      label: "Space key",
+      required: true,
+      description: "The key of the space to mirror (one collection per space), e.g. ENG.",
+    },
+    {
+      key: "api_token",
+      type: "string",
+      secret: true,
+      label: "Personal Access Token",
+      required: true,
+      description:
+        "A Confluence Server/DC Personal Access Token (Profile → Personal Access Tokens). Stored encrypted; never returned.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this knowledge collection.",
+    },
+  ],
+};
+
+/**
  * The GitBook Cloud connector Knowledge Base catalog row (#4393, ADR-0030). A
  * form install that mirrors ONE GitBook space into a review-gated collection;
  * the Scheduler dispatches the registered GitBook connector on a cadence
@@ -304,6 +366,7 @@ export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatal
   BUILTIN_BUNDLE_SYNC_CATALOG_ROW,
   BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW,
   BUILTIN_CONFLUENCE_CATALOG_ROW,
+  BUILTIN_CONFLUENCE_DC_CATALOG_ROW,
   BUILTIN_GITBOOK_CATALOG_ROW,
 ];
 

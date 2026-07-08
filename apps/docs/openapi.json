@@ -56649,6 +56649,7 @@
                               "bundle-sync",
                               "notion",
                               "confluence",
+                              "confluence-datacenter",
                               "gitbook"
                             ]
                           },

@@ -245,6 +245,7 @@ describe("agent-auth WebAuthn step-up strength gating (#4413)", () => {
       stepUpWrites: false,
       webauthnRpId: "app.example.com",
       webauthnOrigin: "https://app.example.com",
+      cibaApproval: false,
       ...overrides,
     };
   }
@@ -358,6 +359,126 @@ describe("agent-auth WebAuthn step-up strength gating (#4413)", () => {
   });
 });
 
+// ── CIBA backchannel approval gating (#4414, Slice 5b) ──────────────────────
+//
+// The /ee license controls whether the Atlas-internal CIBA (backchannel)
+// approval method is OFFERED. With enterprise on, `approval_methods` advertises
+// both `device_authorization` and `ciba` and the library accepts
+// `/agent/ciba/authorize`; core (AGPL) offers ONLY `device_authorization` — the
+// library omits `ciba` from the discovery document and hard-rejects the CIBA
+// endpoint. This asserts the plugin OPTION that drives the library gate plus the
+// end-to-end advertised method set through a real `betterAuth()` instance.
+
+describe("agent-auth CIBA backchannel approval gating (#4414)", () => {
+  /** Full plugin deps with injected seams; CIBA (enterprise) off by default. */
+  function makeCibaDeps(overrides: Partial<AgentAuthPluginDeps> = {}): AgentAuthPluginDeps {
+    return {
+      spec: FIXTURE_SPEC,
+      fetch: async () => new Response("{}", { status: 200 }),
+      mintToken: async () => "wskey",
+      baseUrl: "http://internal",
+      deviceAuthorizationPage: "https://app.example.com/agent/approve",
+      stepUpWrites: false,
+      webauthnRpId: "app.example.com",
+      webauthnOrigin: "https://app.example.com",
+      cibaApproval: false,
+      ...overrides,
+    };
+  }
+
+  it("core plugin options (AC2): device-authorization only, CIBA not offered", () => {
+    const opts = buildAgentAuthPluginOptions(makeCibaDeps({ cibaApproval: false }));
+    // Set EXPLICITLY, not left to the library default (["ciba","device_authorization"])
+    // — leaving it unset would offer CIBA in core.
+    expect(opts.approvalMethods).toEqual(["device_authorization"]);
+    expect(opts.approvalMethods).not.toContain("ciba");
+  });
+
+  it("enterprise plugin options (AC1): CIBA offered alongside device-authorization", () => {
+    const opts = buildAgentAuthPluginOptions(makeCibaDeps({ cibaApproval: true }));
+    expect(opts.approvalMethods).toContain("ciba");
+    expect(opts.approvalMethods).toContain("device_authorization");
+  });
+
+  /** A real `betterAuth()` instance with only the agent-auth plugin, CIBA gated by `cibaApproval`. */
+  function makeCibaInstance(cibaApproval: boolean) {
+    const plugin = buildAgentAuthPlugin({ spec: FIXTURE_SPEC, cibaApproval });
+    return betterAuth({
+      baseURL: BASE,
+      secret: "test-secret-at-least-32-characters-long!!",
+      database: memoryAdapter({
+        user: [], session: [], account: [], verification: [],
+        agent: [], agentHost: [], agentCapabilityGrant: [], approvalRequest: [],
+      }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
+      plugins: [plugin] as any[],
+    });
+  }
+
+  // The advertised method set through a REAL betterAuth() instance: the discovery
+  // document (§6.1) is exactly what an agent reads to learn which approval methods
+  // the server accepts, and the library derives `/agent/ciba/authorize`'s own gate
+  // from the same list — so this is the load-bearing "offered / not offered" proof.
+  async function discoveryApprovalMethods(cibaApproval: boolean): Promise<string[]> {
+    const res = await makeCibaInstance(cibaApproval).handler(
+      new Request(`${ISSUER}/agent-configuration`, { method: "GET" }),
+    );
+    // A non-200 here (a regressed discovery endpoint) would otherwise surface as an
+    // empty method list; assert the status so a break reads as "endpoint broke",
+    // not "methods list is empty".
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { approval_methods?: string[] };
+    return body.approval_methods ?? [];
+  }
+
+  // The ENFORCEMENT endpoint, end-to-end — not just the advertisement. The library
+  // runs `approvalMethods.includes("ciba")` as the FIRST line of
+  // `/agent/ciba/authorize`, before it even checks for a host session, so an
+  // unauthenticated POST cleanly separates the two postures: core rejects with
+  // `invalid_request` (CIBA is not offered), while enterprise passes the method gate
+  // and only THEN demands host auth (`unauthorized`). This pins the actual gate
+  // against a future library bump that might decouple the endpoint from
+  // `approval_methods` — a decoupling that would keep the advertising tests green
+  // while core silently accepted a backchannel approval (an enterprise-gate bypass).
+  async function cibaAuthorize(
+    cibaApproval: boolean,
+  ): Promise<{ status: number; error?: string }> {
+    const res = await makeCibaInstance(cibaApproval).handler(
+      new Request(`${ISSUER}/agent/ciba/authorize`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ login_hint: "user@example.com" }),
+      }),
+    );
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    return { status: res.status, error: body.error };
+  }
+
+  it("core /agent/ciba/authorize is hard-rejected (invalid_request) — enforcement, not just advertising", async () => {
+    const { status, error } = await cibaAuthorize(false);
+    expect(status).toBe(400);
+    expect(error).toBe("invalid_request");
+  });
+
+  it("enterprise /agent/ciba/authorize passes the method gate, then demands host auth (unauthorized)", async () => {
+    // Not `invalid_request`: the CIBA method IS offered, so the library advances
+    // past the gate to the host-auth check — which an unauthenticated request fails.
+    const { status, error } = await cibaAuthorize(true);
+    expect(status).toBe(401);
+    expect(error).toBe("unauthorized");
+  });
+
+  it("core discovery document advertises device-authorization only (no ciba) — end-to-end", async () => {
+    expect(await discoveryApprovalMethods(false)).toEqual(["device_authorization"]);
+  });
+
+  it("enterprise discovery document advertises the CIBA backchannel — end-to-end", async () => {
+    const methods = await discoveryApprovalMethods(true);
+    expect(methods).toContain("ciba");
+    expect(methods).toContain("device_authorization");
+  });
+});
+
 // ── resolveDeps default-resolution wiring (#4413 AC3) ───────────────────────
 //
 // The step-up tests above inject `stepUpWrites` directly; these pin the seam
@@ -386,6 +507,21 @@ describe("resolveDeps enterprise-flag wiring (#4413 AC3)", () => {
   it("an explicit stepUpWrites override wins over the enterprise flag", () => {
     process.env.ATLAS_ENTERPRISE_ENABLED = "true";
     expect(resolveDeps({ spec: FIXTURE_SPEC, stepUpWrites: false }).stepUpWrites).toBe(false);
+  });
+
+  it("cibaApproval resolves true when enterprise is enabled (read via the core mirror, not @atlas/ee)", () => {
+    process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+    expect(resolveDeps({ spec: FIXTURE_SPEC }).cibaApproval).toBe(true);
+  });
+
+  it("cibaApproval resolves false when enterprise is disabled — core offers only device-authorization", () => {
+    process.env.ATLAS_ENTERPRISE_ENABLED = "false";
+    expect(resolveDeps({ spec: FIXTURE_SPEC }).cibaApproval).toBe(false);
+  });
+
+  it("an explicit cibaApproval override wins over the enterprise flag", () => {
+    process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+    expect(resolveDeps({ spec: FIXTURE_SPEC, cibaApproval: false }).cibaApproval).toBe(false);
   });
 
   it("webauthnRpId is resolved from the shared passkey RP resolver (resolvePasskeyRpId + getWebOrigin)", () => {

@@ -676,18 +676,25 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   // returns 404; when on, they become reachable — WITH NO REDEPLOY, because
   // this is a hot-reloadable settings key (NOT `requiresRestart`, NOT an env
   // var). The per-request gate reads it via `getSettingLive`/`getSettingAuto`
-  // and fails closed (any resolution error ⇒ off). `scope: "workspace"` gives
-  // the standard four-tier precedence (workspace override > platform > env >
-  // default): an operator flips the platform default, a workspace admin can
-  // override for their own workspace. Kept experimental (upstream spec is a
-  // moving `v1.0-draft`) — default OFF. See ADR-0016 §Agent Auth and the
-  // decision comment on #2058.
+  // and fails closed (any resolution error ⇒ off). `scope: "workspace"` makes
+  // the key mechanically override-able per workspace, but the enablement is
+  // enforced at TWO tiers with ASYMMETRIC power (#4419) — it is NOT a flat
+  // "workspace can override the platform" precedence:
+  //   • Operator (PLATFORM tier) = master on/off for EVERYONE. The HTTP-surface
+  //     gate reads the platform tier only (no orgId), so platform-off ⇒ 404
+  //     globally and a workspace CANNOT re-open it. This is the kill-switch.
+  //   • Workspace admin (WORKSPACE tier) = opt-OUT of EXECUTION only. With the
+  //     platform on, a workspace override of `false` seals that workspace's
+  //     capability execution (others unaffected); it can only tighten, never
+  //     turn the surface on when the platform default is off.
+  // Kept experimental (upstream spec is a moving `v1.0-draft`) — default OFF.
+  // See ADR-0016 §Agent Auth, `agent-auth-gate.ts`, and the decision on #2058.
   {
     key: "ATLAS_AGENT_AUTH_ENABLED",
     section: "MCP",
     label: "Enable Agent Auth Protocol",
     description:
-      "Expose the (experimental) Agent Auth Protocol surface: agent/host/capability endpoints and the `/.well-known/agent-configuration` discovery document. Hot-reloadable — takes effect within seconds, no redeploy. When off (default) the entire surface returns 404. Leave off unless you are piloting agent-identity clients.",
+      "Expose the (experimental) Agent Auth Protocol surface: agent/host/capability endpoints and the `/.well-known/agent-configuration` discovery document. Hot-reloadable — takes effect within seconds, no redeploy. When off (default) the entire surface returns 404. Operator master switch: setting it at the platform level turns the surface on or off for everyone, and a workspace cannot re-enable it while the platform default is off. A workspace override can only tighten — setting it to off seals that workspace's capability execution while leaving others reachable. Leave off unless you are piloting agent-identity clients.",
     type: "boolean",
     default: "false",
     envVar: "ATLAS_AGENT_AUTH_ENABLED",

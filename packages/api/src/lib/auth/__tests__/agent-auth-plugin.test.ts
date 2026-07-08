@@ -21,7 +21,7 @@
  * restored, never at module top level.
  */
 
-import { describe, it, expect, beforeAll, afterAll, mock } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll, afterEach, mock } from "bun:test";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
@@ -47,10 +47,11 @@ mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
 // Spread the real semantic/entities module and override only `listEntities`,
 // so "mock all exports" holds and the org-scoped read is deterministic.
 import * as entitiesReal from "@atlas/api/lib/semantic/entities";
-const entitiesForOrg: (orgId: string | undefined) => entitiesReal.EntityListEntry[] = (orgId) =>
+const defaultEntitiesForOrg = (orgId: string | undefined): entitiesReal.EntityListEntry[] =>
   orgId === "wsA"
-    ? ([{ name: "orders", table: "public.orders", description: "Orders fact" }] as entitiesReal.EntityListEntry[])
+    ? [{ name: "orders", table: "public.orders", description: "Orders fact", source: "default" }]
     : [];
+let entitiesForOrg: (orgId: string | undefined) => entitiesReal.EntityListEntry[] = defaultEntitiesForOrg;
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   ...entitiesReal,
   listEntities: async (opts: { orgId?: string } = {}) => entitiesForOrg(opts.orgId),
@@ -126,11 +127,18 @@ describe("agent-auth capability execution (#4409)", () => {
     publicJwk = (await exportJWK(kp.publicKey)) as Record<string, unknown>;
   });
 
+  // Reset the mutable stubs after EVERY test (not just once in afterAll) so a
+  // test that repoints a stub can't bleed into a later one — the org-scoped read
+  // path is order-sensitive otherwise.
+  afterEach(() => {
+    workspacesForUser = () => ["wsA"];
+    enabledForWorkspace = () => true;
+    entitiesForOrg = defaultEntitiesForOrg;
+  });
+
   afterAll(() => {
     if (prevEnabled === undefined) delete process.env.ATLAS_AGENT_AUTH_ENABLED;
     else process.env.ATLAS_AGENT_AUTH_ENABLED = prevEnabled;
-    workspacesForUser = () => ["wsA"];
-    enabledForWorkspace = () => true;
   });
 
   /**
@@ -234,6 +242,31 @@ describe("agent-auth capability execution (#4409)", () => {
     expect(status).toBe(404);
     expect(body.error).toBe("unauthorized");
     expect(body.data).toBeUndefined();
+  });
+
+  it("workspace-override isolation: with platform on, wsA off but wsB on, wsA is 404'd while wsB executes 200", async () => {
+    // The cross-workspace half of the precedence matrix (#4419): a workspace
+    // override tightens ONLY its own execution. user_1 is a member of both; the
+    // override seals wsA and leaves wsB fully reachable.
+    workspacesForUser = () => ["wsA", "wsB"];
+    enabledForWorkspace = (orgId) => orgId !== "wsA"; // platform on; wsA opted out
+    entitiesForOrg = (orgId) =>
+      orgId === "wsB"
+        ? [{ name: "events", table: "public.events", description: "Events fact", source: "default" }]
+        : [];
+    const instance = makeInstance([
+      { id: "agent_a", workspaceId: "wsA", grantStatus: "active" },
+      { id: "agent_b", workspaceId: "wsB", grantStatus: "active" },
+    ]);
+
+    const a = await execute(instance, await mintJWT({ agentId: "agent_a" }));
+    expect(a.status).toBe(404); // wsA sealed by its own override
+    expect(a.body.error).toBe("unauthorized");
+    expect(a.body.data).toBeUndefined();
+
+    const b = await execute(instance, await mintJWT({ agentId: "agent_b" }));
+    expect(b.status).toBe(200); // wsB unaffected — override is per-org
+    expect(b.body.data).toMatchObject({ workspaceId: "wsB", count: 1 });
   });
 
   it("wrong audience → 401 invalid_jwt (rejected before onExecute)", async () => {

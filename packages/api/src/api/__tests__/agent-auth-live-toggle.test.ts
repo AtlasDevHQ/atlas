@@ -61,6 +61,23 @@ mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => stubAuthInstance,
 }));
 
+// Spy on `getSettingLive` to record the orgId the REAL gate threads through on
+// each read, while keeping env as the source (no internal DB in the test, so a
+// non-delegating stub that reads process.env matches real self-hosted
+// resolution — delegating to the real fn would recurse through this same mock).
+// Spread so every other settings export stays real. This lets the state-4 guard
+// below assert the router NEVER passes a workspace to the gate — the property
+// that keeps a tenant from re-opening an operator-disabled feature (#4419).
+import * as settingsReal from "@atlas/api/lib/settings";
+const gateOrgIdCalls: Array<string | undefined> = [];
+mock.module("@atlas/api/lib/settings", () => ({
+  ...settingsReal,
+  getSettingLive: async (_key: string, orgId?: string) => {
+    gateOrgIdCalls.push(orgId);
+    return process.env.ATLAS_AGENT_AUTH_ENABLED;
+  },
+}));
+
 // SUT routers — imported AFTER the mocks.
 import { auth } from "@atlas/api/api/routes/auth";
 import { wellKnown } from "@atlas/api/api/routes/well-known";
@@ -140,6 +157,22 @@ describe("Agent Auth live-toggle (#4409)", () => {
     process.env.ATLAS_AGENT_AUTH_ENABLED = "false";
     expect((await req("POST", "/api/auth/agent/register")).status).toBe(404);
     expect((await req("GET", DISCOVERY_PATH)).status).toBe(404);
+  });
+
+  it("state 4 (#4419): the HTTP surface reads the platform tier only — a workspace can never re-open a platform-off", async () => {
+    // Platform OFF. The HTTP surface has no workspace to consult (the JWT isn't
+    // verified yet), so it MUST call the gate with no orgId — meaning a
+    // workspace override of ON is invisible here and the surface stays 404 for
+    // everyone. Assert both the 404 AND that no orgId was ever threaded, so a
+    // future refactor that leaked a workspace into the HTTP gate (which would
+    // let a tenant re-open an operator-disabled feature) goes RED here.
+    delete process.env.ATLAS_AGENT_AUTH_ENABLED;
+    gateOrgIdCalls.length = 0;
+    expect((await req("POST", "/api/auth/agent/register")).status).toBe(404);
+    expect((await req("POST", "/api/auth/capability/execute")).status).toBe(404);
+    expect((await req("GET", DISCOVERY_PATH)).status).toBe(404);
+    expect(gateOrgIdCalls.length).toBeGreaterThan(0);
+    expect(gateOrgIdCalls.every((orgId) => orgId === undefined)).toBe(true);
   });
 
   it("the gate is scoped: a non-agent-auth auth path is never gated", async () => {

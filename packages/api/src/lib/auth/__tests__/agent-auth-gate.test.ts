@@ -22,12 +22,21 @@ import { describe, it, expect, afterEach, mock } from "bun:test";
 // its fail-closed catch — from the settings live-cache TTL, which would
 // otherwise hold a stale value across rapid flips within one test run.
 import * as settingsReal from "@atlas/api/lib/settings";
+// `settingValue` is the PLATFORM-tier value (what resolves when no workspace
+// override applies). `workspaceOverrides` models per-org overrides, consulted
+// ONLY when an `orgId` is supplied — mirroring the real `getSettingLive`
+// precedence (workspace override > platform), which the raw HTTP surface never
+// reaches because it omits `orgId`.
 let settingValue: string | undefined;
+let workspaceOverrides: Record<string, string | undefined> = {};
 let throwOnRead = false;
 mock.module("@atlas/api/lib/settings", () => ({
   ...settingsReal,
-  getSettingLive: async (_key: string, _orgId?: string) => {
+  getSettingLive: async (_key: string, orgId?: string) => {
     if (throwOnRead) throw new Error("settings backend unavailable");
+    if (orgId !== undefined && orgId in workspaceOverrides) {
+      return workspaceOverrides[orgId];
+    }
     return settingValue;
   },
 }));
@@ -79,6 +88,7 @@ describe("isAgentAuthEnabled (fail-closed)", () => {
   afterEach(() => {
     throwOnRead = false;
     settingValue = undefined;
+    workspaceOverrides = {};
   });
 
   it("off when the setting resolves to undefined (default)", async () => {
@@ -104,5 +114,53 @@ describe("isAgentAuthEnabled (fail-closed)", () => {
     settingValue = "true"; // would be ON if it read cleanly
     throwOnRead = true;
     expect(await isAgentAuthEnabled()).toBe(false);
+  });
+});
+
+// The two-tier enablement matrix (#4419). `isAgentAuthEnabled()` (no orgId) is
+// the HTTP-surface / platform tier; `isAgentAuthEnabled(workspaceId)` is the
+// execution / workspace tier. Together they encode: operator = master on/off
+// for everyone; workspace = opt-OUT of execution only (can tighten, never
+// re-open). These assert every cell of the four-state matrix the issue enumerates.
+describe("enablement precedence matrix (#4419): platform tier vs workspace tier", () => {
+  afterEach(() => {
+    throwOnRead = false;
+    settingValue = undefined;
+    workspaceOverrides = {};
+  });
+
+  it("platform OFF + workspace unset ⇒ off at both tiers (the default kill-switch)", async () => {
+    settingValue = undefined; // platform default
+    expect(await isAgentAuthEnabled()).toBe(false); // HTTP surface
+    expect(await isAgentAuthEnabled("wsA")).toBe(false); // execution
+  });
+
+  it("platform ON + workspace unset ⇒ on at both tiers (full access)", async () => {
+    settingValue = "true";
+    expect(await isAgentAuthEnabled()).toBe(true); // HTTP surface reachable
+    expect(await isAgentAuthEnabled("wsA")).toBe(true); // execution allowed
+  });
+
+  it("platform ON + workspace OFF ⇒ tightens THAT workspace's execution only; the surface + other workspaces stay on", async () => {
+    settingValue = "true";
+    workspaceOverrides = { wsA: "false" };
+    expect(await isAgentAuthEnabled()).toBe(true); // HTTP surface unaffected (platform tier)
+    expect(await isAgentAuthEnabled("wsA")).toBe(false); // wsA sealed at execution
+    expect(await isAgentAuthEnabled("wsB")).toBe(true); // per-org override — others unaffected
+  });
+
+  it("platform OFF + workspace ON ⇒ HTTP surface still off (a workspace cannot re-open an operator-disabled feature)", async () => {
+    settingValue = undefined; // platform off
+    workspaceOverrides = { wsA: "true" };
+    // The raw HTTP gate omits orgId, so the workspace override is invisible: the
+    // surface is 404 for EVERYONE, including wsA. This is the kill-switch direction.
+    expect(await isAgentAuthEnabled()).toBe(false);
+    // Another workspace with no override also stays off (platform tier).
+    expect(await isAgentAuthEnabled("wsB")).toBe(false);
+    // The workspace tier read for wsA WOULD resolve the override to on — but that
+    // state is unreachable in practice: execution is only entered after the HTTP
+    // surface (above) admits the request, and it never does while platform is off.
+    // Asserted so the "can only tighten, never loosen" invariant is explicit.
+    expect(await isAgentAuthEnabled("wsA")).toBe(true);
   });
 });

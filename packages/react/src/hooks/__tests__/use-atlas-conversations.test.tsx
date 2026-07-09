@@ -17,7 +17,7 @@ const mockConversations = [
   },
 ];
 
-const fetchMock = mock(() =>
+const fetchMock = mock((_url: string, _init?: RequestInit) =>
   Promise.resolve(
     new Response(
       JSON.stringify({ conversations: mockConversations, total: 1 }),

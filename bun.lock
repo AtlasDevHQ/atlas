@@ -354,9 +354,9 @@
       "version": "0.0.17",
       "devDependencies": {
         "@types/node": "^25.9.4",
+        "@typescript/native-preview": "^7.0.0-dev.20260623.1",
         "ai": "^6.0.208",
         "hono": "^4.12.27",
-        "typescript": "^6.0.3",
         "zod": "^4.4.3",
       },
       "peerDependencies": {
@@ -446,14 +446,14 @@
       },
       "devDependencies": {
         "@atlas/oauth-helper": "workspace:*",
-        "typescript": "^6.0.3",
+        "@typescript/native-preview": "^7.0.0-dev.20260623.1",
       },
     },
     "packages/types": {
       "name": "@useatlas/types",
       "version": "0.5.0",
       "devDependencies": {
-        "typescript": "^6.0.3",
+        "@typescript/native-preview": "^7.0.0-dev.20260623.1",
       },
     },
     "packages/web": {
@@ -531,7 +531,7 @@
       "version": "0.0.1",
       "devDependencies": {
         "@types/node": "^25.9.4",
-        "typescript": "^6.0.3",
+        "@typescript/native-preview": "^7.0.0-dev.20260623.1",
       },
     },
     "plugins/bigquery": {

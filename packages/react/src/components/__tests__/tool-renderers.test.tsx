@@ -4,7 +4,7 @@ import { render, screen } from "@testing-library/react";
 import type { ToolRendererProps, ToolRenderers } from "../../lib/tool-renderer-types";
 
 // Mock the `ai` module — must mock ALL named exports used by the component tree
-mock.module("ai", () => ({
+void mock.module("ai", () => ({
   getToolName: (part: Record<string, unknown>) => {
     if (!part.toolName) throw new Error("Unknown tool part");
     return part.toolName as string;

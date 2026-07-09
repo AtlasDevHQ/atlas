@@ -27,7 +27,7 @@ function queuedFetch(specs: ResponseSpec[]): { fetchImpl: typeof fetch; calls: R
   const calls: Request[] = [];
   let i = 0;
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-    calls.push(new Request(typeof url === "string" ? url : url.toString(), init));
+    calls.push(new Request(typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url, init));
     const spec = specs[Math.min(i, specs.length - 1)];
     i++;
     return new Response(JSON.stringify(spec.body), {

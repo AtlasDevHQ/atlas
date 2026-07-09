@@ -44,7 +44,7 @@ function stubFetch(spec: { status: number; body: unknown }): {
 } {
   const calls: Request[] = [];
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-    calls.push(new Request(typeof url === "string" ? url : url.toString(), init));
+    calls.push(new Request(typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url, init));
     return new Response(spec.body === undefined ? "" : JSON.stringify(spec.body), {
       status: spec.status,
       headers: { "Content-Type": "application/json" },

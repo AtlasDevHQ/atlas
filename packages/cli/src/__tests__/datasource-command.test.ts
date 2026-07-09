@@ -17,7 +17,7 @@ function capture(): { io: DatasourceIO; out: string[]; err: string[] } {
 function stubFetch(status: number, body: unknown): { fetchImpl: typeof fetch; calls: string[] } {
   const calls: string[] = [];
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-    calls.push(`${init?.method ?? "GET"} ${typeof url === "string" ? url : url.toString()}`);
+    calls.push(`${init?.method ?? "GET"} ${typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url}`);
     return new Response(JSON.stringify(body), {
       status,
       headers: { "Content-Type": "application/json" },
@@ -83,7 +83,7 @@ function stubFetchHeaders(
         headers[k] = v;
       });
     }
-    calls.push({ url: typeof url === "string" ? url : url.toString(), headers });
+    calls.push({ url: typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url, headers });
     return new Response(JSON.stringify(body), {
       status,
       headers: { "Content-Type": "application/json" },
@@ -686,7 +686,7 @@ function stubNdjson(lines: Array<Record<string, unknown>>): {
 } {
   const calls: string[] = [];
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-    calls.push(`${init?.method ?? "GET"} ${typeof url === "string" ? url : url.toString()}`);
+    calls.push(`${init?.method ?? "GET"} ${typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url}`);
     const body = lines.map((l) => JSON.stringify(l)).join("\n") + "\n";
     return new Response(body, {
       status: 200,

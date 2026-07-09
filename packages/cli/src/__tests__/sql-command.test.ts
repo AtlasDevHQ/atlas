@@ -46,7 +46,7 @@ function stubFetch(
     }
     calls.push({
       method: init?.method ?? "GET",
-      url: typeof url === "string" ? url : url.toString(),
+      url: typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url,
       body: typeof init?.body === "string" ? init.body : "",
       headers,
     });
@@ -263,7 +263,7 @@ describe("runSqlCommand — --workspace override (ADR-0027 §5 / #4050)", () => 
   ): { fetchImpl: typeof fetch; calls: Array<{ url: string; body: string }> } {
     const calls: Array<{ url: string; body: string }> = [];
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-      const u = typeof url === "string" ? url : url.toString();
+      const u = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
       calls.push({ url: u, body: typeof init?.body === "string" ? init.body : "" });
       if (u.endsWith("/api/auth/organization/set-active")) {
         return new Response(

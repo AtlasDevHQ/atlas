@@ -39,7 +39,7 @@ function stubFetch(
   const calls: CapturedCall[] = [];
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({
-      url: typeof url === "string" ? url : url.toString(),
+      url: typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url,
       method: init?.method ?? "GET",
       authorization:
         init?.headers && typeof init.headers === "object"
@@ -398,7 +398,7 @@ function stubNdjsonStream(chunks: string[]): { fetchImpl: typeof fetch; calls: C
   const calls: CapturedCall[] = [];
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({
-      url: typeof url === "string" ? url : url.toString(),
+      url: typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url,
       method: init?.method ?? "GET",
       authorization:
         init?.headers && typeof init.headers === "object"

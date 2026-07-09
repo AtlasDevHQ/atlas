@@ -35,7 +35,7 @@ function stubFetch(
     }
     calls.push({
       method: init?.method ?? "GET",
-      url: typeof url === "string" ? url : url.toString(),
+      url: typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url,
       body: typeof init?.body === "string" ? init.body : "",
       headers,
     });

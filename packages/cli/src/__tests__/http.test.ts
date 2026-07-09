@@ -52,7 +52,7 @@ function stubFetch(status: number, body: unknown): { fetchImpl: typeof fetch; ca
     const headers: Record<string, string> = {};
     if (init?.headers) new Headers(init.headers as Record<string, string>).forEach((v, k) => (headers[k] = v));
     calls.push({
-      url: typeof url === "string" ? url : url.toString(),
+      url: typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url,
       method: init?.method ?? "GET",
       headers,
       body: typeof init?.body === "string" ? init.body : undefined,

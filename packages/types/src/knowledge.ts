@@ -31,13 +31,16 @@ export interface KnowledgeDocumentCounts {
  *   - `confluence-datacenter` — the #4394 Knowledge Sync Connector (a scheduled
  *     pull of a self-managed Confluence Data Center/Server space via a Personal
  *     Access Token; REST v1 instead of Cloud's v2).
+ *   - `zendesk` — the #4396 Knowledge Sync Connector (a scheduled pull of one
+ *     Zendesk Guide brand's help center via an API token; one collection per
+ *     brand, one document per published article translation).
  *
  * Every value except `upload` is a "synced" collection: its content is owned by
  * an external source, it has last-sync bookkeeping, and it can be re-pulled with
  * "Sync now". Only `bundle-sync` additionally exposes an `endpointUrl` /
  * `authScheme`; connector collections (`notion`, `confluence`,
- * `confluence-datacenter`, `gitbook`) carry neither (their credential is a
- * token, not an endpoint).
+ * `confluence-datacenter`, `gitbook`, `zendesk`) carry neither (their
+ * credential is a token, not an endpoint).
  */
 export type KnowledgeCollectionSource =
   | "upload"
@@ -45,7 +48,8 @@ export type KnowledgeCollectionSource =
   | "notion"
   | "confluence"
   | "confluence-datacenter"
-  | "gitbook";
+  | "gitbook"
+  | "zendesk";
 
 /**
  * Bundle-endpoint auth schemes for `bundle-sync` collections — the one wire

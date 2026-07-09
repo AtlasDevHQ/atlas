@@ -138,3 +138,28 @@ bookkeeping — the same reason `knowledge_sync_state` exists at all (migration
   the new state SQL (COALESCE-forward semantics) and migration 0168 against a
   live schema.
 - CONTEXT.md gains the **Knowledge Sync Connector** term.
+
+## Amendment (#4396): the shared support HTML→markdown converter sub-seam
+
+PRD #4395 extends the connector family to **support/help-center platforms**
+(Zendesk Guide, Intercom, Help Scout, Freshdesk, Front, Zoho Desk, ServiceNow,
+Salesforce Knowledge). The vendor research found the tier homogeneous in one
+load-bearing way: **every viable support platform returns article bodies as
+plain HTML** — unlike Confluence's storage-XHTML dialect or GitBook's extended
+markdown. So the tier gets ONE shared converter, named as a sub-seam of this
+ADR's "converter" role:
+
+- `lib/knowledge/support/html-to-markdown.ts` — pure, golden-fixture-tested
+  HTML→markdown with the same degradation policy the per-vendor converters
+  established (unconvertible constructs → counted, visible placeholders
+  linking back to the vendor page; never silent drops), plus a **cross-link
+  rewriting hook** vendors use to absolutize relative article links.
+- A support connector must NOT fork its own HTML→markdown pass; per-vendor
+  shaping (titles, paths, provenance, locale fan-out) stays in the vendor's
+  `documents.ts`.
+- Built with the anchor slice (#4396 Zendesk Guide — token auth + the tier's
+  only native incremental feed); consumed by every subsequent support vendor.
+- Delta-less vendors in the tier (Intercom, Freshdesk, Front) lean on the
+  engine's reconciliation crawl as their change detection — `fetchChanges`
+  falls back to full enumeration; no engine change (the two-cadence split
+  above already prices this in, just costlier cycles, documented per vendor).

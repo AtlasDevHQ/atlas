@@ -48,6 +48,8 @@ import {
 } from "@atlas/api/lib/knowledge/notion/connector";
 import { GitbookFormInstallHandler, GITBOOK_SLUG } from "./gitbook-form-handler";
 import { registerGitbookKnowledgeConnector } from "@atlas/api/lib/knowledge/gitbook/connector";
+import { ZendeskFormInstallHandler, ZENDESK_SLUG } from "./zendesk-form-handler";
+import { registerZendeskKnowledgeConnector } from "@atlas/api/lib/knowledge/zendesk/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -282,6 +284,19 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(GITBOOK_SLUG, new GitbookFormInstallHandler());
   registerGitbookKnowledgeConnector();
   log.info("Registered GitbookFormInstallHandler + knowledge sync connector");
+  // Knowledge Base (Zendesk Guide) — the built-in `zendesk` connector install
+  // (#4396, PRD #4395 anchor slice). Knowledge-pillar, multi-instance: ONE
+  // install fans out to one collection per help-center-enabled BRAND. Config =
+  // account subdomain + email + per-brand binding; the API token lands in
+  // `knowledge_sync_credentials` (encrypted, one row per brand collection),
+  // never in `workspace_plugins.config`. Hosts are composed `*.zendesk.com`
+  // labels → SSRF gated at install and fetch. Registering the FORM handler +
+  // the CONNECTOR together (as with Confluence/Notion/GitBook) keeps a
+  // half-wired deploy from having an installable card whose scheduled sync has
+  // no registered vendor client. No env gate.
+  registerFormHandler(ZENDESK_SLUG, new ZendeskFormInstallHandler());
+  registerZendeskKnowledgeConnector();
+  log.info("Registered ZendeskFormInstallHandler + knowledge sync connector");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

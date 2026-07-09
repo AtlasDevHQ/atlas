@@ -4,34 +4,71 @@ Run the same checks CI runs. This must pass before opening a PR.
 `cd packages/api && bun run scripts/test-isolated.ts --affected` (only tests
 whose source graph your branch touched — typically 10–60s vs the full suite).
 
-## How to run it (token-aware)
+## How to run it (token-aware, hang-proof)
 
 All gates run through one wrapper: **`bash scripts/ci-local.sh`**. It runs every
 gate, redirects each one's output to `.ci-local/<gate>.log`, and prints only a
 compact PASS/FAIL table plus the tail of any *failed* gate — one small result
 instead of ~26 verbose ones. Exit code is 0 (all green) or 1 (something failed).
 
-**Delegate the run to a subagent** so even that stays out of the main thread.
-Spawn ONE `general-purpose` agent with this prompt:
+The wrapper also leaves machine-readable run state under `.ci-local/`, so
+completion is observable **from disk**, independent of any agent hand-off:
 
-> Run `bash scripts/ci-local.sh` from the repo root (it takes ~4–6 min — the
-> full test suite is the long pole; wait for it). Then, only if it exited 0,
-> run the two remote-status commands in the "Remote checks" section of
-> `.claude/commands/ci.md` and summarize them. Do NOT fix anything — you are
-> reporting only. Return: (1) the gate table verbatim if anything failed, or
-> just "local: all N gates green" if not; (2) for each failed gate, its name,
-> a one-line root cause from its `.ci-local/<gate>.log`, and the file:line to
-> fix; (3) the remote-status summary. Keep the whole reply under ~40 lines —
-> do not paste full logs.
+| File | Meaning |
+|------|---------|
+| `.ci-local/PID` | The run's pid — `kill -0 "$(cat .ci-local/PID)"` = still running |
+| `.ci-local/STATUS` | Last stage transition (install / stage 0 / 1 / 2) |
+| `.ci-local/RESULT` | The full compact report, written **atomically at the very end**. Existence = run finished; contents = the report |
 
-The subagent burns the verbose output in its own context and hands you back a
-short report. You (main thread) then apply any fixes — fixing needs the
-conversation context, so it stays here, not in the subagent.
+### Launch, then actively watch — never passively wait
+
+Historic failure mode: `/ci` was delegated to a background subagent and the
+main thread ended its turn "waiting for the report". When that completion
+hand-off was lost (subagent died or its reply never arrived), the calling loop
+(`/ship-issue`) sat idle until a human poked it. The fix is a protocol, not a
+hope: **whoever kicks off the run owns a watchdog loop, and `.ci-local/RESULT`
+on disk — not any agent's reply — is the completion signal.**
+
+1. **Launch** `bash scripts/ci-local.sh` from the repo root as a background
+   Bash task (`run_in_background: true`). Its printed output is already
+   compact — that is the wrapper's whole purpose — so no subagent wrapper is
+   needed. (If you do wrap it in a subagent, prefer a synchronous run; a
+   background subagent changes nothing below — the disk artifacts stay the
+   ground truth, never the agent's reply.)
+2. **Arm a backstop before doing anything else.** If your harness has a
+   scheduled self check-in (`send_later`, `ScheduleWakeup`, or similar),
+   schedule one ~10 min out that says "check .ci-local/RESULT for the /ci run
+   and act on it" — so even a lost completion notification can't strand the
+   session. Cancel or ignore it if the result arrives first.
+3. **Watch on a loop.** Do NOT end your turn to wait for a completion
+   notification. Check roughly every 1–2 minutes (`sleep 90` between checks
+   where foreground sleep is allowed; otherwise your harness's Monitor /
+   until-loop / background-task polling). Each check is one cheap tri-state:
+   ```bash
+   if [ -f .ci-local/RESULT ]; then cat .ci-local/RESULT
+   elif kill -0 "$(cat .ci-local/PID 2>/dev/null)" 2>/dev/null; then
+     echo "RUNNING: $(cat .ci-local/STATUS 2>/dev/null) — $(ls .ci-local/*.exit 2>/dev/null | wc -l) gates done"
+   else echo "DEAD without RESULT — the wrapper crashed"; fi
+   ```
+4. **Resolve** on the first check that isn't RUNNING:
+   - **`RESULT` exists** → that output IS the report; act on it (green →
+     remote checks; failures → fix). If a subagent/notification reports too,
+     fine — but never *require* it.
+   - **Still RUNNING past ~20 min** (a normal run is ~4–6 min; the full test
+     suite is the long pole) → treat as hung: note `.ci-local/STATUS` and which
+     gates have no `.exit` file yet, kill the run, relaunch once. Hung twice →
+     STOP and report the stuck gate to the human.
+   - **DEAD without `RESULT`** → the wrapper crashed: read the tail of the
+     newest `.ci-local/*.log`, relaunch once. Crashed twice → STOP and report.
+
+Once local gates are green, run the two commands in "Remote checks" below
+yourself (they're short, compact `gh` calls) and fold them into the report.
+You (main thread) apply any fixes — fixing needs the conversation context.
 
 After fixing a gate, re-verify just that one cheaply — e.g.
 `bash scripts/check-schema-drift.sh` or `bun run test path/to/file.test.ts` —
 rather than re-running the whole wrapper. Re-run the full `bash scripts/ci-local.sh`
-once at the end to confirm a clean green.
+once at the end (same launch-and-watch protocol) to confirm a clean green.
 
 **Env toggles** (pass to the wrapper): `CI_LOCAL_NO_TEST=1` skips the test suite
 for a fast gates-only pass (RESULT is flagged "tests skipped" — never a clean
@@ -139,6 +176,7 @@ gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state
 `CI gates (scripts/ci-local.sh): all pass. Remote: CI, Sync Starters, Railway staging (api-staging/web-staging/docs) — all green.`
 
 ## Rules
+- Never end a turn "waiting for the CI report". `.ci-local/RESULT` on disk is the completion signal — poll it on the watch loop above. A lost subagent reply or notification must cost you one poll interval, not a stalled session.
 - Never skip a gate or mark it "probably fine". The wrapper runs them all; don't second-guess a FAIL without reading the log.
 - If a gate fails on code you didn't write (pre-existing), still fix it — CI won't distinguish. The one exception is local-only cruft (see `plugin-count` above), which you remove, not fix.
 - If a test is flaky (passes on retry), note it but don't ignore it. The test suite runs isolated in Stage 2 specifically to reduce WSL2 flakiness — a failure there is more likely real.

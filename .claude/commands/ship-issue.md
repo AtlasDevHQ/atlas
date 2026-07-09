@@ -49,6 +49,8 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 ```
 All gates must pass. Fix anything red (these are usually small). Run full `bun run test` once here even if `--affected` was green.
 
+`/ci` uses a **launch-and-watch protocol** (see `ci.md`): the wrapper runs in the background and YOU poll `.ci-local/RESULT` on a loop — never end the turn "waiting for the CI report". A lost subagent hand-off here used to stall the whole ship loop until a human poked it; `.ci-local/RESULT` on disk is the completion signal, not any agent's reply.
+
 **Step 5 — Open the PR, then drive it to merge**
 
 ```

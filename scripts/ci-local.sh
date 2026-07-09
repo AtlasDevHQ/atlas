@@ -8,8 +8,9 @@
 #   accumulated context on every step. This wrapper runs every gate, redirects
 #   each one's output to its own logfile under .ci-local/, and prints ONLY a
 #   compact PASS/FAIL table plus the tail of any FAILED gate. One small tool
-#   result instead of twenty large ones. Run it from a subagent (see
-#   .claude/commands/ci.md) to keep even that out of the main thread.
+#   result instead of twenty large ones. Launch it in the background and poll
+#   .ci-local/RESULT (the launch-and-watch protocol in .claude/commands/ci.md)
+#   — completion is observable from disk, never dependent on an agent hand-off.
 #
 # WHAT IT MIRRORS
 #   The required `ci` GitHub check (.github/workflows/ci.yml: drift + lint +
@@ -51,6 +52,15 @@ cd "$ROOT"
 LOG_DIR="$ROOT/.ci-local"
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
+
+# Machine-readable run state for the launch-and-watch protocol in
+# .claude/commands/ci.md — a watcher must never depend on an agent hand-off:
+#   PID     — this run's pid; liveness = `kill -0 "$(cat .ci-local/PID)"`
+#   STATUS  — last stage transition, overwritten in place
+#   RESULT  — the full compact report, written ATOMICALLY at the very end.
+#             Its existence is the completion signal; its contents are the report.
+echo "$$" >"$LOG_DIR/PID"
+status() { printf '%s\n' "$*" | tee "$LOG_DIR/STATUS"; }
 
 JOBS="${CI_LOCAL_JOBS:-6}"
 NO_TEST="${CI_LOCAL_NO_TEST:-0}"
@@ -144,22 +154,25 @@ fi
 
 # Match CI's `bun install --frozen-lockfile`: catches a stale lockfile and
 # guarantees node_modules exists (a worktree/fresh checkout would TS2307 otherwise).
+status "install: bun install --frozen-lockfile" >/dev/null
 printf '  bun install (frozen) … '
 if bun install --frozen-lockfile >"$LOG_DIR/install.log" 2>&1; then
   echo "ok"
 else
   echo "FAILED — see .ci-local/install.log"
   tail -n "$FAIL_TAIL" "$LOG_DIR/install.log"
-  echo "RESULT: FAIL — dependency install failed; fix the lockfile before gates can run."
+  msg="RESULT: FAIL — dependency install failed; fix the lockfile before gates can run."
+  echo "$msg"
+  printf '%s\n' "$msg" >"$LOG_DIR/RESULT"
   exit 1
 fi
 
 # ---- Stage 0: the lone dist/-writer, serial ----
-echo "stage 0: type-check + SDK dist build (serial) …"
+status "stage 0: type-check + SDK dist build (serial) …"
 run_fg type g_type
 
 # ---- Stage 1: read-only gates, parallel ----
-echo "stage 1: read-only drift/lint gates (parallel, jobs=$JOBS) …"
+status "stage 1: read-only drift/lint gates (parallel, jobs=$JOBS) …"
 launch lint                      g_lint
 # Type-aware lint reads the SDK dist/ that Stage 0 just built (tsgolint
 # resolves @useatlas/* via "exports" → dist), so it must run after Stage 0 —
@@ -196,45 +209,61 @@ wait
 
 # ---- Stage 2: full test suite, isolated ----
 if [ "$NO_TEST" != "1" ]; then
-  echo "stage 2: full test suite (isolated — no parallel load) …"
+  status "stage 2: full test suite (isolated — no parallel load) …"
   run_fg test g_test
 fi
 
 # ---- Report ----
-echo ""
-printf '%-28s %-7s %5s\n' "GATE" "RESULT" "TIME"
-printf '%s\n' "------------------------------------------------"
-
+# Rendered once, printed to stdout AND written atomically (tmp + mv) to
+# .ci-local/RESULT so a watcher polling for the file can never observe it
+# half-written. RESULT's existence = run finished; its contents = the report.
 failed=()
 for name in "${GATE_NAMES[@]}"; do
   rc="$(cat "$LOG_DIR/$name.exit" 2>/dev/null || echo 1)"
-  secs="$(cat "$LOG_DIR/$name.secs" 2>/dev/null || echo '?')"
-  if [ "$rc" = "0" ]; then
-    printf '%-28s %-7s %4ss\n' "$name" "PASS" "$secs"
-  else
-    printf '%-28s %-7s %4ss\n' "$name" "FAIL" "$secs"
-    failed+=("$name")
-  fi
+  [ "$rc" = "0" ] || failed+=("$name")
 done
-printf '%s\n' "------------------------------------------------"
-
 total="${#GATE_NAMES[@]}"
-if [ "${#failed[@]}" -eq 0 ]; then
-  if [ "$NO_TEST" = "1" ]; then
-    echo "RESULT: PASS (tests skipped — Stage 2 not run; not a clean pre-PR pass)"
-  else
-    echo "RESULT: PASS — all $total gates green."
-  fi
-  exit 0
-fi
 
-echo "RESULT: FAIL — ${#failed[@]} of $total gates failed: ${failed[*]}"
-echo ""
-for name in "${failed[@]}"; do
-  echo "▼ $name  (.ci-local/$name.log — last $FAIL_TAIL lines)"
-  tail -n "$FAIL_TAIL" "$LOG_DIR/$name.log" 2>/dev/null | sed 's/^/    /'
+render_report() {
+  local name rc secs
   echo ""
-done
-echo "Full logs: .ci-local/<gate>.log   Re-run one gate, e.g.: bash scripts/check-schema-drift.sh"
-echo "Note: a 'type' failure can cascade into openapi-drift/test (incomplete SDK dist) — fix type first."
+  printf '%-28s %-7s %5s\n' "GATE" "RESULT" "TIME"
+  printf '%s\n' "------------------------------------------------"
+  for name in "${GATE_NAMES[@]}"; do
+    rc="$(cat "$LOG_DIR/$name.exit" 2>/dev/null || echo 1)"
+    secs="$(cat "$LOG_DIR/$name.secs" 2>/dev/null || echo '?')"
+    if [ "$rc" = "0" ]; then
+      printf '%-28s %-7s %4ss\n' "$name" "PASS" "$secs"
+    else
+      printf '%-28s %-7s %4ss\n' "$name" "FAIL" "$secs"
+    fi
+  done
+  printf '%s\n' "------------------------------------------------"
+
+  if [ "${#failed[@]}" -eq 0 ]; then
+    if [ "$NO_TEST" = "1" ]; then
+      echo "RESULT: PASS (tests skipped — Stage 2 not run; not a clean pre-PR pass)"
+    else
+      echo "RESULT: PASS — all $total gates green."
+    fi
+    return
+  fi
+
+  echo "RESULT: FAIL — ${#failed[@]} of $total gates failed: ${failed[*]}"
+  echo ""
+  for name in "${failed[@]}"; do
+    echo "▼ $name  (.ci-local/$name.log — last $FAIL_TAIL lines)"
+    tail -n "$FAIL_TAIL" "$LOG_DIR/$name.log" 2>/dev/null | sed 's/^/    /'
+    echo ""
+  done
+  echo "Full logs: .ci-local/<gate>.log   Re-run one gate, e.g.: bash scripts/check-schema-drift.sh"
+  echo "Note: a 'type' failure can cascade into openapi-drift/test (incomplete SDK dist) — fix type first."
+}
+
+report="$(render_report)"
+printf '%s\n' "$report"
+printf '%s\n' "$report" >"$LOG_DIR/RESULT.tmp"
+mv "$LOG_DIR/RESULT.tmp" "$LOG_DIR/RESULT"
+
+[ "${#failed[@]}" -eq 0 ] && exit 0
 exit 1

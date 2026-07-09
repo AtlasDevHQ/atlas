@@ -24,7 +24,7 @@ const mockSandboxInstance = {
 
 const mockCreate = mock((_opts?: Record<string, unknown>) => Promise.resolve(mockSandboxInstance));
 
-mock.module("@vercel/sandbox", () => ({
+void mock.module("@vercel/sandbox", () => ({
   Sandbox: { create: mockCreate },
 }));
 

@@ -20,7 +20,7 @@ const mockCreate = mock(() =>
   }),
 );
 
-mock.module("e2b", () => ({
+void mock.module("e2b", () => ({
   Sandbox: { create: mockCreate },
 }));
 

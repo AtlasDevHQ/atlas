@@ -29,7 +29,7 @@ const mockCreate = mock((_opts?: Record<string, unknown>) =>
   Promise.resolve(mockSandboxInstance),
 );
 
-mock.module("railway", () => ({
+void mock.module("railway", () => ({
   Sandbox: { create: mockCreate },
 }));
 

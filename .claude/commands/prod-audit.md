@@ -14,7 +14,7 @@ The audit is most valuable when **Atlas Cloud** is the deployment under review �
 
 Run 4 agents in parallel, one per audit domain. Each agent reads the relevant code and cross-references against the production source of truth (settings registry, env defaults, OTel instrumentation, deployed health endpoints).
 
-The deployed surface as of writing: `api.useatlas.dev`, `api-eu.useatlas.dev`, `api-apac.useatlas.dev`, `app.useatlas.dev`, `docs.useatlas.dev`, `www.useatlas.dev`, plus the sandbox sidecar service (internal). Discover from `memory/railway.md` and `apps/www/src/app/sla/page.tsx` — don't trust this list.
+The deployed surface as of writing: `api.useatlas.dev`, `api-eu.useatlas.dev`, `api-apac.useatlas.dev`, `app.useatlas.dev`, `docs.useatlas.dev`, `www.useatlas.dev`, plus the sandbox sidecar service (internal). Discover from the `deploy/` directory (one subdirectory per deployed service: `api`, `api-eu`, `api-apac`, `web`, `www`, `docs`, `dns` — railway.json + Dockerfiles are the in-repo deploy SSOT), supplemented by `memory/railway.md` when available — don't trust this list.
 
 ---
 
@@ -56,7 +56,7 @@ The deployed surface as of writing: `api.useatlas.dev`, `api-eu.useatlas.dev`, `
 
 ## Part B: Graceful Degradation (HIGH)
 
-**Code surface:** `packages/api/src/lib/agent.ts`, `packages/api/src/lib/db/connection.ts`, `packages/api/src/lib/effect/sql.ts`, `packages/api/src/lib/db/internal.ts`, every external-call site (LLM provider, plugin sandbox, email transport, OAuth providers).
+**Code surface:** `packages/api/src/lib/agent.ts`, `packages/api/src/lib/db/connection.ts`, `packages/api/src/lib/tools/sql.ts` + `packages/api/src/lib/tools/sql-execution-plan.ts`, `packages/api/src/lib/db/internal.ts`, every external-call site (LLM provider, plugin sandbox, email transport, OAuth providers).
 **Source of truth:** Run-the-failure-mode mentally — when the LLM provider is unreachable, what does the user see? When the analytics DB is locked, what does `executeSQL` return? When the internal DB is down, does auth break or graceful-degrade?
 
 ### Steps
@@ -75,8 +75,9 @@ For each upstream dependency, walk the failure path top-to-bottom and document w
    - Does auth fail open or fail closed? (Should fail closed.)
    - Does the conversation history endpoint return cached/empty or 503?
    - Health check endpoint behavior (must not 200 if internal DB is down for SaaS).
-4. **Sandbox sidecar unreachable**:
-   - `sandbox.priority` fallback chain per CLAUDE.md (plugin > Vercel > nsjail > sidecar > nsjail auto-detect > just-bash). Does the chain actually fall through, or does the first failure abort?
+4. **Sandbox backend unreachable** — the correct behavior DIFFERS by deploy mode:
+   - **Self-hosted default chain** (`lib/tools/backends/selection.ts`: plugin/BYOC > Vercel sandbox > nsjail explicit > sidecar > nsjail auto-detect > just-bash dev-only): does the chain actually fall through, or does the first failure abort?
+   - **SaaS pins `["vercel-sandbox"]`** in `deploy/api/atlas.config.ts` — deny-all egress, **fail-closed on exhaustion**. On SaaS, falling through to another backend (especially `just-bash`) is a CRITICAL isolation-escape finding, NOT graceful degradation. Verify exhaustion surfaces a structured error and does not fall back.
 5. **Email transport down** (Resend 503):
    - Does `sendEmail` retry?
    - Does it queue?
@@ -95,7 +96,8 @@ For each upstream dependency, walk the failure path top-to-bottom and document w
 | CRITICAL | Auth fails open on internal-DB outage |
 | CRITICAL | Email send silently drops on transport failure (no retry, no queue, no error to caller) |
 | HIGH | LLM provider failure surfaces as ambiguous stream-end instead of structured error code |
-| HIGH | Sandbox priority fallback chain breaks on first backend's failure (doesn't actually fall through) |
+| CRITICAL | SaaS sandbox falls back past the pinned `vercel-sandbox` backend (must fail closed) |
+| HIGH | Self-hosted sandbox priority chain breaks on first backend's failure (doesn't actually fall through) |
 | HIGH | Health endpoint 200s when internal DB is down |
 | MEDIUM | Connection-pool exhaustion surfaces as 500 with no `requestId` |
 | MEDIUM | OTel exporter outage blocks API boot |
@@ -114,15 +116,17 @@ For each upstream dependency, walk the failure path top-to-bottom and document w
 ### Steps
 
 1. **Existing boot guards inventory.** Find every boot-time assertion:
-   - Encryption-key derivation (`ATLAS_ENCRYPTION_KEYS` versioned keyset, F-47, in `lib/encryption/` or `startup.ts`)
-   - SaaS DPA email guard (`lib/email/dpa-guard.ts`, #1969 / win #45)
+   - **The SaaS boot contract** — `SAAS_ENV_KEYS` in `lib/effect/saas-env.ts` enumerates every env var SaaS-mode boot reads, and the fail-closed guards in `lib/effect/saas-guards.ts` (Turnstile, rate-limit RPM, billing, MCP spine, …) refuse to boot without them. This is the primary inventory — audit its *coverage* (is every SaaS-critical input in the contract?), not its existence. Full audit doc: `docs/development/saas-env-audit.md`
+   - Versioned encryption keyset (`db/secret-encryption.ts` — versioned AES-256-GCM; rotation runbook at `apps/docs/content/docs/platform-ops/encryption-key-rotation.mdx`)
+   - SaaS DPA email guard (`lib/email/dpa-guard.ts`, #1969)
    - Settings registry validation (corrupt settings → fail boot?)
    - Required-but-unset env vars (`ATLAS_DATASOURCE_URL`, `ATLAS_PROVIDER`, etc. — what fails boot vs warns?)
+   - **The dev relaxation footgun** — `relaxSaasGuardForDev` no-ops ALL SaaS fail-closed guards when `ATLAS_DEPLOY_ENV=development`. Verify no customer-facing deploy config (`deploy/api*/`) sets `development`; that would silently disable every boot guard → CRITICAL
 2. **Missing boot guards** — for each high-risk config setting, ask: would a boot guard have caught it? Candidates:
-   - `ATLAS_DEPLOY_MODE=saas` without enterprise enabled (CLAUDE.md says it always resolves to `self-hosted` — should this be a startup warning, not silent?)
-   - Region-routing assertions: deployment claims region X (`ATLAS_REGION`?) — does any code verify the matching residency tables exist?
+   - `ATLAS_DEPLOY_MODE=saas` requires `/ee` (resolution via `resolveDeployMode`; without enterprise it resolves to `self-hosted`) — is the mismatch loud at boot or silent?
+   - Region-routing assertions: deployment claims region X (`ATLAS_REGION_*` / residency config) — does any code verify the matching residency tables exist?
    - Plugin schema validity at boot (vs lazy validation when first invoked)
-   - OpenStatus monitor IDs vs deployed monitor inventory (memory: `reference_openstatus.md`)
+   - OpenStatus monitor IDs vs deployed monitor inventory (memory: `reference_openstatus.md`, if available)
 3. **Default-value safety** — for each numeric config (rate limits, timeouts, pool sizes), is the default appropriate for **prod scale** or for **dev convenience**? Compare:
    - `ATLAS_AGENT_MAX_STEPS` default 25 — fine for prod
    - `ATLAS_QUERY_TIMEOUT` default 30s — fine
@@ -130,7 +134,7 @@ For each upstream dependency, walk the failure path top-to-bottom and document w
    - Connection pool `pool.perOrg.*` defaults (5 / 30000 / 50 / 2 / 5) — fine for trial-tier, undersized for Business?
    - `ATLAS_RATE_LIMIT_RPM_CHAT` (memory: F-74 separate-bucket chat ceiling) — what's the actual production value vs default?
    - `ATLAS_CONVERSATION_STEP_CAP` default 500 — fine
-4. **Hot-reloadable vs startup-only correctness** — settings that affect security-critical paths (DPA email vendor, encryption keys, deploy mode, plan-tier enforcement) should be startup-only OR have a hot-reload path that re-runs the relevant guards. Mismatch is a finding.
+4. **Hot-reloadable vs startup-only correctness** — the lock mechanism now exists: `SAAS_IMMUTABLE_KEYS` (in `lib/effect/saas-env.ts`) blocks runtime mutation of boot-guard-dependent keys. Audit its MEMBERSHIP, not its existence: every setting whose value a boot guard validated (DPA email vendor, encryption keys, deploy mode, plan-tier enforcement) must be in the immutable set or have a hot-reload path that re-runs the guard. A guard-validated key that's runtime-mutable is the finding.
 5. **Required-but-undocumented env vars** — `/docs-audit` Part A handles this for the docs site, but cross-check that `.env.example` and the docs page agree with what the **deployed** API actually reads in prod paths (vs dev/test-only).
 
 ### Findings to flag
@@ -147,7 +151,7 @@ For each upstream dependency, walk the failure path top-to-bottom and document w
 
 ## Part D: Migration Safety & Operational Resilience (MEDIUM-HIGH)
 
-**Code surface:** `packages/api/src/lib/db/migrate.ts`, Drizzle migration files (`packages/api/migrations/`), the demo-data seed flow, scheduled tasks, plugin install lifecycle, region-migration paths (`packages/api/src/lib/residency/` if exists, or grep for `region_migrations`).
+**Code surface:** `packages/api/src/lib/db/migrate.ts`, SQL migration files (`packages/api/src/lib/db/migrations/`), the demo-data seed flow, scheduled tasks, plugin install lifecycle, region-migration paths (`packages/api/src/lib/residency/`).
 **Source of truth:**
 - Drizzle Kit migration framework (shipped 0.9.6, #978)
 - The 3-region cross-region migration shipped in 1.0.0 (#1154)
@@ -156,10 +160,11 @@ For each upstream dependency, walk the failure path top-to-bottom and document w
 
 ### Steps
 
-1. **Drizzle migrations** — run through every migration file. For each:
-   - Is it backward-compatible with one-version-old API instances? (Mid-deploy state where N-1 and N pods both run.)
-   - Does it have a rollback path? (Drizzle doesn't auto-generate; check for explicit rollback scripts.)
-   - Are there any DDL operations on tables that the running API writes to during migration (e.g. ALTER COLUMN with active inserts)?
+1. **Migrations** — three CI guards now cover the mechanical cases; verify they're green and audit only what they DON'T cover:
+   - `scripts/check-migration-rename-discipline.sh` enforces two-phase drop (no single-phase `RENAME COLUMN`/`DROP COLUMN` — the N-1↔N deploy-overlap case). Covered.
+   - `scripts/check-schema-drift.sh` enforces schema.ts mirrors (prevents the next `drizzle-kit generate` emitting a `DROP TABLE`). Covered.
+   - `migrate-pg.test.ts` runs every migration against real Postgres. Covered.
+   - **Residual audit surface:** long-lock DDL on hot tables (e.g. non-`CONCURRENTLY` index builds, `ALTER COLUMN` type changes with active writes), data backfills in `db/migrations/scripts/` that aren't idempotent under retry, and rollback paths (none are auto-generated — check for explicit rollback scripts on risky migrations)
 2. **Demo-data seeding flow** — fresh signup → onboarding wizard → save → demo connection → first query. Walk the path: any step that's idempotent under retry? Any that races with another user creating the same demo workspace?
 3. **Region migration path** — `region_migrations` table per #1154. Walk a customer move: source region marks workspace migrating, destination region writes, source region archives. What happens if step 2 fails mid-flight? What's the rollback?
 4. **Scheduled task rollback** — `0.6.0` shipped action timeout + rollback. Confirm scheduled tasks that fail mid-operation actually unwind (not just stop). Read `packages/api/src/lib/scheduler/` and the action-rollback code.
@@ -181,7 +186,7 @@ For each upstream dependency, walk the failure path top-to-bottom and document w
 
 ## Part E: Live Surface Cross-Check (LOW-MEDIUM)
 
-**Code surface:** Whatever the audit agents reference + `apps/www/src/app/sla/page.tsx`, `memory/reference_openstatus.md`.
+**Code surface:** Whatever the audit agents reference + the `deploy/` directory (service inventory) + `memory/reference_openstatus.md` when available.
 **Source of truth:** Real curl commands.
 
 ### Steps

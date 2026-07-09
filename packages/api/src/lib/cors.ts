@@ -40,7 +40,7 @@ let corsSettingsWarnLogged = false;
 export function resolveCorsOrigin(): string {
   let configured: string | undefined;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency at module load
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency at module load
     const { getSettingAuto } = require("@atlas/api/lib/settings") as {
       getSettingAuto: (key: string) => string | undefined;
     };

@@ -28,14 +28,14 @@ let destroyCalls = 0;
 const sendCalls: Array<{ region: string; commandName: string }> = [];
 
 class MockListFoundationModelsCommand {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape mirrors AWS SDK v3 command surface; we only consume name + input
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- shape mirrors AWS SDK v3 command surface; we only consume name + input
   constructor(public readonly input: any) {}
   readonly $name = "ListFoundationModelsCommand";
 }
 
 class MockBedrockClient {
   readonly region: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors AWS SDK v3 BedrockClient constructor shape
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors AWS SDK v3 BedrockClient constructor shape
   constructor(opts: any) {
     this.region = opts.region;
   }

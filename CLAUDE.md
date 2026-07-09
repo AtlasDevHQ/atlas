@@ -30,7 +30,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Prefer errors over silent fallbacks** — `catch { return false }` on a security check is a bug. Return 500, not a false negative
 
 ### Type Safety
-- [ ] **No explicit `any`** — Use proper types or `unknown` with narrowing. `any` only where unavoidable (third-party) with `eslint-disable` + justification
+- [ ] **No explicit `any`** — Use proper types or `unknown` with narrowing. `any` only where unavoidable (third-party) with `oxlint-disable` + justification
 - [ ] **Minimize non-null assertions** — Only `!` when provably non-null. Prefer `?.` or explicit null checks
 
 ### Code Style
@@ -47,7 +47,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **No async waterfalls** — `Promise.all([a(), b()])` for independent awaits
 - [ ] **Immutable array operations** — `toSorted()`, `toReversed()`, `toSpliced()` in React components
 - [ ] **Dynamic imports for heavy components** — `next/dynamic` for Monaco, Recharts, syntax highlighters
-- [ ] **Flat ESLint config** — `eslint.config.mjs`, not `.eslintrc`
+- [ ] **oxlint, not ESLint** — Linting is [oxlint](https://oxc.rs) via `.oxlintrc.json` (Rust core, tsgo-backed). Rule set mirrors the former ESLint baseline (eslint + typescript + nextjs + import correctness). The three CI-enforced guards (FetchError-flatten, `feature: FeatureName` registry, `@useatlas/schemas` import boundary) run as `no-restricted-syntax`/`no-restricted-imports` through the `oxlint-plugin-eslint` JS plugin (`jsPlugins` in `.oxlintrc.json`). Type-aware linting (tsgolint) is available but intentionally off — enabling it is tracked follow-up work
 - [ ] **`FeatureName` registry for admin surfaces** — `<MutationErrorSurface>`, `<EnterpriseUpsell>`, `<FeatureGate>`, `<AdminContentWrapper>`, `<ReasonDialog>` type `feature` as `FeatureName` from `@/ui/components/admin/feature-registry`. Append the canonical name to `FEATURE_NAMES` first (casing matches banner copy — "SSO" not "sso"); consolidate duplicates. `tsgo`-enforced
 
 ### Database & Migrations
@@ -141,7 +141,7 @@ bun run dev              # Containers + Hono API (:3001) + Next.js (:3000)
 bun run dev:api          # Standalone Hono API
 bun run dev:web          # Standalone Next.js  (also: dev:www, dev:docs, dev:mcp)
 bun run build            # Production build
-bun run lint             # ESLint
+bun run lint             # oxlint
 bun run type             # Builds published packages, then tsgo --noEmit (+ web/www type)
 bun run test             # Full suite — @atlas/api then all other packages (isolated per-file)
 bun run test:api         # Just @atlas/api tests (serial, full)

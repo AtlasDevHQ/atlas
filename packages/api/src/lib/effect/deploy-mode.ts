@@ -19,7 +19,7 @@ import type { DeployMode, DeployModeSetting } from "@useatlas/types";
 import { isEnterpriseEnabled } from "./enterprise-config";
 
 function hasInternalDBLocal(): boolean {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
     hasInternalDB: () => boolean;
   };

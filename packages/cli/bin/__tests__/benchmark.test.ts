@@ -545,7 +545,7 @@ describe("executeGoldSQL", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "bird-test-"));
     dbPath = path.join(tmpDir, "test.sqlite");
 
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { Database } = require("bun:sqlite");
     const db = new Database(dbPath);
     db.run("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
@@ -566,7 +566,7 @@ describe("executeGoldSQL", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "bird-test-"));
     dbPath = path.join(tmpDir, "test.sqlite");
 
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { Database } = require("bun:sqlite");
     const db = new Database(dbPath);
     db.run("CREATE TABLE items (id INTEGER, price REAL)");
@@ -586,7 +586,7 @@ describe("executeGoldSQL", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "bird-test-"));
     dbPath = path.join(tmpDir, "test.sqlite");
 
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { Database } = require("bun:sqlite");
     const db = new Database(dbPath);
     db.run("CREATE TABLE empty_table (id INTEGER, val TEXT)");

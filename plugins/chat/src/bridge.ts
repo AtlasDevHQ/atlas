@@ -210,9 +210,9 @@ async function safePostError(
  * directly from Chat SDK event handlers which have complex generic signatures.
  */
 async function safePostEphemeralError(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Chat SDK Thread/Author generics are complex; we only call postEphemeral/post
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Chat SDK Thread/Author generics are complex; we only call postEphemeral/post
   thread: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Chat SDK Author type varies per adapter
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Chat SDK Author type varies per adapter
   user: any,
   message: { card: CardElement; fallbackText: string },
   log: PluginLogger,

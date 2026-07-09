@@ -441,7 +441,7 @@ describe("POST /api/v1/onboarding/test-connection", () => {
     });
     // 422: Zod validation via OpenAPIHono createRoute rejects missing required field
     expect(res.status).toBe(422);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
     const body = (await res.json()) as any;
     expect(body.error).toBe("validation_error");
   });
@@ -453,7 +453,7 @@ describe("POST /api/v1/onboarding/test-connection", () => {
       body: "not json",
     });
     expect(res.status).toBe(400);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
     const body = (await res.json()) as any;
     expect(body.error).toBe("invalid_request");
   });

@@ -81,12 +81,12 @@ const mockGetAbuseDetail: Mock<(wsId: string) => Promise<AbuseDetail | null>> = 
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
 mock.module("@atlas/ee/layers", () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
     EELayer: Layer.unwrapEffect(
       E.sync(() => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        // oxlint-disable-next-line @typescript-eslint/no-require-imports
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
         // Typed against the real shape (no outer `as never`) so a renamed or
         // dropped `AbuseResponseShape` method breaks this mock at compile time.

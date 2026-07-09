@@ -43,7 +43,7 @@ import { getEnterpriseRuntime, type EnterpriseSubsystem } from "./enterprise-lay
  */
 declare const DomainErrorMappingBrand: unique symbol;
 export type DomainErrorMapping = [
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructor signatures vary across EE error classes; { code: string } ensures the statusMap lookup is valid
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- constructor signatures vary across EE error classes; { code: string } ensures the statusMap lookup is valid
   errorClass: new (...args: any[]) => Error & { code: string },
   statusMap: Record<string, ContentfulStatusCode>,
 ] & { readonly [DomainErrorMappingBrand]: true };
@@ -65,7 +65,7 @@ export type DomainErrorMapping = [
  * ```
  */
 export function domainError<TCode extends string>(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- must accept varied constructor signatures; TCode constraint ensures the statusMap is exhaustive
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- must accept varied constructor signatures; TCode constraint ensures the statusMap is exhaustive
   errorClass: new (...args: any[]) => Error & { code: TCode },
   statusMap: Record<TCode, ContentfulStatusCode>,
 ): DomainErrorMapping {

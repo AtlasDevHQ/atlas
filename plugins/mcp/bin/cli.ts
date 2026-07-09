@@ -270,7 +270,7 @@ export async function runServeCommand(argv: string[]): Promise<number> {
     // interface. We can't import the type statically because `@atlas/mcp`
     // isn't a hard dep of the published package; type-only imports would
     // still demand the .d.ts at consumer build time.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see comment above
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see comment above
     serverMod = (await import("@atlas/mcp/server")) as any as ServerModule;
   } catch (err) {
     if (!isModuleNotFound(err)) {
@@ -306,7 +306,7 @@ export async function runServeCommand(argv: string[]): Promise<number> {
 
     if (flags.transport === "sse") {
       (async () => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see note on serverMod above
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see note on serverMod above
         const streamableMod = (await import("@atlas/mcp/streamable-http")) as any as StreamableHttpModule;
         const handle = await streamableMod.startStreamableHttpServer(
           () => serverMod.createAtlasMcpServer({ transport: "sse" }),

@@ -3,12 +3,12 @@ import type { DataTableConfig } from "@/config/data-table";
 import type { FilterItemSchema } from "@/lib/parsers";
 
 declare module "@tanstack/react-table" {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- type params must match original interface for module augmentation
+  // oxlint-disable-next-line @typescript-eslint/no-unused-vars -- type params must match original interface for module augmentation
   interface TableMeta<TData extends RowData> {
     queryKeys?: QueryKeys;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- type params must match original interface for module augmentation
+  // oxlint-disable-next-line @typescript-eslint/no-unused-vars -- type params must match original interface for module augmentation
   interface ColumnMeta<TData extends RowData, TValue> {
     label?: string;
     placeholder?: string;

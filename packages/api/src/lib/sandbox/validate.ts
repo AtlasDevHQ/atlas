@@ -336,7 +336,7 @@ export async function validateRailwayCredentials(
     // before embedding it in the admin-facing error.
     if (data.errors && data.errors.length > 0) {
       const raw = data.errors[0]?.message ?? "unknown error";
-      // eslint-disable-next-line no-control-regex -- scrubbing control chars from external content is the point
+      // oxlint-disable-next-line no-control-regex -- scrubbing control chars from external content is the point
       const detail = raw.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 200);
       return {
         valid: false,

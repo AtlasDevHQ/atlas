@@ -1668,7 +1668,7 @@ type DeployModeSnapshot = "saas" | "self-hosted" | "unloaded" | "errored";
 function resolveDeployModeSnapshot(): DeployModeSnapshot {
   let configMod: { getConfig: () => { deployMode?: string } | null };
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     configMod = require("@atlas/api/lib/config") as typeof configMod;
   } catch (err) {
     log.debug(
@@ -2159,7 +2159,7 @@ export async function refreshSettingsTick(): Promise<void> {
 const SETTING_SIDE_EFFECTS: Readonly<Record<string, (value: string) => void>> = {
   ATLAS_LOG_LEVEL: (value) => {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
+      // oxlint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
       const { setLogLevel } = require("@atlas/api/lib/logger") as { setLogLevel: (level: string) => boolean };
       if (setLogLevel(value)) {
         log.info({ level: value }, "Log level updated via hot-reload");

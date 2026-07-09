@@ -14,7 +14,7 @@ import {
 
 // Declared at module scope so `mock.module()` factories — which run before
 // imported module code — can capture this class reference. An inline require()
-// inside the factory would violate the @typescript-eslint/no-require-imports rule.
+// inside the factory would violate the no-require-imports rule.
 class MockApprovalError extends Data.TaggedError("ApprovalError")<{
   message: string;
   code: "validation" | "not_found" | "conflict" | "expired";
@@ -174,12 +174,12 @@ mock.module("@atlas/api/lib/model-routing/errors", () => ({
 }));
 
 mock.module("@atlas/ee/layers", () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
     EELayer: Layer.unwrapEffect(
       E.sync(() => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        // oxlint-disable-next-line @typescript-eslint/no-require-imports
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
         return Layer.succeed(services.ApprovalGate, {
           available: true,

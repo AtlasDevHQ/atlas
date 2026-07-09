@@ -25,7 +25,7 @@ export interface CostEstimate {
 
 // Cached BigQuery client — lazily created on first dry run,
 // reused across all subsequent calls to avoid re-resolving credentials.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 let cachedClient: any = null;
 let cachedConfigKey: string | undefined;
 
@@ -48,10 +48,10 @@ export async function estimateQueryCost(
   sql: string,
   config: CostEstimatorConfig,
 ): Promise<CostEstimate | null> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   let BigQueryClass: any;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     ({ BigQuery: BigQueryClass } = require("@google-cloud/bigquery"));
   } catch {
     return null;

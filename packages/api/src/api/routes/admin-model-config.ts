@@ -841,7 +841,7 @@ function byotAdapter(provider: Exclude<ByotProviderKey, never>): ByotAdapter<unk
  * lockstep regardless of the per-provider fetcher shape.
  */
 function finalizeByotCatalog(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Hono's context type carries the runtime request var bag; we only call its narrow `json` + `header` here, no need to thread the full Env type through.
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Hono's context type carries the runtime request var bag; we only call its narrow `json` + `header` here, no need to thread the full Env type through.
   c: any,
   result: ByotCatalogResult,
   meta: { orgId: string; requestId: string; provider: ByotProviderKey },

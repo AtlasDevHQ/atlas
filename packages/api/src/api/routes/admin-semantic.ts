@@ -569,7 +569,7 @@ type AdminAuthFn = (
  * @param authFn - The `adminAuthAndContext` function from admin.ts
  */
 export function registerSemanticEditorRoutes(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- admin.ts uses untyped OpenAPIHono; typed generics would require matching the exact Env
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- admin.ts uses untyped OpenAPIHono; typed generics would require matching the exact Env
   admin: OpenAPIHono<any>,
   authFn: AdminAuthFn,
 ): void {

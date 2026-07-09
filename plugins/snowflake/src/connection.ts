@@ -87,10 +87,10 @@ export interface SnowflakeConnectionConfig {
 export function createSnowflakeConnection(
   config: SnowflakeConnectionConfig,
 ): PluginDBConnection {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   let snowflake: any;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     snowflake = require("snowflake-sdk");
   } catch (err) {
     const isNotFound =

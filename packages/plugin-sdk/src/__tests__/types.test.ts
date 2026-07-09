@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any -- tests deliberately pass invalid config to verify runtime validation */
+/* oxlint-disable @typescript-eslint/no-explicit-any -- tests deliberately pass invalid config to verify runtime validation */
 import { describe, test, expect } from "bun:test";
 import { z } from "zod";
 import { tool } from "ai";

@@ -364,7 +364,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(201);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.id).toBe("analytics");
 
@@ -425,7 +425,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).toContain("warehouse");
@@ -443,7 +443,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).toEqual(["default"]);
@@ -466,7 +466,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
       expect(warehouse).toBeDefined();
@@ -483,7 +483,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.connections).toHaveLength(1);
       expect(body.connections[0].id).toBe("default");
@@ -505,7 +505,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
       expect(warehouse).toBeDefined();
@@ -524,7 +524,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
       expect(warehouse).toBeDefined();
@@ -554,7 +554,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const clickhouse = body.connections.find((c: { id: string }) => c.id === "clickhouse-staging");
       expect(clickhouse).toBeDefined();
@@ -585,7 +585,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const clickhouse = body.connections.find((c: { id: string }) => c.id === "clickhouse-staging");
       expect(clickhouse.health).toBeDefined();
@@ -623,7 +623,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       // The list survives — no 500 — despite the throwing probe.
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const clickhouse = body.connections.find((c: { id: string }) => c.id === "clickhouse-staging");
       // The bad row is degraded, not absent or fatal.
@@ -650,7 +650,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(404);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.error).toBe("not_found");
 
@@ -698,7 +698,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.id).toBe("warehouse");
     });
@@ -774,7 +774,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
         );
 
         expect(res.status).toBe(200);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
         const body = (await res.json()) as any;
         expect(body.id).toBe("clickhouse");
         // dbType is the plugin slug, not a core-detected scheme.
@@ -849,7 +849,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
         );
 
         expect(res.status).toBe(200);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
         const body = (await res.json()) as any;
         expect(body.dbType).toBe("elasticsearch");
         expect(body.groupId).toBe("elasticsearch");
@@ -878,7 +878,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
         // Succeeds despite the unreachable host — the probe was never invoked.
         expect(res.status).toBe(200);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
         const body = (await res.json()) as any;
         expect(body.groupId).toBe("clickhouse");
         // The liveness probe was never invoked — that is what lets the rename
@@ -913,7 +913,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
         );
 
         expect(res.status).toBe(500);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
         const body = (await res.json()) as any;
         expect(body.error).toBe("internal_error");
         expect(body.requestId).toBeDefined();
@@ -939,7 +939,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
         );
 
         expect(res.status).toBe(400);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
         const body = (await res.json()) as any;
         expect(body.error).toBe("connection_failed");
         expect(body.requestId).toBeDefined();
@@ -976,7 +976,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(404);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.error).toBe("not_found");
     });
@@ -998,7 +998,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.success).toBe(true);
 
@@ -1023,7 +1023,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(403);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.error).toBe("forbidden");
     });
@@ -1074,7 +1074,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.status).toBe("healthy");
       expect(body.latencyMs).toBe(7);
@@ -1133,7 +1133,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(403);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.error).toBe("forbidden");
     });
@@ -1178,7 +1178,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).toEqual(["warehouse"]);
@@ -1251,7 +1251,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.success).toBe(true);
 
@@ -1272,7 +1272,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).toContain("default");
@@ -1284,7 +1284,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).toEqual(["default"]);
@@ -1301,7 +1301,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).not.toContain("default");
@@ -1323,7 +1323,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).toEqual(["warehouse"]);
@@ -1340,7 +1340,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).toEqual(["warehouse"]);
@@ -1358,7 +1358,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).toEqual(["warehouse"]);
@@ -1393,7 +1393,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections/warehouse"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.id).toBe("warehouse");
       expect(body.managed).toBe(true);
@@ -1427,7 +1427,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections/clickhouse-staging"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.id).toBe("clickhouse-staging");
       // dbType comes from describeForWorkspace meta (the plugin pool), proving the
@@ -1456,7 +1456,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
 
       const res = await app.fetch(adminRequest("/api/v1/admin/connections/warehouse"));
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.groupId).toBe("warehouse-env");
       // Post-cutover groupName mirrors groupId verbatim — `connection_groups.name`
@@ -1865,7 +1865,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(201);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.groupId).toBe("prod");
 
@@ -1900,7 +1900,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(201);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.groupId).toBe("Production");
 
@@ -1932,7 +1932,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(201);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.groupId).toBeNull();
 
@@ -1965,7 +1965,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(404);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.error).toBe("not_found");
 
@@ -1987,7 +1987,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(400);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.error).toBe("invalid_request");
     });
@@ -2170,7 +2170,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.groupId).toBe("prod");
 
@@ -2224,7 +2224,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.groupId).toBeNull();
 
@@ -2269,7 +2269,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.groupId).toBe("Production");
 
@@ -2304,7 +2304,7 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(404);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.error).toBe("not_found");
 

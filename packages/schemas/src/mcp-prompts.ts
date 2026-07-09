@@ -13,7 +13,7 @@
  * from there would transitively pull `@atlas/api` into any web caller —
  * a violation of the "frontend never imports from `@atlas/api`" rule
  * documented in CLAUDE.md. `@useatlas/schemas` sits below `@atlas/*` (an
- * ESLint `no-restricted-imports` rule scoped to `packages/schemas/**`
+ * oxlint `no-restricted-imports` rule scoped to `packages/schemas/**`
  * fails the lint on an upward import) so the dependency direction stays
  * `types → schemas → api/web/mcp`.
  */

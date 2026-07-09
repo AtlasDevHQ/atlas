@@ -84,7 +84,7 @@ const log = createLogger("abuse");
 function isSaasDeployment(): boolean {
   if (process.env.ATLAS_DEPLOY_MODE === "saas") return true;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const configMod = require("@atlas/api/lib/config") as {
       getConfig: () => { deployMode?: string } | null;
     };

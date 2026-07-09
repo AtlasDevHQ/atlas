@@ -43,7 +43,7 @@ function makeStubLogger(): Record<string, unknown> {
 // Splat the real module so every other logger export (withRequestContext,
 // scrub serializers, …) used across server.ts's import graph stays intact
 // — the "mock all exports" rule.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realLogger = require("@atlas/api/lib/logger") as Record<string, unknown>;
 
 mock.module("@atlas/api/lib/logger", () => ({

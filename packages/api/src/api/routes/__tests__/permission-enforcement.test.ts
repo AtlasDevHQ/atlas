@@ -64,7 +64,7 @@ type CheckPermissionResult = { body: Record<string, unknown>; status: 403 } | nu
 const mockCheckPermission: Mock<(user: unknown, permission: string, requestId: string) => Effect.Effect<CheckPermissionResult>> =
   mock(() => Effect.succeed(null as CheckPermissionResult));
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentionally generic
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- intentionally generic
 const mockListRoles: Mock<(orgId: string) => Effect.Effect<any, any>> = mock(() => Effect.succeed([]));
 
 class MockRoleError extends Error {
@@ -91,7 +91,7 @@ mock.module("@atlas/api/lib/auth/roles-errors", () => ({
 // helper defaults so unrelated middleware doesn't perturb the result.
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   const { makeTestEnterpriseLayer } =
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
     require("@atlas/api/__test-utils__/makeTestEnterpriseLayer") as typeof import("@atlas/api/__test-utils__/makeTestEnterpriseLayer");
   return makeTestEnterpriseLayer({
     RolesPolicy: {

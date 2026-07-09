@@ -123,7 +123,7 @@ beforeEach(() => {
     return [];
   });
   mockFetch.mockClear();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   globalThis.fetch = mockFetch as any;
   happyFetchSequence([
     { id: 123456789, account: { login: "acme-corp", type: "Organization" } },

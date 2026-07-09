@@ -253,7 +253,7 @@ describe("config wiring snapshot — buildAuthOptions", () => {
     };
     process.on("unhandledRejection", handler);
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- narrow Better Auth callback type for test invocation
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- narrow Better Auth callback type for test invocation
       await (callback as any)({
         user: { email: "reset@example.com" },
         url: "https://example.com/reset?token=x",
@@ -321,7 +321,7 @@ describe("config wiring snapshot — buildAuthOptions", () => {
     const callback = options.emailAndPassword?.sendResetPassword;
     expect(typeof callback).toBe("function");
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- narrow Better Auth callback type for test invocation
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- narrow Better Auth callback type for test invocation
     await (callback as any)({
       user: { email: "reset@example.com" },
       url: "https://api.useatlas.dev/api/auth/reset-password?token=r&callbackURL=%2Freset",

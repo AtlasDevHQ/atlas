@@ -1970,7 +1970,7 @@ alternative: wrap `createLogger(...)` so the returned logger has
 pre-applied scrubbers on `log.warn`/`log.error`. Even cheaper: replace
 `err: err instanceof Error ? err.message : String(err)` with
 `err: errorMessage(err)` at every flagged call site and lint-enforce it
-(eslint-plugin-no-raw-error-message).
+(a no-raw-error-message lint rule).
 
 **Severity:** P2 — operationally high-impact (log-feed audience is
 broad in SaaS), no live HTTP-surface leakage so not P1.

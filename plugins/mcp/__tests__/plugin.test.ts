@@ -184,7 +184,7 @@ describe("mcpPlugin — error paths", () => {
 
 describe("mcpPlugin — config validation", () => {
   test("defaults transport to stdio when omitted", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = mcpPlugin({} as any);
     expect(plugin.config?.transport).toBe("stdio");
   });

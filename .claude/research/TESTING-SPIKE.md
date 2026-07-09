@@ -279,7 +279,7 @@
 
 ### Quality Checks
 - [x] `bun run test` — **1340 tests pass, 0 fail** across 22 test files (isolated runner)
-- [x] `bun run lint` — **clean** (ESLint flat config, no warnings or errors)
+- [x] `bun run lint` — **clean** (no warnings or errors)
 - [x] `bun run type` — **clean** (tsgo --noEmit, 0 errors)
 
 ---

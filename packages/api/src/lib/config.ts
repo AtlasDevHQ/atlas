@@ -1393,7 +1393,7 @@ async function applyDeployMode(
   // Lazy require keeps `config.ts` at the bottom of the dep graph. The
   // resolver itself is a sync pure function that lazy-requires `getConfig`
   // and `hasInternalDB` — neither pulls in anything heavy.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { resolveDeployMode } = require("@atlas/api/lib/effect/deploy-mode") as {
     resolveDeployMode: (raw?: typeof rawSetting) => "saas" | "self-hosted";
   };

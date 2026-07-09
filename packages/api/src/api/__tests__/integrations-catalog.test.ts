@@ -34,7 +34,7 @@ const mockWithInstallStatusFor: Mock<
 
 let mockHasInternalDB = true;
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realPillarFacade = require("@atlas/api/lib/effect/pillar-catalog-query") as typeof import("@atlas/api/lib/effect/pillar-catalog-query");
 
 mock.module("@atlas/api/lib/effect/pillar-catalog-query", () => ({
@@ -50,7 +50,7 @@ mock.module("@atlas/api/lib/effect/pillar-catalog-query", () => ({
   }),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realDbInternal = require("@atlas/api/lib/db/internal") as typeof import("@atlas/api/lib/db/internal");
 
 mock.module("@atlas/api/lib/db/internal", () => ({
@@ -139,7 +139,7 @@ const { registerFormHandler, _resetInstallHandlerRegistries } = await import(
 // ---------------------------------------------------------------------------
 
 function buildApp(role: string = "admin", orgId: string | null = "org-1") {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test helper bypasses typed env
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test helper bypasses typed env
   const app = new OpenAPIHono<any>();
   app.use(async (c, next) => {
     c.set("requestId", "test-req-1");
@@ -157,7 +157,7 @@ function buildApp(role: string = "admin", orgId: string | null = "org-1") {
   return app;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test helper for untyped JSON responses
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test helper for untyped JSON responses
 const json = (res: Response) => res.json() as Promise<any>;
 
 function makeRichRow(overrides: Partial<CatalogEntryWithState> = {}): CatalogEntryWithState {

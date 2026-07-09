@@ -354,7 +354,7 @@ export function makeInternalDBLive(): Layer.Layer<InternalDB> {
   // in the module-level _pool for backward-compat standalone functions.
   const acquirePool = Effect.acquireRelease(
     Effect.sync(() => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      // oxlint-disable-next-line @typescript-eslint/no-require-imports
       const { Pool } = require("pg");
       const pool: PgPool = new Pool({
         connectionString: connString,
@@ -545,7 +545,7 @@ export function getInternalDB(): InternalPool {
       "DATABASE_URL is not set. Atlas internal database requires a PostgreSQL connection string."
     );
   }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Pool } = require("pg");
   const connString = databaseUrl.replace(
     /([?&])sslmode=require(?=&|$)/,
@@ -589,7 +589,7 @@ function getStripeLockPool(): InternalPool {
       "DATABASE_URL is not set. Atlas internal database requires a PostgreSQL connection string."
     );
   }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Pool } = require("pg");
   const connString = databaseUrl.replace(
     /([?&])sslmode=require(?=&|$)/,
@@ -1487,7 +1487,7 @@ export function insertLearnedPattern(pattern: {
  * same lazy-require pattern settings.ts itself uses for config/logger.
  */
 function requireGetSetting(): (key: string, orgId?: string) => string | undefined {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency (settings.ts imports db/internal.ts)
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency (settings.ts imports db/internal.ts)
   const { getSetting } = require("@atlas/api/lib/settings") as {
     getSetting: (key: string, orgId?: string) => string | undefined;
   };

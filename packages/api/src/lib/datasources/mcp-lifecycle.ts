@@ -929,7 +929,7 @@ export async function provisionRestDatasource(
     // UNSCRUBBED message, and a cause chain is serialized by loggers — re-attaching
     // it would re-introduce the exact credential this scrub removes.
     const raw = err instanceof Error ? err.message : String(err);
-    // eslint-disable-next-line preserve-caught-error -- attaching the raw cause would leak the scrubbed credential (see above)
+    // oxlint-disable-next-line preserve-caught-error -- attaching the raw cause would leak the scrubbed credential (see above)
     throw new Error(scrubSecretsFromMessage(raw, secrets));
   }
 }

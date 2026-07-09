@@ -29,7 +29,7 @@ import { listEntitiesWithOverlay, listEntityRows } from "@atlas/api/lib/semantic
 // ---------------------------------------------------------------------------
 
 let db: IMemoryDb;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- pg-mem's adapter returns a dynamic Pool constructor; not worth typing for tests
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- pg-mem's adapter returns a dynamic Pool constructor; not worth typing for tests
 let pool: any;
 let originalDatabaseUrl: string | undefined;
 

@@ -37,10 +37,10 @@ export function extractHost(url: string): string {
 export function createMySQLConnection(
   config: MySQLConnectionConfig,
 ): PluginDBConnection {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   let mysql: any;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     mysql = require("mysql2/promise");
   } catch (err) {
     const isNotFound =

@@ -13,7 +13,7 @@ import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 import { RateLimitExceededError, ConcurrencyLimitError } from "@atlas/api/lib/effect/errors";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyResult = any;
 
 // --- Mocks ---
@@ -68,7 +68,7 @@ let slotReason = "QPM limit reached (3/min)";
 let slotRetryAfterMs: number | undefined = 5000;
 
 mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   withSourceSlot: (_sourceId: string, effect: Effect.Effect<any, any>) => {
     if (!slotAcquired) {
       if (slotErrorType === "concurrency") {

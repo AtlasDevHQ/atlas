@@ -37,7 +37,7 @@ interface CapturedQuery {
 const sqlLog: CapturedQuery[] = [];
 let internalDbAvailable = true;
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realInternal = require("@atlas/api/lib/db/internal") as Record<string, unknown>;
 
 mock.module("@atlas/api/lib/db/internal", () => ({

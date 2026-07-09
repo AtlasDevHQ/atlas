@@ -145,7 +145,7 @@ export function AdminSidebar() {
               <Link href="/admin" aria-label="Admin home">
                 {showCustomLogo ? (
                   <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-muted">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    {/* oxlint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={showCustomLogo as string}
                       alt=""

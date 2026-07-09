@@ -101,7 +101,7 @@ test.describe("multi-env routing — partial failure @llm", () => {
         data: { url: originalUrlBackup },
       });
       if (restore.status() !== 200) {
-        // eslint-disable-next-line no-console -- diagnostic for the next CI run
+        // oxlint-disable-next-line no-console -- diagnostic for the next CI run
         console.error(
           `[multi-env-routing-partial-failure] MANUAL CLEANUP REQUIRED: ` +
             `failed to restore ${FAILED_ENV_ID} URL (status ${restore.status()}). ` +

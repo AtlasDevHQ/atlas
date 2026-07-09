@@ -84,7 +84,7 @@ function makeInstance() {
       user: [], session: [], account: [], verification: [],
       agent: [], agentHost: [], agentCapabilityGrant: [], approvalRequest: [],
     }),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
     plugins: [plugin] as any[],
   });
 }

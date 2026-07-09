@@ -74,10 +74,10 @@ function makeLoader(state: FakeLoaderState): Pick<LazyPluginLoader, "getOrInstan
   return { getOrInstantiate };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
   if (!tool?.execute) throw new Error("tool has no execute");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   return (await tool.execute(args, undefined as any)) as T;
 }
 
@@ -270,7 +270,7 @@ describe("createLinearIssue — input validation", () => {
     // schema parse (the parse happens upstream of the tool execution
     // when called via streamText). Test the schema directly to pin
     // the contract.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const inputSchema = (tool as any).inputSchema as { safeParse: (v: unknown) => { success: boolean } };
     expect(inputSchema.safeParse({ title: "" }).success).toBe(false);
     expect(inputSchema.safeParse({ title: "ok" }).success).toBe(true);
@@ -279,7 +279,7 @@ describe("createLinearIssue — input validation", () => {
   it("rejects teamKey that isn't uppercase alphanumeric", async () => {
     const oauth = makeFakeInstance();
     const tool = createCreateLinearIssueTool(makeDeps({ oauth }));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const inputSchema = (tool as any).inputSchema as { safeParse: (v: unknown) => { success: boolean } };
     expect(inputSchema.safeParse({ title: "x", teamKey: "lowercase" }).success).toBe(false);
     expect(inputSchema.safeParse({ title: "x", teamKey: "ENG" }).success).toBe(true);

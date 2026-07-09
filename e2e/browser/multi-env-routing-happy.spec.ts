@@ -165,5 +165,5 @@ test.describe("multi-env routing — happy path @llm", () => {
 // that the multi-env overlay's three connection groups exist before any
 // chat-level assertion runs. Without it a partial seed produces obscure
 // failures; the helper skips with a clear "run db:multi-env:up" message.
-// eslint-disable-next-line @typescript-eslint/no-unused-expressions -- referenced statically for clarity
+// oxlint-disable-next-line @typescript-eslint/no-unused-expressions -- referenced statically for clarity
 PROD_GROUP_NAME;

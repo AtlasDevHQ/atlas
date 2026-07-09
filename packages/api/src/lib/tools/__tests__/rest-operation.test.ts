@@ -73,7 +73,7 @@ async function call(
   resolve: () => Promise<RestDatasource | null> = async () => datasource(),
 ): Promise<ExecuteRestOperationResult> {
   const t = createExecuteRestOperationTool({ resolveDatasource: resolve });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub for a unit invocation
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub for a unit invocation
   return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
 }
 
@@ -221,9 +221,9 @@ describe("executeRestOperation — single-page truncation (executeOperationPaged
       fetchImpl,
     });
     const result = (await t.execute!(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
       { operationId: "findManyPeople" } as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
       { toolCallId: "t1", messages: [] } as any,
     )) as ExecuteRestOperationResult;
 
@@ -431,7 +431,7 @@ describe("executeRestOperation — multi-datasource routing", () => {
     datasources: RestDatasource[],
   ): Promise<ExecuteRestOperationResult> {
     const t = createExecuteRestOperationTool({ resolveDatasources: async () => datasources });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
     return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
   }
 
@@ -501,7 +501,7 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
     driftRecovery: DriftRecoveryFn,
   ): Promise<ExecuteRestOperationResult> {
     const t = createExecuteRestOperationTool({ resolveDatasource: async () => ds, driftRecovery });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
     return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
   }
 

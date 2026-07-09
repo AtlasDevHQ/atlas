@@ -35,7 +35,7 @@ cp -r "$TEMPLATE/data" "$OUTPUT/data"
 cp -r "$TEMPLATE/docs" "$OUTPUT/docs"
 
 # Static template files
-cp "$TEMPLATE/eslint.config.mjs"  "$OUTPUT/eslint.config.mjs"
+cp "$TEMPLATE/.oxlintrc.json"     "$OUTPUT/.oxlintrc.json"
 cp "$TEMPLATE/next.config.ts"     "$OUTPUT/next.config.ts"
 cp "$TEMPLATE/postcss.config.mjs" "$OUTPUT/postcss.config.mjs"
 cp "$TEMPLATE/tsconfig.json"      "$OUTPUT/tsconfig.json"

@@ -31,7 +31,7 @@ describe("Better Auth instance shape", () => {
         type: "sqlite",
       } as unknown as Parameters<typeof betterAuth>[0]["database"],
       secret: "test-secret-at-least-32-characters-long",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin types are complex union types that vary by plugin combination
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin types are complex union types that vary by plugin combination
       plugins: [bearer(), apiKey()] as any[],
     });
 
@@ -283,7 +283,7 @@ describe("captcha gates the HTTP signup door only, not the in-process seam (#415
       database: memoryAdapter({ user: [], account: [], session: [], verification: [] }),
       secret: "test-secret-at-least-32-characters-long",
       emailAndPassword: { enabled: true },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
       plugins: [captchaPlugin] as any[],
     });
   }

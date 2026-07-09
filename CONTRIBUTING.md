@@ -65,7 +65,7 @@ internal paths. See [CLAUDE.md](./CLAUDE.md) for the full architecture reference
   awaits, not sequential `await a(); await b();`
 - **Dynamic imports** — use `next/dynamic` for Monaco, Recharts, syntax
   highlighters, and other large client-only libraries
-- **Flat ESLint config** — use `eslint.config.mjs`, not `.eslintrc`
+- **oxlint** — linting is [oxlint](https://oxc.rs) via `.oxlintrc.json`, not ESLint; run `bun run lint`
 - **Frontend is a pure HTTP client** — `@atlas/web` imports `@atlas/api` for
   types only; all data flows over HTTP
 - **Server external packages** — native/worker-thread packages (`pg`, `mysql2`,

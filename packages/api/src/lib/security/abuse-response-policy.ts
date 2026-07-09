@@ -145,7 +145,7 @@ export const NOOP_ABUSE_RESPONSE_POLICY: AbuseResponsePolicy = Object.freeze({
   }),
   reinstateWorkspace: () => null,
   getAbuseConfig: () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const baseline = require("./abuse-baseline") as typeof import("./abuse-baseline");
     return baseline.getAbuseConfig();
   },

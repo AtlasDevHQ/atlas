@@ -217,5 +217,5 @@ test.describe("stage tracker — per-user scope (integration, no LLM)", () => {
 
 // Reference the admin email so the linter doesn't flag the import as
 // unused — the `request` fixture pulls auth from the global storage state.
-// eslint-disable-next-line @typescript-eslint/no-unused-expressions
+// oxlint-disable-next-line @typescript-eslint/no-unused-expressions
 ADMIN_EMAIL;

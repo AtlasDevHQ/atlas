@@ -127,7 +127,7 @@ type ExecuteParams = Parameters<ExecuteFn>[0];
 async function run(args: ExecuteParams) {
   const fn = createDashboard.execute as ExecuteFn;
   return runInCtx(async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const out = (await fn(args, undefined as any)) as
       | {
           kind: "ok";
@@ -846,7 +846,7 @@ describe("createDashboard tool", () => {
           },
         ],
       },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       undefined as any,
     )) as { kind: "err"; error: string } | { kind: "ok" };
 

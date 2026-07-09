@@ -428,7 +428,7 @@ export const PillarCatalogQueryLive: Layer.Layer<
   import("@atlas/api/lib/db/internal").InternalDB
 > = Layer.unwrapEffect(
   Effect.sync(() => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { InternalDB } = require("@atlas/api/lib/db/internal") as {
       InternalDB: InternalDBTag;
     };

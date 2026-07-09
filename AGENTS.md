@@ -36,7 +36,7 @@ Guidance for Codex when working in this repository.
 - [ ] **Prefer errors over silent fallbacks** — `catch { return false }` on a security check is a bug. Return 500, not a false negative
 
 ### Type Safety
-- [ ] **No explicit `any`** — Use proper types or `unknown` with narrowing. Keep `any` only where unavoidable (third-party constraints) with `eslint-disable` + justification comment
+- [ ] **No explicit `any`** — Use proper types or `unknown` with narrowing. Keep `any` only where unavoidable (third-party constraints) with `oxlint-disable` + justification comment
 - [ ] **Minimize non-null assertions** — Only use `!` when the value is provably non-null. Prefer optional chaining (`?.`) or explicit null checks
 
 ### Code Style
@@ -53,7 +53,7 @@ Guidance for Codex when working in this repository.
 - [ ] **No async waterfalls** — Use `Promise.all([a(), b()])` for independent awaits
 - [ ] **Immutable array operations** — Use `toSorted()`, `toReversed()`, `toSpliced()` in React components
 - [ ] **Dynamic imports for heavy components** — Use `next/dynamic` for Monaco, Recharts, syntax highlighters
-- [ ] **Flat ESLint config** — `eslint.config.mjs`, not `.eslintrc`
+- [ ] **oxlint, not ESLint** — Linting is [oxlint](https://oxc.rs) via `.oxlintrc.json`. The three CI-enforced guards (FetchError-flatten, `feature: FeatureName` registry, `@useatlas/schemas` import boundary) run through the `oxlint-plugin-eslint` JS plugin. Type-aware linting (tsgolint) is available but off by default
 - [ ] **`FeatureName` registry for admin surfaces** — `<MutationErrorSurface>`, `<EnterpriseUpsell>`, `<FeatureGate>`, `<AdminContentWrapper>`, and `<ReasonDialog>` type their `feature` prop as `FeatureName` from `@/ui/components/admin/feature-registry`. Adding a new admin surface means appending its canonical name to `FEATURE_NAMES` first — then TS guides every call site into agreement. Casing matches the banner copy ("SSO" not "sso"); consolidate duplicates rather than adding variants. The registry is the `tsgo`-enforced source of truth for user-visible feature labels — skip it and typos render in production upsells
 
 ### Database & Migrations
@@ -128,7 +128,7 @@ bun run dev              # Containers + Hono API (:3001) + Next.js (:3000)
 bun run dev:api          # Standalone Hono API
 bun run dev:web          # Standalone Next.js
 bun run build            # Production build
-bun run lint             # ESLint
+bun run lint             # oxlint
 bun run type             # TypeScript type-check (tsgo --noEmit)
 bun run test             # Full suite — @atlas/api then all other packages (isolated per-file)
 bun run test:api         # Just @atlas/api tests (serial, full)

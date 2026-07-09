@@ -76,7 +76,7 @@ async function withSemanticDir<T>(
 
 describe("config validation", () => {
   test("accepts empty config (env fallback)", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     expect(plugin.id).toBe("railway-sandbox");
     expect(plugin.types).toEqual(["sandbox"]);
@@ -86,28 +86,28 @@ describe("config validation", () => {
     const plugin = railwaySandboxPlugin({
       token: "rw_tok",
       environmentId: "env_abc",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     expect(plugin.config?.token).toBe("rw_tok");
     expect(plugin.config?.environmentId).toBe("env_abc");
   });
 
   test("applies idleTimeoutMinutes and timeoutSec defaults", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     expect(plugin.config?.idleTimeoutMinutes).toBe(10);
     expect(plugin.config?.timeoutSec).toBe(30);
   });
 
   test("rejects idleTimeoutMinutes outside 1-120", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => railwaySandboxPlugin({ idleTimeoutMinutes: 0 } as any)).toThrow();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => railwaySandboxPlugin({ idleTimeoutMinutes: 121 } as any)).toThrow();
   });
 
   test("rejects empty token", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => railwaySandboxPlugin({ token: "" } as any)).toThrow();
   });
 });
@@ -118,7 +118,7 @@ describe("config validation", () => {
 
 describe("plugin shape", () => {
   test("createPlugin factory returns a valid plugin", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     expect(plugin.id).toBe("railway-sandbox");
     expect(plugin.types).toEqual(["sandbox"]);
@@ -136,13 +136,13 @@ describe("plugin shape", () => {
   });
 
   test("isSandboxPlugin type guard passes", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     expect(isSandboxPlugin(plugin)).toBe(true);
   });
 
   test("sandbox.priority is 80", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     expect(plugin.sandbox.priority).toBe(80);
   });
@@ -155,19 +155,19 @@ describe("plugin shape", () => {
 
 describe("security metadata", () => {
   test("declares networkIsolation FALSE (no deny-all egress mode)", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     expect(plugin.security?.networkIsolation).toBe(false);
   });
 
   test("declares filesystem isolation", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     expect(plugin.security?.filesystemIsolation).toBe(true);
   });
 
   test("description documents the egress caveat", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     expect(plugin.security?.description).toContain("egress");
     expect(plugin.security?.description).toContain("NOT blocked");
@@ -182,7 +182,7 @@ describe("sandbox.create", () => {
   beforeEach(resetMocks);
 
   test("creates with ISOLATED network mode and idle backstop, never PRIVATE", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     await withSemanticDir(async (dir) => {
       await plugin.sandbox.create(dir);
@@ -197,7 +197,7 @@ describe("sandbox.create", () => {
     const plugin = railwaySandboxPlugin({
       token: "rw_test",
       environmentId: "env_test",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     await withSemanticDir(async (dir) => {
       await plugin.sandbox.create(dir);
@@ -208,7 +208,7 @@ describe("sandbox.create", () => {
   });
 
   test("omits token/environmentId when not configured (SDK env fallback)", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     await withSemanticDir(async (dir) => {
       await plugin.sandbox.create(dir);
@@ -219,7 +219,7 @@ describe("sandbox.create", () => {
   });
 
   test("uploads the semantic tree via files.mkdir + files.write (no shell)", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     // Record the interleaving of mkdir/write so we can assert ordering, not
     // just membership — the semantic root must be mkdir'd BEFORE any write so
@@ -259,7 +259,7 @@ describe("sandbox.create", () => {
   });
 
   test("writes binary-safe content unchanged (no base64 round-trip)", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     const tmpDir = `/tmp/railway-sandbox-bin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const { mkdirSync, writeFileSync, rmSync } = await import("fs");
@@ -282,7 +282,7 @@ describe("sandbox.create", () => {
   });
 
   test("throws a clear error (and destroys the sandbox) when the files API is missing", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     // Simulate an older SDK whose Sandbox instance has no `files` surface.
     mockCreate.mockImplementation(() =>
@@ -298,7 +298,7 @@ describe("sandbox.create", () => {
   });
 
   test("throws when no semantic files found — without creating a sandbox", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     const tmpDir = `/tmp/railway-sandbox-empty-${Date.now()}`;
     const { mkdirSync, rmSync } = await import("fs");
@@ -314,7 +314,7 @@ describe("sandbox.create", () => {
   });
 
   test("skips symlinks targeting a prefix-collision sibling of the semantic root", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     const base = `/tmp/railway-sandbox-prefix-${Date.now()}`;
     const { mkdirSync, writeFileSync, symlinkSync, rmSync } = await import("fs");
@@ -340,7 +340,7 @@ describe("sandbox.create", () => {
   });
 
   test("destroys the sandbox when the upload fails", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     mockWrite.mockImplementation(() =>
       Promise.reject(new Error("disk full")),
@@ -357,7 +357,7 @@ describe("sandbox.create", () => {
     // mkdir shares the upload guard with write — a mkdir rejection must take
     // the same Failed-to-upload → destroy path, proving mkdir is inside the
     // guarded block.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     mockMkdir.mockImplementation(() =>
       Promise.reject(new Error("permission denied")),
@@ -373,7 +373,7 @@ describe("sandbox.create", () => {
   test("redacts sensitive detail from an upload-failure message", async () => {
     // A files.write rejection whose message carries a credential must be
     // scrubbed before it reaches the caller (CLAUDE.md: no secrets in responses).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     mockWrite.mockImplementation(() =>
       Promise.reject(new Error("upload rejected: token=rw_supersecret_abc123")),
@@ -396,7 +396,7 @@ describe("sandbox.create", () => {
     mockCreate.mockImplementation(() =>
       Promise.reject(new Error("sandbox limit reached for environment")),
     );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     await withSemanticDir(async (dir) => {
       await expect(plugin.sandbox.create(dir)).rejects.toThrow(/sandbox cap/);
@@ -407,7 +407,7 @@ describe("sandbox.create", () => {
     mockCreate.mockImplementation(() =>
       Promise.reject(new Error("connect ECONNREFUSED")),
     );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     await withSemanticDir(async (dir) => {
       await expect(plugin.sandbox.create(dir)).rejects.toThrow(
@@ -421,7 +421,7 @@ describe("exec / close", () => {
   beforeEach(resetMocks);
 
   test("exec runs the command in a child shell under the semantic dir", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     await withSemanticDir(async (dir) => {
       const backend = await plugin.sandbox.create(dir);
@@ -437,7 +437,7 @@ describe("exec / close", () => {
   });
 
   test("exec shell-quotes commands containing single quotes", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     await withSemanticDir(async (dir) => {
       const backend = await plugin.sandbox.create(dir);
@@ -449,7 +449,7 @@ describe("exec / close", () => {
   });
 
   test("exec surfaces timeout and truncation flags in stderr", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     await withSemanticDir(async (dir) => {
       const backend = await plugin.sandbox.create(dir);
@@ -470,7 +470,7 @@ describe("exec / close", () => {
   });
 
   test("exec returns error result when the SDK throws", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     await withSemanticDir(async (dir) => {
       const backend = await plugin.sandbox.create(dir);
@@ -487,7 +487,7 @@ describe("exec / close", () => {
   });
 
   test("close destroys the sandbox", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     await withSemanticDir(async (dir) => {
       const backend = await plugin.sandbox.create(dir);
@@ -497,7 +497,7 @@ describe("exec / close", () => {
   });
 
   test("close swallows (but logs) destroy failures", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     await withSemanticDir(async (dir) => {
       const backend = await plugin.sandbox.create(dir);
@@ -540,7 +540,7 @@ function makeCtx(logged: { level: string; msg: string }[]) {
 
 describe("initialize", () => {
   test("logs env-fallback auth mode and the egress warning", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     const logged: { level: string; msg: string }[] = [];
     await plugin.initialize!(makeCtx(logged));
@@ -549,7 +549,7 @@ describe("initialize", () => {
   });
 
   test("logs explicit-token auth mode when token is set", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({ token: "rw_tok", environmentId: "env_1" } as any);
     const logged: { level: string; msg: string }[] = [];
     await plugin.initialize!(makeCtx(logged));
@@ -565,7 +565,7 @@ describe("healthCheck", () => {
   beforeEach(resetMocks);
 
   test("returns healthy when sandbox echo succeeds, and destroys the sandbox", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     const result = await plugin.healthCheck!();
     expect(result.healthy).toBe(true);
@@ -580,7 +580,7 @@ describe("healthCheck", () => {
 
   test("returns unhealthy when Sandbox.create fails", async () => {
     mockCreate.mockImplementation(() => Promise.reject(new Error("quota exceeded")));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     const result = await plugin.healthCheck!();
     expect(result.healthy).toBe(false);
@@ -591,7 +591,7 @@ describe("healthCheck", () => {
     mockExec.mockImplementation(() =>
       Promise.resolve({ stdout: "", stderr: "error", exitCode: 1 }),
     );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
     const result = await plugin.healthCheck!();
     expect(result.healthy).toBe(false);

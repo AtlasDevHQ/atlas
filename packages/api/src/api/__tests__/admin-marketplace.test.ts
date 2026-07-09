@@ -157,7 +157,7 @@ interface TestEffectPromise {
 
 interface TestPipeable {
   [Symbol.iterator]: () => Generator<unknown, unknown>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pipe is variadic across operator types
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- pipe is variadic across operator types
   pipe(...ops: Array<(source: TestPipeable) => any>): any;
 }
 
@@ -540,7 +540,7 @@ const { buildFormInstallUpsertSql } = await import(
 // ---------------------------------------------------------------------------
 
 function buildPlatformApp() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test helper bypasses typed env
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test helper bypasses typed env
   const app = new OpenAPIHono<any>();
   app.use(async (c, next) => {
     c.set("requestId", "test-req-1");
@@ -556,7 +556,7 @@ function buildPlatformApp() {
 }
 
 function buildWorkspaceApp() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test helper bypasses typed env
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test helper bypasses typed env
   const app = new OpenAPIHono<any>();
   app.use(async (c, next) => {
     c.set("requestId", "test-req-1");
@@ -572,7 +572,7 @@ function buildWorkspaceApp() {
   return app;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test helper for untyped JSON responses
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test helper for untyped JSON responses
 const json = (res: Response) => res.json() as Promise<any>;
 
 const now = new Date().toISOString();

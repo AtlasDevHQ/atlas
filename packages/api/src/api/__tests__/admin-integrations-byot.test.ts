@@ -452,7 +452,7 @@ describe("BYOT routes", () => {
     mockFetchImpl = mock(() =>
       Promise.resolve(new Response("{}", { status: 200 })),
     );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- globalThis.fetch requires preconnect; safe to cast in tests
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- globalThis.fetch requires preconnect; safe to cast in tests
     globalThis.fetch = mockFetchImpl as any;
   });
 

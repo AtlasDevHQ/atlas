@@ -53,7 +53,7 @@ type InternalQueryFn = <T = unknown>(sql: string, params?: unknown[]) => Promise
 // graph so partial `mock.module()` setups elsewhere don't trip bun's
 // "Export named 'X' not found" loader error. One cached resolver hit per call.
 function lazyInternalQuery(): InternalQueryFn {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require("@atlas/api/lib/db/internal") as {
     internalQuery: InternalQueryFn;
   };
@@ -115,7 +115,7 @@ export async function deleteDedicatedCredentialStore(
     // those tests don't exercise the disconnect path) don't trip
     // bun's "Export named 'X' not found" loader error. Production
     // perf cost is one resolver hit per disconnect call.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { deleteInstallation } = require("@atlas/api/lib/slack/store") as {
       deleteInstallation: (teamId: string) => Promise<void>;
     };
@@ -123,7 +123,7 @@ export async function deleteDedicatedCredentialStore(
     return;
   }
   if (INTEGRATION_CREDENTIALS_SLUGS.has(slug)) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { deleteCredentialBundle } = require("@atlas/api/lib/integrations/credentials/store") as {
       deleteCredentialBundle: (workspaceId: string, catalogId: string) => Promise<boolean>;
     };
@@ -136,7 +136,7 @@ export async function deleteDedicatedCredentialStore(
     // credential row so the dispatcher falls back to env var (or surfaces
     // the actionable "configure under Admin → Integrations → Twenty" error).
     // Lazy import for the same reason as the Slack branch above.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { deleteTwentyIntegration } = require("@atlas/api/lib/integrations/twenty/store") as {
       deleteTwentyIntegration: (workspaceId: string) => Promise<boolean>;
     };
@@ -150,7 +150,7 @@ export async function deleteDedicatedCredentialStore(
     // workspace has both, a unified disconnect must clear the BYOT credential
     // too. `deleteDiscordInstallationByOrg` is a no-op (returns false) for a
     // static-bot-only install with no BYOT row, so this is safe in both cases.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { deleteDiscordInstallationByOrg } = require("@atlas/api/lib/discord/store") as {
       deleteDiscordInstallationByOrg: (orgId: string) => Promise<boolean>;
     };

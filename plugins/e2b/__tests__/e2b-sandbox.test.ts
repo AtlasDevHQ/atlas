@@ -46,7 +46,7 @@ afterAll(() => {
 
 describe("config validation", () => {
   test("valid config accepted", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "test-key" } as any);
     expect(plugin.id).toBe("e2b-sandbox");
     expect(plugin.types).toEqual(["sandbox"]);
@@ -54,29 +54,29 @@ describe("config validation", () => {
   });
 
   test("empty apiKey rejected", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => e2bSandboxPlugin({ apiKey: "" } as any)).toThrow();
   });
 
   test("custom template accepted", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k", template: "my-tmpl" } as any);
     expect(plugin.config?.template).toBe("my-tmpl");
   });
 
   test("custom timeout accepted", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k", timeoutSec: 60 } as any);
     expect(plugin.config?.timeoutSec).toBe(60);
   });
 
   test("rejects negative timeout", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => e2bSandboxPlugin({ apiKey: "k", timeoutSec: -1 } as any)).toThrow();
   });
 
   test("rejects zero timeout", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => e2bSandboxPlugin({ apiKey: "k", timeoutSec: 0 } as any)).toThrow();
   });
 });
@@ -87,7 +87,7 @@ describe("config validation", () => {
 
 describe("plugin shape", () => {
   test("factory returns valid plugin", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k" } as any);
     expect(plugin.id).toBe("e2b-sandbox");
     expect(plugin.types).toEqual(["sandbox"]);
@@ -105,19 +105,19 @@ describe("plugin shape", () => {
   });
 
   test("isSandboxPlugin passes", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k" } as any);
     expect(isSandboxPlugin(plugin)).toBe(true);
   });
 
   test("priority is 90", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k" } as any);
     expect(plugin.sandbox.priority).toBe(90);
   });
 
   test("sandbox.create is a function", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k" } as any);
     expect(typeof plugin.sandbox.create).toBe("function");
   });
@@ -129,25 +129,25 @@ describe("plugin shape", () => {
 
 describe("security metadata", () => {
   test("networkIsolation true", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k" } as any);
     expect(plugin.security?.networkIsolation).toBe(true);
   });
 
   test("filesystemIsolation true", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k" } as any);
     expect(plugin.security?.filesystemIsolation).toBe(true);
   });
 
   test("unprivilegedExecution true", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k" } as any);
     expect(plugin.security?.unprivilegedExecution).toBe(true);
   });
 
   test("description contains E2B", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k" } as any);
     expect(plugin.security?.description).toContain("E2B");
   });
@@ -166,7 +166,7 @@ describe("sandbox.create / exec", () => {
   });
 
   test("creates sandbox and uploads files", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "test-key" } as any);
     // Empty test dir — collectSemanticFiles finds no files, which is fine for testing the create flow
     const backend = await plugin.sandbox.create(testDir);
@@ -176,7 +176,7 @@ describe("sandbox.create / exec", () => {
   });
 
   test("exec delegates to commands.run", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "test-key" } as any);
     const backend = await plugin.sandbox.create(testDir);
     const result = await backend.exec("ls -la");
@@ -193,7 +193,7 @@ describe("sandbox.create / exec", () => {
     mockRun.mockImplementationOnce(() =>
       Promise.reject(new Error("command timed out")),
     );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "test-key" } as any);
     const backend = await plugin.sandbox.create(testDir);
     const result = await backend.exec("sleep 999");
@@ -202,7 +202,7 @@ describe("sandbox.create / exec", () => {
   });
 
   test("close calls kill", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "test-key" } as any);
     const backend = await plugin.sandbox.create(testDir);
     await backend.close!();
@@ -210,14 +210,14 @@ describe("sandbox.create / exec", () => {
   });
 
   test("creates sandbox with template when configured", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "test-key", template: "custom-tmpl" } as any);
     await plugin.sandbox.create(testDir);
     expect(mockCreate).toHaveBeenCalledWith({ apiKey: "test-key", template: "custom-tmpl" });
   });
 
   test("creates sandbox without template when not configured", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "test-key" } as any);
     await plugin.sandbox.create(testDir);
     expect(mockCreate).toHaveBeenCalledWith({ apiKey: "test-key" });
@@ -225,7 +225,7 @@ describe("sandbox.create / exec", () => {
 
   test("does not mutate process.env.E2B_API_KEY", async () => {
     const before = process.env.E2B_API_KEY;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "test-key" } as any);
     await plugin.sandbox.create(testDir);
     expect(process.env.E2B_API_KEY).toBe(before);
@@ -243,7 +243,7 @@ describe("healthCheck", () => {
   });
 
   test("returns healthy when sandbox creates and kills successfully", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "test-key" } as any);
     const result = await plugin.healthCheck!();
     expect(result.healthy).toBe(true);
@@ -256,7 +256,7 @@ describe("healthCheck", () => {
     mockCreate.mockImplementationOnce(() =>
       Promise.reject(new Error("API key invalid")),
     );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "bad-key" } as any);
     const result = await plugin.healthCheck!();
     expect(result.healthy).toBe(false);
@@ -271,7 +271,7 @@ describe("healthCheck", () => {
 
 describe("initialize", () => {
   test("logs plugin readiness", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = e2bSandboxPlugin({ apiKey: "k" } as any);
     const logged: { level: string; msg: string }[] = [];
     const ctx = {

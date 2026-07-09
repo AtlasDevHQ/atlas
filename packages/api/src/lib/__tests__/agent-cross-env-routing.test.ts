@@ -193,7 +193,7 @@ function userMessages(content: string): UIMessage[] {
   ];
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- AI SDK step types are generic
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- AI SDK step types are generic
 function findToolResults(steps: any[], toolName: string): any[] {
   const results: unknown[] = [];
   for (const step of steps) {

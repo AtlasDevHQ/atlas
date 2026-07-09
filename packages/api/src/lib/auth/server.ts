@@ -2416,7 +2416,7 @@ export function buildSignupCaptchaPlugin(
 }
 
 export function buildPlugins() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin types are complex union types that vary by plugin combination
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin types are complex union types that vary by plugin combination
   const plugins: any[] = [
     bearer(),
     // #4046 / ADR-0027 §6 — workspace-scoped API key for unattended CI.

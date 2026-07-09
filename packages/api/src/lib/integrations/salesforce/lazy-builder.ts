@@ -135,10 +135,10 @@ interface JsforceConnection {
  * try/catch that throws a clear error if the operator hasn't
  * installed it.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 function requireJsforce(): any {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     return require("jsforce");
   } catch {
     throw new Error(

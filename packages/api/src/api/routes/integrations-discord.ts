@@ -273,7 +273,7 @@ function buildAdminIntegrationsUrl(
  */
 function sanitizeUpstreamMessage(raw: string | undefined): string | null {
   if (typeof raw !== "string") return null;
-  // eslint-disable-next-line no-control-regex
+  // oxlint-disable-next-line no-control-regex
   const cleaned = raw.replace(/[\x00-\x1f\x7f]/g, " ").trim();
   if (cleaned.length === 0) return null;
   return cleaned.length > 256 ? `${cleaned.slice(0, 253)}...` : cleaned;

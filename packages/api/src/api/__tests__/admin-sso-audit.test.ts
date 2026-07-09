@@ -122,12 +122,12 @@ mock.module("@atlas/api/lib/audit/retention-errors", () => ({
 // Provide SSOPolicy through EELayer so route `yield* SSOPolicy` resolves.
 // Pattern parallel to admin-ip-allowlist.test.ts (slice 8/11).
 mock.module("@atlas/ee/layers", () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
     EELayer: Layer.unwrapEffect(
       E.sync(() => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        // oxlint-disable-next-line @typescript-eslint/no-require-imports
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
         return Layer.succeed(services.SSOPolicy, {
           available: true,

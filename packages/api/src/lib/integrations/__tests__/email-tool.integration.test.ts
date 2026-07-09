@@ -100,9 +100,9 @@ const STORED_CONFIG = {
   secure: true,
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   return (await tool.execute(args, undefined as any)) as T;
 }
 
@@ -124,13 +124,13 @@ describe("Email agent-tool — install-present path through the real lazy loader
     // nodemailer major bump would surface.
     let serializedMessage = "";
     const realSendMail = capturedTransport.sendMail.bind(capturedTransport);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     capturedTransport.sendMail = (async (message: any) => {
       const info = await realSendMail(message);
       const raw = (info as { message?: Buffer | string }).message;
       serializedMessage = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw ?? "");
       return info;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
 
     loaderMod.lazyPluginLoader.registerBuilder(
@@ -141,7 +141,7 @@ describe("Email agent-tool — install-present path through the real lazy loader
         // generic than the SMTP-typed signature the builder's parameter
         // declares. They are structurally identical for `.sendMail()` /
         // `.close()` so `unknown` widens past the overload mismatch.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         createTransport: (() => capturedTransport) as any,
       }),
     );
@@ -208,7 +208,7 @@ describe("Email agent-tool — install-present path through the real lazy loader
         // before the builder runs when the row is missing.
         createTransport: ((): never => {
           throw new Error("builder should not run when there is no install");
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         }) as any,
       }),
     );

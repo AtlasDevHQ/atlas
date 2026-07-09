@@ -95,7 +95,7 @@ Skip this step entirely if the page already has prominent teal buttons/accents t
 
 ## Step 5 — Verify
 
-1. `bun x eslint <changed files>` → exit 0
+1. `bun x oxlint <changed files>` → exit 0
 2. `bun run type` → filter out pre-existing `bun:test` noise, confirm no new errors
 3. Re-navigate the Playwright tab (or close + reopen — the browser session can go stale across long iterations)
 4. Take `page-after-top.png` and `page-after-bottom.png`

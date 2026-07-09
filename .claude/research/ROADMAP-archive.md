@@ -362,7 +362,7 @@ Standalone API server, monorepo structure, and frontend decoupling. Users can br
 - [x] Workspace-scoped imports — `@atlas/api/*` for cross-package, `@/` for intra-package
 - [x] Re-export shims in `@atlas/api` for shared types (zero internal import rewrites)
 - [x] Next.js Turbopack build with `transpilePackages` for workspace deps
-- [x] Updated Dockerfile, docker-compose, ESLint, and root scripts for monorepo layout
+- [x] Updated Dockerfile, docker-compose, lint config, and root scripts for monorepo layout
 
 ### Example projects ([#38](https://github.com/AtlasDevHQ/atlas/issues/38)) ✓
 - [x] `examples/docker` — Hono API + Docker + optional nsjail, deploy configs (Railway, Render)
@@ -1959,7 +1959,7 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 - [x] `ReasonDialog` caller `error` prop hidden while `localError` is set (#1612, PR #1645) — `useEffect` on `error` prop clears stale localError when a fresh non-null error arrives; null→null transition is a no-op; covers retry-flow distinct-non-null cases
 - [x] `AtlasChat` demo usage has unknown prop `chatEndpoint` / `conversationsEndpoint` (#1613, PR #1618) — added `@atlas/web` to root `bun run type` so future drift catches in CI; surfaced a concrete repro (#1621 — props genuinely don't exist on current `AtlasChatProps` build) tracked as follow-up
 - [x] `useAdminMutation.error` hook-level field still flattens `FetchError` — ~40 admin pages (#1615, PR #1622) — hook-level `error` widened to `FetchError | null`; `friendlyError()` + new `friendlyErrorOrNull()` helper rolled out atomically; architecture win #30
-- [x] ESLint guard to prevent re-introducing `{ message: result.error }` wrap (#1616, PR #1622) — `no-restricted-syntax` rule in root `eslint.config.mjs`; broader `.error?.y` optional-chain variant carved out as follow-up #1625
+- [x] oxlint guard to prevent re-introducing `{ message: result.error }` wrap (#1616, PR #1622) — `no-restricted-syntax` rule in root `.oxlintrc.json`; broader `.error?.y` optional-chain variant carved out as follow-up #1625
 - [x] `useAdminMutation` catch conflates `invalidates()` callback errors with fetch errors (#1617, PR #1622) — `invalidates()` callbacks moved outside the `mutateAsync` try-catch; throwing invalidates no longer flips `result.ok` or populates `error`; debug log preserved
 - [x] Sibling to #1611: `action-approval-card` surfaces 'Unknown error' when `res.text()` rejects (#1620, PR #1633)
 - [x] Follow-up to #1613: demo page still references `chatEndpoint` / `conversationsEndpoint` that don't exist on `AtlasChatProps` — decide wire-up vs drop (#1621, closed stale) — props actually exist on `AtlasChatProps` (`packages/react/src/components/atlas-chat.tsx:56-58`, added in `91213d18` / #677) and are threaded through to `DefaultChatTransport` + `useConversations`; both `bun run type` and `tsgo --noEmit -p packages/web/tsconfig.json` pass clean on `main`. No code change needed

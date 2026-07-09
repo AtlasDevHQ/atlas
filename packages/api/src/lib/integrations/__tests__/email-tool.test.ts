@@ -64,10 +64,10 @@ const HAPPY_DECRYPTED_CONFIG = {
   secure: true,
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
   if (!tool?.execute) throw new Error("tool has no execute");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   return (await tool.execute(args, undefined as any)) as T;
 }
 
@@ -91,7 +91,7 @@ describe("createEmailLazyBuilder — happy path", () => {
     });
 
     const build = createEmailLazyBuilder({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       createTransport: mockCreateTransport as any,
     });
 
@@ -142,7 +142,7 @@ describe("createEmailLazyBuilder — happy path", () => {
     });
 
     const build = createEmailLazyBuilder({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       createTransport: mockCreateTransport as any,
     });
 
@@ -167,7 +167,7 @@ describe("createEmailLazyBuilder — happy path", () => {
 describe("createEmailLazyBuilder — error paths", () => {
   it("throws when the decrypted config is missing a required field", async () => {
     const build = createEmailLazyBuilder({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       createTransport: mock(() => ({ sendMail: mock(), close: mock() })) as any,
     });
 
@@ -189,7 +189,7 @@ describe("createEmailLazyBuilder — error paths", () => {
     // and throws. The builder must wrap that throw so the tool layer
     // can attach a `requestId` to the agent-visible payload.
     const build = createEmailLazyBuilder({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       createTransport: mock(() => ({ sendMail: mock(), close: mock() })) as any,
     });
 
@@ -256,7 +256,7 @@ describe("createEmailLazyBuilder — staging outbound clamp (#3095)", () => {
       return Promise.resolve({ messageId: "<id@example.com>", envelope: {} });
     });
     const build = createEmailLazyBuilder({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       createTransport: mock(() => ({ sendMail: mockSendMail, close: mock() })) as any,
     });
     const instance = (await build({

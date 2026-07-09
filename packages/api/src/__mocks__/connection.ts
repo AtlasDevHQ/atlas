@@ -18,7 +18,7 @@
  * @module
  */
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentionally generic mock function type for test overrides
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- intentionally generic mock function type for test overrides
 type AnyFn = (...args: any[]) => any;
 
 /** Shape of the `connections` object on the mock. */
@@ -203,7 +203,7 @@ export function createConnectionTestLayer(
   overrides?: ConnectionsOverrides & { [key: string]: unknown },
 ) {
   // Lazy import to avoid pulling Effect into every test that uses createConnectionMock
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { createTestLayer } = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
   const mockDBConnection = {
     query: async () => ({ columns: [] as string[], rows: [] as Record<string, unknown>[] }),

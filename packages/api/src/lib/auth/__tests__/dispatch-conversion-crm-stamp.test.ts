@@ -136,7 +136,7 @@ describe("dispatchConversionCrmStamp — happy path", () => {
     }));
 
     await dispatchConversionCrmStamp({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
       stripeClient: stripe as any,
       stripeCustomerId: "cus_pay_42",
       orgId: "org_abc",
@@ -156,7 +156,7 @@ describe("dispatchConversionCrmStamp — no-op cases", () => {
     const stripe = makeStripe(async (id) => ({ id, email: null }));
 
     await dispatchConversionCrmStamp({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
       stripeClient: stripe as any,
       stripeCustomerId: "cus_no_email",
     });
@@ -171,7 +171,7 @@ describe("dispatchConversionCrmStamp — no-op cases", () => {
     const stripe = makeStripe(async (id) => ({ id, email: "   " }));
 
     await dispatchConversionCrmStamp({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
       stripeClient: stripe as any,
       stripeCustomerId: "cus_blank",
     });
@@ -184,7 +184,7 @@ describe("dispatchConversionCrmStamp — no-op cases", () => {
     const stripe = makeStripe(async (id) => ({ id, deleted: true }));
 
     await dispatchConversionCrmStamp({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
       stripeClient: stripe as any,
       stripeCustomerId: "cus_gone",
     });
@@ -204,7 +204,7 @@ describe("dispatchConversionCrmStamp — failure swallow contract", () => {
 
     await expect(
       dispatchConversionCrmStamp({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
         stripeClient: stripe as any,
         stripeCustomerId: "cus_die",
       }),
@@ -224,7 +224,7 @@ describe("dispatchConversionCrmStamp — failure swallow contract", () => {
 
     await expect(
       dispatchConversionCrmStamp({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
         stripeClient: stripe as any,
         stripeCustomerId: "cus_defect",
       }),
@@ -248,7 +248,7 @@ describe("dispatchConversionCrmStamp — failure swallow contract", () => {
 
     await expect(
       dispatchConversionCrmStamp({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
         stripeClient: stripe as any,
         stripeCustomerId: "cus_pgblip",
         orgId: "org_pg",
@@ -275,7 +275,7 @@ describe("dispatchConversionCrmStamp — Noop / self-hosted shape", () => {
 
     await expect(
       dispatchConversionCrmStamp({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
         stripeClient: stripe as any,
         stripeCustomerId: "cus_selfhosted",
       }),
@@ -306,7 +306,7 @@ describe("dispatchConversionCrmStamp — enqueue_failed log shape", () => {
     const stripe = makeStripe(async (id) => ({ id, email: "x@y.com" }));
 
     await dispatchConversionCrmStamp({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
       stripeClient: stripe as any,
       stripeCustomerId: "cus_pin_outer_log",
       orgId: "org_pin",

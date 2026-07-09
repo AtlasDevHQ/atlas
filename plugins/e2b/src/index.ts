@@ -55,10 +55,10 @@ export type E2BSandboxConfig = z.infer<typeof E2BSandboxConfigSchema>;
 // Lazy SDK loader
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 function loadE2BSDK(): { Sandbox: any } {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require("e2b");
     return { Sandbox: mod.Sandbox };
   } catch (err) {
@@ -96,7 +96,7 @@ function loadE2BSDK(): { Sandbox: any } {
 // Shared helper — create an E2B sandbox instance
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 async function createE2BSandbox(config: E2BSandboxConfig): Promise<any> {
   const { Sandbox: SandboxClass } = loadE2BSDK();
 
@@ -197,7 +197,7 @@ export function buildE2BSandboxPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       let sandbox: any = null;
       return runHealthCheckWithTimeout(
         async () => {

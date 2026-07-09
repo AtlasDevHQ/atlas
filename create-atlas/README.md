@@ -191,7 +191,7 @@ bun run db:up            # Start local Postgres via Docker Compose
 bun run db:down          # Stop local Postgres
 bun run db:reset         # Reset local Postgres (fresh data)
 bun run test             # Run tests
-bun run lint             # Lint with ESLint
+bun run lint             # Lint with oxlint
 ```
 
 ## Troubleshooting

@@ -87,7 +87,7 @@ type ValidateResult = {
 };
 
 async function run(): Promise<ValidateResult> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- AI SDK execute options are irrelevant to this tool
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- AI SDK execute options are irrelevant to this tool
   return (await validateProposal.execute!({ proposalId: "prop-1" }, {} as any)) as ValidateResult;
 }
 

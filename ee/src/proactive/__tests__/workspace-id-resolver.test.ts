@@ -54,7 +54,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // ── DB internal mock (only `hasInternalDB` matters now) ─────────────
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realInternal = require("@atlas/api/lib/db/internal") as typeof import("@atlas/api/lib/db/internal");
 
 const mockHasInternalDB: Mock<() => boolean> = mock(() => true);
@@ -66,7 +66,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 // ── Slack store mock ───────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realStore = require("@atlas/api/lib/slack/store") as typeof import("@atlas/api/lib/slack/store");
 
 const mockGetInstallation: Mock<
@@ -80,7 +80,7 @@ mock.module("@atlas/api/lib/slack/store", () => ({
 
 // ── Module under test (loaded AFTER mocks via sync require) ──────────
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const { createSlackWorkspaceIdResolver, __resetContractWarnDedupForTests } = require(
   "../workspace-id-resolver",
 ) as typeof import("../workspace-id-resolver");

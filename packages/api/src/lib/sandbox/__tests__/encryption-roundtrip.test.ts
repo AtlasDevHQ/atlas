@@ -21,7 +21,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getEncryptionKey: () => {
     const raw = process.env.ATLAS_ENCRYPTION_KEY ?? process.env.BETTER_AUTH_SECRET;
     if (!raw) return null;
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const crypto = require("crypto");
     return crypto.createHash("sha256").update(raw).digest();
   },

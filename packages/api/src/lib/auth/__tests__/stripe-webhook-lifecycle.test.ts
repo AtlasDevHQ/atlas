@@ -226,7 +226,7 @@ function makeStripeClient() {
       search: mock(() => Promise.resolve({ data: [] })),
       create: mock(() => Promise.resolve({ id: "cus_1" })),
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe double
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe double
   } as any;
 }
 
@@ -446,10 +446,10 @@ describe("getCheckoutSessionParams — org-scope guard", () => {
             session: {},
             plan: { name: "starter" },
             subscription: { id: "subrow_1", referenceId: "user-1" },
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
+            // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
           } as any,
           undefined,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
+          // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
           {} as any,
         ),
       ),
@@ -467,10 +467,10 @@ describe("getCheckoutSessionParams — org-scope guard", () => {
         session: {},
         plan: { name: "starter" },
         subscription: { id: "subrow_1", referenceId: "org-1" },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
       } as any,
       undefined,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
       {} as any,
     );
     // trial_period_days: undefined overrides the plugin's freeTrial spread;
@@ -491,10 +491,10 @@ describe("getCheckoutSessionParams — org-scope guard", () => {
         session: {},
         plan: { name: "starter" },
         subscription: { id: "subrow_1", referenceId: "org-1" },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
       } as any,
       undefined,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
       {} as any,
     );
     expect(result).toEqual({});
@@ -509,10 +509,10 @@ describe("getCheckoutSessionParams — org-scope guard", () => {
         session: {},
         plan: { name: "starter" },
         subscription: { id: "subrow_1", referenceId: "org-1" },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
       } as any,
       undefined,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
       {} as any,
     );
     expect(result).toEqual({

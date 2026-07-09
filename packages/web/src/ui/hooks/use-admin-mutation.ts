@@ -67,8 +67,8 @@ interface UseAdminMutationReturn<TResponse> {
    * `EnterpriseUpsell` instead of a generic banner. Stays `FetchError`
    * (not flattened to `string`) specifically so the `code`, `status`, and
    * `requestId` fields survive the hook boundary — wrapping it as
-   * `{ message: error.message }` re-flattens and is guarded by an ESLint
-   * rule in `eslint.config.mjs`.
+   * `{ message: error.message }` re-flattens and is guarded by an oxlint
+   * rule in `.oxlintrc.json`.
    *
    * Clearing semantics intentionally differ for itemized vs non-itemized
    * calls:

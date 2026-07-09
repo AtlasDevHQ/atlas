@@ -638,7 +638,7 @@ function PreviewShell({
         <div className="flex items-center gap-3">
           {logoUrl && !logoBroken ? (
             <div className="flex size-8 items-center justify-center rounded-lg bg-muted">
-              {/* eslint-disable-next-line @next/next/no-img-element -- user-supplied URL, not in next.config remotePatterns */}
+              {/* oxlint-disable-next-line @next/next/no-img-element -- user-supplied URL, not in next.config remotePatterns */}
               <img
                 src={logoUrl}
                 alt="Logo preview"

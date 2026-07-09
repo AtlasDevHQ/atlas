@@ -70,7 +70,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
 }));
 
 mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Effect type complex to express
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Effect type complex to express
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
@@ -195,12 +195,12 @@ mock.module("@atlas/api/lib/model-routing/errors", () => ({
 }));
 
 mock.module("@atlas/ee/layers", () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
     EELayer: Layer.unwrapEffect(
       E.sync(() => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        // oxlint-disable-next-line @typescript-eslint/no-require-imports
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
         return Layer.succeed(services.ApprovalGate, {
           available: true,

@@ -33,7 +33,7 @@ gh run view <run_id> -R AtlasDevHQ/atlas --log-failed 2>&1 | tail -30
 Run all CI gates locally. If any fail, stop and report — the codebase is broken.
 
 ```bash
-bun run lint           # ESLint (flat config) — 0 warnings
+bun run lint           # oxlint — 0 errors (warnings allowed)
 bun run type           # TypeScript strict mode via tsgo — 0 errors
 bun run test           # Full suite — @atlas/api + all other workspace packages (isolated per-file)
 bun x syncpack lint    # Workspace dependency versions consistent
@@ -247,7 +247,7 @@ Grep for: \.message\b in catch blocks — verify preceded by instanceof Error gu
 
 | Check | What to Verify |
 |-------|----------------|
-| No explicit `any` | Grep for `: any` in non-test `.ts`/`.tsx` files. Should be near zero. Remaining must have `eslint-disable` + justification |
+| No explicit `any` | Grep for `: any` in non-test `.ts`/`.tsx` files. Should be near zero. Remaining must have `oxlint-disable` + justification |
 | Minimal `!` assertions | Non-null assertions should be rare and justified. Prefer `?.` or explicit null checks |
 | No unused exports | Dead exports add confusion. Public API packages (`sdk`, `react`, `plugin-sdk`, `types`) are exceptions — external consumers may use them |
 

@@ -205,9 +205,9 @@ describe("collectSemanticFiles", () => {
         if (typeof p === "string" && p.endsWith("bad.yml")) {
           throw new Error("EACCES: permission denied");
         }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         return (realReadFileSync as any)(p, ...rest);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       }) as any,
     );
 
@@ -235,9 +235,9 @@ describe("collectSemanticFiles", () => {
         if (typeof p === "string" && p.endsWith(`${path.sep}locked`)) {
           throw new Error("EACCES: permission denied");
         }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         return (realReaddirSync as any)(p, ...rest);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       }) as any,
     );
 

@@ -149,7 +149,7 @@ describe("learned-patterns semantic_amendment YAML side-effect (#3613)", () => {
 
       const res = await req("POST", "/bulk", { ids: ["pat-query", "pat-sem"], status: "approved" });
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.updated).toContain("pat-query");
       expect(body.updated).toContain("pat-sem");
@@ -185,7 +185,7 @@ describe("learned-patterns semantic_amendment YAML side-effect (#3613)", () => {
 
       const res = await req("POST", "/bulk", { ids: ["pat-sem"], status: "approved" });
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       // The failed apply is reported per-id; the row is NOT marked updated.
       expect(body.updated).not.toContain("pat-sem");

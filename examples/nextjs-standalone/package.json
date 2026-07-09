@@ -6,7 +6,7 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint src/"
+    "lint": "oxlint --config .oxlintrc.json src/"
   },
   "dependencies": {
     "@atlas/api": "workspace:*",
@@ -19,8 +19,8 @@
     "react-dom": "^19.2.4"
   },
   "devDependencies": {
-    "@next/eslint-plugin-next": "^16.2.9",
     "@tailwindcss/postcss": "^4.3.1",
+    "oxlint": "^1.72.0",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "tailwindcss": "^4.3.1"

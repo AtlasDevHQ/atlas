@@ -53,7 +53,7 @@ export function createClickHouseConnection(
 ): PluginDBConnection {
   let createClient: (opts: Record<string, unknown>) => unknown;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     ({ createClient } = require("@clickhouse/client"));
   } catch (err) {
     const isNotFound =
@@ -86,7 +86,7 @@ export function createClickHouseConnection(
   const clientOpts: Record<string, unknown> = { url: httpUrl };
   if (config.database) clientOpts.database = config.database;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   const client = (createClient as any)(clientOpts);
 
   return {

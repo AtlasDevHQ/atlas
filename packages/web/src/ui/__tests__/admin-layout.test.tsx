@@ -63,7 +63,6 @@ mock.module("@/ui/hooks/use-branding", () => ({
 }));
 
 import { render, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import type React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AdminLayout } from "../components/admin/admin-layout";
 import { AtlasProvider, type AtlasAuthClient } from "../context";

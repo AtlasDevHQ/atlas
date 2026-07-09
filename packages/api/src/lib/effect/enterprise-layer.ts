@@ -57,7 +57,7 @@ const log = createLogger("effect:enterprise-layer");
  * the layer DAG via type-only paths in `lib/db/internal`).
  */
 function isEnterpriseEnabledLocal(): boolean {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { getConfig } = require("@atlas/api/lib/config") as {
     getConfig: () => { enterprise?: { enabled?: boolean } } | null;
   };

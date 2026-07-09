@@ -120,10 +120,10 @@ export function createSalesforceConnection(
   config: SalesforceConfig,
   logger?: PluginLogger,
 ): SalesforceConnection {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   let jsforce: any;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     jsforce = require("jsforce");
   } catch {
     throw new Error(
@@ -143,7 +143,7 @@ export function createSalesforceConnection(
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   const conn = new jsforce.Connection(connOpts) as any;
 
   let loginPromise: Promise<void> | null = null;

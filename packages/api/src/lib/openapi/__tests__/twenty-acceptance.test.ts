@@ -167,7 +167,7 @@ function scriptModel(steps: Step[]): InstanceType<typeof MockLanguageModelV3> {
   const chunked = steps.map(stepChunks);
   let idx = 0;
   return new MockLanguageModelV3({
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock receives provider call options
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mock receives provider call options
     doStream: async (options: any) => {
       try {
         capturedSystemPrompt = JSON.stringify(options?.prompt ?? options);
@@ -185,7 +185,7 @@ const userMessages = (content: string): UIMessage[] => [
   { id: "m-1", role: "user", parts: [{ type: "text", text: content }] },
 ];
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- AI SDK step shapes are generic
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- AI SDK step shapes are generic
 function findRestResults(steps: any[]): any[] {
   const out: unknown[] = [];
   for (const step of steps) {
@@ -211,7 +211,7 @@ async function runScenario(prompt: string, steps: Step[]) {
         role: "admin",
         label: "test@acceptance.dev",
         activeOrganizationId: "test-org",
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- minimal AtlasUser for the request context
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- minimal AtlasUser for the request context
       } as any,
     },
     () => runAgent({ messages: userMessages(prompt) }),

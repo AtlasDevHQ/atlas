@@ -42,14 +42,14 @@ import {
 
 describe("config validation", () => {
   test("accepts empty config (auto-detected OIDC)", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     expect(plugin.id).toBe("vercel-sandbox");
     expect(plugin.types).toEqual(["sandbox"]);
   });
 
   test("rejects accessToken without teamId", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => vercelSandboxPlugin({ accessToken: "tok_123" } as any)).toThrow(
       /teamId is required/,
     );
@@ -71,7 +71,7 @@ describe("config validation", () => {
 
 describe("plugin shape", () => {
   test("createPlugin factory returns a valid plugin", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     expect(plugin.id).toBe("vercel-sandbox");
     expect(plugin.types).toEqual(["sandbox"]);
@@ -86,19 +86,19 @@ describe("plugin shape", () => {
   });
 
   test("isSandboxPlugin type guard passes", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     expect(isSandboxPlugin(plugin)).toBe(true);
   });
 
   test("sandbox.priority is 100", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     expect(plugin.sandbox.priority).toBe(100);
   });
 
   test("sandbox.create is a function", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     expect(typeof plugin.sandbox.create).toBe("function");
   });
@@ -110,25 +110,25 @@ describe("plugin shape", () => {
 
 describe("security metadata", () => {
   test("declares network isolation", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     expect(plugin.security?.networkIsolation).toBe(true);
   });
 
   test("declares filesystem isolation", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     expect(plugin.security?.filesystemIsolation).toBe(true);
   });
 
   test("declares unprivileged execution as false", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     expect(plugin.security?.unprivilegedExecution).toBe(false);
   });
 
   test("description mentions Firecracker", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     expect(plugin.security?.description).toContain("Firecracker");
   });
@@ -157,7 +157,7 @@ describe("sandbox.create / error handling", () => {
   });
 
   test("sandbox.create calls Sandbox.create", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     // Will fail on file collection (no real semantic dir), but Sandbox.create should be called
     try {
@@ -188,7 +188,7 @@ describe("sandbox.create / error handling", () => {
   });
 
   test("exec delegates to runCommand", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
 
     // Create a temp dir with a file so collectSemanticFiles succeeds
@@ -212,7 +212,7 @@ describe("sandbox.create / error handling", () => {
   });
 
   test("close calls stop", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
 
     const tmpDir = `/tmp/vercel-sandbox-test-${Date.now()}`;
@@ -230,7 +230,7 @@ describe("sandbox.create / error handling", () => {
   });
 
   test("exec returns error result when runCommand throws", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
 
     const tmpDir = `/tmp/vercel-sandbox-test-${Date.now()}`;
@@ -256,7 +256,7 @@ describe("sandbox.create / error handling", () => {
   });
 
   test("sandbox.create throws when no semantic files found", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
 
     const tmpDir = `/tmp/vercel-sandbox-empty-${Date.now()}`;
@@ -292,14 +292,14 @@ describe("sandboxErrorDetail", () => {
 
   test("appends json field when present", () => {
     const err = new Error("API error");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     (err as any).json = { code: "QUOTA_EXCEEDED" };
     expect(sandboxErrorDetail(err)).toContain("QUOTA_EXCEEDED");
   });
 
   test("appends text field when present", () => {
     const err = new Error("API error");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     (err as any).text = "Internal Server Error";
     expect(sandboxErrorDetail(err)).toContain("Internal Server Error");
   });
@@ -311,7 +311,7 @@ describe("sandboxErrorDetail", () => {
 
 describe("initialize", () => {
   test("logs OIDC mode when no accessToken", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     const logged: { level: string; msg: string }[] = [];
     const ctx = {
@@ -375,7 +375,7 @@ describe("healthCheck", () => {
   });
 
   test("returns healthy when sandbox echo succeeds", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     const result = await plugin.healthCheck!();
     expect(result.healthy).toBe(true);
@@ -386,7 +386,7 @@ describe("healthCheck", () => {
 
   test("returns unhealthy when Sandbox.create fails", async () => {
     mockCreate.mockImplementation(() => Promise.reject(new Error("quota exceeded")));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     const result = await plugin.healthCheck!();
     expect(result.healthy).toBe(false);
@@ -401,7 +401,7 @@ describe("healthCheck", () => {
         exitCode: 1,
       }),
     );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = vercelSandboxPlugin({} as any);
     const result = await plugin.healthCheck!();
     expect(result.healthy).toBe(false);

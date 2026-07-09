@@ -324,7 +324,7 @@ async function loadArtifactCounts(userId: string): Promise<{
  * importing.
  */
 export function registerRevokeRoutes(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- generic admin router type
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- generic admin router type
   admin: OpenAPIHono<any>,
   adminAuthAndContext: (
     c: { req: { raw: Request }; get(key: string): unknown; set?: (key: string, value: unknown) => void },

@@ -66,7 +66,7 @@ export function executeGoldSQL(
   sqlitePath: string,
   sql: string,
 ): { columns: string[]; rows: Record<string, unknown>[] } {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Database } = require("bun:sqlite");
   const db = new Database(sqlitePath, { readonly: true });
   try {

@@ -12,7 +12,7 @@ import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 import { withRequestContext, type RequestActor } from "@atlas/api/lib/logger";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyResult = any;
 
 // --- Mocks for sql.ts dependencies (NOT audit or logger) ---
@@ -57,7 +57,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
 }));
 
 mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 

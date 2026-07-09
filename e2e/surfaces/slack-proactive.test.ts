@@ -385,17 +385,17 @@ beforeAll(async () => {
     // (`as never` would defeat the whole point of strict-mode coverage
     // for the e2e file's *own* code). Matches the pattern other workspace
     // tests use when stubbing a deep callback chain at the boundary.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     executeQuery: mockExecuteQuery as any,
     // Disable status reactions so the message-event flow does not race the
     // adapter's `reactions.add` calls into the test assertions.
     reactions: { enabled: false },
     proactive: {
       platform: "slack",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       resolveWorkspaceId: mockResolveWorkspaceId as any,
       isEnabled: mockIsEnabled,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       classify: mockClassify as any,
       getWorkspaceConfig: mockGetWorkspaceConfig,
       getChannelConfigs: mockGetChannelConfigs,
@@ -404,9 +404,9 @@ beforeAll(async () => {
       // SaaS deploy uses.
       killSwitch: {
         enabled: true,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         isPaused: mockIsPaused as any,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         onPauseRequest: mockPauseRequest as any,
       },
       // Answer flow stays on `linked-only` with a user-resolver stub

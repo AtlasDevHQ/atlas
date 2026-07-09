@@ -227,7 +227,7 @@ describe("billing routes", () => {
 
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.workspaceId).toBe("org-1");
       expect(body.plan.tier).toBe("starter");
@@ -301,7 +301,7 @@ describe("billing routes", () => {
 
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.usage.usageOverageStatus).toBe("metered");
       expect(body.usage.costUsd).toBe(70);
@@ -333,7 +333,7 @@ describe("billing routes", () => {
 
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.usage.spendPolicy).toBe("cutoff");
       expect(body.usage.usageOverageStatus).toBe("hard_limit");
@@ -362,7 +362,7 @@ describe("billing routes", () => {
 
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.plan.byot).toBe(true);
       expect(body.usage.usageOverageStatus).toBe("ok");
@@ -384,7 +384,7 @@ describe("billing routes", () => {
 
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       // Default mockUsage (costUsd $0) is far under the $60 credit.
       expect(body.usage.usageOverageStatus).toBe("ok");
@@ -400,7 +400,7 @@ describe("billing routes", () => {
 
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.plan.tier).toBe("trial");
       expect(body.plan.trialEndsAtEffective).toBe(trialEnds);
@@ -414,7 +414,7 @@ describe("billing routes", () => {
 
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       // mockWorkspace.createdAt = 2026-01-01 → +14d = 2026-01-15. The exact
       // date `trial-state`'s effectiveTrialEndsAt fallback computes (which
@@ -437,7 +437,7 @@ describe("billing routes", () => {
 
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.seats.count).toBe(1);
       // Budget should be tokenBudgetPerSeat * 1 = 2M
@@ -468,7 +468,7 @@ describe("billing routes", () => {
       });
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.seats.count).toBe(5);
       // Budget holds at tokenBudgetPerSeat * 5 = 10M, not the 1-seat 2M.
@@ -489,7 +489,7 @@ describe("billing routes", () => {
 
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.connections.count).toBe(0);
     });
@@ -514,7 +514,7 @@ describe("billing routes", () => {
 
         const res = await request("/api/v1/billing");
         expect(res.status).toBe(200);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
         const body = await res.json() as any;
         expect(body.currentModel).toBe("anthropic/claude-sonnet-5");
       } finally {
@@ -537,7 +537,7 @@ describe("billing routes", () => {
 
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.currentModel).toBe("anthropic/claude-opus-4.8");
     });
@@ -589,7 +589,7 @@ describe("billing routes", () => {
       });
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.subscription).not.toBeNull();
       expect(body.subscription.status).toBe(status);
@@ -606,7 +606,7 @@ describe("billing routes", () => {
       });
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.subscription.cancelAtPeriodEnd).toBe(true);
       // pg Date is normalized to an ISO string on the wire.
@@ -622,7 +622,7 @@ describe("billing routes", () => {
         periodEnd: null,
       });
       const res = await request("/api/v1/billing");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.subscription.cancelAtPeriodEnd).toBe(false);
       expect(body.subscription.periodEnd).toBeNull();
@@ -631,7 +631,7 @@ describe("billing routes", () => {
     it("returns null subscription only when no row exists at all (#3429)", async () => {
       mockSubscriptionRow(null);
       const res = await request("/api/v1/billing");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.subscription).toBeNull();
     });
@@ -654,7 +654,7 @@ describe("billing routes", () => {
       mockGetWorkspaceDetails.mockImplementation(() => Promise.resolve(null));
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(404);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.error).toBe("not_found");
     });
@@ -682,7 +682,7 @@ describe("billing routes", () => {
         body: JSON.stringify({ enabled: true }),
       });
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.byot).toBe(true);
       expect(body.workspaceId).toBe("org-1");
@@ -705,7 +705,7 @@ describe("billing routes", () => {
         body: JSON.stringify({ enabled: true }),
       });
       expect(res.status).toBe(404);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.error).toBe("not_found");
     });
@@ -743,7 +743,7 @@ describe("billing routes", () => {
         body: JSON.stringify({ enabled: true }),
       });
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.byot).toBe(true);
     });

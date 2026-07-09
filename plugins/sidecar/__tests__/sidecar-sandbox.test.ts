@@ -16,7 +16,7 @@ const VALID_URL = "http://sandbox-sidecar:8080";
 
 describe("config validation", () => {
   test("valid URL accepted", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(plugin.id).toBe("sidecar-sandbox");
     expect(plugin.types).toEqual(["sandbox"]);
@@ -24,34 +24,34 @@ describe("config validation", () => {
   });
 
   test("invalid URL rejected", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => sidecarSandboxPlugin({ url: "not-a-url" } as any)).toThrow();
   });
 
   test("auth token optional", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(plugin.config?.authToken).toBeUndefined();
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const withToken = sidecarSandboxPlugin({ url: VALID_URL, authToken: "secret" } as any);
     expect(withToken.config?.authToken).toBe("secret");
   });
 
   test("custom timeout accepted", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL, timeoutMs: 30000 } as any);
     expect(plugin.config?.timeoutMs).toBe(30000);
   });
 
   test("default timeout is 10000", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(plugin.config?.timeoutMs).toBe(10000);
   });
 
   test("rejects negative timeout", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => sidecarSandboxPlugin({ url: VALID_URL, timeoutMs: -1 } as any)).toThrow();
   });
 });
@@ -62,7 +62,7 @@ describe("config validation", () => {
 
 describe("plugin shape", () => {
   test("factory returns valid plugin", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(plugin.id).toBe("sidecar-sandbox");
     expect(plugin.types).toEqual(["sandbox"]);
@@ -80,19 +80,19 @@ describe("plugin shape", () => {
   });
 
   test("isSandboxPlugin passes", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(isSandboxPlugin(plugin)).toBe(true);
   });
 
   test("priority is 50", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(plugin.sandbox.priority).toBe(50);
   });
 
   test("sandbox.create is a function", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(typeof plugin.sandbox.create).toBe("function");
   });
@@ -104,25 +104,25 @@ describe("plugin shape", () => {
 
 describe("security metadata", () => {
   test("networkIsolation true", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(plugin.security?.networkIsolation).toBe(true);
   });
 
   test("filesystemIsolation true", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(plugin.security?.filesystemIsolation).toBe(true);
   });
 
   test("unprivilegedExecution true", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(plugin.security?.unprivilegedExecution).toBe(true);
   });
 
   test("description contains 'HTTP-isolated'", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     expect(plugin.security?.description).toContain("HTTP-isolated");
   });
@@ -146,7 +146,7 @@ describe("sandbox.create / exec", () => {
     );
     globalThis.fetch = mock(() => Promise.resolve(mockResponse)) as unknown as typeof fetch;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     const backend = await plugin.sandbox.create("/tmp/semantic");
     const result = await backend.exec("ls");
@@ -161,7 +161,7 @@ describe("sandbox.create / exec", () => {
       Promise.reject(new Error("fetch failed: ECONNREFUSED")),
     ) as unknown as typeof fetch;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     const backend = await plugin.sandbox.create("/tmp/semantic");
 
@@ -173,7 +173,7 @@ describe("sandbox.create / exec", () => {
       Promise.reject(new Error("The operation timed out")),
     ) as unknown as typeof fetch;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     const backend = await plugin.sandbox.create("/tmp/semantic");
     const result = await backend.exec("sleep 999");
@@ -187,7 +187,7 @@ describe("sandbox.create / exec", () => {
     const mockResponse = new Response(body, { status: 500 });
     globalThis.fetch = mock(() => Promise.resolve(mockResponse)) as unknown as typeof fetch;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     const backend = await plugin.sandbox.create("/tmp/semantic");
     const result = await backend.exec("bad-cmd");
@@ -200,7 +200,7 @@ describe("sandbox.create / exec", () => {
     const mockResponse = new Response("Internal Server Error", { status: 500 });
     globalThis.fetch = mock(() => Promise.resolve(mockResponse)) as unknown as typeof fetch;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     const backend = await plugin.sandbox.create("/tmp/semantic");
     const result = await backend.exec("bad-cmd");
@@ -216,7 +216,7 @@ describe("sandbox.create / exec", () => {
     );
     globalThis.fetch = mock(() => Promise.resolve(mockResponse)) as unknown as typeof fetch;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     const backend = await plugin.sandbox.create("/tmp/semantic");
     const result = await backend.exec("ls");
@@ -237,7 +237,7 @@ describe("sandbox.create / exec", () => {
       return Promise.resolve(mockResponse);
     }) as unknown as typeof fetch;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL, authToken: "my-secret" } as any);
     const backend = await plugin.sandbox.create("/tmp/semantic");
     await backend.exec("ls");
@@ -261,7 +261,7 @@ describe("healthCheck", () => {
     const mockResponse = new Response("OK", { status: 200 });
     globalThis.fetch = mock(() => Promise.resolve(mockResponse)) as unknown as typeof fetch;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     const result = await plugin.healthCheck!();
 
@@ -273,7 +273,7 @@ describe("healthCheck", () => {
     const mockResponse = new Response("Bad Gateway", { status: 502 });
     globalThis.fetch = mock(() => Promise.resolve(mockResponse)) as unknown as typeof fetch;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     const result = await plugin.healthCheck!();
 
@@ -287,7 +287,7 @@ describe("healthCheck", () => {
       Promise.reject(new Error("fetch failed: ECONNREFUSED")),
     ) as unknown as typeof fetch;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     const result = await plugin.healthCheck!();
 
@@ -303,7 +303,7 @@ describe("healthCheck", () => {
 
 describe("initialize", () => {
   test("logs sidecar URL", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = sidecarSandboxPlugin({ url: VALID_URL } as any);
     const logged: { level: string; msg: string }[] = [];
     const ctx = {

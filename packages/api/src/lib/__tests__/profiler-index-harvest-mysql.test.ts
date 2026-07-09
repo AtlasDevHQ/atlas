@@ -41,7 +41,7 @@ describeIfMySQL("profileMySQL — index harvest (live MySQL, #3634)", () => {
   let pool: { execute: (sql: string) => Promise<unknown>; end: () => Promise<void> };
 
   beforeAll(async () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const mysql = require("mysql2/promise");
     pool = mysql.createPool({ uri: TEST_MYSQL_URL });
     await pool.execute(`DROP TABLE IF EXISTS \`${TABLE}\``);

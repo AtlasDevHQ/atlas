@@ -75,7 +75,7 @@ Reference the GH issue number. Include acceptance criteria.
 IMPORTANT — CI gates (mandatory before PR):
 - Before creating a PR, run `/ci` — checks lint, type, test, syncpack, template drift, railway-watch. All six must pass.
 - Individual gates during development:
-  - `bun run lint` — ESLint
+  - `bun run lint` — oxlint
   - `bun run type` — TypeScript (tsgo)
   - `bun run test` — FULL suite across all packages (isolated per-file runner). NEVER bare `bun test`.
   - `bun x syncpack lint` — dependency version consistency

@@ -110,7 +110,7 @@ export {
 // resolution cost is one cached resolver hit per install call.
 type DatasourceRegistryBridge = typeof import("@atlas/api/lib/db/datasource-registry-bridge");
 function lazyDatasourceBridge(): DatasourceRegistryBridge {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   return require("@atlas/api/lib/db/datasource-registry-bridge") as DatasourceRegistryBridge;
 }
 
@@ -121,7 +121,7 @@ function lazyDatasourceBridge(): DatasourceRegistryBridge {
 // uses for the same reason (#2741).
 type InternalQueryFn = <T = unknown>(sql: string, params?: unknown[]) => Promise<T[]>;
 function lazyInternalQuery(): InternalQueryFn {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require("@atlas/api/lib/db/internal") as {
     internalQuery: InternalQueryFn;
   };
@@ -129,7 +129,7 @@ function lazyInternalQuery(): InternalQueryFn {
 }
 
 function lazyGetInstallHandler(): (row: CatalogRowForDispatch) => PlatformInstallHandler {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require("@atlas/api/lib/integrations/install/dispatch") as {
     getInstallHandler: (row: CatalogRowForDispatch) => PlatformInstallHandler;
   };

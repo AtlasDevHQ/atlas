@@ -100,7 +100,7 @@ function denyApiKeyOnAdmin(
  */
 function isSaasDeployMode(): boolean {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { getConfig } = require("@atlas/api/lib/config") as {
       getConfig: () => { deployMode?: string } | null;
     };

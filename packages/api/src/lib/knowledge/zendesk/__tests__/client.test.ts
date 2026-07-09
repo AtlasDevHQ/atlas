@@ -69,6 +69,7 @@ function jsonResponse(obj: unknown, status = 200, headers: Record<string, string
 
 interface FixtureState {
   calls: string[];
+  authHeaders: Array<string | null>;
 }
 
 /**
@@ -84,13 +85,14 @@ function makeFetch(opts: {
   failFirst?: { status: number; headers?: Record<string, string> };
   offOriginNext?: boolean;
 }): { impl: typeof globalThis.fetch; state: FixtureState } {
-  const state: FixtureState = { calls: [] };
+  const state: FixtureState = { calls: [], authHeaders: [] };
   const articles = opts.articles ?? ARTICLES;
   let failed = false;
   let incrementalServed = 0;
-  const impl = (async (input: string | URL | Request): Promise<Response> => {
+  const impl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     state.calls.push(raw);
+    state.authHeaders.push(new Headers(init?.headers).get("authorization"));
     if (opts.failFirst && !failed) {
       failed = true;
       return new Response("", { status: opts.failFirst.status, headers: opts.failFirst.headers });
@@ -253,8 +255,25 @@ describe("fetchChanges (incremental)", () => {
     expect(changes.highWaterMark).toBe("2026-07-06T10:00:00.000Z");
     const incrementalCalls = state.calls.filter((u) => u.includes("/incremental/articles.json"));
     expect(incrementalCalls).toHaveLength(2);
+    // The FIRST request's start_time is `since` in epoch SECONDS — a ms/s
+    // regression here would silently sync nothing against real Zendesk.
+    expect(incrementalCalls[0]).toContain("start_time=1783296000");
     // The second page's start_time is the first response's end_time.
     expect(incrementalCalls[1]).toContain("start_time=1783418400");
+  });
+
+  it("stops on a stuck cursor (end_time did not advance) instead of looping", async () => {
+    const { c, state } = client({
+      incremental: [
+        {
+          articles: [{ id: 1, draft: true, updated_at: "2026-07-06T10:00:00Z" }],
+          next_page: "next",
+          end_time: 1783296000, // equals the request's start_time — no progress
+        },
+      ],
+    });
+    await c.fetchChanges({ since: "2026-07-06T00:00:00.000Z", cursor: null });
+    expect(state.calls.filter((u) => u.includes("/incremental/articles.json"))).toHaveLength(1);
   });
 
   it("dedupes an article that appears on multiple feed pages (newest wins)", async () => {
@@ -304,6 +323,16 @@ describe("fetchChanges (incremental)", () => {
     const changes = await c.fetchChanges({ since: null, cursor: null });
     expect(changes.documents).toHaveLength(3);
     expect(state.calls.some((u) => u.includes("/incremental/"))).toBe(false);
+  });
+});
+
+describe("authentication", () => {
+  it("sends Zendesk token auth: Basic base64('{email}/token:{apiToken}')", async () => {
+    const { c, state } = client();
+    await c.fetchAll();
+    const expected = `Basic ${Buffer.from("ops@acme.test/token:tok").toString("base64")}`;
+    expect(state.authHeaders.length).toBeGreaterThan(0);
+    for (const header of state.authHeaders) expect(header).toBe(expected);
   });
 });
 

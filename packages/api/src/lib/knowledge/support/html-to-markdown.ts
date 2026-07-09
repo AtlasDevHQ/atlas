@@ -56,9 +56,10 @@ export interface HtmlConvertOptions {
   /** The article's canonical vendor URL — every degradation placeholder links here. */
   readonly pageUrl: string;
   /**
-   * Cross-link rewriting hook: every `<a href>` is passed through it before
-   * rendering. Vendors absolutize relative article links here (e.g. resolve
-   * `/hc/en-us/articles/123` against the brand host). Default: identity.
+   * Cross-link rewriting hook: every RENDERED `<a href>` is passed through it
+   * before rendering (empty and `javascript:` hrefs are dropped first and
+   * never reach it). Vendors absolutize relative article links here (e.g.
+   * resolve `/hc/en-us/articles/123` against the brand host). Default: identity.
    */
   readonly rewriteLink?: (href: string) => string;
 }
@@ -292,9 +293,8 @@ function renderList(listEl: Element, ctx: Ctx, depth: number): string {
     const nested: Element[] = [];
     const leadNodes: ChildNode[] = [];
     for (const child of li.children) {
-      const childName = isElement(child) ? child.name.toLowerCase() : "";
-      if (childName === "ul" || childName === "ol") {
-        nested.push(child as Element);
+      if (isElement(child) && (child.name.toLowerCase() === "ul" || child.name.toLowerCase() === "ol")) {
+        nested.push(child);
       } else {
         leadNodes.push(child);
       }
@@ -446,7 +446,7 @@ function collapseInlineWhitespace(text: string): string {
   return text.replace(/\u00a0/g, " ").replace(/[ \t\r\n]+/g, " ");
 }
 
-/** Collapse 3+ newlines to a paragraph break and trim trailing whitespace. */
+/** Collapse 3+ newlines to a paragraph break and trim the result. */
 function normalizeBlankLines(markdown: string): string {
   return markdown.replace(/\n{3,}/g, "\n\n").trim();
 }

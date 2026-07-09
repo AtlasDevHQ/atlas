@@ -629,6 +629,37 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     expect(conf?.endpointUrl).toBeNull();
     expect(conf?.sync).not.toBeNull();
   });
+
+  it("dispatches a Zendesk collection to the connector engine and lists it as source 'zendesk' (#4396)", async () => {
+    COLLECTION = {
+      install_id: "runbooks",
+      catalog_id: "catalog:zendesk",
+      status: "published",
+      config: {
+        subdomain: "acme",
+        email: "ops@acme.test",
+        brand_id: "10",
+        brand_subdomain: "acme",
+        brand_name: "Acme",
+      },
+    };
+    SYNC_STATES = [
+      { collection_id: "runbooks", last_sync_at: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    ];
+    const syncRes = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
+    expect(syncRes.status).toBe(200);
+    expect(syncConnectorCollection).toHaveBeenCalledTimes(1);
+    expect(syncCollection).not.toHaveBeenCalled();
+
+    const listRes = await adminKnowledge.request("/", { method: "GET" });
+    const body = (await listRes.json()) as {
+      collections: Array<{ slug: string; source: string; endpointUrl: string | null; sync: unknown }>;
+    };
+    const zd = body.collections.find((c) => c.slug === "runbooks");
+    expect(zd?.source).toBe("zendesk");
+    expect(zd?.endpointUrl).toBeNull();
+    expect(zd?.sync).not.toBeNull();
+  });
 });
 
 describe("knowledge mirror invalidation (#4208)", () => {

@@ -187,6 +187,19 @@ describe("brand enumeration (install-time verification)", () => {
     expect(msg).toMatch(/rate-limited/i);
   });
 
+  it("blames the subdomain field on a 404 (wrong subdomain)", async () => {
+    const msg = await fieldErrorOf(
+      handler(brandsFetch({ status: 404 })).validateConfig(WORKSPACE, VALID),
+      "subdomain",
+    );
+    expect(msg).toMatch(/404/);
+  });
+
+  it("surfaces a vendor 5xx as a form-level error, never blaming the token", async () => {
+    const msg = await formErrorOf(handler(brandsFetch({ status: 503 })).validateConfig(WORKSPACE, VALID));
+    expect(msg).toMatch(/vendor-side error/i);
+  });
+
   it("rejects an account with no help-center-enabled brand", async () => {
     const msg = await formErrorOf(
       handler(
@@ -244,6 +257,20 @@ describe("per-brand fan-out", () => {
       }),
     ).validateConfig(WORKSPACE, VALID);
     expect(insertCalls.map((c) => c.params[3])).toEqual(["zendesk-acme", "zendesk-acme-beta"]);
+  });
+
+  it("rejects a fan-out slug that would exceed the collection-slug bound BEFORE any write", async () => {
+    const longBase = "z".repeat(120); // valid alone; overflows once "-acme-beta" is appended
+    const msg = await fieldErrorOf(
+      handler(brandsFetch({ brands: TWO_BRANDS })).validateConfig(WORKSPACE, {
+        ...VALID,
+        __install_id__: longBase,
+      }),
+      "__install_id__",
+    );
+    expect(msg).toMatch(/exceeds 128 characters/i);
+    expect(insertCalls).toHaveLength(0);
+    expect(saveSyncCredential).not.toHaveBeenCalled();
   });
 
   it("rejects a fan-out slug taken by another knowledge catalog BEFORE any write", async () => {

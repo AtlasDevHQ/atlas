@@ -6,9 +6,10 @@
  * BRAND (the PRD's "each brand maps to a collection"): the handler enumerates
  * the account's brands with the supplied credentials and upserts one
  * `pillar='knowledge'` `workspace_plugins` row per brand, each config pinned
- * to that brand's `*.zendesk.com` subdomain. A single-brand account (the
- * common case) gets exactly the chosen collection slug; a multi-brand account
- * fans out to `<slug>-<brand-subdomain>`. The Scheduler dispatches the
+ * to that brand's `*.zendesk.com` subdomain. A single INSTALLABLE brand (the
+ * common case; installable = active + Help Center enabled + valid host label)
+ * gets exactly the chosen collection slug; multiple installable brands fan
+ * out to `<slug>-<brand-subdomain>`. The Scheduler dispatches the
  * registered Zendesk connector per collection on a cadence
  * (`lib/knowledge/connector-sync.ts`), and every synced article lands `draft`.
  *
@@ -43,9 +44,10 @@ import {
   saveSyncCredential,
   deleteSyncCredential,
 } from "@atlas/api/lib/knowledge/sync-credentials";
-import { ConnectorRateLimitError } from "@atlas/api/lib/knowledge/connectors";
 import {
   listZendeskBrands,
+  ZendeskAuthError,
+  ZendeskNotFoundError,
   type ZendeskBrand,
   type ZendeskClientDeps,
 } from "@atlas/api/lib/knowledge/zendesk/client";
@@ -155,12 +157,12 @@ export class ZendeskFormInstallHandler implements FormBasedInstallHandler {
 
     // ── Enumerate brands = verify the connection loudly BEFORE persisting ────
     const brands = await this.enumerateBrands({ subdomain, email, apiToken });
-    const installable = brands.filter(
-      (b) => b.active && b.hasHelpCenter && ZENDESK_SUBDOMAIN_PATTERN.test(b.subdomain),
-    );
-    const skippedBadSubdomain = brands.filter(
-      (b) => b.active && b.hasHelpCenter && !ZENDESK_SUBDOMAIN_PATTERN.test(b.subdomain),
-    );
+    // Brand subdomains come from vendor JSON: same label validation as the
+    // admin-supplied one (pattern + DNS-label bound) before a host is composed.
+    const validLabel = (b: ZendeskBrand) =>
+      b.subdomain.length <= SUBDOMAIN_LABEL_MAX && ZENDESK_SUBDOMAIN_PATTERN.test(b.subdomain);
+    const installable = brands.filter((b) => b.active && b.hasHelpCenter && validLabel(b));
+    const skippedBadSubdomain = brands.filter((b) => b.active && b.hasHelpCenter && !validLabel(b));
     if (skippedBadSubdomain.length > 0) {
       // Never silent: a brand whose subdomain fails the host-label pattern
       // cannot get a composed host, so it cannot be installed.
@@ -252,7 +254,7 @@ export class ZendeskFormInstallHandler implements FormBasedInstallHandler {
         { workspaceId, collectionSlug: slug, err: err instanceof Error ? err.message : String(err) },
         "Failed to persist knowledge_sync_credentials row — aborting install (retrying is safe; completed brand collections stay installed)",
       );
-      throw err;
+      throw retryableInstallError(slug, err);
     }
 
     const candidateId = this.newId();
@@ -301,11 +303,18 @@ export class ZendeskFormInstallHandler implements FormBasedInstallHandler {
           "Failed to roll back the orphaned credential after an install-row failure — a re-install overwrites it",
         );
       }
-      throw err;
+      throw retryableInstallError(slug, err);
     }
   }
 
-  /** Enumerate brands with the supplied creds; map every failure to a 400. */
+  /**
+   * Enumerate brands with the supplied creds; map every failure to a 400.
+   * Classification is POSITIVE, by `instanceof` on the client's typed errors —
+   * never by message text or `cause`-presence sniffing — so only a failure the
+   * client KNOWS is credential-shaped blames the api_token field; a Zendesk
+   * outage or transport error stays form-level (re-entering a fine token
+   * would be the wrong guidance). All messages host-redacted by the client.
+   */
   private async enumerateBrands(input: {
     subdomain: string;
     email: string;
@@ -321,20 +330,23 @@ export class ZendeskFormInstallHandler implements FormBasedInstallHandler {
         });
       }
       const message = err instanceof Error ? err.message : String(err);
-      // Non-credential failures — a 429 (ConnectorRateLimitError) or a
-      // transport error (DNS/timeout/non-JSON; the client marks those with
-      // `cause`) — are form-level: blaming the api_token field would send the
-      // admin re-entering a token that may be fine. All host-redacted.
-      if (err instanceof ConnectorRateLimitError || (err instanceof Error && err.cause !== undefined)) {
+      if (err instanceof ZendeskAuthError) {
         throw new FormInstallValidationError({
-          fieldErrors: {},
-          formErrors: [message],
+          fieldErrors: { api_token: [message] },
+          formErrors: [],
         });
       }
-      // Auth (401/403) / wrong subdomain (404) — actionable, host-redacted.
+      if (err instanceof ZendeskNotFoundError) {
+        throw new FormInstallValidationError({
+          fieldErrors: { subdomain: [message] },
+          formErrors: [],
+        });
+      }
+      // Everything else — 429 (ConnectorRateLimitError), vendor 5xx,
+      // transport/DNS/non-JSON — is form-level.
       throw new FormInstallValidationError({
-        fieldErrors: { api_token: [message] },
-        formErrors: [],
+        fieldErrors: {},
+        formErrors: [message],
       });
     }
   }
@@ -425,4 +437,16 @@ function validateDescription(raw: unknown): string | null {
 
 function fieldError(field: string, message: string): FormInstallValidationError {
   return new FormInstallValidationError({ fieldErrors: { [field]: [message] }, formErrors: [] });
+}
+
+/**
+ * Wrap a mid-fan-out persistence failure with the retry guidance the admin
+ * needs: all writes are idempotent upserts converging on the same slugs, so
+ * re-running the install is always safe. The original failure rides as cause.
+ */
+function retryableInstallError(slug: string, err: unknown): Error {
+  return new Error(
+    `Failed to install the "${slug}" collection: ${err instanceof Error ? err.message : String(err)}. Retrying the install is safe — already-installed brand collections are simply updated in place.`,
+    { cause: err },
+  );
 }

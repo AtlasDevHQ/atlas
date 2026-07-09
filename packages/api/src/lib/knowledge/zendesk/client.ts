@@ -51,6 +51,27 @@ import { assembleZendeskDocuments, type ZendeskArticleTranslation } from "./docu
 
 const log = createLogger("knowledge.zendesk.client");
 
+/**
+ * Zendesk rejected the credentials (401/403). A distinct class — not a
+ * `cause`-presence side channel — so the install handler can blame the
+ * `api_token` field with `instanceof` (the `ConnectorRateLimitError`
+ * precedent; plain subclass, this is not Effect code).
+ */
+export class ZendeskAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ZendeskAuthError";
+  }
+}
+
+/** Zendesk returned 404 — wrong subdomain, or the brand has no Help Center. */
+export class ZendeskNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ZendeskNotFoundError";
+  }
+}
+
 /** Resolved, non-secret connection inputs plus the token. One brand per client. */
 export interface ZendeskClientConfig {
   /** The BRAND's validated subdomain label — the help-center host to fetch. */
@@ -77,8 +98,12 @@ const PAGE_SIZE = 100;
  * on a broken `next` link.
  */
 const MAX_ARTICLES = 100_000;
-/** Anti-runaway bound on incremental feed pages walked in one fetch. */
-const MAX_INCREMENTAL_PAGES = 1_000;
+/**
+ * Anti-runaway bound on pages walked in one paginated enumeration — the
+ * article list, the incremental feed, AND the brand listing all share it, so
+ * every walk fails loud on a stuck `next` cursor rather than looping forever.
+ */
+const MAX_FEED_PAGES = 1_000;
 /** Anti-runaway bound on one article's translation pages (locales are few). */
 const MAX_TRANSLATION_PAGES = 20;
 
@@ -210,14 +235,14 @@ export async function listZendeskBrands(
   let url: string | null = `${base}/api/v2/brands.json?page[size]=${PAGE_SIZE}`;
   let pages = 0;
   while (url !== null) {
-    if (++pages > MAX_INCREMENTAL_PAGES) {
+    if (++pages > MAX_FEED_PAGES) {
       throw new Error(
-        `Zendesk brand listing on ${hostForLog(base)} did not terminate after ${MAX_INCREMENTAL_PAGES} pages — unexpected vendor pagination.`,
+        `Zendesk brand listing on ${hostForLog(base)} did not terminate after ${MAX_FEED_PAGES} pages — unexpected vendor pagination.`,
       );
     }
     const body: BrandListResponse = await http.getJson<BrandListResponse>(url);
     for (const raw of body.brands ?? []) {
-      const id = raw.id === undefined ? "" : String(raw.id);
+      const id = idOf(raw.id);
       const subdomain = typeof raw.subdomain === "string" ? raw.subdomain.trim().toLowerCase() : "";
       if (id === "" || subdomain === "") {
         skippedMalformed++;
@@ -257,10 +282,12 @@ function sameOriginPageUrl(rawNext: string, base: string): string {
   let resolved: URL;
   try {
     resolved = new URL(rawNext, base);
-  } catch {
-    // intentionally ignored: the URL constructor throw is the negative signal.
+  } catch (err) {
+    // Translate-and-rethrow: the raw link must not reach the message (it is
+    // untrusted vendor payload), but the parse failure rides along as cause.
     throw new Error(
       `Zendesk returned an unparseable pagination link from ${hostForLog(base)} — unexpected vendor response.`,
+      { cause: err },
     );
   }
   if (resolved.origin !== new URL(base).origin) {
@@ -291,7 +318,16 @@ class ZendeskApi {
     const articles: NormalizedArticle[] = [];
     let skippedMalformed = 0;
     let url: string | null = `${this.base}/api/v2/help_center/articles.json?include=translations&page[size]=${PAGE_SIZE}`;
+    let pages = 0;
     while (url !== null) {
+      // Page-count bound, not just the article-count one below: a stuck
+      // cursor that keeps returning EMPTY pages never grows `articles`, and
+      // an unbounded loop here would silently wedge the sync fiber.
+      if (++pages > MAX_FEED_PAGES) {
+        throw new Error(
+          `Zendesk article listing on ${hostForLog(this.base)} did not terminate after ${MAX_FEED_PAGES} pages — unexpected vendor pagination.`,
+        );
+      }
       const body: ArticleListResponse = await this.http.getJson<ArticleListResponse>(url);
       for (const raw of body.articles ?? []) {
         const normalized = normalizeArticle(raw);
@@ -332,9 +368,9 @@ class ZendeskApi {
     const changedById = new Map<string, NormalizedArticle>();
     let skippedMalformed = 0;
     for (let page = 1; ; page++) {
-      if (page > MAX_INCREMENTAL_PAGES) {
+      if (page > MAX_FEED_PAGES) {
         throw new Error(
-          `Zendesk incremental feed on ${hostForLog(this.base)} did not terminate after ${MAX_INCREMENTAL_PAGES} pages — unexpected vendor pagination.`,
+          `Zendesk incremental feed on ${hostForLog(this.base)} did not terminate after ${MAX_FEED_PAGES} pages — unexpected vendor pagination.`,
         );
       }
       const url = `${this.base}/api/v2/help_center/incremental/articles.json?start_time=${startTime}`;
@@ -398,6 +434,7 @@ class ZendeskApi {
     mode: "incremental" | "reconciliation",
   ): Promise<ConnectorChanges> {
     let skippedMalformed = skippedMalformedArticles;
+    let sideloadFallbacks = 0;
     let highWaterMark: string | null = null;
     const emitted: ZendeskArticleTranslation[] = [];
 
@@ -412,6 +449,11 @@ class ZendeskApi {
       // Reconciliation sideloads translations; a response missing the sideload
       // entirely (vendor quirk) falls back to the per-article fetch so the
       // crawl's coverage stays honest rather than silently emitting nothing.
+      // Counted + logged below: the fallback flips the request profile from
+      // ~1/100 articles to N+1, and an operator debugging sudden 429s needs
+      // that breadcrumb. (On the incremental path the per-article fetch IS
+      // the design, so the counter only ticks during reconciliation.)
+      if (article.translations === null && mode === "reconciliation") sideloadFallbacks++;
       const rawTranslations =
         article.translations ?? (await this.fetchTranslations(article.id));
 
@@ -466,6 +508,12 @@ class ZendeskApi {
         "Skipped Zendesk articles/translations missing id/locale/timestamp — not ingested (unexpected for published content)",
       );
     }
+    if (sideloadFallbacks > 0) {
+      log.warn(
+        { host: hostForLog(this.base), mode, sideloadFallbacks },
+        "Zendesk article list returned no translations sideload — fell back to per-article translation fetches (N+1 request profile)",
+      );
+    }
 
     return {
       documents: assembled.documents,
@@ -476,9 +524,14 @@ class ZendeskApi {
   }
 }
 
+/** Stringify an untrusted vendor id — scalars only (`null`/objects = malformed). */
+function idOf(raw: number | string | undefined): string {
+  return typeof raw === "number" || typeof raw === "string" ? String(raw) : "";
+}
+
 /** Normalize one raw article; null = malformed (skip + count). */
 function normalizeArticle(raw: RawArticle): NormalizedArticle | null {
-  const id = raw.id === undefined ? "" : String(raw.id);
+  const id = idOf(raw.id);
   const updatedAt = toIsoInstant(raw.updated_at);
   if (id === "" || updatedAt === null) return null;
   return {
@@ -531,18 +584,23 @@ class ZendeskHttp {
 
     if (response.status === 429) {
       throw new ConnectorRateLimitError(
-        `Zendesk rate-limited the request to ${hostForLog(this.base)} (the incremental feed allows 10 requests/minute).`,
+        `Zendesk rate-limited the request to ${hostForLog(this.base)} (Zendesk rate limits apply — the incremental feed is capped at 10 requests/minute).`,
         parseRetryAfter(response.headers.get("retry-after")),
       );
     }
     if (response.status === 401 || response.status === 403) {
-      throw new Error(
+      throw new ZendeskAuthError(
         `Zendesk rejected the credentials (${response.status}) for ${hostForLog(this.base)} — re-enter the email + API token (Admin Center → Apps and integrations → Zendesk API) and confirm token access is enabled.`,
       );
     }
     if (response.status === 404) {
-      throw new Error(
+      throw new ZendeskNotFoundError(
         `Zendesk returned 404 from ${hostForLog(this.base)} — check the subdomain, and that the brand's Help Center is activated.`,
+      );
+    }
+    if (response.status >= 500) {
+      throw new Error(
+        `Zendesk returned HTTP ${response.status} from ${hostForLog(this.base)} — a vendor-side error; the next scheduled sync (or retrying the install) will usually succeed.`,
       );
     }
     if (!response.ok) {

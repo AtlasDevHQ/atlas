@@ -1,8 +1,8 @@
 /**
  * Boot-time idempotent seed pass for the built-in Knowledge Base catalog rows
  * — the upload/bundle-sync arms plus the vendor connectors (Notion, Confluence
- * Cloud + Data Center, GitBook). `BUILTIN_KNOWLEDGE_CATALOG_ROWS` is the
- * authoritative list; adding a connector is one append there.
+ * Cloud + Data Center, GitBook, Zendesk Guide). `BUILTIN_KNOWLEDGE_CATALOG_ROWS`
+ * is the authoritative list; adding a connector is one append there.
  *
  * The Knowledge Base lifecycle (ADR-0028 §5) started as one built-in catalog
  * row — `okf-upload`, an **explicit, degenerate form install** with no
@@ -39,6 +39,7 @@ import {
   NOTION_KNOWLEDGE_SLUG,
 } from "@atlas/api/lib/knowledge/notion/connector";
 import { GITBOOK_CATALOG_ID, GITBOOK_SLUG } from "@atlas/api/lib/knowledge/gitbook/config";
+import { ZENDESK_CATALOG_ID, ZENDESK_SLUG } from "@atlas/api/lib/knowledge/zendesk/config";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
@@ -360,6 +361,64 @@ export const BUILTIN_GITBOOK_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
   ],
 };
 
+/**
+ * The Zendesk Guide connector Knowledge Base catalog row (#4396, PRD #4395 —
+ * the support tier's anchor slice). A form install that enumerates the
+ * account's help-center-enabled BRANDS and creates one review-gated collection
+ * per brand; the Scheduler dispatches the registered Zendesk connector on a
+ * cadence (native incremental feed + reconciliation) and every synced article
+ * translation lands `draft`.
+ *
+ * `api_token` is `secret: true` but is NOT stored in `workspace_plugins.config`
+ * — the install handler routes it to `knowledge_sync_credentials` (encrypted,
+ * one row per brand collection). Hosts are composed from the validated
+ * subdomain label (`*.zendesk.com`), so there is no free-form base-URL field;
+ * every request still goes through the SSRF egress guard. The id/slug are the
+ * config SSOT (`ZENDESK_CATALOG_ID` / `ZENDESK_SLUG`).
+ */
+export const BUILTIN_ZENDESK_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: ZENDESK_CATALOG_ID,
+  slug: ZENDESK_SLUG,
+  name: "Knowledge Base (Zendesk Guide)",
+  description:
+    "Mirror your Zendesk Guide help center into review-gated knowledge collections (one per brand); Atlas syncs published articles on a schedule (incremental + reconciliation) and queues changes for review.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "subdomain",
+      type: "string",
+      label: "Zendesk subdomain",
+      required: true,
+      description:
+        'The "acme" in acme.zendesk.com (you can paste the full URL). Brands are discovered automatically — one collection per help center.',
+    },
+    {
+      key: "email",
+      type: "string",
+      label: "Zendesk account email",
+      required: true,
+      description: "The account email paired with the API token for token authentication.",
+    },
+    {
+      key: "api_token",
+      type: "string",
+      secret: true,
+      label: "API token",
+      required: true,
+      description:
+        "A Zendesk API token (Admin Center → Apps and integrations → Zendesk API). Stored encrypted; never returned.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this knowledge collection.",
+    },
+  ],
+};
+
 /** Every built-in Knowledge Base catalog row, in seed order. */
 export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatalogRow> = [
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
@@ -368,6 +427,7 @@ export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatal
   BUILTIN_CONFLUENCE_CATALOG_ROW,
   BUILTIN_CONFLUENCE_DC_CATALOG_ROW,
   BUILTIN_GITBOOK_CATALOG_ROW,
+  BUILTIN_ZENDESK_CATALOG_ROW,
 ];
 
 /**

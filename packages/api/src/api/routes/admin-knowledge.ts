@@ -57,6 +57,7 @@ import { NOTION_KNOWLEDGE_CATALOG_ID } from "@atlas/api/lib/knowledge/notion/con
 import { CONFLUENCE_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/config";
 import { CONFLUENCE_DC_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/config-datacenter";
 import { GITBOOK_CATALOG_ID } from "@atlas/api/lib/knowledge/gitbook/config";
+import { ZENDESK_CATALOG_ID } from "@atlas/api/lib/knowledge/zendesk/config";
 import { syncCollection } from "@atlas/api/lib/knowledge/sync";
 import { getKnowledgeSyncConnector } from "@atlas/api/lib/knowledge/connectors";
 import { syncConnectorCollection } from "@atlas/api/lib/knowledge/connector-sync";
@@ -111,6 +112,7 @@ type KnowledgeSource =
   | "confluence"
   | "confluence-datacenter"
   | "gitbook"
+  | "zendesk"
   | "unknown";
 
 /**
@@ -127,6 +129,7 @@ function sourceOf(catalogId: string): KnowledgeSource {
   if (catalogId === CONFLUENCE_CATALOG_ID) return "confluence";
   if (catalogId === CONFLUENCE_DC_CATALOG_ID) return "confluence-datacenter";
   if (catalogId === GITBOOK_CATALOG_ID) return "gitbook";
+  if (catalogId === ZENDESK_CATALOG_ID) return "zendesk";
   return "unknown";
 }
 
@@ -137,7 +140,8 @@ function isSyncedSource(source: KnowledgeSource): boolean {
     source === "notion" ||
     source === "confluence" ||
     source === "confluence-datacenter" ||
-    source === "gitbook"
+    source === "gitbook" ||
+    source === "zendesk"
   );
 }
 
@@ -158,7 +162,7 @@ const CollectionListResponseSchema = z.object({
   collections: z.array(
     z.object({
       slug: z.string(),
-      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook"]),
+      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk"]),
       description: z.string().nullable(),
       installedAt: z.string().nullable(),
       endpointUrl: z.string().nullable(),

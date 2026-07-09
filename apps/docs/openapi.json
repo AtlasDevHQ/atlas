@@ -56650,7 +56650,8 @@
                               "notion",
                               "confluence",
                               "confluence-datacenter",
-                              "gitbook"
+                              "gitbook",
+                              "zendesk"
                             ]
                           },
                           "description": {

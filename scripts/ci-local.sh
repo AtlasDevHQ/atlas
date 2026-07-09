@@ -25,7 +25,8 @@
 # SCHEDULE (race- and flake-safe, not max-parallel)
 #   Stage 0  serial    `bun run type` — the ONLY gate that writes SDK dist/.
 #                      Runs alone first so nothing reads a half-written dist/.
-#   Stage 1  parallel  lint + syncpack + ~22 read-only drift/check scripts.
+#   Stage 1  parallel  lint + lint:type-aware + syncpack + ~22 read-only
+#                      drift/check scripts.
 #                      None touch dist/, so they fan out safely (CI_LOCAL_JOBS).
 #   Stage 2  serial    `bun run test` ALONE. The full suite flakes under CPU
 #                      contention on WSL2, so it gets the machine to itself.
@@ -68,6 +69,7 @@ now() { date +%s; }
 # ---- gate bodies that need shell operators / env (plain scripts run inline) ----
 g_type()             { bun run type; }
 g_lint()             { bun run lint; }
+g_lint_type_aware()  { bun run lint:type-aware; }
 g_syncpack()         { bun x syncpack lint; }
 g_template_drift()   { SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh; }
 g_openapi_drift()    { bash scripts/check-openapi-drift.sh; }
@@ -159,6 +161,10 @@ run_fg type g_type
 # ---- Stage 1: read-only gates, parallel ----
 echo "stage 1: read-only drift/lint gates (parallel, jobs=$JOBS) …"
 launch lint                      g_lint
+# Type-aware lint reads the SDK dist/ that Stage 0 just built (tsgolint
+# resolves @useatlas/* via "exports" → dist), so it must run after Stage 0 —
+# which every Stage-1 gate already does. Read-only; safe to fan out.
+launch lint-type-aware           g_lint_type_aware
 launch syncpack                  g_syncpack
 launch dockerfile-bun-pins       g_dockerfile_pins "$EXPECTED_BUN"
 launch dockerfile-workspace      bash scripts/check-dockerfile-workspace.sh

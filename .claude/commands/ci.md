@@ -42,7 +42,9 @@ pass); `CI_LOCAL_NO_NET=1` skips the two npm-registry gates for offline runs;
 
 It is a **superset of the historic /ci list** — it adds the drift gates real CI
 runs that the old /ci skipped (so you stop discovering them only after a push):
-`type`, `lint`, `syncpack`, `dockerfile-bun-pins`, `dockerfile-workspace`,
+`type`, `lint`, `lint-type-aware` (oxlint `--type-aware` via tsgolint — the
+promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
+`syncpack`, `dockerfile-bun-pins`, `dockerfile-workspace`,
 `railway-watch`, `template-drift`, `security-headers-drift`, `pricing-parity`,
 `plugin-count`, `enforcement-parity`, `schema-drift`, `migration-rename`,
 `oauth-helper-drift`, `ee-imports`, `twenty-resolver`, `no-admin-plugin`,
@@ -78,6 +80,7 @@ tail; read `.ci-local/<gate>.log` for the rest. Common fixes by gate:
 | Gate | Fix |
 |------|-----|
 | `lint` | type annotations, unused vars, unsafe types |
+| `lint-type-aware` | a promoted type-aware rule (e.g. `no-floating-promises`, `await-thenable`, `no-redundant-type-constituents`) regressed. Fix the code — never demote the rule back to `warn` (ADR-0031). Reproduce with `bun run lint:type-aware` |
 | `type` | missing types, interface mismatches. **Fix this first** — a `type` failure leaves SDK `dist/` incomplete and can cascade into `openapi-drift`/`test` |
 | `test` | read the tail / full log, fix the code or test |
 | `syncpack` | `bun x syncpack fix` then re-verify |

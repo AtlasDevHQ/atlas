@@ -174,6 +174,46 @@ jobs:
       - name: Lint
         run: bun run lint
 
+  # Type-aware lint (oxlint --type-aware via tsgolint). Kept out of the fast
+  # `lint` job on purpose: it builds full TS programs per package (~1.5min of
+  # CPU vs seconds for the syntax pass), so it runs as its own parallel job.
+  # It joins the `ci` umbrella below — a type-aware regression blocks merges
+  # exactly like a syntax-lint failure (ADR-0031: promoted rules are at
+  # `error` and 0 repo-wide; the remaining `warn` rules are permanent
+  # non-targets and do not fail this job).
+  lint-type-aware:
+    name: lint-type-aware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # tsgolint's per-package programs resolve @useatlas/* via each package's
+      # "exports" → dist/*.d.ts (e.g. @atlas/web imports @useatlas/sdk). A
+      # missing dist makes those imports resolve to error-types-that-act-as-any,
+      # which can both mask real findings and fabricate phantom ones (the
+      # wave-4/5 config-artifact class in ADR-0031). Build all four so the
+      # programs match what `bun run type` checks. Same set as test-others.
+      - name: Build SDK packages
+        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build
+
+      - name: Type-aware lint
+        run: bun run lint:type-aware
+
   type:
     name: type
     runs-on: ubuntu-latest
@@ -342,7 +382,7 @@ jobs:
   # `if: always()` so the check is present even when a dependent job fails.
   ci:
     name: ci
-    needs: [drift, lint, type, build, test-others, test-e2e-integration]
+    needs: [drift, lint, lint-type-aware, type, build, test-others, test-e2e-integration]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -350,6 +390,7 @@ jobs:
         env:
           DRIFT_RESULT: ${{ needs.drift.result }}
           LINT_RESULT: ${{ needs.lint.result }}
+          LINT_TYPE_AWARE_RESULT: ${{ needs.lint-type-aware.result }}
           TYPE_RESULT: ${{ needs.type.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           TEST_OTHERS_RESULT: ${{ needs.test-others.result }}
@@ -357,7 +398,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for pair in "drift=$DRIFT_RESULT" "lint=$LINT_RESULT" "type=$TYPE_RESULT" "build=$BUILD_RESULT" "test-others=$TEST_OTHERS_RESULT" "test-e2e-integration=$TEST_E2E_RESULT"; do
+          for pair in "drift=$DRIFT_RESULT" "lint=$LINT_RESULT" "lint-type-aware=$LINT_TYPE_AWARE_RESULT" "type=$TYPE_RESULT" "build=$BUILD_RESULT" "test-others=$TEST_OTHERS_RESULT" "test-e2e-integration=$TEST_E2E_RESULT"; do
             name=${pair%%=*}
             result=${pair#*=}
             if [ "$result" != "success" ]; then

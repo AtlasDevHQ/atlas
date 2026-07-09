@@ -186,6 +186,15 @@ does **not** implement `no-restricted-syntax` natively.
     75 → 113, `unbound-method` 50 → 65, `restrict-template-expressions` 5 → 10) —
     same genuine-`unknown`/save-restore classes, newly visible, still not burndown
     targets. This closes #4432.
+  - **CI enforcement (post-Wave-5).** With every promotable rule at `error` and
+    0 repo-wide, `bun run lint:type-aware` is wired into CI as its own parallel
+    `lint-type-aware` job (joined into the required `ci` umbrella check, so a
+    type-aware regression blocks merges) and into `/ci` Stage 1
+    (`scripts/ci-local.sh`). It stays out of the fast `bun run lint` gate — it
+    builds full TS programs. The CI job builds the four `@useatlas/*` dists
+    first so tsgolint's programs resolve `@useatlas/*` imports to real types
+    (missing dist ⇒ error-types-as-`any`, the wave-4/5 config-artifact class).
+    The permanent `warn` residuals (~200) never fail the job.
 
 ## Consequences
 

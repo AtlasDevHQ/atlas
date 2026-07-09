@@ -18,6 +18,17 @@
  * naturally know the surface exists; the quarantine is about the *enforcement
  * core*, not every file.)
  *
+ * AUTHORITATIVE shape-quarantine enumeration (other module headers point here;
+ * scope each claim by shape, not by "agent-auth" at large):
+ *   - Agent SESSION / agent-JWT shapes: `agent-auth-plugin.ts` (adapts
+ *     `agentSession` at the boundary) and `agent-auth-openapi.ts` (adapter
+ *     options). This module deliberately does NOT know `AgentSession` — it
+ *     consumes only the plugin-agnostic `AgentAuthIdentity` below.
+ *   - Agent-auth EVENT shapes: `agent-auth-audit.ts` (the `onEvent` bridge) and
+ *     the plugin factory that wires it.
+ *   - On/off decision + path shape ONLY (no token/session/event knowledge):
+ *     `agent-auth-gate.ts` and the two HTTP surfaces that consult it.
+ *
  * ── Trust boundary ──────────────────────────────────────────────────────────
  *
  * An agent credential is a delegated, portable bearer — strictly less trusted
@@ -70,6 +81,20 @@ export interface AgentAuthIdentity {
   readonly agentId: string;
   /** Display label for the bound actor (defaults to the user id). */
   readonly label?: string;
+}
+
+/**
+ * The compile-checked key set of the claims bag this producer stamps onto the
+ * resolved `AtlasUser`. `AtlasUser.claims` stays a wide
+ * `Record<string, unknown>` (it is shared by every producer), but building the
+ * bag through `satisfies AgentAuthClaims` means a consumer typing these keys by
+ * hand (RLS, audit) has one declaration to import and a producer-side typo is a
+ * compile error, not silent claim loss.
+ */
+export interface AgentAuthClaims {
+  readonly agent_auth: true;
+  readonly agent_id: string;
+  readonly active_organization_id: string;
 }
 
 /**
@@ -149,7 +174,7 @@ export async function resolveAgentAuthActor(
         agent_auth: true,
         agent_id: identity.agentId,
         active_organization_id: workspaceId,
-      },
+      } satisfies AgentAuthClaims,
     },
   );
 

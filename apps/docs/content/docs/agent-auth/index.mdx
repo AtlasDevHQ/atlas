@@ -95,9 +95,9 @@ execution the incoming JWT is validated (signature, `aud`, expiry, `jti` replay)
 requested capability is checked against the agent's recorded grants. A missing, expired, or
 revoked grant fails closed — the capability does not run.
 
-Grants are workspace-scoped by construction. An agent registers under a **user** (who may
-belong to several workspaces) and *proposes* a workspace per request; the proposal is
-honored only if that owning user is a live member of it. So an agent bound to workspace A
+Data access is workspace-scoped by construction. An agent registers under a **user** (who
+may belong to several workspaces) and carries a *proposed* workspace on its agent record;
+at each execution the proposal is honored only if that owning user is a live member of it. So an agent bound to workspace A
 can never resolve a capability that reads workspace B's data. That isolation is enforced at
 capability **execution** (`onExecute`), which is the point where the workspace is known and
 membership-verified — see the enforcement discussion in

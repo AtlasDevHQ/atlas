@@ -116,6 +116,25 @@ describe("agent-auth audit — lifecycle mappings", () => {
     });
   });
 
+  it("drops non-primitive values under allowlisted detail keys (value guard pairs with the key allowlist)", async () => {
+    const { auditor, rows } = harness();
+    await auditor.handleEvent({
+      type: "capability.denied",
+      actorId: "user_1",
+      agentId: "agent_1",
+      metadata: {
+        reason: { verbose: "object smuggled under an allowlisted key", claims: { ssn: "123-45-6789" } },
+        name: "ok-label",
+        capabilities: ["getReports"],
+      },
+    });
+    expect(rows).toHaveLength(1);
+    const detail = (rows[0]!.metadata?.detail ?? {}) as Record<string, unknown>;
+    // Primitive + flat-array values survive; the nested object is dropped whole.
+    expect(detail).toEqual({ name: "ok-label", capabilities: ["getReports"] });
+    expect(JSON.stringify(rows[0]!.metadata)).not.toContain("123-45-6789");
+  });
+
   it("ignores event types that are not in the audited catalog", async () => {
     const { auditor, rows } = harness();
     for (const type of [
@@ -248,6 +267,48 @@ describe("agent-auth audit — fail-closed master gate (AC #4)", () => {
     await auditor.handleEvent({ type: "capability.approved", actorId: "user_1", agentId: "agent_1" });
     await auditor.handleEvent(executeEvent());
     await auditor.handleEvent(executeEvent({ status: "error", error: "boom" }));
+    expect(rows).toHaveLength(0);
+  });
+});
+
+// The interface's stated contract: `handleEvent` NEVER rejects — a slow/failing
+// audit path must not be able to break an agent-auth request.
+describe("agent-auth audit — never-rejects contract", () => {
+  it("resolves (and keeps processing later events) when emit throws", async () => {
+    const rows: AdminActionEntry[] = [];
+    let failNext = true;
+    const auditor = createAgentAuthAuditor({
+      emit: (entry) => {
+        if (failNext) {
+          failNext = false;
+          throw new Error("admin_action_log insert failed");
+        }
+        rows.push(entry);
+      },
+      isEnabled: async () => true,
+    });
+    // The throwing emit is swallowed + logged, never rejected to the caller…
+    await expect(
+      auditor.handleEvent({ type: "agent.created", agentId: "agent_1" }),
+    ).resolves.toBeUndefined();
+    // …and the auditor is not poisoned: the next event still lands.
+    await auditor.handleEvent({ type: "agent.revoked", agentId: "agent_1" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.actionType).toBe(ADMIN_ACTIONS.agent.revoke);
+  });
+
+  it("resolves AND emits nothing when the gate resolver rejects (fail-closed, not fail-open)", async () => {
+    const rows: AdminActionEntry[] = [];
+    const auditor = createAgentAuthAuditor({
+      emit: (entry) => rows.push(entry),
+      isEnabled: async () => {
+        throw new Error("settings backend unavailable");
+      },
+    });
+    await expect(
+      auditor.handleEvent({ type: "agent.created", agentId: "agent_1" }),
+    ).resolves.toBeUndefined();
+    // A gate error must read as OFF (no rows), never as ON.
     expect(rows).toHaveLength(0);
   });
 });

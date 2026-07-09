@@ -44,8 +44,10 @@ void mock.module("@atlas/api/lib/settings", () => ({
 import {
   isAgentAuthPath,
   isAgentAuthEnabled,
+  resolveAgentAuthEnablement,
   AGENT_AUTH_MOUNT,
   AGENT_AUTH_CONFIGURATION_PATH,
+  AGENT_AUTH_ENABLED_SETTING,
 } from "@atlas/api/lib/auth/agent-auth-gate";
 import { buildAgentAuthPlugin } from "@atlas/api/lib/auth/agent-auth-plugin";
 
@@ -114,6 +116,51 @@ describe("isAgentAuthEnabled (fail-closed)", () => {
     settingValue = "true"; // would be ON if it read cleanly
     throwOnRead = true;
     expect(await isAgentAuthEnabled()).toBe(false);
+  });
+});
+
+// The tri-state under the boolean: `indeterminate` (a failed settings read)
+// stays distinguishable for the execution tier, which surfaces it as a
+// ref-stamped 500 instead of a 404 that would falsely claim a workspace opt-out.
+describe("resolveAgentAuthEnablement (tri-state)", () => {
+  afterEach(() => {
+    throwOnRead = false;
+    settingValue = undefined;
+    workspaceOverrides = {};
+  });
+
+  it("resolves on / off from the setting value", async () => {
+    settingValue = "true";
+    expect(await resolveAgentAuthEnablement()).toBe("on");
+    settingValue = "false";
+    expect(await resolveAgentAuthEnablement()).toBe("off");
+    settingValue = undefined;
+    expect(await resolveAgentAuthEnablement()).toBe("off");
+  });
+
+  it("a settings-resolution error is 'indeterminate' — distinguishable from a deliberate off", async () => {
+    settingValue = "true";
+    throwOnRead = true;
+    expect(await resolveAgentAuthEnablement("wsA")).toBe("indeterminate");
+    // The boolean view of the same state stays fail-closed.
+    expect(await isAgentAuthEnabled("wsA")).toBe(false);
+  });
+});
+
+// Pin the load-bearing registry-definition fields. Every behavioral test above
+// stubs `getSettingLive`, so nothing else goes red if the DEFINITION drifts —
+// e.g. default flipped to "true" (fleet-wide silent enable), `requiresRestart`
+// added (kills the no-redeploy guarantee), or the workspace scope dropped
+// (breaks tier 2 of the #4419 precedence).
+describe("ATLAS_AGENT_AUTH_ENABLED settings-registry definition pin", () => {
+  it("is a hot-reloadable, workspace-scoped boolean defaulting OFF", () => {
+    const def = settingsReal.getSettingDefinition(AGENT_AUTH_ENABLED_SETTING);
+    expect(def).toBeDefined();
+    expect(def?.type).toBe("boolean");
+    expect(def?.default).toBe("false");
+    expect(def?.scope).toBe("workspace");
+    expect(def?.envVar).toBe("ATLAS_AGENT_AUTH_ENABLED");
+    expect(def?.requiresRestart ?? false).toBe(false);
   });
 });
 

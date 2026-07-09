@@ -670,16 +670,19 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   },
   // #4409 / #2058 — Agent Auth Protocol spine kill-switch. The `agentAuth()`
   // plugin is registered UNCONDITIONALLY in buildPlugins() (schema + routes
-  // always present, like twoFactor/passkey), so the ONLY thing this key
-  // controls is whether the reachable HTTP surface answers: when off (the
-  // default), every agent-auth endpoint + `/.well-known/agent-configuration`
-  // returns 404; when on, they become reachable — WITH NO REDEPLOY, because
-  // this is a hot-reloadable settings key (NOT `requiresRestart`, NOT an env
-  // var). The per-request gate reads it via `getSettingLive`/`getSettingAuto`
-  // and fails closed (any resolution error ⇒ off). `scope: "workspace"` makes
-  // the key mechanically override-able per workspace, but the enablement is
-  // enforced at TWO tiers with ASYMMETRIC power (#4419) — it is NOT a flat
-  // "workspace can override the platform" precedence:
+  // always present, like twoFactor/passkey) — this key never toggles plugin
+  // registration or schema. What it DOES gate: surface reachability (platform
+  // tier — when off, the default, every agent-auth endpoint +
+  // `/.well-known/agent-configuration` returns 404), capability EXECUTION
+  // (workspace tier), and agent-audit emission (`agent-auth-audit.ts`).
+  // Toggling needs NO REDEPLOY: this is a hot-reloadable settings key (not
+  // `requiresRestart`; the `envVar` below is only the tier-3 fallback under
+  // the hot-reloading DB tiers). The per-request gate reads it via
+  // `getSettingLive` and fails closed (any resolution error ⇒ off).
+  // `scope: "workspace"` makes the key mechanically override-able per
+  // workspace, but the enablement is enforced at TWO tiers with ASYMMETRIC
+  // power (#4419) — it is NOT a flat "workspace can override the platform"
+  // precedence:
   //   • Operator (PLATFORM tier) = master on/off for EVERYONE. The HTTP-surface
   //     gate reads the platform tier only (no orgId), so platform-off ⇒ 404
   //     globally and a workspace CANNOT re-open it. This is the kill-switch.
@@ -688,7 +691,9 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   //     capability execution (others unaffected); it can only tighten, never
   //     turn the surface on when the platform default is off.
   // Kept experimental (upstream spec is a moving `v1.0-draft`) — default OFF.
-  // See ADR-0016 §Agent Auth, `agent-auth-gate.ts`, and the decision on #2058.
+  // Design + precedence rationale: `agent-auth-gate.ts`, the #4419 decision
+  // recorded on #2058, and the operator doc
+  // `apps/docs/content/docs/platform-ops/agent-auth-enablement.mdx`.
   {
     key: "ATLAS_AGENT_AUTH_ENABLED",
     section: "MCP",

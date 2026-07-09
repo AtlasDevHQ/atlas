@@ -54,7 +54,10 @@ import {
   resolvePendingApproval,
   type PendingApprovalRequest,
 } from "./resolve-pending-approval";
-import { resolveApprovalOutcome } from "./resolve-approval-outcome";
+import {
+  isAgentAuthGateOff,
+  resolveApprovalOutcome,
+} from "./resolve-approval-outcome";
 
 function getApiBase(): string {
   const url = getApiUrl();
@@ -90,7 +93,9 @@ function AgentApproval() {
   // Fetch the pending request once a signed-in user is present. `GET
   // /agent/ciba/pending` returns the user's pending approvals across BOTH
   // methods; `resolvePendingApproval` selects the device request for this
-  // `agent_id`. A 404 means the whole agent-auth surface is gated off.
+  // `agent_id`. A 404 bearing the gate envelope means the whole agent-auth
+  // surface is off; any other 404 is a per-request error (see
+  // resolve-approval-outcome.ts for the discrimination).
   useEffect(() => {
     // No authenticated user yet (session still loading, or signed out) — the
     // render shows the skeleton or the sign-in prompt, so don't fetch.
@@ -109,7 +114,26 @@ function AgentApproval() {
       .then(async (r) => {
         if (controller.signal.aborted) return;
         if (r.status === 404) {
-          setLoad("unavailable");
+          // 404 is ambiguous on this surface (see resolve-approval-outcome.ts):
+          // only the gate's whole-surface envelope means agent auth is off. Any
+          // other 404 is a per-request error and must not be misdiagnosed as
+          // "feature disabled".
+          let body: unknown = null;
+          try {
+            body = await r.json();
+          } catch {
+            // intentionally ignored: a non-JSON 404 body (gateway HTML) carries
+            // no discriminator; it falls to the per-request error branch below.
+            body = null;
+          }
+          if (isAgentAuthGateOff(r.status, body)) {
+            setLoad("unavailable");
+            return;
+          }
+          setError(
+            "Could not load the pending request (HTTP 404). Reopen the link from your agent.",
+          );
+          setLoad("error");
           return;
         }
         if (r.status === 401) {
@@ -152,12 +176,16 @@ function AgentApproval() {
       })
       .catch((err: unknown) => {
         if (err instanceof Error && err.name === "AbortError") return;
+        // Raw error messages (extension/CSP/browser internals) are cryptic UI
+        // text — show fixed actionable copy, keep the cause in the console.
+        console.debug(
+          "agent-approve pending fetch failed",
+          err instanceof Error ? err.message : String(err),
+        );
         setError(
           err instanceof TypeError
             ? "Couldn't reach Atlas. Check your connection and try again."
-            : err instanceof Error
-              ? err.message
-              : "Could not load the pending request.",
+            : "Could not load the pending request. Refresh to try again.",
         );
         setLoad("error");
       });
@@ -196,12 +224,16 @@ function AgentApproval() {
         setError(result.message);
       }
     } catch (err) {
+      // Same discipline as the pending fetch: fixed copy in the UI, raw cause
+      // in the console for diagnosis.
+      console.debug(
+        "agent-approve decision failed",
+        err instanceof Error ? err.message : String(err),
+      );
       setError(
         err instanceof TypeError
           ? "Couldn't reach Atlas. Check your connection and try again."
-          : err instanceof Error
-            ? err.message
-            : "Could not record your decision.",
+          : "Could not record your decision. Refresh the page and try again.",
       );
     } finally {
       setSubmitting(null);
@@ -285,8 +317,11 @@ function AgentApproval() {
         <CardHeader>
           <CardTitle>Agent approvals are not available</CardTitle>
           <CardDescription>
-            Agent authorization is not enabled on this workspace. Ask your
-            workspace admin to enable it, then reopen the link from your agent.
+            {/* Reachable only via the PLATFORM-tier gate 404 (#4419) — a
+                workspace admin cannot enable it; only the Atlas operator can. */}
+            Agent authorization is not enabled on this Atlas deployment. Ask
+            your Atlas operator to enable it, then reopen the link from your
+            agent.
           </CardDescription>
         </CardHeader>
       </Card>

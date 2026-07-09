@@ -32,8 +32,12 @@
 import { describe, it, expect, beforeAll } from "bun:test";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
+import { passkey } from "@better-auth/passkey";
 import { createHash } from "node:crypto";
-import { buildAgentAuthPlugin } from "@atlas/api/lib/auth/agent-auth-plugin";
+import {
+  buildAgentAuthPlugin,
+  type AgentAuthPluginDeps,
+} from "@atlas/api/lib/auth/agent-auth-plugin";
 import type { AtlasOpenApiSpec } from "@atlas/api/lib/auth/atlas-openapi-source";
 
 const BASE = "http://localhost:3000";
@@ -68,13 +72,14 @@ interface SignedUpUser {
 }
 
 /** Build a fresh instance so each test gets an isolated in-memory store. */
-function makeInstance() {
+function makeInstance(overrides: Partial<AgentAuthPluginDeps> = {}) {
   const plugin = buildAgentAuthPlugin({
     spec: FIXTURE_SPEC,
     fetch: async () => new Response("{}", { status: 200 }),
     mintToken: async () => "unused-token",
     baseUrl: "http://internal",
     deviceAuthorizationPage: WEB_APPROVAL_PAGE,
+    ...overrides,
   });
   return betterAuth({
     baseURL: BASE,
@@ -83,9 +88,14 @@ function makeInstance() {
     database: memoryAdapter({
       user: [], session: [], account: [], verification: [],
       agent: [], agentHost: [], agentCapabilityGrant: [], approvalRequest: [],
+      passkey: [],
     }),
+    // The passkey plugin mirrors server.ts — it is LOAD-BEARING for the step-up
+    // test: without it the agent-auth plugin's proofOfPresence enforcement is
+    // silently inert (no challenge cache), and an approval that should demand a
+    // WebAuthn assertion would just succeed.
     // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
-    plugins: [plugin] as any[],
+    plugins: [plugin, passkey({ rpID: "localhost" })] as any[],
   });
 }
 
@@ -280,6 +290,37 @@ describe("Agent Auth device-approval round-trip (#4411)", () => {
 
     expect(status).toBeGreaterThanOrEqual(400);
     expect(body.error).toBe("invalid_user_code");
+    expect(await grantStatus(instance, agentId)).toBe("pending");
+  });
+
+  it("enterprise step-up (#4413): with proofOfPresence on, an approve WITHOUT a WebAuthn assertion is rejected and the grant stays pending", async () => {
+    // The options-level tests (agent-auth-plugin.test.ts) pin that /ee turns
+    // proofOfPresence on; this pins that the library then actually ENFORCES the
+    // ceremony end-to-end: a signed-in user with no passkey (and no assertion in
+    // the POST) cannot complete an approval — the grant never activates. This is
+    // the "an autonomous agent with browser control cannot self-approve" half.
+    instance = makeInstance({
+      stepUpWrites: true,
+      webauthnRpId: "localhost",
+      webauthnOrigin: BASE,
+    });
+    approver = await signUp(instance, "stepup@example.com");
+    const agentId = await seedPendingApproval(instance, approver.userId);
+
+    const { body } = await postApproval(instance, approver.cookie, {
+      agent_id: agentId,
+      user_code: USER_CODE,
+      action: "approve",
+    });
+
+    // No enrolled passkey → the ceremony cannot even start; with one enrolled
+    // the library instead returns `webauthn_required` + a challenge. Either way
+    // the approval does NOT complete without proof of presence. (0.6.2 quirk:
+    // this branch uses `ctx.json(body, { status: 403 })`, whose status is not
+    // honored through the handler — the ERROR BODY + the grant staying pending
+    // are the enforced contract, so those are what this pins.)
+    expect(body.error).toBe("webauthn_not_enrolled");
+    expect(body.status).toBeUndefined(); // never "approved"
     expect(await grantStatus(instance, agentId)).toBe("pending");
   });
 });

@@ -49,8 +49,8 @@ When a workspace has opted out (platform on, workspace override off),
 its **registration, discovery, and `capability/list`** endpoints stay
 reachable — those endpoints are user-scoped / workspace-agnostic and
 cannot be workspace-gated (an agent registers under a *user* who may
-belong to several workspaces; the workspace is only *proposed* per
-request and only *bound* at execute). No data flows, though: the only
+belong to several workspaces; the workspace is only *proposed* on the
+agent's record and only *bound*, membership-checked, at execute). No data flows, though: the only
 data-bearing endpoint, `capability/execute`, is `404`'d by the
 workspace-tier check. Execution is the single correct enforcement
 point, and it is gated.

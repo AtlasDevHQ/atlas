@@ -832,17 +832,31 @@ app.get("/api/v1/openapi.json", (c) => c.json(buildAtlasOpenApiDocument()));
 // Hand the agent-auth OpenAPI adapter (#4410) the in-process Atlas spec, lazily.
 // The thunk runs at most once, on the first agent-auth plugin build (first
 // authed request), so the ~2.5 MB document is never generated eagerly at boot.
-registerAtlasOpenApiSource(
-  () => buildAtlasOpenApiDocument() as unknown as AtlasOpenApiSpec,
-);
+registerAtlasOpenApiSource(() => {
+  const doc = buildAtlasOpenApiDocument();
+  // Structural assert at the unchecked-cast boundary: a shape regression here
+  // must surface as the source module's loud fail-soft (zero capabilities,
+  // logged at error, not memoized), never as a silently-empty operation index.
+  if (!doc.paths || typeof doc.paths !== "object") {
+    throw new Error("Atlas OpenAPI document has no paths object — cannot derive agent-auth capabilities");
+  }
+  return doc as unknown as AtlasOpenApiSpec;
+});
 
 // Hand the agent-auth proxy (#4410) an in-process transport to THIS app, so its
 // `onExecute` forwards derived operations through the real middleware stack with
 // no network socket. Registered here (where `app` lives) so `lib/` never imports
 // the `api/` layer.
 registerInProcessApiFetch(async (input, init) => {
+  // `new Request(input, init)` when both are present: a caller passing
+  // `fetch(request, init)` must not have its init (method/headers — potentially
+  // the minted x-api-key) silently dropped.
   const request =
-    input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init);
+    input instanceof Request
+      ? init
+        ? new Request(input, init)
+        : input
+      : new Request(input instanceof URL ? input.href : input, init);
   return app.fetch(request);
 });
 

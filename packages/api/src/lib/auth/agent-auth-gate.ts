@@ -102,21 +102,39 @@ function isTrue(value: string | undefined): boolean {
  *      override is consulted, so a workspace can only ever TIGHTEN: with the
  *      platform on, a workspace that sets its override to `false` has its data
  *      sealed (execute 404'd) while other workspaces are unaffected (overrides
- *      are per-org). It can never LOOSEN a platform-off, because execution is
- *      only reached after the HTTP surface (tier 1) has already admitted the
- *      request.
+ *      are per-org). It can never LOOSEN a platform-off for HTTP-reached
+ *      execution, because that path passes the tier-1 surface gate first. A
+ *      direct server-side `auth.api.*` call bypasses tier 1, which is why the
+ *      audit bridge (`agent-auth-audit.ts`) independently re-checks the
+ *      platform tier before emitting.
  *
  * Net: operator = master on/off for everyone; workspace admin = opt-OUT of
  * execution only. See the precedence-matrix tests in `agent-auth-gate.test.ts`.
  */
 export async function isAgentAuthEnabled(orgId?: string): Promise<boolean> {
+  return (await resolveAgentAuthEnablement(orgId)) === "on";
+}
+
+/**
+ * The tri-state the boolean gate is built on. `indeterminate` means the
+ * settings read itself failed — for the HTTP surface + audit bridge that is
+ * indistinguishable from `off` (fail closed, via {@link isAgentAuthEnabled}),
+ * but the capability-execution tier surfaces it as a ref-stamped 500 instead of
+ * a 404 that would falsely claim the workspace opted out (an infra blip must
+ * not read as a permanent policy decision — CLAUDE.md: return 500, not a false
+ * negative).
+ */
+export type AgentAuthEnablement = "on" | "off" | "indeterminate";
+
+/** The authoritative enablement read behind {@link isAgentAuthEnabled} — same tiers, same fail-closed logging, but errors stay distinguishable. */
+export async function resolveAgentAuthEnablement(orgId?: string): Promise<AgentAuthEnablement> {
   try {
-    return isTrue(await getSettingLive(AGENT_AUTH_ENABLED_SETTING, orgId));
+    return isTrue(await getSettingLive(AGENT_AUTH_ENABLED_SETTING, orgId)) ? "on" : "off";
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err), orgId },
       "agent-auth gate: settings resolution failed — failing closed (off)",
     );
-    return false;
+    return "indeterminate";
   }
 }

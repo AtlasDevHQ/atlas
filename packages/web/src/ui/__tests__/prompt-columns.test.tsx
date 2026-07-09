@@ -41,8 +41,9 @@ function renderNameCell(row: PromptCollection) {
     column: nameCol,
     getValue: () => row.name,
     renderValue: () => row.name,
-    // The cell renderer only reads row/getValue; a real Column instance is
-    // not constructible in a unit test, so narrow through unknown.
+    // The cell renderer only reads row/getValue; a real Column instance
+    // isn't cheaply constructible without standing up a full Table, so
+    // narrow through unknown.
   } as unknown as CellContext<PromptCollection, unknown>;
   return render(<>{flexRender(nameCol.cell, ctx)}</>);
 }

@@ -1,0 +1,169 @@
+---
+title: Agent Auth
+description: Capability-based authorization for AI agents on top of OAuth 2.1 — grants, approval strengths, and autonomous-mode caveats.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Agent Auth is an **experimental** authorization layer for AI agents, built on the
+[Agent Auth Protocol](https://agentauthprotocol.com) and layered on top of Atlas's
+[OAuth 2.1 MCP surface](/guides/mcp). Where OAuth 2.1 answers _"is this token valid for
+this resource?"_, Agent Auth answers _"which narrow capabilities did the user approve,
+with what step-up, for which agent identity?"_
+
+The whole surface is gated by a single hot-reloadable setting, `ATLAS_AGENT_AUTH_ENABLED`,
+which is **off by default**. When it is off, every agent-auth path and the
+`/.well-known/agent-configuration` discovery document return `404` — there is no reachable
+surface. The operator/workspace on-off model (an operator kill-switch plus a workspace
+opt-out) is documented separately in
+[Agent Auth Enablement](/platform-ops/agent-auth-enablement).
+
+<Callout type="warn" title="Experimental — pinned to an upstream 0.x spec">
+  The Agent Auth Protocol is still in heavy development upstream, and Atlas pins
+  `@better-auth/agent-auth` to an exact `0.x` version. Keep the setting off in production
+  until the spec stabilizes, and don't build workflows that assume the wire format is
+  frozen.
+</Callout>
+
+## When to enable Agent Auth
+
+You want OAuth 2.1 alone — not Agent Auth — for the common case: a person connecting Claude
+Desktop, Cursor, ChatGPT, or Claude Code to their Atlas workspace and asking questions in a
+session they're watching. That flow is fully covered by the [MCP server](/guides/mcp) and
+needs nothing here.
+
+Reach for Agent Auth when you need one of the things OAuth scopes can't express:
+
+- **Per-capability approval, not broad scopes.** You want the user to approve _"read the
+  orders entity"_ specifically, rather than granting a coarse `workspace-read` scope that
+  covers everything.
+- **Step-up per action.** Reads go through on the existing session, but on an
+  enterprise deployment a write forces a stronger check (a passkey tap) at approval time —
+  see [approval strengths](#approval-strengths).
+- **An identity for background agents.** A scheduled or runbook-style agent that acts with
+  no user present needs its own identity and an explicit, constrained grant — see the
+  [autonomous-mode caveat](#autonomous-mode-caveat) below.
+
+If none of those apply, stay on OAuth 2.1.
+
+## OAuth 2.1 vs Agent Auth
+
+The two protocols complement rather than compete — OAuth 2.1 establishes the transport-layer
+identity, and Agent Auth adds a capability-and-approval model on top. They answer different
+questions:
+
+| | OAuth 2.1 ([MCP guide](/guides/mcp)) | Agent Auth (this page) |
+|---|---|---|
+| **Question answered** | Is this token valid for this resource? | Which capabilities did the user approve, with what step-up, for which agent? |
+| **Unit of authorization** | Scope (coarse, e.g. `workspace-read`) | Capability (narrow: name, description, JSON-Schema input, optional per-capability `location`) |
+| **Discovery** | `/.well-known/oauth-authorization-server` (RFC 8414) | `/.well-known/agent-configuration` |
+| **Token** | Access / refresh tokens | Short-lived signed JWT, `aud`-bound, replay-protected (`jti`) |
+| **Identity model** | Client + user | Registered **agent** identity, optionally enrolled to a **host** |
+| **Step-up** | Not modeled | Per-capability `approvalStrength` (`session`; `webauthn` on enterprise) |
+| **Modes** | Interactive (user present) | `delegated` (user present); `autonomous` (background) |
+
+In the protocol model the two stack: an agent presents its OAuth 2.1 access token, then
+Agent Auth validates a per-capability JWT (`aud` = the capability's `location`, or the
+default execute URL) and checks the request against the agent's recorded grants before the
+capability's `onExecute` runs. In Atlas today the agent-auth surface is reached with the
+Agent Auth JWT (signature / `aud` / expiry / `jti` verified by the library), and `onExecute`
+resolves per-org data access by minting a short-lived, per-workspace API key and routing the
+operation back through the in-process API — so the real middleware stack (auth, org scoping,
+RLS, rate limits) runs exactly as for any client. No plaintext secrets ride in headers, and
+the proxy never bypasses org scoping.
+
+## Capabilities and grants
+
+A **capability** is the unit of authorization. Each has a name, a human-readable
+description, a JSON-Schema describing its input, and an optional per-capability `location`
+URL that becomes the JWT audience (`aud`) for calls that target it. Atlas derives its
+capabilities from the OpenAPI spec (one per operation) rather than hand-maintaining a list.
+Instead of handing an agent a broad scope, the user approves specific capabilities, one
+grant at a time.
+
+<Callout type="info" title="Reads only, for now">
+  The reachable derived surface is deliberately narrow today: only read-only, non-admin
+  operations (`GET`/`HEAD`, outside `/api/v1/admin` and `/api/v1/platform`) can be granted
+  or executed. Every write and every admin/platform operation is hard-blocked from grant
+  and execution and hidden from discovery. The write approval-strength policy below is the
+  enforcement each capability *carries for when writes become reachable* — it is not a live
+  write path yet.
+</Callout>
+
+A **capability grant** is the record that a given agent may invoke a given capability. At
+execution the incoming JWT is validated (signature, `aud`, expiry, `jti` replay) and the
+requested capability is checked against the agent's recorded grants. A missing, expired, or
+revoked grant fails closed — the capability does not run.
+
+Grants are workspace-scoped by construction. An agent registers under a **user** (who may
+belong to several workspaces) and *proposes* a workspace per request; the proposal is
+honored only if that owning user is a live member of it. So an agent bound to workspace A
+can never resolve a capability that reads workspace B's data. That isolation is enforced at
+capability **execution** (`onExecute`), which is the point where the workspace is known and
+membership-verified — see the enforcement discussion in
+[Agent Auth Enablement](/platform-ops/agent-auth-enablement).
+
+## Approval strengths
+
+Every approval carries an **approval strength** — how hard the user must prove intent
+before a grant is issued. Strength is assigned per capability, keyed to the underlying HTTP
+method, and the write strength differs by deploy tier:
+
+| Method class | `approvalStrength` (core / AGPL) | `approvalStrength` (enterprise) | What the user does |
+|---|---|---|---|
+| `GET` / `HEAD` (reads) | `session` | `session` | Approve on the existing authenticated session |
+| Non-read methods (`POST` / `PUT` / `PATCH` / `DELETE`, writes) | `session` | `webauthn` | Complete a [passkey](/security/passkeys) / WebAuthn step-up |
+
+**Reads always approve on the session.** On the **core (AGPL)** build, writes keep the same
+`session` default — there is no WebAuthn enforcement. Only on an **enterprise** deployment
+are write-method capabilities stamped `webauthn` and backed by proof-of-presence, so a write
+requires a live passkey step-up that an autonomous agent cannot self-satisfy. The stronger
+mechanisms — `webauthn` step-up enforcement and CIBA — are
+[enterprise-gated](/platform-ops/agent-auth-enablement); the core surface ships the plugin
+wiring, capability model, JWT verification, and device-authorization approval. This mirrors
+Atlas's broader [approval workflows](/guides/approval-workflows) for write actions. (Recall
+from above that writes are not a reachable surface yet — this policy governs them once they
+are.)
+
+<Callout type="info" title="On enterprise, the write step-up is a floor, not a ceiling">
+  Where a capability is stamped `webauthn` (enterprise writes), it always requires the
+  passkey step-up, regardless of how the agent authenticated. There is no path that
+  downgrades a `webauthn` capability to a session-only approval.
+</Callout>
+
+## Autonomous-mode caveat
+
+The protocol models two agent modes:
+
+- **`delegated`** — a user is present (the chat UI, MCP via Claude Desktop, anything with a
+  live session). The user can complete a step-up approval interactively.
+- **`autonomous`** — no user is present (scheduled queries, runbook-style executions,
+  background triggers). The agent acts on its own identity.
+
+Atlas supports the delegated flow today; end-to-end **autonomous execution is not yet
+wired** (it's on the experimental roadmap). The caveat below is why that gap matters and how
+the protocol resolves it.
+
+<Callout type="warn" title="An autonomous agent cannot satisfy a step-up unattended">
+  An autonomous agent still **cannot** satisfy a `webauthn`-required capability on its own.
+  WebAuthn requires a live human gesture (a passkey tap), and there is nobody present to
+  perform it. Autonomy does not weaken the approval-strength floor — it removes the actor
+  who could clear it.
+</Callout>
+
+The resolution is to approve ahead of time, not at execution: for an autonomous use case
+the user **pre-approves a constrained, long-lived grant** while present. They complete the
+step-up once, interactively, and the resulting grant lets the background agent invoke that
+specific capability later without a fresh human gesture. The constraint is doing the work —
+the grant is scoped to one capability, carries an expiry, and can be revoked at any time.
+This is deliberately narrow: a long-lived grant for _"read the daily-orders summary"_ is a
+very different risk than a standing `webauthn` bypass, and Agent Auth only offers the
+former.
+
+## See also
+
+- [MCP Server](/guides/mcp) — the OAuth 2.1 + DCR + PKCE surface Agent Auth layers on top of
+- [Agent Auth Enablement](/platform-ops/agent-auth-enablement) — the operator kill-switch and workspace opt-out on-off model
+- [Approval Workflows](/guides/approval-workflows) — approval-gated write actions in the analyst agent
+- [Passkeys](/security/passkeys) — the WebAuthn credentials that back `webauthn` approval strength
+- [Agent Auth Protocol](https://agentauthprotocol.com) — the upstream spec

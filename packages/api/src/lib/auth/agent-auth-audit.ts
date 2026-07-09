@@ -40,9 +40,10 @@
  *     string is run through {@link errorMessage} (connection-string scrub +
  *     truncation) before it lands in the row.
  *
- * Reversibility: like the rest of the agent-auth seam, only this file, the
- * plugin factory, the verifier and the gate know the agent-auth event shape.
- * Nothing downstream learns it.
+ * Reversibility: this file (and the plugin factory that wires it) is where the
+ * agent-auth EVENT shape is quarantined — the authoritative per-shape
+ * enumeration lives in the `agent-auth-verifier.ts` header. Nothing downstream
+ * learns it.
  */
 
 import type {
@@ -130,12 +131,37 @@ const DETAIL_ALLOWLIST: ReadonlySet<string> = new Set([
   "agentsRevoked",
 ]);
 
-/** Project the plugin's per-event metadata down to the {@link DETAIL_ALLOWLIST}. Returns undefined when nothing survives. */
+/** A detail value we allow into JSONB: a primitive label/count/flag, or a flat array of them. */
+type BenignDetailValue = string | number | boolean | Array<string | number | boolean>;
+
+/**
+ * Value-level guard paired with the key allowlist: a future plugin version
+ * nesting a large or sensitive OBJECT under an allowlisted key (`reason`,
+ * `name`, …) is dropped rather than persisted wholesale.
+ */
+function benignDetailValue(value: unknown): BenignDetailValue | undefined {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (
+    Array.isArray(value) &&
+    value.every(
+      (v) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+    )
+  ) {
+    return value as Array<string | number | boolean>;
+  }
+  return undefined;
+}
+
+/** Project the plugin's per-event metadata down to the {@link DETAIL_ALLOWLIST} (keys) + {@link benignDetailValue} (values). Returns undefined when nothing survives. */
 function allowlistedDetail(raw: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (!raw) return undefined;
   const detail: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(raw)) {
-    if (DETAIL_ALLOWLIST.has(key)) detail[key] = value;
+    if (!DETAIL_ALLOWLIST.has(key)) continue;
+    const benign = benignDetailValue(value);
+    if (benign !== undefined) detail[key] = benign;
   }
   return Object.keys(detail).length > 0 ? detail : undefined;
 }

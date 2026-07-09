@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { resolveApprovalOutcome } from "./resolve-approval-outcome";
+import { isAgentAuthGateOff, resolveApprovalOutcome } from "./resolve-approval-outcome";
 
 describe("resolveApprovalOutcome (#4411)", () => {
   it("200 { status: approved } → resolved/approved", () => {
@@ -61,5 +61,23 @@ describe("resolveApprovalOutcome (#4411)", () => {
   it("2xx with an unexpected status value → error, not a false success", () => {
     const out = resolveApprovalOutcome({ status: 200, body: { status: "weird" } });
     expect(out.kind).toBe("error");
+  });
+});
+
+// Web-side half of the cross-package gate-envelope pin — the API side is the
+// gate-envelope test in packages/api's agent-auth-live-toggle.test.ts. If the
+// gate's `{ error: "not_found" }` envelope ever changes, both go red together.
+describe("isAgentAuthGateOff (the one 404 discrimination)", () => {
+  it("true only for a 404 carrying the gate envelope", () => {
+    expect(isAgentAuthGateOff(404, { error: "not_found" })).toBe(true);
+    expect(isAgentAuthGateOff(404, { error: "not_found", message: "Not found" })).toBe(true);
+  });
+
+  it("false for per-request 404s, non-404 statuses, and undiscriminable bodies", () => {
+    expect(isAgentAuthGateOff(404, { error: "agent_not_found" })).toBe(false);
+    expect(isAgentAuthGateOff(200, { error: "not_found" })).toBe(false);
+    expect(isAgentAuthGateOff(404, null)).toBe(false);
+    expect(isAgentAuthGateOff(404, "not json")).toBe(false);
+    expect(isAgentAuthGateOff(404, {})).toBe(false);
   });
 });

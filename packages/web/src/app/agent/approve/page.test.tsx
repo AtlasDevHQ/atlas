@@ -191,7 +191,7 @@ describe("agent approval page (#4411)", () => {
     expect(screen.getByText("Approve")).toBeDefined();
   });
 
-  test("404 on the pending list → the fail-closed 'not available' state (gate off)", async () => {
+  test("gate 404 on the pending list → the fail-closed 'not available' state (gate off)", async () => {
     pendingResponder = () => jsonResponse(404, { error: "not_found" });
     render(<AgentApprovePage />);
     await waitFor(() =>
@@ -199,6 +199,21 @@ describe("agent approval page (#4411)", () => {
     );
     // No approve control is offered when the surface is gated off.
     expect(screen.queryByText("Approve")).toBeNull();
+    // The guidance names the actor who can actually act: this state is only
+    // reachable via the PLATFORM-tier kill-switch (#4419), which a workspace
+    // admin cannot re-open — only the Atlas operator can.
+    expect(
+      screen.getByText(/not enabled on this Atlas deployment.*Atlas operator/s),
+    ).toBeDefined();
+  });
+
+  test("NON-gate 404 on the pending list → an error state, NOT 'not available' (404 is ambiguous)", async () => {
+    // A per-request 404 (e.g. a future plugin version 404ing a stale agent on
+    // this endpoint) must not be misdiagnosed as "feature disabled".
+    pendingResponder = () => jsonResponse(404, { error: "agent_not_found" });
+    render(<AgentApprovePage />);
+    await waitFor(() => expect(screen.getByText("Couldn't load the request")).toBeDefined());
+    expect(screen.queryByText("Agent approvals are not available")).toBeNull();
   });
 
   test("POST-time gate 404 (surface toggled off mid-flow) → 'not available'", async () => {

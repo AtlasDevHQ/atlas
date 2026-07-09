@@ -2431,7 +2431,20 @@ export function buildPlugins() {
     // key; the device-flow session bearer stays on `Authorization: Bearer`, so the
     // two credential classes never collide). The legacy `ATLAS_API_KEY` god-key is
     // a SEPARATE auth path (`simple-key.ts`) and is untouched.
-    apiKey({ enableMetadata: true, enableSessionForAPIKeys: true }),
+    //  - `keyExpiration.minExpiresIn` is in DAYS (plugin default 1). The
+    //    agent-auth proxy mints 15-MINUTE workspace keys
+    //    (`WORKSPACE_KEY_TTL_SECONDS`, agent-auth-plugin.ts); with the default
+    //    minimum every real capability execution would throw
+    //    EXPIRES_IN_IS_TOO_SMALL at first mint. 15/(60*24) admits exactly that
+    //    TTL and nothing shorter; the admin workspace-key route keeps its own
+    //    stricter ≥1-day schema (`expiresInDays: int().positive()`), so this
+    //    relaxation does not loosen operator-facing keys. Pinned by the
+    //    "upstream contract" mint test in agent-auth-plugin.test.ts.
+    apiKey({
+      enableMetadata: true,
+      enableSessionForAPIKeys: true,
+      keyExpiration: { minExpiresIn: 15 / (60 * 24) },
+    }),
     // Business-email-only signup (#3650, ADR-0018). `emailHarmony` contributes
     // the unique `normalizedEmail` column + `+alias`/dot/case normalization —
     // the teeth behind one-trial-per-user — and ships the `mailchecker`

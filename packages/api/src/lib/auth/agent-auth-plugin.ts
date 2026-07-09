@@ -40,10 +40,10 @@
  *      auth path (`resolveApiKeyAuth`), which binds the org from the key's
  *      metadata and enforces workspace isolation itself — no org-scope bypass.
  *
- * Reversibility: this module, `agent-auth-openapi.ts`, and `agent-auth-verifier.ts`
- * are the ONLY places that know about agent sessions / agent JWTs. Nothing
- * downstream — the dispatch gate, RBAC, permissions — learns the agent-auth
- * shape (pinned by `agent-auth-seam-quarantine.test.ts`).
+ * Reversibility: the verifier (`agent-auth-verifier.ts`) header carries the
+ * authoritative enumeration of which files may know which agent-auth shapes.
+ * Nothing downstream — the dispatch gate, RBAC, permissions — learns the
+ * agent-auth shape (pinned by `agent-auth-seam-quarantine.test.ts`).
  */
 
 import {
@@ -61,7 +61,8 @@ import {
   type AgentAuthActorResult,
   type AgentAuthIdentity,
 } from "@atlas/api/lib/auth/agent-auth-verifier";
-import { isAgentAuthEnabled } from "@atlas/api/lib/auth/agent-auth-gate";
+import { resolveAgentAuthEnablement } from "@atlas/api/lib/auth/agent-auth-gate";
+import { errorMessage } from "@atlas/api/lib/audit";
 import { auditAgentAuthEvent } from "@atlas/api/lib/auth/agent-auth-audit";
 import { resolveAgentApprovalPage } from "@atlas/api/lib/auth/agent-approval-page";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
@@ -123,8 +124,29 @@ function toIdentity(session: AgentSession): AgentAuthIdentity {
 /** The typed reasons `resolveAgentAuthActor` can deny for. */
 type DenialReason = Extract<AgentAuthActorResult, { kind: "denied" }>["reason"];
 
-/** Map a resolver denial to its spec-compliant error envelope. */
+/**
+ * Map a resolver denial to its spec-compliant error envelope.
+ *
+ * `membership_lookup_failed` is NOT an authorization decision — it means the
+ * membership READ itself failed (internal-DB blip, pool exhaustion). Dressing
+ * that as a 403 would tell the agent's operator "this agent is not authorized"
+ * for a transient infra fault, so it surfaces as a ref-stamped, retriable
+ * 500 instead (CLAUDE.md: return 500, not a false negative; request IDs on all
+ * 500s). The deny direction stays fail-closed either way — nothing executes.
+ */
 function denialError(reason: DenialReason): APIError {
+  if (reason === "membership_lookup_failed") {
+    const ref = crypto.randomUUID();
+    log.error(
+      { ref },
+      "agent-auth: membership lookup failed — surfacing a retriable 500, not a denial",
+    );
+    return agentError(
+      "INTERNAL_SERVER_ERROR",
+      AGENT_AUTH_ERROR_CODES.INTERNAL_ERROR,
+      `Could not verify workspace membership (ref ${ref}). Retry shortly.`,
+    );
+  }
   return agentError(
     "FORBIDDEN",
     AGENT_AUTH_ERROR_CODES.UNAUTHORIZED,
@@ -149,8 +171,28 @@ async function resolveBoundActor(
   }
 
   // Workspace-override precedence (#4419, tier 2): with the workspace resolved,
-  // honor a per-workspace opt-out even when the platform default is on. Fail-closed.
-  if (!(await isAgentAuthEnabled(resolved.workspaceId))) {
+  // honor a per-workspace opt-out even when the platform default is on. The
+  // tri-state keeps a settings-read failure distinguishable from a deliberate
+  // opt-out: an infra blip is a retriable 500, never a 404 claiming the
+  // workspace disabled the feature. Both directions fail closed.
+  const enablement = await resolveAgentAuthEnablement(resolved.workspaceId);
+  if (enablement === "indeterminate") {
+    const ref = crypto.randomUUID();
+    log.error(
+      { workspaceId: resolved.workspaceId, agentId: identity.agentId, ref },
+      "agent-auth: workspace enablement could not be resolved — failing closed with a retriable 500",
+    );
+    throw agentError(
+      "INTERNAL_SERVER_ERROR",
+      AGENT_AUTH_ERROR_CODES.INTERNAL_ERROR,
+      `Could not verify Agent Auth enablement for this workspace (ref ${ref}). Retry shortly.`,
+    );
+  }
+  if (enablement === "off") {
+    log.warn(
+      { workspaceId: resolved.workspaceId, agentId: identity.agentId },
+      "agent-auth capability execution sealed by workspace enablement override (tier 2)",
+    );
     throw agentError(
       "NOT_FOUND",
       AGENT_AUTH_ERROR_CODES.UNAUTHORIZED,
@@ -175,7 +217,10 @@ async function resolveBoundActor(
  * validated only in managed auth mode (the SaaS path this feature targets);
  * self-hosted `simple-key`/`none` deploys do not consume Better Auth keys.
  */
-type MintWorkspaceToken = (input: { user: AtlasUser; workspaceId: string }) => Promise<string>;
+export type MintWorkspaceToken = (input: {
+  user: AtlasUser;
+  workspaceId: string;
+}) => Promise<string>;
 
 /** The Better Auth `apiKey()` plugin's server-side `createApiKey`, narrowed to what we call. */
 export type CreateWorkspaceApiKey = (opts: {
@@ -244,24 +289,73 @@ export async function mintWorkspaceApiKeyVia(
   return created.key;
 }
 
-const tokenCache = new Map<string, { token: string; expiresAtMs: number }>();
+/**
+ * Coarse bound on live cached tokens (`user × workspace` keys). Expired/stale
+ * entries are evicted on the write path, so this cap only matters under a flood
+ * of distinct pairs; on overflow the stale sweep runs and, if still full, the
+ * cache clears wholesale — a re-mint is cheap, unbounded key material in process
+ * memory is not. Mirrors the audit sampler's `EXECUTE_TRACKED_KEYS_CAP` posture.
+ */
+const TOKEN_CACHE_MAX_ENTRIES = 1000;
 
-const mintWorkspaceApiKey: MintWorkspaceToken = async ({ user, workspaceId }) => {
-  const cacheKey = `${user.id}:${workspaceId}`;
-  const now = Date.now();
-  const cached = tokenCache.get(cacheKey);
-  if (cached && cached.expiresAtMs - now > WORKSPACE_KEY_REFRESH_BEFORE_MS) return cached.token;
+/**
+ * Caching wrapper around a token minter. Exported as a factory (mirroring
+ * `createAgentAuthAuditor`) so the cache contract is directly testable: the
+ * `${user.id}:${workspaceId}` key can never hand workspace A's token to a
+ * workspace-B execution, entries refresh before expiry
+ * ({@link WORKSPACE_KEY_REFRESH_BEFORE_MS}), and the cache stays bounded.
+ */
+export function createWorkspaceTokenMinter(
+  mint: MintWorkspaceToken,
+  opts?: {
+    ttlSeconds?: number;
+    refreshBeforeMs?: number;
+    maxEntries?: number;
+    now?: () => number;
+  },
+): MintWorkspaceToken {
+  const ttlMs = (opts?.ttlSeconds ?? WORKSPACE_KEY_TTL_SECONDS) * 1000;
+  const refreshBeforeMs = opts?.refreshBeforeMs ?? WORKSPACE_KEY_REFRESH_BEFORE_MS;
+  const maxEntries = opts?.maxEntries ?? TOKEN_CACHE_MAX_ENTRIES;
+  const now = opts?.now ?? Date.now;
+  const cache = new Map<string, { token: string; expiresAtMs: number }>();
 
-  // Dynamic import: a static import of `auth/server` would pull its eager
-  // `db/internal` graph into every consumer + break partial-mock tests. Mirrors
-  // the dynamic-import pattern in `admin-workspace-keys.ts`.
-  const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
-  const createApiKey = (getAuthInstance().api as { createApiKey?: unknown })
-    .createApiKey as CreateWorkspaceApiKey | undefined;
-  const token = await mintWorkspaceApiKeyVia(createApiKey, { user, workspaceId });
-  tokenCache.set(cacheKey, { token, expiresAtMs: now + WORKSPACE_KEY_TTL_SECONDS * 1000 });
-  return token;
-};
+  return async ({ user, workspaceId }) => {
+    const cacheKey = `${user.id}:${workspaceId}`;
+    const t = now();
+    const cached = cache.get(cacheKey);
+    if (cached && cached.expiresAtMs - t > refreshBeforeMs) return cached.token;
+    if (cached) cache.delete(cacheKey); // stale — evict rather than overwrite later
+
+    const token = await mint({ user, workspaceId });
+    if (cache.size >= maxEntries) {
+      for (const [key, entry] of cache) {
+        if (entry.expiresAtMs - t <= refreshBeforeMs) cache.delete(key);
+      }
+      if (cache.size >= maxEntries) cache.clear();
+    }
+    cache.set(cacheKey, { token, expiresAtMs: t + ttlMs });
+    return token;
+  };
+}
+
+const mintWorkspaceApiKey: MintWorkspaceToken = createWorkspaceTokenMinter(
+  async ({ user, workspaceId }) => {
+    // Dynamic import: a static import of `auth/server` would pull its eager
+    // `db/internal` graph into every consumer + break partial-mock tests. Mirrors
+    // the dynamic-import pattern in `admin-workspace-keys.ts`.
+    const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
+    const rawCreateApiKey = (getAuthInstance().api as { createApiKey?: unknown }).createApiKey;
+    // Runtime-narrow before trusting the third-party surface: a Better Auth bump
+    // that reshapes/renames `createApiKey` must land on the loud fail-closed
+    // branch in `mintWorkspaceApiKeyVia`, not be blind-cast and fail late.
+    const createApiKey =
+      typeof rawCreateApiKey === "function"
+        ? (rawCreateApiKey as CreateWorkspaceApiKey)
+        : undefined;
+    return mintWorkspaceApiKeyVia(createApiKey, { user, workspaceId });
+  },
+);
 
 /**
  * The proxy transport for `onExecute`: route the derived operation through the
@@ -458,10 +552,37 @@ function buildOptions(deps: AgentAuthPluginDeps): AgentAuthOpenApiOptions {
   // survive; only opaque errors are collapsed to a non-leaking ref. (CLAUDE.md:
   // no silent swallow, no secrets in responses, requestId on 500s.)
   const proxyExecute = opts.onExecute;
-  if (!proxyExecute) return opts;
+  if (!proxyExecute) {
+    // An adapter bump that stops returning `onExecute` would build a capability
+    // surface with no execute path AND no protective wrapper — make that drift
+    // loud instead of silent.
+    log.error(
+      "agent-auth openapi adapter returned no onExecute — capabilities will not execute",
+    );
+    return opts;
+  }
+
+  // Defense-in-depth for the containment set: as of 0.6.2 the library enforces
+  // `blockedCapabilities` at grant/request/approve time but NOT at
+  // `/capability/execute` — an active grant that exists anyway (seeded directly,
+  // or a future library path that skips the block) would execute. Re-check at
+  // the execute seam Atlas controls, so a blocked (write/admin) capability can
+  // never reach the in-process proxy regardless of grant state.
+  const blockedSet = new Set(opts.blockedCapabilities ?? []);
 
   const onExecute: NonNullable<AgentAuthOptions["onExecute"]> = async (ctx) => {
     const requestId = crypto.randomUUID();
+    if (blockedSet.has(ctx.capability)) {
+      log.warn(
+        { capability: ctx.capability, requestId },
+        "agent-auth: execute of a blocked capability rejected (execute-time re-check)",
+      );
+      throw agentError(
+        "FORBIDDEN",
+        AGENT_AUTH_ERROR_CODES.CAPABILITY_BLOCKED,
+        `Capability "${ctx.capability}" is blocked by server policy.`,
+      );
+    }
     try {
       return await proxyExecute(ctx);
     } catch (err) {
@@ -482,7 +603,10 @@ function buildOptions(deps: AgentAuthPluginDeps): AgentAuthOpenApiOptions {
       // call is permanently bad. (Preserve the throttle/timeout status label.)
       if (upstreamStatus !== null && RETRIABLE_UPSTREAM_STATUS.has(upstreamStatus)) {
         log.warn(
-          { status: upstreamStatus, requestId, capability: ctx.capability },
+          // `errorMessage` scrubs connection strings + truncates — the raw
+          // upstream body embedded in the adapter's message is Atlas-log-only
+          // and must be diagnosable without being persisted verbatim.
+          { status: upstreamStatus, requestId, capability: ctx.capability, errMessage: errorMessage(err) },
           "agent-auth openapi proxy: upstream throttled/timed out (retriable)",
         );
         throw agentError(
@@ -503,7 +627,9 @@ function buildOptions(deps: AgentAuthPluginDeps): AgentAuthOpenApiOptions {
       // transport error falls through to the opaque 500.
       if (upstreamStatus !== null && upstreamStatus >= 400 && upstreamStatus < 500) {
         log.warn(
-          { status: upstreamStatus, requestId, capability: ctx.capability },
+          // Withheld from the agent (least-trusted actor), but logged scrubbed —
+          // otherwise a 400-class capability failure is undiagnosable server-side.
+          { status: upstreamStatus, requestId, capability: ctx.capability, errMessage: errorMessage(err) },
           "agent-auth openapi proxy: upstream rejected the request (client error)",
         );
         throw agentError(
@@ -514,7 +640,9 @@ function buildOptions(deps: AgentAuthPluginDeps): AgentAuthOpenApiOptions {
       }
 
       log.error(
-        { err: err instanceof Error ? err.message : String(err), requestId, capability: ctx.capability },
+        // Scrub before logging: a driver-level error echoed through an upstream
+        // 500 body can carry a connection string (same hygiene as the audit bridge).
+        { err: errorMessage(err), requestId, capability: ctx.capability },
         "agent-auth openapi proxy execution failed",
       );
       throw agentError(

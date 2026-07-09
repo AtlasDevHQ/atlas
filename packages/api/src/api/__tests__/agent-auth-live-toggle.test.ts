@@ -19,8 +19,9 @@
  *
  * No-restart proof: the same mounted app + same stub is reused across the
  * off→on→off sequence; only `process.env.ATLAS_AGENT_AUTH_ENABLED` changes
- * between requests, and `getSettingLive` (no internal DB in the test → reads env
- * fresh) picks it up per request. Self-contained: env saved and restored.
+ * between requests, and the `getSettingLive` stub (which mirrors real
+ * no-internal-DB resolution: an env read per call — see the stub-site comment)
+ * picks it up per request. Self-contained: env saved and restored.
  */
 
 import { describe, it, expect, beforeAll, afterAll, mock } from "bun:test";
@@ -120,6 +121,20 @@ describe("Agent Auth live-toggle (#4409)", () => {
       const res = await req(method, path);
       expect({ path, status: res.status }).toEqual({ path, status: 404 });
     }
+  });
+
+  it("OFF: the gate 404 carries the exact `{ error: \"not_found\" }` envelope the web approval page keys on", async () => {
+    // Cross-package wire contract: `resolve-approval-outcome.ts` (packages/web)
+    // discriminates "surface gated off" from a per-request 404 (e.g.
+    // `agent_not_found`) by this literal. The constant can't be shared until the
+    // next `@useatlas/types` publish window (scaffold-bound source may only use
+    // published symbols), so this pin + the web-side test are the drift guard.
+    // If you change this envelope, update GATE_OFF_ERROR there in the same PR.
+    delete process.env.ATLAS_AGENT_AUTH_ENABLED;
+    const res = await req("POST", "/api/auth/agent/approve-capability");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("not_found");
   });
 
   it("OFF (default): the discovery document returns 404", async () => {

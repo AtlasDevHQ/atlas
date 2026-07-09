@@ -24,6 +24,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, afterEach, mock } from "bun:test";
 import { betterAuth } from "better-auth";
+import { apiKey as apiKeyPlugin } from "@better-auth/api-key";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import { existsSync, readFileSync } from "node:fs";
@@ -47,15 +48,26 @@ void mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
   revokeWorkspaceGrant: async () => 0,
 }));
 
-// Spread the real gate and override only the enable check, so resolveHeaders'
+// Spread the real gate and override only the enablement reads, so resolveHeaders'
 // workspace-override branch can be driven deterministically without an internal
 // DB (the gate's own env/fail-closed behavior is covered in agent-auth-gate.test.ts).
-// Default: enabled for every workspace.
+// Default: enabled for every workspace. `enablementForWorkspace` (when set)
+// drives the tri-state directly — used to exercise the `indeterminate` (settings
+// read failed) branch, which must surface as a 500, not a workspace opt-out 404.
 import * as gateReal from "@atlas/api/lib/auth/agent-auth-gate";
+import type { AgentAuthEnablement } from "@atlas/api/lib/auth/agent-auth-gate";
 let enabledForWorkspace: (orgId?: string) => boolean = () => true;
+let enablementForWorkspace: ((orgId?: string) => AgentAuthEnablement) | null = null;
+const resolveStubEnablement = (orgId?: string): AgentAuthEnablement =>
+  enablementForWorkspace
+    ? enablementForWorkspace(orgId)
+    : enabledForWorkspace(orgId)
+      ? "on"
+      : "off";
 void mock.module("@atlas/api/lib/auth/agent-auth-gate", () => ({
   ...gateReal,
-  isAgentAuthEnabled: async (orgId?: string) => enabledForWorkspace(orgId),
+  isAgentAuthEnabled: async (orgId?: string) => resolveStubEnablement(orgId) === "on",
+  resolveAgentAuthEnablement: async (orgId?: string) => resolveStubEnablement(orgId),
 }));
 
 // SUT — imported AFTER the mocks are registered.
@@ -63,11 +75,13 @@ import {
   buildAgentAuthPlugin,
   buildAgentAuthPluginOptions,
   resolveDeps,
+  createWorkspaceTokenMinter,
   AGENT_WORKSPACE_METADATA_KEY,
   mintWorkspaceApiKeyVia,
   type CreateWorkspaceApiKey,
   type AgentAuthPluginDeps,
 } from "@atlas/api/lib/auth/agent-auth-plugin";
+import { auditAgentAuthEvent } from "@atlas/api/lib/auth/agent-auth-audit";
 import { resolvePasskeyRpId } from "@atlas/api/lib/auth/rpid";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
@@ -176,6 +190,12 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
     // a dev artifact (not in the runtime image) but IS in the repo/CI checkout.
     const specPath = resolve(import.meta.dir, "../../../../../../apps/docs/openapi.json");
     if (!existsSync(specPath)) {
+      // In CI this file is the strongest containment guarantee in the suite — a
+      // docs-repo reorg must not silently drop it. Locally (partial checkouts)
+      // skipping stays fine.
+      if (process.env.CI) {
+        throw new Error(`real-spec containment test requires ${specPath} in the CI checkout`);
+      }
       console.warn(`[agent-auth] real-spec containment test skipped — ${specPath} not found`);
       return;
     }
@@ -333,6 +353,9 @@ describe("agent-auth WebAuthn step-up strength gating (#4413)", () => {
     // guarantee at spec scale (mirrors the containment real-spec test above).
     const specPath = resolve(import.meta.dir, "../../../../../../apps/docs/openapi.json");
     if (!existsSync(specPath)) {
+      if (process.env.CI) {
+        throw new Error(`real-spec stamping test requires ${specPath} in the CI checkout`);
+      }
       console.warn(`[agent-auth] real-spec stamping test skipped — ${specPath} not found`);
       return;
     }
@@ -410,7 +433,7 @@ describe("agent-auth CIBA backchannel approval gating (#4414)", () => {
         user: [], session: [], account: [], verification: [],
         agent: [], agentHost: [], agentCapabilityGrant: [], approvalRequest: [],
       }),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
       plugins: [plugin] as any[],
     });
   }
@@ -494,6 +517,16 @@ describe("resolveDeps enterprise-flag wiring (#4413 AC3)", () => {
     else process.env.ATLAS_ENTERPRISE_ENABLED = prevEnterprise;
   });
 
+  it("UNSET flag (config unloaded) fails closed: stepUpWrites AND cibaApproval default false", () => {
+    // The comments in resolveDeps promise "defaults false whenever config is
+    // unloaded / the env flag is unset" — the true/false cases below don't
+    // exercise that default; this does.
+    delete process.env.ATLAS_ENTERPRISE_ENABLED;
+    const deps = resolveDeps({ spec: FIXTURE_SPEC });
+    expect(deps.stepUpWrites).toBe(false);
+    expect(deps.cibaApproval).toBe(false);
+  });
+
   it("stepUpWrites resolves true when enterprise is enabled (read via the core mirror, not @atlas/ee)", () => {
     process.env.ATLAS_ENTERPRISE_ENABLED = "true";
     expect(resolveDeps({ spec: FIXTURE_SPEC }).stepUpWrites).toBe(true);
@@ -572,6 +605,61 @@ describe("agent-auth per-org token minting (#4410)", () => {
       body: { error: "internal_error" },
     });
   });
+
+  it("upstream contract: minting through the REAL apiKey plugin stores the expiry + workspace metadata on the key row", async () => {
+    // The stub-based tests above pin what Atlas SENDS; this pins what Better
+    // Auth STORES — the half a `better-auth` bump could break while every stub
+    // test stayed green (e.g. a renamed `expiresIn` silently ignored).
+    const now = new Date();
+    const userRow = {
+      id: "user_1", name: "U", email: "u@example.com", emailVerified: true,
+      createdAt: now, updatedAt: now,
+    };
+    const apikeyRows: Array<Record<string, unknown>> = [];
+    const instance = betterAuth({
+      baseURL: BASE,
+      secret: "test-secret-at-least-32-characters-long!!",
+      database: memoryAdapter({
+        user: [userRow], session: [], account: [], verification: [], apikey: apikeyRows,
+      }),
+      // MIRROR of server.ts's apiKey() registration (metadata + the 15-minute
+      // minExpiresIn are both load-bearing: without the latter, the plugin's
+      // 1-DAY default minimum rejects the agent TTL with EXPIRES_IN_IS_TOO_SMALL
+      // — the exact production regression this test exists to catch).
+      plugins: [
+        apiKeyPlugin({
+          enableMetadata: true,
+          enableSessionForAPIKeys: true,
+          keyExpiration: { minExpiresIn: 15 / (60 * 24) },
+        }),
+      ],
+    });
+    const rawCreate = (instance.api as { createApiKey?: unknown }).createApiKey;
+    // The exact surface the production runtime-narrowing trusts.
+    expect(typeof rawCreate).toBe("function");
+    const token = await mintWorkspaceApiKeyVia(rawCreate as CreateWorkspaceApiKey, {
+      user,
+      workspaceId: "wsA",
+    });
+    expect(token.length).toBeGreaterThan(0);
+    // Read the STORED row back through the adapter (the memory adapter copies
+    // its seed arrays, so the row must be queried, not observed by reference).
+    const ctx = await instance.$context;
+    const rows = (await ctx.adapter.findMany({
+      model: "apikey",
+    })) as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    // The plugin stores the owning user under `referenceId`.
+    expect(row.referenceId).toBe("user_1");
+    // The 15-min TTL actually landed on the stored row (a silently-ignored
+    // `expiresIn` would leave a never-expiring credential).
+    const expiresAt = new Date(String(row.expiresAt)).getTime();
+    const createdAt = new Date(String(row.createdAt)).getTime();
+    expect(expiresAt - createdAt).toBe(15 * 60 * 1000);
+    const meta = typeof row.metadata === "string" ? JSON.parse(row.metadata) : row.metadata;
+    expect(meta).toMatchObject({ atlasWorkspaceKey: true, orgId: "wsA" });
+  });
 });
 
 // ── Plugin contract ─────────────────────────────────────────────────────────
@@ -604,6 +692,103 @@ describe("agent-auth plugin contract (#4410)", () => {
     // capability set, never a crash. The surface stays default-off + 404-gated.
     const plugin = buildAgentAuthPlugin({ spec: null });
     expect(plugin.id).toBe("agent-auth");
+  });
+
+  it("wires the audit bridge as onEvent (drop that line and the whole agent.* trail silently disappears)", () => {
+    const opts = buildAgentAuthPluginOptions(
+      resolveDeps({
+        spec: FIXTURE_SPEC,
+        fetch: async () => new Response("{}", { status: 200 }),
+        mintToken: async () => "wskey",
+        baseUrl: "http://internal",
+        deviceAuthorizationPage: "https://app.example.com/agent/approve",
+        stepUpWrites: false,
+        webauthnRpId: "app.example.com",
+        webauthnOrigin: "https://app.example.com",
+        cibaApproval: false,
+      }),
+    );
+    // Identity, not shape: the audit unit tests all drive createAgentAuthAuditor
+    // directly, so ONLY this assertion goes red if the plugin factory stops
+    // passing the bridge ("unit-tested but unwired").
+    expect(opts.onEvent).toBe(auditAgentAuthEvent);
+  });
+});
+
+// ── Workspace token cache (createWorkspaceTokenMinter) ──────────────────────
+//
+// The cache sits between resolveHeaders and the Better Auth mint. Its one
+// unforgivable failure mode is key confusion: returning workspace A's cached
+// token for a workspace-B execution would be a cross-workspace credential leak.
+
+describe("agent-auth workspace token cache", () => {
+  const cacheUser = createAtlasUser("user_1", "managed", "U", { activeOrganizationId: "wsA" });
+  const otherUser = createAtlasUser("user_2", "managed", "V", { activeOrganizationId: "wsA" });
+
+  function cacheHarness(opts?: { ttlSeconds?: number; refreshBeforeMs?: number; maxEntries?: number }) {
+    let clock = 0;
+    const minted: string[] = [];
+    const minter = createWorkspaceTokenMinter(
+      async ({ user: u, workspaceId }) => {
+        const token = `tok_${u.id}_${workspaceId}_${minted.length}`;
+        minted.push(token);
+        return token;
+      },
+      { ...opts, now: () => clock },
+    );
+    return { minter, minted, advance: (ms: number) => (clock += ms) };
+  }
+
+  it("caches per (user, workspace): repeat calls reuse the token, no re-mint", async () => {
+    const { minter, minted } = cacheHarness({ ttlSeconds: 900, refreshBeforeMs: 120_000 });
+    const first = await minter({ user: cacheUser, workspaceId: "wsA" });
+    const second = await minter({ user: cacheUser, workspaceId: "wsA" });
+    expect(second).toBe(first);
+    expect(minted).toHaveLength(1);
+  });
+
+  it("NEVER returns one workspace's token for another workspace (cache-key isolation)", async () => {
+    const { minter, minted } = cacheHarness({ ttlSeconds: 900, refreshBeforeMs: 120_000 });
+    const a = await minter({ user: cacheUser, workspaceId: "wsA" });
+    const b = await minter({ user: cacheUser, workspaceId: "wsB" });
+    expect(b).not.toBe(a);
+    expect(b).toContain("wsB");
+    expect(minted).toHaveLength(2);
+    // …and per-user too: same workspace, different owning user ⇒ distinct token.
+    const c = await minter({ user: otherUser, workspaceId: "wsA" });
+    expect(c).not.toBe(a);
+    expect(c).toContain("user_2");
+  });
+
+  it("re-mints when the cached token is inside the refresh-before-expiry window", async () => {
+    const { minter, minted, advance } = cacheHarness({ ttlSeconds: 900, refreshBeforeMs: 120_000 });
+    const first = await minter({ user: cacheUser, workspaceId: "wsA" });
+    // Just before the window: still cached.
+    advance(900_000 - 120_000 - 1);
+    expect(await minter({ user: cacheUser, workspaceId: "wsA" })).toBe(first);
+    // Into the window: a proxied call must never race expiry — re-mint.
+    advance(2);
+    const refreshed = await minter({ user: cacheUser, workspaceId: "wsA" });
+    expect(refreshed).not.toBe(first);
+    expect(minted).toHaveLength(2);
+  });
+
+  it("stays bounded: overflowing maxEntries sweeps stale entries and keeps working", async () => {
+    const { minter, minted, advance } = cacheHarness({
+      ttlSeconds: 900,
+      refreshBeforeMs: 120_000,
+      maxEntries: 2,
+    });
+    await minter({ user: cacheUser, workspaceId: "ws1" });
+    await minter({ user: cacheUser, workspaceId: "ws2" });
+    // Let both go stale, then a third distinct pair triggers the sweep.
+    advance(900_000);
+    await minter({ user: cacheUser, workspaceId: "ws3" });
+    expect(minted).toHaveLength(3);
+    // Post-sweep the cache is intact: ws3 is cached, the stale pair re-mints.
+    expect(await minter({ user: cacheUser, workspaceId: "ws3" })).toBe(minted[2]);
+    const ws1Again = await minter({ user: cacheUser, workspaceId: "ws1" });
+    expect(ws1Again).toBe(minted[3]);
   });
 });
 
@@ -651,6 +836,7 @@ describe("agent-auth capability execution (#4410)", () => {
   afterEach(() => {
     workspacesForUser = () => ["wsA"];
     enabledForWorkspace = () => true;
+    enablementForWorkspace = null;
     lastForwarded = null;
     mintedFor = [];
     fetchResponder = okResponder;
@@ -662,7 +848,13 @@ describe("agent-auth capability execution (#4410)", () => {
   });
 
   function makeInstance(
-    agents: Array<{ id: string; workspaceId: string; grantStatus: "active" | "revoked" }>,
+    agents: Array<{
+      id: string;
+      workspaceId: string;
+      grantStatus: "active" | "revoked";
+      /** Capability the grant is for — defaults to the safe read. A BLOCKED name here models a grant that exists despite the policy (the execute-time re-check target). */
+      capability?: string;
+    }>,
   ) {
     const now = new Date();
     const host = {
@@ -680,7 +872,7 @@ describe("agent-auth capability execution (#4410)", () => {
       createdAt: now, updatedAt: now,
     }));
     const grantRows = agents.map((a) => ({
-      id: `grant_${a.id}`, agentId: a.id, capability: SAFE_CAP,
+      id: `grant_${a.id}`, agentId: a.id, capability: a.capability ?? SAFE_CAP,
       deniedBy: null, grantedBy: "user_1", expiresAt: null, status: a.grantStatus,
       constraints: null, createdAt: now, updatedAt: now,
     }));
@@ -704,6 +896,8 @@ describe("agent-auth capability execution (#4410)", () => {
     aud?: string;
     capabilities?: string[];
     expired?: boolean;
+    /** Sign with a DIFFERENT key than the registered one (forged-signature case). */
+    signWith?: AgentPrivateKey;
   }): Promise<string> {
     const jwt = new SignJWT({
       ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : { capabilities: [SAFE_CAP] }),
@@ -715,7 +909,7 @@ describe("agent-auth capability execution (#4410)", () => {
       .setJti(`jti_${opts.agentId}_${crypto.randomUUID()}`)
       .setIssuedAt(opts.expired ? Math.floor(Date.now() / 1000) - 3600 : undefined)
       .setExpirationTime(opts.expired ? Math.floor(Date.now() / 1000) - 1800 : "2m");
-    return jwt.sign(privateKey);
+    return jwt.sign(opts.signWith ?? privateKey);
   }
 
   async function execute(
@@ -796,6 +990,79 @@ describe("agent-auth capability execution (#4410)", () => {
     expect(body.error).toBe("invalid_jwt");
   });
 
+  it("forged signature: a JWT signed by a foreign keypair → 401 invalid_jwt", async () => {
+    const forged = await generateKeyPair("EdDSA", { crv: "Ed25519", extractable: true });
+    const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
+    const { status, body } = await execute(
+      instance,
+      await mintJWT({ agentId: "agent_1", signWith: forged.privateKey }),
+    );
+    expect(status).toBe(401);
+    expect(body.error).toBe("invalid_jwt");
+    expect(mintedFor).toEqual([]);
+  });
+
+  it("jti replay: presenting the same token twice → second execute 401 jti_replay", async () => {
+    const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
+    const token = await mintJWT({ agentId: "agent_1" });
+    const first = await execute(instance, token);
+    expect(first.status).toBe(200);
+    const replay = await execute(instance, token);
+    expect(replay.status).toBe(401);
+    expect(replay.body.error).toBe("jti_replay");
+    // Only the first (legitimate) execute minted + forwarded.
+    expect(mintedFor).toHaveLength(1);
+  });
+
+  it("blocked capability with a seeded ACTIVE grant → 403 capability_blocked before mint/forward (execute-time re-check)", async () => {
+    // As of 0.6.2 the library enforces `blockedCapabilities` at grant/approve
+    // time but NOT at execute — this drives the grant-exists-anyway state
+    // (seeded directly into the adapter, exactly how SAFE_CAP grants are seeded)
+    // and pins Atlas's own execute-time re-check: the containment set must hold
+    // regardless of grant state, or a write/admin op reaches the in-process
+    // proxy under a real per-org key.
+    workspacesForUser = () => ["wsA"];
+    const instance = makeInstance([
+      { id: "agent_1", workspaceId: "wsA", grantStatus: "active", capability: "postQuery" },
+    ]);
+    const { status, body } = await execute(
+      instance,
+      await mintJWT({ agentId: "agent_1", capabilities: ["postQuery"] }),
+      "postQuery",
+    );
+    expect(status).toBe(403);
+    expect(body.error).toBe("capability_blocked");
+    expect(mintedFor).toEqual([]);
+    expect(lastForwarded).toBeNull();
+  });
+
+  it("membership lookup FAILURE → retriable 500 with a ref, never a 403 denial (infra ≠ authorization)", async () => {
+    workspacesForUser = () => {
+      throw new Error("internal DB unreachable at secret-db-host:5432");
+    };
+    const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
+    const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
+    expect(status).toBe(500);
+    expect(body.error).toBe("internal_error");
+    const message = JSON.stringify(body);
+    expect(message).toContain("ref ");
+    expect(message).toContain("Retry"); // transient guidance, not "not authorized"
+    expect(message).not.toContain("secret-db-host"); // no infra detail leaked
+    expect(mintedFor).toEqual([]);
+    expect(lastForwarded).toBeNull();
+  });
+
+  it("workspace enablement INDETERMINATE (settings read failed) → retriable 500, not a 404 claiming an opt-out", async () => {
+    enablementForWorkspace = () => "indeterminate";
+    const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
+    const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
+    expect(status).toBe(500);
+    expect(body.error).toBe("internal_error");
+    expect(JSON.stringify(body)).toContain("ref ");
+    expect(mintedFor).toEqual([]);
+    expect(lastForwarded).toBeNull();
+  });
+
   it("revoked grant → 403 grant_revoked", async () => {
     const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "revoked" }]);
     const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
@@ -870,6 +1137,22 @@ describe("agent-auth capability execution (#4410)", () => {
     const message = JSON.stringify(body);
     expect(message).toContain("backoff");
     expect(message).not.toContain("will not succeed"); // transient, not a permanent client error
+  });
+
+  it("upstream 408: a timeout is retriable — status preserved, backoff advised (the other RETRIABLE_UPSTREAM_STATUS arm)", async () => {
+    fetchResponder = () =>
+      new Response(JSON.stringify({ error: "request_timeout" }), {
+        status: 408,
+        headers: { "content-type": "application/json" },
+      });
+    const instance = makeInstance([{ id: "agent_1", workspaceId: "wsA", grantStatus: "active" }]);
+    const { status, body } = await execute(instance, await mintJWT({ agentId: "agent_1" }));
+    expect(status).toBe(408);
+    // 408 has no dedicated machine code — it carries internal_error, unlike 429's rate_limited.
+    expect(body.error).toBe("internal_error");
+    const message = JSON.stringify(body);
+    expect(message).toContain("backoff");
+    expect(message).not.toContain("will not succeed");
   });
 
   it("upstream 5xx: an upstream 500 collapses to a non-leaking opaque 500", async () => {

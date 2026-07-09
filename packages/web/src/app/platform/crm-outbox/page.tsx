@@ -352,7 +352,7 @@ function CrmOutboxPageContent() {
       <Sheet
         open={!!selectedId}
         onOpenChange={(open) => {
-          if (!open) setSelectedId(null);
+          if (!open) void setSelectedId(null);
         }}
       >
         <SheetContent className="w-full sm:max-w-2xl">

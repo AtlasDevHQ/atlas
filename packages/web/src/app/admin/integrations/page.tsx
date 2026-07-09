@@ -148,13 +148,15 @@ export default function IntegrationsPage() {
 
     if (installed) {
       setPendingSuccessPlatform(asLabeledPlatform(installed));
-      refetchStatus();
+      // fire-and-forget: background refetch to reflect the Connected state
+      void refetchStatus();
     }
     if (reconnect) {
       toast.warning(`${platformLabel(reconnect)} install completed but credentials didn't persist`, {
         description: "Click Reconnect on the card to retry the OAuth dance.",
       });
-      refetchStatus();
+      // fire-and-forget: background refetch to reflect the Connected state
+      void refetchStatus();
     }
     if (errParam) {
       toast.error(`Couldn't connect ${platformLabel(errParam)}`, {

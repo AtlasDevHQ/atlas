@@ -371,7 +371,7 @@ export const createSSOProvider = (
   eeWrite("sso", "SSO provider management", Effect.gen(function* () {
     // Validate type
     if (!isValidSSOProviderType(input.type)) {
-      return yield* Effect.fail(new SSOError({ message: `Invalid SSO provider type: ${input.type}. Must be one of: ${SSO_PROVIDER_TYPES.join(", ")}`, code: "validation" }));
+      return yield* Effect.fail(new SSOError({ message: `Invalid SSO provider type: ${String(input.type)}. Must be one of: ${SSO_PROVIDER_TYPES.join(", ")}`, code: "validation" }));
     }
 
     // Validate domain

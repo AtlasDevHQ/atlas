@@ -145,7 +145,8 @@ export default function ActionsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    // fire-and-forget: async IIFE with internal try/catch; cancelled flag guards stale writes
+    void (async () => {
       setLoading(true);
       setError(null);
       try {

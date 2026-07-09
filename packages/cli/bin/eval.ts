@@ -190,11 +190,11 @@ export function validateCase(
   }
 
   if (!isEvalSchema(doc.schema)) {
-    throw new Error(`Invalid schema "${doc.schema}" in ${filePath}. Valid: ${VALID_SCHEMAS.join(", ")}`);
+    throw new Error(`Invalid schema "${String(doc.schema)}" in ${filePath}. Valid: ${VALID_SCHEMAS.join(", ")}`);
   }
 
   if (!VALID_DIFFICULTIES.includes(doc.difficulty as typeof VALID_DIFFICULTIES[number])) {
-    throw new Error(`Invalid difficulty "${doc.difficulty}" in ${filePath}. Valid: ${VALID_DIFFICULTIES.join(", ")}`);
+    throw new Error(`Invalid difficulty "${String(doc.difficulty)}" in ${filePath}. Valid: ${VALID_DIFFICULTIES.join(", ")}`);
   }
 
   if (typeof doc.id !== "string" || !doc.id.trim()) {

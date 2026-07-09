@@ -164,7 +164,8 @@ export default function UsageDashboardPage() {
             message={portalError}
             onRetry={() => {
               clearPortalError();
-              openPortal();
+              // fire-and-forget: opens billing portal
+              void openPortal();
             }}
           />
         )}

@@ -178,7 +178,7 @@ export async function startEvalAuthServer(
         : new Response("eval auth server not yet wired", { status: 503 }),
   });
   if (typeof server.port !== "number") {
-    server.stop(true);
+    void server.stop(true); // fire-and-forget: best-effort teardown before throwing on bind failure
     throw new Error("Bun.serve did not bind a TCP port for eval auth");
   }
   const baseUrl = `http://localhost:${server.port}`;
@@ -249,12 +249,12 @@ export async function startEvalAuthServer(
       close: () => {
         if (closed) return;
         closed = true;
-        server.stop(true);
+        void server.stop(true); // fire-and-forget: best-effort server teardown on close
         restoreEnv();
       },
     };
   } catch (err) {
-    server.stop(true);
+    void server.stop(true); // fire-and-forget: best-effort teardown before rethrow
     restoreEnv();
     throw err;
   }

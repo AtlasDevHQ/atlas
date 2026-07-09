@@ -633,7 +633,8 @@ export default function SemanticPage() {
       }
     }
 
-    fetchAll().finally(() => {
+    // fire-and-forget: initial data load; cancellation guarded via `cancelled`
+    void fetchAll().finally(() => {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
@@ -641,7 +642,8 @@ export default function SemanticPage() {
 
   const handleSelect = (sel: SemanticSelection) => {
     startTransition(() => {
-      setParams({
+      // fire-and-forget: URL state navigation
+      void setParams({
         file: selectionToFileParam(sel),
         view: "pretty",
         group: selectionToGroupParam(sel),
@@ -759,7 +761,8 @@ export default function SemanticPage() {
       refetchAll();
       // Navigate to the new/updated entity
       startTransition(() => {
-        setParams({ file: `entities/${name}`, view: "pretty" });
+        // fire-and-forget: URL state navigation
+        void setParams({ file: `entities/${name}`, view: "pretty" });
       });
     }
   };
@@ -779,7 +782,8 @@ export default function SemanticPage() {
       // Clear selection if deleted entity was selected
       if (selection?.type === "entity" && selection.name === deleteTarget) {
         startTransition(() => {
-          setParams({ file: null, view: "pretty", group: null });
+          // fire-and-forget: URL state navigation
+          void setParams({ file: null, view: "pretty", group: null });
         });
       }
     }
@@ -1064,7 +1068,7 @@ export default function SemanticPage() {
                   );
                 })()}
               </div>
-              <ViewToggle mode={viewMode} onChange={(m) => { startTransition(() => { setParams({ view: m }); }); }} showHistory={isSaas && selection?.type === "entity" && !selectionReadOnly} />
+              <ViewToggle mode={viewMode} onChange={(m) => { startTransition(() => { void setParams({ view: m }); }); }} showHistory={isSaas && selection?.type === "entity" && !selectionReadOnly} />
             </div>
           )}
 
@@ -1083,7 +1087,7 @@ export default function SemanticPage() {
               entityName={selection.name}
               onRollback={() => {
                 refetchAll();
-                startTransition(() => { setParams({ view: "pretty" }); });
+                startTransition(() => { void setParams({ view: "pretty" }); });
               }}
             />
           ) : viewMode === "yaml" ? (
@@ -1205,7 +1209,7 @@ export default function SemanticPage() {
             <AlertDialogAction
               onClick={(e) => {
                 e.preventDefault(); // prevent auto-close, we close on success
-                handleDeleteEntity();
+                void handleDeleteEntity();
               }}
               disabled={deletingEntity}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"

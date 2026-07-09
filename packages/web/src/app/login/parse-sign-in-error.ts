@@ -97,7 +97,7 @@ export function parseSignInError(input: SignInErrorInput): SignInErrorState {
       };
     }
     const message =
-      input.thrown instanceof Error ? input.thrown.message : String(input.thrown);
+      input.thrown instanceof Error ? input.thrown.message : String(input.thrown as string);
     return {
       kind: "unknown",
       title: UNKNOWN_FALLBACK.title,

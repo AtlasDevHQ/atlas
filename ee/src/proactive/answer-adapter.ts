@@ -658,7 +658,7 @@ function formatCell(value: unknown): string {
   // canonical and shorter.
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
+  return String(value as string);
 }
 
 function escapeCell(value: string): string {

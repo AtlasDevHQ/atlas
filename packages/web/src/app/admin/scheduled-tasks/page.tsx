@@ -126,12 +126,12 @@ export default function ScheduledTasksPage() {
   // ── Fetch detail (with recent runs) ─────────────────────────────
   async function handleRowClick(taskId: string) {
     if (expandedId === taskId) {
-      setParams({ expanded: null });
+      void setParams({ expanded: null }); // fire-and-forget: URL state setter
       setSelectedTask(null);
       setDetailError(null);
       return;
     }
-    setParams({ expanded: taskId });
+    void setParams({ expanded: taskId }); // fire-and-forget: URL state setter
     setSelectedTask(null);
     setDetailError(null);
     setDetailLoading(true);
@@ -189,7 +189,7 @@ export default function ScheduledTasksPage() {
 
   // ── Filter change resets pagination ─────────────────────────────
   function changeFilter(filter: EnabledFilter) {
-    setParams({ enabled: filter, page: 1, expanded: null });
+    void setParams({ enabled: filter, page: 1, expanded: null }); // fire-and-forget: URL state setter
     setSelectedTask(null);
   }
 

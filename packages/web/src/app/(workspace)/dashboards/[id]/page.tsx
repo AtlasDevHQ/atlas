@@ -820,8 +820,9 @@ export default function DashboardViewPage() {
   // changed after an accept) AND the stage list (the row is no longer
   // pending). Both calls are cheap (org-scoped GETs).
   function handleStagesChanged() {
-    refetch();
-    refetchStages();
+    // fire-and-forget: refresh dashboard + stage list after an accept/discard; UI updates on resolve
+    void refetch();
+    void refetchStages();
   }
 
   // #2267 — re-render every card when the parameter bar commits a change.

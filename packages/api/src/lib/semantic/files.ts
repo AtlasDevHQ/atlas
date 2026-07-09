@@ -139,7 +139,7 @@ export function discoverEntities(root: string): DiscoverEntitiesResult {
 
     const fileStem = path.basename(filePath, ".yml");
     const displayName =
-      typeof raw.name === "string" && raw.name ? raw.name : String(raw.table);
+      typeof raw.name === "string" && raw.name ? raw.name : String(raw.table as string);
     // Resolve the effective group directory-canonically (ADR-0012) so it
     // matches the importer + file-based whitelist; the raw `connection`/`source`
     // fields are kept for display/back-compat but must not drive scoping.
@@ -147,7 +147,7 @@ export function discoverEntities(root: string): DiscoverEntitiesResult {
     entities.push({
       name: fileStem,
       displayName,
-      table: String(raw.table),
+      table: String(raw.table as string),
       description: typeof raw.description === "string" ? raw.description : "",
       columnCount: dimensions.length,
       joinCount: Array.isArray(joins) ? joins.length : 0,
@@ -214,7 +214,7 @@ export function discoverTables(root: string, allowed?: ReadonlySet<string>): Dis
       // `raw` is already `Record<string, unknown>`, so `raw.identifier_style`
       // is `unknown` — no cast needed to compare it to the opaque marker.
       const opaque = raw.identifier_style === "opaque";
-      const keys = tableWhitelistKeys(String(raw.table), { opaque });
+      const keys = tableWhitelistKeys(String(raw.table as string), { opaque });
       if (!keys.some((k) => allowed.has(k))) continue;
     }
 
@@ -244,7 +244,7 @@ export function discoverTables(root: string, allowed?: ReadonlySet<string>): Dis
     }
 
     tables.push({
-      table: String(raw.table),
+      table: String(raw.table as string),
       description: typeof raw.description === "string" ? raw.description : "",
       columns,
     });

@@ -894,7 +894,8 @@ export class ConnectionRegistry {
 
     // Fire warmup probes in background (don't block the first request)
     if (this.orgPoolSettings.warmupProbes > 0) {
-      this._warmupEntry(entry, this.orgPoolSettings.warmupProbes, { orgId, connectionId });
+      // fire-and-forget: background warmup probes must not block the first request
+      void this._warmupEntry(entry, this.orgPoolSettings.warmupProbes, { orgId, connectionId });
     }
 
     return newConn;

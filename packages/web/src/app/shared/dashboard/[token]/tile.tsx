@@ -16,7 +16,7 @@ const ResultChart = dynamic(
 );
 
 function toStringRows(columns: string[], rows: Record<string, unknown>[]): string[][] {
-  return rows.map((row) => columns.map((col) => (row[col] == null ? "" : String(row[col]))));
+  return rows.map((row) => columns.map((col) => (row[col] == null ? "" : String(row[col] as string))));
 }
 
 /** Cached rows come from a JSONB column — drop anything that isn't a plain object so a stale or corrupt row can't crash render. */

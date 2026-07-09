@@ -259,7 +259,8 @@ export default function AuditPage() {
   );
 
   function clearFilters() {
-    setParams({
+    // fire-and-forget: nuqs URL update; no need to await navigation
+    void setParams({
       search: "",
       connection: "",
       table: "",
@@ -382,7 +383,7 @@ export default function AuditPage() {
           {exportError && (
             <ErrorBanner
               message={exportError}
-              onRetry={() => { setExportError(null); handleExport(); }}
+              onRetry={() => { setExportError(null); void handleExport(); }}
             />
           )}
 

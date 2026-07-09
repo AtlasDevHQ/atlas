@@ -201,8 +201,8 @@ function rowToStagedChange(r: Record<string, unknown>): StagedChange {
     status: r.status as StageStatus,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
-    appliedAt: r.applied_at == null ? null : String(r.applied_at),
-    discardedAt: r.discarded_at == null ? null : String(r.discarded_at),
+    appliedAt: r.applied_at == null ? null : String(r.applied_at as string),
+    discardedAt: r.discarded_at == null ? null : String(r.discarded_at as string),
   };
 }
 

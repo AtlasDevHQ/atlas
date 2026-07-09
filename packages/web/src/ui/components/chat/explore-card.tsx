@@ -17,7 +17,7 @@ export function ExploreCard({ part }: { part: unknown }) {
       >
         <span className="font-mono text-zinc-400 dark:text-zinc-600">$</span>
         <span className="min-w-0 flex-1 truncate font-mono">
-          {String(args.command ?? "")}
+          {String((args.command as string | number | boolean | null | undefined) ?? "")}
         </span>
         {done ? (
           <span className="text-zinc-400 opacity-0 transition-opacity group-hover/explore:opacity-100 dark:text-zinc-600">{open ? "▾" : "▸"}</span>
@@ -28,7 +28,7 @@ export function ExploreCard({ part }: { part: unknown }) {
       {open && done && (
         <pre className="mt-0.5 max-h-60 overflow-auto whitespace-pre-wrap rounded bg-zinc-50 px-3 py-2 font-mono text-xs leading-relaxed text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
           <span className="text-zinc-400 dark:text-zinc-600">$ </span>
-          <span className="text-zinc-700 dark:text-zinc-300">{String(args.command ?? "")}</span>
+          <span className="text-zinc-700 dark:text-zinc-300">{String((args.command as string | number | boolean | null | undefined) ?? "")}</span>
           {"\n\n"}
           {result != null
             ? typeof result === "string"

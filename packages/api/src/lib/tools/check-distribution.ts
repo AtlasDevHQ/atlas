@@ -83,9 +83,9 @@ export const checkDataDistribution = tool({
         30000,
       );
       const countRow = countResult.rows[0] ?? {};
-      const totalCount = parseInt(String(countRow.total ?? "0"), 10);
-      const nullCount = parseInt(String(countRow.null_count ?? "0"), 10);
-      const distinctCount = parseInt(String(countRow.distinct_count ?? "0"), 10);
+      const totalCount = parseInt(String((countRow.total as string | number) ?? "0"), 10);
+      const nullCount = parseInt(String((countRow.null_count as string | number) ?? "0"), 10);
+      const distinctCount = parseInt(String((countRow.distinct_count as string | number) ?? "0"), 10);
 
       // Top values by frequency
       const textCast = dbType === "mysql" ? `CAST(${col} AS CHAR)` : `${col}::text`;

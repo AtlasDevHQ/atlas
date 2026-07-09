@@ -24,6 +24,6 @@ export function generateId(
   )();
 
   return prefix && prefix in prefixes
-    ? `${prefixes[prefix]}${separator}${id}`
+    ? `${String(prefixes[prefix])}${separator}${id}`
     : id;
 }

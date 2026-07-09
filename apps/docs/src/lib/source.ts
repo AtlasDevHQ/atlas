@@ -32,9 +32,7 @@ export const selfHostedSource = buildSectionSource({
  * A page from either human section. Both sections share the same frontmatter
  * schema, so the shared renderer can accept a page from either mount.
  */
-export type SectionPage =
-  | InferPageType<typeof source>
-  | InferPageType<typeof selfHostedSource>;
+export type SectionPage = InferPageType<typeof source>;
 
 function toEntry(page: SectionPage): ContentEntry {
   return {

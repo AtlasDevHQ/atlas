@@ -45,7 +45,8 @@ export class QueryModal extends Modal {
     this.inputEl.addEventListener("keydown", (e: KeyboardEvent) => {
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        this.runQuery();
+        // fire-and-forget: keydown handler kicks off the async query; UI updates land via runQuery's own awaits
+        void this.runQuery();
       }
     });
   }
@@ -125,7 +126,7 @@ export class QueryModal extends Modal {
     for (const row of display) {
       const tr = tbody.createEl("tr");
       for (const col of columns) {
-        tr.createEl("td", { text: String(row[col] ?? "") });
+        tr.createEl("td", { text: String((row[col] ?? "") as string) });
       }
     }
 

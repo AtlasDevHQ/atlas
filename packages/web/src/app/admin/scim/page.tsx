@@ -259,7 +259,7 @@ export default function SCIMPage() {
           loading={loading}
           error={error}
           feature="SCIM"
-          onRetry={() => { refetchStatus(); refetchMappings(); }}
+          onRetry={() => { void refetchStatus(); void refetchMappings(); }}
           loadingMessage="Loading SCIM configuration..."
           emptyIcon={Cable}
           emptyTitle="No SCIM configuration"
@@ -518,7 +518,7 @@ export default function SCIMPage() {
       <AddMappingDialog
         open={addMappingOpen}
         onOpenChange={setAddMappingOpen}
-        onAdded={() => { refetchMappings(); }}
+        onAdded={() => { void refetchMappings(); }}
       />
 
       {/* Delete Confirmation Dialog */}

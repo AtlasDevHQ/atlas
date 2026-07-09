@@ -66,7 +66,13 @@ export function isFieldVisible(
 ): boolean {
   if (!field.showWhen) return true;
   const current = values[field.showWhen.field];
-  return field.showWhen.equals.includes(typeof current === "string" ? current : String(current ?? ""));
+  return field.showWhen.equals.includes(
+    typeof current === "string"
+      ? current
+      : current == null || typeof current === "object"
+        ? ""
+        : String(current),
+  );
 }
 
 /**

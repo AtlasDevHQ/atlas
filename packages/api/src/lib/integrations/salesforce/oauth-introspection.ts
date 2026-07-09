@@ -128,7 +128,7 @@ export async function profileSalesforceOAuth(
             ([k, v]) => k !== "attributes" && (typeof v === "number" || typeof v === "string"),
           )?.[1];
           const countVal = first.expr0 ?? first.count ?? fallback;
-          rowCount = parseInt(String(countVal ?? "0"), 10);
+          rowCount = parseInt(String((countVal ?? "0") as unknown), 10);
           if (Number.isNaN(rowCount)) rowCount = 0;
         }
       } catch (countErr) {

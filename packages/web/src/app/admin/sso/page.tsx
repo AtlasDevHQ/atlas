@@ -225,7 +225,7 @@ export default function SSOPage() {
           loading={loading}
           error={error}
           feature="SSO"
-          onRetry={() => { refetchProviders(); refetchEnforcement(); }}
+          onRetry={() => { void refetchProviders(); void refetchEnforcement(); }}
           loadingMessage="Loading SSO configuration..."
           isEmpty={false}
         >

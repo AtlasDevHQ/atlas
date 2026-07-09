@@ -275,7 +275,7 @@ class ConfluenceApi {
     const spaceId = await this.ensureSpaceId();
     const params = new URLSearchParams({ status: "current", limit: String(PAGE_LIMIT) });
     if (opts.withBody) params.set("body-format", "storage");
-    let nextUrl: string | null = `${this.base}/api/v2/spaces/${encodeURIComponent(spaceId)}/pages?${params}`;
+    let nextUrl: string | null = `${this.base}/api/v2/spaces/${encodeURIComponent(spaceId)}/pages?${params.toString()}`;
 
     const pages: EnumeratedPage[] = [];
     let skippedMalformed = 0;

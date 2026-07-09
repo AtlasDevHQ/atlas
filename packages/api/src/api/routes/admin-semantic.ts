@@ -865,9 +865,9 @@ export function registerSemanticEditorRoutes(
         }
 
         const columns = queryResult.rows.map((row) => ({
-          name: String(row.name ?? ""),
-          type: String(row.type ?? ""),
-          nullable: String(row.nullable ?? "YES").toUpperCase() === "YES",
+          name: String((row.name as string) ?? ""),
+          type: String((row.type as string) ?? ""),
+          nullable: String((row.nullable as string) ?? "YES").toUpperCase() === "YES",
         }));
 
         return c.json({ columns }, 200);

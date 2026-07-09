@@ -22,7 +22,8 @@ export function SQLBlock({ sql }: { sql: string }) {
 
   useEffect(() => {
     if (_cache) return;
-    Promise.all([
+    // fire-and-forget: lazy-load the syntax highlighter; setMod handles the result
+    void Promise.all([
       import("react-syntax-highlighter"),
       import("react-syntax-highlighter/dist/esm/styles/prism"),
     ]).then(([sh, styles]) => {

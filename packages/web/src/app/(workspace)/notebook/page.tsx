@@ -67,7 +67,8 @@ function NotebookContent() {
     isCrossOrigin: isCrossOrigin(),
     getConversationId: () => conversationId ?? null,
     onNewConversationId: (id) => {
-      setParams({ id });
+      // fire-and-forget: nuqs URL update; navigation state settles asynchronously
+      void setParams({ id });
       setTimeout(() => {
         refreshConvosRef.current().catch((err: unknown) => {
           console.warn(
@@ -169,7 +170,8 @@ function NotebookContent() {
         );
       }
     }
-    loadRootBranches();
+    // fire-and-forget: async load with internal try/catch; cancelled flag guards stale writes
+    void loadRootBranches();
     return () => { cancelled = true; };
   }, [serverNotebookState?.forkRootId, conversationId, convos.getConversationData]);
 
@@ -212,7 +214,8 @@ function NotebookContent() {
         }
       }
     }
-    load();
+    // fire-and-forget: async load with internal try/catch; cancelled flag guards stale writes
+    void load();
     return () => {
       cancelled = true;
     };
@@ -221,7 +224,8 @@ function NotebookContent() {
   // Server save callback (passed to useNotebook for debounced persistence)
   const saveToServer = useCallback((state: NotebookStateWire) => {
     if (!conversationId || conversationId.startsWith("temp:")) return;
-    convos.saveNotebookState(conversationId, state);
+    // fire-and-forget: debounced background persistence; failures are non-blocking
+    void convos.saveNotebookState(conversationId, state);
   }, [conversationId, convos.saveNotebookState]);
 
   // Fork navigation callback

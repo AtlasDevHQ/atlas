@@ -34,7 +34,6 @@ import type {
   PIIConfidence,
   PIIColumnClassification,
   MaskingStrategy,
-  MaskingRole,
   UpdatePIIClassificationRequest,
 } from "@useatlas/types";
 import { PII_CATEGORIES, MASKING_STRATEGIES } from "@useatlas/types";
@@ -402,7 +401,7 @@ export interface MaskingContext {
   /** Organization ID. */
   orgId: string;
   /** User role — determines masking level. */
-  userRole: MaskingRole | string | undefined;
+  userRole: string | undefined;
   /**
    * Connection id the query ran against (#2341). When provided, the
    * masking lookup is filtered to classifications whose
@@ -550,7 +549,7 @@ export function maskValue(
   if (value == null) return value;
 
   // For non-string types, convert to string for masking
-  const str = String(value);
+  const str = String(value as string);
   if (str === "") return str;
 
   // Viewers/members always see full mask

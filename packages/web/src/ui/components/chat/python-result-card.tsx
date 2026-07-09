@@ -99,7 +99,7 @@ function PythonResultCardInner({ part, progressEvents }: { part: unknown; progre
             Running Python...
           </span>
           <span className="flex-1 truncate text-zinc-500 dark:text-zinc-400">
-            {String(args.explanation ?? "")}
+            {String((args.explanation as string) ?? "")}
           </span>
         </div>
         {(partialOutput || streamCharts.length > 0) && (
@@ -139,18 +139,18 @@ function PythonResultCardInner({ part, progressEvents }: { part: unknown; progre
           Python execution failed
         </div>
         <pre className="border-t border-red-200 px-3 py-2 text-xs whitespace-pre-wrap text-red-600 dark:border-red-900/50 dark:text-red-300">
-          {String(result.error ?? "Unknown error")}
+          {String((result.error as string) ?? "Unknown error")}
         </pre>
         {!!result.output && (
           <pre className="border-t border-red-200 px-3 py-2 text-xs whitespace-pre-wrap text-red-500 dark:border-red-900/50 dark:text-red-400">
-            {String(result.output)}
+            {String(result.output as string)}
           </pre>
         )}
       </div>
     );
   }
 
-  const output = result.output ? String(result.output) : null;
+  const output = result.output ? String(result.output as string) : null;
   const table = result.table as { columns: string[]; rows: unknown[][] } | undefined;
   const charts = Array.isArray(result.charts) ? (result.charts as PythonChart[]) : undefined;
   const rechartsCharts = Array.isArray(result.rechartsCharts) ? (result.rechartsCharts as RechartsChartConfig[]) : undefined;
@@ -169,7 +169,7 @@ function PythonResultCardInner({ part, progressEvents }: { part: unknown; progre
     <ResultCardBase
       badge="Python"
       badgeClassName="bg-emerald-100 text-emerald-700 dark:bg-emerald-600/20 dark:text-emerald-400"
-      title={String(args.explanation ?? "Python result")}
+      title={String((args.explanation as string) ?? "Python result")}
       contentClassName="space-y-2 px-3 py-2"
     >
       {output && (
@@ -234,7 +234,7 @@ function RechartsChartSection({ chart, dark }: { chart: RechartsChartConfig; dar
 
   const headers = [chart.categoryKey, ...chart.valueKeys];
   const rows: string[][] = chart.data.map((row) =>
-    headers.map((key) => (row[key] == null ? "" : String(row[key]))),
+    headers.map((key) => (row[key] == null ? "" : String(row[key] as string))),
   );
 
   // Build a synthetic detection result so ResultChart uses the backend's
@@ -262,7 +262,7 @@ function RechartsChartSection({ chart, dark }: { chart: RechartsChartConfig; dar
       const out: Record<string, string | number> = {};
       for (const key of headers) {
         const val = row[key];
-        out[key] = typeof val === "number" ? val : String(val ?? "");
+        out[key] = typeof val === "number" ? val : String((val as string) ?? "");
       }
       return out;
     }),

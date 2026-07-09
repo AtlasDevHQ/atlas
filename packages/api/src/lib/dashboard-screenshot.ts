@@ -208,7 +208,7 @@ async function computeSnapshotHash(
 // Use a loose `unknown` typed pair — we lazy-import playwright to avoid
 // pulling it into the import graph at module load time (some self-hosted
 // users may not install browsers).
-let cachedBrowser: unknown | null = null;
+let cachedBrowser: unknown = null;
 let browserShuttingDown = false;
 // Single-flight guard: N concurrent renders that find the cache empty (or a
 // dead handle) share ONE (close-dead + launch) instead of each spawning its

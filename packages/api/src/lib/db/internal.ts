@@ -1743,7 +1743,7 @@ export async function reviewSemanticAmendment(
 export function incrementPatternCount(
   id: string,
   sourceFingerprint?: string,
-  durationMs?: number | null | undefined,
+  durationMs?: number | null,
 ): void {
   const observation =
     typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0 ? durationMs : null;

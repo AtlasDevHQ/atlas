@@ -24,13 +24,13 @@ export const cliProfileLogger: ProfileLogger = {
   warn(obj, msg) {
     const ctx = [obj.table, obj.column].filter(Boolean).join(".");
     console.warn(
-      `  Warning: ${msg}${ctx ? ` (${ctx})` : ""}${obj.err ? `: ${obj.err}` : ""}`,
+      `  Warning: ${msg}${ctx ? ` (${ctx})` : ""}${obj.err ? `: ${String(obj.err as string)}` : ""}`,
     );
   },
   error(obj, msg) {
     const ctx = [obj.table, obj.column].filter(Boolean).join(".");
     console.error(
-      `  ${msg}${ctx ? ` (${ctx})` : ""}${obj.err ? `: ${obj.err}` : ""}`,
+      `  ${msg}${ctx ? ` (${ctx})` : ""}${obj.err ? `: ${String(obj.err as string)}` : ""}`,
     );
   },
 };

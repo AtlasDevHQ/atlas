@@ -184,7 +184,7 @@ export async function probePluginDatasourceConnection(
 
   // Capture the narrowed factory before the nested closure below — TS resets the
   // `typeof conn.createFromConfig === "function"` narrowing inside the async IIFE.
-  const createFromConfig = conn.createFromConfig;
+  const createFromConfig = conn.createFromConfig.bind(conn);
   let built: ProbeableConnection | undefined;
   let timedOut = false;
   // Track whether the salvage-close has already fired so we never double-close

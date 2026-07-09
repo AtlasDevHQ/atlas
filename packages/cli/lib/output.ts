@@ -11,12 +11,12 @@
 export function formatCellValue(value: unknown): string {
   if (value === null || value === undefined) return "(null)";
   if (typeof value === "number") return value.toLocaleString();
-  return String(value);
+  return String(value as string);
 }
 
 export function formatCsvValue(value: unknown): string {
   if (value === null || value === undefined) return "";
-  return String(value);
+  return String(value as string);
 }
 
 /** Quote a CSV field value per RFC 4180: wrap in double-quotes if it contains commas, quotes, or newlines. */

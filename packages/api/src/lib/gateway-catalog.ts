@@ -106,7 +106,7 @@ interface RawCatalogEntry {
   type?: unknown;
   context_window?: unknown;
   max_tokens?: unknown;
-  pricing?: { input?: unknown; output?: unknown } | unknown;
+  pricing?: unknown;
 }
 
 interface CatalogCacheEntry {

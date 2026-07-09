@@ -347,7 +347,7 @@ function coerceValue(
     }
     default: {
       const _exhaustive: never = param.type;
-      throw new DashboardParameterError(`Unsupported parameter type "${_exhaustive}".`);
+      throw new DashboardParameterError(`Unsupported parameter type "${String(_exhaustive)}".`);
     }
   }
 }
@@ -371,7 +371,7 @@ function resolveDefault(param: DashboardParameter, now: Date): string | number |
       return String(param.default);
     default: {
       const _exhaustive: never = param.type;
-      throw new DashboardParameterError(`Unsupported parameter type "${_exhaustive}".`);
+      throw new DashboardParameterError(`Unsupported parameter type "${String(_exhaustive)}".`);
     }
   }
 }

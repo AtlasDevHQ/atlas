@@ -88,7 +88,7 @@ export function registerQueryTool(
   // semantic-tools.ts (OTel → actor bind → rate-limit → ADR-0016 gate order →
   // body → typed error envelope). `checksBilling` runs the gate-0 solvency
   // check; the claim gate + token metering live inside `executeAgentQuery`.
-  const { dispatch } = createMcpDispatch({
+  const dispatcher = createMcpDispatch({
     actor,
     transport,
     workspaceId,
@@ -96,6 +96,8 @@ export function registerQueryTool(
     ...(clientId ? { clientId } : {}),
     ...(scopes ? { scopes } : {}),
   });
+  const dispatch: typeof dispatcher.dispatch = (...args) =>
+    dispatcher.dispatch(...args);
 
   server.registerTool(
     "query",

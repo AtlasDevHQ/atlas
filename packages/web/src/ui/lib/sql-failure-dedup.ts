@@ -58,6 +58,6 @@ function sqlFailureKey(part: unknown): string | null {
   // Non-string errors contribute no key — they render as separate cards
   // rather than collapsing through `String([object Object])`.
   if (typeof result.error !== "string") return null;
-  const sql = String(getToolArgs(part).sql ?? "");
+  const sql = String((getToolArgs(part).sql ?? "") as string);
   return `${sql}\n${result.error}`;
 }

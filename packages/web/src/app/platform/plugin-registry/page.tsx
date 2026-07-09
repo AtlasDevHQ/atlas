@@ -453,7 +453,7 @@ function PluginRow({
                 </div>
               ) : field.type === "select" && field.options ? (
                 <Select
-                  value={String(values[field.key] ?? "")}
+                  value={String((values[field.key] ?? "") as string)}
                   onValueChange={(v) => updateValue(field.key, v)}
                   disabled={!configManageable}
                 >
@@ -472,7 +472,7 @@ function PluginRow({
                 <Input
                   id={`cfg-${plugin.id}-${field.key}`}
                   type={field.type === "number" ? "number" : field.secret ? "password" : "text"}
-                  value={String(values[field.key] ?? "")}
+                  value={String((values[field.key] ?? "") as string)}
                   onChange={(e) =>
                     updateValue(
                       field.key,

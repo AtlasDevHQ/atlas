@@ -47,7 +47,7 @@ export function buildQueryResultCard(result: ChatQueryResult): {
   for (const dataset of datasets) {
     const displayRows = dataset.rows.slice(0, MAX_INLINE_ROWS);
     const tableRows = displayRows.map((row) =>
-      dataset.columns.map((col) => String(row[col] ?? "")),
+      dataset.columns.map((col) => String((row[col] ?? "") as string)),
     );
 
     children.push(<Divider />);
@@ -116,7 +116,7 @@ function buildFallbackText(
     const separator = `| ${dataset.columns.map(() => "---").join(" | ")} |`;
     const dataLines = displayRows.map(
       (row) =>
-        `| ${dataset.columns.map((col) => String(row[col] ?? "")).join(" | ")} |`,
+        `| ${dataset.columns.map((col) => String((row[col] ?? "") as string)).join(" | ")} |`,
     );
     let table = [header, separator, ...dataLines].join("\n");
     if (dataset.rows.length > MAX_INLINE_ROWS) {

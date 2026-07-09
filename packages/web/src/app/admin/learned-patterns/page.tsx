@@ -161,8 +161,9 @@ export default function LearnedPatternsPage() {
       }
     }
 
-    fetchStats();
-    fetchEntities();
+    // fire-and-forget: background loads guarded by the `cancelled` flag
+    void fetchStats();
+    void fetchEntities();
     return () => { cancelled = true; };
   }, [apiUrl, credentials, fetchKey]);
 
@@ -362,7 +363,8 @@ export default function LearnedPatternsPage() {
                   variant={params.status === opt.value ? "secondary" : "ghost"}
                   onClick={() => {
                     table.setPageIndex(0);
-                    setParams({ status: opt.value, page: 1 });
+                    // fire-and-forget: nuqs URL update
+                    void setParams({ status: opt.value, page: 1 });
                   }}
                 >
                   {opt.label}
@@ -376,7 +378,8 @@ export default function LearnedPatternsPage() {
                   variant={params.type === opt.value ? "secondary" : "ghost"}
                   onClick={() => {
                     table.setPageIndex(0);
-                    setParams({ type: opt.value, page: 1 });
+                    // fire-and-forget: nuqs URL update
+                    void setParams({ type: opt.value, page: 1 });
                   }}
                 >
                   {opt.label}
@@ -387,7 +390,8 @@ export default function LearnedPatternsPage() {
                   value={params.source_entity || "all"}
                   onValueChange={(v) => {
                     table.setPageIndex(0);
-                    setParams({ source_entity: v === "all" ? "" : v, page: 1 });
+                    // fire-and-forget: nuqs URL update
+                    void setParams({ source_entity: v === "all" ? "" : v, page: 1 });
                   }}
                 >
                   <SelectTrigger className="h-8 w-44 text-sm">
@@ -409,7 +413,8 @@ export default function LearnedPatternsPage() {
                   size="sm"
                   onClick={() => {
                     table.setPageIndex(0);
-                    setParams({ status: "", type: "", source_entity: "", page: 1 });
+                    // fire-and-forget: nuqs URL update
+                    void setParams({ status: "", type: "", source_entity: "", page: 1 });
                   }}
                 >
                   <X className="mr-1.5 size-3.5" />
@@ -659,7 +664,7 @@ export default function LearnedPatternsPage() {
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                onClick={() => { if (deleteTarget) deletePattern(deleteTarget.id); }}
+                onClick={() => { if (deleteTarget) void deletePattern(deleteTarget.id); }}
               >
                 Delete
               </AlertDialogAction>

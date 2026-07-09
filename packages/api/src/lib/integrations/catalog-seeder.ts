@@ -93,7 +93,7 @@ export interface CatalogDbRow {
    * but the install route rejects form-based catalog rows whose stored
    * schema is null.
    */
-  readonly configSchema: unknown | null;
+  readonly configSchema: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -443,7 +443,7 @@ interface CatalogDbRowRaw {
   install_model: string;
   saas_eligible: boolean;
   implementation_status: string;
-  config_schema: unknown | null;
+  config_schema: unknown;
 }
 
 async function readExistingCatalog(db: CatalogSeedDb): Promise<CatalogDbRow[]> {

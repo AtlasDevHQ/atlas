@@ -135,7 +135,7 @@ export const validateProposal = tool({
         payload.amendmentType === "add_join" &&
         payload.amendment
       ) {
-        const joinSql = String(payload.amendment.sql ?? "");
+        const joinSql = String((payload.amendment.sql ?? "") as string);
         // Extract table references from join SQL (e.g., "table_a.col = table_b.col")
         const tableRefs = joinSql.match(/(\w+)\.\w+/g);
         if (tableRefs) {

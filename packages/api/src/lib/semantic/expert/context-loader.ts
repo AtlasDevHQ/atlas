@@ -45,10 +45,10 @@ function projectParsedEntity(
 ): ParsedEntity {
   const name = typeof parsed.name === "string" && parsed.name
     ? parsed.name
-    : String(parsed.table ?? opts.fallbackName);
+    : String((parsed.table ?? opts.fallbackName) as string);
   return {
     name,
-    table: String(parsed.table ?? opts.fallbackName),
+    table: String((parsed.table ?? opts.fallbackName) as string),
     description: typeof parsed.description === "string" ? parsed.description : undefined,
     dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions as ParsedEntity["dimensions"] : [],
     measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
@@ -114,8 +114,8 @@ export async function loadEntitiesFromDB(
       // semantics. `loadEntitiesForOrg` honors `parsed.name` because the
       // admin merge path keys dedup by it.
       entities.push({
-        name: String(parsed.table ?? row.name),
-        table: String(parsed.table ?? row.name),
+        name: String((parsed.table ?? row.name) as string),
+        table: String((parsed.table ?? row.name) as string),
         description: typeof parsed.description === "string" ? parsed.description : undefined,
         dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions as ParsedEntity["dimensions"] : [],
         measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],

@@ -173,7 +173,7 @@ function dedupeDatasets(
  */
 function formatScalarRow(columns: string[], row: Record<string, unknown>): string {
   return columns
-    .map((col) => `*${col}:* ${String(row[col] ?? "")}`)
+    .map((col) => `*${col}:* ${String((row[col] as string | number | boolean) ?? "")}`)
     .join("    ");
 }
 
@@ -194,7 +194,7 @@ function formatDataTable(
   const header = columns.join(" | ");
   const separator = columns.map((c) => "-".repeat(c.length)).join("-+-");
   const dataLines = displayRows.map((row) =>
-    columns.map((col) => String(row[col] ?? "")).join(" | "),
+    columns.map((col) => String((row[col] as string | number | boolean) ?? "")).join(" | "),
   );
 
   let table = [header, separator, ...dataLines].join("\n");

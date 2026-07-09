@@ -241,7 +241,8 @@ export function resolveAuthFromDecryptedConfig(
 ): DecryptedAuthResult {
   const rawAuthKind = decrypted.auth_kind;
   if (rawAuthKind === undefined) return { ok: true, auth: { kind: "none" } };
-  if (typeof rawAuthKind !== "string") return { ok: false, rawAuthKind: String(rawAuthKind) };
+  if (typeof rawAuthKind !== "string")
+    return { ok: false, rawAuthKind: String(rawAuthKind as string | number | boolean | bigint) };
   const authKind = narrowSupportedAuthKind(rawAuthKind);
   if (!authKind) return { ok: false, rawAuthKind };
   const authValue = typeof decrypted.auth_value === "string" ? decrypted.auth_value : undefined;

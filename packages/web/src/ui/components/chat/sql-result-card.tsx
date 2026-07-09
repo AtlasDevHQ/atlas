@@ -20,7 +20,7 @@ import { ResultCardBase, ResultCardErrorBoundary } from "./result-card-base";
 
 /** Convert structured rows (Record<string, unknown>[]) to string[][] for chart detection. */
 function toStringRows(columns: string[], rows: Record<string, unknown>[]): string[][] {
-  return rows.map((row) => columns.map((col) => (row[col] == null ? "" : String(row[col]))));
+  return rows.map((row) => columns.map((col) => (row[col] == null ? "" : String(row[col] as string))));
 }
 
 
@@ -105,7 +105,7 @@ function SQLResultCardInner({
     () => (done && result?.success ? ((result.rows as Record<string, unknown>[]) ?? []) : []),
     [done, result],
   );
-  const sql = String(args.sql ?? "");
+  const sql = String((args.sql as string) ?? "");
 
   const stringRows = useMemo(() => toStringRows(columns, rows), [columns, rows]);
   const chartResult = useMemo(
@@ -164,7 +164,7 @@ function SQLResultCardInner({
     <ResultCardBase
       badge="SQL"
       badgeClassName="bg-primary/15 text-primary dark:bg-primary/20 dark:text-primary"
-      title={String(args.explanation ?? "Query result")}
+      title={String((args.explanation as string) ?? "Query result")}
       headerExtra={
         <span className="flex items-center gap-1.5 text-zinc-500">
           {isOnDashboard && (
@@ -277,7 +277,7 @@ function SQLResultCardInner({
             columns={columns}
             rows={rows}
             chartResult={chartResult}
-            explanation={String(args.explanation ?? "")}
+            explanation={String((args.explanation as string) ?? "")}
             onAdded={handleDashboardAdded}
           />
         </ResultCardErrorBoundary>

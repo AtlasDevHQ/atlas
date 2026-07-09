@@ -84,7 +84,7 @@ export function getEffectiveBlockedModules(): Set<string> {
 
   if (!pythonConfig) return DEFAULT_BLOCKED_MODULES;
 
-  const { blockedModules = [], allowModules = [] } = pythonConfig;
+  const { blockedModules, allowModules } = pythonConfig;
 
   // Reject attempts to unblock critical modules
   const criticalViolations = allowModules.filter((m) => CRITICAL_MODULES.has(m));
@@ -184,8 +184,9 @@ json.dump({"imports": imports, "calls": calls}, sys.stdout)
   }
 
   try {
-    proc.stdin.write(code);
-    proc.stdin.end();
+    // fire-and-forget: Bun FileSink write/end return number|Promise; original code never awaited and relies on Bun's buffering
+    void proc.stdin.write(code);
+    void proc.stdin.end();
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     log.warn({ err: detail }, "Failed to write to python3 stdin");
@@ -716,7 +717,7 @@ Blocked: subprocess, os, socket, shutil, sys, ctypes, importlib, exec(), eval(),
       // 2. Build streaming progress callback if stream writer is available
       const writer = getStreamWriter();
       const toolCallId = options?.toolCallId;
-      const canStream = writer && toolCallId && backend.execStream;
+      const canStream = writer && toolCallId && typeof backend.execStream === "function";
 
       const onProgress = canStream
         ? (event: PythonProgressEvent) => {

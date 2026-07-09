@@ -144,7 +144,7 @@ function CatalogFormDialog({
           return JSON.stringify(entry.configSchema, null, 2);
         } catch (err) {
           console.warn("Failed to serialize configSchema:", err instanceof Error ? err.message : String(err));
-          return String(entry.configSchema);
+          return String(entry.configSchema as string);
         }
       })(),
       minPlan: (PLAN_TIERS as readonly string[]).includes(entry?.minPlan ?? "")
@@ -455,7 +455,7 @@ function PlatformPluginCatalogPageContent() {
       itemId: entry.id,
     });
     if (result.ok) {
-      refetch();
+      void refetch(); // fire-and-forget: background list refresh after toggle
     } else {
       setMutationError(`Failed to ${entry.enabled ? "disable" : "enable"} "${entry.name}": ${friendlyError(result.error)}`);
     }
@@ -468,7 +468,7 @@ function PlatformPluginCatalogPageContent() {
       path: `/api/v1/platform/plugins/catalog/${encodeURIComponent(deleteTarget.id)}`,
     });
     if (result.ok) {
-      refetch();
+      void refetch(); // fire-and-forget: background list refresh after delete
     } else {
       setMutationError(`Failed to delete "${deleteTarget.name}": ${friendlyError(result.error)}`);
     }

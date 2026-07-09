@@ -537,7 +537,8 @@ function QueueSection() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    // fire-and-forget: async load driven by useEffect; cleanup guards via cancelled flag
+    void (async () => {
       setLoading(true);
       setFetchError(null);
       try {

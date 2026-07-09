@@ -862,7 +862,8 @@ export async function runEffect<A, E>(
     if (classified) throw classified;
   }
 
-  const errObj = primary instanceof Error ? primary : new Error(String(primary ?? "unknown defect"));
+  const errObj =
+    primary instanceof Error ? primary : new Error(String((primary ?? "unknown defect") as unknown));
 
   if (defects.length > 1) {
     log.error(

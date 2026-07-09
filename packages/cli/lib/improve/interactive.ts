@@ -111,10 +111,10 @@ function presentProposal(
 
   const amendment = result.amendment as Record<string, unknown>;
   if (amendment.name) {
-    console.log(`  Name: ${pc.bold(String(amendment.name))}`);
+    console.log(`  Name: ${pc.bold(String(amendment.name as string))}`);
   }
   if (amendment.sql) {
-    console.log(`  SQL: ${pc.dim(String(amendment.sql))}`);
+    console.log(`  SQL: ${pc.dim(String(amendment.sql as string))}`);
   }
 
   // Show diff

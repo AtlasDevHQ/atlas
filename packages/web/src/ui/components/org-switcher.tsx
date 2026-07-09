@@ -55,7 +55,7 @@ export function OrgSwitcher({ variant = "sidebar" }: OrgSwitcherProps) {
         if (!cancelled) setLoading(false);
       }
     }
-    fetchOrgs();
+    void fetchOrgs(); // fire-and-forget: effect kick-off, cleanup guarded by cancelled flag
     return () => { cancelled = true; };
   }, [session.data?.user]);
 

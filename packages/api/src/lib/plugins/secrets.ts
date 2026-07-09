@@ -95,7 +95,7 @@ export function isConfigFieldActive(
   if (typeof gate.field !== "string" || !Array.isArray(gate.equals)) return true;
   const current = config[gate.field];
   return gate.equals.includes(
-    typeof current === "string" ? current : String(current ?? ""),
+    typeof current === "string" ? current : String((current ?? "") as string | number | boolean | bigint),
   );
 }
 

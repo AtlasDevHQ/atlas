@@ -70,7 +70,7 @@ export function recordDecision(
 
   if (decision === "rejected") {
     const amendment = proposal.amendment as Record<string, unknown>;
-    const key = `${proposal.entityName}:${proposal.amendmentType}:${String(amendment.name ?? "")}`;
+    const key = `${proposal.entityName}:${proposal.amendmentType}:${String((amendment.name ?? "") as string)}`;
     session.rejectedKeys.add(key);
   }
 

@@ -101,7 +101,8 @@ export function CatalogSection({ status, statusError, onChange }: CatalogSection
   // `invalidates` upstream) and the per-platform detail rows need to
   // repaint with the new connection state (handled by `onChange`).
   const refresh = () => {
-    catalogQuery.refetch();
+    // fire-and-forget: background refetch of the catalog after install/disconnect
+    void catalogQuery.refetch();
     onChange();
   };
 

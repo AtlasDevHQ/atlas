@@ -207,14 +207,14 @@ function themeTokens(dark: boolean) {
 
 function formatNumber(value: unknown): string {
   const num = Number(value);
-  if (!isFinite(num)) return String(value ?? "");
+  if (!isFinite(num)) return String((value as string | number | boolean | null | undefined) ?? "");
   if (Math.abs(num) >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
   if (Math.abs(num) >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
   return Number.isInteger(num) ? num.toLocaleString() : num.toFixed(2);
 }
 
 function truncateLabel(label: unknown, maxLen = 12): string {
-  const str = String(label ?? "");
+  const str = String((label as string | number | boolean | null | undefined) ?? "");
   return str.length > maxLen ? str.slice(0, maxLen) + "\u2026" : str;
 }
 

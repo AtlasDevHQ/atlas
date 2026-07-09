@@ -76,12 +76,12 @@ export async function handlePluginList(): Promise<void> {
   const infos: PluginInfo[] = [];
   for (const p of plugins) {
     const info: PluginInfo = {
-      id: String(p.id ?? "unknown"),
+      id: String((p.id as string | undefined) ?? "unknown"),
       types: Array.isArray(p.types)
         ? (p.types as string[]).map(String)
         : ["unknown"],
-      version: String(p.version ?? "unknown"),
-      name: p.name ? String(p.name) : undefined,
+      version: String((p.version as string | undefined) ?? "unknown"),
+      name: p.name ? String(p.name as string) : undefined,
     };
 
     if (typeof p.healthCheck === "function") {

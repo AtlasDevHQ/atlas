@@ -84,7 +84,8 @@ export function DashboardSwitcher({ currentId }: DashboardSwitcherProps) {
                 type="button"
                 onClick={(e) => {
                   e.preventDefault();
-                  refetch();
+                  // fire-and-forget: retry click re-runs the fetch; result handled by the hook
+                  void refetch();
                 }}
                 className="ml-5 underline hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >

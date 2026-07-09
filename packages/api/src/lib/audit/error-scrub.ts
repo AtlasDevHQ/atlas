@@ -43,7 +43,7 @@ export function errorMessage(err: unknown): string {
     : scrubbed;
 }
 
-export function causeToError(cause: Cause.Cause<unknown>): unknown | undefined {
+export function causeToError(cause: Cause.Cause<unknown>): unknown {
   if (Cause.isInterruptedOnly(cause)) return undefined;
   const failure = Cause.failureOption(cause);
   if (Option.isSome(failure)) return failure.value;

@@ -61,7 +61,7 @@ export function parseCSV(csv: string): { headers: string[]; rows: string[][] } {
 /** Serialize columns + rows to a CSV string. Handles commas, quotes, and newlines in values. */
 export function toCsvString(columns: string[], rows: Record<string, unknown>[]): string {
   const escape = (v: unknown) => {
-    const s = v == null ? "" : String(v);
+    const s = v == null ? "" : String(v as string);
     return s.includes(",") || s.includes('"') || s.includes("\n")
       ? `"${s.replace(/"/g, '""')}"`
       : s;
@@ -141,7 +141,7 @@ export function coerceExcelCell(v: unknown): unknown {
   if (typeof v === "string" && ISO_DATE_RE.test(v) && !isNaN(Date.parse(v))) {
     return new Date(v);
   }
-  return String(v);
+  return String(v as string);
 }
 
 /** Trigger an Excel (.xlsx) download in the browser. Dynamically imports exceljs to avoid bundle bloat. */
@@ -243,7 +243,7 @@ export function normalizeList<T>(
  * match exactly, so text / number categories never produce a false positive.
  */
 export function categoryMatchesSelection(cellValue: unknown, selectedValue: string): boolean {
-  const s = String(cellValue ?? "");
+  const s = String((cellValue ?? "") as string);
   if (s === selectedValue) return true;
   const datePrefix = /^(\d{4}-\d{2}-\d{2})[T ]/.exec(s);
   return datePrefix !== null && datePrefix[1] === selectedValue;
@@ -257,5 +257,5 @@ export function formatCell(value: unknown): string {
       ? value.toLocaleString()
       : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
   }
-  return String(value);
+  return String(value as string);
 }

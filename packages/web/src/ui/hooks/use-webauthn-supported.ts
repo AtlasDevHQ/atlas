@@ -36,7 +36,9 @@ export function useWebAuthnSupported(): WebAuthnSupport {
     }
 
     let cancelled = false;
-    const probe = window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable;
+    const probe = window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable?.bind(
+      window.PublicKeyCredential,
+    );
     if (typeof probe !== "function") {
       // Older WebAuthn implementations expose PublicKeyCredential without the
       // platform-availability probe. Treat platform support as absent so the

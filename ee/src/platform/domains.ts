@@ -70,36 +70,36 @@ function toISOString(value: unknown, field: string): string {
 /** Map a DB row to a CustomDomain wire type. Validates status and certificate_status against known enums; other fields are defensively coerced. */
 function rowToDomain(row: Record<string, unknown>): CustomDomain {
   const id = row.id;
-  if (id == null || String(id) === "") {
+  if (id == null || String(id as string) === "") {
     throw new DomainError({ message: `rowToDomain: missing required field "id"`, code: "data_integrity" });
   }
 
-  const status = String(row.status ?? "");
+  const status = String((row.status ?? "") as string);
   if (!DOMAIN_STATUSES.includes(status as CustomDomain["status"])) {
     throw new DomainError({ message: `rowToDomain: unexpected status "${status}" — expected one of ${DOMAIN_STATUSES.join(", ")}`, code: "data_integrity" });
   }
 
-  const certRaw = row.certificate_status != null ? String(row.certificate_status) : null;
+  const certRaw = row.certificate_status != null ? String(row.certificate_status as string) : null;
   if (certRaw != null && !CERTIFICATE_STATUSES.includes(certRaw as CertificateStatus)) {
     throw new DomainError({ message: `rowToDomain: unexpected certificate_status "${certRaw}" — expected one of ${CERTIFICATE_STATUSES.join(", ")}`, code: "data_integrity" });
   }
 
   // Default to "pending" for pre-migration rows that lack the column
-  const verificationStatusRaw = row.domain_verification_status != null ? String(row.domain_verification_status) : "pending";
+  const verificationStatusRaw = row.domain_verification_status != null ? String(row.domain_verification_status as string) : "pending";
   if (!DOMAIN_VERIFICATION_STATUSES.includes(verificationStatusRaw as DomainVerificationStatus)) {
     throw new DomainError({ message: `rowToDomain: unexpected domain_verification_status "${verificationStatusRaw}" — expected one of ${DOMAIN_VERIFICATION_STATUSES.join(", ")}`, code: "data_integrity" });
   }
   const domainVerificationStatus = verificationStatusRaw as DomainVerificationStatus;
 
   return {
-    id: String(id),
-    workspaceId: String(row.workspace_id ?? ""),
-    domain: String(row.domain ?? ""),
+    id: String(id as string),
+    workspaceId: String((row.workspace_id ?? "") as string),
+    domain: String((row.domain ?? "") as string),
     status: status as CustomDomain["status"],
-    railwayDomainId: row.railway_domain_id != null ? String(row.railway_domain_id) : null,
-    cnameTarget: row.cname_target != null ? String(row.cname_target) : null,
+    railwayDomainId: row.railway_domain_id != null ? String(row.railway_domain_id as string) : null,
+    cnameTarget: row.cname_target != null ? String(row.cname_target as string) : null,
     certificateStatus: certRaw as CertificateStatus | null,
-    verificationToken: row.verification_token != null ? String(row.verification_token) : null,
+    verificationToken: row.verification_token != null ? String(row.verification_token as string) : null,
     domainVerified: row.domain_verified === true || row.domain_verified === "true",
     domainVerifiedAt: row.domain_verified_at != null ? toISOString(row.domain_verified_at, "domain_verified_at") : null,
     domainVerificationStatus,

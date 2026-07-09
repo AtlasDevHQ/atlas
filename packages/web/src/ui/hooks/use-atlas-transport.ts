@@ -429,7 +429,8 @@ export function useAtlasTransport(
       }
     }
 
-    fetchHealth(1);
+    // fire-and-forget: background health probe, effect cleanup handles cancellation
+    void fetchHealth(1);
     return () => {
       cancelled = true;
     };

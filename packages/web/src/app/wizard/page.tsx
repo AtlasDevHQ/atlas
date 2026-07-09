@@ -406,7 +406,7 @@ function StepTables({
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => { // fire-and-forget: async effect body, cleanup via cancelled flag
       try {
         const res = await fetch(`${apiUrl}/api/v1/wizard/profile`, {
           method: "POST",
@@ -671,7 +671,7 @@ function StepReview({
   useEffect(() => {
     if (entities.length > 0) return;
     let cancelled = false;
-    (async () => {
+    void (async () => { // fire-and-forget: async effect body, cleanup via cancelled flag
       setLoading(true);
       try {
         const res = await fetch(`${apiUrl}/api/v1/wizard/generate`, {
@@ -870,7 +870,7 @@ function StepReview({
         // but never silently swallow an unexpected throw (CLAUDE.md error rule).
         if (workerError) {
           const message =
-            workerError instanceof Error ? workerError.message : String(workerError);
+            workerError instanceof Error ? workerError.message : String(workerError as string);
           console.warn("[wizard] enrich worker error:", tableName, message);
           setEnrichStatus((prev) => ({ ...prev, [tableName]: "error" }));
           setEnrichRowError((prev) => ({
@@ -1027,7 +1027,7 @@ function StepReview({
               <AlertDialogAction
                 onClick={() => {
                   setConfirmAllOpen(false);
-                  runEnrich(enrichAllTargets);
+                  void runEnrich(enrichAllTargets); // fire-and-forget: user-initiated enrich action
                 }}
               >
                 Enrich {enrichAllTargets.length}{" "}
@@ -1434,7 +1434,7 @@ export default function WizardPage() {
   const [saveError, setSaveError] = useState<WizardError | null>(null);
 
   function goTo(nextStep: number) {
-    setParams({ step: nextStep, connectionId });
+    void setParams({ step: nextStep, connectionId }); // fire-and-forget: URL state update
   }
 
   // Going back from Review invalidates cached entities — the user may change
@@ -1531,7 +1531,7 @@ export default function WizardPage() {
           ignored={ignored}
           setIgnored={setIgnored}
           onNext={() => {
-            if (!saving) handleSave();
+            if (!saving) void handleSave(); // fire-and-forget: user-initiated save action
           }}
           onBack={goBackFromReview}
           saving={saving}

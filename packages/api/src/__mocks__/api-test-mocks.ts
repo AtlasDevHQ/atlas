@@ -427,7 +427,10 @@ export function createApiTestMocks(
 
   const mockCheckRateLimit: Mock<AnyFn> = mock(() => ({ allowed: true }));
 
-  mock.module("@atlas/api/lib/auth/middleware", () => ({
+  // fire-and-forget: bun's `mock.module()` registers the module override
+  // synchronously for our purposes; the returned promise is intentionally not
+  // awaited (each call below is `void`-prefixed for the same reason).
+  void mock.module("@atlas/api/lib/auth/middleware", () => ({
     authenticateRequest: mockAuthenticateRequest,
     checkRateLimit: mockCheckRateLimit,
     getClientIP: mock(() => null),
@@ -438,7 +441,7 @@ export function createApiTestMocks(
 
   // ── Auth detect ───────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/auth/detect", () => ({
+  void mock.module("@atlas/api/lib/auth/detect", () => ({
     detectAuthMode: () => authMode,
     resetAuthModeCache: () => {},
   }));
@@ -450,7 +453,7 @@ export function createApiTestMocks(
   // (#1752) in tests. The invariant is enforced by the tuple assertions in
   // packages/api/src/lib/auth/__tests__/organization.test.ts — do not trim
   // these arrays to make a test pass.
-  mock.module("@atlas/api/lib/auth/types", () => ({
+  void mock.module("@atlas/api/lib/auth/types", () => ({
     AUTH_MODES: ["none", "simple-key", "byot", "managed"],
     ATLAS_ROLES: ["member", "admin", "owner", "platform_admin"],
     ORG_ROLES: ["member", "admin", "owner"],
@@ -465,7 +468,7 @@ export function createApiTestMocks(
 
   // ── Auth server ───────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/auth/server", () => ({
+  void mock.module("@atlas/api/lib/auth/server", () => ({
     getAuthInstance: () => null,
     // #4046 — managed.ts imports SESSION_ORIGIN_CLI from auth/server; export it
     // so harness consumers that transitively load managed.ts don't SyntaxError on
@@ -480,14 +483,14 @@ export function createApiTestMocks(
 
   // ── Startup ───────────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/startup", () => ({
+  void mock.module("@atlas/api/lib/startup", () => ({
     validateEnvironment: mock(() => Promise.resolve([])),
     getStartupWarnings: mock(() => []),
   }));
 
   // ── DB connection ─────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/db/connection", () =>
+  void mock.module("@atlas/api/lib/db/connection", () =>
     createConnectionMock({
       connections: {
         get: () => null,
@@ -539,14 +542,14 @@ export function createApiTestMocks(
     hasInternalDB: () => _hasInternalDB,
   });
 
-  mock.module("@atlas/api/lib/db/internal", () => ({
+  void mock.module("@atlas/api/lib/db/internal", () => ({
     ...internalDefaults,
     ...overrides?.internal,
   }));
 
   // ── Semantic ──────────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/semantic", () => ({
+  void mock.module("@atlas/api/lib/semantic", () => ({
     getOrgWhitelistedTables: () => new Set(),
     loadOrgWhitelist: async () => new Map(),
     invalidateOrgWhitelist: () => {},
@@ -562,7 +565,7 @@ export function createApiTestMocks(
     ...overrides?.semantic,
   }));
 
-  mock.module("@atlas/api/lib/semantic/entities", () => ({
+  void mock.module("@atlas/api/lib/semantic/entities", () => ({
     listEntityRows: mock(() => Promise.resolve([])),
     listEntitiesWithOverlay: mock(() => Promise.resolve([])),
     listEntities: mock(() => Promise.resolve([])),
@@ -597,7 +600,7 @@ export function createApiTestMocks(
     ),
   }));
 
-  mock.module("@atlas/api/lib/semantic/diff", () => ({
+  void mock.module("@atlas/api/lib/semantic/diff", () => ({
     runDiff: mock(async () => ({
       connection: "default",
       newTables: [],
@@ -636,18 +639,18 @@ export function createApiTestMocks(
   });
 
   // Both paths needed: route handlers use dynamic import("@atlas/api/lib/cache/index")
-  mock.module("@atlas/api/lib/cache", cacheMock);
-  mock.module("@atlas/api/lib/cache/index", cacheMock);
+  void mock.module("@atlas/api/lib/cache", cacheMock);
+  void mock.module("@atlas/api/lib/cache/index", cacheMock);
 
   // ── Workspace ─────────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/workspace", () => ({
+  void mock.module("@atlas/api/lib/workspace", () => ({
     checkWorkspaceStatus: mock(async () => ({ allowed: true })),
   }));
 
   // ── Pattern cache ─────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+  void mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
     buildLearnedPatternsSection: async () => "",
     getRelevantPatterns: async () => [],
     buildRetrievalQuery: () => "",
@@ -661,13 +664,13 @@ export function createApiTestMocks(
   // favorites + approved suggestions) via this module. Stubbed here too so
   // shared-harness runAgent tests don't execute the real orchestrator's
   // resolvers; the dedicated org-knowledge-section.test.ts covers it directly.
-  mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
+  void mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
     resolveOrgKnowledgeSection: async () => "",
   }));
 
   // ── Plugins ───────────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/plugins/registry", () => ({
+  void mock.module("@atlas/api/lib/plugins/registry", () => ({
     plugins: {
       describe: () => [],
       get: () => undefined,
@@ -682,11 +685,11 @@ export function createApiTestMocks(
     PluginRegistry: class {},
   }));
 
-  mock.module("@atlas/api/lib/plugins/hooks", () => ({
+  void mock.module("@atlas/api/lib/plugins/hooks", () => ({
     dispatchHook: mock(async () => {}),
   }));
 
-  mock.module("@atlas/api/lib/plugins/settings", () => ({
+  void mock.module("@atlas/api/lib/plugins/settings", () => ({
     loadPluginSettings: mock(async () => 0),
     savePluginEnabled: mock(async () => {}),
     savePluginConfig: mock(async () => {}),
@@ -696,7 +699,7 @@ export function createApiTestMocks(
 
   // ── Tools ─────────────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/tools/explore", () => ({
+  void mock.module("@atlas/api/lib/tools/explore", () => ({
     getExploreBackendType: () => "just-bash",
     getActiveSandboxPluginId: () => null,
     explore: { type: "function" },
@@ -706,11 +709,11 @@ export function createApiTestMocks(
     markSidecarFailed: mock(() => {}),
   }));
 
-  mock.module("@atlas/api/lib/tools/actions", () => ({}));
+  void mock.module("@atlas/api/lib/tools/actions", () => ({}));
 
   // ── Agent ─────────────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/agent", () => ({
+  void mock.module("@atlas/api/lib/agent", () => ({
     runAgent: mock(() =>
       Promise.resolve({
         toUIMessageStreamResponse: () =>
@@ -722,7 +725,7 @@ export function createApiTestMocks(
 
   // ── Conversations ─────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/conversations", () => ({
+  void mock.module("@atlas/api/lib/conversations", () => ({
     createConversation: mock(() => Promise.resolve(null)),
     addMessage: mock(() => {}),
     persistAssistantSteps: mock(() => {}),
@@ -796,14 +799,14 @@ export function createApiTestMocks(
 
   // ── Security ──────────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/security", () => ({
+  void mock.module("@atlas/api/lib/security", () => ({
     maskConnectionUrl: (url: string) => url.replace(/\/\/.*@/, "//***@"),
     SENSITIVE_PATTERNS: [],
   }));
 
   // ── Residency ─────────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/residency/misrouting", () => ({
+  void mock.module("@atlas/api/lib/residency/misrouting", () => ({
     detectMisrouting: mock(async () => null),
     isStrictRoutingEnabled: mock(() => false),
     getMisroutedCount: mock(() => 0),
@@ -812,13 +815,13 @@ export function createApiTestMocks(
     getApiRegion: mock(() => null),
   }));
 
-  mock.module("@atlas/api/lib/residency/readonly", () => ({
+  void mock.module("@atlas/api/lib/residency/readonly", () => ({
     isWorkspaceMigrating: mock(async () => false),
   }));
 
   // ── Settings ──────────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/settings", () => ({
+  void mock.module("@atlas/api/lib/settings", () => ({
     getSettingsForAdmin: mock(() => []),
     getSettingsRegistry: mock(() => []),
     getSettingDefinition: mock(() => undefined),
@@ -838,14 +841,14 @@ export function createApiTestMocks(
 
   // ── Config ────────────────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/config", () => ({
+  void mock.module("@atlas/api/lib/config", () => ({
     getConfig: () => null,
     defineConfig: (c: unknown) => c,
   }));
 
   // ── Scheduled tasks / Scheduler ───────────────────────────────
 
-  mock.module("@atlas/api/lib/scheduled-tasks", () => ({
+  void mock.module("@atlas/api/lib/scheduled-tasks", () => ({
     listScheduledTasks: mock(async () => []),
     getScheduledTask: mock(async () => null),
     createScheduledTask: mock(async () => ({})),
@@ -856,11 +859,11 @@ export function createApiTestMocks(
     scheduledTaskBelongsToUser: mock(async () => false),
   }));
 
-  mock.module("@atlas/api/lib/scheduler", () => ({
+  void mock.module("@atlas/api/lib/scheduler", () => ({
     getSchedulerEngine: mock(() => null),
   }));
 
-  mock.module("@atlas/api/lib/scheduler/preview", () => ({
+  void mock.module("@atlas/api/lib/scheduler/preview", () => ({
     previewSchedule: () => [],
   }));
 
@@ -876,7 +879,7 @@ export function createApiTestMocks(
   // stays for any transitive resolver chain (slice 11 closeout #2573
   // will drop it entirely).
 
-  mock.module("@atlas/api/lib/auth/roles-errors", () => ({
+  void mock.module("@atlas/api/lib/auth/roles-errors", () => ({
     RoleError: class extends Error {
       public readonly _tag = "RoleError" as const;
       public readonly code: string;
@@ -888,7 +891,7 @@ export function createApiTestMocks(
     },
   }));
 
-  mock.module("@atlas/ee/auth/roles", () => ({
+  void mock.module("@atlas/ee/auth/roles", () => ({
     PERMISSIONS: [
       "query",
       "query:raw_data",
@@ -927,7 +930,7 @@ export function createApiTestMocks(
 
   // ── EE: IP allowlist (queries internal DB, which doesn't exist in tests) ──
 
-  mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+  void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
     checkIPAllowlist: mock(() => Effect.succeed({ allowed: true })),
     listIPAllowlistEntries: mock(async () => []),
     addIPAllowlistEntry: mock(async () => ({})),
@@ -949,7 +952,7 @@ export function createApiTestMocks(
 
   // ── Security: abuse ───────────────────────────────────────────
 
-  mock.module("@atlas/api/lib/security/abuse", () => ({
+  void mock.module("@atlas/api/lib/security/abuse", () => ({
     listFlaggedWorkspaces: mock(() => []),
     // F-33: returns the previous level on success so the route can emit
     // audit metadata without a second getter call, or `null` when the

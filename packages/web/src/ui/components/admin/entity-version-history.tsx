@@ -127,12 +127,12 @@ function computeDiff(oldYaml: string, newYaml: string): DiffItem[] {
 
     // Check description
     if ((oldObj.description ?? "") !== (newObj.description ?? "")) {
-      items.push({ section: "Meta", type: "changed", name: "description", detail: `"${String(oldObj.description ?? "")}" → "${String(newObj.description ?? "")}"` });
+      items.push({ section: "Meta", type: "changed", name: "description", detail: `"${typeof oldObj.description === "string" ? oldObj.description : ""}" → "${typeof newObj.description === "string" ? newObj.description : ""}"` });
     }
 
     // Check table
     if ((oldObj.table ?? "") !== (newObj.table ?? "")) {
-      items.push({ section: "Meta", type: "changed", name: "table", detail: `"${String(oldObj.table ?? "")}" → "${String(newObj.table ?? "")}"` });
+      items.push({ section: "Meta", type: "changed", name: "table", detail: `"${typeof oldObj.table === "string" ? oldObj.table : ""}" → "${typeof newObj.table === "string" ? newObj.table : ""}"` });
     }
 
     return items;
@@ -355,7 +355,7 @@ export function EntityVersionHistory({ entityName, onRollback }: EntityVersionHi
     });
     if (result.ok) {
       setRollbackTarget(null);
-      refetch();
+      void refetch();
       onRollback();
     }
   };
@@ -523,7 +523,7 @@ export function EntityVersionHistory({ entityName, onRollback }: EntityVersionHi
             <AlertDialogAction
               onClick={(e) => {
                 e.preventDefault();
-                handleRollback();
+                void handleRollback();
               }}
               disabled={rollingBack}
             >

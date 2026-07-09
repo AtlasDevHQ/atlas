@@ -204,8 +204,8 @@ export async function applyAmendmentFromPayload(params: {
     );
   }
 
-  const rawCategory = String(payload.category ?? "coverage_gaps");
-  const rawAmendmentType = String(payload.amendmentType ?? "update_description");
+  const rawCategory = String((payload.category ?? "coverage_gaps") as string);
+  const rawAmendmentType = String((payload.amendmentType ?? "update_description") as string);
 
   await applyAmendmentToEntity(
     orgId,
@@ -306,7 +306,7 @@ export function applyAmendment(
         const target = dims.find((d) => d.name === amendment.dimension);
         if (!target) {
           throw new Error(
-            `Cannot update description: dimension "${String(amendment.dimension)}" not found in entity "${result.entityName}"`,
+            `Cannot update description: dimension "${String(amendment.dimension as string)}" not found in entity "${result.entityName}"`,
           );
         }
         target.description = amendment.description;

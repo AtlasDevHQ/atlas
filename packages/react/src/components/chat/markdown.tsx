@@ -148,7 +148,7 @@ export const Markdown = memo(function Markdown({
           if (match) {
             return (
               <LazyCodeBlock language={match[1]} dark={isDark}>
-                {String(children).replace(/\n$/, "")}
+                {String(children as string | number | boolean).replace(/\n$/, "")}
               </LazyCodeBlock>
             );
           }

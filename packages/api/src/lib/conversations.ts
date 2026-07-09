@@ -194,7 +194,7 @@ function readAnswerStyleColumn(r: Record<string, unknown>): AnswerStyle | null {
   const raw = r.answer_style;
   if (raw == null) return null;
   if (isAnswerStyle(raw)) return raw;
-  const key = String(raw);
+  const key = String(raw as string);
   if (!loggedUnknownAnswerStyles.has(key)) {
     log.debug(
       { answerStyle: key },
@@ -1419,7 +1419,7 @@ export async function getShareStatus(
     );
     if (rows.length === 0) return { ok: false, reason: "not_found" };
     const token = (rows[0].share_token as string) ?? null;
-    const expiresAt = token && rows[0].share_expires_at ? String(rows[0].share_expires_at) : null;
+    const expiresAt = token && rows[0].share_expires_at ? String(rows[0].share_expires_at as Date | string) : null;
     const shareMode = (rows[0].share_mode as ShareMode) ?? "public";
     const isExpired = expiresAt !== null && new Date(expiresAt) < new Date();
     if (!token || isExpired) {
@@ -1491,7 +1491,7 @@ export async function getSharedConversation(
 
     if (convRows.length === 0) return { ok: false, reason: "not_found" };
 
-    const expiresAt = convRows[0].share_expires_at ? String(convRows[0].share_expires_at) : null;
+    const expiresAt = convRows[0].share_expires_at ? String(convRows[0].share_expires_at as Date | string) : null;
     if (expiresAt !== null && new Date(expiresAt) < new Date()) {
       return { ok: false, reason: "expired" };
     }

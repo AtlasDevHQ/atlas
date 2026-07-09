@@ -357,7 +357,7 @@ export default function AIAgentsPage() {
             // Refetch on close — a successful connect lands a new row in the
             // table, but the client-side state can't observe it without a
             // refetch (the OAuth dance happens in the agent process, not here).
-            refetch();
+            void refetch(); // fire-and-forget: background refresh on wizard close
           }}
         />
       )}

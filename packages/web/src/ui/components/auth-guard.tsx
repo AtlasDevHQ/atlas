@@ -112,7 +112,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
         if (result?.error) {
           console.warn(
             "[atlas] stale-session signOut returned an HTTP error; cookie not cleared, staying put to avoid a redirect loop (reload once the API is reachable):",
-            result.error.message ?? String(result.error),
+            result.error.message ?? JSON.stringify(result.error),
           );
         } else {
           cleared = true;

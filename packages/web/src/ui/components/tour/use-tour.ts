@@ -101,7 +101,7 @@ export function useTour({
       setStatusChecked(true);
     }
 
-    checkStatus();
+    void checkStatus(); // fire-and-forget: effect kick-off, cleanup guarded by cancelled flag
     return () => {
       cancelled = true;
     };

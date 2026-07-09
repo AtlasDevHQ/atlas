@@ -127,7 +127,8 @@ export function SalesforceProviderBlock({
     path: `/api/v1/integrations/${SALESFORCE_SLUG}`,
     method: "DELETE",
     invalidates: () => {
-      catalogQuery.refetch();
+      // fire-and-forget: refresh catalog after disconnect
+      void catalogQuery.refetch();
       onChange();
     },
   });

@@ -218,7 +218,7 @@ async function shutdown(signal: string) {
   log.info({ signal }, "Graceful shutdown initiated");
 
   try {
-    server.stop();
+    await server.stop();
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err) },

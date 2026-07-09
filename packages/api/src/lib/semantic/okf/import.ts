@@ -368,7 +368,7 @@ function attachJoins(
     }
     const joins = Array.isArray(from.obj.joins) ? (from.obj.joins as unknown[]) : [];
     joins.push({
-      target_entity: String(to.obj.name ?? to.table),
+      target_entity: String((to.obj.name ?? to.table) as string),
       join_columns: { from: eq.fromColumn, to: eq.toColumn },
       ...(typeof concept.frontmatter.description === "string"
         ? { description: concept.frontmatter.description }
@@ -397,7 +397,7 @@ function buildCatalog(
         ? datasetNotes.join("\n\n")
         : "First-draft semantic layer imported from an OKF bundle. Review via scan -> enrich -> edit.",
     entities: entities.map((e) => ({
-      name: String(e.obj.name ?? e.table),
+      name: String((e.obj.name ?? e.table) as string),
       file: `entities/${e.table}.yml`,
       ...(typeof e.obj.description === "string"
         ? { description: firstLine(e.obj.description) }

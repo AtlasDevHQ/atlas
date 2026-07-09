@@ -53,7 +53,7 @@ export default function RunHistoryPage() {
         // Non-critical — filter will just lack task names
       }
     }
-    fetchTasks();
+    void fetchTasks(); // fire-and-forget: effect-scoped async loader
   }, [apiUrl, credentials]);
 
   // ── Data table ──────────────────────────────────────────────────
@@ -157,7 +157,7 @@ export default function RunHistoryPage() {
   };
 
   function resetFilters() {
-    setParams({ page: 1, task: null, status: "all", dateFrom: null, dateTo: null, expandedRun: null });
+    void setParams({ page: 1, task: null, status: "all", dateFrom: null, dateTo: null, expandedRun: null }); // fire-and-forget: URL state setter
   }
 
   const hasFilters = !!taskFilter || (statusFilter && statusFilter !== "all") || !!dateFrom || !!dateTo;

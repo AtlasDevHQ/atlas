@@ -138,6 +138,17 @@ export class SalesforceKnowledgeFormInstallHandler implements FormBasedInstallHa
 
     // ── Verify the reused Salesforce connection loudly BEFORE persisting ────
     const instance = await this.resolveInstance(workspaceId);
+    // Resolve the org URL pre-write too: a builder without one must be an
+    // actionable 400 here, not a 500 after the row already landed.
+    let instanceHost: string;
+    try {
+      instanceHost = hostForLog(instanceUrlOf(instance));
+    } catch (err) {
+      throw new FormInstallValidationError({
+        fieldErrors: {},
+        formErrors: [err instanceof Error ? err.message : String(err)],
+      });
+    }
     await this.verifyArticleObject(instance, articleObject, channel);
 
     // ── Persist the collection row (no credential — the OAuth install owns it) ─
@@ -166,13 +177,7 @@ export class SalesforceKnowledgeFormInstallHandler implements FormBasedInstallHa
     }
 
     this.log.info(
-      {
-        workspaceId,
-        collectionSlug: slug,
-        articleObject,
-        channel,
-        host: hostForLog(instanceUrlOf(instance)),
-      },
+      { workspaceId, collectionSlug: slug, articleObject, channel, host: instanceHost },
       "Salesforce Knowledge collection install completed",
     );
     return {

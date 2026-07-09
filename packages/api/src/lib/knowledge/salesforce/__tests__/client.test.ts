@@ -2,7 +2,7 @@
  * Tests for the Salesforce Knowledge vendor client (#4397) — driven entirely
  * through an injected fixture {@link SalesforceKnowledgeApi}; NO test touches
  * a live org. Covers describe-driven body-field discovery, the EXPLICIT
- * PublishStatus filters (the v47+ Draft+Archived leak guard), queryMore
+ * PublishStatus filters (the unfiltered-query Draft+Archived leak guard), queryMore
  * paging + the anti-runaway page bound, the indexed SystemModstamp
  * incremental walk (non-Online / out-of-channel rows advance the mark but
  * emit nothing), channel visibility, malformed-row coverage flagging, and
@@ -15,6 +15,7 @@ import {
   type SalesforceKnowledgeApi,
 } from "@atlas/api/lib/knowledge/salesforce/client";
 import { ConnectorRateLimitError } from "@atlas/api/lib/knowledge/connectors";
+import { IntegrationReconnectRequiredError } from "@atlas/api/lib/effect/errors";
 import type { SalesforceKnowledgeChannel } from "@atlas/api/lib/knowledge/salesforce/config";
 
 const INSTANCE_URL = "https://acme.my.salesforce.com";
@@ -155,7 +156,7 @@ describe("fetchAll (reconciliation)", () => {
     expect(changes.highWaterMark).toBe("2026-07-05T08:00:00.000Z");
     expect(changes.coverageIncomplete).toBe(false);
     expect(changes.cursor).toBeNull();
-    // Explicit published-only filter — the v47+ Draft+Archived leak guard.
+    // Explicit published-only filter — the unfiltered-query Draft+Archived leak guard.
     expect(state.soql[0]).toContain("PublishStatus = 'Online'");
     expect(state.soql[0]).toContain("FROM Knowledge__kav");
     // Discovered custom body fields are selected; no channel clause configured.
@@ -210,6 +211,46 @@ describe("fetchAll (reconciliation)", () => {
     const changes = await c.fetchAll();
     expect(changes.documents).toHaveLength(1);
     expect(changes.coverageIncomplete).toBe(true);
+  });
+
+  it("a malformed row can NEVER advance the high-water mark past itself", async () => {
+    // Load-bearing ordering: if the malformed row's (newer) SystemModstamp
+    // advanced the mark, the fixed row would never be refetched incrementally.
+    const { c } = client({
+      pages: [
+        {
+          records: [
+            row(),
+            row({
+              Id: "ka0x002",
+              ArticleNumber: null, // malformed — but carries the newest stamp
+              SystemModstamp: "2026-07-08T12:00:00.000+0000",
+            }),
+          ],
+        },
+      ],
+    });
+    const changes = await c.fetchAll();
+    expect(changes.highWaterMark).toBe("2026-07-01T10:00:00.000Z");
+    expect(changes.coverageIncomplete).toBe(true);
+  });
+
+  it("describes the article object once per client across both cadences (shape cache)", async () => {
+    const { c, state } = client();
+    await c.fetchAll();
+    await c.fetchChanges({ since: "2026-07-06T00:00:00.000Z", cursor: null });
+    expect(state.describeCalls).toEqual(["Knowledge__kav"]);
+  });
+
+  it("selects at most the body-field cap, warning-counted rather than silent", async () => {
+    const manyBodies = Array.from({ length: 25 }, (_, i) =>
+      field(`Body${i}__c`, { type: "textarea", custom: true, extraTypeInfo: "richtextarea" }),
+    );
+    const { c, state } = client({ fields: [...DEFAULT_FIELDS, ...manyBodies] });
+    await c.fetchAll();
+    // DEFAULT_FIELDS already carries 2 custom bodies → 18 more fit the cap of 20.
+    expect(state.soql[0]).toContain("Body17__c");
+    expect(state.soql[0]).not.toContain("Body18__c");
   });
 
   it("converts rich bodies via the shared converter and passes plain bodies through", async () => {
@@ -363,5 +404,20 @@ describe("governor-limit mapping", () => {
   it("wraps other query failures with actionable context (original as cause)", async () => {
     const { c } = client({ queryError: new Error("MALFORMED_QUERY: unexpected token") });
     await expect(c.fetchAll()).rejects.toThrow(/Salesforce Knowledge query .* failed/i);
+  });
+
+  it("passes a mid-crawl reconnect-required error through UNWRAPPED (its message is the actionable one)", async () => {
+    const reconnect = new IntegrationReconnectRequiredError({
+      message: "Salesforce install needs to be reconnected.",
+      workspaceId: "org-1",
+      platform: "salesforce",
+      upstreamError: "invalid_grant",
+    });
+    const { c } = client({ queryError: reconnect });
+    const err = await c.fetchAll().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBe(reconnect);
   });
 });

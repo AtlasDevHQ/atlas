@@ -188,6 +188,8 @@ describe("assembleSalesforceKnowledgeDocuments", () => {
     expect(result.skippedContentless).toBe(1);
     expect(result.documents).toHaveLength(1);
     expect(result.documents[0].path).toContain("/fr/");
+    // The WHICH, not just the count — reconciliation archives the vanished doc.
+    expect(result.contentlessArticles).toEqual(["000001001:en_us"]);
   });
 
   it("uses the fallback segment for an unslugifiable title (number keeps it unique)", () => {

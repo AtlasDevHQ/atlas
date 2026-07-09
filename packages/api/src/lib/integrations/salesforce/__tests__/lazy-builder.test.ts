@@ -308,12 +308,36 @@ describe("createSalesforceLazyBuilder — paged query surface (#4397)", () => {
     expect(mockJsforceQueryMore).toHaveBeenCalledWith("/services/data/v60.0/query/01gxx-2000");
   });
 
-  it("treats a done:false response with no locator as done (cannot continue)", async () => {
+  it("THROWS on done:false with no locator — a truncated result must never read as complete", async () => {
+    // If this were coerced to done, a reconciliation crawl would feed a
+    // partial set to subtractive archiving and mass-archive live documents.
     mockJsforceQuery.mockResolvedValueOnce({ records: [], done: false });
     const instance = await buildInstance();
+    await expect(
+      instance.queryPage("SELECT Id FROM Knowledge__kav WHERE PublishStatus = 'Online'"),
+    ).rejects.toThrow(/done:false with no nextRecordsUrl/i);
+  });
+
+  it("continues a contradictory done:true + locator page (locator presence is authoritative)", async () => {
+    mockJsforceQuery.mockResolvedValueOnce({
+      records: [{ Id: "ka0x001" }],
+      done: true,
+      nextRecordsUrl: "/services/data/v60.0/query/01gxx-2000",
+    });
+    const instance = await buildInstance();
     const page = await instance.queryPage("SELECT Id FROM Knowledge__kav WHERE PublishStatus = 'Online'");
-    expect(page.done).toBe(true);
-    expect(page.nextRecordsUrl).toBeNull();
+    expect(page.done).toBe(false);
+    expect(page.nextRecordsUrl).toBe("/services/data/v60.0/query/01gxx-2000");
+  });
+
+  it("refresh-retries queryMorePage on INVALID_SESSION_ID (the mid-crawl expiry case)", async () => {
+    mockJsforceQueryMore
+      .mockRejectedValueOnce(new Error("INVALID_SESSION_ID: Session expired or invalid"))
+      .mockResolvedValueOnce({ records: [{ Id: "ka0x004" }], done: true });
+    const instance = await buildInstance();
+    const page = await instance.queryMorePage("/services/data/v60.0/query/01gxx-2000");
+    expect(page.records).toEqual([{ Id: "ka0x004" }]);
+    expect(mockRefreshSalesforceToken).toHaveBeenCalledTimes(1);
   });
 
   it("describeObject exposes the object's field metadata over the OAuth session", async () => {

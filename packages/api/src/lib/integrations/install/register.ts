@@ -311,9 +311,11 @@ export function registerBuiltinInstallHandlers(): void {
   // ADR-0014) via the lazy plugin loader. Registering the FORM handler + the
   // CONNECTOR together (as with the other knowledge vendors) keeps a
   // half-wired deploy from having an installable card whose scheduled sync has
-  // no registered vendor client. No env gate: on a deploy without
-  // SALESFORCE_CLIENT_ID/SECRET the install fails loudly with the actionable
-  // builder-missing message (same posture as the querySalesforce agent tool).
+  // no registered vendor client. No env gate: on a deploy without the
+  // Salesforce OAuth env the install fails loudly with an actionable message —
+  // connect-Salesforce-first on a fresh deploy (no catalog:salesforce install
+  // row can exist), builder-missing when an install row outlived the env vars
+  // (same posture as the querySalesforce agent tool).
   registerFormHandler(SALESFORCE_KNOWLEDGE_SLUG, new SalesforceKnowledgeFormInstallHandler());
   registerSalesforceKnowledgeConnector();
   log.info("Registered SalesforceKnowledgeFormInstallHandler + knowledge sync connector");

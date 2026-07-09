@@ -27,9 +27,10 @@
  *     `queryMore`/`nextRecordsUrl` batches.
  *
  * Explicit-status discipline: EVERY query filters `PublishStatus` explicitly.
- * API v47+ dropped the implicit Online-only default on `*__kav` queries —
- * an unfiltered query returns Draft + Archived versions too, which would leak
- * unpublished content into the mirror.
+ * Modern Salesforce API versions return Draft + Archived versions on an
+ * unfiltered `*__kav` query (older versions required a single-status filter
+ * outright), so an unfiltered query would leak unpublished content into the
+ * mirror — never rely on a vendor default here.
  *
  * Governor limits: Salesforce signals org-level API exhaustion with
  * `REQUEST_LIMIT_EXCEEDED` (not an HTTP 429 the guardedFetch path would see) —
@@ -216,6 +217,9 @@ class SalesforceKnowledgeClient {
     }
     const shape = await this.resolveShape();
     // SOQL datetime literals are unquoted ISO instants without milliseconds.
+    // `>` (not `>=`) is safe against the contract's "at-or-after": `since` is
+    // already mark − overlap window, and truncating the milliseconds widens
+    // the `>` window further downward.
     const soqlSince = new Date(sinceMs).toISOString().replace(/\.\d{3}Z$/, "Z");
     const where = `SystemModstamp > ${soqlSince} AND PublishStatus IN ('Online', 'Draft', 'Archived')`;
     const rows = await this.enumerate(shape, where);
@@ -243,6 +247,7 @@ class SalesforceKnowledgeClient {
     const fieldNames = new Set<string>();
     const bodyFields: SalesforceBodyField[] = [];
     let skippedUnsafeNames = 0;
+    let droppedBodyFields = 0;
     for (const raw of described.fields) {
       const name = typeof raw.name === "string" ? raw.name : "";
       if (name === "") continue;
@@ -253,7 +258,10 @@ class SalesforceKnowledgeClient {
       }
       fieldNames.add(name);
       if (raw.custom === true && raw.type === "textarea") {
-        if (bodyFields.length >= MAX_BODY_FIELDS) continue;
+        if (bodyFields.length >= MAX_BODY_FIELDS) {
+          droppedBodyFields++;
+          continue;
+        }
         bodyFields.push({ name, rich: raw.extraTypeInfo === "richtextarea" });
       }
     }
@@ -261,6 +269,14 @@ class SalesforceKnowledgeClient {
       log.warn(
         { articleObject, skippedUnsafeNames },
         "Skipped Salesforce fields whose names fail the SOQL identifier pattern — not selectable (unexpected describe metadata)",
+      );
+    }
+    if (droppedBodyFields > 0) {
+      // Never a silent shrink: documents from this org mirror only the first
+      // MAX_BODY_FIELDS custom textarea fields, in describe order.
+      log.warn(
+        { articleObject, droppedBodyFields, cap: MAX_BODY_FIELDS },
+        "Salesforce article object exceeds the custom body-field cap — later textarea fields are not mirrored",
       );
     }
 
@@ -391,6 +407,10 @@ class SalesforceKnowledgeClient {
           mode,
           degradations: assembled.degradations,
           skippedContentless: assembled.skippedContentless,
+          // Bounded article-number breadcrumbs — a reconciliation archives a
+          // previously-mirrored doc that converts to empty, so the operator
+          // needs the WHICH, not just the count.
+          contentlessArticles: assembled.contentlessArticles,
         },
         "Salesforce Knowledge conversion completed with degradations/skips",
       );
@@ -449,11 +469,10 @@ class SalesforceKnowledgeClient {
     }
 
     const summary = shape.optionalPresent.has("Summary") ? stringOf(raw.Summary) : "";
-    const versionNumber =
-      shape.optionalPresent.has("VersionNumber") && raw.VersionNumber !== null &&
-      raw.VersionNumber !== undefined
-        ? String(raw.VersionNumber)
-        : null;
+    const rawVersionNumber = shape.optionalPresent.has("VersionNumber")
+      ? stringOf(raw.VersionNumber)
+      : "";
+    const versionNumber = rawVersionNumber === "" ? null : rawVersionNumber;
     const isMasterLanguage = shape.optionalPresent.has("IsMasterLanguage")
       ? raw.IsMasterLanguage === true
       : null;
@@ -503,12 +522,15 @@ function stringOf(raw: unknown): string {
  */
 function mapSalesforceError(err: unknown, context: string): Error {
   if (err instanceof ConnectorRateLimitError) return err;
+  // Specific classes before the substring heuristic: a reconnect error whose
+  // upstream text happened to contain the governor token must stay a
+  // reconnect, not a futile backoff.
+  if (err instanceof IntegrationReconnectRequiredError) return err;
   if (isGovernorLimitError(err)) {
     return new ConnectorRateLimitError(
       "Salesforce rejected the request with REQUEST_LIMIT_EXCEEDED — the org's daily API request allocation is exhausted; the sync will back off and retry.",
     );
   }
-  if (err instanceof IntegrationReconnectRequiredError) return err;
   return new Error(`${context}: ${err instanceof Error ? err.message : String(err)}`, {
     cause: err,
   });

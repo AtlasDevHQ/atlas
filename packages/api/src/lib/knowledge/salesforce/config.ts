@@ -54,8 +54,12 @@ export function isSalesforceKnowledgeChannel(value: string): value is Salesforce
 export interface SalesforceKnowledgeCollectionConfig {
   /** The article-version object this collection mirrors (validated `*__kav`). */
   readonly article_object: string;
-  /** Optional channel scope (`app`/`pkb`/`csp`/`prm`); absent = all channels. */
-  readonly channel?: string;
+  /**
+   * Optional channel scope; absent = all channels. Typed as the union so a
+   * writer can't stamp an arbitrary string — the read path still re-validates
+   * (a DB row can be edited out of band).
+   */
+  readonly channel?: SalesforceKnowledgeChannel;
   readonly description?: string;
 }
 

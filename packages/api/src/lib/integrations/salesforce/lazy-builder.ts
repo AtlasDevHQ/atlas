@@ -199,17 +199,26 @@ async function raceTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 
 /**
  * Normalize jsforce's raw response into a {@link SalesforceQueryPage}. A
- * response that claims more pages but carries no locator is treated as done —
- * the caller can't continue it, and looping on a missing locator would spin.
+ * response that claims more pages (`done: false`) but carries no locator is a
+ * truncation the caller cannot continue — it THROWS rather than masquerade as
+ * a complete page: a sync crawl that trusted it would feed a partial set to
+ * subtractive archiving. After that guard, locator presence is authoritative
+ * (a contradictory `done: true` + locator is continued — the safe direction,
+ * bounded by the caller's page cap).
  */
 function toQueryPage(result: JsforceQueryResponse): SalesforceQueryPage {
   const nextRecordsUrl =
     typeof result.nextRecordsUrl === "string" && result.nextRecordsUrl !== ""
       ? result.nextRecordsUrl
       : null;
+  if (result.done === false && nextRecordsUrl === null) {
+    throw new Error(
+      "Salesforce returned done:false with no nextRecordsUrl — the paged query cannot be continued; refusing to treat a truncated result as complete.",
+    );
+  }
   return {
     records: result.records ?? [],
-    done: result.done !== false || nextRecordsUrl === null,
+    done: nextRecordsUrl === null,
     nextRecordsUrl,
   };
 }
@@ -378,7 +387,9 @@ export function createSalesforceLazyBuilder(
 
       async describeObject(objectName: string): Promise<SalesforceObjectDescribe> {
         return withRetry(async (c) => {
-          const described = await c.describe(objectName);
+          // Bounded like the query paths — a hung describe would otherwise
+          // wedge the install request and the sync fiber indefinitely.
+          const described = await raceTimeout(c.describe(objectName), 30_000);
           return { fields: described.fields ?? [] };
         });
       },

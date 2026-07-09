@@ -37,7 +37,7 @@ function fakeInstance(overrides: Partial<SalesforcePluginInstance> = {}): Salesf
     queryMorePage: async () => ({ records: [], done: true, nextRecordsUrl: null }),
     describeObject: async () => ({ fields: [] }),
     listObjects: async () => [],
-    profile: async () => ({ profiles: [] }) as never,
+    profile: async () => ({ profiles: [], errors: [] }),
     ...overrides,
   };
 }
@@ -76,6 +76,14 @@ describe("createSalesforceKnowledgeConnector", () => {
       loader: loaderReturning(fakeInstance()),
     });
     const client = await connector.createClient(ctx({}));
+    expect(typeof client.fetchAll).toBe("function");
+  });
+
+  it("builds the default scope from a null config (out-of-band-edited row)", async () => {
+    const connector = createSalesforceKnowledgeConnector({
+      loader: loaderReturning(fakeInstance()),
+    });
+    const client = await connector.createClient(ctx(null));
     expect(typeof client.fetchAll).toBe("function");
   });
 

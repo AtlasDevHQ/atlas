@@ -80,7 +80,17 @@ export interface SalesforceAssembleResult {
   readonly degradations: readonly HtmlDegradation[];
   /** Articles skipped because they carried no ingestable prose. */
   readonly skippedContentless: number;
+  /**
+   * `<articleNumber>:<language>` breadcrumbs for the skipped articles (capped
+   * at {@link CONTENTLESS_BREADCRUMB_CAP}) — a reconciliation crawl archives a
+   * previously-mirrored document that converts to empty, so the operator
+   * investigating a vanished article needs more than a count.
+   */
+  readonly contentlessArticles: readonly string[];
 }
+
+/** Bound on the contentless breadcrumb list (log hygiene, not correctness). */
+export const CONTENTLESS_BREADCRUMB_CAP = 20;
 
 /** Slugify into a single path segment; `fallback` guarantees non-empty. */
 export function slugifySegment(value: string, fallback: string): string {
@@ -106,6 +116,7 @@ export function assembleSalesforceKnowledgeDocuments(
   const documents: ConnectorDocument[] = [];
   const degradationTotals = new Map<string, number>();
   let skippedContentless = 0;
+  const contentlessArticles: string[] = [];
 
   for (const article of articles) {
     const sections: string[] = [];
@@ -132,6 +143,9 @@ export function assembleSalesforceKnowledgeDocuments(
     const markdown = sections.join("\n\n");
     if (isContentlessBody(markdown)) {
       skippedContentless++;
+      if (contentlessArticles.length < CONTENTLESS_BREADCRUMB_CAP) {
+        contentlessArticles.push(`${article.articleNumber}:${article.language}`);
+      }
       continue;
     }
 
@@ -174,7 +188,7 @@ export function assembleSalesforceKnowledgeDocuments(
     .map(([name, count]) => ({ name, count }))
     .toSorted((a, b) => a.name.localeCompare(b.name));
 
-  return { documents, degradations, skippedContentless };
+  return { documents, degradations, skippedContentless, contentlessArticles };
 }
 
 /**

@@ -145,6 +145,22 @@ describe("field validation", () => {
     );
     expect(msg).toMatch(/"app", "pkb", "csp"/);
   });
+
+  it("rejects non-string field values and a non-object body with typed messages", async () => {
+    expect(
+      await fieldErrorOf(handler().validateConfig(WORKSPACE, { article_object: 42 }), "article_object"),
+    ).toMatch(/must be a string/i);
+    expect(
+      await fieldErrorOf(handler().validateConfig(WORKSPACE, { channel: ["pkb"] }), "channel"),
+    ).toMatch(/must be a string/i);
+    expect(
+      await fieldErrorOf(handler().validateConfig(WORKSPACE, { description: 7 }), "description"),
+    ).toMatch(/must be a string/i);
+    expect(await formErrorOf(handler().validateConfig(WORKSPACE, "not-an-object"))).toMatch(
+      /JSON object/i,
+    );
+    expect(insertCalls).toHaveLength(0);
+  });
 });
 
 describe("reused-install verification (loud, pre-write)", () => {

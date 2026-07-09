@@ -66,18 +66,23 @@ export async function resolveSalesforceKnowledgeInstance(
   try {
     raw = await loader.getOrInstantiate(workspaceId, SALESFORCE_CATALOG_ID);
   } catch (err) {
+    // The original failure rides along as `cause` so the forensic detail
+    // (invalid_grant, the builder's own message) survives the remap.
     switch (classifyLazyInstantiateError(err)) {
       case "install_not_found":
         throw new Error(
           "This collection reuses the workspace's Salesforce integration, but Salesforce is not connected — connect it under Admin → Integrations, then sync again.",
+          { cause: err },
         );
       case "reconnect_required":
         throw new Error(
           "The workspace's Salesforce integration needs to be reconnected — open Admin → Integrations and click Reconnect on the Salesforce card, then sync again.",
+          { cause: err },
         );
       case "builder_missing":
         throw new Error(
-          "Salesforce integration is not configured on this deploy (SALESFORCE_CLIENT_ID/SALESFORCE_CLIENT_SECRET unset) — contact your operator.",
+          "Salesforce integration is not configured on this deploy (SALESFORCE_CLIENT_ID/SALESFORCE_CLIENT_SECRET or ATLAS_PUBLIC_API_URL unset) — contact your operator.",
+          { cause: err },
         );
       case "unknown":
         // Credential decrypt failure, missing bundle/instance_url, or
@@ -85,19 +90,29 @@ export async function resolveSalesforceKnowledgeInstance(
         throw err;
     }
   }
-  const instance = raw as SalesforcePluginInstance;
-  if (
-    typeof instance.queryPage !== "function" ||
-    typeof instance.queryMorePage !== "function" ||
-    typeof instance.describeObject !== "function"
-  ) {
+  if (!hasKnowledgeSurface(raw)) {
     // A custom/BYOC builder registered for catalog:salesforce that lacks the
     // paged-query surface — fail loud rather than truncate a crawl.
     throw new Error(
       "The workspace's Salesforce integration instance does not expose the paged query/describe surface the Knowledge connector requires.",
     );
   }
-  return instance;
+  return raw;
+}
+
+/**
+ * Structural check for the #4397 surface, run BEFORE the instance is trusted
+ * as a {@link SalesforcePluginInstance} — the loader's return type is only
+ * `PluginLike`, and a plugin/BYOC builder may have registered something else.
+ */
+function hasKnowledgeSurface(raw: unknown): raw is SalesforcePluginInstance {
+  if (raw === null || typeof raw !== "object") return false;
+  const candidate = raw as Record<string, unknown>;
+  return (
+    typeof candidate.queryPage === "function" &&
+    typeof candidate.queryMorePage === "function" &&
+    typeof candidate.describeObject === "function"
+  );
 }
 
 /** Read the instance's org URL — required for article links + provenance. */

@@ -224,6 +224,35 @@ Bonus: spot-check that `Atlas Cloud's actual platform email vendor` matches the 
 
 ---
 
+## Part F: Security Seam Sweep (pre-tag runs — HIGH)
+
+**When:** only when running with a release-cycle window (`$LAST_TAG..HEAD`, per [docs/agents/audits.md](../../docs/agents/audits.md)). `/security-review` covers a *branch's pending diff*; this part covers the *whole cycle* on the seams where a subtle regression is a tenant-isolation or data-exposure incident.
+
+**Method:** for each seam below, `git log "$LAST_TAG"..HEAD --oneline -- <paths>`. Zero commits → PASS, record and move on. Otherwise read each touching diff and verify the seam's invariant survived. Guard-first: where a guard script is listed, run it — a green guard closes the mechanical half of the check; the diff review covers semantics the guard can't see.
+
+| Seam | Paths | Invariant to verify | Guard |
+|---|---|---|---|
+| SQL validation | `packages/api/src/lib/tools/sql.ts`, `sql-execution-plan.ts` | One AST parse shared by ALL consumers (shape guards, forbidden functions, whitelist, classifier); unparseable → rejected, never skipped; out-of-reach → `reject`, never silent re-route | — |
+| Table whitelist | `packages/api/src/lib/semantic/whitelist.ts` | Failed scan **fails closed** (`getWhitelistedTablesStrict`); never falls back to a broader set | — |
+| Secret encryption | `packages/api/src/lib/db/secret-encryption.ts`, `db/integration-tables.ts`, `db/internal.ts` | New credential tables joined `INTEGRATION_TABLES` with `_encrypted` columns; the legacy `internal.ts` passthrough gained NO new call sites (frozen at two columns) | — |
+| Sandbox selection | `packages/api/src/lib/tools/backends/selection.ts`, `deploy/api/atlas.config.ts` | SaaS still pins `["vercel-sandbox"]`, deny-all egress, fail-closed on exhaustion | — |
+| Tenant credential resolution | Twenty/plugin credential resolvers | `resolveWorkspaceCredentials` stays DB-only in both deploy modes; no plugin install reads operator env | `scripts/check-twenty-resolver-imports.sh` |
+| Auth & enterprise auth | `packages/api/src/lib/auth/`, `ee/src/auth/` (sso, scim, roles, ip-allowlist) | No fail-open path introduced (a `catch { return false }` on an authz check is a false *negative* only if false means denied — verify direction); session/timeout semantics unchanged unless intended | — |
+| MCP security model | `packages/mcp/src/` (esp. `actor.ts`, `onboarding.ts`, `dispatch-gate.ts`, `billing-gate.ts`), `packages/api/src/lib/mcp/` | ADR-0016 model intact; `@atlas/ee` coupling confined to the two audited seam files (`MCP_ALLOWED_FILES`) | `scripts/check-ee-imports.sh` |
+| EE boundary | `packages/api/src/lib/effect/enterprise-layer.ts` | Still the ONLY core file importing `@atlas/ee`; Noop layers still fail closed for gated features | `scripts/check-ee-imports.sh` + `consumer-fail-closed.test.ts` |
+| Content publish | `packages/api/src/api/routes/admin-publish.ts`, `packages/api/src/lib/content-mode/` | `/api/v1/admin/publish` remains the single draft→published path; no new out-of-band status stamping without a recorded carve-out | — |
+| RLS injection | RLS paths in `packages/api/src/lib/tools/` (grep `rls`) | Injection still reuses the threaded parse; RLS can't be bypassed by a query shape the validator accepts | — |
+
+### Findings to flag
+
+| Severity | Pattern |
+|---|---|
+| CRITICAL | Any invariant above regressed (fail-closed became fail-open, second parse introduced, new env-credential read, sandbox fallback un-pinned) |
+| HIGH | Seam commit whose diff can't be confirmed safe from reading (needs a human or a deeper session) — name the commit, don't wave it through |
+| MEDIUM | Guard script covering a seam was itself modified this cycle (verify the guard still guards) |
+
+---
+
 ## Output Format
 
 ```markdown
@@ -260,7 +289,11 @@ Run 4 agents in parallel:
 1. **Observability** (Part A) — OTel coverage, structured-log conformance, requestId on 500s, scheduler instrumentation, abuse counter sinks
 2. **Graceful degradation** (Part B) — failure-mode walks for LLM provider, analytics DB, internal DB, sandbox sidecar, email transport, OTel exporter, plugin lifecycle
 3. **Config & boot guards** (Part C) — boot-guard inventory, missing-guard candidates, default-value prod-safety, hot-reload-vs-startup correctness, env-var contract drift
-4. **Migration & live surface** (Parts D + E) — Drizzle migration backward-compat, region-migration rollback, scheduled-task unwind, backup verification, plugin lifecycle, plus the live-curl spot checks
+4. **Migration & live surface** (Parts D + E) — migration backward-compat residue, region-migration rollback, scheduled-task unwind, backup verification, plugin lifecycle, plus the live-curl spot checks
+
+When running pre-tag with a release-cycle window, add a 5th agent:
+
+5. **Security seam sweep** (Part F) — per-seam `$LAST_TAG..HEAD` diff review + guard runs; skip on non-cycle runs
 
 Each agent should:
 - Read the relevant code paths

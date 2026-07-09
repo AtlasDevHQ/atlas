@@ -1,6 +1,8 @@
 # Audit commands: shared conventions
 
-Conventions shared by the `-audit` family — `/docs-audit` (docs vs code), `/www-audit` (marketing/legal vs reality), `/prod-audit` (runtime readiness vs prod requirements). Each command reads this file before spawning its agents.
+Conventions shared by the `-audit` family — `/docs-audit` (docs vs code), `/www-audit` (marketing/legal vs reality), `/prod-audit` (runtime readiness vs prod requirements), `/contracts-audit` (code vs stability commitments — semver evidence for `/release`). Each command reads this file before spawning its agents.
+
+**The pre-tag battery:** at the end of a code cycle, before `/release`: `/docs-audit` (with Part K) + `/contracts-audit` always; `/www-audit` when the window touched pricing/legal/marketing surfaces; `/prod-audit` (with Part F, the security seam sweep) when it touched infra, boot, or security seams. `/contracts-audit`'s output — the semver recommendation and any policy violations — feeds the tag decision directly.
 
 **Why this file exists:** a 2026-07 sweep found all three commands had drifted from the codebase — dead file paths, shipped features still described as open issues, checks that silently matched nothing (a grep against a file that no longer contained the pattern), and a security check whose success criterion was inverted for SaaS. Audit commands are snapshots of reality, and reality moves. These conventions are the mechanics that make drift self-announcing instead of silent.
 

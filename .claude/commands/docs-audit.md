@@ -4,6 +4,8 @@ Cross-reference documentation (`apps/docs/content/`) against source code to find
 
 **Mode:** Read-only audit — generate a report with findings. Fix trivial issues (< 5 lines) directly. File GH issues for larger gaps.
 
+**Before starting:** read [docs/agents/audits.md](../../docs/agents/audits.md) (shared audit conventions) and run its **Step 0 self-check** against this command file — fix any drifted references in this file as part of the run. *Last verified against the codebase: 2026-07-09.*
+
 ## Docs Layout: Three Audience Trees (PRD #4257)
 
 The docs portal is segmented by audience. Every content file lives in exactly ONE of three disjoint roots (`CONTENT_ROOTS` in `apps/docs/src/lib/audience-taxonomy.ts`):

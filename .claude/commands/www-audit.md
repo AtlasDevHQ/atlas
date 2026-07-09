@@ -6,6 +6,8 @@ Cross-reference the marketing site (`apps/www/`) against source code, vendor rea
 
 **Why this is its own command:** The www site is *legal* and *marketing* surface. Drift here is more dangerous than docs drift — it can mislead a buyer, misstate a vendor name in a DPA, or claim a certification we don't hold. The verification anchors are different too (billing code, vendor reality, OpenStatus monitors, deployed regions).
 
+**Before starting:** read [docs/agents/audits.md](../../docs/agents/audits.md) (shared audit conventions) and run its **Step 0 self-check** against this command file — fix any drifted references in this file as part of the run. *Last verified against the codebase: 2026-07-09.*
+
 ---
 
 ## Execution Strategy

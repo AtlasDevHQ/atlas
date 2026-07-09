@@ -8,6 +8,8 @@ Cross-reference the running-system surface against code reality, deployed config
 
 The audit is most valuable when **Atlas Cloud** is the deployment under review — every finding maps to "could this misroute a customer's data, drop their mail, miss an abuse signal, or hide a P1 from on-call." Self-hosted operators benefit too — the audit doubles as a "is your Atlas instance prod-ready" checklist.
 
+**Before starting:** read [docs/agents/audits.md](../../docs/agents/audits.md) (shared audit conventions) and run its **Step 0 self-check** against this command file — fix any drifted references in this file as part of the run. *Last verified against the codebase: 2026-07-09.*
+
 ---
 
 ## Execution Strategy

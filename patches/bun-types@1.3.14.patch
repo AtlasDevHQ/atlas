@@ -1,0 +1,47 @@
+diff --git a/test.d.ts b/test.d.ts
+index 6c3dfe7760ced9444cf1dce7e7432da0c47b63b4..9a11eb39834e049aa2df04fba1511735c3c30e1e 100644
+--- a/test.d.ts
++++ b/test.d.ts
+@@ -897,6 +897,24 @@ declare module "bun:test" {
+     closeTo(num: number, numDigits?: number): AsymmetricMatcher;
+   }
+ 
++  /**
++   * Atlas patch (#4437): the matcher methods reached through `.resolves` / `.rejects`
++   * are declared to return `void` upstream, even though at runtime they return a real
++   * thenable that MUST be awaited for the assertion to be enforced. That mismatch makes
++   * tsgolint's `typescript/await-thenable` rule flag every
++   * `await expect(...).rejects/.resolves.X()` as a redundant await (~740 false positives),
++   * and stripping the `await` would silently disable the assertion. We rewrite the async
++   * matcher path to return `Promise<void>` so `await` is honored; the synchronous matcher
++   * path (`expect(x).toBe(y)`) is untouched, so `no-floating-promises` still (correctly)
++   * fires on a missing `await` before a `.rejects` / `.resolves` assertion.
++   */
++  type AsyncMatchers<T = unknown> = {
++    [K in keyof MatchersBuiltin<T>]: MatchersBuiltin<T>[K] extends (
++      ...args: infer A
++    ) => unknown
++      ? (...args: A) => Promise<void>
++      : AsyncMatchers<T>;
++  };
+   export interface MatchersBuiltin<T = unknown> {
+     /**
+      * Negates the result of a subsequent assertion.
+@@ -918,7 +936,7 @@ declare module "bun:test" {
+      * @example
+      * expect(Promise.resolve(1)).resolves.toBe(1);
+      */
+-    resolves: Matchers<Awaited<T>>;
++    resolves: AsyncMatchers<Awaited<T>>;
+ 
+     /**
+      * Expects the value to be a promise that rejects.
+@@ -926,7 +944,7 @@ declare module "bun:test" {
+      * @example
+      * expect(Promise.reject("error")).rejects.toBe("error");
+      */
+-    rejects: Matchers<unknown>;
++    rejects: AsyncMatchers<unknown>;
+ 
+     /**
+      * Assertion which passes.

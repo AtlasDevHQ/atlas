@@ -55,7 +55,7 @@ describe("ConnectionRegistry health checks", () => {
   }
 
   it("healthy on successful health check", async () => {
-    await registry.registerDirect("test", mockConn(), "postgres");
+    registry.registerDirect("test", mockConn(), "postgres");
     const result = await registry.healthCheck("test");
     expect(result.status).toBe("healthy");
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
@@ -63,7 +63,7 @@ describe("ConnectionRegistry health checks", () => {
   });
 
   it("degraded after 1 failure", async () => {
-    await registry.registerDirect("test", mockConn({ failQuery: true }), "postgres");
+    registry.registerDirect("test", mockConn({ failQuery: true }), "postgres");
     const result = await registry.healthCheck("test");
     expect(result.status).toBe("degraded");
     expect(result.message).toContain("connection refused");
@@ -71,7 +71,7 @@ describe("ConnectionRegistry health checks", () => {
 
   it("unhealthy after 3 failures spanning > 5 minutes", async () => {
     const conn = mockConn({ failQuery: true });
-    await registry.registerDirect("test", conn, "postgres");
+    registry.registerDirect("test", conn, "postgres");
 
     // Simulate 3 failures over 5+ minutes
     await registry.healthCheck("test"); // failure 1
@@ -97,7 +97,7 @@ describe("ConnectionRegistry health checks", () => {
       async close() {},
     };
 
-    await registry.registerDirect("test", conn, "postgres");
+    registry.registerDirect("test", conn, "postgres");
 
     // Make it unhealthy
     const entries = (registry as unknown as { entries: Map<string, { firstFailureAt: number | null; consecutiveFailures: number }> }).entries;
@@ -115,7 +115,7 @@ describe("ConnectionRegistry health checks", () => {
   });
 
   it("describe() includes health status", async () => {
-    await registry.registerDirect("test", mockConn(), "postgres", "Test DB");
+    registry.registerDirect("test", mockConn(), "postgres", "Test DB");
     await registry.healthCheck("test");
 
     const meta = registry.describe();
@@ -125,7 +125,7 @@ describe("ConnectionRegistry health checks", () => {
   });
 
   it("describe() omits health when no check has been run", async () => {
-    await registry.registerDirect("test", mockConn(), "postgres");
+    registry.registerDirect("test", mockConn(), "postgres");
     const meta = registry.describe();
     expect(meta[0].health).toBeUndefined();
   });

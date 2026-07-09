@@ -78,6 +78,31 @@ does **not** implement `no-restricted-syntax` natively.
     `warn` → `error`** (now 0 repo-wide): `no-floating-promises`,
     `require-array-sort-compare`, `no-useless-default-assignment`,
     `no-duplicate-type-constituents`.
+  - **Wave 3 (`await-thenable`, 753 → 0, #4437).** The 753 sites were all
+    `await expect(...).rejects/.resolves.X()` false positives: `bun-types` declares
+    the matcher methods reached through `.resolves`/`.rejects` as returning `void`
+    (they share the synchronous `MatchersBuiltin` interface), so tsgolint sees
+    `await <void>` and flags the `await` as redundant — even though at runtime those
+    methods return a real thenable that MUST be awaited to enforce the assertion.
+    Not a bun-1.4 bump (that is a runtime rewrite; the matcher return types on bun
+    `main` are still `void`). **Fix: a repo-side `bun` patch** (`patches/bun-types@1.3.14.patch`
+    via `patchedDependencies`) that rewrites only the async matcher path — a mapped type
+    repoints `resolves`/`rejects` so every matcher method returns `Promise<void>`, leaving
+    the synchronous `expect(x).toBe(y)` path (`void`) untouched. We chose the patch over a
+    repo-side `declare module` augmentation because the augmentation only applies to files
+    in a program that includes it, and the repo's programs diverge (several packages have
+    no tsconfig; `packages/web` *excludes* its tests, so tsgolint builds inferred per-file
+    programs for them) — the patch propagates to every test program uniformly and stays
+    correct for future test files, with no per-package wiring. Because the sync path is
+    preserved, `no-floating-promises` (now `error`) newly catches a missing `await` before a
+    `.rejects`/`.resolves` assertion — which surfaced one real latent bug (an un-awaited,
+    never-enforced rejection assertion in `lazy-loader.test.ts`). After the patch, 15
+    genuine residual redundant-awaits remained (previously masked by the 753 noise) and were
+    removed: `await registry.registerDirect(...)` ×11 (`registerDirect` returns `void`) and
+    `await validate!(...)` ×4 (synchronous mock returns). **Promoted `await-thenable`
+    `warn` → `error`** (0 repo-wide). *Caveat:* the patch is pinned to `bun-types@1.3.14`;
+    a version bump that changes `test.d.ts` will fail to apply at install time (a loud,
+    CI-caught failure) and the patch must be regenerated (`bun patch bun-types@<v>`).
 
 ## Consequences
 

@@ -167,7 +167,7 @@ void mock.module("effect", () => {
       // execute the generator synchronously so `yield* RolesPolicy` and
       // `yield* roles.checkPermission(...)` resolve under the same shim
       // semantics the rest of this file relies on.
-      const v = value as { _tag?: string; genFn?: () => Generator } | unknown;
+      const v = value;
       if (v && typeof v === "object" && (v as { _tag?: string })._tag === "EffectGen") {
         const gen = (v as { genFn: () => Generator }).genFn();
         let next = gen.next();

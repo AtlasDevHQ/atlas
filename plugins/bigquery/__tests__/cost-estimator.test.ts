@@ -31,7 +31,7 @@ const mockBigQuery = mock(() => ({
   query: mockQuery,
 }));
 
-mock.module("@google-cloud/bigquery", () => ({
+void mock.module("@google-cloud/bigquery", () => ({
   BigQuery: mockBigQuery,
 }));
 

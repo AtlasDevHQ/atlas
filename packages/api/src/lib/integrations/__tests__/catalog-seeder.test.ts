@@ -171,7 +171,7 @@ function snapshotRaw(rows: CatalogDbRow[]): Array<{
   install_model: string;
   saas_eligible: boolean;
   implementation_status: string;
-  config_schema: unknown | null;
+  config_schema: unknown;
 }> {
   return rows.map((r) => ({
     slug: r.slug,

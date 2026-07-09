@@ -141,6 +141,51 @@ does **not** implement `no-restricted-syntax` natively.
     repo-wide (residuals in `packages/web`, `plugins/mcp`, `packages/oauth-helper`,
     `packages/api` test files + the one genuine react finding), so both stay `warn` —
     promotion to `error` is gated on 0 **repo-wide**, not 0 in the touched packages.
+  - **Wave 5 (closeout: `tsconfig-error` 16 → 0, `no-redundant-type-constituents`
+    17 → 0, #4432).** *tsconfig-error (16 → 0):* every finding was a plugin
+    `tsconfig.json` extending `../../../tsconfig.json` — one level above the repo
+    root, a path that doesn't exist — so tsgolint couldn't load the base config and
+    skipped type-aware analysis of those plugins entirely. Fixed to
+    `../../tsconfig.json` (16 plugins; `plugins/chat` was already correct). No plugin
+    has a `build`/`type` script, so the wrong depth had been invisible outside the
+    linter. **Fixing the depth un-hid the same config-artifact class inside plugins**:
+    unresolved `URL`/`Request`/`RequestInit`/`Buffer` globals (root config is
+    `lib: ["esnext"]` with no `types`, and tsgolint doesn't auto-include `@types/bun`)
+    plus 16 previously-masked `no-floating-promises` errors, all top-level
+    `mock.module(...)` (wave-2 class, fixed with `void`) except one genuinely-floating
+    `plugin.initialize!(...)` in the email-digest tests whose completion gates
+    `schemaReady` — that helper became `async` and its 19 call sites `await`. Fix for
+    the globals: `types: ["bun", "node"]` in all 16 plugin tsconfigs (mirroring
+    `packages/api` and the wave-4 sdk fix), plus a new `plugins/mcp/tsconfig.json`
+    (mcp had none, so its files fell under the root program's `lib: ["esnext"]`).
+    `packages/oauth-helper` got the same `types` addition (its 2 `URL`/`Request`
+    findings were this class). *packages/web (9 → 0):* web's tsconfig excludes tests,
+    so tsgolint built inferred per-file programs for them — no `@/*` paths mapping, so
+    `FetchError`/`DashboardCard`/`KnowledgeCollectionListResponse` resolved to
+    error-types-as-`any` and absorbed union members. tsgolint honors **project
+    references** for file→program routing: a new `packages/web/tsconfig.test.json`
+    (extends the web config, adds `types: ["bun", "node"]`, includes tests; `composite:
+    true` + an emit target under gitignored `dist/` only because TS validates
+    references against TS6306/TS6310 — nothing ever builds it) referenced from
+    `packages/web/tsconfig.json`. The web `type` gate and `next build` still check the
+    unchanged main config; web tests now get a real program (which surfaced one
+    `no-meaningless-void-operator` error — a `void act(...)` whose callee now resolves
+    as `void`-returning; the `void` was dropped). *The last 6 findings were genuine,
+    not config artifacts* — wave 4's classification of the mcp/api residuals as config
+    artifacts turned out wrong: they persist under fully-healthy programs
+    (`packages/api`'s program already had `types: ["bun", "node"]`) because `unknown`
+    genuinely absorbs any union partner. All six were simplified to the type-identical
+    form per the wave-4 genuine-finding carve-out: `unknown | "pending"` → `unknown`
+    (react), `unknown | FetchStub` ×3 → `unknown` (mcp test helper; the doc comment
+    keeps the either-body-or-stub intent), `{…} | unknown` → the already-`unknown`
+    initializer and `unknown | null` → `unknown` (api tests). **Promoted
+    `no-redundant-type-constituents` `warn` → `error`** (0 repo-wide);
+    `tsconfig-error` isn't a configurable rule (it already reports at `error`
+    severity when a program fails to load) and is now also 0 repo-wide. The
+    healthier programs grew the permanent-`warn` tallies (`no-base-to-string`
+    75 → 113, `unbound-method` 50 → 65, `restrict-template-expressions` 5 → 10) —
+    same genuine-`unknown`/save-restore classes, newly visible, still not burndown
+    targets. This closes #4432.
 
 ## Consequences
 

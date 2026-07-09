@@ -118,9 +118,9 @@ const EXPECTED_VERIFIER = (() => {
 type FetchStub = (req: Request) => Response | Promise<Response>;
 interface FetchStubBehavior {
   /** Either the JSON body to return or a function that throws/returns. */
-  discovery?: unknown | FetchStub;
-  registration?: unknown | FetchStub;
-  token?: unknown | FetchStub;
+  discovery?: unknown;
+  registration?: unknown;
+  token?: unknown;
 }
 
 function fakeFetch(behavior: FetchStubBehavior): typeof fetch {

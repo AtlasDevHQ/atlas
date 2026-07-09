@@ -68,7 +68,7 @@ const mockCreate = mock((_path: string, opts?: Record<string, string>) => {
   return Promise.resolve({ connect: mockConnect, closeSync: mockCloseSync });
 });
 
-mock.module("@duckdb/node-api", () => ({ DuckDBInstance: { create: mockCreate } }));
+void mock.module("@duckdb/node-api", () => ({ DuckDBInstance: { create: mockCreate } }));
 
 import { listDuckDBObjects, profileDuckDB } from "../src/profiler";
 

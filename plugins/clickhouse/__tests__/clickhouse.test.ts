@@ -17,7 +17,7 @@ const mockCreateClient = mock(() => ({
   close: mockClose,
 }));
 
-mock.module("@clickhouse/client", () => ({
+void mock.module("@clickhouse/client", () => ({
   createClient: mockCreateClient,
 }));
 

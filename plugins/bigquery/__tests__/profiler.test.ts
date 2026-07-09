@@ -87,7 +87,7 @@ const mockQuery = mock((opts: { query: string }) => {
 
 const mockBigQuery = mock(() => ({ query: mockQuery }));
 
-mock.module("@google-cloud/bigquery", () => ({ BigQuery: mockBigQuery }));
+void mock.module("@google-cloud/bigquery", () => ({ BigQuery: mockBigQuery }));
 
 import { listBigQueryObjects, profileBigQuery } from "../src/profiler";
 

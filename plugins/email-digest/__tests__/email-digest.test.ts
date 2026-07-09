@@ -127,10 +127,10 @@ function createMockCtx(db?: ReturnType<typeof createMockDb>["db"]) {
   };
 }
 
-function createTestApp(config: EmailDigestPluginConfig, db?: ReturnType<typeof createMockDb>["db"]): Hono {
+async function createTestApp(config: EmailDigestPluginConfig, db?: ReturnType<typeof createMockDb>["db"]): Promise<Hono> {
   const plugin = buildEmailDigestPlugin(config);
   const mockCtx = createMockCtx(db);
-  plugin.initialize!(mockCtx.ctx as never);
+  await plugin.initialize!(mockCtx.ctx as never);
   const app = new Hono();
   plugin.routes!(app);
   return app;
@@ -421,7 +421,7 @@ describe("sendEmail", () => {
 describe("routes — subscription CRUD", () => {
   test("POST /digest/subscriptions creates a subscription", async () => {
     const { db } = createMockDb();
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions", {
       method: "POST",
@@ -449,7 +449,7 @@ describe("routes — subscription CRUD", () => {
 
   test("POST rejects empty metrics array", async () => {
     const { db } = createMockDb();
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions", {
       method: "POST",
@@ -472,7 +472,7 @@ describe("routes — subscription CRUD", () => {
 
   test("POST rejects invalid frequency", async () => {
     const { db } = createMockDb();
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions", {
       method: "POST",
@@ -485,7 +485,7 @@ describe("routes — subscription CRUD", () => {
 
   test("POST rejects invalid deliveryHour", async () => {
     const { db } = createMockDb();
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions", {
       method: "POST",
@@ -498,7 +498,7 @@ describe("routes — subscription CRUD", () => {
 
   test("POST rejects missing email", async () => {
     const { db } = createMockDb();
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions", {
       method: "POST",
@@ -511,7 +511,7 @@ describe("routes — subscription CRUD", () => {
 
   test("POST rejects invalid JSON body", async () => {
     const { db } = createMockDb();
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions", {
       method: "POST",
@@ -539,7 +539,7 @@ describe("routes — subscription CRUD", () => {
       updated_at: "2026-03-16T00:00:00Z",
     });
 
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions", {
       method: "GET",
@@ -567,7 +567,7 @@ describe("routes — subscription CRUD", () => {
       enabled: true,
     });
 
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions", {
       method: "GET",
@@ -592,7 +592,7 @@ describe("routes — subscription CRUD", () => {
       enabled: true,
     });
 
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions/sub-del", {
       method: "DELETE",
@@ -606,7 +606,7 @@ describe("routes — subscription CRUD", () => {
 
   test("DELETE returns 404 for non-existent subscription", async () => {
     const { db } = createMockDb();
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions/nonexistent", {
       method: "DELETE",
@@ -617,7 +617,7 @@ describe("routes — subscription CRUD", () => {
   });
 
   test("returns 503 when internal DB is not available", async () => {
-    const app = createTestApp(createMockConfig());
+    const app = await createTestApp(createMockConfig());
 
     const resp = await app.request("/digest/subscriptions", {
       method: "GET",
@@ -629,7 +629,7 @@ describe("routes — subscription CRUD", () => {
 
   test("returns 401 when user ID header is missing", async () => {
     const { db } = createMockDb();
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions", {
       method: "GET",
@@ -659,7 +659,7 @@ describe("routes — PUT /digest/subscriptions/:id", () => {
       enabled: true,
     });
 
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions/sub-up", {
       method: "PUT",
@@ -676,7 +676,7 @@ describe("routes — PUT /digest/subscriptions/:id", () => {
     const { db, rows } = createMockDb();
     rows.push({ id: "sub-other", user_id: "user-2", email: "x@t.com", metrics: "[]", frequency: "daily", delivery_hour: 9, timezone: "UTC", enabled: true });
 
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions/sub-other", {
       method: "PUT",
@@ -691,7 +691,7 @@ describe("routes — PUT /digest/subscriptions/:id", () => {
     const { db, rows } = createMockDb();
     rows.push({ id: "sub-x", user_id: "user-1", email: "x@t.com", metrics: "[]", frequency: "daily", delivery_hour: 9, timezone: "UTC", enabled: true });
 
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions/sub-x", {
       method: "PUT",
@@ -708,7 +708,7 @@ describe("routes — PUT /digest/subscriptions/:id", () => {
     const { db, rows } = createMockDb();
     rows.push({ id: "sub-x", user_id: "user-1", email: "x@t.com", metrics: "[]", frequency: "daily", delivery_hour: 9, timezone: "UTC", enabled: true });
 
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions/sub-x", {
       method: "PUT",
@@ -723,7 +723,7 @@ describe("routes — PUT /digest/subscriptions/:id", () => {
     const { db, rows } = createMockDb();
     rows.push({ id: "sub-tog", user_id: "user-1", email: "x@t.com", metrics: "[]", frequency: "daily", delivery_hour: 9, timezone: "UTC", enabled: true });
 
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions/sub-tog", {
       method: "PUT",
@@ -738,7 +738,7 @@ describe("routes — PUT /digest/subscriptions/:id", () => {
     const { db, rows } = createMockDb();
     rows.push({ id: "sub-v", user_id: "user-1", email: "x@t.com", metrics: "[]", frequency: "daily", delivery_hour: 9, timezone: "UTC", enabled: true });
 
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp1 = await app.request("/digest/subscriptions/sub-v", {
       method: "PUT",
@@ -757,7 +757,7 @@ describe("routes — PUT /digest/subscriptions/:id", () => {
 
   test("returns 401 without user ID header", async () => {
     const { db } = createMockDb();
-    const app = createTestApp(createMockConfig(), db);
+    const app = await createTestApp(createMockConfig(), db);
 
     const resp = await app.request("/digest/subscriptions/sub-x", {
       method: "PUT",

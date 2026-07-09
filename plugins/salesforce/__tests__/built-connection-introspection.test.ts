@@ -13,7 +13,7 @@ import { describe, test, expect, mock } from "bun:test";
 const listSpy = mock(async (_o: unknown) => [] as unknown[]);
 const profileSpy = mock(async (_o: unknown) => ({ profiles: [], errors: [] }));
 const realProfiler = await import("../src/profiler");
-mock.module("../src/profiler", () => ({
+void mock.module("../src/profiler", () => ({
   ...realProfiler,
   listSalesforceObjects: listSpy,
   profileSalesforce: profileSpy,
@@ -22,7 +22,7 @@ mock.module("../src/profiler", () => ({
 // Mock the jsforce-backed connection so createFromConfig doesn't open a session;
 // keep parseSalesforceURL real so the url is validated as the plugin would.
 const realConn = await import("../src/connection");
-mock.module("../src/connection", () => ({
+void mock.module("../src/connection", () => ({
   ...realConn,
   createSalesforceConnection: mock(() => ({
     query: mock(async () => ({ columns: [], rows: [] })),

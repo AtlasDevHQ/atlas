@@ -20,7 +20,7 @@ const mockCreatePool = mock(() => ({
   end: mockEnd,
 }));
 
-mock.module("mysql2/promise", () => ({
+void mock.module("mysql2/promise", () => ({
   createPool: mockCreatePool,
 }));
 

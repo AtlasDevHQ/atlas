@@ -30,7 +30,7 @@ import { DEFAULT_STARTER_PROMPT_TEXTS } from "../../lib/fallback-starter-prompts
 
 let resolveStarter: ((res: Response) => void) | null = null;
 
-function makeFetch(starterBody: unknown | "pending", starterStatus = 200) {
+function makeFetch(starterBody: unknown, starterStatus = 200) {
   return function fetchImpl(input: string | URL | Request): Promise<Response> {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 

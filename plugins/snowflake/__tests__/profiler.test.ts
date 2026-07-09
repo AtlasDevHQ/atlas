@@ -54,7 +54,7 @@ const mockCreatePool = mock(() => ({
 }));
 const mockConfigure = mock(() => {});
 
-mock.module("snowflake-sdk", () => ({
+void mock.module("snowflake-sdk", () => ({
   createPool: mockCreatePool,
   configure: mockConfigure,
 }));

@@ -266,8 +266,8 @@ describe("useContextWarnings (integration)", () => {
     render(<Probe />);
     await act(async () => { await Promise.resolve(); });
 
-    expect(returnedForWarning).toBe(true);
-    expect(returnedForOther).toBe(false);
+    expect<boolean | null>(returnedForWarning).toBe(true);
+    expect<boolean | null>(returnedForOther).toBe(false);
   });
 
   test("turn-N warnings attach to turn N's assistant, NOT turn N-1's", async () => {

@@ -30,7 +30,7 @@ describe("NotebookEmptyState", () => {
           total: 1,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
-      )) as typeof fetch;
+      )) as unknown as typeof fetch;
 
     try {
       const { findByText } = render(
@@ -59,7 +59,7 @@ describe("NotebookEmptyState", () => {
         JSON.stringify({ error: "Forbidden", requestId: "req-xyz" }),
         { status: 403, headers: { "Content-Type": "application/json" } },
       );
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     try {
       const { findByTestId, getByRole } = render(

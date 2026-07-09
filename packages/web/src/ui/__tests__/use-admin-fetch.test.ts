@@ -82,7 +82,7 @@ const stubAuthClient = {
   signIn: { email: async () => ({}) },
   signUp: { email: async () => ({}) },
   signOut: async () => {},
-  useSession: () => ({ data: null }),
+  useSession: () => ({ data: null, isPending: false }),
 };
 
 let testQueryClient: QueryClient;
@@ -93,8 +93,7 @@ function wrapper({ children }: { children: ReactNode }) {
     { client: testQueryClient },
     createElement(
       AtlasProvider,
-      { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient } },
-      children,
+      { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient }, children },
     ),
   );
 }
@@ -768,7 +767,7 @@ describe("useAdminFetch", () => {
       expect(second.current.loading).toBe(false);
     });
 
-    expect(second.current.data).toEqual({ connections: [{ id: "a" }] });
+    expect(second.current.data as unknown).toEqual({ connections: [{ id: "a" }] });
     expect(Array.isArray(second.current.data)).toBe(false);
   });
 
@@ -817,11 +816,10 @@ function gatedWrapper({ children }: { children: ReactNode }) {
   return createElement(
     QueryClientProvider,
     { client: testQueryClient },
-    createElement(
-      AtlasProvider,
-      { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient } },
-      createElement(MfaGateProvider, null, children),
-    ),
+    createElement(AtlasProvider, {
+      config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient },
+      children: createElement(MfaGateProvider, null, children),
+    }),
   );
 }
 

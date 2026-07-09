@@ -107,10 +107,10 @@ describe("TestConnectionButton (#3846)", () => {
 
   test("clicking reads the latest url + schema at click time, not a stale snapshot", async () => {
     const onTest = mock((_url: string, _schema: string) => {});
-    let captured: UseFormReturn<ConnectionFormValues> | null = null;
+    const captured: { current: UseFormReturn<ConnectionFormValues> | null } = { current: null };
 
     const { getByText, getByTestId } = render(
-      <Harness onForm={(f) => (captured = f)}>
+      <Harness onForm={(f) => (captured.current = f)}>
         {(form) => (
           <TestConnectionButton form={form} saving={false} onTest={onTest} />
         )}
@@ -124,9 +124,9 @@ describe("TestConnectionButton (#3846)", () => {
     // Mutate schema AFTER mount: the button reads it via `getValues` at click
     // time, so a regression that snapshots schema into a prop/closure at mount
     // would surface the old (empty) value here.
-    const form = captured;
+    const form = captured.current;
     if (!form) throw new Error("form not captured");
-    void act(() => form.setValue("schema", "analytics"));
+    act(() => form.setValue("schema", "analytics"));
 
     const button = getByText("Test").closest("button");
     if (!button) throw new Error("Test button not found");
@@ -159,19 +159,19 @@ describe("TestConnectionButton (#3846)", () => {
 
 describe("NewEnvNameField (#3846)", () => {
   test("hidden until envSelection becomes the create-sentinel, then mounts", async () => {
-    let captured: UseFormReturn<ConnectionFormValues> | null = null;
+    const captured: { current: UseFormReturn<ConnectionFormValues> | null } = { current: null };
 
     const { queryByTestId } = render(
-      <Harness onForm={(f) => (captured = f)}>
+      <Harness onForm={(f) => (captured.current = f)}>
         {(form) => <NewEnvNameField form={form} />}
       </Harness>,
     );
 
     expect(queryByTestId("env-new-name-input")).toBeNull();
 
-    const form = captured;
+    const form = captured.current;
     if (!form) throw new Error("form not captured");
-    void act(() => form.setValue("envSelection", ENV_SENTINEL_CREATE));
+    act(() => form.setValue("envSelection", ENV_SENTINEL_CREATE));
 
     await waitFor(() => {
       expect(queryByTestId("env-new-name-input")).not.toBeNull();
@@ -181,19 +181,19 @@ describe("NewEnvNameField (#3846)", () => {
 
 describe("PostgresSchemaField (#3846)", () => {
   test("shown for postgres and hidden once dbType changes away", async () => {
-    let captured: UseFormReturn<ConnectionFormValues> | null = null;
+    const captured: { current: UseFormReturn<ConnectionFormValues> | null } = { current: null };
 
     const { queryByText } = render(
-      <Harness defaults={{ dbType: "postgres" }} onForm={(f) => (captured = f)}>
+      <Harness defaults={{ dbType: "postgres" }} onForm={(f) => (captured.current = f)}>
         {(form) => <PostgresSchemaField form={form} />}
       </Harness>,
     );
 
     expect(queryByText("Schema")).not.toBeNull();
 
-    const form = captured;
+    const form = captured.current;
     if (!form) throw new Error("form not captured");
-    void act(() => form.setValue("dbType", "mysql"));
+    act(() => form.setValue("dbType", "mysql"));
 
     await waitFor(() => {
       expect(queryByText("Schema")).toBeNull();

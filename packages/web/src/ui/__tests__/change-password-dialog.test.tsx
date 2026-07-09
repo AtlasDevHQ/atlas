@@ -7,7 +7,7 @@ const stubAuthClient: AtlasAuthClient = {
   signIn: { email: async () => ({}) },
   signUp: { email: async () => ({}) },
   signOut: async () => {},
-  useSession: () => ({ data: null }),
+  useSession: () => ({ data: null, isPending: false }),
 };
 
 function renderDialog(open: boolean, onComplete?: () => void) {

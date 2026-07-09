@@ -37,7 +37,7 @@ function PromptHarness(props: { onPrefill: (text: string) => void }) {
 
 function wrapper(searchParams: Record<string, string>) {
   return ({ children }: { children: ReactNode }) =>
-    createElement(NuqsTestingAdapter, { searchParams, hasMemory: true }, children);
+    createElement(NuqsTestingAdapter, { searchParams, hasMemory: true, children });
 }
 
 afterEach(() => cleanup());

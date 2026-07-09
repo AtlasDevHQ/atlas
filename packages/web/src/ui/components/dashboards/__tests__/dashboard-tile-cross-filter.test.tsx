@@ -31,6 +31,7 @@ const noop = () => {};
 const tableCard: DashboardCard = {
   id: "card-table",
   dashboardId: "dash-1",
+  annotations: [],
   position: 0,
   title: "Pipeline by stage",
   kind: "chart",

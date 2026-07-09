@@ -11,15 +11,17 @@ import { useResumeHandler } from "@/ui/hooks/use-resume-handler";
 import { ATLAS_RESUME_MARKER } from "@/ui/hooks/use-atlas-transport";
 
 function makeOpts(over: Partial<Parameters<typeof useResumeHandler>[0]> = {}) {
-  return {
-    regenerate: mock(() => Promise.resolve()),
+  const base = {
+    regenerate: mock((_opts?: { body?: Record<string, unknown> }) => Promise.resolve()),
     clearRunStatus: mock(() => {}),
     refetchRunStatus: mock(() => {}),
     isLoading: false,
     resetPendingWarnings: mock(() => {}),
-    onError: mock(() => {}),
-    ...over,
+    onError: mock((_message: string, _detail?: string) => {}),
   };
+  // `over` may swap in same-shaped mocks; keep the Mock-typed fields so
+  // `.mock.calls` stays typed at the assertion sites.
+  return { ...base, ...over } as typeof base;
 }
 
 describe("useResumeHandler (#3749)", () => {

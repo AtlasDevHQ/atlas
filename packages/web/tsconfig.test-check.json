@@ -1,0 +1,17 @@
+{
+  // Check-only companion to tsconfig.test.json (#4450): the routing artifact
+  // it extends is composite (load-bearing for the tsgolint project-reference
+  // redirect) and therefore can't compile standalone — composite demands a
+  // complete file list, while the include is deliberately test-only (#4447).
+  // This config drops `composite` so the compiler may pull app src into the
+  // program unlisted, giving `tsgo -p tsconfig.test-check.json` a real
+  // type-check over every web test file. It is NOT in tsconfig.json's
+  // `references` on purpose — referencing it would let it claim files out of
+  // the main program (#4447). The include list stays stated once, in
+  // tsconfig.test.json.
+  "extends": "./tsconfig.test.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true
+  }
+}

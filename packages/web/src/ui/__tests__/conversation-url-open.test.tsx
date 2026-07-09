@@ -113,11 +113,7 @@ function wrapper(
   onUrlUpdate?: (e: UrlUpdateEvent) => void,
 ) {
   return ({ children }: { children: ReactNode }) =>
-    createElement(
-      NuqsTestingAdapter,
-      { searchParams, onUrlUpdate, hasMemory: true },
-      children,
-    );
+    createElement(NuqsTestingAdapter, { searchParams, onUrlUpdate, hasMemory: true, children });
 }
 
 afterEach(() => cleanup());

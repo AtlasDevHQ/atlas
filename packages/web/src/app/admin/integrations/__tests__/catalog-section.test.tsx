@@ -44,9 +44,10 @@ const testConfig = {
   apiUrl: "http://localhost:3001",
   isCrossOrigin: false,
   authClient: {
-    getToken: async () => null,
-    getOrgId: () => null,
-    onAuthChange: () => () => undefined,
+    signIn: { email: async () => ({}) },
+    signUp: { email: async () => ({}) },
+    signOut: async () => {},
+    useSession: () => ({ data: null, isPending: false }),
   },
 };
 
@@ -805,7 +806,6 @@ describe("CatalogSection — pillar split + status error surface (#2746)", () =>
           status: 0,
           message,
           requestId: undefined,
-          rawBody: null,
         }}
         onChange={noopChange}
       />,

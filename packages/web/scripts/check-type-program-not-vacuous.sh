@@ -9,8 +9,14 @@ set -euo pipefail
 # contains a healthy number of this package's source files.
 # --listFilesOnly skips the check phase, so this costs a small fraction of
 # the full check.
+#
+# Parameterized for the adversarial fixture suite at root
+# scripts/__tests__/check-type-program-not-vacuous.test.sh, which points the
+# guard at a scaffolded synthetic tree instead of mutating the real tsconfigs:
+#   TYPE_PROGRAM_GUARD_ROOT — project dir to check (default: packages/web)
+#   TYPE_PROGRAM_GUARD_MIN  — minimum src-file floor (default: 450)
 
-cd "$(dirname "$0")/.."
+cd "${TYPE_PROGRAM_GUARD_ROOT:-$(dirname "$0")/..}"
 
 if [ -x "node_modules/.bin/tsgo" ]; then
   TSGO="node_modules/.bin/tsgo"
@@ -30,8 +36,10 @@ files=$("$TSGO" --noEmit --listFilesOnly) || {
   exit 1
 }
 
+# tsgo prints absolute paths; count this project's src files. -F because the
+# resolved path is a literal, not a pattern.
 # grep -c prints 0 before exiting 1 on no-match; only exit 1 is expected.
-count=$(printf '%s\n' "$files" | grep -c "packages/web/src/") || {
+count=$(printf '%s\n' "$files" | grep -cF "$(pwd -P)/src/") || {
   status=$?
   if [ "$status" -gt 1 ]; then
     echo "check-type-program-not-vacuous: FAIL — grep exited $status while counting src files; guard could not run." >&2
@@ -48,7 +56,7 @@ esac
 # The program is ~580 src files today. 450 allows real code shrinkage but
 # trips on partial vacuation (a reference claiming a whole subtree like
 # src/ui/** would drop hundreds of files), not just the total wipe-out.
-min=450
+min="${TYPE_PROGRAM_GUARD_MIN:-450}"
 
 if [ "$count" -lt "$min" ]; then
   echo "check-type-program-not-vacuous: FAIL — only $count packages/web/src files in the type program (expected >= $min)." >&2

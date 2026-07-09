@@ -53,20 +53,20 @@ describe("coerceRollbackWarning", () => {
 
 describe("logUnsurfacedRollbackWarning", () => {
   test("does not log null / undefined (no warning to drift)", () => {
-    const logger = mock(() => {});
+    const logger = mock((_message: string, _value: unknown) => {});
     logUnsurfacedRollbackWarning(null, logger);
     logUnsurfacedRollbackWarning(undefined, logger);
     expect(logger).not.toHaveBeenCalled();
   });
 
   test("does not log well-formed non-empty strings (surfaced verbatim)", () => {
-    const logger = mock(() => {});
+    const logger = mock((_message: string, _value: unknown) => {});
     logUnsurfacedRollbackWarning("rollback may not have reversed", logger);
     expect(logger).not.toHaveBeenCalled();
   });
 
   test("logs non-string shapes with the raw value (schema-drift signal)", () => {
-    const logger = mock(() => {});
+    const logger = mock((_message: string, _value: unknown) => {});
     logUnsurfacedRollbackWarning({ code: "partial", message: "x" }, logger);
     expect(logger).toHaveBeenCalledTimes(1);
     const [msg, value] = logger.mock.calls[0] ?? [];
@@ -75,7 +75,7 @@ describe("logUnsurfacedRollbackWarning", () => {
   });
 
   test("logs blank strings separately from non-string shapes", () => {
-    const logger = mock(() => {});
+    const logger = mock((_message: string, _value: unknown) => {});
     logUnsurfacedRollbackWarning("   ", logger);
     logUnsurfacedRollbackWarning("", logger);
     expect(logger).toHaveBeenCalledTimes(2);
@@ -83,7 +83,7 @@ describe("logUnsurfacedRollbackWarning", () => {
   });
 
   test("logs arrays as non-string shape (not blank string)", () => {
-    const logger = mock(() => {});
+    const logger = mock((_message: string, _value: unknown) => {});
     logUnsurfacedRollbackWarning(["a", "b"], logger);
     expect(logger).toHaveBeenCalledTimes(1);
     expect(logger.mock.calls[0]?.[0]).toBe("handleRollback: non-string warning shape");

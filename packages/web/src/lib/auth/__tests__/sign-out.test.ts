@@ -43,7 +43,7 @@ describe("signOutForgettingRegion", () => {
 
     // Forgotten before the request ran — not after, so the hint can't survive a
     // signOut that hangs or the page navigating away mid-flight.
-    expect(presentDuringSignOut).toBe(false);
+    expect<boolean | null>(presentDuringSignOut).toBe(false);
     expect(hasRegionCookie()).toBe(false);
   });
 

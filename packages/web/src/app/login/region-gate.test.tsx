@@ -25,7 +25,9 @@ Object.defineProperty(window, "location", {
   configurable: true,
 });
 
-const fetchMock = mock(async (): Promise<Response> => new Response("{}"));
+const fetchMock = mock(
+  async (_input?: RequestInfo | URL, _init?: RequestInit): Promise<Response> => new Response("{}"),
+);
 const originalFetch = globalThis.fetch;
 globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 
@@ -66,7 +68,7 @@ describe("LoginRegionGate", () => {
     expect(applyRegionSignalMock).toHaveBeenCalledWith("eu", "https://api-eu.useatlas.dev");
     expect(reloadMock).toHaveBeenCalledTimes(1);
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("/api/login/resolve-region");
     expect(JSON.parse(init.body as string)).toEqual({ email: "alice@corp.com" });
   });

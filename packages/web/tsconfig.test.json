@@ -7,7 +7,10 @@
   // app code into the program unlisted), so never build this with `tsc -b`.
   // Keep `include` narrowed to test files only — a broader include claims
   // app src files and redirects them OUT of the main program, silently
-  // emptying the web `type` gate (#4447).
+  // emptying the web `type` gate (#4447). The non-composite sibling
+  // tsconfig.test-check.json extends this file to actually TYPE-CHECK the
+  // test program (#4450) — this include is the single statement of the
+  // test-file set for both.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "composite": true,

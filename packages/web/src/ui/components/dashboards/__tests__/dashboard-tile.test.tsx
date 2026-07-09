@@ -210,6 +210,7 @@ describe("DashboardTile", () => {
 
 const textCard: DashboardCard = {
   id: "card-text",
+  annotations: [],
   dashboardId: "dash-1",
   position: 0,
   title: "Top of funnel",
@@ -260,6 +261,7 @@ describe("DashboardTile — text cards", () => {
 
 const kpiCard: DashboardCard = {
   id: "card-kpi",
+  annotations: [],
   dashboardId: "dash-1",
   position: 0,
   title: "Revenue",

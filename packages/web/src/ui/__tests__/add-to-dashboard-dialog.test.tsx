@@ -79,7 +79,7 @@ function Wrapper({ children }: { children: ReactNode }) {
   return React.createElement(QueryClientProvider, { client }, children);
 }
 
-const noChartResult = { chartable: false as const, recommendations: [] };
+const noChartResult = { chartable: false as const, columns: [], recommendations: [] };
 
 const baseProps = {
   open: true,

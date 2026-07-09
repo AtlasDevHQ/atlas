@@ -16,6 +16,8 @@ import {
   activityAwaitsUser,
   partitionTurn,
   summarizeActivity,
+  type TextTurnPart,
+  type ToolTurnPart,
   type TurnPart,
 } from "../turn-partitioner";
 
@@ -23,7 +25,7 @@ import {
 /*  Part fixtures                                                      */
 /* ------------------------------------------------------------------ */
 
-function text(t: string, state?: "streaming" | "done"): TurnPart {
+function text(t: string, state?: "streaming" | "done"): TextTurnPart {
   return { type: "text", text: t, state };
 }
 
@@ -41,7 +43,7 @@ function sql(opts: {
   success?: boolean;
   state?: "input-streaming" | "input-available" | "output-available";
   sql?: string;
-}): TurnPart {
+}): ToolTurnPart {
   const state = opts.state ?? "output-available";
   return {
     type: "tool-executeSQL",
@@ -56,27 +58,27 @@ function sql(opts: {
               : { success: true, columns: ["n"], rows: [{ n: 1 }] },
         }
       : {}),
-  } as TurnPart;
+  } as ToolTurnPart;
 }
 
-function explore(command = "ls semantic/entities"): TurnPart {
+function explore(command = "ls semantic/entities"): ToolTurnPart {
   return {
     type: "tool-explore",
     toolCallId: `call-${nextCallId++}`,
     state: "output-available",
     input: { command },
     output: "entities.yml",
-  } as TurnPart;
+  } as ToolTurnPart;
 }
 
-function python(): TurnPart {
+function python(): ToolTurnPart {
   return {
     type: "tool-executePython",
     toolCallId: `call-${nextCallId++}`,
     state: "output-available",
     input: { code: "print(1)" },
     output: { success: true, stdout: "1" },
-  } as TurnPart;
+  } as ToolTurnPart;
 }
 
 /* ------------------------------------------------------------------ */
@@ -190,7 +192,7 @@ describe("partitionTurn", () => {
 
     const result = partitionTurn(parts);
 
-    const surfaced = [
+    const surfaced: TurnPart[] = [
       ...result.activity.map((p) => p.part),
       ...result.answer.map((p) => p.part),
       ...(result.answerBearingArtifact ? [result.answerBearingArtifact.part] : []),
@@ -243,14 +245,14 @@ describe("partitionTurn", () => {
 /* ------------------------------------------------------------------ */
 
 /** A generic tool part with an arbitrary output envelope. */
-function toolWithOutput(output: unknown): TurnPart {
+function toolWithOutput(output: unknown): ToolTurnPart {
   return {
     type: "tool-someAction",
     toolCallId: `call-${nextCallId++}`,
     state: "output-available",
     input: {},
     output,
-  } as TurnPart;
+  } as ToolTurnPart;
 }
 
 describe("activityAwaitsUser", () => {

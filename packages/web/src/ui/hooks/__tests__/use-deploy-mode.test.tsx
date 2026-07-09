@@ -45,7 +45,7 @@ describe("useDeployMode { enabled } forwarding", () => {
     staged({});
     lastOpts = undefined;
     renderHook(() => useDeployMode());
-    expect(lastOpts).toEqual({ enabled: undefined });
+    expect<{ enabled?: boolean } | undefined>(lastOpts).toEqual({ enabled: undefined });
   });
 
   test("explicit enabled: false threads through to skip the fetch", () => {
@@ -54,14 +54,14 @@ describe("useDeployMode { enabled } forwarding", () => {
     staged({});
     lastOpts = undefined;
     renderHook(() => useDeployMode({ enabled: false }));
-    expect(lastOpts).toEqual({ enabled: false });
+    expect<{ enabled?: boolean } | undefined>(lastOpts).toEqual({ enabled: false });
   });
 
   test("explicit enabled: true also threads through", () => {
     staged({});
     lastOpts = undefined;
     renderHook(() => useDeployMode({ enabled: true }));
-    expect(lastOpts).toEqual({ enabled: true });
+    expect<{ enabled?: boolean } | undefined>(lastOpts).toEqual({ enabled: true });
   });
 
   test("falls back to the hostname guess when the fetch is disabled", () => {

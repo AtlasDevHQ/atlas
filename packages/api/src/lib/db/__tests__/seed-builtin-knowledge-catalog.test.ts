@@ -27,6 +27,7 @@ import {
   BUILTIN_CONFLUENCE_CATALOG_ROW,
   BUILTIN_CONFLUENCE_DC_CATALOG_ROW,
   BUILTIN_ZENDESK_CATALOG_ROW,
+  BUILTIN_SALESFORCE_KNOWLEDGE_CATALOG_ROW,
   BUILTIN_KNOWLEDGE_CATALOG_ROWS,
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
@@ -187,6 +188,29 @@ describe("BUILTIN_ZENDESK_CATALOG_ROW (#4396)", () => {
   });
 });
 
+describe("BUILTIN_SALESFORCE_KNOWLEDGE_CATALOG_ROW (#4397)", () => {
+  it("is the `salesforce-knowledge` form install: scope-only config, NO secret field", () => {
+    const row = BUILTIN_SALESFORCE_KNOWLEDGE_CATALOG_ROW;
+    expect(row.slug).toBe("salesforce-knowledge");
+    expect(row.id).toBe("catalog:salesforce-knowledge");
+    expect(row.installModel).toBe("form");
+    expect(row.autoInstall).toBe(false);
+    const keys = row.configSchema.map((f) => f.key);
+    expect(keys).toContain("channel");
+    expect(keys).toContain("article_object");
+    expect(keys).toContain("description");
+    // The tier's credential-model departure: the connector reuses the
+    // workspace's existing Salesforce OAuth install (catalog:salesforce), so
+    // this row collects NO secret and NO endpoint — zero secret fields.
+    expect(row.configSchema.filter((f) => f.secret === true)).toEqual([]);
+    expect(keys).not.toContain("api_token");
+    expect(keys).not.toContain("base_url");
+    // Every field is optional — an empty form installs the Knowledge__kav
+    // default scope.
+    expect(row.configSchema.filter((f) => f.required === true)).toEqual([]);
+  });
+});
+
 describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
   it("issues one INSERT per built-in row with type 'context' and pillar 'knowledge'", async () => {
     const { db, captured } = captureDb();
@@ -210,6 +234,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "confluence-datacenter",
       "gitbook",
       "zendesk",
+      "salesforce-knowledge",
     ]);
   });
 
@@ -237,6 +262,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "confluence-datacenter",
       "gitbook",
       "zendesk",
+      "salesforce-knowledge",
     ]);
     // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).
     const reboot = await seedBuiltinKnowledgeCatalog(captureDb(false).db);

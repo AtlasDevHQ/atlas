@@ -163,3 +163,32 @@ ADR's "converter" role:
   engine's reconciliation crawl as their change detection — `fetchChanges`
   falls back to full enumeration; no engine change (the two-cadence split
   above already prices this in, just costlier cycles, documented per vendor).
+
+## Amendment (#4397): connector credentials from a reused OAuth install
+
+The Salesforce Knowledge connector (#4397) introduces the tier's second
+credential-sourcing model. Every prior connector reads a per-collection secret
+from `knowledge_sync_credentials` via `readSyncCredential(workspaceId,
+collectionSlug)` inside `createClient`. Salesforce Knowledge instead **reuses
+the workspace's existing Salesforce OAuth install** (`catalog:salesforce`,
+ADR-0014): `createClient` resolves the lazy plugin instance
+(`lazyPluginLoader.getOrInstantiate`) and drives SOQL through its
+refresh-retried surface. Consequences the pattern pins:
+
+- **No new secret path.** The install handler collects no credential, writes
+  no `knowledge_sync_credentials` row, and has no credential rollback pairing;
+  token storage, refresh, and reconnect stay single-homed in the OAuth
+  install's `integration_credentials` bundle + lazy builder.
+- **The install-time "verify loudly" step changes shape, not posture**: the
+  handler resolves the live instance (classifying loader failures to
+  actionable 400s — connect first / Reconnect / operator env missing) and
+  `describe`s the configured object before persisting, replacing the
+  credential check the other vendors run.
+- **Lifecycle coupling is deliberate**: disconnecting the Salesforce OAuth
+  install breaks the knowledge collection's sync — surfaced per cycle as that
+  collection's actionable error outcome, never a silent no-op. Uninstalling
+  the knowledge collection never touches the OAuth install.
+- A connector needing a RAW vendor surface beyond the lazy instance's
+  tool-facing `query()` extends the instance (here: `queryPage`/
+  `queryMorePage`/`describeObject` for `queryMore` pagination + body-field
+  discovery) rather than re-implementing OAuth construction.

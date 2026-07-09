@@ -50,6 +50,11 @@ import { GitbookFormInstallHandler, GITBOOK_SLUG } from "./gitbook-form-handler"
 import { registerGitbookKnowledgeConnector } from "@atlas/api/lib/knowledge/gitbook/connector";
 import { ZendeskFormInstallHandler, ZENDESK_SLUG } from "./zendesk-form-handler";
 import { registerZendeskKnowledgeConnector } from "@atlas/api/lib/knowledge/zendesk/connector";
+import {
+  SalesforceKnowledgeFormInstallHandler,
+  SALESFORCE_KNOWLEDGE_SLUG,
+} from "./salesforce-knowledge-form-handler";
+import { registerSalesforceKnowledgeConnector } from "@atlas/api/lib/knowledge/salesforce/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -297,6 +302,23 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(ZENDESK_SLUG, new ZendeskFormInstallHandler());
   registerZendeskKnowledgeConnector();
   log.info("Registered ZendeskFormInstallHandler + knowledge sync connector");
+  // Knowledge Base (Salesforce Knowledge) — the built-in `salesforce-knowledge`
+  // connector install (#4397, PRD #4395). Knowledge-pillar, multi-instance:
+  // one collection per article-object/channel scope. The tier's one
+  // credential-model departure: NO secret is collected and NO
+  // `knowledge_sync_credentials` row is written — the connector reuses the
+  // workspace's existing Salesforce OAuth install (`catalog:salesforce`,
+  // ADR-0014) via the lazy plugin loader. Registering the FORM handler + the
+  // CONNECTOR together (as with the other knowledge vendors) keeps a
+  // half-wired deploy from having an installable card whose scheduled sync has
+  // no registered vendor client. No env gate: the install always fails loudly
+  // with an actionable message — builder-missing on a deploy without the
+  // Salesforce OAuth env (the loader checks the builder first),
+  // connect-Salesforce-first on a configured deploy where the workspace hasn't
+  // connected yet (same posture as the querySalesforce agent tool).
+  registerFormHandler(SALESFORCE_KNOWLEDGE_SLUG, new SalesforceKnowledgeFormInstallHandler());
+  registerSalesforceKnowledgeConnector();
+  log.info("Registered SalesforceKnowledgeFormInstallHandler + knowledge sync connector");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

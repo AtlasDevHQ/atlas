@@ -29,6 +29,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import type {
   KnowledgeCollectionListResponse,
+  KnowledgeCollectionSource,
   KnowledgeDocumentListResponse,
   KnowledgeIngestSummary,
   KnowledgeSyncRunResponse,
@@ -58,6 +59,7 @@ import { CONFLUENCE_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/confi
 import { CONFLUENCE_DC_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/config-datacenter";
 import { GITBOOK_CATALOG_ID } from "@atlas/api/lib/knowledge/gitbook/config";
 import { ZENDESK_CATALOG_ID } from "@atlas/api/lib/knowledge/zendesk/config";
+import { SALESFORCE_KNOWLEDGE_CATALOG_ID } from "@atlas/api/lib/knowledge/salesforce/config";
 import { syncCollection } from "@atlas/api/lib/knowledge/sync";
 import { getKnowledgeSyncConnector } from "@atlas/api/lib/knowledge/connectors";
 import { syncConnectorCollection } from "@atlas/api/lib/knowledge/connector-sync";
@@ -104,16 +106,12 @@ async function loadCollection(
   return rows[0] ?? null;
 }
 
-/** A synced-collection source discriminator + whether it is a connector. */
-type KnowledgeSource =
-  | "upload"
-  | "bundle-sync"
-  | "notion"
-  | "confluence"
-  | "confluence-datacenter"
-  | "gitbook"
-  | "zendesk"
-  | "unknown";
+/**
+ * A synced-collection source discriminator — the wire union plus the local
+ * fail-closed `"unknown"` (derived, not hand-duplicated, so a new wire member
+ * can't drift this file).
+ */
+type KnowledgeSource = KnowledgeCollectionSource | "unknown";
 
 /**
  * Map a knowledge catalog id to the wire `source` discriminator — matching
@@ -130,6 +128,7 @@ function sourceOf(catalogId: string): KnowledgeSource {
   if (catalogId === CONFLUENCE_DC_CATALOG_ID) return "confluence-datacenter";
   if (catalogId === GITBOOK_CATALOG_ID) return "gitbook";
   if (catalogId === ZENDESK_CATALOG_ID) return "zendesk";
+  if (catalogId === SALESFORCE_KNOWLEDGE_CATALOG_ID) return "salesforce-knowledge";
   return "unknown";
 }
 
@@ -141,7 +140,8 @@ function isSyncedSource(source: KnowledgeSource): boolean {
     source === "confluence" ||
     source === "confluence-datacenter" ||
     source === "gitbook" ||
-    source === "zendesk"
+    source === "zendesk" ||
+    source === "salesforce-knowledge"
   );
 }
 
@@ -162,7 +162,7 @@ const CollectionListResponseSchema = z.object({
   collections: z.array(
     z.object({
       slug: z.string(),
-      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk"]),
+      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge"]),
       description: z.string().nullable(),
       installedAt: z.string().nullable(),
       endpointUrl: z.string().nullable(),

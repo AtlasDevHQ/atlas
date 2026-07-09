@@ -1136,7 +1136,10 @@ describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
     }
     expect(mockGetWorkspaceModelConfigRaw).not.toHaveBeenCalled();
     expect(mockGetAnthropicCatalog).not.toHaveBeenCalled();
-  });
+    // 15s: the real gateway fetch self-aborts at FETCH_TIMEOUT_MS (10s) and
+    // falls back — on a network that black-holes the request (sandboxed/proxied
+    // CI containers), bun's default 5s test timeout fired before the fallback.
+  }, 15_000);
 });
 
 // ---------------------------------------------------------------------------

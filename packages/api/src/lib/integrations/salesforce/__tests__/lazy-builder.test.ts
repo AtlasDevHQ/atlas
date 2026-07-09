@@ -59,8 +59,12 @@ void mock.module("@atlas/api/lib/integrations/install/salesforce-token-refresh",
 
 // Mock jsforce so the test never touches a real network. Tracks the
 // last-constructed Connection's args so assertions can inspect them.
-const mockJsforceQuery: Mock<(soql: string) => Promise<{ records?: Record<string, unknown>[] }>> =
-  mock(() => Promise.resolve({ records: [] }));
+const mockJsforceQuery: Mock<
+  (soql: string) => Promise<{ records?: Record<string, unknown>[]; done?: boolean; nextRecordsUrl?: string | null }>
+> = mock(() => Promise.resolve({ records: [] }));
+const mockJsforceQueryMore: Mock<
+  (url: string) => Promise<{ records?: Record<string, unknown>[]; done?: boolean; nextRecordsUrl?: string | null }>
+> = mock(() => Promise.resolve({ records: [], done: true }));
 const mockDescribeGlobal: Mock<() => Promise<{ sobjects?: { name?: string; queryable?: boolean }[] }>> =
   mock(() => Promise.resolve({ sobjects: [] }));
 const mockDescribe: Mock<(name: string) => Promise<{ fields?: Record<string, unknown>[] }>> =
@@ -71,6 +75,7 @@ class MockJsforceConnection {
     lastConnectionArgs = args;
   }
   query = mockJsforceQuery;
+  queryMore = mockJsforceQueryMore;
   describeGlobal = mockDescribeGlobal;
   describe = mockDescribe;
 }
@@ -128,6 +133,7 @@ beforeEach(() => {
   mockReadCredentialBundle.mockClear();
   mockRefreshSalesforceToken.mockClear();
   mockJsforceQuery.mockClear();
+  mockJsforceQueryMore.mockClear();
   mockDescribeGlobal.mockClear();
   mockDescribe.mockClear();
   lastConnectionArgs = null;
@@ -258,6 +264,100 @@ describe("createSalesforceLazyBuilder — OAuth introspection (#3667)", () => {
     expect(mockRefreshSalesforceToken).toHaveBeenCalledTimes(1);
     expect(result.profiles).toHaveLength(1);
     expect(result.profiles[0].table_name).toBe("Account");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4397 — raw paged SOQL + describeObject (the Knowledge sync surface)
+// ---------------------------------------------------------------------------
+
+describe("createSalesforceLazyBuilder — paged query surface (#4397)", () => {
+  async function buildInstance(): Promise<SalesforcePluginInstance> {
+    mockReadCredentialBundle.mockResolvedValueOnce(HAPPY_BUNDLE);
+    const build = builderMod.createSalesforceLazyBuilder(BUILDER_CONFIG);
+    return (await build({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      config: { instance_url: "https://na139.my.salesforce.com", status: "ok" },
+    })) as SalesforcePluginInstance;
+  }
+
+  it("queryPage keeps jsforce's paging bookkeeping (done + nextRecordsUrl) intact", async () => {
+    mockJsforceQuery.mockResolvedValueOnce({
+      records: [{ attributes: { type: "Knowledge__kav" }, Id: "ka0x001" }],
+      done: false,
+      nextRecordsUrl: "/services/data/v60.0/query/01gxx-2000",
+    });
+    const instance = await buildInstance();
+    const page = await instance.queryPage("SELECT Id FROM Knowledge__kav WHERE PublishStatus = 'Online'");
+    expect(page.records).toHaveLength(1);
+    expect(page.done).toBe(false);
+    expect(page.nextRecordsUrl).toBe("/services/data/v60.0/query/01gxx-2000");
+  });
+
+  it("queryMorePage continues from the locator", async () => {
+    mockJsforceQueryMore.mockResolvedValueOnce({
+      records: [{ Id: "ka0x002" }],
+      done: true,
+      nextRecordsUrl: null,
+    });
+    const instance = await buildInstance();
+    const page = await instance.queryMorePage("/services/data/v60.0/query/01gxx-2000");
+    expect(page.records).toEqual([{ Id: "ka0x002" }]);
+    expect(page.done).toBe(true);
+    expect(mockJsforceQueryMore).toHaveBeenCalledWith("/services/data/v60.0/query/01gxx-2000");
+  });
+
+  it("THROWS on done:false with no locator — a truncated result must never read as complete", async () => {
+    // If this were coerced to done, a reconciliation crawl would feed a
+    // partial set to subtractive archiving and mass-archive live documents.
+    mockJsforceQuery.mockResolvedValueOnce({ records: [], done: false });
+    const instance = await buildInstance();
+    await expect(
+      instance.queryPage("SELECT Id FROM Knowledge__kav WHERE PublishStatus = 'Online'"),
+    ).rejects.toThrow(/done:false with no nextRecordsUrl/i);
+  });
+
+  it("continues a contradictory done:true + locator page (locator presence is authoritative)", async () => {
+    mockJsforceQuery.mockResolvedValueOnce({
+      records: [{ Id: "ka0x001" }],
+      done: true,
+      nextRecordsUrl: "/services/data/v60.0/query/01gxx-2000",
+    });
+    const instance = await buildInstance();
+    const page = await instance.queryPage("SELECT Id FROM Knowledge__kav WHERE PublishStatus = 'Online'");
+    expect(page.done).toBe(false);
+    expect(page.nextRecordsUrl).toBe("/services/data/v60.0/query/01gxx-2000");
+  });
+
+  it("refresh-retries queryMorePage on INVALID_SESSION_ID (the mid-crawl expiry case)", async () => {
+    mockJsforceQueryMore
+      .mockRejectedValueOnce(new Error("INVALID_SESSION_ID: Session expired or invalid"))
+      .mockResolvedValueOnce({ records: [{ Id: "ka0x004" }], done: true });
+    const instance = await buildInstance();
+    const page = await instance.queryMorePage("/services/data/v60.0/query/01gxx-2000");
+    expect(page.records).toEqual([{ Id: "ka0x004" }]);
+    expect(mockRefreshSalesforceToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("describeObject exposes the object's field metadata over the OAuth session", async () => {
+    mockDescribe.mockResolvedValueOnce({
+      fields: [{ name: "Id", type: "id" }, { name: "Body__c", type: "textarea", custom: true }],
+    });
+    const instance = await buildInstance();
+    const described = await instance.describeObject("Knowledge__kav");
+    expect(described.fields.map((f) => f.name)).toEqual(["Id", "Body__c"]);
+    expect(mockDescribe).toHaveBeenCalledWith("Knowledge__kav");
+  });
+
+  it("refresh-retries a paged query on INVALID_SESSION_ID like query()", async () => {
+    mockJsforceQuery
+      .mockRejectedValueOnce(new Error("INVALID_SESSION_ID: Session expired or invalid"))
+      .mockResolvedValueOnce({ records: [{ Id: "ka0x003" }], done: true });
+    const instance = await buildInstance();
+    const page = await instance.queryPage("SELECT Id FROM Knowledge__kav WHERE PublishStatus = 'Online'");
+    expect(page.records).toEqual([{ Id: "ka0x003" }]);
+    expect(mockRefreshSalesforceToken).toHaveBeenCalledTimes(1);
   });
 });
 

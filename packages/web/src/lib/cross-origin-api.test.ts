@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { isCrossOriginApi } from "./cross-origin-api";
 
 const env = (v: string | undefined) =>
-  ({ NEXT_PUBLIC_ATLAS_API_URL: v }) as NodeJS.ProcessEnv;
+  ({ NEXT_PUBLIC_ATLAS_API_URL: v, NODE_ENV: "test" }) as NodeJS.ProcessEnv;
 
 describe("isCrossOriginApi", () => {
   it("is true when NEXT_PUBLIC_ATLAS_API_URL is a non-empty origin (SaaS app↔api split)", () => {

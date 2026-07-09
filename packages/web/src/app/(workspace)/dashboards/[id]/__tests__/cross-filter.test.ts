@@ -46,6 +46,7 @@ function chartCard(id: string, sql: string): DashboardCard {
     cachedAt: null,
     connectionGroupId: null,
     layout: null,
+    annotations: [],
     createdAt: "2026-04-25T12:00:00Z",
     updatedAt: "2026-04-25T12:00:00Z",
   };

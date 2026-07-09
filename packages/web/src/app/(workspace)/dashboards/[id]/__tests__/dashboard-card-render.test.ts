@@ -39,6 +39,7 @@ const baseCard: DashboardCard = {
   cachedAt: "2026-06-04T00:00:00Z",
   connectionGroupId: null,
   layout: { x: 0, y: 0, w: 12, h: 8 },
+  annotations: [],
   createdAt: "2026-06-04T00:00:00Z",
   updatedAt: "2026-06-04T00:00:00Z",
 };

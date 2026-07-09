@@ -103,7 +103,7 @@ describe("DashboardSwitcher", () => {
       new Response(JSON.stringify({ error: "boom" }), {
         status: 500,
         headers: { "Content-Type": "application/json" },
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
 
     render(<DashboardSwitcher currentId="d-1" />, { wrapper: dashboardsWrapper });
     openSwitcher();

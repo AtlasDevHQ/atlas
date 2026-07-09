@@ -30,7 +30,7 @@ const stubAuthClient = {
   signIn: { email: async () => ({}) },
   signUp: { email: async () => ({}) },
   signOut: async () => {},
-  useSession: () => ({ data: null }),
+  useSession: () => ({ data: null, isPending: false }),
 };
 
 function Wrapper({ children }: { children: ReactNode }) {

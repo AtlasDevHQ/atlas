@@ -24,7 +24,7 @@ function stubMatchMedia(matches: boolean) {
     addListener: (cb: Listener) => listeners.add(cb),
     removeListener: (cb: Listener) => listeners.delete(cb),
     dispatchEvent: () => true,
-  })) as typeof window.matchMedia;
+  })) as unknown as typeof window.matchMedia;
   return {
     listenerCount: () => listeners.size,
     restore: () => {
@@ -45,7 +45,7 @@ describe("useCoarsePointer (#4323)", () => {
     const mm = stubMatchMedia(true);
     let value: boolean | null = null;
     render(<Probe onValue={(v) => { value = v; }} />);
-    expect(value).toBe(true);
+    expect<boolean | null>(value).toBe(true);
     mm.restore();
   });
 
@@ -53,7 +53,7 @@ describe("useCoarsePointer (#4323)", () => {
     const mm = stubMatchMedia(false);
     let value: boolean | null = null;
     render(<Probe onValue={(v) => { value = v; }} />);
-    expect(value).toBe(false);
+    expect<boolean | null>(value).toBe(false);
     mm.restore();
   });
 

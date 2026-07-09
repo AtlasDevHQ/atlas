@@ -131,6 +131,9 @@ jobs:
       - name: Adversarial fixtures for the admin-plugin-removal gate (#3159)
         run: bash scripts/__tests__/check-no-admin-plugin.test.sh
 
+      - name: Adversarial fixtures for the web vacuous-type-program guard (#4447/#4450)
+        run: bash scripts/__tests__/check-type-program-not-vacuous.test.sh
+
       - name: Check no legacy `connections` / `connection_groups` SQL outside migrations (#2744)
         run: bash scripts/check-no-legacy-connections-sql.sh
 

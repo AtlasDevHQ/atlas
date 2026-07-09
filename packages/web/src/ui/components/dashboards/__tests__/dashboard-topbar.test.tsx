@@ -28,7 +28,7 @@ const stubAuthClient: AtlasAuthClient = {
   signIn: { email: async () => ({}) },
   signUp: { email: async () => ({}) },
   signOut: async () => {},
-  useSession: () => ({ data: null }),
+  useSession: () => ({ data: null, isPending: false }),
 };
 
 const unexpected = (label: string) => () => {
@@ -99,7 +99,7 @@ describe("DashboardTopBar", () => {
     const editBtn = screen.getByRole("button", { name: /Edit/ });
     expect(editBtn.getAttribute("aria-pressed")).toBe("false");
     fireEvent.click(editBtn);
-    expect(captured).toBe(true);
+    expect<boolean | null>(captured).toBe(true);
   });
 
   test("Suggest button disabled when no cards", () => {
@@ -137,7 +137,7 @@ describe("DashboardTopBar", () => {
     fireEvent.change(input, { target: { value: "  New title  " } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(saved).toBe("New title");
+    expect<string | null>(saved).toBe("New title");
   });
 
   test("Escape cancels the title edit without firing onTitleChange", () => {

@@ -30,6 +30,7 @@ const noop = () => {};
 const card: DashboardCard = {
   id: "card-1",
   dashboardId: "dash-1",
+  annotations: [],
   position: 0,
   title: "Pipeline by stage",
   kind: "chart",
@@ -54,7 +55,7 @@ const baseProps = {
   onDuplicate: noop,
   onDelete: noop,
   onUpdateTitle: noop,
-} as const;
+};
 
 describe("DashboardGrid", () => {
   afterEach(cleanup);

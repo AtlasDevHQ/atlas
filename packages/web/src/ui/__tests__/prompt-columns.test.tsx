@@ -1,7 +1,13 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { render, cleanup } from "@testing-library/react";
-import { flexRender, type Row, type Table, type Cell } from "@tanstack/react-table";
-import type { PromptCollection } from "@useatlas/types/prompt";
+import {
+  flexRender,
+  type CellContext,
+  type Row,
+  type Table,
+  type Cell,
+} from "@tanstack/react-table";
+import type { PromptCollection } from "@/ui/lib/types";
 import { getPromptCollectionColumns } from "../../app/admin/prompts/columns";
 
 function baseCollection(partial: Partial<PromptCollection> = {}): PromptCollection {
@@ -35,7 +41,10 @@ function renderNameCell(row: PromptCollection) {
     column: nameCol,
     getValue: () => row.name,
     renderValue: () => row.name,
-  };
+    // The cell renderer only reads row/getValue; a real Column instance
+    // isn't cheaply constructible without standing up a full Table, so
+    // narrow through unknown.
+  } as unknown as CellContext<PromptCollection, unknown>;
   return render(<>{flexRender(nameCol.cell, ctx)}</>);
 }
 

@@ -19,10 +19,12 @@ void mock.module("@/lib/auth/client", () => ({ authClient: {} }));
 import * as realTwoFactorClient from "@/lib/auth/two-factor-client";
 
 const verifyTotpMock = mock(
-  async (_opts: { code: string; trustDevice?: boolean }) => ({
-    data: { token: "session-token" },
-    error: null,
-  }),
+  async (
+    _opts: { code: string; trustDevice?: boolean },
+  ): Promise<
+    | { data: { token: string }; error: null }
+    | { data: null; error: { code: string; message: string; status: number } }
+  > => ({ data: { token: "session-token" }, error: null }),
 );
 const verifyBackupCodeMock = mock(
   async (_opts: { code: string; trustDevice?: boolean }) => ({

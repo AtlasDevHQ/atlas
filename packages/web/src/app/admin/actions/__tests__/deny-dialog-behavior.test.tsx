@@ -99,7 +99,7 @@ describe("ReasonDialog — reason reset timing", () => {
 
 describe("ReasonDialog — Cmd+Enter keyboard", () => {
   test("Cmd+Enter while not loading triggers onConfirm with trimmed reason", async () => {
-    const onConfirm = mock(async () => {});
+    const onConfirm = mock(async (_reason: string) => {});
     render(
       <ReasonDialog
         open
@@ -124,7 +124,7 @@ describe("ReasonDialog — Cmd+Enter keyboard", () => {
   });
 
   test("Ctrl+Enter (non-macOS) also triggers onConfirm", async () => {
-    const onConfirm = mock(async () => {});
+    const onConfirm = mock(async (_reason: string) => {});
     render(
       <ReasonDialog
         open
@@ -149,7 +149,7 @@ describe("ReasonDialog — Cmd+Enter keyboard", () => {
     // Guards against a double-fire if the operator hits Cmd+Enter twice —
     // the second invocation would trigger a duplicate deny without this
     // check. Audit-sensitive.
-    const onConfirm = mock(async () => {});
+    const onConfirm = mock(async (_reason: string) => {});
     render(
       <ReasonDialog
         open
@@ -176,7 +176,7 @@ describe("ReasonDialog — Cmd+Enter keyboard", () => {
   });
 
   test("plain Enter (no modifier) does NOT trigger onConfirm — preserves newline insertion", async () => {
-    const onConfirm = mock(async () => {});
+    const onConfirm = mock(async (_reason: string) => {});
     render(
       <ReasonDialog
         open
@@ -198,7 +198,7 @@ describe("ReasonDialog — Cmd+Enter keyboard", () => {
 
 describe("ReasonDialog — trim behavior", () => {
   test("confirm click passes trimmed reason to onConfirm", async () => {
-    const onConfirm = mock(async () => {});
+    const onConfirm = mock(async (_reason: string) => {});
     render(
       <ReasonDialog
         open
@@ -227,7 +227,7 @@ describe("ReasonDialog — trim behavior", () => {
     // trimmed — including the empty string. A substitution like
     // `reason || "no reason given"` would corrupt the audit trail by
     // making "no reason given" indistinguishable from a real typed one.
-    const onConfirm = mock(async () => {});
+    const onConfirm = mock(async (_reason: string) => {});
     render(
       <ReasonDialog
         open
@@ -250,7 +250,7 @@ describe("ReasonDialog — trim behavior", () => {
   });
 
   test("required=true blocks confirm when reason is whitespace-only", async () => {
-    const onConfirm = mock(async () => {});
+    const onConfirm = mock(async (_reason: string) => {});
     render(
       <ReasonDialog
         open

@@ -5,6 +5,7 @@ import { COLS, DEFAULT_TEXT_TILE_H, DEFAULT_TILE_H } from "../grid-constants";
 
 const DEFAULT_CARD: Omit<DashboardCard, "id" | "position" | "layout"> = {
   dashboardId: "d1",
+  annotations: [],
   title: "Untitled",
   kind: "chart",
   sql: "SELECT 1",

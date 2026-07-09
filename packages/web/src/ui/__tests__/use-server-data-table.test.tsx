@@ -38,7 +38,7 @@ const stubAuthClient = {
   signIn: { email: async () => ({}) },
   signUp: { email: async () => ({}) },
   signOut: async () => {},
-  useSession: () => ({ data: null }),
+  useSession: () => ({ data: null, isPending: false }),
 };
 
 let testQueryClient: QueryClient;
@@ -46,25 +46,21 @@ let testQueryClient: QueryClient;
 /** Compose nuqs (URL state) → react-query → AtlasProvider around the hook. */
 function makeWrapper(searchParams: string) {
   return function Wrapper({ children }: { children: ReactNode }) {
-    return createElement(
-      NuqsTestingAdapter,
-      { searchParams },
-      createElement(
+    return createElement(NuqsTestingAdapter, {
+      searchParams,
+      children: createElement(
         QueryClientProvider,
         { client: testQueryClient },
-        createElement(
-          AtlasProvider,
-          {
-            config: {
-              apiUrl: "http://localhost:3001",
-              isCrossOrigin: false as const,
-              authClient: stubAuthClient,
-            },
+        createElement(AtlasProvider, {
+          config: {
+            apiUrl: "http://localhost:3001",
+            isCrossOrigin: false as const,
+            authClient: stubAuthClient,
           },
           children,
-        ),
+        }),
       ),
-    );
+    });
   };
 }
 

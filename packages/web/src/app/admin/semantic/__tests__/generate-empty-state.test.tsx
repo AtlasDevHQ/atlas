@@ -27,7 +27,7 @@ void mock.module("@/ui/context", () => ({
   useAtlasConfig: () => ({
     apiUrl: "http://localhost",
     isCrossOrigin: false,
-    authClient: { useSession: () => ({ data: null }) },
+    authClient: { useSession: () => ({ data: null, isPending: false }) },
   }),
 }));
 

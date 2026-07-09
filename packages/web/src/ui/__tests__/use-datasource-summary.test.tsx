@@ -28,7 +28,7 @@ describe("useDatasourceSummary", () => {
       new Response(
         JSON.stringify({ entities: [{ name: "users" }, { name: "orders" }] }),
         { status: 200, headers: { "Content-Type": "application/json" } },
-      )) as typeof fetch;
+      )) as unknown as typeof fetch;
 
     const { result } = renderHook(
       () =>
@@ -53,7 +53,7 @@ describe("useDatasourceSummary", () => {
       new Response(JSON.stringify({ requestId: "req_abc" }), {
         status: 500,
         headers: { "Content-Type": "application/json" },
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
 
     try {
       const { result } = renderHook(
@@ -87,7 +87,7 @@ describe("useDatasourceSummary", () => {
       new Response(JSON.stringify({ entities: null }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
 
     const { result } = renderHook(
       () =>

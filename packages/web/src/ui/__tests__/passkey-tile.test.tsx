@@ -5,8 +5,18 @@
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { render, fireEvent, waitFor, cleanup, act, screen } from "@testing-library/react";
 
-const addPasskeyMock = mock(async (_opts?: unknown) => ({ data: null, error: null }));
-const updatePasskeyMock = mock(async (_opts?: unknown) => ({ data: null, error: null }));
+/** Result shape the tile consumes from better-auth's passkey client — wide
+ * enough for the success/error variants the tests stage per call. */
+type PasskeyCallResult = {
+  data: { id?: string; createdAt?: Date } | null;
+  error: { code?: string; message?: string; status?: number } | null;
+};
+const addPasskeyMock = mock(
+  async (_opts?: unknown): Promise<PasskeyCallResult> => ({ data: null, error: null }),
+);
+const updatePasskeyMock = mock(
+  async (_opts?: unknown): Promise<PasskeyCallResult> => ({ data: null, error: null }),
+);
 const listUserPasskeysMock = mock(async () => ({ data: [], error: null }));
 const deletePasskeyMock = mock(async (_opts?: unknown) => ({ data: { status: true }, error: null }));
 
@@ -25,7 +35,7 @@ void mock.module("@/lib/auth/passkey-client", () => ({
 const signInEmailMock = mock(
   async (_opts: { email: string; password: string }) =>
     ({ data: null, error: null }) as {
-      data: { twoFactorRedirect?: boolean } | null;
+      data: { twoFactorRedirect?: boolean; user?: Record<string, unknown> } | null;
       error: { message?: string; code?: string } | null;
     },
 );

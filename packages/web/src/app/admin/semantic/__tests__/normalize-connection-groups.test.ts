@@ -49,7 +49,8 @@ describe("connectionGroupsFrom", () => {
     // A member with an empty dbType is dropped entirely; a later member with a
     // real dbType still sets the group's datasource label.
     const groups = connectionGroupsFrom([
-      conn({ id: "a", groupId: "g_x", dbType: "" }),
+      // deliberately invalid: server rows can carry an empty dbType at runtime
+      conn({ id: "a", groupId: "g_x", dbType: "" as unknown as ConnectionInfo["dbType"] }),
       conn({ id: "b", groupId: "g_x", dbType: "postgres" }),
     ]);
     expect(groups).toHaveLength(1);
@@ -74,14 +75,18 @@ describe("connectionGroupsFrom", () => {
   });
 
   test("drops connections with no dbType", () => {
-    const groups = connectionGroupsFrom([conn({ id: "a", groupId: "g_x", dbType: "" })]);
+    // deliberately invalid: server rows can carry an empty dbType at runtime
+    const groups = connectionGroupsFrom([
+      conn({ id: "a", groupId: "g_x", dbType: "" as unknown as ConnectionInfo["dbType"] }),
+    ]);
     // The only member had no dbType → the group has no members → not emitted.
     expect(groups).toEqual([]);
   });
 
   test("dbTypeLabel is omitted for an unknown datasource type", () => {
     const groups = connectionGroupsFrom([
-      conn({ id: "a", groupId: "g_x", dbType: "exotic-engine" }),
+      // deliberately invalid: exercises the unknown-datasource fallback
+      conn({ id: "a", groupId: "g_x", dbType: "exotic-engine" as unknown as ConnectionInfo["dbType"] }),
     ]);
     // labelForDbType returns the raw value for unknown types (not undefined),
     // so the header still shows *something* rather than dropping it silently.

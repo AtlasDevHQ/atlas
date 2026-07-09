@@ -52,8 +52,8 @@ function wrapper({ children }: { children: ReactNode }) {
           isCrossOrigin: false as const,
           authClient: stubAuthClient,
         },
+        children,
       },
-      children,
     ),
   );
 }

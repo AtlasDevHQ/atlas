@@ -34,6 +34,8 @@ function counts(partial: Partial<ModeDraftCounts> = {}): ModeDraftCounts {
     entityEdits: 0,
     entityDeletes: 0,
     prompts: 0,
+    starterPrompts: 0,
+    knowledgeDocuments: 0,
     ...partial,
   };
 }

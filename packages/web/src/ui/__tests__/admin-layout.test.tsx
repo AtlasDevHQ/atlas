@@ -72,7 +72,7 @@ function makeAuthClient(overrides: Partial<AtlasAuthClient> = {}): AtlasAuthClie
     signIn: { email: async () => ({}) },
     signUp: { email: async () => ({}) },
     signOut: mockSignOut,
-    useSession: () => mockSession,
+    useSession: () => ({ isPending: false, ...mockSession }),
     ...overrides,
   };
 }

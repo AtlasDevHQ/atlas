@@ -1521,7 +1521,7 @@ describe("ChatEnvPicker three-state routing mode (#2518)", () => {
   });
 
   test("selecting Auto produces a triple with routingMode='auto' keeping the current member", () => {
-    let captured: { groupId: string; connectionId: string; routingMode: string } | null = null;
+    let captured: ChatEnvSelection | null = null;
     const { container } = render(
       <ChatEnvPicker
         groups={multiMemberGroup}
@@ -1544,7 +1544,7 @@ describe("ChatEnvPicker three-state routing mode (#2518)", () => {
   });
 
   test("selecting All produces a triple with routingMode='all' keeping the current member", () => {
-    let captured: { groupId: string; connectionId: string; routingMode: string } | null = null;
+    let captured: ChatEnvSelection | null = null;
     const { container } = render(
       <ChatEnvPicker
         groups={multiMemberGroup}
@@ -1568,7 +1568,7 @@ describe("ChatEnvPicker three-state routing mode (#2518)", () => {
     // The user picks a member from the per-group section while in Auto.
     // The natural interpretation is "pin to that member" — you can't
     // 'select a member' in fanout.
-    let captured: { groupId: string; connectionId: string; routingMode: string } | null = null;
+    let captured: ChatEnvSelection | null = null;
     const { container } = render(
       <ChatEnvPicker
         groups={multiMemberGroup}
@@ -1722,6 +1722,9 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           groupId: "g_prod",
           connectionId: "eu-prod",
           routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -1738,6 +1741,9 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           groupId: "g_prod",
           connectionId: "eu-prod",
           routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -1763,6 +1769,9 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           groupId: "g_prod",
           connectionId: "eu-prod",
           routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -1785,13 +1794,16 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
     // `selectedConnectionId !== null` guard no longer locks the default in.
     const decision = resolveEnvSelection(
       input({
-        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null },
+        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null, restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null },
         provenance: "default",
         preference: {
           workspaceId: "org-1",
           groupId: "g_prod",
           connectionId: "eu-prod",
           routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -1813,13 +1825,16 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
     // restore rather than no-op (routingMode is part of the selection).
     const decision = resolveEnvSelection(
       input({
-        current: { groupId: "g_prod", connectionId: "eu-prod", routingMode: null },
+        current: { groupId: "g_prod", connectionId: "eu-prod", routingMode: null, restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null },
         provenance: "default",
         preference: {
           workspaceId: "org-1",
           groupId: "g_prod",
           connectionId: "eu-prod",
           routingMode: "auto",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -1840,7 +1855,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
     // been seeded and no preference matches, leave it — don't seed again.
     const decision = resolveEnvSelection(
       input({
-        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null },
+        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null, restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null },
         provenance: "default",
       }),
     );
@@ -1852,13 +1867,16 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
     // authoritative — the resolver must never auto-replace it.
     const decision = resolveEnvSelection(
       input({
-        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null },
+        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null, restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null },
         provenance: "explicit",
         preference: {
           workspaceId: "org-1",
           groupId: "g_prod",
           connectionId: "eu-prod",
           routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -1870,13 +1888,16 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
     const decision = resolveEnvSelection(
       input({
         // Full match including routing mode — nothing to restore.
-        current: { groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" },
+        current: { groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null },
         provenance: "default",
         preference: {
           workspaceId: "org-1",
           groupId: "g_prod",
           connectionId: "eu-prod",
           routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -1903,6 +1924,9 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           groupId: "g_prod",
           connectionId: "gone-prod",
           routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -1925,6 +1949,9 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           groupId: "g_prod",
           connectionId: "eu-prod",
           routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-A",
       }),
@@ -1947,6 +1974,9 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           groupId: "g_prod",
           connectionId: "eu-prod",
           routingMode: "auto",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: null,
       }),
@@ -2884,7 +2914,7 @@ describe("ChatEnvPicker — Group reach axis (#3895)", () => {
     container
       .querySelector<HTMLElement>('[data-testid="chat-env-picker-reach-all"]')
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(captured).toEqual({
+    expect<ChatEnvSelection | null>(captured).toEqual({
       groupReach: null,
       groupId: null,
       connectionId: null,
@@ -2908,7 +2938,7 @@ describe("ChatEnvPicker — Group reach axis (#3895)", () => {
     container
       .querySelector<HTMLElement>('[data-testid="chat-env-picker-reach-focus-g_prod"]')
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(captured).toEqual({
+    expect<ChatEnvSelection | null>(captured).toEqual({
       groupReach: "g_prod",
       groupId: "g_prod",
       connectionId: "us-prod",

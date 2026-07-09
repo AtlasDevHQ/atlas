@@ -14,7 +14,7 @@ const stubAuthClient = {
   signIn: { email: async () => ({}) },
   signUp: { email: async () => ({}) },
   signOut: async () => {},
-  useSession: () => ({ data: null }),
+  useSession: () => ({ data: null, isPending: false }),
 };
 
 let testQueryClient: QueryClient;
@@ -31,8 +31,8 @@ function wrapper({ children }: { children: ReactNode }) {
           isCrossOrigin: false as const,
           authClient: stubAuthClient,
         },
+        children,
       },
-      children,
     ),
   );
 }

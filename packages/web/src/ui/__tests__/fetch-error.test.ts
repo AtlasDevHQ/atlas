@@ -317,14 +317,17 @@ describe("extractFetchError empty-message clobber guard", () => {
 });
 
 describe("buildFetchError empty-message invariant", () => {
+  // Next's types declare NODE_ENV readonly; the invariant under test branches
+  // on it, so write through a widened view of process.env.
+  const mutableEnv = process.env as Record<string, string | undefined>;
   const originalEnv = process.env.NODE_ENV;
 
   beforeEach(() => {
-    process.env.NODE_ENV = "test";
+    mutableEnv.NODE_ENV = "test";
   });
 
   afterEach(() => {
-    process.env.NODE_ENV = originalEnv;
+    mutableEnv.NODE_ENV = originalEnv;
   });
 
   test("returns a FetchError with trimmed message on happy path", () => {
@@ -351,33 +354,33 @@ describe("buildFetchError empty-message invariant", () => {
   });
 
   test("throws in development when message is empty", () => {
-    process.env.NODE_ENV = "development";
+    mutableEnv.NODE_ENV = "development";
     expect(() => buildFetchError({ message: "", status: 500 })).toThrow(
       /refused to construct FetchError with empty message/,
     );
   });
 
   test("throws in development when message is whitespace-only", () => {
-    process.env.NODE_ENV = "development";
+    mutableEnv.NODE_ENV = "development";
     expect(() => buildFetchError({ message: "   ", status: 500 })).toThrow(
       /refused to construct FetchError with empty message/,
     );
   });
 
   test("throws in development when message is undefined", () => {
-    process.env.NODE_ENV = "development";
+    mutableEnv.NODE_ENV = "development";
     expect(() => buildFetchError({ status: 500 })).toThrow(
       /refused to construct FetchError with empty message/,
     );
   });
 
   test("throws in non-production (e.g. test env too)", () => {
-    process.env.NODE_ENV = "test";
+    mutableEnv.NODE_ENV = "test";
     expect(() => buildFetchError({ message: "" })).toThrow();
   });
 
   test("substitutes a generic message in production", () => {
-    process.env.NODE_ENV = "production";
+    mutableEnv.NODE_ENV = "production";
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const err = buildFetchError({ message: "", status: 502 });
@@ -392,7 +395,7 @@ describe("buildFetchError empty-message invariant", () => {
   });
 
   test("production substitute uses 'unknown' when status is undefined", () => {
-    process.env.NODE_ENV = "production";
+    mutableEnv.NODE_ENV = "production";
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const err = buildFetchError({ message: undefined });
@@ -404,7 +407,7 @@ describe("buildFetchError empty-message invariant", () => {
   });
 
   test("production substitute still preserves code and requestId", () => {
-    process.env.NODE_ENV = "production";
+    mutableEnv.NODE_ENV = "production";
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const err = buildFetchError({

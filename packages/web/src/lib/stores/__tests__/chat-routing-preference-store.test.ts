@@ -27,6 +27,7 @@ describe("useChatRoutingPreferenceStore (#3044)", () => {
       routingMode: "pin",
       restExcludedDatasourceIds: ["billing-api"],
       restFocusDatasourceId: "stripe",
+      groupReach: null,
     });
     const s = useChatRoutingPreferenceStore.getState();
     expect(s.workspaceId).toBe("org-1");
@@ -46,6 +47,7 @@ describe("useChatRoutingPreferenceStore (#3044)", () => {
       routingMode: "all",
       restExcludedDatasourceIds: ["billing-api"],
       restFocusDatasourceId: "stripe",
+      groupReach: null,
     });
     const raw = localStorage.getItem(STORAGE_KEY);
     expect(raw).not.toBeNull();
@@ -57,6 +59,7 @@ describe("useChatRoutingPreferenceStore (#3044)", () => {
       routingMode: "all",
       restExcludedDatasourceIds: ["billing-api"],
       restFocusDatasourceId: "stripe",
+      groupReach: null,
     });
     // Setters must never be serialized.
     expect(persisted.state.setPreference).toBeUndefined();
@@ -71,6 +74,9 @@ describe("useChatRoutingPreferenceStore (#3044)", () => {
       groupId: "prod",
       connectionId: "warehouse",
       routingMode: "pin",
+      restExcludedDatasourceIds: [],
+      restFocusDatasourceId: null,
+      groupReach: null,
     });
     expect(useChatRoutingPreferenceStore.getState().workspaceId).toBe("org-A");
   });
@@ -82,6 +88,9 @@ describe("useChatRoutingPreferenceStore (#3044)", () => {
       groupId: "prod",
       connectionId: "us-prod",
       routingMode: "auto",
+      restExcludedDatasourceIds: [],
+      restFocusDatasourceId: null,
+      groupReach: null,
     });
     store.clear();
     const s = useChatRoutingPreferenceStore.getState();
@@ -160,6 +169,9 @@ describe("useChatRoutingPreferenceStore hydration gate (#3064)", () => {
       groupId: "prod",
       connectionId: "eu-prod",
       routingMode: "pin",
+      restExcludedDatasourceIds: [],
+      restFocusDatasourceId: null,
+      groupReach: null,
     });
     const raw = localStorage.getItem(STORAGE_KEY);
     expect(raw).not.toBeNull();

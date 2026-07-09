@@ -18,7 +18,7 @@ const stubAuthClient = {
   signIn: { email: async () => ({}) },
   signUp: { email: async () => ({}) },
   signOut: async () => {},
-  useSession: () => ({ data: null }),
+  useSession: () => ({ data: null, isPending: false }),
 };
 
 function Wrapper({ children }: { children: ReactNode }) {
@@ -88,7 +88,7 @@ describe("RestWriteConfirmCard — retrySafe gating on confirm outcome", () => {
     global.fetch = (async () =>
       new Response(JSON.stringify({ error: "writes_disabled", message: "Writes are disabled." }), {
         status: 403,
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
     renderCard();
     clickConfirm();
     await waitFor(() => expect(screen.getByText(/Writes are disabled\./)).toBeTruthy());
@@ -102,7 +102,7 @@ describe("RestWriteConfirmCard — retrySafe gating on confirm outcome", () => {
     global.fetch = (async () =>
       new Response(JSON.stringify({ error: "internal_error", message: "Failed to execute the write." }), {
         status: 500,
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
     renderCard();
     clickConfirm();
     await waitFor(() => expect(screen.getByText(/may have completed/)).toBeTruthy());
@@ -114,7 +114,7 @@ describe("RestWriteConfirmCard — retrySafe gating on confirm outcome", () => {
   test("a network fault (fetch threw) withholds Try again — the outcome is ambiguous", async () => {
     global.fetch = (async () => {
       throw new TypeError("Failed to fetch");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     renderCard();
     clickConfirm();
     await waitFor(() => expect(screen.getByText(/Network error/)).toBeTruthy());
@@ -124,7 +124,7 @@ describe("RestWriteConfirmCard — retrySafe gating on confirm outcome", () => {
 
   test("a 2xx whose body can't be read reports the write ran and withholds Try again", async () => {
     global.fetch = (async () =>
-      new Response("<<not json>>", { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch;
+      new Response("<<not json>>", { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
     renderCard();
     clickConfirm();
     await waitFor(() => expect(screen.getByText(/The write completed/)).toBeTruthy());

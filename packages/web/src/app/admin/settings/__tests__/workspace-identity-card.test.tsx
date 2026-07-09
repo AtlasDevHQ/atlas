@@ -50,7 +50,7 @@ describe("WorkspaceIdentityCard", () => {
   });
 
   test("copies the orgId to the clipboard and flips the icon to the copied state", async () => {
-    const writeText = mock(async () => undefined);
+    const writeText = mock(async (_text: string) => undefined);
     Object.defineProperty(globalThis.navigator, "clipboard", {
       configurable: true,
       value: { writeText },

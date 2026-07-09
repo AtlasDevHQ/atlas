@@ -52,7 +52,7 @@ const SALESFORCE_ROW_DEFAULTS = {
   accessible: true,
   upgradeRequired: null as string | null,
   pillar: "datasource" as const,
-  implementationStatus: "available" as const,
+  implementationStatus: "available" as "available" | "coming_soon",
   installConfig: null as Record<string, unknown> | null,
 };
 
@@ -66,9 +66,10 @@ const testConfig = {
   apiUrl: "http://localhost:3001",
   isCrossOrigin: false,
   authClient: {
-    getToken: async () => null,
-    getOrgId: () => null,
-    onAuthChange: () => () => undefined,
+    signIn: { email: async () => ({}) },
+    signUp: { email: async () => ({}) },
+    signOut: async () => {},
+    useSession: () => ({ data: null, isPending: false }),
   },
 };
 

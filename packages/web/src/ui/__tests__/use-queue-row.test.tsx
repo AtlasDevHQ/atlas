@@ -19,8 +19,8 @@ const INITIAL: Row[] = [
 function ok<T>(data: T): MutateResult<T> {
   return { ok: true, data };
 }
-function fail(error: string): MutateResult<never> {
-  return { ok: false, error };
+function fail(message: string): MutateResult<never> {
+  return { ok: false, error: { message } };
 }
 
 /**

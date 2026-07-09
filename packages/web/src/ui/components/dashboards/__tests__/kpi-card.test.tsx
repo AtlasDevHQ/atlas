@@ -392,6 +392,7 @@ describe("kpiComparisonSignature", () => {
 
 const kpiCard: DashboardCard = {
   id: "kpi-1",
+  annotations: [],
   dashboardId: "dash-1",
   position: 0,
   title: "Revenue",

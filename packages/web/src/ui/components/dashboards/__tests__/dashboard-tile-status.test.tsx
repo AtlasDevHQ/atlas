@@ -121,7 +121,7 @@ describe("DashboardTile — per-tile status (#4321)", () => {
     // …but labeled stale with an amber-or-worse caption.
     const caption = screen.getByTestId("tile-age-caption");
     expect(caption.textContent).toContain("Stale");
-    expect(["amber", "red"]).toContain(caption.getAttribute("data-caption-tone"));
+    expect<Array<string | null>>(["amber", "red"]).toContain(caption.getAttribute("data-caption-tone"));
     // …and a one-click retry that re-renders THIS card.
     fireEvent.click(screen.getByTestId("tile-retry"));
     expect(onRetry).toHaveBeenCalledTimes(1);

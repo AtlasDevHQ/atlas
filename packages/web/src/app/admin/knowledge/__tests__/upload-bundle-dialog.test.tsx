@@ -20,8 +20,9 @@ const realFetch = globalThis.fetch;
 beforeEach(() => {
   responseStatus = 200;
   responseBody = {};
-  globalThis.fetch = (async () =>
-    new Response(JSON.stringify(responseBody), { status: responseStatus })) as typeof globalThis.fetch;
+  globalThis.fetch = mock(
+    async () => new Response(JSON.stringify(responseBody), { status: responseStatus }),
+  ) as unknown as typeof globalThis.fetch;
 });
 afterEach(() => {
   globalThis.fetch = realFetch;

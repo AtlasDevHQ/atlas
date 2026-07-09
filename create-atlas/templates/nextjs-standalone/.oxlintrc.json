@@ -4,5 +4,8 @@
   "categories": {
     "correctness": "error"
   },
+  "rules": {
+    "typescript/no-explicit-any": "warn"
+  },
   "ignorePatterns": ["**/.next/", "node_modules/", "**/dist/"]
 }

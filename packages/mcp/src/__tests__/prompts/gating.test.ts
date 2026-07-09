@@ -18,11 +18,11 @@ let mockHasInternalDB = false;
 let mockInternalQueryRows: Array<{ active: boolean }> = [];
 let mockInternalQueryError: Error | null = null;
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string, _orgId?: string) => mockSettings[key],
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: async () => {
     if (mockInternalQueryError) throw mockInternalQueryError;

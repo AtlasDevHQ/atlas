@@ -206,7 +206,7 @@ const mockPublishWorkspaceDrafts = mock<(...a: unknown[]) => Promise<unknown>>(
   async () => publishResult,
 );
 
-mock.module("@atlas/api/lib/datasources/mcp-lifecycle", () => ({
+void mock.module("@atlas/api/lib/datasources/mcp-lifecycle", () => ({
   listDatasources: mockListDatasources,
   resolveDatasourceCatalogSlug: mockResolveCatalogSlug,
   testDatasource: mockTestDatasource,
@@ -244,7 +244,7 @@ const mockElicit = mock(async (_server: unknown, args: ElicitFormCall & { messag
   if (elicitThrows) throw new Error("client does not support elicitation");
   return elicitOutcome;
 });
-mock.module("../elicitation.js", () => ({
+void mock.module("../elicitation.js", () => ({
   elicitMaskedForm: mockElicit,
 }));
 
@@ -268,7 +268,7 @@ const mockRunGate = mock(async (ctx: GateCall["ctx"], reqs: GateCall["reqs"]) =>
   return gateReturn;
 });
 
-mock.module("../dispatch-gate.js", () => ({
+void mock.module("../dispatch-gate.js", () => ({
   runMcpDispatchGate: mockRunGate,
 }));
 

@@ -30,14 +30,14 @@ const mockExecuteSQLExecute = mock<(...args: unknown[]) => Promise<unknown>>(
   }),
 );
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   explore: {
     description: "Explore the semantic layer",
     execute: mockExploreExecute,
   },
 }));
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   executeSQL: {
     description: "Execute SQL",
     execute: mockExecuteSQLExecute,
@@ -51,7 +51,7 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 // the raw_sql kill-switch. Mock ALL runtime exports so a sibling test loading
 // the real module doesn't inherit a partial mock (CLAUDE.md).
 let blockedCategories = new Set<string>();
-mock.module("@atlas/api/lib/mcp/action-policy", () => ({
+void mock.module("@atlas/api/lib/mcp/action-policy", () => ({
   loadMcpActionPolicy: async () => ({ isBlocked: (c: string) => blockedCategories.has(c) }),
   mcpActionDenialCopy: (category: string) => ({
     message: `MCP '${category}' actions are disabled for this workspace by an administrator.`,
@@ -85,7 +85,7 @@ type GateVerdict =
 let billingGateVerdict: GateVerdict = { allowed: true };
 const mockCheckAgentBillingGate = mock(async (_orgId: string | undefined) => billingGateVerdict);
 
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockCheckAgentBillingGate,
   BillingBlockedError: class BillingBlockedError extends Error {
     override readonly name = "BillingBlockedError";

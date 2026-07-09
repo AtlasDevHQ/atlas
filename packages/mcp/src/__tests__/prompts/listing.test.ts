@@ -24,17 +24,17 @@ let mockScannedEntities: Array<{
 }> = [];
 let mockSettings: Record<string, string | undefined> = {};
 
-mock.module("@atlas/api/lib/semantic/files", () => ({
+void mock.module("@atlas/api/lib/semantic/files", () => ({
   getSemanticRoot: () => "/tmp/atlas-test-semantic",
 }));
 
-mock.module("@atlas/api/lib/semantic/scanner", () => ({
+void mock.module("@atlas/api/lib/semantic/scanner", () => ({
   scanEntities: () => ({ entities: mockScannedEntities, warnings: [] }),
   getEntityDirs: () => ({ dirs: [], rootScanFailed: false }),
   readEntityYaml: () => null,
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: async () => {
     if (mockInternalQueryError) throw mockInternalQueryError;
@@ -43,7 +43,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalExecute: async () => ({ rowCount: 1 }),
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string, _orgId?: string) => mockSettings[key],
 }));
 

@@ -20,7 +20,7 @@ const __mockedConfig = {
   semanticLayer: "./semantic",
   source: "env",
 };
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   initializeConfig: mock(async () => __mockedConfig),
   getConfig: mock(() => __mockedConfig),
   loadConfig: mock(async () => __mockedConfig),
@@ -36,14 +36,14 @@ mock.module("@atlas/api/lib/config", () => ({
 }));
 
 // Mock tool execute functions
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   explore: {
     description: "Explore the semantic layer",
     execute: mock(async () => "catalog.yml\nentities/\nglossary.yml"),
   },
 }));
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   executeSQL: {
     description: "Execute SQL",
     execute: mock(async () => ({

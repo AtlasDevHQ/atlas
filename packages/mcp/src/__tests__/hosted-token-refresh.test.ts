@@ -63,7 +63,7 @@ const mockVerifyAccessToken: Mock<
   throw new Error("verifyAccessToken called without a stub");
 });
 
-mock.module("better-auth/oauth2", () => ({
+void mock.module("better-auth/oauth2", () => ({
   verifyAccessToken: (token: string, opts: unknown) =>
     mockVerifyAccessToken(token, opts),
   authorizationCodeRequest: () => {
@@ -128,7 +128,7 @@ mock.module("better-auth/oauth2", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: async () => null,
   getApiRegion: () => null,
   isStrictRoutingEnabled: () => false,
@@ -137,7 +137,7 @@ mock.module("@atlas/api/lib/residency/misrouting", () => ({
   _resetRegionCache: () => undefined,
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => {
+void mock.module("@atlas/api/lib/db/internal", () => {
   const notUsed = (name: string) => () => {
     throw new Error(`db/internal.${name} called from refresh test — add a mock`);
   };
@@ -161,7 +161,7 @@ const mockLogAdminAction: Mock<(entry: AdminActionEntry) => void> = mock(
   },
 );
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: {
     mcp_session: { start: "mcp_session.start" },
     oauth_token: { refresh: "oauth_token.refresh" },
@@ -192,7 +192,7 @@ const __mockedConfig: MockedConfig = {
   source: "env",
 };
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   initializeConfig: mock(async () => __mockedConfig),
   getConfig: mock(() => __mockedConfig),
   loadConfig: mock(async () => __mockedConfig),
@@ -207,14 +207,14 @@ mock.module("@atlas/api/lib/config", () => ({
   _warnPoolDefaultsInSaaS: mock(() => undefined),
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   explore: {
     description: "Explore the semantic layer",
     execute: mock(async () => "catalog.yml"),
   },
 }));
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   executeSQL: {
     description: "Execute SQL",
     execute: mock(async () => ({
@@ -234,7 +234,7 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 // partial mock above. Token-refresh tests don't exercise billing —
 // allow everything (the blocked arms are pinned in tools.test.ts /
 // semantic-tools.test.ts).
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mock(async () => ({ allowed: true })),
   BillingBlockedError: class BillingBlockedError extends Error {
     override readonly name = "BillingBlockedError";
@@ -320,7 +320,7 @@ describe("hosted MCP — refresh contract", () => {
       expect(wwwAuth).toContain("resource_metadata=");
       expect(wwwAuth).toContain(`/mcp/${ORG}`);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -358,7 +358,7 @@ describe("hosted MCP — refresh contract", () => {
       const wwwAuth = res.headers.get("www-authenticate");
       expect(wwwAuth).toContain("resource_metadata=");
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -401,7 +401,7 @@ describe("hosted MCP — refresh contract", () => {
         auditedEntries.some((e) => e.actionType === "oauth_token.refresh"),
       ).toBe(false);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -441,7 +441,7 @@ describe("hosted MCP — refresh contract", () => {
       expect(wwwBeta).toContain("/mcp/org_beta");
       expect(wwwAlpha).not.toBe(wwwBeta);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -486,7 +486,7 @@ describe("hosted MCP — refresh contract", () => {
       expect(res.status).not.toBe(401);
       expect(res.headers.get("www-authenticate")).toBeNull();
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });

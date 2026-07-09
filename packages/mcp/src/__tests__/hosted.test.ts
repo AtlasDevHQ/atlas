@@ -56,7 +56,7 @@ const mockVerifyAccessToken: Mock<
   throw new Error("verifyAccessToken called without a stub");
 });
 
-mock.module("better-auth/oauth2", () => ({
+void mock.module("better-auth/oauth2", () => ({
   verifyAccessToken: (token: string, opts: unknown) =>
     mockVerifyAccessToken(token, opts),
   // Other re-exports from better-auth/oauth2 — none read by hosted.ts,
@@ -126,7 +126,7 @@ mock.module("better-auth/oauth2", () => ({
 
 const mockApiRegion: Mock<() => string | null> = mock(() => null);
 
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   // hosted.ts no longer uses detectMisrouting — kept here so any
   // sibling test that imports it still resolves.
   detectMisrouting: async () => null,
@@ -143,7 +143,7 @@ const mockWorkspaceRegion: Mock<(orgId: string) => Promise<string | null>> =
 // `@atlas/api/lib/db/internal` has many exports. The hosted route only
 // uses `getWorkspaceRegion`; mocking the rest as throw-on-call surfaces
 // any accidental dep clearly.
-mock.module("@atlas/api/lib/db/internal", () => {
+void mock.module("@atlas/api/lib/db/internal", () => {
   const notUsed = (name: string) => () => {
     throw new Error(`db/internal.${name} called from hosted.test — add a mock`);
   };
@@ -172,7 +172,7 @@ const mockHasWorkspaceGrant: Mock<(clientId: string, workspaceId: string) => Pro
 const mockUserIsWorkspaceMember: Mock<(userId: string, workspaceId: string) => Promise<boolean>> = mock(
   async () => false,
 );
-mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
+void mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
   getOAuthClientScope: (clientId: string) => mockGetOAuthClientScope(clientId),
   hasWorkspaceGrant: (clientId: string, workspaceId: string) =>
     mockHasWorkspaceGrant(clientId, workspaceId),
@@ -192,7 +192,7 @@ mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
 const mockResolveEffectiveRole: Mock<
   (userRole: unknown, userId: string, orgId: string | undefined) => Promise<unknown>
 > = mock(async (userRole: unknown) => userRole);
-mock.module("@atlas/api/lib/auth/effective-role", () => ({
+void mock.module("@atlas/api/lib/auth/effective-role", () => ({
   resolveEffectiveRole: (userRole: unknown, userId: string, orgId: string | undefined) =>
     mockResolveEffectiveRole(userRole, userId, orgId),
 }));
@@ -201,7 +201,7 @@ mock.module("@atlas/api/lib/auth/effective-role", () => ({
 // "not flagged" so existing tests pass; the gate tests flip it.
 const mockIsPasswordChangeRequired: Mock<(userId: string) => Promise<boolean>> =
   mock(async () => false);
-mock.module("@atlas/api/lib/auth/password-gate", () => ({
+void mock.module("@atlas/api/lib/auth/password-gate", () => ({
   PASSWORD_CHANGE_REQUIRED_ERROR: "password_change_required",
   isPasswordChangeRequired: (userId: string) => mockIsPasswordChangeRequired(userId),
   checkPasswordChangeGate: async () => null,
@@ -218,7 +218,7 @@ const mockLogAdminAction: Mock<(entry: AdminActionEntry) => void> = mock(
   },
 );
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: {
     mcp_session: {
       start: "mcp_session.start",
@@ -254,7 +254,7 @@ let __mockedConfig: MockedConfig = {
   source: "env",
 };
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   initializeConfig: mock(async () => __mockedConfig),
   getConfig: mock(() => __mockedConfig),
   loadConfig: mock(async () => __mockedConfig),
@@ -269,14 +269,14 @@ mock.module("@atlas/api/lib/config", () => ({
   _warnPoolDefaultsInSaaS: mock(() => undefined),
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   explore: {
     description: "Explore the semantic layer",
     execute: mock(async () => "catalog.yml\nentities/\nglossary.yml"),
   },
 }));
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   executeSQL: {
     description: "Execute SQL",
     execute: mock(async () => ({
@@ -296,7 +296,7 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 // partial mock above. Hosted-session tests don't exercise billing —
 // allow everything (the blocked arms are pinned in tools.test.ts /
 // semantic-tools.test.ts).
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mock(async () => ({ allowed: true })),
   BillingBlockedError: class BillingBlockedError extends Error {
     override readonly name = "BillingBlockedError";
@@ -467,7 +467,7 @@ describe("hosted MCP — bearer enforcement", () => {
       expect(body.error).toBe("password_change_required");
       expect(mockIsPasswordChangeRequired).toHaveBeenCalledWith(SUB_A);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -495,7 +495,7 @@ describe("hosted MCP — bearer enforcement", () => {
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe("auth_unavailable");
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -518,7 +518,7 @@ describe("hosted MCP — bearer enforcement", () => {
       expect(wwwAuth).toContain("Bearer");
       expect(wwwAuth).toContain("resource_metadata=");
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -541,7 +541,7 @@ describe("hosted MCP — bearer enforcement", () => {
         expect(body.error).toBe("missing_bearer");
       }
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -582,7 +582,7 @@ describe("hosted MCP — bearer enforcement", () => {
       expect(res.status).toBe(200);
       expect(res.headers.get("mcp-session-id")).toBeTruthy();
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -616,7 +616,7 @@ describe("hosted MCP — bearer enforcement", () => {
         "resource_metadata=",
       );
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -655,7 +655,7 @@ describe("hosted MCP — bearer enforcement", () => {
           auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
         ).toHaveLength(0);
       } finally {
-        handle.close();
+        await handle.close();
       }
     });
   }
@@ -697,7 +697,7 @@ describe("hosted MCP — bearer enforcement", () => {
         auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
       ).toHaveLength(0);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -730,7 +730,7 @@ describe("hosted MCP — bearer enforcement", () => {
         auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
       ).toHaveLength(0);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -763,7 +763,7 @@ describe("hosted MCP — bearer enforcement", () => {
         auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
       ).toHaveLength(0);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -789,7 +789,7 @@ describe("hosted MCP — bearer enforcement", () => {
       expect(body.error).toBe("missing_subject");
       expect(res.headers.get("www-authenticate")).toBeNull();
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -823,7 +823,7 @@ describe("hosted MCP — bearer enforcement", () => {
         auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
       ).toHaveLength(0);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });
@@ -872,7 +872,7 @@ describe("hosted MCP — mcp.useatlas.dev brand hostname", () => {
         "https://mcp.useatlas.dev/mcp",
       ]);
     } finally {
-      handle.close();
+      await handle.close();
       if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
       else process.env.ATLAS_PUBLIC_API_URL = prev;
     }
@@ -918,7 +918,7 @@ describe("hosted MCP — mcp.useatlas.dev brand hostname", () => {
         "https://api.useatlas.dev/mcp",
       ]);
     } finally {
-      handle.close();
+      await handle.close();
       if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
       else process.env.ATLAS_PUBLIC_API_URL = prev;
     }
@@ -945,7 +945,7 @@ describe("hosted MCP — mcp.useatlas.dev brand hostname", () => {
         `resource_metadata="https://mcp.useatlas.dev/.well-known/oauth-protected-resource/mcp/${ORG_A}"`,
       );
     } finally {
-      handle.close();
+      await handle.close();
       if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
       else process.env.ATLAS_PUBLIC_API_URL = prev;
     }
@@ -986,7 +986,7 @@ describe("hosted MCP — path/claim workspace match", () => {
         auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
       ).toHaveLength(0);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });
@@ -1042,7 +1042,7 @@ describe("hosted MCP — cross-workspace agent identity (#2073)", () => {
       const grantArgs = mockHasWorkspaceGrant.mock.calls.map((c) => c[1]);
       expect(grantArgs).toContain(ORG_B);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1077,7 +1077,7 @@ describe("hosted MCP — cross-workspace agent identity (#2073)", () => {
       const grantArgs = mockHasWorkspaceGrant.mock.calls.map((c) => c[1]);
       expect(grantArgs).toContain(ORG_B);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1108,7 +1108,7 @@ describe("hosted MCP — cross-workspace agent identity (#2073)", () => {
       const grantArgs = mockHasWorkspaceGrant.mock.calls.map((c) => c[1]);
       expect(grantArgs).toContain(ORG_A);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1140,7 +1140,7 @@ describe("hosted MCP — cross-workspace agent identity (#2073)", () => {
       expect(body.error).toBe("cross_workspace_denied");
       expect(body.hint).toContain("Settings");
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1188,7 +1188,7 @@ describe("hosted MCP — cross-workspace agent identity (#2073)", () => {
         ORG_B,
       );
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1236,7 +1236,7 @@ describe("hosted MCP — cross-workspace agent identity (#2073)", () => {
         "admission_lookup_failed",
       );
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1289,7 +1289,7 @@ describe("hosted MCP — cross-workspace agent identity (#2073)", () => {
       expect(meta.orgId).toBe(ORG_B);
       expect(meta.claimOrgId).toBe(ORG_A);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });
@@ -1337,7 +1337,7 @@ describe("hosted MCP — residency", () => {
       expect(body.expectedRegion).toBe("eu-west");
       expect(body.actualRegion).toBe("us-east");
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1366,7 +1366,7 @@ describe("hosted MCP — residency", () => {
       const body = (await res.json()) as { correctApiUrl?: string };
       expect(body.correctApiUrl).toBe("https://api.example.test");
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1403,7 +1403,7 @@ describe("hosted MCP — residency", () => {
       ).toHaveLength(0);
       expect(_hostedSessionCount()).toBe(0);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1430,7 +1430,7 @@ describe("hosted MCP — residency", () => {
         auditedEntries.filter((e) => e.actionType === "mcp_session.start"),
       ).toHaveLength(0);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });
@@ -1470,7 +1470,7 @@ describe("hosted MCP — successful session", () => {
 
       await client.close();
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1527,7 +1527,7 @@ describe("hosted MCP — successful session", () => {
 
       await client.close();
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1586,7 +1586,7 @@ describe("hosted MCP — successful session", () => {
       await clientA.close();
       await clientB.close();
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });
@@ -1620,7 +1620,7 @@ describe("hosted MCP — session lifecycle", () => {
       expect(body.error).toBe("unknown_session");
       expect(body.requestId).toBeTruthy();
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1655,7 +1655,7 @@ describe("hosted MCP — session lifecycle", () => {
 
       await client.close().catch(() => {});
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });
@@ -1709,7 +1709,7 @@ describe("hosted MCP — capacity", () => {
 
       await client.close();
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1759,7 +1759,7 @@ describe("hosted MCP — capacity", () => {
       await second.close();
     } finally {
       delete process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS;
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1800,7 +1800,7 @@ describe("hosted MCP — capacity", () => {
       await client.close();
     } finally {
       delete process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS;
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1849,7 +1849,7 @@ describe("hosted MCP — capacity", () => {
       await fresh.close();
     } finally {
       _setIdleTimeoutForTests(null);
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1892,7 +1892,7 @@ describe("hosted MCP — capacity", () => {
       await connected.close();
     } finally {
       _setIdleTimeoutForTests(null);
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -1940,7 +1940,7 @@ describe("hosted MCP — capacity", () => {
 
       await connected.close();
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });
@@ -1972,7 +1972,7 @@ describe("hosted MCP — audit failure", () => {
       expect(tools.tools.length).toBeGreaterThan(0);
       await client.close();
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });

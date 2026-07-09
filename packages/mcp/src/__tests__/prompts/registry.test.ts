@@ -22,20 +22,20 @@ let mockScannedEntities: Array<{
 let mockSettings: Record<string, string | undefined> = {};
 const internalExecuteCalls: Array<{ sql: string; params: unknown[] }> = [];
 
-mock.module("@atlas/api/lib/semantic/files", () => ({
+void mock.module("@atlas/api/lib/semantic/files", () => ({
   getSemanticRoot: () => {
     if (mockSemanticRootError) throw mockSemanticRootError;
     return "/tmp/atlas-test-semantic";
   },
 }));
 
-mock.module("@atlas/api/lib/semantic/scanner", () => ({
+void mock.module("@atlas/api/lib/semantic/scanner", () => ({
   scanEntities: () => ({ entities: mockScannedEntities, warnings: [] }),
   getEntityDirs: () => ({ dirs: [], rootScanFailed: false }),
   readEntityYaml: () => null,
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: async () => {
     if (mockInternalQueryError) throw mockInternalQueryError;
@@ -47,14 +47,14 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string, _orgId?: string) => mockSettings[key],
 }));
 
 // The prompts chain (registry → gating / listing / canonical) logs via the
 // MCP stderr logger (#3494). Stub it so the suite stays quiet and never
 // pulls the real pino-to-fd-2 sink into the test process.
-mock.module("../../logger", () => ({
+void mock.module("../../logger", () => ({
   createMcpLogger: () => ({
     info: () => {},
     warn: () => {},

@@ -22,7 +22,7 @@ import { TrialProvisioningError } from "@atlas/ee/onboarding/provision-trial";
 // is mutable so individual tests can flip SaaS on/off.
 let mockDeployMode: "saas" | "self-hosted" = "saas";
 const __mockedConfig = () => ({ deployMode: mockDeployMode });
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   initializeConfig: mock(async () => __mockedConfig()),
   getConfig: mock(() => __mockedConfig()),
   loadConfig: mock(async () => __mockedConfig()),

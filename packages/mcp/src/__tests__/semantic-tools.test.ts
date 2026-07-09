@@ -91,7 +91,7 @@ const mockFindMetricById = mock<(...args: unknown[]) => unknown>(
   },
 );
 
-mock.module("@atlas/api/lib/semantic/lookups", () => ({
+void mock.module("@atlas/api/lib/semantic/lookups", () => ({
   // #2150: `listEntities` was consolidated into `semantic/entities.ts` and
   // is mocked there now (see the entities mock below). lookups still owns
   // `getEntityByName`, `searchGlossary`, and `findMetricById` — the other
@@ -108,7 +108,7 @@ mock.module("@atlas/api/lib/semantic/lookups", () => ({
 // the call would normally hit the DB; we stub the surface here so the test
 // stays hermetic and asserts on the same fixture that the old lookups mock
 // returned.
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mockListEntities,
   // The other entities exports aren't used by the SUT; provide minimal
   // stubs so any transitive importer doesn't see undefined exports.
@@ -145,7 +145,7 @@ const mockExecuteSQLExecute = mock<(...args: unknown[]) => Promise<unknown>>(
   }),
 );
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   executeSQL: {
     description: "Execute SQL",
     execute: mockExecuteSQLExecute,
@@ -161,7 +161,7 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 // (groupId undefined, degraded true), simulating a transient internal-DB fault
 // in the membership lookup. Reset in beforeEach.
 let routingLookupDegraded = false;
-mock.module("@atlas/api/lib/env-routing/lookup", () => ({
+void mock.module("@atlas/api/lib/env-routing/lookup", () => ({
   loadGroupRoutingContext: mock(async (_orgId: string | undefined, connectionId: string) => {
     if (routingLookupDegraded) {
       return {
@@ -204,7 +204,7 @@ type GateVerdict =
 let billingGateVerdict: GateVerdict = { allowed: true };
 const mockCheckAgentBillingGate = mock(async (_orgId: string | undefined) => billingGateVerdict);
 
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockCheckAgentBillingGate,
   BillingBlockedError: class BillingBlockedError extends Error {
     override readonly name = "BillingBlockedError";

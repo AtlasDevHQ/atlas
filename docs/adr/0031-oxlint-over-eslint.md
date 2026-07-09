@@ -41,11 +41,18 @@ does **not** implement `no-restricted-syntax` natively.
   files before shipping. The admin override duplicates the two FetchError
   selectors alongside the two `feature` selectors, matching ESLint's flat-config
   array-replace merge semantics.
-- **Type-aware linting is intentionally OFF.** The former config used
-  `tseslint.recommended` (not `recommendedTypeChecked`), so no type-aware rules
-  were in the baseline; enabling `tsgolint` now would be a scope change, not a
-  cutover. It is available (`oxlint-tsgolint` + `--type-aware`, TS7-gated) and is
-  the natural next step — tracked as follow-up.
+- **Type-aware linting: enabled at `warn`, burning down.** The former config
+  used `tseslint.recommended` (not `recommendedTypeChecked`), so the cutover
+  itself carried no type-aware rules. Post-cutover, `oxlint-tsgolint` is wired
+  via a dedicated `bun run lint:type-aware` script (kept out of the fast
+  blocking `bun run lint` gate — it builds TS programs and is slower) with the
+  full type-aware rule set at `warn`. Initial scan: ~3,856 findings (~418 in
+  non-test source, the rest in test files). **Wave 1** fixed all ~406 non-test
+  findings via parallel subagents under a behavior-preserving protocol
+  (floating-promises → `await` when completion matters else `void`;
+  base-to-string/template-expressions → output-preserving `String()`). Rules
+  stay `warn` until the test-file findings (**wave 2**) are cleared, then the
+  cleared rules promote to `error`.
 
 ## Consequences
 

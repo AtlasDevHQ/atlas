@@ -243,8 +243,8 @@ beforeAll(async () => {
   baseUrl = result.baseUrl;
 });
 
-afterAll(() => {
-  server?.stop(true);
+afterAll(async () => {
+  await server?.stop(true);
   // Clean up the temporary semantic directory
   try {
     rmSync(semanticDir, { recursive: true, force: true });
@@ -311,7 +311,7 @@ describe("sidecar server", () => {
         expect(body.status).toBe("error");
         expect(body.error).toContain("SEMANTIC_DIR not readable");
       } finally {
-        badServer.server.stop(true);
+        await badServer.server.stop(true);
       }
     });
   });
@@ -686,7 +686,7 @@ describe("sidecar server", () => {
         const body = (await res.json()) as ExecBody;
         expect(body.error).toBe("Unauthorized");
       } finally {
-        authServer.server.stop(true);
+        await authServer.server.stop(true);
       }
     });
 
@@ -709,7 +709,7 @@ describe("sidecar server", () => {
         const body = (await res.json()) as ExecBody;
         expect(body.error).toBe("Unauthorized");
       } finally {
-        authServer.server.stop(true);
+        await authServer.server.stop(true);
       }
     });
 
@@ -729,7 +729,7 @@ describe("sidecar server", () => {
         });
         expect(res.status).toBe(401);
       } finally {
-        authServer.server.stop(true);
+        await authServer.server.stop(true);
       }
     });
 
@@ -753,7 +753,7 @@ describe("sidecar server", () => {
         expect(body.stdout).toBe("authenticated\n");
         expect(body.exitCode).toBe(0);
       } finally {
-        authServer.server.stop(true);
+        await authServer.server.stop(true);
       }
     });
 
@@ -780,7 +780,7 @@ describe("sidecar server", () => {
         const body = (await res.json()) as ExecBody;
         expect(body.status).toBe("ok");
       } finally {
-        authServer.server.stop(true);
+        await authServer.server.stop(true);
       }
     });
   });
@@ -819,7 +819,7 @@ describe("sidecar server", () => {
         // Consume all response bodies to prevent connection leaks
         await Promise.all(responses.map((r) => r.text()));
       } finally {
-        concServer.server.stop(true);
+        await concServer.server.stop(true);
       }
     }, 20_000);
 
@@ -848,7 +848,7 @@ describe("sidecar server", () => {
           expect(body.stdout).toBe(`batch-${i}\n`);
         }
       } finally {
-        concServer.server.stop(true);
+        await concServer.server.stop(true);
       }
     });
   });

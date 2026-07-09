@@ -58,7 +58,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
@@ -67,7 +67,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "simple-key",
   resetAuthModeCache: () => {},
 }));
@@ -80,7 +80,7 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 //     "Export named 'X' not found" at module load, taking down every
 //     admin route. ---
 import { Effect as F53Effect, Layer as F53Layer } from "effect";
-mock.module("@atlas/ee/auth/roles", () => ({
+void mock.module("@atlas/ee/auth/roles", () => ({
   PERMISSIONS: [
     "query",
     "query:raw_data",
@@ -119,7 +119,7 @@ mock.module("@atlas/ee/auth/roles", () => ({
 
 // --- IP allowlist mock. `createAdminRouter`'s middleware chain runs an
 //     allowlist check on every request via `@atlas/ee/auth/ip-allowlist`. ---
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: () => F53Effect.succeed({ allowed: true }),
   listIPAllowlistEntries: () => F53Effect.succeed([]),
   addIPAllowlistEntry: () => F53Effect.succeed(null),
@@ -169,7 +169,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
 
 let mockHasInternalDB = true;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({
     query: () => Promise.resolve({ rows: [] }),
@@ -183,7 +183,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: mock(async () => 0),
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -223,7 +223,7 @@ interface CapturedAuditEntry {
 }
 const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mockLogAdminAction,
   logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
@@ -257,7 +257,7 @@ const mockListWorkspaceChannels: Mock<(workspaceId: string) => Promise<Directory
 //     permission/IP-allowlist checks fall through to their core Noop
 //     layers (admin role → legacy allow). ---
 
-mock.module("@atlas/ee/layers", () => ({
+void mock.module("@atlas/ee/layers", () => ({
   EELayer: F53Layer.unwrapEffect(
     F53Effect.sync(() => {
       // oxlint-disable-next-line @typescript-eslint/no-require-imports

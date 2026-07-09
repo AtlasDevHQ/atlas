@@ -20,7 +20,7 @@ const loggerCalls: {
   error: Array<{ data: Record<string, unknown>; message: string }>;
 } = { warn: [], error: [] };
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     debug: () => {},

@@ -16,7 +16,7 @@ import { resolve, join, relative } from "path";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
 import type { TableProfile } from "../../profiler";
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {} }),
   getLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, level: "info" }),
   withRequestContext: <T,>(_ctx: unknown, fn: () => T) => fn(),

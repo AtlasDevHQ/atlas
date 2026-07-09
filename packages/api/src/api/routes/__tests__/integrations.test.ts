@@ -78,7 +78,7 @@ let authResultImpl: () => Promise<AuthResult> = async () => ({
   },
 });
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mock(() => authResultImpl()),
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
@@ -86,7 +86,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   rateLimitCleanupTick: () => {},
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -98,7 +98,7 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: () => Effect.succeed({ allowed: true }),
 }));
 
@@ -106,7 +106,7 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
 // SaaS posture without bleeding into the OAuth callback suites.
 let deployModeImpl: () => string | undefined = () => undefined;
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({ deployMode: deployModeImpl() }),
   defineConfig: (c: unknown) => c,
 }));
@@ -134,7 +134,7 @@ const mockInternalQuery = mock(
   async (sql: string, _params?: unknown[]): Promise<unknown[]> => defaultMockInternalQuery(sql),
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
   hasInternalDB: () => true,
   internalQuery: mockInternalQuery,
@@ -189,7 +189,7 @@ const mockDeleteCredentialBundle = mock(async (_workspaceId: string, _catalogId:
   return true;
 });
 
-mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
+void mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
   deleteCredentialBundle: mockDeleteCredentialBundle,
   // CLAUDE.md "Mock all exports" — the disconnect path only calls
   // `deleteCredentialBundle`; stub the read/write so other tests that
@@ -198,7 +198,7 @@ mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
   saveCredentialBundle: mock(() => Promise.resolve()),
 }));
 
-mock.module("@atlas/api/lib/slack/store", () => ({
+void mock.module("@atlas/api/lib/slack/store", () => ({
   deleteInstallation: mockDeleteInstallation,
   // mock.module() requires every named export to be mocked (CLAUDE.md
   // "Mock all exports"). The disconnect handler only calls
@@ -232,7 +232,7 @@ let mockMisrouted:
   | null = null;
 let mockStrictRouting = false;
 
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: () => Promise.resolve(mockMisrouted),
   isStrictRoutingEnabled: () => mockStrictRouting,
 }));
@@ -245,7 +245,7 @@ mock.module("@atlas/api/lib/residency/misrouting", () => ({
 // test files. `mintOAuthStateToken` is mocked too even though no
 // test below calls it directly.
 let stubVerifiedState: { workspaceId: string; catalogId: string } | null = null;
-mock.module("@atlas/api/lib/integrations/install/oauth-state-token", () => ({
+void mock.module("@atlas/api/lib/integrations/install/oauth-state-token", () => ({
   mintOAuthStateToken: () => "stub",
   verifyOAuthStateToken: () => stubVerifiedState,
 }));

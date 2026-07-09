@@ -20,7 +20,7 @@ const mockResumeChatTurn: Mock<(i: unknown) => Promise<ResumeChatTurnResult>> = 
   answer: "the answer",
 }));
 
-mock.module("@atlas/api/lib/chat-plugin/resume-turn", () => ({
+void mock.module("@atlas/api/lib/chat-plugin/resume-turn", () => ({
   resumeChatTurn: mockResumeChatTurn,
 }));
 

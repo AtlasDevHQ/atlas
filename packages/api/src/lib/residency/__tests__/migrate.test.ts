@@ -19,7 +19,7 @@ let mockPoolQueryResult = { rows: [{ id: "org-1" }] };
 let mockPoolQueryError: Error | null = null;
 const capturedQueries: Array<{ sql: string; params: unknown[] }> = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({
     query: (sql: string, params: unknown[]) => {
@@ -54,7 +54,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -63,7 +63,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   flushCache: () => {},
   getCache: () => null,
   cacheEnabled: () => false,
@@ -83,7 +83,7 @@ const DEFAULT_MOCK_CONFIG = {
 
 let mockConfig: Record<string, unknown> | null = { ...DEFAULT_MOCK_CONFIG };
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfig,
 }));
 

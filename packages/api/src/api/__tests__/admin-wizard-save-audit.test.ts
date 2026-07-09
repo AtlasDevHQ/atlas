@@ -101,7 +101,7 @@ interface AuditEntry {
 
 const mockLogAdminAction: Mock<(entry: AuditEntry) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
@@ -112,7 +112,7 @@ mock.module("@atlas/api/lib/audit", async () => {
 
 // Mock fs so wizard /save never touches the real filesystem. Tests only
 // inspect the audit emission, not the on-disk artifacts.
-mock.module("fs", () => ({
+void mock.module("fs", () => ({
   mkdirSync: mock(() => {}),
   writeFileSync: mock(() => {}),
   existsSync: mock(() => true),
@@ -121,7 +121,7 @@ mock.module("fs", () => ({
 }));
 
 // syncEntityToDisk mock — avoid touching the disk/DB sync layer.
-mock.module("@atlas/api/lib/semantic/sync", () => ({
+void mock.module("@atlas/api/lib/semantic/sync", () => ({
   syncEntityToDisk: mock(async () => {}),
   syncEntityDeleteFromDisk: async () => {},
   syncAllEntitiesToDisk: async () => 0,
@@ -142,7 +142,7 @@ const mockBulkUpsertEntities: Mock<(
   entities: Array<{ entityType: string; name: string; yamlContent: string; connectionId?: string; connectionGroupId?: string | null }>,
 ) => Promise<number>> = mock(async (_orgId, entities) => entities.length);
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   DEMO_CONNECTION_ID: "__demo__",
   SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
   bulkUpsertEntities: mockBulkUpsertEntities,
@@ -178,7 +178,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
 // /save; the rest are stubbed to satisfy the import graph. Keep list of
 // OBJECT_TYPES / FK_SOURCES / PARTITION_STRATEGIES / SEMANTIC_TYPES exact —
 // Zod schemas in wizard.ts bind to `z.enum(OBJECT_TYPES)` at module load.
-mock.module("@atlas/api/lib/profiler", () => ({
+void mock.module("@atlas/api/lib/profiler", () => ({
   OBJECT_TYPES: ["table", "view", "materialized_view", "partitioned_table"] as const,
   FK_SOURCES: ["catalog", "inferred"] as const,
   PARTITION_STRATEGIES: ["range", "list", "hash"] as const,

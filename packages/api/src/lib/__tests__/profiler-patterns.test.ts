@@ -6,7 +6,7 @@
 import { describe, it, expect, mock } from "bun:test";
 
 // Mock logger to avoid pino output at import time
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

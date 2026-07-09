@@ -17,7 +17,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
@@ -26,7 +26,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "simple-key",
   resetAuthModeCache: () => {},
 }));
@@ -35,7 +35,7 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 
 let mockHasInternalDB = true;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({ query: () => Promise.resolve({ rows: [] }), end: async () => {}, on: () => {} }),
   internalQuery: mock(() => Promise.resolve([])),
@@ -50,12 +50,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 let mockStatuses: { statuses: Array<Record<string, unknown>>; total: number } = { statuses: [], total: 0 };
 let mockEnabled = true;
 
-mock.module("@atlas/api/lib/email/engine", () => ({
+void mock.module("@atlas/api/lib/email/engine", () => ({
   getOnboardingStatuses: mock(() => Promise.resolve(mockStatuses)),
   isOnboardingEmailEnabled: () => mockEnabled,
 }));
 
-mock.module("@atlas/api/lib/email/sequence", () => ({
+void mock.module("@atlas/api/lib/email/sequence", () => ({
   ONBOARDING_SEQUENCE: [
     { step: "welcome", trigger: "signup_completed", fallbackHours: 0, subject: "Welcome to {{appName}}", description: "Welcome email" },
     { step: "connect_database", trigger: "database_connected", fallbackHours: 24, subject: "Connect your database", description: "Guide" },
@@ -64,7 +64,7 @@ mock.module("@atlas/api/lib/email/sequence", () => ({
 
 // --- Logger mock ---
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

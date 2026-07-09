@@ -500,7 +500,7 @@ export function authErrorMessage(authMode: AuthMode): string {
       return "An unexpected authentication error occurred. Please refresh the page.";
     default: {
       const _exhaustive: never = authMode;
-      return `Authentication failed (unknown mode: ${_exhaustive}).`;
+      return `Authentication failed (unknown mode: ${String(_exhaustive)}).`;
     }
   }
 }
@@ -610,7 +610,7 @@ function clientErrorInfo(clientCode: ClientErrorCode, authMode: AuthMode): ChatE
       };
     default: {
       const _exhaustive: never = clientCode;
-      return { title: `Unknown error (${_exhaustive}).` };
+      return { title: `Unknown error (${String(_exhaustive)}).` };
     }
   }
 }
@@ -754,7 +754,7 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
 
     default: {
       const _exhaustive: never = rawCode;
-      return { title: serverMessage ?? `Something went wrong (${_exhaustive}).`, requestId };
+      return { title: serverMessage ?? `Something went wrong (${String(_exhaustive)}).`, requestId };
     }
   }
 }

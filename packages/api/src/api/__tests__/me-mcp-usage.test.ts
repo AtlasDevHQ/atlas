@@ -63,7 +63,7 @@ const auditCalls: CapturedAuditEntry[] = [];
 // Mock the oauth-clients helper module wholesale (CLAUDE.md "Mock all
 // exports" — listOAuthClients is one of several exports the route layer
 // or its dependants might pull).
-mock.module("@atlas/api/lib/auth/oauth-clients", () => ({
+void mock.module("@atlas/api/lib/auth/oauth-clients", () => ({
   listOAuthClients: async (scope: CapturedListCall["scope"] | { kind: "org"; orgId: string }) => {
     if (scope.kind !== "user") {
       throw new Error(`unexpected scope kind: ${scope.kind} — me-mcp-usage must always pass user scope`);
@@ -106,7 +106,7 @@ function capture(entry: CapturableAuditEntry): void {
   });
 }
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS,
   errorMessage,
   causeToError,

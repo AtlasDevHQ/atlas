@@ -48,7 +48,7 @@ import type { WorkspaceId } from "@useatlas/types";
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
   () => Promise.resolve([]),
 );
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -76,7 +76,7 @@ const mockCheckChatLimitAndInstall: Mock<
 // Mock every value export — a partial `mock.module()` causes a `SyntaxError`
 // in other files importing the missing exports (per CLAUDE.md "Mock all
 // exports"). Only `checkChatIntegrationLimitAndInstall` is exercised here.
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
   CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
   checkResourceLimit: () => Promise.resolve({ allowed: true }),
@@ -110,7 +110,7 @@ function setFetchOk(
   body: { id?: string; display_phone_number?: string; verified_name?: string } = {},
 ): void {
   globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-    fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+    fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
     return new Response(
       JSON.stringify({
         id: body.id ?? SAMPLE_PHONE_NUMBER_ID,
@@ -128,7 +128,7 @@ function setFetchOk(
 
 function setFetchMetaError(message: string, code: number, status: number): void {
   globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-    fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+    fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
     return new Response(
       JSON.stringify({ error: { message, type: "OAuthException", code } }),
       { status, headers: { "content-type": "application/json" } },
@@ -138,7 +138,7 @@ function setFetchMetaError(message: string, code: number, status: number): void 
 
 function setFetchNonJson(status: number): void {
   globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-    fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+    fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
     return new Response("<html>error</html>", {
       status,
       headers: { "content-type": "text/html" },
@@ -360,7 +360,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
 
   it("throws when Meta returns 2xx but no id field — upstream contract violation, not silent success", async () => {
     globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
       return new Response(JSON.stringify({ foo: "bar" }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -382,7 +382,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
     // violation. The previous version of this parser would silently
     // succeed here.
     globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
       return new Response(
         JSON.stringify({
           id: SAMPLE_PHONE_NUMBER_ID,
@@ -405,7 +405,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
     // message (which would surface as "Meta rejected …:  — " with no
     // hint for the admin).
     globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
       return new Response(JSON.stringify({ error: {} }), {
         status: 400,
         headers: { "content-type": "application/json" },
@@ -653,7 +653,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
   it("omits display_phone when neither extras nor API supplied one", async () => {
     // Override the fetch to return only `id`, no display_phone_number.
     globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
       return new Response(JSON.stringify({ id: SAMPLE_PHONE_NUMBER_ID }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -673,7 +673,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
     // Isolate the "wrong-type drop" behavior from the fallback chain
     // by giving Meta nothing to fall back through.
     globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
       return new Response(JSON.stringify({ id: SAMPLE_PHONE_NUMBER_ID }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -694,7 +694,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
 
   it("falls back to Meta's verified_name when display_phone_number is absent (third-tier fallback)", async () => {
     globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
       return new Response(
         JSON.stringify({ id: SAMPLE_PHONE_NUMBER_ID, verified_name: "Acme Test Co" }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -712,7 +712,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
 
   it("prefers display_phone_number over verified_name when both are present", async () => {
     globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
       return new Response(
         JSON.stringify({
           id: SAMPLE_PHONE_NUMBER_ID,

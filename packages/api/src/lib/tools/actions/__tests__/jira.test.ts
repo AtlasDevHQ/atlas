@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 
 let lastHandleActionCall: { request: unknown; executeFn: unknown } | null = null;
 
-mock.module("@atlas/api/lib/tools/actions/handler", () => ({
+void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   buildActionRequest: (params: Record<string, unknown>) => ({
     id: "test-action-id",
     ...params,
@@ -17,7 +17,7 @@ mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

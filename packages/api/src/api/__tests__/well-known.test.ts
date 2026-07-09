@@ -23,7 +23,7 @@ import {
 
 const mockDetectAuthMode: { current: "managed" | "none" } = { current: "managed" };
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => mockDetectAuthMode.current,
 }));
 
@@ -31,7 +31,7 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 // oauth-provider helpers. We stub both with handlers that return a
 // well-shaped response so the route's wiring can be exercised without
 // standing up Better Auth.
-mock.module("@atlas/api/lib/auth/server", () => ({
+void mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => ({
     api: {
       // Helpers in @better-auth/oauth-provider read these — stubs are
@@ -43,7 +43,7 @@ mock.module("@atlas/api/lib/auth/server", () => ({
   }),
 }));
 
-mock.module("@better-auth/oauth-provider", () => ({
+void mock.module("@better-auth/oauth-provider", () => ({
   oauthProviderAuthServerMetadata: () =>
     () =>
       new Response(
@@ -68,7 +68,7 @@ mock.module("@better-auth/oauth-provider", () => ({
       ),
 }));
 
-mock.module("@better-auth/oauth-provider/resource-client", () => ({
+void mock.module("@better-auth/oauth-provider/resource-client", () => ({
   oauthProviderResourceClient: () => ({
     getActions: () => ({
       getProtectedResourceMetadata: async (overrides: {
@@ -121,7 +121,7 @@ describe("well-known — managed auth mode", () => {
       const body = (await res.json()) as { issuer: string };
       expect(body.issuer).toBe("https://example.test/api/auth");
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -136,7 +136,7 @@ describe("well-known — managed auth mode", () => {
       const body = (await res.json()) as { jwks_uri: string };
       expect(body.jwks_uri).toBe("https://example.test/api/auth/jwks");
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -166,7 +166,7 @@ describe("well-known — managed auth mode", () => {
       expect(body.scopes_supported).toEqual(["mcp:read", "mcp:write"]);
       expect(body.bearer_methods_supported).toEqual(["header"]);
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 
@@ -190,7 +190,7 @@ describe("well-known — managed auth mode", () => {
       const body = (await res.json()) as { resource: string };
       expect(body.resource).toBe("https://mcp.useatlas.dev/mcp");
     } finally {
-      handle.close();
+      await handle.close();
       if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
       else process.env.ATLAS_PUBLIC_API_URL = prev;
     }
@@ -207,7 +207,7 @@ describe("well-known — managed auth mode", () => {
       const body = (await res.json()) as { resource: string };
       expect(body.resource).toBe("https://mcp-eu.useatlas.dev/mcp");
     } finally {
-      handle.close();
+      await handle.close();
       if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
       else process.env.ATLAS_PUBLIC_API_URL = prev;
     }
@@ -230,7 +230,7 @@ describe("well-known — managed auth mode", () => {
       const body = (await res.json()) as { resource: string };
       expect(body.resource).toBe("https://mcp.useatlas.dev/mcp");
     } finally {
-      handle.close();
+      await handle.close();
       if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
       else process.env.ATLAS_PUBLIC_API_URL = prev;
     }
@@ -247,7 +247,7 @@ describe("well-known — managed auth mode", () => {
       const body = (await res.json()) as { resource: string };
       expect(body.resource).toBe("https://api.example.test/mcp");
     } finally {
-      handle.close();
+      await handle.close();
       if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
       else process.env.ATLAS_PUBLIC_API_URL = prev;
     }
@@ -264,7 +264,7 @@ describe("well-known — managed auth mode", () => {
       expect(res.headers.get("access-control-allow-origin")).toBe("*");
       expect(res.headers.get("access-control-allow-methods")).toContain("GET");
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });
@@ -285,7 +285,7 @@ describe("well-known — non-managed auth mode", () => {
         expect(body.error).toBe("not_found");
       }
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });
@@ -304,7 +304,7 @@ describe("well-known — helpers fail to load", () => {
     // in this file (if any are added below) see the original mock.
     // `bun:test` `mock.module` doesn't return a `.restore()` handle,
     // so we explicitly re-install the success shape to revert.
-    mock.module("@atlas/api/lib/auth/server", () => ({
+    void mock.module("@atlas/api/lib/auth/server", () => ({
       getAuthInstance: () => {
         throw new Error("better-auth boot failure");
       },
@@ -327,10 +327,10 @@ describe("well-known — helpers fail to load", () => {
         // map response → log line directly.
         expect(body.reason).toContain("better-auth boot failure");
       } finally {
-        handle.close();
+        await handle.close();
       }
     } finally {
-      mock.module("@atlas/api/lib/auth/server", () => ({
+      void mock.module("@atlas/api/lib/auth/server", () => ({
         getAuthInstance: () => ({
           api: {
             getOAuthServerConfig: () => ({}),

@@ -147,7 +147,7 @@ beforeEach(() => {
   // (order-independence per the CLAUDE.md singleton-leak discipline).
   __resetSharedSpecCacheForTests();
 
-  mock.module("@atlas/api/lib/db/internal", () => ({
+  void mock.module("@atlas/api/lib/db/internal", () => ({
     internalQuery: async (sql: string, params: unknown[]) => {
       queryCalls.push({ sql, params });
       return [{ id: params[0] ?? "generated-id" }];

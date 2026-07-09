@@ -52,7 +52,7 @@ const ranAccountDelete = () => ranSql(/DELETE FROM account/i);
 // --- Audit mock — capture logAdminAction calls to verify the compliance path ---
 const mockLogAdminAction: Mock<(entry: unknown) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   // Pass the real ADMIN_ACTIONS enum through so route handlers get correct constants.
   const actual = await import("@atlas/api/lib/audit/actions");
   return {

@@ -128,7 +128,7 @@ const mockOption = {
     opt._tag === "Some",
 };
 
-mock.module("effect", () => {
+void mock.module("effect", () => {
   const Effect = {
     gen: (genFn: () => Generator) => {
       // Post-#2571 `admin-router.ts` does
@@ -222,7 +222,7 @@ mock.module("effect", () => {
 // + `ManagedRuntime.make` are the local shims that don't actually
 // construct a runtime. Migrating off the shim is a separate, larger
 // refactor — until then this inert stub stands in.
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   EnterpriseLayer: { _tag: "MockLayer" },
   // Never called because the shimmed `runEffect` above doesn't reach
   // the real runtime, but the imports must resolve.
@@ -271,7 +271,7 @@ class MockResidencyError extends Error {
   }
 }
 
-mock.module("@atlas/api/lib/residency/errors", () => ({
+void mock.module("@atlas/api/lib/residency/errors", () => ({
   ResidencyError: MockResidencyError,
 }));
 
@@ -320,7 +320,7 @@ const stubTag = (impl: unknown) => ({
   [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield impl; },
 });
 
-mock.module("@atlas/api/lib/effect/services", () => ({
+void mock.module("@atlas/api/lib/effect/services", () => ({
   AuthContext: fakeAuthContext,
   RequestContext: { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield { requestId: "test-req-1", startTime: Date.now() }; } },
   ResidencyResolver: fakeResidencyResolver,
@@ -374,7 +374,7 @@ mock.module("@atlas/api/lib/effect/services", () => ({
 // replaces `Layer.succeed` + `ManagedRuntime` with shims, so the
 // helper's real-runtime construction can't run. Migrating off the
 // shim is a separate, larger refactor.
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   EnterpriseLayer: { _tag: "MockLayer" },
   // Never called because the shimmed `runEffect` above doesn't reach
   // the real runtime, but the imports must resolve.
@@ -395,7 +395,7 @@ const TAGGED_ERROR_HTTP_MAP: Record<string, { status: number; code: string }> = 
   UnsafeRegionMigrationResetError: { status: 409, code: "conflict" },
 };
 
-mock.module("@atlas/api/lib/effect/hono", () => ({
+void mock.module("@atlas/api/lib/effect/hono", () => ({
   runEffect: async (_c: unknown, effect: { _tag: string; genFn: () => Generator }, opts?: { domainErrors?: [unknown, Record<string, number>][] }) => {
     try {
       const gen = effect.genFn();
@@ -468,7 +468,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
@@ -477,7 +477,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "simple-key",
   resetAuthModeCache: () => {},
 }));
@@ -512,7 +512,7 @@ function invokeInternalQueryMock(sql?: string): Promise<unknown[]> {
     : Promise.resolve(mockInternalQueryResult);
 }
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({
     query: () => Promise.resolve({ rows: [] }),
@@ -537,7 +537,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // No need to also stub `@atlas/ee/platform/residency` — the route no
 // longer dynamic-imports it.
 
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: mock(() => ({ allowed: true })),
   listIPAllowlistEntries: mock(async () => []),
   addIPAllowlistEntry: mock(async () => ({})),
@@ -553,7 +553,7 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
 // `requirePermission` would 403. ALL named exports admin-roles.ts imports
 // must be stubbed: a partial mock surfaces as "Export named 'X' not
 // found" at module load time and the admin tree fails to register.
-mock.module("@atlas/ee/auth/roles", () => ({
+void mock.module("@atlas/ee/auth/roles", () => ({
   PERMISSIONS: [
     "query", "query:raw_data", "admin:users", "admin:connections",
     "admin:settings", "admin:audit", "admin:roles", "admin:semantic",
@@ -584,7 +584,7 @@ mock.module("@atlas/ee/auth/roles", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -609,7 +609,7 @@ interface CapturedAuditEntry {
 
 const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mockLogAdminAction,
   logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
@@ -625,7 +625,7 @@ let mockCancelResult: { ok: true } | { ok: false; reason: string; error: string 
 // without dragging in the real migrate module's DB plumbing.
 let mockResetThrow: Error | null = null;
 
-mock.module("@atlas/api/lib/residency/migrate", () => ({
+void mock.module("@atlas/api/lib/residency/migrate", () => ({
   triggerMigrationExecution: () => {},
   failStaleMigrations: () => Promise.resolve(0),
   resetMigrationForRetry: () => {
@@ -635,7 +635,7 @@ mock.module("@atlas/api/lib/residency/migrate", () => ({
   cancelMigration: () => Promise.resolve(mockCancelResult),
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   flushCache: () => {},
   getCache: () => null,
   cacheEnabled: () => false,

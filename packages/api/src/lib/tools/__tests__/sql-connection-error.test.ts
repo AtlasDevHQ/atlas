@@ -10,7 +10,7 @@ import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 import { withRequestContext } from "@atlas/api/lib/logger";
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -36,7 +36,7 @@ let getDefaultFn: () => typeof mockConn;
 let getFn: (id: string) => typeof mockConn;
 let getDBTypeFn: (id: string) => string;
 
-mock.module("@atlas/api/lib/db/connection", () => ({
+void mock.module("@atlas/api/lib/db/connection", () => ({
   ...createConnectionMock(),
   ConnectionNotRegisteredError,
   NoDatasourceConfiguredError,
@@ -48,7 +48,7 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (
     _name: string,
     _attrs: Record<string, unknown>,
@@ -57,7 +57,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
+void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));

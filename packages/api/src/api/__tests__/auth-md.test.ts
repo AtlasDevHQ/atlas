@@ -19,7 +19,7 @@ const mockDetectAuthMode: { current: "managed" | "none" } = {
   current: "managed",
 };
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => mockDetectAuthMode.current,
 }));
 
@@ -79,7 +79,7 @@ describe("auth.md — managed auth mode", () => {
       // Backstop: no WorkOS conformance endpoint Atlas doesn't serve.
       expect(body).not.toContain("/agent/identity");
     } finally {
-      handle.close();
+      await handle.close();
       if (prev === undefined) delete process.env.ATLAS_PUBLIC_API_URL;
       else process.env.ATLAS_PUBLIC_API_URL = prev;
     }
@@ -93,7 +93,7 @@ describe("auth.md — managed auth mode", () => {
       expect(res.headers.get("access-control-allow-origin")).toBe("*");
       expect(res.headers.get("access-control-allow-methods")).toContain("GET");
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });
@@ -108,7 +108,7 @@ describe("auth.md — non-managed auth mode", () => {
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe("not_found");
     } finally {
-      handle.close();
+      await handle.close();
     }
   });
 });

@@ -66,7 +66,7 @@ function makeFetch(opts: FixtureOptions = {}) {
   const calls: string[] = [];
   let failed = false;
   const impl = async (input: string | URL | Request, _init?: RequestInit): Promise<Response> => {
-    const raw = typeof input === "string" ? input : input.toString();
+    const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     calls.push(raw);
     if (opts.failFirst && !failed) {
       failed = true;
@@ -212,7 +212,7 @@ describe("failure handling", () => {
 
   it("warn-skips a malformed page (no version) and flags the crawl's coverage incomplete", async () => {
     const impl = async (input: string | URL | Request): Promise<Response> => {
-      const url = new URL(typeof input === "string" ? input : input.toString());
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
       if (url.pathname.endsWith("/rest/api/space")) {
         return jsonResponse({ results: [{ key: "ENG", id: 100 }] });
       }
@@ -257,7 +257,7 @@ describe("context path", () => {
     // concatenates (not URL-resolves) so the context path is never dropped.
     const CTX_BASE = "https://confluence.acme.com/confluence";
     const impl = async (input: string | URL | Request): Promise<Response> => {
-      const url = new URL(typeof input === "string" ? input : input.toString());
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
       if (url.pathname.endsWith("/rest/api/space")) {
         return jsonResponse({ results: [{ key: "ENG", id: 100 }] });
       }
@@ -287,7 +287,7 @@ describe("auth", () => {
   it("sends the PAT as a Bearer token (never Basic, never in the URL)", async () => {
     const seen: { authorization: string | null; url: string }[] = [];
     const impl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const url = typeof input === "string" ? input : input.toString();
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const headers = new Headers(init?.headers);
       seen.push({ authorization: headers.get("authorization"), url });
       const path = new URL(url).pathname;

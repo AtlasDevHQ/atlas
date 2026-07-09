@@ -55,7 +55,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   },
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -77,7 +77,7 @@ const mockDeleteSlackInstallation: Mock<(teamId: string) => Promise<void>> = moc
   },
 );
 
-mock.module("@atlas/api/lib/slack/store", () => ({
+void mock.module("@atlas/api/lib/slack/store", () => ({
   deleteInstallation: mockDeleteSlackInstallation,
   saveInstallation: mock(() => Promise.resolve()),
 }));
@@ -91,7 +91,7 @@ const mockDeleteCredentialBundle: Mock<(workspaceId: string, catalogId: string) 
   },
 );
 
-mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
+void mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
   deleteCredentialBundle: mockDeleteCredentialBundle,
   saveCredentialBundle: mock(() => Promise.resolve()),
   readCredentialBundle: mock(() => Promise.resolve(null)),
@@ -109,7 +109,7 @@ const mockDeleteTwentyIntegration: Mock<(workspaceId: string) => Promise<boolean
   },
 );
 
-mock.module("@atlas/api/lib/integrations/twenty/store", () => ({
+void mock.module("@atlas/api/lib/integrations/twenty/store", () => ({
   deleteTwentyIntegration: mockDeleteTwentyIntegration,
   saveTwentyIntegration: mock(() => Promise.resolve(null)),
   getTwentyIntegrationPublic: mock(() => Promise.resolve(null)),
@@ -127,7 +127,7 @@ const mockDeleteDiscordInstallationByOrg: Mock<(orgId: string) => Promise<boolea
   },
 );
 
-mock.module("@atlas/api/lib/discord/store", () => ({
+void mock.module("@atlas/api/lib/discord/store", () => ({
   getDiscordInstallation: mock(() => Promise.resolve(null)),
   getDiscordInstallationByOrg: mock(() => Promise.resolve(null)),
   saveDiscordInstallation: mock(() => Promise.resolve()),
@@ -156,7 +156,7 @@ const mockInvokeOnUninstallHook: Mock<
   return { invoked: [], failures: [] };
 });
 
-mock.module("@atlas/api/lib/plugins/uninstall-hook", () => ({
+void mock.module("@atlas/api/lib/plugins/uninstall-hook", () => ({
   invokeOnUninstallHook: mockInvokeOnUninstallHook,
   invokeOnUninstallHookForInstallRow: mock(async () => ({ invoked: [], failures: [] })),
   ON_UNINSTALL_HOOK_TIMEOUT_MS: 15_000,
@@ -203,7 +203,7 @@ const mockGetInstallHandler = mock((catalogRow: { slug: string; install_model: s
 // `lib/integrations/install/dispatch` (not the barrel) so we shadow
 // the same path. Mock ALL named exports of that file per CLAUDE.md's
 // "mock all exports" rule.
-mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
+void mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
   getInstallHandler: mockGetInstallHandler,
   hasFormInstallHandler: mock(() => false),
   registerOAuthHandler: mock(() => {}),
@@ -237,7 +237,7 @@ const mockBridgeUnregister = mock((_workspaceId: string, installId: string) => {
   bridgeUnregisterCalls.push(installId);
   return true;
 });
-mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
+void mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   registerDatasourceInstall: mockBridgeRegister,
   unregisterDatasourceInstall: mockBridgeUnregister,
 }));

@@ -34,7 +34,7 @@ function makeRecordingLogger() {
       loggerCalls.push({ level: "debug", arg, ...(message !== undefined && { message }) }),
   };
 }
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: makeRecordingLogger,
   getLogger: () => ({ ...makeRecordingLogger(), level: "info" }),
   setLogLevel: () => true,
@@ -93,16 +93,16 @@ function withCleanEnv<T>(run: () => Promise<T>): Promise<T> {
 function mockValidator(
   result: { kind: "ok"; issues: readonly PluginConfigIssue[] } | { kind: "throws"; error: Error },
 ): void {
-  mock.module("@atlas/api/lib/plugins/validation", () => ({
+  void mock.module("@atlas/api/lib/plugins/validation", () => ({
     validateStoredPluginConfigs: async () => {
       if (result.kind === "throws") throw result.error;
       return result.issues;
     },
   }));
-  mock.module("@atlas/api/lib/db/internal", () => ({
+  void mock.module("@atlas/api/lib/db/internal", () => ({
     hasInternalDB: () => true,
   }));
-  mock.module("@atlas/api/lib/plugins/registry", () => ({
+  void mock.module("@atlas/api/lib/plugins/registry", () => ({
     plugins: {
       getAll: () => [],
       get: () => undefined,

@@ -10,7 +10,7 @@ const stubLogger = {
   error: mock(() => {}),
   debug: mock(() => {}),
 };
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => stubLogger,
   getLogger: () => stubLogger,
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),

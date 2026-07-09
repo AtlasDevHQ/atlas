@@ -18,17 +18,17 @@ let setCalls: Array<{ orgId: string; groupId: string; description: string }> = [
 /** Whether the captured `setManualGroupDescription` reports a row now exists. */
 let setReturns = true;
 
-mock.module("@atlas/api/lib/effect/hono", () => ({
+void mock.module("@atlas/api/lib/effect/hono", () => ({
   runHandler: async (_c: unknown, _label: string, fn: () => unknown) => fn(),
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger };
 });
 
-mock.module("@atlas/api/lib/db/connection-group-descriptions", () => ({
+void mock.module("@atlas/api/lib/db/connection-group-descriptions", () => ({
   listGroupDescriptions: async (_orgId: string) => listRows,
   setManualGroupDescription: async (orgId: string, groupId: string, description: string) => {
     setCalls.push({ orgId, groupId, description });
@@ -39,7 +39,7 @@ mock.module("@atlas/api/lib/db/connection-group-descriptions", () => ({
   upsertAutoGroupDescription: async () => {},
 }));
 
-mock.module("../admin-router", () => ({
+void mock.module("../admin-router", () => ({
   createAdminRouter: () => new OpenAPIHono(),
   requireOrgContext: () => async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {
     c.set("orgContext", { requestId: "test-req", orgId: CURRENT_ORG });

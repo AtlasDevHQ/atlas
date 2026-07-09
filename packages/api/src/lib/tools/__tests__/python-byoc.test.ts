@@ -32,7 +32,7 @@ let mockRequestContext:
   | { user?: { activeOrganizationId?: string } }
   | undefined;
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -52,14 +52,14 @@ mock.module("@atlas/api/lib/logger", () => ({
   redactPaths: [],
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async <T,>(_name: string, _attrs: unknown, fn: () => Promise<T>) => fn(),
   withEffectSpan: <T,>(_n: string, _a: unknown, e: T) => e,
 }));
 
 const mockSettings = new Map<string, string>();
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string, _orgId?: string) => mockSettings.get(key),
   getSettingAuto: (key: string, _orgId?: string) => mockSettings.get(key),
   getSettingLive: async (key: string, _orgId?: string) => mockSettings.get(key),
@@ -76,7 +76,7 @@ mock.module("@atlas/api/lib/settings", () => ({
 // --- sidecar backend mock: the operator chain proxy (ATLAS_SANDBOX_URL) ---
 
 let mockSidecarExecCalls = 0;
-mock.module("@atlas/api/lib/tools/python-sidecar", () => ({
+void mock.module("@atlas/api/lib/tools/python-sidecar", () => ({
   executePythonViaSidecar: async () => {
     mockSidecarExecCalls += 1;
     return { success: true, output: "[sidecar]" };
@@ -104,7 +104,7 @@ const PROVIDER_FOR_BACKEND: Record<string, string> = {
   "railway-sandbox": "railway",
 };
 
-mock.module("@atlas/api/lib/sandbox/runtime", () => ({
+void mock.module("@atlas/api/lib/sandbox/runtime", () => ({
   sandboxProviderForBackendId: (backendId: string) =>
     PROVIDER_FOR_BACKEND[backendId] ?? null,
   providerSupportsPython: (provider: string) => provider === "vercel",

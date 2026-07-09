@@ -17,7 +17,7 @@ let mockInternalQueryResultBySql: ((sql: string) => unknown[]) | null = null;
 let mockHasDB = true;
 let decryptSecretShouldThrow = false;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasDB,
   internalQuery: mock((sql: string, params: unknown[] = []) => {
     capturedQueries.push({ sql, params });
@@ -28,7 +28,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   }),
 }));
 
-mock.module("@atlas/api/lib/db/secret-encryption", () => ({
+void mock.module("@atlas/api/lib/db/secret-encryption", () => ({
   encryptSecret: (plaintext: string) => `enc:v1:test:${plaintext}`,
   decryptSecret: (stored: string) => {
     if (decryptSecretShouldThrow) {
@@ -38,13 +38,13 @@ mock.module("@atlas/api/lib/db/secret-encryption", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/db/encryption-keys", () => ({
+void mock.module("@atlas/api/lib/db/encryption-keys", () => ({
   activeKeyVersion: () => 1,
   getEncryptionKeyset: () => ({ active: { version: 1, key: Buffer.alloc(32) } }),
   _resetEncryptionKeyCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

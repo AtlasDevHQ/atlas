@@ -17,17 +17,17 @@ import type {
 const mockLoad: Mock<(id: string) => Promise<ChatResumeCoordinates | null>> = mock(async () => null);
 const mockClear: Mock<(id: string) => Promise<void>> = mock(async () => {});
 
-mock.module("@atlas/api/lib/chat-plugin/resume-pending-store", () => ({
+void mock.module("@atlas/api/lib/chat-plugin/resume-pending-store", () => ({
   loadResumePending: mockLoad,
   clearResumePending: mockClear,
 }));
 
 let deliverer: ChatResumeDeliverer;
-mock.module("@atlas/api/lib/chat-plugin/resume-delivery-registry", () => ({
+void mock.module("@atlas/api/lib/chat-plugin/resume-delivery-registry", () => ({
   getChatResumeDeliverer: () => deliverer,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 

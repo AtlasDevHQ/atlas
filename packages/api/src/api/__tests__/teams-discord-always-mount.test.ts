@@ -28,7 +28,7 @@ import { describe, it, expect, beforeAll, afterAll, mock } from "bun:test";
 // app's import graph (the legacy `routes/teams.ts` install route doesn't touch
 // it), so it no longer needs mocking here.
 
-mock.module("@atlas/api/lib/discord/store", () => ({
+void mock.module("@atlas/api/lib/discord/store", () => ({
   saveDiscordInstallation: mock(() => Promise.resolve()),
   getDiscordInstallation: mock(() => Promise.resolve(null)),
   getDiscordInstallationByOrg: mock(() => Promise.resolve(null)),
@@ -36,7 +36,7 @@ mock.module("@atlas/api/lib/discord/store", () => ({
   deleteDiscordInstallationByOrg: mock(() => Promise.resolve(false)),
 }));
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   checkRateLimit: mock(() => ({ allowed: true })),
   authenticateRequest: mock(() =>
     Promise.resolve({ authenticated: true, mode: "none", user: null }),

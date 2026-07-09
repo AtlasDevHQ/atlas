@@ -73,7 +73,7 @@ const onUserSignupCalls: Array<{ userId: string; email: string; orgId: string }>
 
 // _autoProvisionSsoMember early-returns unless enterprise is enabled —
 // force it on so the hook reaches its `sso_providers` SELECT.
-mock.module("@atlas/api/lib/effect/enterprise-config", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-config", () => ({
   isEnterpriseEnabled: () => true,
 }));
 
@@ -81,7 +81,7 @@ mock.module("@atlas/api/lib/effect/enterprise-config", () => ({
 // it and resolve the `SaasCrm` Tag through a recording double. All named
 // exports mocked (CLAUDE.md) — a partial mock surfaces as a cross-file
 // SyntaxError under bun's `--parallel` workers (slice 6 / #2802).
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   runEnterprise: (p: unknown) => runEnterpriseImpl(p),
   getEnterpriseRuntime: () => ({
     runPromise: <A, E>(p: Effect.Effect<A, E, never>) => Effect.runPromise(p),
@@ -91,7 +91,7 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
 
 // The welcome-email path dynamically imports this module inside its
 // deferred setTimeout callback. Record onUserSignup; stub the rest.
-mock.module("@atlas/api/lib/email/hooks", () => ({
+void mock.module("@atlas/api/lib/email/hooks", () => ({
   onUserSignup: (u: { userId: string; email: string; orgId: string }) => {
     onUserSignupCalls.push(u);
   },

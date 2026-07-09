@@ -363,7 +363,7 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
     // Two distinct rows — one per connection group-of-one. `DISTINCT ON`
     // keys on connection_group_id, so the same name no longer collapses.
     expect(rows).toHaveLength(2);
-    const scopes = rows.map((r) => r.connection_group_id).toSorted();
+    const scopes = rows.map((r) => r.connection_group_id as string).toSorted();
     expect(scopes).toEqual(["clickhouse", "mysql-staging"]);
     // Each row kept its own dialect-specific YAML — neither overwrote the other.
     const byScope = new Map(rows.map((r) => [r.connection_group_id, r.yaml_content]));
@@ -413,7 +413,7 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
 
     const rows = await listEntityRows("org-1", "entity", "published");
     expect(rows).toHaveLength(2);
-    expect(rows.map((r) => r.connection_group_id).toSorted()).toEqual(["clickhouse", "mysql-staging"]);
+    expect(rows.map((r) => r.connection_group_id as string).toSorted()).toEqual(["clickhouse", "mysql-staging"]);
   });
 
   it("listEntityRows(published) hides a group-of-one entity whose standalone install is archived (#3855)", async () => {

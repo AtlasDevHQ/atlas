@@ -12,7 +12,7 @@ const cachePath = path.join(cacheDir, "profiles.json");
 let warnCalls: unknown[][] = [];
 
 // Mock logger — must be before importing profile-cache
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: (...args: unknown[]) => {
@@ -24,7 +24,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 // Mock getSemanticRoot to use our temp directory
-mock.module("@atlas/api/lib/semantic/files", () => ({
+void mock.module("@atlas/api/lib/semantic/files", () => ({
   getSemanticRoot: () => tmpRoot,
   isValidEntityName: (name: string) => !name.includes("/") && !name.includes(".."),
   getEntityDirs: () => [],

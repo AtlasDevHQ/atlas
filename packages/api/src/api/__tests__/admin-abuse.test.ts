@@ -80,7 +80,7 @@ const mockGetAbuseDetail: Mock<(wsId: string) => Promise<AbuseDetail | null>> = 
 // equivalent note in platform-sla-audit.test.ts.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
-mock.module("@atlas/ee/layers", () => {
+void mock.module("@atlas/ee/layers", () => {
   // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
@@ -115,7 +115,7 @@ mock.module("@atlas/ee/layers", () => {
 // The shim is still imported transitively by sibling routes (admin-orgs,
 // platform-admin) mounted on the same app. Keep the module mock so those
 // imports resolve to inert stubs — mock-all-exports per the test discipline.
-mock.module("@atlas/api/lib/security/abuse", () => ({
+void mock.module("@atlas/api/lib/security/abuse", () => ({
   listFlaggedWorkspaces: mock(() => []),
   reinstateWorkspace: mock(() => "warning" as const),
   getAbuseEvents: mock(async () => ({ events: [], status: "ok" })),
@@ -148,7 +148,7 @@ interface CapturedAuditEntry {
 
 const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,

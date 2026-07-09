@@ -32,7 +32,7 @@ import { _setConfigForTest, _resetConfig, type ResolvedConfig } from "@atlas/api
 
 // Vercel backend always throws at init in this file — only invoked when the
 // Vercel branch is reached (tests 2 + 3); the sidecar test never selects it.
-mock.module("@atlas/api/lib/tools/explore-sandbox", () => ({
+void mock.module("@atlas/api/lib/tools/explore-sandbox", () => ({
   createSandboxBackend: async (): Promise<never> => {
     throw new Error("vercel sandbox unreachable (test)");
   },

@@ -62,7 +62,7 @@ function makeFetch(opts: FixtureOptions = {}) {
   const calls: string[] = [];
   let failed = false;
   const impl = async (input: string | URL | Request, _init?: RequestInit): Promise<Response> => {
-    const raw = typeof input === "string" ? input : input.toString();
+    const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     calls.push(raw);
     if (opts.failFirst && !failed) {
       failed = true;
@@ -207,7 +207,7 @@ describe("failure handling", () => {
 
   it("warn-skips a malformed page (no version) and flags the crawl's coverage incomplete", async () => {
     const impl = async (input: string | URL | Request): Promise<Response> => {
-      const url = new URL(typeof input === "string" ? input : input.toString());
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
       if (url.pathname.endsWith("/api/v2/spaces")) {
         return jsonResponse({ results: [{ id: SPACE_ID, key: "ENG" }] });
       }

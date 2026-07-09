@@ -17,7 +17,7 @@ import { describe, it, expect, mock } from "bun:test";
 // Mock ALL runtime exports of `better-auth-harmony/email` (CLAUDE.md rule):
 // `validateEmail` (the throwing stub under test) + `default` (the
 // `emailHarmony` plugin factory). The type-only exports are erased at runtime.
-mock.module("better-auth-harmony/email", () => ({
+void mock.module("better-auth-harmony/email", () => ({
   default: () => ({}),
   validateEmail: () => {
     throw new Error("validator boom");

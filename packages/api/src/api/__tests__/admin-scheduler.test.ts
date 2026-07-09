@@ -46,7 +46,7 @@ const mockTrigger: Mock<() => Promise<ByotRefreshCycleResult>> = mock(async () =
   skippedMalformedBundle: 0,
 }));
 
-mock.module("@atlas/api/lib/scheduler/byot-catalog-refresh", () => ({
+void mock.module("@atlas/api/lib/scheduler/byot-catalog-refresh", () => ({
   isByotCatalogRefreshSchedulerRunning: mockIsRunning,
   triggerByotCatalogRefreshCycle: mockTrigger,
   BYOT_CATALOG_REFRESH_ACTOR: "system:byot-catalog-refresh",

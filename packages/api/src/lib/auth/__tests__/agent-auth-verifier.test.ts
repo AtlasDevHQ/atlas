@@ -15,7 +15,7 @@
 import { describe, it, expect, mock } from "bun:test";
 
 let workspacesFor: (userId: string) => Promise<string[]> = async () => ["wsA"];
-mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
+void mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
   getOAuthClientScope: async () => "single",
   hasWorkspaceGrant: async () => false,
   userIsWorkspaceMember: async () => false,
@@ -29,7 +29,7 @@ mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
 // assert the org-role-only boundary (userRole must be undefined).
 const roleCalls: Array<[unknown, string, string | undefined]> = [];
 let roleResult: unknown = undefined;
-mock.module("@atlas/api/lib/auth/effective-role", () => ({
+void mock.module("@atlas/api/lib/auth/effective-role", () => ({
   resolveEffectiveRole: async (userRole: unknown, userId: string, orgId: string | undefined) => {
     roleCalls.push([userRole, userId, orgId]);
     return roleResult;

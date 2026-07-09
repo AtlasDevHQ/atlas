@@ -72,7 +72,7 @@ let auditShouldThrowForAction: string | null = null;
 // Mocks — all named exports mocked per CLAUDE.md "mock all exports" rule.
 // ---------------------------------------------------------------------------
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -83,7 +83,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   runWithRequestContext: <T>(_ctx: unknown, fn: () => T): T => fn(),
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockInternalDB,
   internalQuery: async (sql: string, params: unknown[]) => {
     staleQueryCalls++;
@@ -97,13 +97,13 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 // Mock auth-mode detection so the dormancy JOIN (managed-auth only) can be
 // driven deterministically. All exports mocked per CLAUDE.md.
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => mockAuthMode,
   getAuthModeSource: () => null,
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => {
     auditCalls.push(entry);
     if (auditShouldThrowForAction && entry.actionType === auditShouldThrowForAction) {
@@ -125,7 +125,7 @@ mock.module("@atlas/api/lib/audit", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/audit/error-scrub", () => ({
+void mock.module("@atlas/api/lib/audit/error-scrub", () => ({
   errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
   causeToError: (_cause: unknown) => undefined,
 }));
@@ -145,7 +145,7 @@ class FakeDecryptError extends Error {
 // no-op resolver lazy-requires it via the EnterpriseLayer's no-op
 // defaults — without a mock here, the require() fails when the test
 // runs in isolation).
-mock.module("@atlas/api/lib/residency/errors", () => ({
+void mock.module("@atlas/api/lib/residency/errors", () => ({
   ResidencyError: class ResidencyError extends Error {
     public readonly _tag = "ResidencyError" as const;
     constructor(args: { message: string; code: string }) {
@@ -157,7 +157,7 @@ mock.module("@atlas/api/lib/residency/errors", () => ({
 // Mock the core ModelConfigDecryptError so the route's
 // `Effect.catchTag("ModelConfigDecryptError", ...)` matches the
 // FakeDecryptError thrown by the test layer below.
-mock.module("@atlas/api/lib/model-routing/errors", () => ({
+void mock.module("@atlas/api/lib/model-routing/errors", () => ({
   ModelConfigError: class ModelConfigError extends Error {
     public readonly _tag = "ModelConfigError" as const;
     public readonly code: string;
@@ -175,7 +175,7 @@ mock.module("@atlas/api/lib/model-routing/errors", () => ({
 // — the scheduler's `loadRawConfig` adapter collapses it back. This
 // keeps the per-test fixture format unchanged while exercising the new
 // Tag contract.
-mock.module("@atlas/ee/layers", () => ({
+void mock.module("@atlas/ee/layers", () => ({
   EELayer: Layer.unwrapEffect(
     Effect.sync(() => {
       // oxlint-disable-next-line @typescript-eslint/no-require-imports
@@ -234,14 +234,14 @@ mock.module("@atlas/ee/layers", () => ({
 
 // Keep a stub for the EE module itself so any leftover transitive
 // imports (admin-router.ts etc.) load without crashing on partial exports.
-mock.module("@atlas/ee/platform/model-routing", () => ({
+void mock.module("@atlas/ee/platform/model-routing", () => ({
   ModelConfigDecryptError: FakeDecryptError,
   ModelConfigError: class extends Error {
     public readonly _tag = "ModelConfigError" as const;
   },
 }));
 
-mock.module("@atlas/api/lib/anthropic-catalog", () => ({
+void mock.module("@atlas/api/lib/anthropic-catalog", () => ({
   getAnthropicCatalog: async (orgId: string, apiKey: string, _opts: { refresh?: boolean }) => {
     anthropicFetcherCalls.push({ orgId, apiKey });
     const outcome = anthropicOutcomes.shift() ?? { kind: "ok" as const, modelCount: 3 };
@@ -260,7 +260,7 @@ mock.module("@atlas/api/lib/anthropic-catalog", () => ({
   invalidateAnthropicCatalog: () => {},
 }));
 
-mock.module("@atlas/api/lib/openai-catalog", () => ({
+void mock.module("@atlas/api/lib/openai-catalog", () => ({
   getOpenAICatalog: async (orgId: string, apiKey: string, _opts: { refresh?: boolean }) => {
     openaiFetcherCalls.push({ orgId, apiKey });
     const outcome = openaiOutcomes.shift() ?? { kind: "ok" as const, modelCount: 5 };
@@ -279,7 +279,7 @@ mock.module("@atlas/api/lib/openai-catalog", () => ({
   invalidateOpenAICatalog: () => {},
 }));
 
-mock.module("@atlas/api/lib/bedrock-catalog", () => ({
+void mock.module("@atlas/api/lib/bedrock-catalog", () => ({
   getBedrockCatalog: async (
     orgId: string,
     region: string,

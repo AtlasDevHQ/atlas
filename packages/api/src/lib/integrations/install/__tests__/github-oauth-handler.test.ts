@@ -40,7 +40,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   },
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -184,7 +184,7 @@ describe("GitHubOAuthInstallHandler.handleCallback — happy path", () => {
     const [tokenUrl, tokenInit] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(tokenUrl).toBe("https://github.com/login/oauth/access_token");
     expect(tokenInit.method).toBe("POST");
-    const tokenBody = String(tokenInit.body);
+    const tokenBody = tokenInit.body as string;
     expect(tokenBody).toContain("client_id=Iv1.test_client_id");
     expect(tokenBody).toContain("code=user-oauth-code-abc");
     expect(tokenBody).toContain("client_secret=github-test-client-secret");

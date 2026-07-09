@@ -28,19 +28,19 @@ let mockReqCtx:
 // `id` matters to these tests; cast to the full shape at the mock boundary.
 let focusResolvesTo: Pick<RestDatasource, "id"> | null = null;
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
   getRequestContext: () => mockReqCtx,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_n: string, _a: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
 // The connection→group inference: a connection in `prod` resolves to it, an
 // `ungrouped-conn` resolves to no group.
-mock.module("@atlas/api/lib/env-routing/lookup", () => ({
+void mock.module("@atlas/api/lib/env-routing/lookup", () => ({
   loadGroupRoutingContext: async (_orgId: string | undefined, currentMember: string) =>
     currentMember === "ungrouped-conn"
       ? { members: ["ungrouped-conn"], primaryMember: "ungrouped-conn", currentMember, degraded: false }
@@ -50,7 +50,7 @@ mock.module("@atlas/api/lib/env-routing/lookup", () => ({
 // Capture how the egress path calls the primary resolver. Mock every export the
 // import graph could touch (CLAUDE.md "Mock all exports").
 let primaryCalls: Array<{ orgId: string; deps: unknown }> = [];
-mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
+void mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
   resolveWorkspacePrimaryRestDatasource: async (orgId: string, deps: unknown) => {
     primaryCalls.push({ orgId, deps });
     // A focus call resolves to the configured datasource (or null = gone); any

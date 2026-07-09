@@ -9,7 +9,7 @@ let mockHasInternalDB = false;
 let mockInternalQuery: (sql: string, params: unknown[]) => Promise<unknown[]> =
   () => Promise.resolve([]);
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: (sql: string, params: unknown[]) => mockInternalQuery(sql, params),
 }));

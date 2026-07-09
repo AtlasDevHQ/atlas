@@ -51,12 +51,12 @@ function setResults(...results: Array<{ rows: Record<string, unknown>[] }>) {
 // Mock config module — SaaS mode
 // ---------------------------------------------------------------------------
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({ deployMode: "saas" }),
   defineConfig: (c: unknown) => c,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

@@ -69,7 +69,7 @@ function makeFetch(opts: FixtureOptions = {}) {
   const calls: string[] = [];
   let failed = false;
   const impl = async (input: string | URL | Request): Promise<Response> => {
-    const raw = typeof input === "string" ? input : input.toString();
+    const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     calls.push(raw);
     if (opts.failFirst && !failed) {
       failed = true;
@@ -117,7 +117,7 @@ function rawClient(impl: (input: string | URL | Request) => Promise<Response>) {
 /** A raw fetch impl serving a fixed content tree + a per-page body responder. */
 function treeFetch(tree: unknown, pageBody: (pageId: string) => Response) {
   return async (input: string | URL | Request): Promise<Response> => {
-    const path = new URL(typeof input === "string" ? input : input.toString()).pathname;
+    const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url).pathname;
     const pageMatch = path.match(/\/content\/page\/([^/]+)$/);
     if (pageMatch) return pageBody(pageMatch[1]);
     if (path.endsWith(`/spaces/${SPACE_ID}/content`)) return jsonResponse(tree);

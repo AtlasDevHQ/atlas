@@ -12,7 +12,7 @@ let mockHasInternalDB = true;
 const queryCalls: Array<{ sql: string; params?: unknown[] }> = [];
 let queryImpl: (sql: string, params?: unknown[]) => Promise<unknown[]> = async () => [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: (sql: string, params?: unknown[]) => {
@@ -38,7 +38,7 @@ const defaultAuthResponse = () =>
 
 const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(() => defaultAuthResponse());
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
@@ -46,7 +46,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   rateLimitCleanupTick: () => {},
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -60,7 +60,7 @@ mock.module("@atlas/api/lib/logger", () => {
 
 const mockLogAdminAction: Mock<(entry: Record<string, unknown>) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mockLogAdminAction,
   logAdminActionAwait: async () => {},
   // Keep in sync with `ADMIN_ACTIONS.conversation` in lib/audit/actions.ts.

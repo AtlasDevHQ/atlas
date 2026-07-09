@@ -13,7 +13,7 @@ let upsertReturnValue: "created" | "updated" | "skipped" = "created";
 // Mock the DB module so we can assert the upsert inputs directly.
 // Partial mocks of module exports are forbidden (per CLAUDE.md), so we
 // mirror every export the generator imports.
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   getAuditLogQueries: async () => [
     {
       sql: "SELECT status, COUNT(*) FROM orders GROUP BY status",
@@ -32,7 +32,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/learn/pattern-analyzer", () => ({
+void mock.module("@atlas/api/lib/learn/pattern-analyzer", () => ({
   normalizeSQL: (sql: string) => sql.trim(),
   fingerprintSQL: (sql: string) => `fp:${sql.length}`,
   extractPatternInfo: () => ({ primaryTable: "orders", tables: ["orders"], description: "Count orders by status" }),

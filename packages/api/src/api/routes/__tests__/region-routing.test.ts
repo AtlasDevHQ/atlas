@@ -15,7 +15,7 @@ import { ResidencyResolver, type ResidencyResolverShape } from "@atlas/api/lib/e
 // --- Controllable auth-mode mock (all value exports preserved) ---
 import * as realDetect from "@atlas/api/lib/auth/detect";
 let authMode: string = "managed";
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   ...realDetect,
   detectAuthMode: () => authMode,
 }));
@@ -26,7 +26,7 @@ let internalDbAvailable = true;
 let existsResult = false;
 let queryThrows = false;
 let internalQueryCalls: Array<{ sql: string; params?: unknown[] }> = [];
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => internalDbAvailable,
   internalQuery: async (sql: string, params?: unknown[]) => {
@@ -43,7 +43,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // reintroduce the staging-login break with every helper test still green.
 import * as realMisrouting from "@atlas/api/lib/residency/misrouting";
 let mockApiRegion: string | null = null;
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   ...realMisrouting,
   getApiRegion: () => mockApiRegion,
 }));
@@ -76,7 +76,7 @@ const testEnterpriseRuntime = ManagedRuntime.make(
   Layer.succeed(ResidencyResolver, fakeResidencyResolver),
 );
 const realEnterpriseLayer = await import("@atlas/api/lib/effect/enterprise-layer");
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   ...realEnterpriseLayer,
   getEnterpriseRuntime: () => testEnterpriseRuntime,
 }));

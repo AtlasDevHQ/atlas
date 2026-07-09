@@ -35,7 +35,7 @@ const mockCheckRateLimit: Mock<(key: string) => { allowed: boolean }> = mock(
   () => ({ allowed: true }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mock(() => null),
@@ -44,7 +44,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: mock(async () => null),
   isStrictRoutingEnabled: mock(() => false),
   getMisroutedCount: mock(() => 0),
@@ -53,22 +53,22 @@ mock.module("@atlas/api/lib/residency/misrouting", () => ({
   getApiRegion: mock(() => null),
 }));
 
-mock.module("@atlas/api/lib/residency/readonly", () => ({
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: mock(async () => false),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "managed",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mock(() => Promise.resolve([])),
   getStartupWarnings: mock(() => []),
 }));
 
 // Stub out transitive deps
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       describe: () => [{ id: "default", dbType: "postgres" }],
@@ -80,7 +80,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -99,7 +99,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   () => Promise.resolve([]),
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
   makeInternalDBShimLayer: () =>
     makeMockInternalDBShimLayer(mockInternalQuery, { available: true }),
@@ -154,7 +154,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   setWorkspaceTrialEndsAt: mock(async () => {}),
 }));
 
-mock.module("@atlas/api/lib/cache", () => ({
+void mock.module("@atlas/api/lib/cache", () => ({
   getCache: mock(() => ({ get: () => null, set: () => {}, delete: () => false, flush: () => {}, stats: () => ({}) })),
   cacheEnabled: mock(() => true),
   setCacheBackend: mock(() => {}),
@@ -164,11 +164,11 @@ mock.module("@atlas/api/lib/cache", () => ({
   buildCacheKey: mock(() => "mock-key"),
 }));
 
-mock.module("@atlas/api/lib/workspace", () => ({
+void mock.module("@atlas/api/lib/workspace", () => ({
   checkWorkspaceStatus: mock(async () => ({ allowed: true })),
 }));
 
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     describe: () => [],
     get: () => undefined,
@@ -180,13 +180,13 @@ mock.module("@atlas/api/lib/plugins/registry", () => ({
   PluginRegistry: class {},
 }));
 
-mock.module("@atlas/api/lib/plugins/settings", () => ({
+void mock.module("@atlas/api/lib/plugins/settings", () => ({
   savePluginEnabled: mock(() => Promise.resolve()),
   savePluginConfig: mock(() => Promise.resolve()),
   getPluginConfig: mock(() => Promise.resolve(null)),
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string) => {
     if (key === "ATLAS_SESSION_IDLE_TIMEOUT") return "0";
     if (key === "ATLAS_SESSION_ABSOLUTE_TIMEOUT") return "0";
@@ -214,7 +214,7 @@ mock.module("@atlas/api/lib/settings", () => ({
   initializeSettings: mock(() => Promise.resolve()),
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   maskConnectionUrl: (_url: string) => "***",
   // Must mirror every named export from lib/security.ts — partial mocks
   // cause SyntaxError when admin.ts dynamically imports routes that
@@ -222,7 +222,7 @@ mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /__never_matches__/,
 }));
 
-mock.module("@atlas/api/lib/auth/server", () => ({
+void mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => ({
     api: {
       listUsers: mock(() => Promise.resolve({ users: [], total: 0 })),
@@ -239,7 +239,7 @@ mock.module("@atlas/api/lib/auth/server", () => ({
 }));
 
 // Need to mock semantic-files since admin.ts imports it
-mock.module("@atlas/api/lib/semantic/files", () => ({
+void mock.module("@atlas/api/lib/semantic/files", () => ({
   getSemanticRoot: () => "/tmp/atlas-test-sessions",
   isValidEntityName: () => true,
   readYamlFile: () => ({}),
@@ -248,7 +248,7 @@ mock.module("@atlas/api/lib/semantic/files", () => ({
 }));
 
 // Mock audit module
-mock.module("@atlas/api/lib/auth/audit", () => ({
+void mock.module("@atlas/api/lib/auth/audit", () => ({
   writeAuditEvent: mock(() => Promise.resolve()),
   logQueryAudit: mock(() => {}),
 }));

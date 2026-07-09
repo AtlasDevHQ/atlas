@@ -26,7 +26,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<AuthResult>> = moc
   Promise.resolve({ authenticated: true as const, mode: "none" as const, user: undefined }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
@@ -39,7 +39,7 @@ interface ReqCtx {
 }
 const mockGetRequestContext: Mock<() => ReqCtx | undefined> = mock(() => undefined);
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -63,7 +63,7 @@ const mockDiscoverTables: Mock<
   warnings: [],
 }));
 
-mock.module("@atlas/api/lib/semantic/files", () => ({
+void mock.module("@atlas/api/lib/semantic/files", () => ({
   discoverTables: mockDiscoverTables,
   getSemanticRoot: () => "/semantic",
 }));
@@ -72,7 +72,7 @@ const mockEnsureOrgModeSemanticRoot: Mock<(orgId: string, mode: string) => Promi
   async (orgId, mode) => `/semantic/.orgs/${orgId}/modes/${mode}`,
 );
 
-mock.module("@atlas/api/lib/semantic/sync", () => ({
+void mock.module("@atlas/api/lib/semantic/sync", () => ({
   ensureOrgModeSemanticRoot: mockEnsureOrgModeSemanticRoot,
 }));
 
@@ -89,20 +89,20 @@ const mockResolveAllowedTables: Mock<
 // allowed-tables module so the test never has to mock the heavy db/internal.
 const mockShouldUseOrgSemanticMirror: Mock<(orgId: string | undefined) => boolean> = mock(() => false);
 
-mock.module("@atlas/api/lib/semantic/allowed-tables", () => ({
+void mock.module("@atlas/api/lib/semantic/allowed-tables", () => ({
   resolveAllowedTables: mockResolveAllowedTables,
   shouldUseOrgSemanticMirror: mockShouldUseOrgSemanticMirror,
 }));
 
 const mockGetSettingAuto: Mock<(key: string) => string | undefined> = mock(() => undefined);
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: mockGetSettingAuto,
 }));
 
 const mockGetDBType: Mock<(id: string, workspaceId?: string) => string> = mock(() => "postgres");
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       getDBType: mockGetDBType,
@@ -121,7 +121,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));

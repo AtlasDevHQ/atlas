@@ -44,7 +44,7 @@ const mockGetScheduledTask: Mock<(id: string, opts: { orgId: string }) => Promis
   async () => ({ ok: true, data: { id: "00000000-0000-0000-0000-000000000001", name: "Daily refresh" } }),
 );
 
-mock.module("@atlas/api/lib/scheduled-tasks", () => ({
+void mock.module("@atlas/api/lib/scheduled-tasks", () => ({
   listScheduledTasks: mock(async () => []),
   getScheduledTask: mockGetScheduledTask,
   createScheduledTask: mock(async () => ({ ok: true, data: { id: "task-1", name: "new" } })),
@@ -61,13 +61,13 @@ const mockRunTick: Mock<() => Promise<{ tasksFound: number; tasksDispatched: num
   async () => ({ tasksFound: 0, tasksDispatched: 0, tasksCompleted: 0, tasksFailed: 0 }),
 );
 
-mock.module("@atlas/api/lib/scheduler/engine", () => ({
+void mock.module("@atlas/api/lib/scheduler/engine", () => ({
   triggerTask: mockTriggerTask,
   runTick: mockRunTick,
   _resetScheduler: () => {},
 }));
 
-mock.module("@atlas/api/lib/scheduler/preview", () => ({
+void mock.module("@atlas/api/lib/scheduler/preview", () => ({
   generateDeliveryPreview: () => ({ preview: "stub" }),
 }));
 
@@ -85,7 +85,7 @@ interface AuditEntry {
 
 const mockLogAdminAction: Mock<(entry: AuditEntry) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,

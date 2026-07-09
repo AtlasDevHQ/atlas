@@ -42,7 +42,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
 // Mock all exports (CLAUDE.md partial-mock rule): spread the real module
 // so every named export (MANAGED_AUTH_MIGRATIONS, _resetPool, …) stays
 // importable, overriding only the three seams the spine touches.
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...actualDbInternal,
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
@@ -54,7 +54,7 @@ const evictMock: Mock<(workspaceId: string, catalogId: string) => Promise<boolea
 );
 // Mock all value exports (CLAUDE.md partial-mock rule) — classes ride
 // along so `instanceof` call sites elsewhere keep working.
-mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
+void mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
   lazyPluginLoader: { evict: evictMock },
   LazyPluginLoader: class {},
   LazyPluginBuilderMissingError: class extends Error {},

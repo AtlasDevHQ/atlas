@@ -84,7 +84,7 @@ const mockListEntitiesWithOverlay = mock(
   },
 );
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntityRows: mockListEntities,
   listEntities: mock(async () => []),
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,
@@ -100,7 +100,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => internalDBAvailable,
   internalQuery: async () => [],
   internalExecute: async () => {},
@@ -124,7 +124,7 @@ const mockDBConnection = {
   close: async () => {},
 };
 
-mock.module("@atlas/api/lib/db/connection", () => ({
+void mock.module("@atlas/api/lib/db/connection", () => ({
   getDB: () => mockDBConnection,
   connections: {
     get: () => mockDBConnection,

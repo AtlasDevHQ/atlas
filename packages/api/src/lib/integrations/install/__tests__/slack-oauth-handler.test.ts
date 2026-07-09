@@ -47,7 +47,7 @@ const mockSlackAPI: Mock<
   }),
 );
 
-mock.module("@atlas/api/lib/slack/api", () => ({
+void mock.module("@atlas/api/lib/slack/api", () => ({
   slackAPI: mockSlackAPI,
   postMessage: mock(() => Promise.resolve({ ok: true })),
   updateMessage: mock(() => Promise.resolve({ ok: true })),
@@ -59,7 +59,7 @@ const mockSaveInstallation: Mock<
   (teamId: string, botToken: string, opts?: { orgId?: string; workspaceName?: string }) => Promise<void>
 > = mock(() => Promise.resolve());
 
-mock.module("@atlas/api/lib/slack/store", () => ({
+void mock.module("@atlas/api/lib/slack/store", () => ({
   saveInstallation: mockSaveInstallation,
   getInstallation: mock(() => Promise.resolve(null)),
   getInstallationByOrg: mock(() => Promise.resolve(null)),
@@ -78,7 +78,7 @@ mock.module("@atlas/api/lib/slack/store", () => ({
   } as const,
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mock(() => Promise.resolve([])),
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -126,7 +126,7 @@ const mockCheckChatLimit: Mock<
 // exports"). `checkChatIntegrationLimit` (pre-redirect precheck) +
 // `checkChatIntegrationLimitAndInstall` (callback gate) are exercised here; the
 // rest are inert no-ops.
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkChatIntegrationLimit: mockCheckChatLimit,
   checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
   CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",

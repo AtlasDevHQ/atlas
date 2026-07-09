@@ -34,7 +34,7 @@ const mockCheckRateLimit: Mock<(key: string) => { allowed: boolean; retryAfterMs
   () => ({ allowed: true }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mock(() => null),
@@ -42,7 +42,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   rateLimitCleanupTick: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => false,
   internalQuery: async () => [],
   internalExecute: async () => {},
@@ -72,7 +72,7 @@ const mockCheckAgentBillingGate: Mock<(orgId: string | undefined) => Promise<Gat
 // below), so we stub just the reached export — matching the curated-stub
 // convention the adjacent semantic.test.ts uses. `BillingBlockedError` is not
 // referenced by the metrics route, so omitting it is safe.
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockCheckAgentBillingGate,
 }));
 
@@ -95,7 +95,7 @@ const mockResolveMetricRun: Mock<() => Promise<MetricRunResolution>> = mock(() =
     targetConnectionId: undefined,
   }),
 );
-mock.module("@atlas/api/lib/semantic/metric-run", () => ({
+void mock.module("@atlas/api/lib/semantic/metric-run", () => ({
   resolveMetricRun: mockResolveMetricRun,
   DEFAULT_SEMANTIC_GROUP: "default",
 }));
@@ -136,7 +136,7 @@ const mockRunUserQueryPipeline: Mock<(opts: PipelineOpts) => Promise<UserQueryOu
 // test relies on), so we deliberately stub just the one reached export. Bun's
 // per-file `--isolate` keeps this from leaking; if the route ever statically
 // imports another sql.ts export, this mock must grow to cover it.
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   runUserQueryPipeline: mockRunUserQueryPipeline,
 }));
 

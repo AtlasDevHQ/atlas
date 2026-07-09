@@ -26,7 +26,7 @@ const COLLECTION = "confluence-eng";
 const BASE = "https://acme.atlassian.net/wiki";
 const SPACE_ID = "100";
 
-mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
+void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   DEFAULT_INGEST_MAX_DOCS: 1000,
   DEFAULT_INGEST_MAX_DOC_BYTES: 1_000_000,
   DEFAULT_INGEST_MAX_BUNDLE_BYTES: 25_000_000,
@@ -42,7 +42,7 @@ mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
 
 // The connector factory reads the encrypted token — doubled at the seam
 // (mock-all-exports; the SQL constant is re-exported verbatim for any reader).
-mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
+void mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
   SYNC_CREDENTIAL_UPSERT_SQL: "-- doubled in this suite",
   saveSyncCredential: async () => {},
   readSyncCredential: async () => "secret-token",
@@ -157,19 +157,19 @@ const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<
   throw new Error(`unexpected internalQuery SQL: ${sql.slice(0, 60)}`);
 });
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery }),
   hasInternalDB: () => true,
   getInternalDB: () => ({ connect: async () => fakeTxClient() }),
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
 });
 
-mock.module("@atlas/api/lib/knowledge/mirror-invalidation", () => ({
+void mock.module("@atlas/api/lib/knowledge/mirror-invalidation", () => ({
   invalidateKnowledgeMirror: async () => {},
 }));
 
@@ -203,7 +203,7 @@ function pageObject(p: FixturePage, withBody: boolean): Record<string, unknown> 
 }
 
 const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
-  const raw = typeof input === "string" ? input : input.toString();
+  const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
   vendorCalls.push(raw);
   const url = new URL(raw);
   const json = (obj: unknown) =>

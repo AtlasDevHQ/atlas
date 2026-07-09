@@ -46,7 +46,7 @@ type GateVerdict =
 let billingGateVerdict: GateVerdict = { allowed: true };
 const mockCheckAgentBillingGate = mock(async (_orgId: string | undefined) => billingGateVerdict);
 
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockCheckAgentBillingGate,
   BillingBlockedError: class BillingBlockedError extends Error {
     override readonly name = "BillingBlockedError";
@@ -57,7 +57,7 @@ mock.module("@atlas/api/lib/billing/agent-gate", () => ({
 
 const mockLogAdminAction: Mock<(entry: Record<string, unknown>) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
@@ -66,7 +66,7 @@ mock.module("@atlas/api/lib/audit", async () => {
   };
 });
 
-mock.module("@atlas/api/lib/semantic/expert", () => ({
+void mock.module("@atlas/api/lib/semantic/expert", () => ({
   createSession: () => ({
     proposals: [],
     currentIndex: 0,
@@ -86,11 +86,11 @@ const mockRunAgent = mock(async () => ({
   text: Promise.resolve("ok"),
 }));
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mockRunAgent,
 }));
 
-mock.module("@atlas/api/lib/tools/expert-registry", () => ({
+void mock.module("@atlas/api/lib/tools/expert-registry", () => ({
   buildExpertRegistry: () => ({ tools: {}, freeze: () => {} }),
 }));
 

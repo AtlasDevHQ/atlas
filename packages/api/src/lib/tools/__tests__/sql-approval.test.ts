@@ -25,7 +25,7 @@ import { createConnectionMock } from "@atlas/api/testing/connection";
 
 const whitelistedTables = new Set(["companies"]);
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => whitelistedTables,
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -42,7 +42,7 @@ const mockDBConnection = {
   close: async () => {},
 };
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnection,
     connections: {
@@ -52,11 +52,11 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/auth/audit", () => ({
+void mock.module("@atlas/api/lib/auth/audit", () => ({
   logQueryAudit: () => {},
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /password|secret/i,
   // No-op stub; sql-approval doesn't exercise the masker but `workspace-
   // installer.ts` (transitively imported via the Effect bridge) needs
@@ -64,29 +64,29 @@ mock.module("@atlas/api/lib/security", () => ({
   maskConnectionUrl: (url: string) => url,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_name: string, _attrs: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
+void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Effect type complex to express
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   cacheEnabled: () => false,
   getCache: () => ({ get: () => null, set: () => {} }),
   buildCacheKey: () => "",
   getDefaultTtl: () => 60000,
 }));
 
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
   dispatchMutableHook: async (_name: string, ctx: { sql: string }) => ctx.sql,
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string) => {
     if (key === "ATLAS_ROW_LIMIT") return "1000";
     if (key === "ATLAS_QUERY_TIMEOUT") return "30000";
@@ -104,11 +104,11 @@ mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({}),
 }));
 
-mock.module("@atlas/api/lib/rls", () => ({
+void mock.module("@atlas/api/lib/rls", () => ({
   resolveRLSFilters: () => ({ groups: [], combineWith: "and" }),
   injectRLSConditions: (sql: string) => sql,
 }));
@@ -123,7 +123,7 @@ let requestContextValue: {
   user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
 };
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -167,7 +167,7 @@ process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
 // Core ApprovalError stub so the route's `instanceof ApprovalError` /
 // `domainError` mapping sees the same class the test layer constructs.
-mock.module("@atlas/api/lib/governance/errors", () => ({
+void mock.module("@atlas/api/lib/governance/errors", () => ({
   ApprovalError: class ApprovalError extends Error {
     public readonly _tag = "ApprovalError" as const;
     public readonly code: string;
@@ -182,19 +182,19 @@ mock.module("@atlas/api/lib/governance/errors", () => ({
 // EnterpriseLayer's no-op defaults lazy-require these even when only
 // ApprovalGate is exercised. Without the stubs the test fails on a
 // require() of an unmocked module.
-mock.module("@atlas/api/lib/residency/errors", () => ({
+void mock.module("@atlas/api/lib/residency/errors", () => ({
   ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
 }));
-mock.module("@atlas/api/lib/compliance/errors", () => ({
+void mock.module("@atlas/api/lib/compliance/errors", () => ({
   ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
   ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
 }));
-mock.module("@atlas/api/lib/model-routing/errors", () => ({
+void mock.module("@atlas/api/lib/model-routing/errors", () => ({
   ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
   ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
 }));
 
-mock.module("@atlas/ee/layers", () => {
+void mock.module("@atlas/ee/layers", () => {
   // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
@@ -226,7 +226,7 @@ mock.module("@atlas/ee/layers", () => {
 
 // Legacy module-mock as a no-op stub for any transitive EE re-export
 // chain that still resolves the old path.
-mock.module("@atlas/ee/governance/approval", () => ({
+void mock.module("@atlas/ee/governance/approval", () => ({
   checkApprovalRequired: mockCheckApprovalRequired,
   createApprovalRequest: mockCreateApprovalRequest,
   hasApprovedRequest: mockHasApprovedRequest,

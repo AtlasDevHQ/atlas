@@ -25,7 +25,7 @@ let queryImpl: (sql: string, params?: unknown[]) => Promise<unknown[]> = async (
 
 // Full internal-DB mock via the sanctioned helper (mock-all-exports
 // discipline) — a new export on db/internal must not break this file's load.
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({
     internalQuery: async (sql: string, params?: unknown[]) => {
       queryCalls.push({ sql, params: params ?? [] });
@@ -47,7 +47,7 @@ const noopLogger = {
     loggedError = obj;
   },
 };
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
   createLogger: () => noopLogger,
   getLogger: () => noopLogger,

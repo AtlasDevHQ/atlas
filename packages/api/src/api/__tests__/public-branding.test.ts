@@ -19,7 +19,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
@@ -43,7 +43,7 @@ let mockPublicBranding: Record<string, unknown> | null = null;
 // afterAll; the `??=` here is the module-load contract, not teardown.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
-mock.module("@atlas/ee/layers", () => {
+void mock.module("@atlas/ee/layers", () => {
   // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
@@ -62,7 +62,7 @@ mock.module("@atlas/ee/layers", () => {
   };
 });
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));

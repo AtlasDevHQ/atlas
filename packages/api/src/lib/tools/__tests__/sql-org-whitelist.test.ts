@@ -16,7 +16,7 @@ import { createConnectionMock } from "@atlas/api/testing/connection";
 
 let mockOrgId: string | undefined;
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -52,7 +52,7 @@ const fileTables = new Set(["file_orders", "file_users", "file_companies"]);
 let loadOrgWhitelistCallCount = 0;
 const loadOrgWhitelistCalls: Array<{ orgId: string; mode: string | undefined }> = [];
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => fileTables,
   getOrgWhitelistedTables: (_orgId: string) => orgTables,
   loadOrgWhitelist: async (orgId: string, mode: string | undefined) => {
@@ -69,7 +69,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
   getCrossSourceJoins: () => [],
 }));
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       list: () => ["default"],
@@ -79,25 +79,25 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/auth/audit", () => ({
+void mock.module("@atlas/api/lib/auth/audit", () => ({
   logQueryAudit: () => {},
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: (_name: string, fn: () => unknown) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => null,
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: [],
   maskConnectionUrl: (url: string) => url,
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
   getSettingAuto: () => undefined,
   getSettingLive: async () => undefined,

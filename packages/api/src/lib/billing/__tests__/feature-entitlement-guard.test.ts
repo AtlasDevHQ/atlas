@@ -23,18 +23,18 @@ let mockEntitlementShouldThrow = false;
 let mockEntitlementCallCount = 0;
 
 const actualInternal = await import("@atlas/api/lib/db/internal");
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...actualInternal,
   hasInternalDB: () => mockHasInternalDB,
 }));
 
 const actualDeployMode = await import("@atlas/api/lib/effect/deploy-mode");
-mock.module("@atlas/api/lib/effect/deploy-mode", () => ({
+void mock.module("@atlas/api/lib/effect/deploy-mode", () => ({
   ...actualDeployMode,
   resolveDeployMode: () => mockDeployMode,
 }));
 
-mock.module(
+void mock.module(
   "@atlas/api/lib/integrations/install/workspace-entitlement",
   () => ({
     getWorkspaceEntitlement: async () => {

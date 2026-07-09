@@ -26,7 +26,7 @@ let internalQueryImpl: (sql: string, params?: unknown[]) => Promise<QueryRow[]> 
 
 let runEnterpriseImpl: (p: unknown) => Promise<unknown> = async () => undefined;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => hasInternalDBValue,
   internalQuery: (sql: string, params?: unknown[]) => internalQueryImpl(sql, params),
   // Other exports demo.ts doesn't reach but are mocked to keep partial
@@ -42,7 +42,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   loadSavedConnections: async () => 0,
 }));
 
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   runEnterprise: (p: unknown) => runEnterpriseImpl(p),
   getEnterpriseRuntime: () => ({
     runPromise: <A, E>(p: Effect.Effect<A, E, never>) => Effect.runPromise(p),
@@ -52,7 +52,7 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
 // SaasCrm Tag is re-imported by the demo module — keep the default
 // (Noop-shaped) implementation visible. The captured `runEnterprise`
 // mock controls how it's invoked.
-mock.module("@atlas/api/lib/effect/services", () => ({
+void mock.module("@atlas/api/lib/effect/services", () => ({
   // Minimal Tag shim that supplies `available: false` + a no-op upsertLead;
   // tests that need the real Effect-Context behaviour drive the
   // `runEnterprise` mock instead.

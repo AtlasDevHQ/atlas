@@ -3,7 +3,7 @@
 // same worker, pair-1-observer will see the real "real" value.
 import { test, expect, mock } from "bun:test";
 
-mock.module("./_shared-target", () => ({
+void mock.module("./_shared-target", () => ({
   truth: () => "MOCKED_BY_LEAKER",
 }));
 

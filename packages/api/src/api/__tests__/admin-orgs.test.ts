@@ -41,7 +41,7 @@ const mocks = createApiTestMocks({
 // which is fine for the platform-gate parametrized tests but blocks
 // any assertion that a real escalation propagates to the wire.
 const abuseStatusByWorkspace = new Map<string, AbuseLevel>();
-mock.module("@atlas/api/lib/security/abuse", () => ({
+void mock.module("@atlas/api/lib/security/abuse", () => ({
   listFlaggedWorkspaces: mock(() => []),
   reinstateWorkspace: mock(() => "warning" as const),
   getAbuseEvents: mock(async () => ({ events: [], status: "ok" })),

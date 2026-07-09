@@ -17,7 +17,7 @@ import { createConnectionMock } from "@atlas/api/testing/connection";
 // ---------------------------------------------------------------------------
 
 const whitelistedTables = new Set(["companies"]);
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => whitelistedTables,
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -37,7 +37,7 @@ const mockDBConnection = {
   close: async () => {},
 };
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnection,
     connections: {
@@ -47,33 +47,33 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/auth/audit", () => ({
+void mock.module("@atlas/api/lib/auth/audit", () => ({
   logQueryAudit: () => {},
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /password|secret/i,
   maskConnectionUrl: (url: string) => url,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_name: string, _attrs: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
+void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Effect type is complex to express in mock
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   cacheEnabled: () => false,
   getCache: () => ({ get: () => null, set: () => {} }),
   buildCacheKey: () => "",
   getDefaultTtl: () => 60000,
 }));
 
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
   dispatchMutableHook: async (_name: string, ctx: { sql: string }) => ctx.sql,
 }));
@@ -81,7 +81,7 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
 // Track error log calls for security audit trail assertions
 let errorLogCalls: Array<unknown[]> = [];
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -97,7 +97,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 // Mutable settings for per-test control
 let mockSettingValues: Record<string, string | undefined> = {};
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string) => mockSettingValues[key] ?? undefined,
   getSettingAuto: (key: string) => mockSettingValues[key] ?? undefined,
   getSettingLive: async (key: string) => mockSettingValues[key] ?? undefined,
@@ -114,13 +114,13 @@ mock.module("@atlas/api/lib/settings", () => ({
 // Mutable config for per-test control
 let mockConfig: Record<string, unknown> = {};
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfig,
 }));
 
 // Mock RLS module — track calls to verify overlay behavior
 let rlsResolveCalls: Array<{ tables: Set<string>; config: unknown }> = [];
-mock.module("@atlas/api/lib/rls", () => ({
+void mock.module("@atlas/api/lib/rls", () => ({
   resolveRLSFilters: (_user: unknown, tables: Set<string>, config: unknown) => {
     rlsResolveCalls.push({ tables, config });
     return { groups: [], combineWith: "and" };

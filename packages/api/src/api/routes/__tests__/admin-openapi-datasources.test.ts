@@ -113,17 +113,17 @@ const db = createOpenApiDatasourceTestLayer((sql, params) => {
 
 // ── Mocks (declared before importing the SUT) ────────────────────────────────
 
-mock.module("@atlas/api/lib/effect/hono", () => ({
+void mock.module("@atlas/api/lib/effect/hono", () => ({
   runHandler: async (_c: unknown, _label: string, fn: () => unknown) => fn(),
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test-req" }) };
 });
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: () => {},
   logAdminActionAwait: async () => {},
   ADMIN_ACTIONS: {
@@ -131,7 +131,7 @@ mock.module("@atlas/api/lib/audit", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/audit/error-scrub", () => ({
+void mock.module("@atlas/api/lib/audit/error-scrub", () => ({
   errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
   causeToError: (err: unknown) => (err instanceof Error ? err : new Error(String(err))),
 }));
@@ -140,7 +140,7 @@ mock.module("@atlas/api/lib/audit/error-scrub", () => ({
 // credential, not about encryption itself (that's the handler test). Returning
 // the config as-is keeps the fixture's (encrypted-shaped) auth_value intact so
 // the "never written back" assertions are meaningful without a real keyset.
-mock.module("@atlas/api/lib/plugins/secrets", () => ({
+void mock.module("@atlas/api/lib/plugins/secrets", () => ({
   parseConfigSchema: () => [],
   decryptSecretFields: (config: Record<string, unknown>) => ({ ...config }),
 }));
@@ -150,7 +150,7 @@ mock.module("@atlas/api/lib/plugins/secrets", () => ({
 // Spread the real exports (per CLAUDE.md "mock all exports") so a route later
 // importing another conversations export doesn't hit "Export named X not found".
 const realConversations = await import("@atlas/api/lib/conversations");
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   ...realConversations,
   verifyGroupBelongsToOrg: async () => mockGroupVerdict,
 }));
@@ -165,7 +165,7 @@ const invalidateGraphCacheSpy = mock((_workspaceId: string, _installId: string) 
 
 // Controllable probe stub — success returns a tiny graph; failure throws the
 // (locally-defined) OpenApiProbeError the route does `instanceof` against.
-mock.module("@atlas/api/lib/openapi/probe", () => {
+void mock.module("@atlas/api/lib/openapi/probe", () => {
   class OpenApiProbeError extends Error {
     reason: string;
     httpStatus?: number;
@@ -215,7 +215,7 @@ mock.module("@atlas/api/lib/openapi/probe", () => {
 });
 
 // Replace the shared admin middleware with pass-throughs; org id = CURRENT_ORG.
-mock.module("../admin-router", () => ({
+void mock.module("../admin-router", () => ({
   createAdminRouter: () => new OpenAPIHono(),
   requireOrgContext: () => async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {
     c.set("orgContext", { requestId: "test-req", orgId: CURRENT_ORG });

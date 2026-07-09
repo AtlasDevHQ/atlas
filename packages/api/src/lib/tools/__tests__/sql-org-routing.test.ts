@@ -46,7 +46,7 @@ const mockRecordSuccess: Mock<(id: string, orgId?: string) => void> = mock(() =>
 const mockRecordError: Mock<(id: string, orgId?: string) => void> = mock(() => {});
 
 const whitelistedTables = new Set(["companies"]);
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => whitelistedTables,
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -58,7 +58,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockBaseDBConnection,
     connections: {
@@ -77,7 +77,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
 
 // Mock the request context to inject user with activeOrganizationId
 let mockRequestContext: Record<string, unknown> | undefined;
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -87,35 +87,35 @@ mock.module("@atlas/api/lib/logger", () => ({
   getRequestContext: () => mockRequestContext,
 }));
 
-mock.module("@atlas/api/lib/auth/audit", () => ({
+void mock.module("@atlas/api/lib/auth/audit", () => ({
   logQueryAudit: () => {},
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /password|secret/i,
   maskConnectionUrl: (url: string) => url,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_name: string, _attrs: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
+void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({}),
 }));
 
-mock.module("@atlas/api/lib/rls", () => ({
+void mock.module("@atlas/api/lib/rls", () => ({
   resolveRLSFilters: () => ({ groups: [] }),
   injectRLSConditions: (sql: string) => sql,
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string) => {
     if (key === "ATLAS_ROW_LIMIT") return "1000";
     if (key === "ATLAS_QUERY_TIMEOUT") return "30000";
@@ -141,14 +141,14 @@ mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   cacheEnabled: () => false,
   getCache: () => ({ get: () => null, set: () => {} }),
   buildCacheKey: () => "",
   getDefaultTtl: () => 60000,
 }));
 
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
   dispatchMutableHook: async (_name: string, ctx: { sql: string }) => ctx.sql,
 }));

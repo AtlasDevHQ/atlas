@@ -32,7 +32,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
@@ -41,7 +41,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "managed",
   resetAuthModeCache: () => {},
 }));
@@ -73,7 +73,7 @@ const mockInternalQuery = mock(async (sqlStr: string, params?: unknown[]) => {
   throw new Error(`unexpected SQL: ${sqlStr}`);
 });
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({
     query: () => Promise.resolve({ rows: [] }),
@@ -84,7 +84,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalExecute: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
   getRequestContext: () => null,
@@ -101,7 +101,7 @@ interface CapturedAuditEntry {
 const mockLogAdminActionAwait: Mock<(entry: CapturedAuditEntry) => Promise<void>> =
   mock(async () => {});
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mock(() => {}),

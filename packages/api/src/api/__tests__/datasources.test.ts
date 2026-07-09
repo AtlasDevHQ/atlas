@@ -53,7 +53,7 @@ const mockCheckRateLimit: Mock<(key: string) => { allowed: boolean; retryAfterMs
 // nothing. Bun's per-file `--isolate` keeps the partial mock from leaking.
 // Mirrors the curated convention in the sibling metrics.test.ts. If the route's
 // middleware grows to reach another export, this stub must grow to cover it.
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mock(() => null),
@@ -61,7 +61,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   rateLimitCleanupTick: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => false,
   internalQuery: async () => [],
   internalExecute: async () => {},
@@ -92,7 +92,7 @@ const mockCheckAgentBillingGate: Mock<(orgId: string | undefined) => Promise<Gat
 // export — same convention as the sibling metrics.test.ts. `BillingBlockedError`
 // is not referenced by this route, so omitting it is safe; Bun's per-file
 // `--isolate` keeps the partial mock from leaking.
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockCheckAgentBillingGate,
 }));
 
@@ -157,7 +157,7 @@ const mockProfileLiveDatasource: Mock<
   } as unknown as RunSemanticProfileOutcome;
 });
 
-mock.module("@atlas/api/lib/datasources/mcp-lifecycle", () => ({
+void mock.module("@atlas/api/lib/datasources/mcp-lifecycle", () => ({
   resolveLiveConnection: mockResolveLiveConnection,
   profileLiveDatasource: mockProfileLiveDatasource,
 }));

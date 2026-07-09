@@ -20,13 +20,13 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 let queryCalls: Array<{ sql: string; params: unknown[] }> = [];
 let decryptShouldThrow = false;
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => undefined };
 });
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: async (sql: string, params: unknown[]) => {
     queryCalls.push({ sql, params });
@@ -36,7 +36,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: () => ({}),
 }));
 
-mock.module("@atlas/api/lib/plugins/secrets", () => ({
+void mock.module("@atlas/api/lib/plugins/secrets", () => ({
   parseConfigSchema: () => [],
   decryptSecretFields: (config: Record<string, unknown>) => {
     if (decryptShouldThrow) throw new Error("key rotated");
@@ -44,7 +44,7 @@ mock.module("@atlas/api/lib/plugins/secrets", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/audit/error-scrub", () => ({
+void mock.module("@atlas/api/lib/audit/error-scrub", () => ({
   errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
   causeToError: (_c: unknown) => undefined,
 }));

@@ -28,7 +28,7 @@ let dashboardResult: { ok: true; data: unknown } | { ok: false; reason: "no_db" 
   },
 };
 
-mock.module("@atlas/api/lib/dashboards", () => ({
+void mock.module("@atlas/api/lib/dashboards", () => ({
   getDashboard: mock(async () => dashboardResult),
   createDashboard: undefined as never,
   listDashboards: undefined as never,

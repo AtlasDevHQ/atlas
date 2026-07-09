@@ -20,7 +20,7 @@ const queries: Array<{ sql: string; params?: unknown[] }> = [];
 let queryImpl: (sql: string, params?: unknown[]) => Promise<unknown[]> = async () => [];
 let internalDbAvailable = true;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mock((sql: string, params?: unknown[]) => {
     queries.push({ sql, params });
     return queryImpl(sql, params);

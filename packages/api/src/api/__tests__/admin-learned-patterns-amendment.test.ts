@@ -50,7 +50,7 @@ const applyAmendmentFromPayload = mock(
   }): Promise<void> => {},
 );
 
-mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
+void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   applyAmendmentFromPayload,
   // Other exports of the real module — keep them present so a transitive
   // `import { … }` never SyntaxErrors at load time.

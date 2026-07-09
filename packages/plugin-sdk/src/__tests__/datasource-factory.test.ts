@@ -225,7 +225,7 @@ describe("createFromConfig", () => {
     });
     const plugin = factory({});
     const raw = { connection_url: "test://snake/case" };
-    plugin.connection.createFromConfig!(raw);
+    void plugin.connection.createFromConfig!(raw);
     expect(buildConnection.mock.calls[0][0]).toEqual({ url: "test://snake/case" });
     const ctx = attachIntrospection.mock.calls[0][1];
     expect(ctx.runtimeConfig).toBe(raw);
@@ -396,8 +396,8 @@ describe("static connection caching", () => {
   test("uncached (default): every create() builds fresh", () => {
     const { factory, buildConnection } = makeFactory();
     const plugin = factory({ url: "test://host/db" });
-    plugin.connection.create!();
-    plugin.connection.create!();
+    void plugin.connection.create!();
+    void plugin.connection.create!();
     expect(buildConnection).toHaveBeenCalledTimes(2);
     // No cache → no factory-emitted teardown.
     expect(plugin.teardown).toBeUndefined();
@@ -421,7 +421,7 @@ describe("static connection caching", () => {
     await plugin.teardown!();
     expect(conns[0].close).toHaveBeenCalledTimes(1);
     // Cache reset — next create builds a new one.
-    plugin.connection.create!();
+    void plugin.connection.create!();
     expect(conns).toHaveLength(2);
   });
 
@@ -435,7 +435,7 @@ describe("static connection caching", () => {
     const plugin = factory({ url: "test://host/db" });
     await plugin.teardown!(); // nothing cached yet — no close
     expect(conn.close).not.toHaveBeenCalled();
-    plugin.connection.create!();
+    void plugin.connection.create!();
     await plugin.teardown!(); // close rejects — swallowed with a warn
     expect(conn.close).toHaveBeenCalledTimes(1);
   });
@@ -454,7 +454,7 @@ describe("static connection caching", () => {
       },
     });
     const plugin = factory({ url: "test://host/db" });
-    plugin.connection.create!();
+    void plugin.connection.create!();
     await plugin.teardown!();
     expect(order).toEqual(["close", "extra"]);
   });

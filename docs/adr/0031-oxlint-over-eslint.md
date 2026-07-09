@@ -53,6 +53,31 @@ does **not** implement `no-restricted-syntax` natively.
   base-to-string/template-expressions → output-preserving `String()`). Rules
   stay `warn` until the test-file findings (**wave 2**) are cleared, then the
   cleared rules promote to `error`.
+  - **Wave 2 (test files).** Cleared the mechanically-safe ("Class 1") findings
+    across every package. `no-floating-promises` (2,084 → 0): top-level
+    `mock.module(...)` → `void` (order-sensitive; runs before imports, so
+    `await` would reorder), async teardown in `finally`/`afterAll` → `await`,
+    unused-return fire-and-forget → `void`; one file's async assertion helpers
+    (`expectInvalid`/`expectValid`) were floating entirely — some `it()`
+    callbacks weren't even `async` — so the fix (`await` + `async`) surfaced
+    assertions that had never run (all still pass). `require-array-sort-compare`
+    (14 → 0): numeric arrays got a real `(a,b)=>a-b` comparator (latent
+    lexicographic bug), string-union `.map()` results a `as string` element cast
+    (pure type assertion). `no-base-to-string` (142 → 73) and
+    `restrict-template-expressions` (8 → 5) narrowed only where output-preserving
+    (fetch-arg unions `string|URL|Request`, known-string init bodies, `never`
+    exhaustiveness guards). **Left as `warn` (false positives / config
+    artifacts, not burndown targets):** `await-thenable` (753) — every site is
+    `await expect(...).rejects/.resolves`, a real Promise that bun types `void`;
+    stripping `await` would silently disable the assertion. `unbound-method`
+    (50) — save/restore identity + method refs passed to `expect`/mocks.
+    `no-base-to-string` residuals — genuine `unknown` values where a narrow
+    would change output. `no-redundant-type-constituents` (42) + `tsconfig-error`
+    (16) — the type-aware program can't resolve `URL`/`Request` globals or the
+    base tsconfig under per-package configs (tracked separately). **Promoted
+    `warn` → `error`** (now 0 repo-wide): `no-floating-promises`,
+    `require-array-sort-compare`, `no-useless-default-assignment`,
+    `no-duplicate-type-constituents`.
 
 ## Consequences
 

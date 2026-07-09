@@ -18,7 +18,7 @@ import type { createLogger } from "@atlas/api/lib/logger";
 import type { PeriodicDbCycleSpec } from "../periodic-db-job";
 
 let dbAvailable = true;
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => dbAvailable,
 }));
 

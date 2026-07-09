@@ -106,7 +106,7 @@ const mocks = createApiTestMocks({
 // can drive getSettingAuto("ATLAS_DEMO_INDUSTRY") via `demoIndustryFixture`
 // and simulate a transient read failure via `throwOnGet`. Registered
 // AFTER createApiTestMocks so this override wins.
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: () => [],
   getSettingsRegistry: () => [],
   getSettingDefinition: () => undefined,
@@ -133,7 +133,7 @@ mock.module("@atlas/api/lib/settings", () => ({
 // our transactional client so we can assert the BEGIN → work → COMMIT
 // sequence via `clientQueries`. These stubs mirror the real helpers in
 // packages/api/src/lib/semantic/entities.ts — update together.
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   // existing mocks still need to be present (mock.module replaces all exports)
   listEntityRows: mock(() => Promise.resolve([])),
   listEntities: mock(() => Promise.resolve([])),

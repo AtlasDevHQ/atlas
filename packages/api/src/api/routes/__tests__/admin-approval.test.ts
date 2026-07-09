@@ -35,7 +35,7 @@ let mockHasInternalDB = true;
 // returning []. The SQL-shape coupling lives in the shared
 // `isFeatureEntitlementQuery` helper so the regex has one definition.
 let mockWorkspaceTier: string | null = "business";
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: async (sql: string) =>
     isFeatureEntitlementQuery(sql) ? workspaceTierRows(mockWorkspaceTier) : [],
@@ -63,7 +63,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
   () => defaultAuthResponse(),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
@@ -73,7 +73,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 
 // #3748 — capture error-level logs so the approval-park "failed re-arm" alarm is assertable.
 const loggedErrors: Array<{ obj: unknown; msg: string }> = [];
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const recordError = (obj: unknown, msg?: string) => {
     loggedErrors.push({ obj, msg: msg ?? (typeof obj === "string" ? obj : "") });
@@ -88,16 +88,16 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: async () => null,
   isStrictRoutingEnabled: () => false,
 }));
 
-mock.module("@atlas/api/lib/residency/readonly", () => ({
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: async () => false,
 }));
 
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: () => Effect.succeed({ allowed: true }),
 }));
 
@@ -123,7 +123,7 @@ const mockResolveApprovalPark: Mock<(...args: unknown[]) => Promise<{ status: st
 // Mock the durable-resume seam the review route calls. All value exports
 // stubbed (the route only uses resolveApprovalPark; prepare/finishResume are
 // the rest of the module's surface).
-mock.module("@atlas/api/lib/durable-resume", () => ({
+void mock.module("@atlas/api/lib/durable-resume", () => ({
   prepareResume: async () => ({ status: "none" as const }),
   finishResume: () => {},
   resolveApprovalPark: mockResolveApprovalPark,
@@ -135,7 +135,7 @@ mock.module("@atlas/api/lib/durable-resume", () => ({
 const mockDeliverChatResume: Mock<(conversationId: string, decision: string) => Promise<string>> = mock(
   async () => "no_pending",
 );
-mock.module("@atlas/api/lib/chat-plugin/resume-delivery", () => ({
+void mock.module("@atlas/api/lib/chat-plugin/resume-delivery", () => ({
   deliverChatResumeIfPending: mockDeliverChatResume,
 }));
 
@@ -155,25 +155,25 @@ process.env.ATLAS_DEPLOY_MODE ??= "saas";
 
 // Core ApprovalError class mock so the route's `domainError(ApprovalError, ...)`
 // mapping matches the test's `MockApprovalError`.
-mock.module("@atlas/api/lib/governance/errors", () => ({
+void mock.module("@atlas/api/lib/governance/errors", () => ({
   ApprovalError: MockApprovalError,
 }));
 
 // Stubs for the other core error modules — `EnterpriseLayer`'s no-op
 // defaults lazy-require them, even when only ApprovalGate is exercised.
-mock.module("@atlas/api/lib/residency/errors", () => ({
+void mock.module("@atlas/api/lib/residency/errors", () => ({
   ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
 }));
-mock.module("@atlas/api/lib/compliance/errors", () => ({
+void mock.module("@atlas/api/lib/compliance/errors", () => ({
   ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
   ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
 }));
-mock.module("@atlas/api/lib/model-routing/errors", () => ({
+void mock.module("@atlas/api/lib/model-routing/errors", () => ({
   ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
   ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
 }));
 
-mock.module("@atlas/ee/layers", () => {
+void mock.module("@atlas/ee/layers", () => {
   // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
@@ -203,13 +203,13 @@ mock.module("@atlas/ee/layers", () => {
 
 // Legacy module-mock stub for any transitive resolver that still
 // reaches the old path.
-mock.module("@atlas/ee/governance/approval", () => ({
+void mock.module("@atlas/ee/governance/approval", () => ({
   ApprovalError: MockApprovalError,
 }));
 
 // --- Audit mock -----------------------------------------------------------
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: () => {},
   logAdminActionAwait: async () => {},
   // Keep in sync with `ADMIN_ACTIONS.approval` in

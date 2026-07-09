@@ -29,12 +29,12 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
 const mockGetWorkspaceDetails: Mock<(orgId: string) => Promise<unknown>> =
   mock(() => Promise.resolve(null));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery: mockInternalQuery }),
   getWorkspaceDetails: mockGetWorkspaceDetails,
 }));
 
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   runEnterprise: async () => undefined,
   getEnterpriseRuntime: () => ({ runPromise: async () => undefined }),
   EnterpriseLayer: {},

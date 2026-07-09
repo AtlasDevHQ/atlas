@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from "bun:test";
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -16,6 +16,11 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 const { slackAPI, postMessage, updateMessage, listChannels } = await import("../api");
+
+// Narrow the fetch first-arg union (string | URL | Request) to its URL string
+// without base-stringifying a Request (which would yield "[object Request]").
+const urlOf = (u: string | URL | Request): string =>
+  typeof u === "string" ? u : u instanceof URL ? u.toString() : u.url;
 
 describe("api", () => {
   const originalFetch = globalThis.fetch;
@@ -194,8 +199,8 @@ describe("api", () => {
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const [url, init] = mockFetch.mock.calls[0];
-      expect(String(url)).toStartWith("https://slack.com/api/conversations.list?");
-      const params = new URL(String(url)).searchParams;
+      expect(urlOf(url)).toStartWith("https://slack.com/api/conversations.list?");
+      const params = new URL(urlOf(url)).searchParams;
       expect(params.get("types")).toBe("public_channel,private_channel");
       expect(params.get("exclude_archived")).toBe("true");
       expect((init as RequestInit).method).toBe("GET");
@@ -219,7 +224,7 @@ describe("api", () => {
         expect(result.channels.map((ch) => ch.id)).toEqual(["C1", "C2"]);
       }
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      const secondUrl = String(mockFetch.mock.calls[1][0]);
+      const secondUrl = urlOf(mockFetch.mock.calls[1][0]);
       expect(new URL(secondUrl).searchParams.get("cursor")).toBe("cur-2");
     });
 
@@ -278,9 +283,9 @@ describe("api", () => {
       }
 
       expect(mockFetch).toHaveBeenCalledTimes(2);
-      const firstParams = new URL(String(mockFetch.mock.calls[0][0])).searchParams;
+      const firstParams = new URL(urlOf(mockFetch.mock.calls[0][0])).searchParams;
       expect(firstParams.get("types")).toBe("public_channel,private_channel");
-      const retryParams = new URL(String(mockFetch.mock.calls[1][0])).searchParams;
+      const retryParams = new URL(urlOf(mockFetch.mock.calls[1][0])).searchParams;
       expect(retryParams.get("types")).toBe("public_channel");
     });
 

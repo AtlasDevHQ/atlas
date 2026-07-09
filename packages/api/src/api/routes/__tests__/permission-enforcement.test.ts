@@ -80,7 +80,7 @@ class MockRoleError extends Error {
 // Slice 9/11 of #2017: routes yield `RolesPolicy` from `EnterpriseLayer`.
 // `mockCheckPermission` is the F-53 chokepoint — per-test overrides
 // install a typed 403 to drive the negative path.
-mock.module("@atlas/api/lib/auth/roles-errors", () => ({
+void mock.module("@atlas/api/lib/auth/roles-errors", () => ({
   RoleError: MockRoleError,
 }));
 
@@ -89,7 +89,7 @@ mock.module("@atlas/api/lib/auth/roles-errors", () => ({
 // SCIMProvenance) with happy-path defaults. The mocked `checkPermission`
 // is what the assertions focus on; everything else falls through to
 // helper defaults so unrelated middleware doesn't perturb the result.
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   const { makeTestEnterpriseLayer } =
     // oxlint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
     require("@atlas/api/__test-utils__/makeTestEnterpriseLayer") as typeof import("@atlas/api/__test-utils__/makeTestEnterpriseLayer");
@@ -102,7 +102,7 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
 });
 
 // Legacy module-mock stub — slice 11 closeout #2573 will drop entirely.
-mock.module("@atlas/ee/auth/roles", () => ({
+void mock.module("@atlas/ee/auth/roles", () => ({
   RoleError: MockRoleError,
   PERMISSIONS: [
     "query",
@@ -133,7 +133,7 @@ mock.module("@atlas/ee/auth/roles", () => ({
 
 // EE governance modules used by audit / connections sub-routers — keep these
 // as no-op Effect succeeds so handlers reach the end of their happy path.
-mock.module("@atlas/ee/governance/audit", () => ({
+void mock.module("@atlas/ee/governance/audit", () => ({
   listAuditLog: mock(() => Effect.succeed({ rows: [], total: 0 })),
   getAuditStats: mock(() => Effect.succeed({})),
   getAuditFacets: mock(() => Effect.succeed({})),
@@ -155,7 +155,7 @@ mock.module("@atlas/ee/governance/audit", () => ({
 
 // ── Audit (logAdminAction) ──────────────────────────────────────────
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mock(() => {}),
   logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: new Proxy(

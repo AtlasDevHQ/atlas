@@ -37,7 +37,7 @@ const mockGetClientIP: Mock<(req: Request) => string | null> = mock(
   () => null,
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mockGetClientIP,
@@ -45,7 +45,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 
 const mockGetRequestContext: Mock<() => unknown> = mock(() => null);
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -64,7 +64,7 @@ const mockParserDatabase: Mock<(dbType: string, connectionId?: string, workspace
   () => "PostgresQL",
 );
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   validateSQL: mockValidateSQL,
   parserDatabase: mockParserDatabase,
   executeSQL: {},
@@ -74,7 +74,7 @@ const mockTableList: Mock<(sql: string, opts?: unknown) => string[]> = mock(
   () => ["select::null::users", "select::null::orders"],
 );
 
-mock.module("node-sql-parser", () => ({
+void mock.module("node-sql-parser", () => ({
   Parser: class {
     tableList = mockTableList;
     astify = mock(() => ({ type: "select" }));
@@ -86,7 +86,7 @@ const mockGetDBType: Mock<(id: string, workspaceId?: string) => string> = mock(
   () => "postgres",
 );
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       getDBType: mockGetDBType,
@@ -105,7 +105,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));

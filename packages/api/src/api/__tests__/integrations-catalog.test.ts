@@ -37,7 +37,7 @@ let mockHasInternalDB = true;
 // oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realPillarFacade = require("@atlas/api/lib/effect/pillar-catalog-query") as typeof import("@atlas/api/lib/effect/pillar-catalog-query");
 
-mock.module("@atlas/api/lib/effect/pillar-catalog-query", () => ({
+void mock.module("@atlas/api/lib/effect/pillar-catalog-query", () => ({
   ...realPillarFacade,
   // Replace the Live Layer with a test layer that delegates to the mock.
   PillarCatalogQueryLive: realPillarFacade.createPillarCatalogQueryTestLayer({
@@ -53,7 +53,7 @@ mock.module("@atlas/api/lib/effect/pillar-catalog-query", () => ({
 // oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realDbInternal = require("@atlas/api/lib/db/internal") as typeof import("@atlas/api/lib/db/internal");
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realDbInternal,
   hasInternalDB: () => mockHasInternalDB,
   // makeInternalDBShimLayer is invoked by the route; pass through the
@@ -62,7 +62,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   makeInternalDBShimLayer: realDbInternal.makeInternalDBShimLayer,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -78,7 +78,7 @@ const passthrough = createMiddleware(async (_c, next) => {
   await next();
 });
 
-mock.module("./routes/middleware", () => ({
+void mock.module("./routes/middleware", () => ({
   adminAuth: passthrough,
   adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
@@ -86,7 +86,7 @@ mock.module("./routes/middleware", () => ({
   standardAuth: passthrough,
   withRequestId: passthrough,
 }));
-mock.module("../routes/middleware", () => ({
+void mock.module("../routes/middleware", () => ({
   adminAuth: passthrough,
   adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
@@ -94,7 +94,7 @@ mock.module("../routes/middleware", () => ({
   standardAuth: passthrough,
   withRequestId: passthrough,
 }));
-mock.module("@atlas/api/api/routes/middleware", () => ({
+void mock.module("@atlas/api/api/routes/middleware", () => ({
   adminAuth: passthrough,
   adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
@@ -102,11 +102,11 @@ mock.module("@atlas/api/api/routes/middleware", () => ({
   standardAuth: passthrough,
   withRequestId: passthrough,
 }));
-mock.module("./routes/admin-mfa-required", () => ({
+void mock.module("./routes/admin-mfa-required", () => ({
   mfaRequired: passthrough,
 }));
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mock(() =>
     Promise.resolve({
       authenticated: true,

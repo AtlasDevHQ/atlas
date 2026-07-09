@@ -64,7 +64,7 @@ function realDemoUserId(email: string): string {
 
 // ── Mock side modules BEFORE importing the route ────────────────────
 
-mock.module("@atlas/api/lib/db/internal", () => {
+void mock.module("@atlas/api/lib/db/internal", () => {
   const internalQuery = async (sql: string, params?: unknown[]) => {
     queryCalls.push({ sql, params });
     return queryStub(sql, params);
@@ -82,7 +82,7 @@ mock.module("@atlas/api/lib/db/internal", () => {
   };
 });
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = {
     info: noop,
@@ -100,7 +100,7 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: {
     settings: { update: "settings.update" },
   },
@@ -112,7 +112,7 @@ mock.module("@atlas/api/lib/audit", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   setSetting: async (key: string, value: string) => {
     setSettingCalls.push({ key, value });
   },
@@ -135,7 +135,7 @@ mock.module("@atlas/api/lib/settings", () => ({
 // (real hash, so the leads/usage join keys line up) and `getDemoConfig` are
 // exercised by these routes; the rest are harmless stubs so nothing in the
 // import graph resolves a demo export to `undefined`.
-mock.module("@atlas/api/lib/demo", () => ({
+void mock.module("@atlas/api/lib/demo", () => ({
   demoUserId: realDemoUserId,
   getDemoConfig: () => demoConfig,
   getDemoModelRaw: () => demoConfig.model,
@@ -169,13 +169,13 @@ const middlewareMock = {
   standardAuth: passthrough,
   withRequestId: passthrough,
 };
-mock.module("./routes/middleware", () => middlewareMock);
-mock.module("../middleware", () => middlewareMock);
-mock.module("@atlas/api/api/routes/middleware", () => middlewareMock);
-mock.module("../admin-mfa-required", () => ({ mfaRequired: passthrough }));
-mock.module("./routes/admin-mfa-required", () => ({ mfaRequired: passthrough }));
+void mock.module("./routes/middleware", () => middlewareMock);
+void mock.module("../middleware", () => middlewareMock);
+void mock.module("@atlas/api/api/routes/middleware", () => middlewareMock);
+void mock.module("../admin-mfa-required", () => ({ mfaRequired: passthrough }));
+void mock.module("./routes/admin-mfa-required", () => ({ mfaRequired: passthrough }));
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   getClientIP: () => "198.51.100.7",
   checkRateLimit: () => ({ allowed: true }),
   resetRateLimits: () => {},
@@ -196,7 +196,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setAuditEnforcementBlockOverride: () => {},
 }));
 
-mock.module("@atlas/api/lib/effect/hono", () => ({
+void mock.module("@atlas/api/lib/effect/hono", () => ({
   runEffect: async (
     _c: unknown,
     program: Effect.Effect<unknown, unknown, unknown>,

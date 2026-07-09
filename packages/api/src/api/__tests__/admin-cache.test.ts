@@ -55,8 +55,8 @@ const cacheMockFactory = () => ({
   buildCacheKey: mock(() => "mock-key"),
 });
 
-mock.module("@atlas/api/lib/cache", cacheMockFactory);
-mock.module("@atlas/api/lib/cache/index", cacheMockFactory);
+void mock.module("@atlas/api/lib/cache", cacheMockFactory);
+void mock.module("@atlas/api/lib/cache/index", cacheMockFactory);
 
 // --- Import app after mocks ---
 

@@ -23,7 +23,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   },
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -45,7 +45,7 @@ const mockLogger = {
   silent: () => {},
   child: () => mockLogger,
 };
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => mockLogger,
   getLogger: () => mockLogger,
   withRequestContext: <T>(_ctx: unknown, fn: () => T) => fn(),
@@ -86,7 +86,7 @@ const SPEC = {
 function makeProbeFetch(): { fetchImpl: typeof globalThis.fetch; calls: Array<{ url: string; headers: Record<string, string> }> } {
   const calls: Array<{ url: string; headers: Record<string, string> }> = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input.toString();
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const headers: Record<string, string> = {};
     const h = init?.headers as Record<string, string> | undefined;
     if (h) for (const [k, v] of Object.entries(h)) headers[k] = v;

@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -21,8 +21,8 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 // Stub out heavy deps that internal.ts imports at module level
-mock.module("@effect/sql", () => ({ SqlClient: { Tag: () => ({}) } }));
-mock.module("@effect/sql-pg", () => ({ PgClient: { layerFromPool: () => ({}) } }));
+void mock.module("@effect/sql", () => ({ SqlClient: { Tag: () => ({}) } }));
+void mock.module("@effect/sql-pg", () => ({ PgClient: { layerFromPool: () => ({}) } }));
 
 // Per-(key, orgId) value map the mock getSetting resolves from. Keyed
 // "KEY" for platform-tier and "KEY\0orgId" for workspace-tier — mirrors
@@ -40,7 +40,7 @@ function mockResolve(key: string, orgId?: string): string | undefined {
 const getSettingMock = mock(mockResolve);
 
 // Mock ALL value exports of the settings module (mock-all-exports rule).
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: () => {},
   getSetting: getSettingMock,
   getSettingAuto: getSettingMock,

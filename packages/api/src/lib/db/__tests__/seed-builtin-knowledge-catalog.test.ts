@@ -234,7 +234,7 @@ describe("runBuiltinKnowledgeCatalogSeedBoot (discriminated outcomes)", () => {
 
   let hasInternalDBReturns = true;
 
-  mock.module("@atlas/api/lib/db/internal", () => ({
+  void mock.module("@atlas/api/lib/db/internal", () => ({
     hasInternalDB: () => hasInternalDBReturns,
     getInternalDB: () => ({ query: mockQuery }),
     _resetEncryptionKeyCache: () => {},

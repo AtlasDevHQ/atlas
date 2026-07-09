@@ -22,7 +22,7 @@ type FakeAuth =
 
 let fakeAuth: FakeAuth = { kind: "anonymous" };
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: async () => {
     if (fakeAuth.kind === "throw") throw new Error("auth boom");
     if (fakeAuth.kind === "unauthenticated") {
@@ -64,11 +64,11 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "managed" as const,
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -77,7 +77,7 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/api/lib/audit/error-scrub", () => ({
+void mock.module("@atlas/api/lib/audit/error-scrub", () => ({
   errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
   causeToError: (cause: unknown) =>
     cause instanceof Error ? cause : new Error(String(cause)),
@@ -115,7 +115,7 @@ const releaseArgs: Array<Error | null> = [];
 // fields itself (mock fidelity, not route correctness).
 let txQueryLog: Array<{ sql: string; params: unknown[] }> = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => dbAvailable,
   internalQuery: async (sql: string, params: unknown[]) => {
     if (queryShouldFail) throw new Error("simulated query failure");

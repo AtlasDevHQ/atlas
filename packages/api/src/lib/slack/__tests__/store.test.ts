@@ -23,7 +23,7 @@ const mockGetInternalDB: Mock<() => { query: typeof mockPoolQuery }> = mock(() =
   query: mockPoolQuery,
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
   internalQuery: mockInternalQuery,
   getInternalDB: mockGetInternalDB,
@@ -39,7 +39,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: mock(async () => 0),
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

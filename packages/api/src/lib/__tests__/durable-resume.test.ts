@@ -30,7 +30,7 @@ let resolveResult: ResolveParkedRunOutcome = "resolved";
 const resolveCalls: Array<{ runId: string; transcript: ModelMessage[]; stepIndex: number }> = [];
 let lastLoadParkRef: string | null = null;
 
-mock.module("@atlas/api/lib/durable-session", () => ({
+void mock.module("@atlas/api/lib/durable-session", () => ({
   ...realDurable,
   isDurabilityEnabled: () => durabilityEnabled,
   getResumeLeaseSeconds: () => leaseSeconds,

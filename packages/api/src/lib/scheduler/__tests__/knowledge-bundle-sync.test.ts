@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 
 let CYCLE_CALLS = 0;
 let CYCLE_DELAY_MS = 0;
-mock.module("@atlas/api/lib/knowledge/sync", () => ({
+void mock.module("@atlas/api/lib/knowledge/sync", () => ({
   runKnowledgeSyncCycle: async () => {
     CYCLE_CALLS++;
     if (CYCLE_DELAY_MS > 0) await Bun.sleep(CYCLE_DELAY_MS);
@@ -29,7 +29,7 @@ mock.module("@atlas/api/lib/knowledge/sync", () => ({
 
 // The interval getter reads the settings registry; pin it via the env tier
 // (registry precedence: DB override → env → default) without touching a DB.
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };

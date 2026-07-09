@@ -16,11 +16,11 @@ import type { OperationGraph } from "@atlas/api/lib/openapi/types";
 //   - a resolve failure / no datasource fails closed to deny-all.
 // ---------------------------------------------------------------------------
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
   getRequestContext: () => undefined,
 }));
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_n: string, _a: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
@@ -28,7 +28,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
 // --- sidecar backend mock: prove the Vercel-only egress path is bypassed when
 // a sidecar is configured (it has no networkPolicy — the self-hosted asymmetry).
 let mockSidecarExecCalls = 0;
-mock.module("@atlas/api/lib/tools/python-sidecar", () => ({
+void mock.module("@atlas/api/lib/tools/python-sidecar", () => ({
   executePythonViaSidecar: async () => {
     mockSidecarExecCalls += 1;
     return { success: true };
@@ -44,7 +44,7 @@ let mockUpdateNetworkPolicyCalls: unknown[] = [];
 
 function setupSandboxMock() {
   mockUpdateNetworkPolicyCalls = [];
-  mock.module("@vercel/sandbox", () => ({
+  void mock.module("@vercel/sandbox", () => ({
     Sandbox: {
       create: async () => ({
         runCommand: async (_params: { cmd: string; env?: Record<string, string> }) => {

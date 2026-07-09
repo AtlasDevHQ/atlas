@@ -31,7 +31,7 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 let mockQueryResult: Record<string, unknown>[] = [];
 const capturedQueries: { sql: string; params: unknown[] }[] = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: mock((sql: string, params: unknown[] = []) => {
     capturedQueries.push({ sql, params });
@@ -41,7 +41,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 // Deterministic fake crypto: `enc:v1:test:<plaintext>` round-trips;
 // `enc:v1:throw:<reason>` raises on decrypt (drives the failure paths).
-mock.module("@atlas/api/lib/db/secret-encryption", () => ({
+void mock.module("@atlas/api/lib/db/secret-encryption", () => ({
   activeKeyVersion: () => "v1",
   UnknownKeyVersionError: class UnknownKeyVersionError extends Error {},
   hasVersionedPrefix: (stored: string) => stored.startsWith("enc:"),
@@ -56,7 +56,7 @@ mock.module("@atlas/api/lib/db/secret-encryption", () => ({
 }));
 
 const logError = mock((..._args: unknown[]) => {});
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: logError, debug: () => {} }),
 }));
 

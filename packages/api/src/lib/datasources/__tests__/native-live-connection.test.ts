@@ -23,7 +23,7 @@ const profileMySQLSpy = mock(async (): Promise<ProfilingResult> => emptyResult()
 // Spread the real module so every export stays present (mock-all-exports
 // discipline); override only the four natives this suite drives.
 const realProfiler = await import("@atlas/api/lib/profiler");
-mock.module("@atlas/api/lib/profiler", () => ({
+void mock.module("@atlas/api/lib/profiler", () => ({
   ...realProfiler,
   listPostgresObjects: listPostgresObjectsSpy,
   listMySQLObjects: listMySQLObjectsSpy,

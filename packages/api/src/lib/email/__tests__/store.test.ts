@@ -21,7 +21,7 @@ let capturedQueries: CapturedQuery[] = [];
 let mockInternalQueryResult: unknown[] = [];
 let mockHasDB = true;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasDB,
   internalQuery: mock((sql: string, params: unknown[] = []) => {
     capturedQueries.push({ sql, params });
@@ -30,7 +30,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 // F-41 secret encryption — deterministic passthrough for test assertions.
-mock.module("@atlas/api/lib/db/secret-encryption", () => ({
+void mock.module("@atlas/api/lib/db/secret-encryption", () => ({
   encryptSecret: (plaintext: string) => `enc:v1:test:${plaintext}`,
   decryptSecret: (stored: string) =>
     stored.startsWith("enc:v1:test:") ? stored.slice("enc:v1:test:".length) : stored,
@@ -40,7 +40,7 @@ mock.module("@atlas/api/lib/db/secret-encryption", () => ({
 
 let warnLogs: Array<{ ctx: Record<string, unknown>; msg: string }> = [];
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: (ctx: Record<string, unknown>, msg: string) => {

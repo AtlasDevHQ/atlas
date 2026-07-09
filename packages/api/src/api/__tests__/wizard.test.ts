@@ -33,13 +33,13 @@ const mockAuthenticate: Mock<() => Promise<{
   }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticate,
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "managed",
   resetAuthModeCache: () => {},
 }));
@@ -49,7 +49,7 @@ const mockConnectionDescribe: Mock<() => Array<{ id: string; dbType: string; sta
   () => [{ id: "default", dbType: "postgres", status: "healthy" }],
 );
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       has: mockConnectionHas,
@@ -81,7 +81,7 @@ const mockDecryptUrl: Mock<(url: string) => string> = mock(
   (url: string) => url.startsWith("postgresql://") ? url : "postgresql://localhost/test",
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
   getInternalDB: () => ({ query: async () => ({ rows: [] }) }),
   internalQuery: mockInternalQuery,
@@ -104,7 +104,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 const mockResetWhitelists: Mock<() => void> = mock(() => {});
 const mockInvalidateOrgWhitelist: Mock<(orgId: string) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => new Set(),
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
@@ -138,7 +138,7 @@ const mockResolveGroupId: Mock<(orgId: string, connectionId?: string | null) => 
   async (_orgId, connectionId) => (!connectionId || connectionId === "default" ? null : connectionId),
 );
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   upsertProfileStatus: mockUpsertProfileStatus,
   listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   // Constants the wizard route imports statically
@@ -174,7 +174,7 @@ const mockSyncEntityToDisk: Mock<(orgId: string, name: string, type: string, yam
   async () => {},
 );
 
-mock.module("@atlas/api/lib/semantic/sync", () => ({
+void mock.module("@atlas/api/lib/semantic/sync", () => ({
   syncEntityToDisk: mockSyncEntityToDisk,
   syncEntityDeleteFromDisk: async () => {},
   syncAllEntitiesToDisk: async () => 0,
@@ -191,14 +191,14 @@ const mockRefreshGroupAutoDescription: Mock<(
   entities: ReadonlyArray<{ name: string; yaml: string }>,
 ) => Promise<void>> = mock(async () => {});
 
-mock.module("@atlas/api/lib/source-catalog/lookup", () => ({
+void mock.module("@atlas/api/lib/source-catalog/lookup", () => ({
   refreshGroupAutoDescription: mockRefreshGroupAutoDescription,
   // Other named export — present so the mock.module() loader resolves every
   // export of the real module for any sibling import in this isolated process.
   loadSourceCatalog: async () => "",
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -208,11 +208,11 @@ mock.module("@atlas/api/lib/logger", () => ({
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
   getSettingAuto: () => undefined,
   getSettingLive: async () => undefined,
@@ -226,7 +226,7 @@ mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   maskConnectionUrl: (url: string) => url.replace(/\/\/.*@/, "//***@"),
 }));
 
@@ -234,7 +234,7 @@ mock.module("@atlas/api/lib/security", () => ({
 const mockMkdirSync: Mock<(dir: string, opts?: unknown) => void> = mock(() => {});
 const mockWriteFileSync: Mock<(path: string, data: string, encoding?: string) => void> = mock(() => {});
 
-mock.module("fs", () => ({
+void mock.module("fs", () => ({
   mkdirSync: mockMkdirSync,
   writeFileSync: mockWriteFileSync,
 }));
@@ -378,7 +378,7 @@ const mockProfileMySQL: Mock<() => Promise<{ profiles: never[]; errors: unknown[
   async () => ({ profiles: [], errors: [] }),
 );
 
-mock.module("@atlas/api/lib/profiler", () => ({
+void mock.module("@atlas/api/lib/profiler", () => ({
   // Re-export all pure functions
   analyzeTableProfiles: _analyzeReal,
   generateEntityYAML: _genEntityReal,
@@ -418,7 +418,7 @@ import * as _providersActual from "@atlas/api/lib/providers";
 const mockGetMissingModelConfig: Mock<() => { provider: string; missing: string[] }> = mock(
   () => ({ provider: "anthropic", missing: [] }),
 );
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   ..._providersActual,
   getModel: () => ({ modelId: "test-model" }),
   getModelFromWorkspaceConfig: () => ({ modelId: "workspace-model" }),
@@ -432,7 +432,7 @@ mock.module("@atlas/api/lib/providers", () => ({
 // route falls through to the env-based getMissingModelConfig path.
 import * as _enterpriseLayerActual from "@atlas/api/lib/effect/enterprise-layer";
 const mockRunEnterprise: Mock<(program: unknown) => Promise<unknown>> = mock(async () => null);
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   ..._enterpriseLayerActual,
   runEnterprise: mockRunEnterprise,
 }));
@@ -448,7 +448,7 @@ const mockEnrichEntityYaml: Mock<
     dbType?: string,
   ) => Promise<{ yaml: string; enriched: boolean }>
 > = mock(async (content: string) => ({ yaml: `${content}description: Enriched by AI.\n`, enriched: true }));
-mock.module("@atlas/api/lib/semantic/enrich", () => ({
+void mock.module("@atlas/api/lib/semantic/enrich", () => ({
   enrichEntityYaml: mockEnrichEntityYaml,
   enrichEntity: async () => {},
   enrichGlossary: async () => {},
@@ -517,7 +517,7 @@ const mockResolveProfilingConnection: Mock<(connectionId: string, orgId?: string
       profile: () => mockProfilePostgres(),
     }),
 );
-mock.module("@atlas/api/lib/datasources/profiling-connection", () => ({
+void mock.module("@atlas/api/lib/datasources/profiling-connection", () => ({
   resolveProfilingConnection: mockResolveProfilingConnection,
 }));
 

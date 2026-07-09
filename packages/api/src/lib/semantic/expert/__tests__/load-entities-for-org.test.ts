@@ -77,11 +77,11 @@ function toSemanticRow(r: FakeDBRow) {
   };
 }
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => internalDBAvailable,
 }));
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntityRows: async (_orgId: string, _type: string, _status: string) =>
     publishedRowsOverride ?? publishedRows.map(toSemanticRow),
   listEntitiesWithOverlay: async (_orgId: string, _type: string) =>
@@ -186,7 +186,7 @@ describe("loadEntitiesForOrg", () => {
     const result = await loadEntitiesForOrg(ORG_ID, "published");
     expect(result.entities).toHaveLength(3);
     expect(result.totalRows).toBe(2); // 2 DB rows considered
-    const descriptions = result.entities.map((e) => e.description).toSorted();
+    const descriptions = result.entities.map((e) => e.description as string).toSorted();
     expect(descriptions).toEqual(["EU", "From disk", "US"]);
   });
 
@@ -214,7 +214,7 @@ describe("loadEntitiesForOrg", () => {
     // Different keys → both appear. (Same outcome as `mergeAdminEntities`'s
     // "dedup key is summary `name`, not DB row `name`" test.)
     expect(result.entities).toHaveLength(2);
-    const descriptions = result.entities.map((e) => e.description).toSorted();
+    const descriptions = result.entities.map((e) => e.description as string).toSorted();
     expect(descriptions).toEqual(["From DB", "From disk"]);
   });
 

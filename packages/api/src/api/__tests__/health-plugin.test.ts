@@ -24,12 +24,12 @@ const mockValidateEnvironment: Mock<() => Promise<{ message: string; code: strin
 
 const mockGetStartupWarnings: Mock<() => string[]> = mock(() => []);
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mockValidateEnvironment,
   getStartupWarnings: mockGetStartupWarnings,
 }));
 
-mock.module("@atlas/api/lib/db/connection", () => {
+void mock.module("@atlas/api/lib/db/connection", () => {
   const mockDBConn = {
     query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
     close: async () => {},
@@ -47,7 +47,7 @@ mock.module("@atlas/api/lib/db/connection", () => {
   });
 });
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",
   // demo.ts (mounted via the app) statically imports getModelForConfig — it
   // must be present so the mock links, even though the anthropic default
@@ -55,7 +55,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   getModelForConfig: () => ({ model: {}, providerType: "anthropic", modelId: "claude-test" }),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -68,18 +68,18 @@ mock.module("@atlas/api/lib/semantic", () => ({
 }));
 
 // Key mock: explore backend returns "plugin" with a pluginId
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "plugin",
   getActiveSandboxPluginId: () => "my-sandbox",
   explore: { type: "function" },
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(() =>
     Promise.resolve({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
@@ -88,7 +88,7 @@ mock.module("@atlas/api/lib/agent", () => ({
   ),
 }));
 
-mock.module("@atlas/api/lib/tools/actions", () => ({
+void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: {
     name: "createJiraTicket",
     description: "Mock",
@@ -109,7 +109,7 @@ mock.module("@atlas/api/lib/tools/actions", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve(null)),
   addMessage: mock(() => {}),
   persistAssistantSteps: mock(() => {}),
@@ -141,7 +141,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mock(() =>
     Promise.resolve({
       authenticated: true as const,

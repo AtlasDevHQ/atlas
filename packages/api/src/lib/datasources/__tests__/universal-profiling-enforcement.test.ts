@@ -109,7 +109,7 @@ let sfInstance: Record<string, unknown> | undefined;
 
 // internal DB — the install-row lookup + persist gate.
 const realInternal = await import("@atlas/api/lib/db/internal");
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   internalQuery: mock(async () => internalRows),
   hasInternalDB: mock(() => true),
@@ -119,7 +119,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // createFromConfig plugin pools share. `getForOrg`/`getForWorkspace` return a
 // fake DBConnection so no real pool spins.
 const fakeDbConn = { query: mock(async () => ({ columns: [], rows: [] })), close: mock(async () => {}) };
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       getForOrg: () => fakeDbConn,
@@ -132,7 +132,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
 );
 
 // catalogSlug → dbType + the pool config the resolver reads.
-mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
+void mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
   catalogSlugToDbType: (slug: string) => slug,
   resolveDatasourcePoolConfig: mock(() => poolConfigResult),
   BUILTIN_DATASOURCE_CATALOG_SLUGS: REAL_BUILTIN_SLUGS,
@@ -140,7 +140,7 @@ mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
 
 // secrets — passthrough decrypt (the resolver decrypts the row config).
 const realSecrets = await import("@atlas/api/lib/plugins/secrets");
-mock.module("@atlas/api/lib/plugins/secrets", () => ({
+void mock.module("@atlas/api/lib/plugins/secrets", () => ({
   ...realSecrets,
   parseConfigSchema: () => ({ state: "parsed", fields: [] }),
   decryptSecretFields: (c: Record<string, unknown>) => c,
@@ -150,7 +150,7 @@ mock.module("@atlas/api/lib/plugins/secrets", () => ({
 
 // plugin registry bridge — the SINGLE structural lookup. The handler-managed
 // predicate routes Salesforce to the OAuth path (ADR-0014: no createFromConfig).
-mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
+void mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   findDatasourcePluginConnection: mock(async () => pluginConn),
   isHandlerManagedDatasourceDbType: (dbType: string) =>
     (OAUTH_DATASOURCE_DBTYPES as readonly string[]).includes(dbType),
@@ -163,7 +163,7 @@ mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
 // native profilers — closures the resolver binds to the decrypted url for
 // pg/mysql (core profiles those in-core). Mocked so no real DB is touched.
 const realProfiler = await import("@atlas/api/lib/profiler");
-mock.module("@atlas/api/lib/profiler", () => ({
+void mock.module("@atlas/api/lib/profiler", () => ({
   ...realProfiler,
   profilePostgres: mock(async () => oneTableResult()),
   profileMySQL: mock(async () => oneTableResult()),
@@ -174,7 +174,7 @@ mock.module("@atlas/api/lib/profiler", () => ({
 // OAuth LazyPluginLoader — Salesforce's live connection is built from
 // integration_credentials tokens here, NOT via createFromConfig (ADR-0014).
 const realLazyLoader = await import("@atlas/api/lib/plugins/lazy-loader");
-mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
+void mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
   ...realLazyLoader,
   lazyPluginLoader: {
     getOrInstantiate: mock(async () => sfInstance),

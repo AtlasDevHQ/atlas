@@ -8,7 +8,7 @@ let mockHasInternalDB = true;
 let mockWorkspaceStatus: string | null = "active";
 let mockGetCachedWorkspaceShouldThrow = false;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getWorkspaceStatus: async () => mockWorkspaceStatus,
   getWorkspaceDetails: async () => null,
@@ -45,7 +45,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   getCachedWorkspace: async (orgId: string) => {
     if (mockGetCachedWorkspaceShouldThrow) throw new Error("connection refused");
     if (mockWorkspaceStatus === null) return null;
@@ -56,7 +56,7 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
   buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 2_000_000, usagePercent: 0, status: "ok" }),
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

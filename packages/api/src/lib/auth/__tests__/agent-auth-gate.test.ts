@@ -30,7 +30,7 @@ import * as settingsReal from "@atlas/api/lib/settings";
 let settingValue: string | undefined;
 let workspaceOverrides: Record<string, string | undefined> = {};
 let throwOnRead = false;
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   ...settingsReal,
   getSettingLive: async (_key: string, orgId?: string) => {
     if (throwOnRead) throw new Error("settings backend unavailable");

@@ -25,7 +25,7 @@ let mockPatternsByGroup: Map<string | null, typeof mockApprovedPatterns> | null 
 
 // --- Mocks (all named exports) ---
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   getInternalDB: () => ({ query: async () => ({ rows: [] }), end: async () => {}, on: () => {} }),
   internalQuery: async () => [],
@@ -57,7 +57,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: mock(async () => 0),
 }));
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({
     learn: mockConfigLearn,
     semanticIndex: { enabled: false },
@@ -75,7 +75,7 @@ mock.module("@atlas/api/lib/config", () => ({
 // pattern-cache reads the learn knobs from the settings registry (workspace
 // override > platform override > env var > default). Drive them from the same
 // `mockConfigLearn` object the tests already mutate.
-mock.module("@atlas/api/lib/settings", () => {
+void mock.module("@atlas/api/lib/settings", () => {
   const settingValue = (key: string): string | undefined => {
     if (key === "ATLAS_LEARN_CONFIDENCE_THRESHOLD") {
       return mockConfigLearn?.confidenceThreshold === undefined
@@ -96,11 +96,11 @@ mock.module("@atlas/api/lib/settings", () => {
   };
 });
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock(),
 );
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

@@ -51,14 +51,14 @@ function setResults(...results: Array<{ rows: Record<string, unknown>[] }>) {
 // (null) and errored (throwing) config resolution. Defaults to SaaS.
 let mockGetConfigImpl: () => { deployMode?: string } | null = () => ({ deployMode: "saas" });
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockGetConfigImpl(),
   defineConfig: (c: unknown) => c,
 }));
 
 // Track setLogLevel calls
 let logLevelCalls: Array<{ level: string; result: boolean }> = [];
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

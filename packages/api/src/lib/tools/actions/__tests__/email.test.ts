@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 
 let lastHandleActionCall: { request: unknown; executeFn: unknown } | null = null;
 
-mock.module("@atlas/api/lib/tools/actions/handler", () => ({
+void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   buildActionRequest: (params: Record<string, unknown>) => ({
     id: "test-action-id",
     ...params,
@@ -17,7 +17,7 @@ mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -29,7 +29,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 // Mock the delivery module — sendEmail is now the core of executeEmailSend
 let mockSendEmailResult = { success: true, provider: "resend", error: undefined as string | undefined };
 
-mock.module("@atlas/api/lib/email/delivery", () => ({
+void mock.module("@atlas/api/lib/email/delivery", () => ({
   sendEmail: async (message: { to: string; subject: string; html: string }) => {
     lastSendEmailCall = message;
     return mockSendEmailResult;

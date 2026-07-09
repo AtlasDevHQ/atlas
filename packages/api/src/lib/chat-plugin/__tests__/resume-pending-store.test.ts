@@ -13,17 +13,17 @@ const mockHasInternalDB: Mock<() => boolean> = mock(() => true);
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>> =
   mock(() => Promise.resolve([]));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
   internalQuery: mockInternalQuery,
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
 
-mock.module("@atlas/api/lib/durable-session", () => ({
+void mock.module("@atlas/api/lib/durable-session", () => ({
   getMaxParkMinutes: () => 1440,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 

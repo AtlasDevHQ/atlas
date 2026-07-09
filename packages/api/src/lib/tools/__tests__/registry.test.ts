@@ -15,7 +15,7 @@ const mockEmailTool = tool({
   execute: async ({ to }) => to,
 });
 
-mock.module("@atlas/api/lib/tools/actions", () => ({
+void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: {
     name: "createJiraTicket",
     description: "### Create JIRA Ticket\nMock description",

@@ -35,7 +35,7 @@ let mockUsage = {
 };
 let mockWorkspace: Record<string, unknown> | null = null;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   getWorkspaceDetails: async (orgId: string) => (orgId ? mockWorkspace : null),
   getWorkspaceStatus: async () => mockWorkspace?.workspace_status ?? null,
@@ -61,7 +61,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
-mock.module("@atlas/api/lib/metering", () => ({
+void mock.module("@atlas/api/lib/metering", () => ({
   // Dollar enforcement denominates on `costUsd` (#4038); the page-budget figure
   // derives from the seat count (`computeTokenBudget(tier, seatCount)`), not from
   // usage. The `weightedTokenCount` mirror just keeps the returned shape realistic.
@@ -75,7 +75,7 @@ mock.module("@atlas/api/lib/metering", () => ({
   getUsageBreakdown: async () => [],
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

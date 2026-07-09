@@ -131,7 +131,7 @@ const observedAuditCalls: ObservedAuditCall[] = [];
 
 // oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realAuditAdmin = require("@atlas/api/lib/audit/admin") as typeof import("@atlas/api/lib/audit/admin");
-mock.module("@atlas/api/lib/audit/admin", () => ({
+void mock.module("@atlas/api/lib/audit/admin", () => ({
   ...realAuditAdmin,
   logAdminAction: (entry: ObservedAuditCall) => {
     observedAuditCalls.push(entry);
@@ -154,7 +154,7 @@ process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 // oxlint-disable-next-line @typescript-eslint/no-require-imports
 const effectMod = require("effect") as typeof import("effect");
 
-mock.module("@atlas/ee/layers", () => {
+void mock.module("@atlas/ee/layers", () => {
   const { Layer, Effect: E } = effectMod;
   return {
     EELayer: Layer.unwrapEffect(

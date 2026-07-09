@@ -49,7 +49,7 @@ class MockBedrockClient {
   }
 }
 
-mock.module("@aws-sdk/client-bedrock", () => ({
+void mock.module("@aws-sdk/client-bedrock", () => ({
   BedrockClient: MockBedrockClient,
   ListFoundationModelsCommand: MockListFoundationModelsCommand,
 }));

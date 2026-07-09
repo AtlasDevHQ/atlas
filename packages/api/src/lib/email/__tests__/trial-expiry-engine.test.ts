@@ -40,7 +40,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   },
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasDB,
   internalQuery: mockInternalQuery,
   internalExecute: mock(() => {}),
@@ -60,13 +60,13 @@ const mockSendEmail: Mock<(msg: unknown, orgId?: string) => Promise<unknown>> = 
   Promise.resolve(mockDeliveryResult),
 );
 
-mock.module("../delivery", () => ({
+void mock.module("../delivery", () => ({
   sendEmail: mockSendEmail,
 }));
 
 // --- Mock logger ---
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

@@ -27,7 +27,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   () => Promise.resolve([]),
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({
     internalQuery: mockInternalQuery,
     hasInternalDB: () => mockHasInternalDB,
@@ -47,7 +47,7 @@ const mockLoggerInstance = () => ({
 // Full export surface of lib/logger (mock-all-exports rule) — only
 // createLogger matters to the unit under test; the rest are inert
 // pass-throughs so unrelated importers can't hit a missing named export.
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   ACTOR_KINDS: ["human", "agent", "mcp", "scheduler"],
   createLogger: mockLoggerInstance,
   getLogger: mockLoggerInstance,

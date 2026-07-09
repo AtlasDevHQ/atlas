@@ -36,7 +36,7 @@ const mockHasInternalDB = mock((): boolean => true);
 const mockInternalQuery = mock((): Promise<Array<{ org_id: string }>> => Promise.resolve([]));
 const mockCountEntities = mock((_orgId: string): Promise<number> => Promise.resolve(0));
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntityRows: mockListEntities,
   listEntitiesWithOverlay: mock(() => Promise.resolve([])),
   listEntities: mock(async () => []),
@@ -47,7 +47,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   bulkUpsertEntities: mockBulkUpsertEntities,
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
   internalQuery: mockInternalQuery,
   getApprovedPatterns: async () => [],
@@ -64,7 +64,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 const mockInvalidateOrgWhitelist = mock(() => {});
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   invalidateOrgWhitelist: mockInvalidateOrgWhitelist,
   getWhitelistedTables: mock(() => new Set()),
   getOrgWhitelistedTables: mock(() => new Set()),
@@ -914,7 +914,7 @@ describe("importFromDisk — group namespace traversal (#3245)", () => {
     const upserted = lastUpsertedEntities();
     const groups = upserted
       .filter((e) => e.entityType === "entity")
-      .map((e) => e.connectionGroupId)
+      .map((e) => e.connectionGroupId as string)
       .sort();
     expect(groups).toEqual(["eu", "us"]);
   });

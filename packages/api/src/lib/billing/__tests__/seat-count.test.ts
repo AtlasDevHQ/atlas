@@ -18,14 +18,14 @@ let mockSeatRows: unknown[] = [];
 /** When true, the `internalQuery` mock throws (DB blip path). */
 let mockSeatQueryShouldThrow = false;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: async () => {
     if (mockSeatQueryShouldThrow) throw new Error("db error");
     return mockSeatRows;
   },
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

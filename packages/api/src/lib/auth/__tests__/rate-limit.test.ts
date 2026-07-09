@@ -369,7 +369,7 @@ describe("_sendVerificationOTP", () => {
     }>,
   ): void => {
     capturedOpts.length = 0;
-    mock.module("@atlas/api/lib/email/delivery", () => ({
+    void mock.module("@atlas/api/lib/email/delivery", () => ({
       sendEmail,
       // _sendVerificationOTP now sends via the durable wrapper (#2942).
       // Delegate to the captured `sendEmail` so the message-capture and

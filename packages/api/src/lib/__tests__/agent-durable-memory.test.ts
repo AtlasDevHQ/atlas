@@ -30,7 +30,7 @@ process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test
 
 let mockModel: InstanceType<typeof MockLanguageModelV3>;
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
   getProviderType: () => "anthropic" as const,
   getModelFromWorkspaceConfig: () => mockModel,
@@ -41,7 +41,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   isGatewayAnthropicModel: (modelId: string) => modelId.includes("anthropic") || modelId.includes("claude"),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -58,7 +58,7 @@ const mockDBConnectionObj = {
   query: async () => ({ columns: ["id"], rows: [{ id: 1 }] }),
   close: async () => {},
 };
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnectionObj,
     connections: {
@@ -83,7 +83,7 @@ function upsertMemoryRow(conv: string, namespace: string, value: unknown): void 
   else memoryRows.push({ conv, namespace, value });
 }
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => hasInternalDB,
   internalExecute: (sql: string, params?: unknown[]) => {

@@ -6,13 +6,13 @@ import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
 import { makeTask as makeFixtureTask, makeResult } from "./fixtures";
 
 // Mock formatters
-mock.module("../format-email", () => ({
+void mock.module("../format-email", () => ({
   formatEmailReport: mock(() => ({ subject: "Subject", body: "<html>body</html>" })),
 }));
-mock.module("../format-slack", () => ({
+void mock.module("../format-slack", () => ({
   formatSlackReport: mock(() => ({ text: "Report", blocks: [] })),
 }));
-mock.module("../format-webhook", () => ({
+void mock.module("../format-webhook", () => ({
   formatWebhookPayload: mock(() => ({ taskId: "t", answer: "A" })),
 }));
 
@@ -22,7 +22,7 @@ mock.module("../format-webhook", () => ({
 // semantics that the production retry policy depends on.
 const deliverySpanCalls: { name: string; attributes: Record<string, unknown> }[] = [];
 const { Effect: EffectModule } = await import("effect");
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (
     _name: string,
     _attrs: Record<string, unknown>,

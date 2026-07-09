@@ -1,7 +1,7 @@
 import { describe, expect, it, mock, afterEach } from "bun:test";
 
 // Mock logger to avoid side effects
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     debug: () => {},
     info: () => {},
@@ -85,7 +85,7 @@ function mockFetchByRoute(
   nonStreamHandler: () => Promise<Response> = OK_FALLBACK,
 ) {
   mockFetch((input) => {
-    const url = String(input);
+    const url = (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
     if (url.includes("/exec-python-stream")) return streamHandler();
     return nonStreamHandler();
   });
@@ -579,7 +579,7 @@ describe("executePythonViaSidecarStream", () => {
       let callCount = 0;
       mockFetch((input) => {
         callCount++;
-        const url = String(input);
+        const url = (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
         if (url.includes("/exec-python-stream")) {
           return Promise.resolve(new Response("Not Found", { status: 404 }));
         }
@@ -599,7 +599,7 @@ describe("executePythonViaSidecarStream", () => {
       let callCount = 0;
       mockFetch((input) => {
         callCount++;
-        const url = String(input);
+        const url = (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
         if (url.includes("/exec-python-stream")) {
           return Promise.resolve(new Response("Internal Server Error", { status: 500 }));
         }
@@ -621,7 +621,7 @@ describe("executePythonViaSidecarStream", () => {
       let callCount = 0;
       mockFetch((input) => {
         callCount++;
-        const url = String(input);
+        const url = (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
         if (url.includes("/exec-python-stream")) {
           return Promise.resolve(new Response("Internal Server Error", { status: 500 }));
         }
@@ -641,7 +641,7 @@ describe("executePythonViaSidecarStream", () => {
       let callCount = 0;
       mockFetch((input) => {
         callCount++;
-        const url = String(input);
+        const url = (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
         if (url.includes("/exec-python-stream")) {
           return Promise.resolve(new Response("Rate limited", { status: 429 }));
         }
@@ -662,7 +662,7 @@ describe("executePythonViaSidecarStream", () => {
       let callCount = 0;
       mockFetch((input) => {
         callCount++;
-        const url = String(input);
+        const url = (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
         if (url.includes("/exec-python-stream")) {
           return Promise.reject(new Error("fetch failed: ECONNREFUSED"));
         }

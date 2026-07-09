@@ -54,19 +54,19 @@ const mockCheckRateLimit: Mock<(key: string) => { allowed: boolean; retryAfterMs
 );
 const mockGetClientIP: Mock<(req: Request) => string | null> = mock(() => null);
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mockGetClientIP,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
   getRequestContext: () => null,
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "session",
   resetAuthModeCache: () => {},
 }));
@@ -75,7 +75,7 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 // MUST land in the query audit log. Mock logQueryAudit (all exports) so the
 // audit-coverage test asserts the exact entry the route hands it.
 const mockLogQueryAudit: Mock<(entry: AuditEntry) => void> = mock(() => {});
-mock.module("@atlas/api/lib/auth/audit", () => ({ logQueryAudit: mockLogQueryAudit }));
+void mock.module("@atlas/api/lib/auth/audit", () => ({ logQueryAudit: mockLogQueryAudit }));
 
 // Import after mocks.
 const { Hono } = await import("hono");
@@ -635,7 +635,7 @@ describe("POST /rest-operations/confirm — single-use token gate (#3007)", () =
       body: { name: { firstName: "Ada" } },
     });
     const [a, b] = await Promise.all([post(app, body), post(app, body)]);
-    expect([a.status, b.status].toSorted()).toEqual([200, 400]);
+    expect([a.status, b.status].toSorted((a, b) => a - b)).toEqual([200, 400]);
     // Exactly one write reached the upstream.
     const writes = twentyMock.matching("/rest/people").filter((r) => r.method === "POST");
     expect(writes.length).toBe(1);

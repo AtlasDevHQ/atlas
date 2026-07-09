@@ -19,7 +19,7 @@ import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
 const mockReadCredentialBundle: Mock<(ws: string, cat: string) => Promise<unknown>> = mock(() =>
   Promise.resolve(null),
 );
-mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
+void mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
   readCredentialBundle: mockReadCredentialBundle,
   saveCredentialBundle: mock(() => Promise.resolve()),
   deleteCredentialBundle: mock(() => Promise.resolve(false)),
@@ -52,7 +52,7 @@ class TestReconnectError extends Error {
     this.upstreamError = args.upstreamError;
   }
 }
-mock.module("@atlas/api/lib/integrations/install/linear-token-refresh", () => ({
+void mock.module("@atlas/api/lib/integrations/install/linear-token-refresh", () => ({
   refreshLinearToken: mockRefreshLinearToken,
   IntegrationReconnectRequiredError: TestReconnectError,
   // Deprecated alias still exported by the real module (#2708) — mock the
@@ -65,7 +65,7 @@ mock.module("@atlas/api/lib/integrations/install/linear-token-refresh", () => ({
 const mockEvict: Mock<(workspaceId: string, catalogId: string) => Promise<boolean>> = mock(() =>
   Promise.resolve(true),
 );
-mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
+void mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
   lazyPluginLoader: {
     evict: mockEvict,
     hasBuilder: mock(() => false),

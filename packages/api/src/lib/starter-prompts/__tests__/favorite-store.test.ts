@@ -15,7 +15,7 @@ const mockInternalQuery = mock(
 );
 let hasInternalDBFixture = true;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => hasInternalDBFixture,
   internalQuery: mockInternalQuery,
 }));

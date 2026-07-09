@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 let mockHasInternalDB = true;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: async () => [],
   internalExecute: async () => {},
@@ -23,7 +23,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () =>
     Promise.resolve({
       authenticated: true,
@@ -41,7 +41,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   getClientIP: () => null,
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -51,31 +51,31 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/api/lib/effect/hono", () => ({
+void mock.module("@atlas/api/lib/effect/hono", () => ({
   runHandler: async (_c: unknown, _label: string, fn: () => unknown) => fn(),
   runEffect: async (_c: unknown, effect: unknown) => effect,
 }));
 
-mock.module("@atlas/api/lib/security/abuse", () => ({
+void mock.module("@atlas/api/lib/security/abuse", () => ({
   checkAbuseStatus: () => ({ level: "ok" }),
 }));
 
-mock.module("@atlas/api/lib/workspace", () => ({
+void mock.module("@atlas/api/lib/workspace", () => ({
   checkWorkspaceStatus: async () => ({ allowed: true }),
 }));
 
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkPlanLimits: async () => ({ allowed: true }),
 }));
 
 // Mock the agent and expert registry (not needed for session/proposal tests)
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: async () => ({
     toUIMessageStream: () => new ReadableStream(),
   }),
 }));
 
-mock.module("@atlas/api/lib/tools/expert-registry", () => ({
+void mock.module("@atlas/api/lib/tools/expert-registry", () => ({
   buildExpertRegistry: () => ({
     getAll: () => ({}),
     freeze: () => {},
@@ -176,7 +176,7 @@ describe("admin-semantic-improve", () => {
     beforeEach(() => {
       orgCalls = 0;
       diskCalls = 0;
-      mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
+      void mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
         loadEntitiesForOrg: async () => {
           orgCalls++;
           return { entities: [], totalRows: 0, parseFailures: 0 };
@@ -187,7 +187,7 @@ describe("admin-semantic-improve", () => {
         },
         loadGlossaryFromDisk: async () => [],
       }));
-      mock.module("@atlas/api/lib/semantic/expert/health", () => ({
+      void mock.module("@atlas/api/lib/semantic/expert/health", () => ({
         computeSemanticHealth: (ctx: { entities: unknown[]; glossary: unknown[] }) => ({
           overall: 0,
           coverage: 0,
@@ -230,7 +230,7 @@ describe("admin-semantic-improve", () => {
       // (DB-only → corrupt-discriminator denominator). A refactor that
       // collapses either side fails here first.
       mockHasInternalDB = true;
-      mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
+      void mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
         loadEntitiesForOrg: async () => ({
           entities: Array.from({ length: 46 }, (_, i) => ({
             name: `e${i}`,
@@ -262,7 +262,7 @@ describe("admin-semantic-improve", () => {
       // `corrupt` on `totalRows` (DB-rows-considered), so the disk fill-in
       // can't mask the signal.
       mockHasInternalDB = true;
-      mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
+      void mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
         loadEntitiesForOrg: async () => ({
           // 5 disk entries merged in despite all DB rows being corrupt.
           entities: Array.from({ length: 5 }, (_, i) => ({
@@ -288,7 +288,7 @@ describe("admin-semantic-improve", () => {
     it("response includes a status discriminator distinguishing empty from corrupt", async () => {
       mockHasInternalDB = true;
       // Override loader to return totalRows=2, parseFailures=2 (full corruption)
-      mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
+      void mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
         loadEntitiesForOrg: async () => ({ entities: [], totalRows: 2, parseFailures: 2 }),
         loadEntitiesFromDisk: async () => [],
         loadGlossaryFromDisk: async () => [],

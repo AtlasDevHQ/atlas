@@ -91,7 +91,7 @@ const fakeTxnClient = {
 // circuits to 404 when DB is unconfigured — true in tests by default),
 // and `getInternalDB` (the atomic install gate's transaction pool).
 const realInternal = await import("@atlas/api/lib/db/internal");
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
@@ -132,7 +132,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
   () => Promise.resolve(authResultForTests),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   checkRateLimit: mock(() => ({ allowed: true })),
   authenticateRequest: mockAuthenticateRequest,
   getClientIP: mock(() => "127.0.0.1"),

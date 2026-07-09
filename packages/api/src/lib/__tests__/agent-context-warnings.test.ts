@@ -40,7 +40,7 @@ process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test";
 
 // Provider — return whatever model the test installs.
 let mockModel: InstanceType<typeof MockLanguageModelV3>;
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
   getProviderType: () => "anthropic" as const,
   getModelFromWorkspaceConfig: () => mockModel,
@@ -59,7 +59,7 @@ const semanticState = {
   patternsThrows: true,
 };
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => {
     if (semanticState.whitelistThrows) {
@@ -84,7 +84,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
 
 // Learned-patterns loader — also toggleable so the per-branch tests
 // can pin "patterns fails alone" and "whitelist fails alone" cases.
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+void mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   buildRetrievalQuery: () => "revenue by region",
   getRetrievalTurns: () => 3,
   buildLearnedPatternsSection: async () => "",
@@ -94,7 +94,7 @@ mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
 // favorites + approved suggestions) via this module. Toggleable so the
 // per-branch tests can pin the "org-knowledge loader fails alone" case that
 // surfaces the `learned_patterns_unavailable` structured warning.
-mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
+void mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
   resolveOrgKnowledgeSection: async () => {
     if (semanticState.patternsThrows) {
       throw new Error("simulated pool exhaustion (org knowledge)");
@@ -109,7 +109,7 @@ const mockConnObj = {
   query: async () => ({ columns: [], rows: [] }),
   close: async () => {},
 };
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockConnObj,
     connections: {
@@ -124,7 +124,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
 
 // Set the request context so `orgId` is non-null (required for the
 // semantic-data branch to run; without an orgId it short-circuits).
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -151,7 +151,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 // Cache — already mocked elsewhere but we need it here too.
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({ get: () => null, set: () => {}, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),
   buildCacheKey: () => "mock-key",
   cacheEnabled: () => false,

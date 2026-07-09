@@ -24,7 +24,7 @@ function mockFetchQueue(responses: QueuedResponse[]): { fetch: FetchFn; urls: st
   const urls: string[] = [];
   const queue = [...responses];
   const fetchMock = mock(async (input: string | URL | Request): Promise<Response> => {
-    urls.push(String(input));
+    urls.push((typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url));
     const next = queue.shift();
     if (!next) throw new Error("fetch called more times than queued responses");
     return new Response(JSON.stringify(next.body), {

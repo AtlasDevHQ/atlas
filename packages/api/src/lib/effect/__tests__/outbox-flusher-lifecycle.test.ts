@@ -40,7 +40,7 @@ let internalDbAvailable = true;
 // oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realInternal = require("@atlas/api/lib/db/internal") as Record<string, unknown>;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => internalDbAvailable,
   internalQuery: async <T extends Record<string, unknown>>(
@@ -54,7 +54,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 // Silence logger noise from the booted Layer.
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

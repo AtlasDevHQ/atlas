@@ -27,7 +27,7 @@ import { pluginMcpToolRegistry } from "../mcp-tools";
 
 // Stub config so the helper sees a known plugin list.
 let configPlugins: unknown[] = [];
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({ plugins: configPlugins }),
 }));
 

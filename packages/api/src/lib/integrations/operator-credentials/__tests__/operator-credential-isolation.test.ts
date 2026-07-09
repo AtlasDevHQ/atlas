@@ -92,8 +92,8 @@ describe("behavioral isolation", () => {
   );
   const mockHasInternalDB: Mock<() => boolean> = mock(() => true);
 
-  mock.module("../store", () => ({ readOperatorCredentials: mockRead }));
-  mock.module("@atlas/api/lib/db/internal", () => ({ hasInternalDB: mockHasInternalDB }));
+  void mock.module("../store", () => ({ readOperatorCredentials: mockRead }));
+  void mock.module("@atlas/api/lib/db/internal", () => ({ hasInternalDB: mockHasInternalDB }));
 
   beforeEach(() => {
     mockRead.mockReset();

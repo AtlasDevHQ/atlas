@@ -20,7 +20,7 @@ import type { RequestActor } from "@atlas/api/lib/logger";
 
 const observedContexts: { requestId?: string; user?: { id: string; activeOrganizationId?: string } | undefined; actor?: RequestActor | undefined }[] = [];
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(async () => {
     const { getRequestContext } = await import("@atlas/api/lib/logger");
     const ctx = getRequestContext();

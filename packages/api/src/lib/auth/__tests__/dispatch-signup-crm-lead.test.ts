@@ -37,7 +37,7 @@ const mockLogError: Mock<(...args: unknown[]) => void> = mock(() => {});
 const mockLogInfo: Mock<(...args: unknown[]) => void> = mock(() => {});
 const mockLogDebug: Mock<(...args: unknown[]) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   // Capture the program and resolve the Tag through the unit-test
   // doubles below. The default runner provides a real SaasCrm Layer
   // whose `upsertLead` pushes into `upsertLeadCalls`.
@@ -52,7 +52,7 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   EnterpriseLayer: Layer.empty,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: mockLogInfo,
     warn: mockLogWarn,

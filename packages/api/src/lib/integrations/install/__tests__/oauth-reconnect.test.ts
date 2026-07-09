@@ -24,7 +24,7 @@ import type { WorkspaceId } from "@useatlas/types";
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(() =>
   Promise.resolve([]),
 );
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -33,7 +33,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 const mockSaveCredentialBundle: Mock<
   (ws: string, cat: string, bundle: unknown) => Promise<void>
 > = mock(() => Promise.resolve());
-mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
+void mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
   saveCredentialBundle: mockSaveCredentialBundle,
   readCredentialBundle: mock(() => Promise.resolve(null)),
   deleteCredentialBundle: mock(() => Promise.resolve(false)),

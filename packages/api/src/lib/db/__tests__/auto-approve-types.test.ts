@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 const mockWarn = mock(() => {});
 const mockDebug = mock(() => {});
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: mockWarn,
@@ -17,8 +17,8 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 // Stub out heavy deps that internal.ts imports at module level
-mock.module("@effect/sql", () => ({ SqlClient: { Tag: () => ({}) } }));
-mock.module("@effect/sql-pg", () => ({ PgClient: { layerFromPool: () => ({}) } }));
+void mock.module("@effect/sql", () => ({ SqlClient: { Tag: () => ({}) } }));
+void mock.module("@effect/sql-pg", () => ({ PgClient: { layerFromPool: () => ({}) } }));
 
 // NOW import the functions under test
 const { getAutoApproveTypes, getAutoApproveThreshold } = await import("../internal");

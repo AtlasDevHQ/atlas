@@ -48,7 +48,7 @@ process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test
 
 let mockModel: InstanceType<typeof MockLanguageModelV3>;
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
   getProviderType: () => "anthropic" as const,
   getModelFromWorkspaceConfig: () => mockModel,
@@ -59,7 +59,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   isGatewayAnthropicModel: (modelId: string) => modelId.includes("anthropic") || modelId.includes("claude"),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -101,7 +101,7 @@ function makeMockDBConnectionFor(connId: string) {
   };
 }
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => makeMockDBConnectionFor("default"),
     connections: {
@@ -125,7 +125,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
 let mockGroupMembers: readonly string[] = ["us-int", "eu", "apac"];
 let mockPrimaryMember = "us-int";
 
-mock.module("@atlas/api/lib/env-routing/lookup", () => ({
+void mock.module("@atlas/api/lib/env-routing/lookup", () => ({
   loadGroupRoutingContext: async (_orgId: string | undefined, currentMember: string) => ({
     groupId: "prod",
     members: mockGroupMembers,
@@ -135,7 +135,7 @@ mock.module("@atlas/api/lib/env-routing/lookup", () => ({
   }),
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({ get: () => null, set: () => {}, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),
   buildCacheKey: () => "mock-key",
   cacheEnabled: () => false,

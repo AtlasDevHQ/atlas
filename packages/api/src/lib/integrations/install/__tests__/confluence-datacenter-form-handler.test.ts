@@ -27,8 +27,8 @@ const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<
   throw new Error(`unexpected SQL: ${sql.slice(0, 50)}`);
 });
 
-mock.module("@atlas/api/lib/db/internal", () => buildInternalDbMockDefaults({ internalQuery }));
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/db/internal", () => buildInternalDbMockDefaults({ internalQuery }));
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
@@ -37,7 +37,7 @@ mock.module("@atlas/api/lib/logger", () => {
 const saveSyncCredential = mock(async (_w: string, _c: string, _s: string) => {});
 const deleteSyncCredential = mock(async (_w: string, _c: string) => {});
 const readSyncCredential = mock(async () => null);
-mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
+void mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
   SYNC_CREDENTIAL_UPSERT_SQL: "INSERT ...",
   saveSyncCredential,
   deleteSyncCredential,
@@ -61,7 +61,7 @@ const VALID = {
 /** A fixture verify-fetch: the space probe returns `spaceResults` (or a status). */
 function verifyFetch(opts: { spaceResults?: unknown[]; status?: number } = {}) {
   return async (input: string | URL | Request): Promise<Response> => {
-    const url = new URL(typeof input === "string" ? input : input.toString());
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
     if (opts.status && opts.status !== 200) return new Response("", { status: opts.status });
     if (url.pathname.endsWith("/rest/api/space")) {
       return new Response(JSON.stringify({ results: opts.spaceResults ?? [{ key: "ENG", id: 100 }] }), {

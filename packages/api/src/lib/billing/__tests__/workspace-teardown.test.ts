@@ -22,7 +22,7 @@ let hasDB = true;
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> =
   mock(() => Promise.resolve([]));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({
     internalQuery: mockInternalQuery,
     hasInternalDB: () => hasDB,
@@ -39,7 +39,7 @@ const stubLogger = {
   fatal: () => {},
   trace: () => {},
 };
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => stubLogger,
   getLogger: () => stubLogger,
   setLogLevel: () => false,
@@ -105,7 +105,7 @@ function makeStripeStub() {
   };
 }
 
-mock.module("@atlas/api/lib/billing/stripe-client", () => ({
+void mock.module("@atlas/api/lib/billing/stripe-client", () => ({
   getStripeClient: () => (stripeAvailable ? makeStripeStub() : null),
   _resetStripeClientCache: () => {},
 }));
@@ -729,7 +729,7 @@ describe("drift detection — zero local rows but a live customer (#3679)", () =
     const outcome = await cancelStripeSubscriptionsForWorkspace(ORG, "cus_drift");
 
     expect(subscriptionsList).toHaveBeenCalledTimes(1);
-    expect(enqueued.map((e) => e.stripeSubId).toSorted()).toEqual(["sub_live_a", "sub_live_b"]);
+    expect(enqueued.map((e) => e.stripeSubId as string).toSorted()).toEqual(["sub_live_a", "sub_live_b"]);
     expect(enqueued.every((e) => e.op === "cancel_subscription")).toBe(true);
     // A warning surfaces the drift rather than silently no-op'ing.
     expect(outcome.warnings.some((w) => w.includes("no local record"))).toBe(true);

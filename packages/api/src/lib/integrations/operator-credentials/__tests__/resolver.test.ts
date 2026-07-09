@@ -13,10 +13,10 @@ const mockRead: Mock<(platform: string) => Promise<Record<string, string> | null
 );
 const mockHasInternalDB: Mock<() => boolean> = mock(() => true);
 
-mock.module("../store", () => ({
+void mock.module("../store", () => ({
   readOperatorCredentials: mockRead,
 }));
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
 }));
 

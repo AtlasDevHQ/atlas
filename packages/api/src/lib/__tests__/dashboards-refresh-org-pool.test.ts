@@ -34,7 +34,7 @@ const mockGetDefault: Mock<() => { query: typeof mockGlobalQuery }> = mock(
 );
 const mockValidateSQL = mock(async () => ({ valid: true as const }));
 
-mock.module("@atlas/api/lib/db/connection", () => ({
+void mock.module("@atlas/api/lib/db/connection", () => ({
   connections: {
     getForOrg: mockGetForOrg,
     get: mockGet,
@@ -42,7 +42,7 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   validateSQL: mockValidateSQL,
 }));
 

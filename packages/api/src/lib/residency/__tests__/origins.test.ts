@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 
 let mockConfig: Record<string, unknown> | null = null;
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfig,
   configFromEnv: () => ({}),
   loadConfig: async () => ({}),
@@ -22,7 +22,7 @@ mock.module("@atlas/api/lib/config", () => ({
   _setConfigForTest: () => {},
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

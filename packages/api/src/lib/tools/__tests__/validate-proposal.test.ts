@@ -24,12 +24,12 @@ const proposalRow = {
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> =
   mock(() => Promise.resolve([proposalRow]));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: mockInternalQuery,
 }));
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       isOrgPoolingEnabled: () => false,
@@ -37,7 +37,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(["companies"]),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -49,7 +49,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
   getRequestContext: () => null,
@@ -68,7 +68,7 @@ const okOutcome: UserQueryOutcome = {
 const mockRunUserQueryPipeline: Mock<(opts: RunUserQueryOpts) => Promise<UserQueryOutcome>> =
   mock(() => Promise.resolve(okOutcome));
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   runUserQueryPipeline: mockRunUserQueryPipeline,
   validateSQL: mock(() => Promise.resolve({ valid: true, classification: { tablesAccessed: [], columnsAccessed: [] } })),
   parserDatabase: () => "PostgresQL",

@@ -32,7 +32,7 @@ import {
 
 // Stub getDashboard so the snapshot-hash step doesn't touch the internal DB.
 // Mock-all-exports: anything the module exports but we don't call is `never`.
-mock.module("@atlas/api/lib/dashboards", () => ({
+void mock.module("@atlas/api/lib/dashboards", () => ({
   getDashboard: mock(async () => ({
     ok: true,
     data: {

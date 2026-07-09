@@ -789,7 +789,7 @@ describe("SaasCrmLive.dispatcher — env-only config baked at boot (#2850)", () 
       }
       // Create-person path. Capture body for assertion.
       if (init?.method === "POST" && url.endsWith("/rest/people")) {
-        capturedPosts.push({ url, body: String(init.body ?? "") });
+        capturedPosts.push({ url, body: ((init.body ?? "") as string) });
         return new Response(
           JSON.stringify({ data: { createPerson: { id: "person_incident" } } }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -920,7 +920,7 @@ describe("dispatchOutboxRow", () => {
       init?: RequestInit,
     ): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      const body = init?.body ? String(init.body) : "";
+      const body = init?.body ? (init.body as string) : "";
       captured.push({ url, body });
       if (url.includes("/rest/people?filter")) {
         return new Response(JSON.stringify({ data: { people: [] } }), {
@@ -985,7 +985,7 @@ describe("dispatchOutboxRow", () => {
       init?: RequestInit,
     ): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      const body = init?.body ? String(init.body) : "";
+      const body = init?.body ? (init.body as string) : "";
       const method = init?.method ?? "GET";
       captured.push({ url, body, method });
       if (url.includes("/rest/people?filter")) {
@@ -1477,7 +1477,7 @@ describe("dispatchOutboxRow", () => {
         );
       }
       if (method === "POST" && url.endsWith("/rest/noteTargets")) {
-        noteTargetBody = JSON.parse(String(init?.body ?? "{}"));
+        noteTargetBody = JSON.parse((init?.body ?? "{}") as string);
         return new Response(JSON.stringify({ data: { createNoteTarget: { id: "nt_replay" } } }), {
           status: 200, headers: { "Content-Type": "application/json" },
         });
@@ -1586,7 +1586,7 @@ describe("dispatchOutboxRow", () => {
         });
       }
       if (method === "POST" && url.endsWith("/rest/people")) {
-        createPersonBody = JSON.parse(String(init?.body ?? "{}"));
+        createPersonBody = JSON.parse((init?.body ?? "{}") as string);
         return new Response(
           JSON.stringify({ data: { createPerson: { id: "person_signup_1" } } }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -1667,7 +1667,7 @@ describe("dispatchOutboxRow", () => {
         );
       }
       if (method === "PATCH" && url.includes("/rest/people/")) {
-        patchBody = JSON.parse(String(init?.body ?? "{}"));
+        patchBody = JSON.parse((init?.body ?? "{}") as string);
         return new Response(
           JSON.stringify({ data: { updatePerson: { id: "person_returning" } } }),
           { status: 200, headers: { "Content-Type": "application/json" } },

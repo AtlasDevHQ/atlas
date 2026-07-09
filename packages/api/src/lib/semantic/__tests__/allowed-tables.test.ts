@@ -9,12 +9,12 @@
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 
 const mockHasInternalDB: Mock<() => boolean> = mock(() => false);
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
 }));
 
@@ -25,7 +25,7 @@ const mockGetOrgWhitelistedTables: Mock<(orgId: string, connectionId?: string, m
 const mockGetWhitelistedTables: Mock<(connectionId?: string) => Set<string>> =
   mock(() => new Set(["file_table"]));
 
-mock.module("../whitelist", () => ({
+void mock.module("../whitelist", () => ({
   loadOrgWhitelist: mockLoadOrgWhitelist,
   getOrgWhitelistedTables: mockGetOrgWhitelistedTables,
   getWhitelistedTables: mockGetWhitelistedTables,

@@ -2,7 +2,7 @@ import { describe, expect, it, afterEach } from "bun:test";
 import { mock } from "bun:test";
 
 // Mock logger, tracing, and config
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     debug: () => {},
     info: () => {},
@@ -12,13 +12,13 @@ mock.module("@atlas/api/lib/logger", () => ({
   getRequestContext: () => undefined,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_name: string, _attrs: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
 let mockConfig: unknown = null;
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfig,
 }));
 

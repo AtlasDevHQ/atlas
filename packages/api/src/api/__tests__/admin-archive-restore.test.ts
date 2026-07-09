@@ -84,7 +84,7 @@ const mocks = createApiTestMocks({
 // Override the default settings mock from createApiTestMocks so tests
 // can drive getSettingAuto("ATLAS_DEMO_INDUSTRY") and simulate a transient
 // read failure. Registered AFTER createApiTestMocks so it wins.
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: () => [],
   getSettingsRegistry: () => [],
   getSettingDefinition: () => undefined,
@@ -113,7 +113,7 @@ mock.module("@atlas/api/lib/settings", () => ({
 // client. That lets the tests assert BEGIN / lock-before-mutate /
 // cascade-ordering / COMMIT. Other entity helpers stay as no-ops because
 // this test file doesn't exercise them.
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   upsertProfileStatus: mock(() => Promise.resolve()),
   listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   listEntityRows: mock(() => Promise.resolve([])),

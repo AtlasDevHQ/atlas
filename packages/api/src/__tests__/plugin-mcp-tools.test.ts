@@ -29,7 +29,7 @@ const rateLimitState: {
   outcome: { kind: "ok" },
   calls: [],
 };
-mock.module("@atlas/api/lib/rate-limit/middleware", () => ({
+void mock.module("@atlas/api/lib/rate-limit/middleware", () => ({
   enforceClientRateLimit: mock(async (input: { orgId: string; clientId: string; userId: string; toolName: string }) => {
     rateLimitState.calls.push(input);
     const o = rateLimitState.outcome;

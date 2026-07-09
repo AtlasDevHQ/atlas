@@ -39,7 +39,7 @@ import type { WorkspaceId } from "@useatlas/types";
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
   () => Promise.resolve([]),
 );
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -69,7 +69,7 @@ const mockCheckChatLimitAndInstall: Mock<
 // in other files importing the missing exports (per CLAUDE.md "Mock all
 // exports"). Only `checkChatIntegrationLimitAndInstall` is exercised here; the
 // rest are inert no-ops.
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
   CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
   checkResourceLimit: () => Promise.resolve({ allowed: true }),
@@ -97,7 +97,7 @@ type FetchInput = string | URL | Request;
 
 function setFetchOk(payload: Record<string, unknown> = { id: "1234567890123456789", name: "Test Guild" }): void {
   globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-    fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+    fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
     return new Response(JSON.stringify(payload), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -107,7 +107,7 @@ function setFetchOk(payload: Record<string, unknown> = { id: "123456789012345678
 
 function setFetchDiscordError(message: string, code: number, status = 404): void {
   globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-    fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+    fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
     return new Response(JSON.stringify({ message, code }), {
       status,
       headers: { "content-type": "application/json" },

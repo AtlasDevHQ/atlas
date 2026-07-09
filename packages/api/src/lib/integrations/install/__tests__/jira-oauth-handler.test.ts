@@ -56,7 +56,7 @@ const defaultInternalQueryImpl = async (
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> =
   mock(defaultInternalQueryImpl);
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -68,7 +68,7 @@ const mockSaveCredentialBundle: Mock<
   callOrder.push("integration_credentials.save");
 });
 
-mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
+void mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
   saveCredentialBundle: mockSaveCredentialBundle,
   readCredentialBundle: mock(() => Promise.resolve(null)),
   deleteCredentialBundle: mock(() => Promise.resolve(false)),

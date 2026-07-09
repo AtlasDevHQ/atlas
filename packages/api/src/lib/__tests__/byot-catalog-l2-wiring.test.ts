@@ -52,7 +52,7 @@ const isFreshSpy = mock(
 
 // Factory must be sync — async mock.module factories with inner awaits
 // deadlock the bun loader.
-mock.module("@atlas/api/lib/byot-catalog-store", () => ({
+void mock.module("@atlas/api/lib/byot-catalog-store", () => ({
   loadFromDB: loadFromDBSpy,
   storeToDB: storeToDBSpy,
   deleteFromDB: deleteFromDBSpy,
@@ -85,7 +85,7 @@ class MockBedrockClient {
   destroy() {}
 }
 
-mock.module("@aws-sdk/client-bedrock", () => ({
+void mock.module("@aws-sdk/client-bedrock", () => ({
   BedrockClient: MockBedrockClient,
   ListFoundationModelsCommand: MockListFoundationModelsCommand,
 }));

@@ -102,7 +102,7 @@ const mockResume = mock(async (_orgId: string) => {
   return teardownOutcome;
 });
 
-mock.module("@atlas/api/lib/billing/workspace-teardown", () => ({
+void mock.module("@atlas/api/lib/billing/workspace-teardown", () => ({
   cancelStripeSubscriptionsForWorkspace: mockCancelSubs,
   purgeStripeBillingForWorkspace: mockPurgeBilling,
   pauseStripeCollectionForWorkspace: mockPause,
@@ -126,7 +126,7 @@ interface CapturedAudit {
 }
 let auditCalls: CapturedAudit[] = [];
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mock((entry: CapturedAudit) => {
     auditCalls.push(entry);
   }),

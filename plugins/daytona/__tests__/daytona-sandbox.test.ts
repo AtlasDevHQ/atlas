@@ -40,7 +40,7 @@ const MockDaytona = mock(function () {
   return { create: mockCreate, delete: mockDelete };
 });
 
-mock.module("@daytonaio/sdk", () => ({
+void mock.module("@daytonaio/sdk", () => ({
   Daytona: MockDaytona,
 }));
 // Dual-package hazard (#3409): @daytonaio/sdk's exports map sends `import`
@@ -53,7 +53,7 @@ mock.module("@daytonaio/sdk", () => ({
 // checkout), the bare mock is a virtual module both loaders hit, and this
 // second registration is unnecessary — hence the try/catch.
 try {
-  mock.module(require.resolve("@daytonaio/sdk"), () => ({
+  void mock.module(require.resolve("@daytonaio/sdk"), () => ({
     Daytona: MockDaytona,
   }));
 } catch {

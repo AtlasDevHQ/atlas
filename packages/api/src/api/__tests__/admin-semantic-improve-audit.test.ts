@@ -63,7 +63,7 @@ interface AuditEntry {
 
 const mockLogAdminAction: Mock<(entry: AuditEntry) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
@@ -73,7 +73,7 @@ mock.module("@atlas/api/lib/audit", async () => {
 });
 
 // Stub YAML apply so the approved branch does not touch the filesystem.
-mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
+void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   applyAmendmentToEntity: mock(async () => undefined),
   applyAmendmentFromPayload: mock(async () => undefined),
 }));
@@ -104,7 +104,7 @@ const SEEDED_PROPOSAL: MinimalProposal = {
   score: 0.7,
 };
 
-mock.module("@atlas/api/lib/semantic/expert", () => ({
+void mock.module("@atlas/api/lib/semantic/expert", () => ({
   createSession: () => ({
     proposals: [SEEDED_PROPOSAL],
     currentIndex: 0,
@@ -130,7 +130,7 @@ mock.module("@atlas/api/lib/semantic/expert", () => ({
 }));
 
 // Stub the agent runner — /chat awaits runAgent and then emits the audit row.
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(async () => ({
     toUIMessageStream: () =>
       new ReadableStream<Uint8Array>({ start: (ctl) => ctl.close() }),
@@ -138,7 +138,7 @@ mock.module("@atlas/api/lib/agent", () => ({
   })),
 }));
 
-mock.module("@atlas/api/lib/tools/expert-registry", () => ({
+void mock.module("@atlas/api/lib/tools/expert-registry", () => ({
   buildExpertRegistry: () => ({ tools: {}, freeze: () => {} }),
 }));
 

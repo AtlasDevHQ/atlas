@@ -100,7 +100,7 @@ process.env.ATLAS_DEPLOY_MODE ??= "saas";
 // `mock.module` factories must be sync (CLAUDE.md). See the file docstring.
 // oxlint-disable-next-line @typescript-eslint/no-require-imports
 const effectMod = require("effect") as typeof import("effect");
-mock.module("@atlas/ee/layers", () => {
+void mock.module("@atlas/ee/layers", () => {
   const { Layer } = effectMod;
   // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");

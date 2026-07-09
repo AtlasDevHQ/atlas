@@ -17,14 +17,14 @@ let entityEntries: ReadonlyArray<{ name: string; source: string }>;
 let visibleThrows = false;
 let autoUpserts: Array<{ orgId: string; groupId: string; description: string }> = [];
 
-mock.module("@atlas/api/lib/group-reach/lookup", () => ({
+void mock.module("@atlas/api/lib/group-reach/lookup", () => ({
   loadVisibleGroups: async () => {
     if (visibleThrows) throw new Error("visible groups failed");
     return visibleGroups;
   },
 }));
 
-mock.module("@atlas/api/lib/db/connection-group-descriptions", () => ({
+void mock.module("@atlas/api/lib/db/connection-group-descriptions", () => ({
   getGroupDescriptionMap: async () => descriptions,
   listGroupDescriptions: async () => [],
   upsertAutoGroupDescription: async (orgId: string, groupId: string, description: string) => {
@@ -33,11 +33,11 @@ mock.module("@atlas/api/lib/db/connection-group-descriptions", () => ({
   setManualGroupDescription: async () => false,
 }));
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: async () => entityEntries,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 

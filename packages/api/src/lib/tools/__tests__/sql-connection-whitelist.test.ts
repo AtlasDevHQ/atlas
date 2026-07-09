@@ -8,7 +8,7 @@ import { describe, it, expect, mock } from "bun:test";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // Mock getWhitelistedTables to return different sets per connectionId
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -36,7 +36,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
 
 // Mock the DB connection — validateSQL doesn't need it, but the module
 // imports it at the top level.
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       getDBType: (id?: string) => {

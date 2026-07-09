@@ -31,7 +31,7 @@ const mockSettings = new Map<string, string>();
 const mockDeleteSetting: Mock<(key: string, userId?: string, orgId?: string) => Promise<void>> =
   mock(async () => {});
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string, _orgId?: string) => mockSettings.get(key),
   getSettingAuto: (key: string, _orgId?: string) => mockSettings.get(key),
   getSettingLive: async (key: string, _orgId?: string) => mockSettings.get(key),
@@ -49,7 +49,7 @@ mock.module("@atlas/api/lib/settings", () => ({
 
 const mockInvalidateOrgExploreBackends: Mock<(orgId: string) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "vercel-sandbox",
   getActiveSandboxPluginId: () => null,
   explore: { type: "function" },
@@ -74,7 +74,7 @@ let mockRuntimeAvailability: Record<string, boolean> = {
   railway: false,
 };
 
-mock.module("@atlas/api/lib/sandbox/runtime", () => ({
+void mock.module("@atlas/api/lib/sandbox/runtime", () => ({
   ...realSandboxRuntime,
   isProviderRuntimeAvailable: async (provider: string) =>
     mockRuntimeAvailability[provider] ?? false,
@@ -84,7 +84,7 @@ mock.module("@atlas/api/lib/sandbox/runtime", () => ({
 
 // --- Built-in backend detection ---
 
-mock.module("@atlas/api/lib/tools/backends/detect", () => ({
+void mock.module("@atlas/api/lib/tools/backends/detect", () => ({
   vercelSandboxAccess: () => undefined,
   useVercelSandbox: () => true,
   useSidecar: () => false,
@@ -96,7 +96,7 @@ mock.module("@atlas/api/lib/tools/backends/detect", () => ({
 
 let mockSandboxPlugins: Array<{ id: string; name?: string }> = [];
 
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     describe: () => [],
     get: () => undefined,
@@ -127,7 +127,7 @@ let mockCredentials: MockCredential[] = [];
 const mockDeleteCredential: Mock<(orgId: string, provider: string) => Promise<boolean>> =
   mock(async () => true);
 
-mock.module("@atlas/api/lib/sandbox/credentials", () => ({
+void mock.module("@atlas/api/lib/sandbox/credentials", () => ({
   SANDBOX_PROVIDERS: SANDBOX_PROVIDER_KEYS,
   getSandboxCredentials: mock(async () => mockCredentials),
   getSandboxCredentialByProvider: mock(async () => null),
@@ -135,7 +135,7 @@ mock.module("@atlas/api/lib/sandbox/credentials", () => ({
   deleteSandboxCredential: mockDeleteCredential,
 }));
 
-mock.module("@atlas/api/lib/sandbox/validate", () => ({
+void mock.module("@atlas/api/lib/sandbox/validate", () => ({
   isSafeExternalUrl: () => true,
   validateVercelCredentials: mock(async () => ({ valid: true as const })),
   validateE2BCredentials: mock(async () => ({ valid: true as const })),

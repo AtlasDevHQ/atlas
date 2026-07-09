@@ -41,7 +41,7 @@ let auditCalls: CapturedAudit[] = [];
 
 // ── Mock side modules BEFORE importing the route ────────────────────
 
-mock.module("@atlas/api/lib/db/internal", () => {
+void mock.module("@atlas/api/lib/db/internal", () => {
   const internalQuery = async (sql: string, params?: unknown[]) => {
     queryCalls.push({ sql, params });
     return queryStub(sql, params);
@@ -60,7 +60,7 @@ mock.module("@atlas/api/lib/db/internal", () => {
   };
 });
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = {
     info: noop,
@@ -78,7 +78,7 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: {
     crm_outbox: {
       retry: "crm_outbox.retry",
@@ -101,7 +101,7 @@ const passthrough = createMiddleware(async (_c, next) => {
   await next();
 });
 
-mock.module("./routes/middleware", () => ({
+void mock.module("./routes/middleware", () => ({
   adminAuth: passthrough,
   adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
@@ -109,7 +109,7 @@ mock.module("./routes/middleware", () => ({
   standardAuth: passthrough,
   withRequestId: passthrough,
 }));
-mock.module("../middleware", () => ({
+void mock.module("../middleware", () => ({
   adminAuth: passthrough,
   adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
@@ -117,7 +117,7 @@ mock.module("../middleware", () => ({
   standardAuth: passthrough,
   withRequestId: passthrough,
 }));
-mock.module("@atlas/api/api/routes/middleware", () => ({
+void mock.module("@atlas/api/api/routes/middleware", () => ({
   adminAuth: passthrough,
   adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
@@ -125,14 +125,14 @@ mock.module("@atlas/api/api/routes/middleware", () => ({
   standardAuth: passthrough,
   withRequestId: passthrough,
 }));
-mock.module("../admin-mfa-required", () => ({
+void mock.module("../admin-mfa-required", () => ({
   mfaRequired: passthrough,
 }));
-mock.module("./routes/admin-mfa-required", () => ({
+void mock.module("./routes/admin-mfa-required", () => ({
   mfaRequired: passthrough,
 }));
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   getClientIP: () => "198.51.100.7",
   checkRateLimit: () => ({ allowed: true }),
   resetRateLimits: () => {},
@@ -156,7 +156,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 // Stub the Hono → Effect bridge to inject test layers (same pattern as
 // contact.test.ts). The real `runEffect` boots OTel and the managed
 // runtime; we don't want either in a unit test.
-mock.module("@atlas/api/lib/effect/hono", () => ({
+void mock.module("@atlas/api/lib/effect/hono", () => ({
   runEffect: async (
     _c: unknown,
     program: Effect.Effect<unknown, unknown, unknown>,

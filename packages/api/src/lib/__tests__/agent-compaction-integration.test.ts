@@ -117,7 +117,7 @@ let summaryMockModel: InstanceType<typeof MockLanguageModelV3> | null = null;
 // the turn model, never error the turn). Reset per test.
 let summaryModelResolutionThrows = false;
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
   getProviderType: () => "anthropic" as const,
   getModelFromWorkspaceConfig: () => mockModel,
@@ -135,7 +135,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -152,7 +152,7 @@ const mockDBConnectionObj = {
   query: async () => ({ columns: ["id"], rows: [{ id: 1 }] }),
   close: async () => {},
 };
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnectionObj,
     connections: {
@@ -165,7 +165,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("just-bash", () => ({
+void mock.module("just-bash", () => ({
   Bash: class MockBash {
     constructor(_: unknown) {}
     async exec() {
@@ -177,7 +177,7 @@ mock.module("just-bash", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({ get: () => null, set: () => {}, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),
   buildCacheKey: () => "mock-key",
   cacheEnabled: () => false,

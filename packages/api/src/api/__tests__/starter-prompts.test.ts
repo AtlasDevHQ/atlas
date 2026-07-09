@@ -44,7 +44,7 @@ const mocks = createApiTestMocks();
 
 // Controls the demo-industry read per test.
 let demoIndustryFixture: string | undefined;
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: () => [],
   getSettingsRegistry: () => [],
   getSettingDefinition: () => undefined,
@@ -103,7 +103,7 @@ const mockUpdateFavoritePosition = mock(
   }),
 );
 
-mock.module("@atlas/api/lib/starter-prompts/favorite-store", () => ({
+void mock.module("@atlas/api/lib/starter-prompts/favorite-store", () => ({
   FAVORITE_TEXT_MAX_LENGTH: 2000,
   FavoriteCapError,
   DuplicateFavoriteError,

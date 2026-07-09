@@ -82,7 +82,7 @@ const mockExecuteAgentQuery: Mock<
   });
 });
 
-mock.module("@atlas/api/lib/agent-query", () => ({
+void mock.module("@atlas/api/lib/agent-query", () => ({
   executeAgentQuery: mockExecuteAgentQuery,
 }));
 
@@ -91,7 +91,7 @@ mock.module("@atlas/api/lib/agent-query", () => ({
 // turn isn't durably resumable).
 const mockSaveResumePending: Mock<(conversationId: string, coords: Record<string, unknown>) => Promise<boolean>> =
   mock(async () => true);
-mock.module("@atlas/api/lib/chat-plugin/resume-pending-store", () => ({
+void mock.module("@atlas/api/lib/chat-plugin/resume-pending-store", () => ({
   saveResumePending: mockSaveResumePending,
 }));
 
@@ -108,7 +108,7 @@ const mockGetInstallation: Mock<(teamId: string) => Promise<{ org_id: string | n
     });
   });
 
-mock.module("@atlas/api/lib/slack/store", () => ({
+void mock.module("@atlas/api/lib/slack/store", () => ({
   // CLAUDE.md "mock all exports" rule — every named export from the
   // real module gets stubbed so any cross-test importer that walks
   // into a symbol other than `getInstallation` gets a no-op rather
@@ -131,7 +131,7 @@ const mockSetConversationId: Mock<(channelId: string, threadTs: string, id: stri
   () => Promise.resolve(),
 );
 
-mock.module("@atlas/api/lib/slack/threads", () => ({
+void mock.module("@atlas/api/lib/slack/threads", () => ({
   getConversationId: mockGetConversationId,
   setConversationId: mockSetConversationId,
 }));
@@ -149,7 +149,7 @@ const mockGenerateTitle: Mock<(q: string) => string> = mock((q) => q.slice(0, 80
 // CLAUDE.md "mock all exports" — a partial factory breaks with "Export named
 // X not found" the moment executeQuery.ts imports another export).
 const realConversations = await import("@atlas/api/lib/conversations");
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   ...realConversations,
   createConversation: mockCreateConversation,
   addMessage: mockAddMessage,
@@ -167,7 +167,7 @@ mockCheckRateLimit.mockImplementation((key) => {
   return { allowed: true };
 });
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   checkRateLimit: mockCheckRateLimit,
 }));
 
@@ -179,7 +179,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Recor
   () => Promise.resolve([]),
 );
 const realInternal = await import("@atlas/api/lib/db/internal");
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   internalQuery: mockInternalQuery,
 }));

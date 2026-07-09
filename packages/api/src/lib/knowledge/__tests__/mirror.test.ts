@@ -26,7 +26,7 @@ let SETTINGS: Record<string, string | undefined> = {};
 // unreached in this module's code path (the internal-DB stubs cover the transitive
 // import graph); a real reach would surface as an obvious `undefined is not a
 // function` rather than a silent wrong answer.
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => internalDBPresent,
   internalQuery: (sql: string, params?: unknown[]) => {
     lastSql = sql;
@@ -39,10 +39,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 // `mirror.ts` reads exactly one setting (`ATLAS_KNOWLEDGE_TOC_MAX_BYTES`) via
 // `getSettingAuto` — the only export it imports from settings.
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string) => SETTINGS[key],
 }));
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };

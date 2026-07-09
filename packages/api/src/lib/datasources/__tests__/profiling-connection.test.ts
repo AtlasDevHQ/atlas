@@ -24,7 +24,7 @@ type LiveResult =
   | { kind: "reconnect_required"; dbType: string; message: string };
 let liveByScope: Map<string, LiveResult>;
 const resolveLiveConnectionSpy = mock(async (orgId: string) => liveByScope.get(orgId) ?? { kind: "not_found" });
-mock.module("@atlas/api/lib/datasources/mcp-lifecycle", () => ({
+void mock.module("@atlas/api/lib/datasources/mcp-lifecycle", () => ({
   resolveLiveConnection: resolveLiveConnectionSpy,
 }));
 
@@ -33,7 +33,7 @@ const listPostgresObjectsSpy = mock(async (): Promise<DatabaseObject[]> => [{ na
 const listMySQLObjectsSpy = mock(async (): Promise<DatabaseObject[]> => [{ name: "products", type: "table" }]);
 const profilePostgresSpy = mock(async (): Promise<ProfilingResult> => ({ profiles: [], errors: [] }));
 const profileMySQLSpy = mock(async (): Promise<ProfilingResult> => ({ profiles: [], errors: [] }));
-mock.module("@atlas/api/lib/profiler", () => ({
+void mock.module("@atlas/api/lib/profiler", () => ({
   listPostgresObjects: listPostgresObjectsSpy,
   listMySQLObjects: listMySQLObjectsSpy,
   profilePostgres: profilePostgresSpy,
@@ -47,7 +47,7 @@ mock.module("@atlas/api/lib/profiler", () => ({
 const realConn = await import("@atlas/api/lib/db/connection");
 const fakeRegistryConn = { query: mock(async () => ({ columns: [], rows: [] })), close: mock(async () => {}) };
 let registryHas = true;
-mock.module("@atlas/api/lib/db/connection", () => ({
+void mock.module("@atlas/api/lib/db/connection", () => ({
   ...realConn,
   connections: { get: () => fakeRegistryConn, has: () => registryHas },
 }));

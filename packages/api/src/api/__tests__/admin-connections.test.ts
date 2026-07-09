@@ -163,7 +163,7 @@ const mocks = createApiTestMocks({
 // `default` connection fallback.
 let mockConfigOverride: { deployMode?: "saas" | "self-hosted" } | null = null;
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfigOverride,
   defineConfig: (c: unknown) => c,
 }));
@@ -172,7 +172,7 @@ mock.module("@atlas/api/lib/config", () => ({
 // re-registration seam. All value exports are mocked (mock-all-exports
 // discipline); the route only calls `registerDatasourceInstall`, the rest are
 // inert stubs so a partial mock can't leave a real export wired.
-mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
+void mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   registerDatasourceInstall: mockRegisterDatasourceInstall,
   unregisterDatasourceInstall: mock(() => true),
   findDatasourcePluginConnection: mock(() => Promise.resolve(undefined)),

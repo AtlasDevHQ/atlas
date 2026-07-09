@@ -34,7 +34,7 @@ const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(
   () => {},
 );
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
@@ -64,7 +64,7 @@ const mockPluginGetConfigSchema = mock(() => [
 
 let mockPluginEnabled = true;
 
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     describe: () => [
       { id: "test-plugin", types: ["context"], version: "1.0.0", name: "Test Plugin", status: "healthy", enabled: mockPluginEnabled },
@@ -126,7 +126,7 @@ const mockGetPluginConfig: Mock<(id: string) => Promise<Record<string, unknown> 
   () => Promise.resolve(null),
 );
 
-mock.module("@atlas/api/lib/plugins/settings", () => ({
+void mock.module("@atlas/api/lib/plugins/settings", () => ({
   loadPluginSettings: mock(async () => 0),
   savePluginEnabled: mockSavePluginEnabled,
   savePluginConfig: mockSavePluginConfig,

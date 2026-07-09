@@ -37,7 +37,7 @@ const checkRateLimitCalls: Array<{
   options?: { bucket?: string; orgId?: string };
 }> = [];
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () =>
     Promise.resolve({ authenticated: true, mode: "managed", user: authUser }),
   checkRateLimit: (key: string, options?: { bucket?: string; orgId?: string }) => {
@@ -51,7 +51,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 
 let withRequestContextCalls: Array<Record<string, unknown>> = [];
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = {
     info: noop,
@@ -72,12 +72,12 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: async () => null,
   isStrictRoutingEnabled: () => false,
 }));
 
-mock.module("@atlas/api/lib/residency/readonly", () => ({
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: async () => false,
 }));
 

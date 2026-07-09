@@ -12,7 +12,7 @@ const mockLogger = () => ({
   fatal: mock(),
   child: mock(),
 });
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: mockLogger,
   getLogger: mockLogger,
   withRequestContext: mock((_ctx: unknown, fn: () => unknown) => fn()),

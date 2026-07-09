@@ -30,7 +30,7 @@ const realInternal = await import("@atlas/api/lib/db/internal");
 let internalRows: Array<Record<string, unknown>> = [];
 const mockInternalQuery = mock<(...a: unknown[]) => Promise<unknown>>(async () => internalRows);
 const mockHasInternalDB = mock<() => boolean>(() => true);
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   internalQuery: mockInternalQuery,
   hasInternalDB: mockHasInternalDB,
@@ -39,13 +39,13 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // `mcp-lifecycle` imports the connection registry at module load — mock it so no
 // real pool spins. `runSemanticProfile`'s whitelist registration goes through the
 // real `whitelist` module (not this mock).
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({ connections: { register: mock(() => {}) } }),
 );
 
 // catalogSlug → dbType + the pool config the profile target reads its url from.
 let poolConfigResult: unknown = { dbType: "clickhouse", url: "clickhouse://h:8443/analytics" };
-mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
+void mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
   catalogSlugToDbType: (slug: string) => {
     if (slug === "clickhouse") return "clickhouse";
     if (slug === "snowflake") return "snowflake";
@@ -62,7 +62,7 @@ mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
 let pluginConn:
   | { dbType: string; createFromConfig?: unknown; profile?: unknown; listObjects?: unknown }
   | undefined;
-mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
+void mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   findDatasourcePluginConnection: mock(async () => pluginConn),
   isHandlerManagedDatasourceDbType: (dbType: string) => dbType === "salesforce",
   probePluginDatasourceConnection: mock(async () => ({ ok: true })),
@@ -73,7 +73,7 @@ mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
 
 // Secrets passthrough — the profile target decrypts the row config.
 const realSecrets = await import("@atlas/api/lib/plugins/secrets");
-mock.module("@atlas/api/lib/plugins/secrets", () => ({
+void mock.module("@atlas/api/lib/plugins/secrets", () => ({
   ...realSecrets,
   parseConfigSchema: () => ({ state: "parsed", fields: [] }),
   decryptSecretFields: (c: Record<string, unknown>) => c,
@@ -87,7 +87,7 @@ mock.module("@atlas/api/lib/plugins/secrets", () => ({
 type UpsertRow = { entityType: string; name: string; yamlContent: string; connectionGroupId?: string | null };
 let upsertCalls: Array<{ orgId: string; rows: UpsertRow[] }> = [];
 const realEntities = await import("@atlas/api/lib/semantic/entities");
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   ...realEntities,
   bulkUpsertEntities: mock(async (orgId: string, rows: UpsertRow[]) => {
     upsertCalls.push({ orgId, rows });

@@ -14,7 +14,7 @@ let mockHasDB = true;
 // we mock the three exports the sibling store tests use so this file is
 // safe if ever run in the same process as them (mock.module is
 // process-global) and matches the repo's mock-all-exports convention.
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasDB,
   internalQuery: mock(() => Promise.resolve([])),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),

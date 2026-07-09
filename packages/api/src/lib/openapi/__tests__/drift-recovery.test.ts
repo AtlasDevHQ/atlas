@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => undefined };

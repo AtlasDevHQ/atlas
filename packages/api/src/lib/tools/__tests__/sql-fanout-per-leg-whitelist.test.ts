@@ -22,7 +22,7 @@ import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // Capture every org-whitelist lookup: which connection bucket + widening flag.
 const whitelistCalls: Array<{ connId: string; unpinned: boolean }> = [];
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: (
     _orgId: string,
     connId: string,
@@ -50,7 +50,7 @@ const mockQuery: Mock<() => Promise<unknown>> = mock(async () => ({
 }));
 const mockDBConnection = { query: mockQuery, close: async () => {} };
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnection,
     connections: {
@@ -70,13 +70,13 @@ mock.module("@atlas/api/lib/db/connection", () =>
 );
 
 let mockRequestContext: Record<string, unknown> | undefined;
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
   getRequestContext: () => mockRequestContext,
 }));
 
 // Two members so `scope: "all"` produces a real fanout.
-mock.module("@atlas/api/lib/env-routing/lookup", () => ({
+void mock.module("@atlas/api/lib/env-routing/lookup", () => ({
   loadGroupRoutingContext: async (_orgId: string | undefined, currentMember: string) => ({
     groupId: "prod",
     members: ["us-int", "eu"] as const,
@@ -86,25 +86,25 @@ mock.module("@atlas/api/lib/env-routing/lookup", () => ({
   }),
 }));
 
-mock.module("@atlas/api/lib/auth/audit", () => ({ logQueryAudit: () => {} }));
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/auth/audit", () => ({ logQueryAudit: () => {} }));
+void mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /password|secret/i,
   maskConnectionUrl: (url: string) => url,
 }));
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_n: string, _a: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
-mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
+void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
-mock.module("@atlas/api/lib/config", () => ({ getConfig: () => ({}) }));
-mock.module("@atlas/api/lib/rls", () => ({
+void mock.module("@atlas/api/lib/config", () => ({ getConfig: () => ({}) }));
+void mock.module("@atlas/api/lib/rls", () => ({
   resolveRLSFilters: () => ({ groups: [] }),
   injectRLSConditions: (sql: string) => sql,
 }));
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (k: string) => (k === "ATLAS_ROW_LIMIT" ? "1000" : k === "ATLAS_QUERY_TIMEOUT" ? "30000" : undefined),
   getSettingAuto: (k: string) => (k === "ATLAS_ROW_LIMIT" ? "1000" : k === "ATLAS_QUERY_TIMEOUT" ? "30000" : undefined),
   getSettingLive: async (k: string) => (k === "ATLAS_ROW_LIMIT" ? "1000" : k === "ATLAS_QUERY_TIMEOUT" ? "30000" : undefined),
@@ -117,13 +117,13 @@ mock.module("@atlas/api/lib/settings", () => ({
   getAllSettingOverrides: async () => [],
   _resetSettingsCache: () => {},
 }));
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   cacheEnabled: () => false,
   getCache: () => ({ get: () => null, set: () => {} }),
   buildCacheKey: () => "",
   getDefaultTtl: () => 60000,
 }));
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
   dispatchMutableHook: async (_n: string, ctx: { sql: string }) => ctx.sql,
 }));

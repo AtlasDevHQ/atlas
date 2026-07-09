@@ -42,7 +42,7 @@ const mockValidateEnvironment: Mock<() => Promise<{ message: string; code: strin
 
 const mockGetStartupWarnings: Mock<() => string[]> = mock(() => []);
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mockValidateEnvironment,
   getStartupWarnings: mockGetStartupWarnings,
 }));
@@ -64,7 +64,7 @@ const mockDBConnection = {
   close: async () => {},
 };
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnection,
     connections: {
@@ -79,7 +79,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",
   // demo.ts (mounted via the app) statically imports getModelForConfig — it
   // must be present so the mock links, even though the anthropic default
@@ -87,7 +87,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   getModelForConfig: () => ({ model: {}, providerType: "anthropic", modelId: "claude-test" }),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -99,18 +99,18 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
   explore: { type: "function" },
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(() =>
     Promise.resolve({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
@@ -120,7 +120,7 @@ mock.module("@atlas/api/lib/agent", () => ({
 }));
 
 // Mock action tools to prevent import errors
-mock.module("@atlas/api/lib/tools/actions", () => ({
+void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: {
     name: "createJiraTicket",
     description: "Mock",
@@ -141,7 +141,7 @@ mock.module("@atlas/api/lib/tools/actions", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve(null)),
   addMessage: mock(() => {}),
   persistAssistantSteps: mock(() => {}),
@@ -191,7 +191,7 @@ const ANON_AUTH: AuthResult = {
 let authenticateRequestImpl: () => Promise<AuthResult> = () =>
   Promise.resolve(OPERATOR_NONE_AUTH);
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mock(() => authenticateRequestImpl()),
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
@@ -220,7 +220,7 @@ let pluginHealthCheckAllImpl: () => Promise<Map<string, PluginHealthEntry>> = ()
 // module — partial mocks have caused SyntaxError in unrelated test files
 // in this project (CLAUDE.md "Mock all exports").
 const realPluginsRegistry = await import("@atlas/api/lib/plugins/registry");
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   ...realPluginsRegistry,
   plugins: {
     describe: () => pluginDescribeImpl(),
@@ -244,7 +244,7 @@ mock.module("@atlas/api/lib/plugins/registry", () => ({
 const realInternalDBModule = await import("@atlas/api/lib/db/internal");
 let internalDBQueryImpl: () => Promise<unknown> = () =>
   Promise.resolve({ rows: [{ "?column?": 1 }] });
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternalDBModule,
   getInternalDB: () => ({ query: () => internalDBQueryImpl() }),
 }));

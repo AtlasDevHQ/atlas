@@ -7,7 +7,7 @@ import { createConnectionMock } from "@atlas/api/testing/connection";
 // queries and qualified names (e.g. "public.companies", "analytics.companies") for
 // explicit schema-qualified queries. This mirrors real usage where atlas init adds
 // qualified entries for non-public schemas.
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -31,7 +31,7 @@ const mockDetectDBType = () => {
   throw new Error(`Unsupported database URL: "${url.slice(0, 40)}…".`);
 };
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       getDBType: () => mockDetectDBType(),

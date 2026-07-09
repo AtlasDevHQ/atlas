@@ -43,7 +43,7 @@ const mockInternalQuery = mock(async (sql: string, params?: unknown[]) => {
 
 const mockHasInternalDB = mock(() => hasDB);
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mockHasInternalDB,
   // Satisfy other consumers that may import these — not exercised in this file
@@ -201,7 +201,7 @@ describe("loadOrgWhitelist — developer mode uses overlay", () => {
   const mockListEntities = mock(async () => [] as Record<string, unknown>[]);
   const mockListEntitiesWithOverlay = mock(async () => [] as Record<string, unknown>[]);
 
-  mock.module("@atlas/api/lib/semantic/entities", () => ({
+  void mock.module("@atlas/api/lib/semantic/entities", () => ({
     listEntityRows: mockListEntities,
     listEntities: mock(async () => []),
     listEntitiesWithOverlay: mockListEntitiesWithOverlay,

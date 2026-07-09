@@ -26,7 +26,7 @@ const mockListEntities = mock(async (_orgId: string, _type?: string, status?: st
 
 const mockListEntitiesWithOverlay = mock(async () => [...publishedRows, ...overlayRows]);
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntityRows: mockListEntities,
   listEntities: async () => [],
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,
@@ -51,7 +51,7 @@ let knowledgeMirrorCalls = 0;
 // When set, the mirror parks on this promise — lets a test interleave an
 // invalidation into an in-flight knowledge-only refresh (the stamp race).
 let knowledgeMirrorGate: Promise<void> | null = null;
-mock.module("@atlas/api/lib/knowledge/mirror", () => ({
+void mock.module("@atlas/api/lib/knowledge/mirror", () => ({
   mirrorKnowledgeToDisk: async () => {
     knowledgeMirrorCalls++;
     if (knowledgeMirrorGate) await knowledgeMirrorGate;
@@ -65,7 +65,7 @@ mock.module("@atlas/api/lib/knowledge/mirror", () => ({
 // files in at creation and would serve stale YAMLs otherwise). Mock ALL
 // exports so loading it here never touches real backend detection.
 const mockInvalidateOrgExploreBackends = mock((_orgId: string) => {});
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   explore: {},
   getActiveSandboxPluginId: () => null,
   getExploreBackendType: () => "just-bash",

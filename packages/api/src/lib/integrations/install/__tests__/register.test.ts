@@ -23,7 +23,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mock(() => Promise.resolve([])),
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -53,7 +53,7 @@ interface MockedConfig {
 }
 let mockedConfig: MockedConfig | null = null;
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockedConfig,
 }));
 

@@ -26,11 +26,11 @@ import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> =
   mock(() => Promise.resolve([]));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery: mockInternalQuery }),
 }));
 
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   runEnterprise: async () => undefined,
   getEnterpriseRuntime: () => ({ runPromise: async () => undefined }),
   EnterpriseLayer: {},

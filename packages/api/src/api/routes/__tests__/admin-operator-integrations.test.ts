@@ -50,7 +50,7 @@ const deleteSpy = mock(async () => {
   storedBundle = null;
   return existed;
 });
-mock.module("@atlas/api/lib/integrations/operator-credentials/store", () => ({
+void mock.module("@atlas/api/lib/integrations/operator-credentials/store", () => ({
   saveOperatorCredentials: saveSpy,
   readOperatorCredentials: mock(async () => (storedBundle ? { ...storedBundle } : null)),
   readOperatorCredentialRecord: mock(async () =>
@@ -62,13 +62,13 @@ mock.module("@atlas/api/lib/integrations/operator-credentials/store", () => ({
 // Plugin registry — spy on the refresh-on-write seam.
 type RefreshResult = { ok: true } | { ok: false; reason: string };
 const refreshSpy = mock(async (_id: string): Promise<RefreshResult> => ({ ok: true }));
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: { refresh: refreshSpy },
 }));
 
 // Audit — capture the rows so masking + `hasSecret` assertions can inspect them.
 const auditRows: Array<{ actionType: string; metadata?: Record<string, unknown> }> = [];
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mock((entry: { actionType: string; metadata?: Record<string, unknown> }) => {
     auditRows.push(entry);
   }),
@@ -81,14 +81,14 @@ mock.module("@atlas/api/lib/audit", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test-req" }) };
 });
 
 // Run the Effect with a RequestContext layer; return the handler's Response.
-mock.module("@atlas/api/lib/effect/hono", () => ({
+void mock.module("@atlas/api/lib/effect/hono", () => ({
   runEffect: async (_c: unknown, effect: Effect.Effect<Response, unknown, RequestContext>) => {
     const layer = Layer.succeed(RequestContext, {
       requestId: "test-req",
@@ -100,7 +100,7 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
 }));
 
 // Pass-through platform perimeter — the auth gate is covered by admin-router.test.ts.
-mock.module("../admin-router", () => ({
+void mock.module("../admin-router", () => ({
   createPlatformRouter: () => new OpenAPIHono(),
 }));
 

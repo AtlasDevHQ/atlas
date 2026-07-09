@@ -32,7 +32,7 @@ const mocks = createApiTestMocks({
 // Controls `getSettingAuto("ATLAS_DEMO_INDUSTRY")` per test — set in beforeEach
 // and mutated by individual it() blocks that exercise mode-aware demo scoping.
 let demoIndustryFixture: string | undefined;
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: () => [],
   getSettingsRegistry: () => [],
   getSettingDefinition: () => undefined,

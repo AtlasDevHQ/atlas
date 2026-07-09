@@ -35,14 +35,14 @@ let upsertLeadShouldFail = false;
 
 // ── Mock the side modules BEFORE importing the route ─────────────────
 
-mock.module("@atlas/api/lib/contact", () => ({
+void mock.module("@atlas/api/lib/contact", () => ({
   checkContactRateLimit: async () => ({
     allowed: rateLimitAllowed,
     retryAfterMs: rateLimitAllowed ? undefined : rateLimitRetryAfterMs,
   }),
 }));
 
-mock.module("@atlas/api/lib/turnstile", () => ({
+void mock.module("@atlas/api/lib/turnstile", () => ({
   verifyTurnstile: async (opts: { token: string; remoteIp?: string | null }) => {
     turnstileCallArgs = { token: opts.token, remoteIp: opts.remoteIp };
     if (turnstileOk) return { ok: true };
@@ -54,7 +54,7 @@ mock.module("@atlas/api/lib/turnstile", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -66,7 +66,7 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   // Mock all exports — bun's mock.module replaces the whole surface.
   // Most aren't called by the contact route but are imported by sibling
   // modules that are pulled in transitively (e.g. routes/middleware.ts).
@@ -86,7 +86,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 // module-level ManagedRuntime. In tests we don't want to boot OTel /
 // the real EE runtime — instead we provide a minimal layer that binds
 // only the tags the route uses (`SaasCrm` + `RequestContext`).
-mock.module("@atlas/api/lib/effect/hono", () => ({
+void mock.module("@atlas/api/lib/effect/hono", () => ({
   runEffect: async (
     _c: unknown,
     program: Effect.Effect<unknown, unknown, unknown>,

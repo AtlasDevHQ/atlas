@@ -13,7 +13,7 @@ let hasInternalDB = true;
 const execCalls: Array<{ sql: string; params?: unknown[] }> = [];
 let queryRows: Array<{ id: string }> = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => hasInternalDB,
   internalExecute: (sql: string, params?: unknown[]) => {
@@ -22,7 +22,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: async () => queryRows,
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: () => undefined,
 }));
 

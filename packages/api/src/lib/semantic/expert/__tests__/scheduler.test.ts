@@ -18,7 +18,7 @@ let settingsRows: Array<{
   org_id: string | null;
 }> = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => dbAvailable,
   getInternalDB: () => ({ query: async () => ({ rows: [] }), end: async () => {}, on: () => {} }),
   internalQuery: async () => settingsRows,
@@ -35,7 +35,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 // Mock logger
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

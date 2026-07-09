@@ -15,11 +15,11 @@ let mockAuthMode = "managed";
 let executeCalls: Array<{ sql: string; params: unknown[] }> = [];
 let executeShouldThrow = false;
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockInternalDB,
   internalExecute: (sql: string, params: unknown[]) => {
     if (executeShouldThrow) throw new Error("pool init throw");
@@ -27,7 +27,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => mockAuthMode,
   getAuthModeSource: () => null,
   resetAuthModeCache: () => {},

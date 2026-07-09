@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 
 let storedToken: string | null = "ntn_workspace-token";
-mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
+void mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
   SYNC_CREDENTIAL_UPSERT_SQL: "INSERT INTO knowledge_sync_credentials …",
   saveSyncCredential: async () => {},
   deleteSyncCredential: async () => {},

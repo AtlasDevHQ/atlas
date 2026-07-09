@@ -22,7 +22,7 @@ import type { CacheEntry } from "@atlas/api/lib/cache/types";
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyResult = any;
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -41,7 +41,7 @@ const mockConn = {
   close: async () => {},
 };
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockConn,
     connections: {
@@ -52,7 +52,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (
     _name: string,
     _attrs: Record<string, unknown>,
@@ -61,7 +61,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
+void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
@@ -73,7 +73,7 @@ mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
 let cachedEntry: CacheEntry | null = null;
 let cacheSets: Array<{ key: string; entry: CacheEntry }> = [];
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({
     get: () => cachedEntry,
     set: (key: string, entry: CacheEntry) => {

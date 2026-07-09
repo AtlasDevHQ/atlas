@@ -11,7 +11,7 @@ const mockSendOnboardingEmail = mock(() => Promise.resolve(true));
 const mockOnMilestoneReached = mock(() => Promise.resolve());
 const mockMarkStepSatisfied = mock(() => Promise.resolve(true));
 
-mock.module("../engine", () => ({
+void mock.module("../engine", () => ({
   isOnboardingEmailEnabled: () => mockEnabled,
   sendOnboardingEmail: mockSendOnboardingEmail,
   onMilestoneReached: mockOnMilestoneReached,
@@ -22,7 +22,7 @@ mock.module("../engine", () => ({
 
 const mockLogWarn = mock(() => {});
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: mockLogWarn,

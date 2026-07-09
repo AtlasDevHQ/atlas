@@ -39,7 +39,7 @@ interface AuditEntry {
 
 const mockLogAdminAction: Mock<(entry: AuditEntry) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
@@ -68,7 +68,7 @@ const mockGetEmailInstallationByOrg: Mock<() => Promise<EmailInstallShape>> = mo
   config: { provider: "resend" as const, apiKey: "re_test" },
 }));
 
-mock.module("@atlas/api/lib/slack/store", () => ({
+void mock.module("@atlas/api/lib/slack/store", () => ({
   // ALL named exports stubbed — this file loads the full app, so a
   // missing binding (e.g. admin-proactive.ts's `getBotToken` import)
   // ESM-link-fails the admin router and 404s every admin route.
@@ -89,24 +89,24 @@ mock.module("@atlas/api/lib/slack/store", () => ({
   getInstallationByOrg: mock(async () => null),
   getBotToken: mock(async () => null),
 }));
-mock.module("@atlas/api/lib/discord/store", () => ({
+void mock.module("@atlas/api/lib/discord/store", () => ({
   saveDiscordInstallation: mockSaveDiscordInstallation,
   deleteDiscordInstallationByOrg: mock(async () => true),
   getDiscordInstallationByOrg: mock(async () => null),
 }));
-mock.module("@atlas/api/lib/github/store", () => ({
+void mock.module("@atlas/api/lib/github/store", () => ({
   saveGitHubInstallation: mockSaveGitHubInstallation,
   deleteGitHubInstallationByOrg: mock(async () => true),
   getGitHubInstallationByOrg: mock(async () => null),
 }));
-mock.module("@atlas/api/lib/linear/store", () => ({
+void mock.module("@atlas/api/lib/linear/store", () => ({
   saveLinearInstallation: mockSaveLinearInstallation,
   deleteLinearInstallationByOrg: mock(async () => true),
   getLinearInstallationByOrg: mock(async () => null),
 }));
 // EMAIL_PROVIDERS feeds the Zod enum at module load — omitting it makes
 // the router fail to register and every integrations route 404s.
-mock.module("@atlas/api/lib/email/store", () => ({
+void mock.module("@atlas/api/lib/email/store", () => ({
   EMAIL_PROVIDERS: ["resend", "sendgrid", "postmark", "smtp", "ses"] as const,
   saveEmailInstallation: mock(async () => {}),
   deleteEmailInstallationByOrg: mock(async () => true),
@@ -441,7 +441,7 @@ describe("POST /api/v1/admin/integrations/email/test — audit emission (F-29 re
     }));
     let capturedFrom: unknown;
     mockFetch.mockImplementation((_url, init) => {
-      const body = init?.body ? (JSON.parse(String(init.body)) as { from?: unknown }) : {};
+      const body = init?.body ? (JSON.parse((init.body as string)) as { from?: unknown }) : {};
       capturedFrom = body.from;
       return Promise.resolve(
         new Response(JSON.stringify({ id: "ok" }), {
@@ -477,8 +477,8 @@ describe("POST /api/v1/admin/integrations/email/test — audit emission (F-29 re
     let capturedUrl: string | undefined;
     let capturedFrom: unknown;
     mockFetch.mockImplementation((url, init) => {
-      capturedUrl = String(url);
-      const body = init?.body ? (JSON.parse(String(init.body)) as { from?: { email?: unknown } }) : {};
+      capturedUrl = (typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url);
+      const body = init?.body ? (JSON.parse((init.body as string)) as { from?: { email?: unknown } }) : {};
       capturedFrom = body.from?.email;
       return Promise.resolve(
         new Response(JSON.stringify({}), { status: 202, headers: { "Content-Type": "application/json" } }),

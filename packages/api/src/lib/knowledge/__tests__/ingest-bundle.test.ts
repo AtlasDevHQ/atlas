@@ -84,7 +84,7 @@ function fakeTxClient() {
   };
 }
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({
     internalQuery: async (sql: string) => {
       throw new Error(`unexpected internalQuery outside the transaction: ${sql.slice(0, 60)}`);
@@ -93,7 +93,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: () => ({ connect: async () => fakeTxClient() }),
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
@@ -102,7 +102,7 @@ mock.module("@atlas/api/lib/logger", () => {
 // Partial mock, justified: this file's import graph reaches only the exports
 // stubbed below; the isolated per-file runner prevents cross-file leaks, and an
 // unmocked export reached later fails loudly as `undefined is not a function`.
-mock.module("@atlas/api/lib/content-mode", () => ({
+void mock.module("@atlas/api/lib/content-mode", () => ({
   CONTENT_MODE_TABLES: [],
   makeService: () => ({
     runPublishPhases: () =>
@@ -114,7 +114,7 @@ mock.module("@atlas/api/lib/content-mode", () => ({
   }),
 }));
 
-mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
+void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   getIngestMaxDocs: () => MAX_DOCS,
   getIngestMaxDocBytes: () => MAX_DOC_BYTES,
   getIngestMaxBundleBytes: () => MAX_BUNDLE_BYTES,
@@ -123,7 +123,7 @@ mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
 // The mirror-invalidation seam lazy-imports semantic/sync; only the
 // invalidation entrypoint is reachable from this module's graph.
 let invalidations: Array<{ orgId: string; scope: string }> = [];
-mock.module("@atlas/api/lib/knowledge/mirror-invalidation", () => ({
+void mock.module("@atlas/api/lib/knowledge/mirror-invalidation", () => ({
   invalidateKnowledgeMirror: async (orgId: string, opts?: { scope?: string }) => {
     invalidations.push({ orgId, scope: opts?.scope ?? "knowledge" });
   },

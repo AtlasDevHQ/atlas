@@ -23,13 +23,13 @@ const internalQueryMock = mock(
 const internalExecuteMock = mock((..._args: unknown[]): void => {});
 let hasInternalDBValue = true;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => hasInternalDBValue,
   internalQuery: internalQueryMock,
   internalExecute: internalExecuteMock,
 }));
 
-mock.module("@atlas/api/lib/audit/error-scrub", () => ({
+void mock.module("@atlas/api/lib/audit/error-scrub", () => ({
   errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
 }));
 

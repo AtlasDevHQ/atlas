@@ -60,13 +60,13 @@ const mockListFavorites = mock(
   },
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => hasInternalDBFixture,
   internalQuery: mockInternalQuery,
   getPopularSuggestions: mockGetPopularSuggestions,
 }));
 
-mock.module("../favorite-store", () => ({
+void mock.module("../favorite-store", () => ({
   // Mock every export to satisfy Bun's mock.module partial-mock rule (CLAUDE.md).
   FAVORITE_TEXT_MAX_LENGTH: 2000,
   FavoriteCapError: class FavoriteCapError extends Error {
@@ -83,7 +83,7 @@ mock.module("../favorite-store", () => ({
   updateFavoritePosition: mock(async () => ({ status: "not_found" as const })),
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string, _orgId?: string) => {
     if (demoReadErrorFixture) throw demoReadErrorFixture;
     return key === "ATLAS_DEMO_INDUSTRY" ? demoIndustryFixture : undefined;

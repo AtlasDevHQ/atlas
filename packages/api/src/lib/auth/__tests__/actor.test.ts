@@ -18,7 +18,7 @@ let nextRows: Record<string, unknown>[][] = [];
 let hasInternalDBValue = true;
 let internalQueryError: Error | null = null;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => hasInternalDBValue,
   internalQuery: async (sql: string, params?: unknown[]) => {
     internalQueryCalls.push({ sql, params: params ?? [] });

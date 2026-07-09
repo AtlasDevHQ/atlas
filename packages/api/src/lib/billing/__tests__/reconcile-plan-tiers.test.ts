@@ -15,7 +15,7 @@ const mockUpdateWorkspacePlanTier: Mock<(orgId: string, tier: string) => Promise
   mock(() => Promise.resolve(true));
 let hasDb = true;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({
     internalQuery: mockInternalQuery,
     hasInternalDB: () => hasDb,

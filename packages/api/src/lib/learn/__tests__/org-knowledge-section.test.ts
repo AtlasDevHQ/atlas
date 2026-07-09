@@ -72,7 +72,7 @@ async function mockInternalQuery(sql: string, paramsArg?: unknown[]) {
   return [];
 }
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   getInternalDB: () => ({ query: async () => ({ rows: [] }), end: async () => {}, on: () => {} }),
   internalQuery: mockInternalQuery,
@@ -122,7 +122,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getAuditLogQueries: async () => [],
 }));
 
-mock.module("@atlas/api/lib/settings", () => {
+void mock.module("@atlas/api/lib/settings", () => {
   const settingValue = (key: string): string | undefined => {
     if (key === "ATLAS_LEARN_CONFIDENCE_THRESHOLD") return "0.7";
     if (key === "ATLAS_LEARN_RETRIEVAL_TURNS") return undefined;
@@ -135,7 +135,7 @@ mock.module("@atlas/api/lib/settings", () => {
   };
 });
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

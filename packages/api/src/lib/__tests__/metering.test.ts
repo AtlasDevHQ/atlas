@@ -36,7 +36,7 @@ const mockPool = {
   on: mock(() => {}),
 };
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalExecute: (sql: string, params?: unknown[]) => {
     queryCalls.push({ sql, params });
@@ -69,7 +69,7 @@ const captureLogger = {
   level: "info",
 };
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => captureLogger,
   getLogger: () => captureLogger,
   getRequestContext: () => null,

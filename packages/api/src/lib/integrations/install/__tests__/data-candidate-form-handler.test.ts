@@ -74,7 +74,7 @@ describe("DataCandidateFormInstallHandler.validateConfig", () => {
     __resetSharedSpecCacheForTests();
     // Mock every export the install graph might import (partial mock.module trips
     // "Export not found" on a transitive import — CLAUDE.md).
-    mock.module("@atlas/api/lib/db/internal", () => ({
+    void mock.module("@atlas/api/lib/db/internal", () => ({
       internalQuery: async (sql: string, params: unknown[]) => {
         queryCalls.push({ sql, params });
         return [{ id: (params[0] as string) ?? "generated-id" }];

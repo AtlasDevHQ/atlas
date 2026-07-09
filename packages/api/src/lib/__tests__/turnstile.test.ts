@@ -37,7 +37,7 @@ function makeScriptedFetch(response: { status: number; body: unknown }): {
     calls.push({
       url,
       method: init?.method ?? "GET",
-      body: String(init?.body ?? ""),
+      body: ((init?.body ?? "") as string),
       headers,
     });
     return new Response(JSON.stringify(response.body), {

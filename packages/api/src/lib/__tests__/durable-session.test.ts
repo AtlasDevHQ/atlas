@@ -26,7 +26,7 @@ let queryThrow: Error | null = null;
 // transcript (or any synchronous throw) is observable, not silently swallowed.
 const warnCalls: Array<{ obj: unknown; msg: unknown }> = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => hasInternalDB,
   internalExecute: (sql: string, params?: unknown[]) => {
@@ -40,7 +40,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   ...realLogger,
   createLogger: () => ({
     warn: (obj: unknown, msg?: unknown) => {
@@ -53,7 +53,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 let settingValue: Record<string, string | undefined> = {};
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string) => settingValue[key],
 }));
 

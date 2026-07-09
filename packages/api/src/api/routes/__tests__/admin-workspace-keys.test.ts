@@ -35,7 +35,7 @@ interface AuditEntry {
   metadata?: Record<string, unknown>;
 }
 const mockLogAdminAction: Mock<(entry: AuditEntry) => void> = mock(() => {});
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
@@ -62,7 +62,7 @@ let createApiKeyImpl: (opts: CreateApiKeyCall) => Promise<{ id?: string; key?: s
 // `setUserRole`/`setBanStatus`/`setPasswordChangeRequired`/`deleteUser`, but those
 // are NOT real exports of auth/server (stale harness residue, grep-confirmed) —
 // reproducing them here would mirror a phantom shape, not satisfy any importer.
-mock.module("@atlas/api/lib/auth/server", () => ({
+void mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => ({
     api: {
       createApiKey: (opts: CreateApiKeyCall) => {

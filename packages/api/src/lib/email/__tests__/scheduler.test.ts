@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 let mockEnabled = true;
 const mockCheckFallbackEmails = mock(() => Promise.resolve({ checked: 0, sent: 0 }));
 
-mock.module("../engine", () => ({
+void mock.module("../engine", () => ({
   isOnboardingEmailEnabled: () => mockEnabled,
   checkFallbackEmails: mockCheckFallbackEmails,
 }));
@@ -22,13 +22,13 @@ mock.module("../engine", () => ({
 
 const mockCheckTrialExpiryEmails = mock(() => Promise.resolve({ checked: 0, sent: 0 }));
 
-mock.module("../trial-expiry-engine", () => ({
+void mock.module("../trial-expiry-engine", () => ({
   checkTrialExpiryEmails: mockCheckTrialExpiryEmails,
 }));
 
 // --- Mock logger ---
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

@@ -11,7 +11,7 @@ const mockInfo = mock(() => {});
 const mockWarn = mock(() => {});
 const mockError = mock(() => {});
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: mockInfo,
     warn: mockWarn,

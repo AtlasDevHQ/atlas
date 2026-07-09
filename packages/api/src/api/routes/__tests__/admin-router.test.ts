@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 let mockHasInternalDB = true;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: async () => [],
   setWorkspaceRegion: async () => {},
@@ -28,13 +28,13 @@ let mockAuthResult: unknown = {
   user: undefined,
 };
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () => Promise.resolve(mockAuthResult),
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {

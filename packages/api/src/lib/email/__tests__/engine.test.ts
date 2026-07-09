@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 let mockInternalQueryResult: unknown[] = [];
 let mockHasDB = true;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasDB,
   internalQuery: mock(() => Promise.resolve(mockInternalQueryResult)),
   internalExecute: mock(() => {}),
@@ -23,13 +23,13 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 let mockDeliveryResult = { success: true, provider: "log" as const };
 
-mock.module("../delivery", () => ({
+void mock.module("../delivery", () => ({
   sendEmail: mock(() => Promise.resolve(mockDeliveryResult)),
 }));
 
 // --- Mock logger ---
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

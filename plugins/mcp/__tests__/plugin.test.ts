@@ -12,19 +12,19 @@ const mockMcpServer = {
   close: mockClose,
 };
 
-mock.module("@atlas/mcp/server", () => ({
+void mock.module("@atlas/mcp/server", () => ({
   createAtlasMcpServer: mock(async () => mockMcpServer),
   // CreateMcpServerOptions is a type — no runtime export needed
 }));
 
-mock.module("@modelcontextprotocol/sdk/server/stdio.js", () => ({
+void mock.module("@modelcontextprotocol/sdk/server/stdio.js", () => ({
   StdioServerTransport: class MockStdioTransport {},
 }));
 
 const mockStreamableHttpClose = mock(async () => {});
 const mockStreamableHttpServer = { hostname: "0.0.0.0", port: 8080 };
 
-mock.module("@atlas/mcp/streamable-http", () => ({
+void mock.module("@atlas/mcp/streamable-http", () => ({
   startStreamableHttpServer: mock(async () => ({
     server: mockStreamableHttpServer,
     close: mockStreamableHttpClose,

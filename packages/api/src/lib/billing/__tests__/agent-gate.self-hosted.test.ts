@@ -21,7 +21,7 @@ import { describe, it, expect, mock } from "bun:test";
 process.env.ATLAS_DEPLOY_MODE ??= "self-hosted";
 
 // Self-hosted: no internal DB. Stub list mirrors `lib/__tests__/workspace.test.ts`.
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => false,
   getWorkspaceStatus: async () => null,
   getWorkspaceDetails: async () => null,

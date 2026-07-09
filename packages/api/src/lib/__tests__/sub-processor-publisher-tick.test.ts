@@ -20,7 +20,7 @@ import type { SubProcessor } from "@atlas/api/lib/sub-processor-publisher";
 const snapshots: { payload: SubProcessor[]; payload_hash: string }[] = [];
 let subscriptions: { id: string; url: string; token_encrypted: string }[] = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: async (sql: string, params?: unknown[]) => {
     if (/SELECT id, url, token_encrypted/.test(sql)) {
@@ -128,7 +128,7 @@ describe("subProcessorPublisherTick — orchestration", () => {
       }
       deliveries.push({
         url,
-        body: JSON.parse(String(init?.body ?? "{}")),
+        body: JSON.parse((init?.body ?? "{}") as string),
       });
       return new Response(null, { status: 200 });
     });

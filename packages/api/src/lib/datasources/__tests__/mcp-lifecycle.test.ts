@@ -77,7 +77,7 @@ const mockReconcileWorkspaceDatasources = mock(async (orgId: string) => {
   return reconcileHandler(orgId);
 });
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mockHasInternalDB,
   getInternalDB: mockGetInternalDB,
@@ -91,7 +91,7 @@ let tombstonesAppliedFixture = 0;
 let entitiesPromotedFixture = 0;
 const mockApplyTombstones = mock(async () => tombstonesAppliedFixture);
 const mockPromoteDraftEntities = mock(async () => entitiesPromotedFixture);
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   applyTombstones: mockApplyTombstones,
   promoteDraftEntities: mockPromoteDraftEntities,
 }));
@@ -114,7 +114,7 @@ const healthCheckSpy = mock<(id: string) => Promise<unknown>>(async () => {
 // Full-module connection mock (every export shaped) with only the registry
 // methods this suite drives overridden — the blessed `createConnectionMock`
 // pattern, not a hand-rolled partial mock.
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       describe: () => describeRows,
@@ -130,7 +130,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
 // `runDatasourceInstaller`) also pulls `resolveDatasourcePoolConfig` +
 // `BUILTIN_DATASOURCE_CATALOG_SLUGS` from this module.
 let poolConfigResult: unknown = { dbType: "postgres", url: "postgres://u:p@h/db", schema: "public" };
-mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
+void mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
   catalogSlugToDbType: (slug: string) => {
     if (slug === "postgres") return "postgres";
     throw new Error(`unknown slug ${slug}`);
@@ -145,7 +145,7 @@ mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
 // install handler graph named-imports stays present; override only the few this
 // suite drives.
 const realSecrets = await import("@atlas/api/lib/plugins/secrets");
-mock.module("@atlas/api/lib/plugins/secrets", () => ({
+void mock.module("@atlas/api/lib/plugins/secrets", () => ({
   ...realSecrets,
   // Echo a config_schema array verbatim as parsed fields so
   // `loadProvisionConfigFields` can be exercised; non-array → empty (matches
@@ -163,7 +163,7 @@ mock.module("@atlas/api/lib/plugins/secrets", () => ({
 const realProfiler = await import("@atlas/api/lib/profiler");
 const profilePostgresSpy = mock(async () => ({ profiles: [], errors: [] }));
 const listPostgresObjectsSpy = mock(async () => []);
-mock.module("@atlas/api/lib/profiler", () => ({
+void mock.module("@atlas/api/lib/profiler", () => ({
   ...realProfiler,
   profilePostgres: profilePostgresSpy,
   listPostgresObjects: listPostgresObjectsSpy,
@@ -177,7 +177,7 @@ mock.module("@atlas/api/lib/profiler", () => ({
 // surface. The rest of the bridge (probe/native predicates) stays real.
 let pluginConnection: { createFromConfig?: (cfg: unknown) => unknown } | undefined = undefined;
 const realBridge = await import("@atlas/api/lib/db/datasource-registry-bridge");
-mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
+void mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   ...realBridge,
   findDatasourcePluginConnection: mock(async () => pluginConnection),
 }));

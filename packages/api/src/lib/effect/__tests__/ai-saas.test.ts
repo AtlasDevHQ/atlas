@@ -36,13 +36,13 @@ function createMockModel(id: string): LanguageModel {
   } as unknown as LanguageModel;
 }
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({ deployMode: "saas" }),
   defineConfig: (c: unknown) => c,
 }));
 
 let currentModelId = "claude-sonnet-4-20250514";
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
   getSettingAuto: (key: string) => {
     if (key === "ATLAS_PROVIDER") return "anthropic";
@@ -60,7 +60,7 @@ mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getModelForConfig: (provider?: string, model?: string) => {
     resolveCallCount++;
     if (shouldThrow) throw new Error("Provider unavailable");
@@ -74,7 +74,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   getWorkspaceProviderType: () => "anthropic" as const,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: (...args: unknown[]) => { warnCalls.push(args); },

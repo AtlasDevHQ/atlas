@@ -954,7 +954,7 @@ describe("runInit --hosted --write — preserves siblings + writes .bak", () => 
       null,
       2,
     );
-    Bun.write(target, existing);
+    await Bun.write(target, existing);
     const { serve, controller } = fakeServe({});
     const cap = captureStdio();
     try {

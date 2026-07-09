@@ -50,7 +50,7 @@ import type { WorkspaceId } from "@useatlas/types";
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
   () => Promise.resolve([]),
 );
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -78,7 +78,7 @@ const mockCheckChatLimitAndInstall: Mock<
 // Mock every value export — a partial `mock.module()` causes a `SyntaxError`
 // in other files importing the missing exports (per CLAUDE.md "Mock all
 // exports"). Only `checkChatIntegrationLimitAndInstall` is exercised here.
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
   CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
   checkResourceLimit: () => Promise.resolve({ allowed: true }),
@@ -118,7 +118,7 @@ type FetchInput = string | URL | Request;
 
 function setFetchOk(): void {
   globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-    fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+    fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
     // Minimal subset of the OIDC discovery payload — the handler
     // doesn't read any field, only the 2xx status.
     return new Response(
@@ -139,7 +139,7 @@ function setFetchMicrosoftError(
   errorCode = "invalid_tenant",
 ): void {
   globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-    fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+    fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
     return new Response(
       JSON.stringify({ error: errorCode, error_description: errorDescription }),
       { status, headers: { "content-type": "application/json" } },
@@ -149,7 +149,7 @@ function setFetchMicrosoftError(
 
 function setFetchNonJson(status: number): void {
   globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-    fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+    fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
     return new Response("not json at all", {
       status,
       headers: { "content-type": "text/html" },
@@ -463,7 +463,7 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — reachability verificat
     // refactor adds field validation, this test will fail and force a
     // rethink.
     globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
       return new Response("", { status: 200 });
     }) as unknown as typeof fetch;
     const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });

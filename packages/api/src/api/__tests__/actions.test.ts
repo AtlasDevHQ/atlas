@@ -36,7 +36,7 @@ const mockGetClientIP: Mock<(req: Request) => string | null> = mock(
   () => null,
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mockGetClientIP,
@@ -66,7 +66,7 @@ const mockRollbackAction = mock((): Promise<ActionLogEntry | null> =>
   Promise.resolve(null),
 );
 
-mock.module("@atlas/api/lib/tools/actions/handler", () => ({
+void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   listPendingActions: mockListPendingActions,
   getAction: mockGetAction,
   approveAction: mockApproveAction,
@@ -94,7 +94,7 @@ const mockBulkDenyActions = mock(
     Promise.resolve({ updated: [], notFound: [], forbidden: [], errors: [] }),
 );
 
-mock.module("@atlas/api/lib/tools/actions/bulk", () => ({
+void mock.module("@atlas/api/lib/tools/actions/bulk", () => ({
   bulkApproveActions: mockBulkApproveActions,
   bulkDenyActions: mockBulkDenyActions,
   BULK_ACTIONS_MAX: 100,
@@ -102,7 +102,7 @@ mock.module("@atlas/api/lib/tools/actions/bulk", () => ({
 
 // Mock other modules required by the Hono app (same as conversations.test.ts)
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(() =>
     Promise.resolve({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
@@ -113,7 +113,7 @@ mock.module("@atlas/api/lib/agent", () => ({
   ),
 }));
 
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   listConversations: mock(() => Promise.resolve({ conversations: [], total: 0 })),
   getConversation: mock(() => Promise.resolve(null)),
   deleteConversation: mock(() => Promise.resolve(false)),
@@ -145,7 +145,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -157,17 +157,17 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mock(() => Promise.resolve([])),
   getStartupWarnings: () => [],
 }));
@@ -176,7 +176,7 @@ mock.module("@atlas/api/lib/startup", () => ({
 // Stub with `{ allowed: true }` so route tests can assert orgId propagation
 // without hitting a real postgres.
 import { Effect as _EffectForAllowlistMock } from "effect";
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: () => _EffectForAllowlistMock.succeed({ allowed: true as const }),
 }));
 

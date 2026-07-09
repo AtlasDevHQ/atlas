@@ -25,7 +25,7 @@ let mockQueryShouldThrow = false;
 let queryCalls: Array<{ sql: string; params?: unknown[] }> = [];
 let queryResults: unknown[] = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: async (sql: string, params?: unknown[]) => {
     if (mockQueryShouldThrow) throw new Error("relation \"subscription\" does not exist");
@@ -35,7 +35,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

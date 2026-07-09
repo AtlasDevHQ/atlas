@@ -22,7 +22,7 @@ let mockRequestContext:
   | { user?: { activeOrganizationId?: string }; atlasMode?: string }
   | undefined;
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -57,18 +57,18 @@ mock.module("@atlas/api/lib/logger", () => ({
 // in this test). Pass through to the base semantic root; all other exports
 // stay real.
 const realSemanticSync = await import("@atlas/api/lib/semantic/sync");
-mock.module("@atlas/api/lib/semantic/sync", () => ({
+void mock.module("@atlas/api/lib/semantic/sync", () => ({
   ...realSemanticSync,
   ensureOrgModeSemanticRoot: async () => realSemanticSync.getSemanticRoot(),
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async <T>(_name: string, _attrs: unknown, fn: () => Promise<T>) =>
     fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
   dispatchMutableHook: async <
     T extends Record<string, unknown>,
@@ -86,7 +86,7 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
 
 const mockSettings = new Map<string, string>();
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string, _orgId?: string) => mockSettings.get(key),
   getSettingAuto: (key: string, _orgId?: string) => mockSettings.get(key),
   getSettingLive: async (key: string, _orgId?: string) => mockSettings.get(key),
@@ -115,7 +115,7 @@ let mockSandboxPlugins: Array<{
   [k: string]: unknown;
 }> = [];
 
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     getByType: (type: string) => {
       if (type === "sandbox") return mockSandboxPlugins;

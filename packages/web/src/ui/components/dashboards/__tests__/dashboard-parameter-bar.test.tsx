@@ -10,7 +10,7 @@
 import { describe, expect, test, afterEach, mock } from "bun:test";
 import { useState } from "react";
 
-mock.module("nuqs", () => ({
+void mock.module("nuqs", () => ({
   parseAsString: {},
   useQueryState: () => useState<string | null>(null),
 }));

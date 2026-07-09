@@ -15,7 +15,7 @@ import React, { type ReactNode } from "react";
 // same harness as env-picker.test.tsx (we test label + selection logic, not
 // Radix's open/close machinery). CLAUDE.md "Mock all exports": every named
 // export of the module is stubbed.
-mock.module("@/components/ui/dropdown-menu", () => {
+void mock.module("@/components/ui/dropdown-menu", () => {
   const passthrough =
     (tag: string) =>
     ({ children, asChild: _asChild, ...rest }: { children?: ReactNode; asChild?: boolean } & Record<string, unknown>) =>

@@ -8,7 +8,7 @@ import React, { type ReactNode } from "react";
 
 // Dialog primitives portal their content; stub them to passthrough divs so the
 // rendered tree contains the dialog body. CLAUDE.md "Mock all exports".
-mock.module("@/components/ui/dialog", () => {
+void mock.module("@/components/ui/dialog", () => {
   const passthrough =
     (tag: string) =>
     ({ children, asChild: _asChild, open: _open, onOpenChange: _onOpenChange, ...rest }: {
@@ -33,7 +33,7 @@ mock.module("@/components/ui/dialog", () => {
   };
 });
 
-mock.module("@/ui/context", () => ({
+void mock.module("@/ui/context", () => ({
   useAtlasConfig: () => ({ apiUrl: "http://localhost", isCrossOrigin: false }),
 }));
 

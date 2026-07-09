@@ -20,7 +20,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import type { SecurityBuckets } from "../lib/admin-schemas";
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/admin/account-security",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
@@ -30,7 +30,7 @@ let mockMetrics: SecurityBuckets | null = null;
 let mockError: { message: string; status?: number; code?: string } | null = null;
 let mockLoading = false;
 
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({
     data: mockError ? null : mockMetrics,
     loading: mockLoading,

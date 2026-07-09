@@ -17,7 +17,7 @@ import { render, fireEvent, waitFor, cleanup, act, screen } from "@testing-libra
 
 // ── Mocks ───────────────────────────────────────────────────────────────
 
-mock.module("@/lib/auth/client", () => ({ authClient: {} }));
+void mock.module("@/lib/auth/client", () => ({ authClient: {} }));
 
 const signInPasskeyMock = mock(
   async (_opts?: { autoFill?: boolean }): Promise<{
@@ -26,7 +26,7 @@ const signInPasskeyMock = mock(
   }> => ({ data: { session: {}, user: {} }, error: null }),
 );
 
-mock.module("@/lib/auth/passkey-client", () => ({
+void mock.module("@/lib/auth/passkey-client", () => ({
   // PasskeyTile + PasskeyList consume getPasskeyClient — the login page only
   // needs the sign-in shim. Both are mocked so a sibling test that imports
   // either module-export still resolves something callable.
@@ -39,7 +39,7 @@ const webAuthnSupportMock = mock<() => { kind: "supported" | "unsupported" | "un
   platformAuthenticator: true,
 }));
 
-mock.module("@/ui/hooks/use-webauthn-supported", () => ({
+void mock.module("@/ui/hooks/use-webauthn-supported", () => ({
   useWebAuthnSupported: () => webAuthnSupportMock(),
 }));
 
@@ -48,13 +48,13 @@ const navigatePostAuthMock = mock((_path: string) => {});
 // Per-test mutable search params so tests can drive the `?invitationId=…`
 // branch without re-mocking the whole module.
 const searchParamsStore: Record<string, string | null> = { invitationId: null };
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useRouter: () => ({ push: routerPushMock, replace: () => {}, back: () => {} }),
   useSearchParams: () => ({ get: (k: string) => searchParamsStore[k] ?? null }),
 }));
 // Sign-in exits go through navigatePostAuth (hard nav) — keep one mock
 // point so tests don't have to spy on `window.location.assign` per-case.
-mock.module("@/lib/auth/post-auth-nav", () => ({
+void mock.module("@/lib/auth/post-auth-nav", () => ({
   navigatePostAuth: navigatePostAuthMock,
 }));
 

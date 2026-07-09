@@ -59,7 +59,7 @@ function MutationHarness({ feature }: { feature: FeatureName }) {
   // mutation so each case observes a single deterministic outcome.
   if (!settled) {
     setSettled(true);
-    mutate().then((result) => {
+    void mutate().then((result) => {
       if (!result.ok) setError(result.error);
     });
   }

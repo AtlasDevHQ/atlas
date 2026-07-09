@@ -4,7 +4,7 @@ import { describe, expect, test, mock } from "bun:test";
 // arbitrary catalog shapes — including the malformed branches the
 // defensive null-walk is meant to absorb.
 let mockData: unknown = null;
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({ data: mockData, loading: false, error: null, refetch: () => {} }),
   friendlyError: (e: unknown) => (e instanceof Error ? e.message : String(e)),
 }));

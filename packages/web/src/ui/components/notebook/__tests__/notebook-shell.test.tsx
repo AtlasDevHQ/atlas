@@ -7,25 +7,25 @@ import type { UseNotebookReturn } from "../use-notebook";
 
 // Stub heavy children — we're testing the shell's conditional rendering matrix,
 // not the inner components.
-mock.module("../notebook-cell", () => ({
+void mock.module("../notebook-cell", () => ({
   NotebookCell: () => React.createElement("div", { "data-testid": "notebook-cell-stub" }),
 }));
-mock.module("../notebook-text-cell", () => ({
+void mock.module("../notebook-text-cell", () => ({
   NotebookTextCell: () => React.createElement("div", { "data-testid": "notebook-text-cell-stub" }),
 }));
-mock.module("../notebook-empty-state", () => ({
+void mock.module("../notebook-empty-state", () => ({
   NotebookEmptyState: () =>
     React.createElement("div", { "data-testid": "notebook-empty-state-stub" }, "Empty"),
 }));
-mock.module("../../ask-composer", () => ({
+void mock.module("../../ask-composer", () => ({
   AskComposer: () => React.createElement("div", { "data-testid": "ask-composer-stub" }),
 }));
-mock.module("../fork-branch-selector", () => ({
+void mock.module("../fork-branch-selector", () => ({
   ForkBranchSelector: () =>
     React.createElement("div", { "data-testid": "fork-branch-selector-stub" }, "Branches"),
 }));
 // Sortable wraps the cell list; stub it so we don't need DnD context.
-mock.module("@/components/ui/sortable", () => ({
+void mock.module("@/components/ui/sortable", () => ({
   Sortable: ({ children }: { children: React.ReactNode }) =>
     React.createElement("div", null, children),
   SortableContent: ({ children }: { children: React.ReactNode }) =>

@@ -126,7 +126,7 @@ describe("TestConnectionButton (#3846)", () => {
     // would surface the old (empty) value here.
     const form = captured;
     if (!form) throw new Error("form not captured");
-    act(() => form.setValue("schema", "analytics"));
+    void act(() => form.setValue("schema", "analytics"));
 
     const button = getByText("Test").closest("button");
     if (!button) throw new Error("Test button not found");
@@ -171,7 +171,7 @@ describe("NewEnvNameField (#3846)", () => {
 
     const form = captured;
     if (!form) throw new Error("form not captured");
-    act(() => form.setValue("envSelection", ENV_SENTINEL_CREATE));
+    void act(() => form.setValue("envSelection", ENV_SENTINEL_CREATE));
 
     await waitFor(() => {
       expect(queryByTestId("env-new-name-input")).not.toBeNull();
@@ -193,7 +193,7 @@ describe("PostgresSchemaField (#3846)", () => {
 
     const form = captured;
     if (!form) throw new Error("form not captured");
-    act(() => form.setValue("dbType", "mysql"));
+    void act(() => form.setValue("dbType", "mysql"));
 
     await waitFor(() => {
       expect(queryByText("Schema")).toBeNull();

@@ -8,13 +8,13 @@
  */
 import { afterEach, describe, expect, mock, test } from "bun:test";
 
-mock.module("@/ui/components/chart/result-chart", () => ({
+void mock.module("@/ui/components/chart/result-chart", () => ({
   ResultChart: () => <div data-testid="result-chart">chart</div>,
 }));
-mock.module("next/dynamic", () => ({
+void mock.module("next/dynamic", () => ({
   default: () => () => <div data-testid="result-chart">chart</div>,
 }));
-mock.module("@/ui/hooks/use-dark-mode", () => ({ useDarkMode: () => false }));
+void mock.module("@/ui/hooks/use-dark-mode", () => ({ useDarkMode: () => false }));
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { DashboardTile } from "../dashboard-tile";

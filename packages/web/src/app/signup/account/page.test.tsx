@@ -22,7 +22,7 @@ import { render, fireEvent, waitFor, cleanup, act, screen } from "@testing-libra
 
 const routerReplaceMock = mock((_path: string) => {});
 const routerMock = { push: () => {}, replace: routerReplaceMock, back: () => {} };
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useRouter: () => routerMock,
 }));
 
@@ -41,7 +41,7 @@ type SendOtpResult = { data?: unknown; error?: { message?: string } | null };
 const sendVerificationOtpMock = mock(
   async (_opts: { email: string; type: "email-verification" }): Promise<SendOtpResult> => ({ data: {}, error: null }),
 );
-mock.module("@/lib/auth/client", () => ({
+void mock.module("@/lib/auth/client", () => ({
   authClient: {
     signUp: { email: signUpEmailMock },
     signIn: { social: signInSocialMock },
@@ -50,24 +50,24 @@ mock.module("@/lib/auth/client", () => ({
 }));
 
 const navigatePostAuthMock = mock((_path: string) => {});
-mock.module("@/lib/auth/post-auth-nav", () => ({
+void mock.module("@/lib/auth/post-auth-nav", () => ({
   navigatePostAuth: navigatePostAuthMock,
 }));
 
 const readDraftMock = mock((): { email: string; invitationId?: string } | null => ({ email: "jane@example.com" }));
 const clearDraftMock = mock(() => {});
-mock.module("@/lib/signup-draft", () => ({
+void mock.module("@/lib/signup-draft", () => ({
   readSignupDraft: readDraftMock,
   clearSignupDraft: clearDraftMock,
   saveSignupDraft: () => {},
 }));
 
-mock.module("@/ui/components/signup/signup-context-provider", () => ({
+void mock.module("@/ui/components/signup/signup-context-provider", () => ({
   SignupContextProvider: ({ children }: { children: unknown }) => <>{children as never}</>,
   useSignupContext: () => ({ status: "ready", showRegion: true }),
 }));
 
-mock.module("@/ui/components/signup/signup-shell", () => ({
+void mock.module("@/ui/components/signup/signup-shell", () => ({
   SignupShell: ({ children, back }: { children: unknown; back?: { href: string } }) => (
     <div>
       {back ? <a href={back.href}>Back</a> : null}
@@ -76,7 +76,7 @@ mock.module("@/ui/components/signup/signup-shell", () => ({
   ),
 }));
 
-mock.module("@/ui/components/auth/verify-email-otp-form", () => ({
+void mock.module("@/ui/components/auth/verify-email-otp-form", () => ({
   VerifyEmailOTPForm: ({ onVerified }: { onVerified: () => void }) => (
     <button type="button" onClick={onVerified}>verify-code</button>
   ),
@@ -88,7 +88,7 @@ mock.module("@/ui/components/auth/verify-email-otp-form", () => ({
 // onToken) and a "block" button (fires onError, simulating a blocked Cloudflare
 // script). BOTH exports are stubbed per the mock-all rule.
 let turnstileConfigured = false;
-mock.module("@/ui/components/auth/turnstile-widget", () => ({
+void mock.module("@/ui/components/auth/turnstile-widget", () => ({
   isTurnstileConfigured: () => turnstileConfigured,
   TurnstileWidget: ({
     onToken,

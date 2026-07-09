@@ -12,7 +12,7 @@ const mockSignOut = mock(() => Promise.resolve());
 // simulate landing on `/admin/account-security` (the MFA-gate exempt
 // route) without re-mocking the module per test.
 let mockPathname = "/admin";
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => mockPathname,
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
@@ -22,14 +22,14 @@ mock.module("next/navigation", () => ({
 }));
 
 // Mock next/link
-mock.module("next/link", () => ({
+void mock.module("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
     <a href={href} {...rest}>{children}</a>
   ),
 }));
 
 // Mock shadcn sidebar — complex component with deep dependency chain (radix-ui, hooks, etc.)
-mock.module("@/components/ui/sidebar", () => {
+void mock.module("@/components/ui/sidebar", () => {
 
   return {
     SidebarProvider: ({ children }: { children: React.ReactNode }) => React.createElement("div", { "data-testid": "sidebar-provider" }, children),
@@ -52,13 +52,13 @@ mock.module("@/components/ui/sidebar", () => {
 });
 
 // Mock shadcn separator
-mock.module("@/components/ui/separator", () => {
+void mock.module("@/components/ui/separator", () => {
 
   return { Separator: () => React.createElement("hr") };
 });
 
 // Mock useBranding — no custom branding by default
-mock.module("@/ui/hooks/use-branding", () => ({
+void mock.module("@/ui/hooks/use-branding", () => ({
   useBranding: () => ({ branding: null, loading: false }),
 }));
 

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 const navigateCalls: string[] = [];
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useRouter: () => ({
     push: (url: string) => navigateCalls.push(url),
     replace: () => {},
@@ -16,7 +16,7 @@ mock.module("next/navigation", () => ({
   notFound: () => {},
 }));
 
-mock.module("next/link", () => ({
+void mock.module("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: ReactNode }) => (
     <a href={href} {...rest}>
       {children}

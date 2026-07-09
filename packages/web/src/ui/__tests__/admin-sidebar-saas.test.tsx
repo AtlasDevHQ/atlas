@@ -3,7 +3,7 @@ import React from "react";
 import type { ReactNode } from "react";
 
 // Mock next/navigation
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/admin",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
@@ -13,24 +13,24 @@ mock.module("next/navigation", () => ({
 }));
 
 // Mock next/link
-mock.module("next/link", () => ({
+void mock.module("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
     <a href={href} {...rest}>{children}</a>
   ),
 }));
 
 // Mock useBranding
-mock.module("@/ui/hooks/use-branding", () => ({
+void mock.module("@/ui/hooks/use-branding", () => ({
   useBranding: () => ({ branding: null, loading: false }),
 }));
 
 // Mock useDeployMode — SaaS mode for this test file
-mock.module("@/ui/hooks/use-deploy-mode", () => ({
+void mock.module("@/ui/hooks/use-deploy-mode", () => ({
   useDeployMode: () => ({ deployMode: "saas", loading: false, error: null, resolved: true }),
 }));
 
 // Mock shadcn sidebar
-mock.module("@/components/ui/sidebar", () => ({
+void mock.module("@/components/ui/sidebar", () => ({
   SidebarProvider: ({ children }: { children: React.ReactNode }) => React.createElement("div", { "data-testid": "sidebar-provider" }, children),
   SidebarInset: ({ children }: { children: React.ReactNode }) => React.createElement("main", null, children),
   SidebarTrigger: () => React.createElement("button", { "data-testid": "sidebar-trigger" }),
@@ -53,14 +53,14 @@ mock.module("@/components/ui/sidebar", () => ({
 }));
 
 // Mock collapsible
-mock.module("@/components/ui/collapsible", () => ({
+void mock.module("@/components/ui/collapsible", () => ({
   Collapsible: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
   CollapsibleTrigger: ({ children }: { children: React.ReactNode; asChild?: boolean }) => React.createElement("div", null, children),
   CollapsibleContent: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
 }));
 
 // Mock separator
-mock.module("@/components/ui/separator", () => ({
+void mock.module("@/components/ui/separator", () => ({
   Separator: () => React.createElement("hr"),
 }));
 

@@ -108,6 +108,6 @@ describe("computeSqlFailureDedup", () => {
     const { failureRuns, skipFailureIndex } = computeSqlFailureDedup(parts);
     expect(failureRuns.get(0)).toBe(3); // SELECT a appears at 0, 2, 4
     expect(failureRuns.get(1)).toBe(2); // SELECT b appears at 1, 3
-    expect([...skipFailureIndex].sort()).toEqual([2, 3, 4]);
+    expect([...skipFailureIndex].sort((a, b) => a - b)).toEqual([2, 3, 4]);
   });
 });

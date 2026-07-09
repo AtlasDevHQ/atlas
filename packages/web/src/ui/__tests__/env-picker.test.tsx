@@ -6,7 +6,7 @@ import React, { type ReactNode } from "react";
 // CLAUDE.md "Mock all exports" — stub every named export of the module
 // so an unrelated sibling test importing a different symbol doesn't
 // trip a SyntaxError under the isolated test runner.
-mock.module("@/components/ui/dropdown-menu", () => {
+void mock.module("@/components/ui/dropdown-menu", () => {
   const passthrough =
     (tag: string) =>
     ({ children, asChild: _asChild, ...rest }: { children?: ReactNode; asChild?: boolean } & Record<string, unknown>) =>

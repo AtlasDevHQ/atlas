@@ -3,7 +3,7 @@ import React, { type ReactNode } from "react";
 
 let currentPathname = "/";
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => currentPathname,
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
@@ -12,7 +12,7 @@ mock.module("next/navigation", () => ({
   notFound: () => {},
 }));
 
-mock.module("next/link", () => ({
+void mock.module("next/link", () => ({
   default: ({
     href,
     children,
@@ -24,7 +24,7 @@ mock.module("next/link", () => ({
     React.createElement("a", { href, ...rest }, children as React.ReactNode),
 }));
 
-mock.module("@/ui/components/conversations/conversation-list", () => ({
+void mock.module("@/ui/components/conversations/conversation-list", () => ({
   ConversationList: ({
     conversations,
     emptyMessage,
@@ -43,16 +43,16 @@ mock.module("@/ui/components/conversations/conversation-list", () => ({
     ),
 }));
 
-mock.module("@/ui/components/chat/sidebar-user-menu", () => ({
+void mock.module("@/ui/components/chat/sidebar-user-menu", () => ({
   SidebarUserMenu: () =>
     React.createElement("div", { "data-testid": "sidebar-user-menu" }),
 }));
 
-mock.module("@/ui/components/demo-indicator-chip", () => ({
+void mock.module("@/ui/components/demo-indicator-chip", () => ({
   DemoIndicatorChip: () => React.createElement("span"),
 }));
 
-mock.module("@/components/ui/sidebar", () => {
+void mock.module("@/components/ui/sidebar", () => {
   const Provider = ({ children }: { children: ReactNode }) =>
     React.createElement("div", null, children);
   const passthrough =

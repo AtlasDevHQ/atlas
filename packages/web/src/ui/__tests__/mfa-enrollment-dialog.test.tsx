@@ -9,7 +9,7 @@ const routerPush = mock((_path: string) => {});
 const routerReplace = mock(() => {});
 const mockSignOut = mock(() => Promise.resolve());
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/admin/users",
   useRouter: () => ({ push: routerPush, replace: routerReplace, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),

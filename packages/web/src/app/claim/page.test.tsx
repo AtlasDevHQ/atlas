@@ -27,7 +27,7 @@ import * as realApiUrl from "@/lib/api-url";
 const isCrossOriginMock = mock((): boolean => false);
 const getActiveRegionMock = mock((): string | null => null);
 const applyRegionSignalMock = mock((_region: string, _apiUrl: string): boolean => true);
-mock.module("@/lib/api-url", () => ({
+void mock.module("@/lib/api-url", () => ({
   ...realApiUrl,
   isCrossOrigin: () => isCrossOriginMock(),
   getActiveRegion: () => getActiveRegionMock(),
@@ -46,7 +46,7 @@ const requestPasswordResetMock = mock(
     error: null,
   }),
 );
-mock.module("@/lib/auth/client", () => ({
+void mock.module("@/lib/auth/client", () => ({
   authClient: {
     getSession: () => getSessionMock(),
     emailOtp: {
@@ -66,7 +66,7 @@ const addPasskeyMock = mock(
 const getPasskeyClientMock = mock((): { addPasskey: typeof addPasskeyMock } | null => ({
   addPasskey: addPasskeyMock,
 }));
-mock.module("@/lib/auth/passkey-client", () => ({
+void mock.module("@/lib/auth/passkey-client", () => ({
   getPasskeyClient: () => getPasskeyClientMock(),
   getPasskeySignIn: () => null,
 }));
@@ -74,17 +74,17 @@ mock.module("@/lib/auth/passkey-client", () => ({
 const webAuthnSupportMock = mock<
   () => { kind: "supported" | "unsupported" | "unknown"; platformAuthenticator?: boolean }
 >(() => ({ kind: "supported", platformAuthenticator: true }));
-mock.module("@/ui/hooks/use-webauthn-supported", () => ({
+void mock.module("@/ui/hooks/use-webauthn-supported", () => ({
   useWebAuthnSupported: () => webAuthnSupportMock(),
 }));
 
 const navigatePostAuthMock = mock((_path: string) => {});
-mock.module("@/lib/auth/post-auth-nav", () => ({ navigatePostAuth: navigatePostAuthMock }));
+void mock.module("@/lib/auth/post-auth-nav", () => ({ navigatePostAuth: navigatePostAuthMock }));
 
 // VerifyEmailOTPForm is already unit-covered; stub it to a button that fires
 // onVerified so the OTP→secure transition is driven deterministically without a
 // real OTP round-trip.
-mock.module("@/ui/components/auth/verify-email-otp-form", () => ({
+void mock.module("@/ui/components/auth/verify-email-otp-form", () => ({
   VerifyEmailOTPForm: ({ email, onVerified }: { email: string; onVerified: () => void }) => (
     <button type="button" data-email={email} onClick={onVerified}>
       stub-verify
@@ -93,7 +93,7 @@ mock.module("@/ui/components/auth/verify-email-otp-form", () => ({
 }));
 
 const searchParamsStore: Record<string, string | null> = { email: null };
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useSearchParams: () => ({ get: (k: string) => searchParamsStore[k] ?? null }),
 }));
 

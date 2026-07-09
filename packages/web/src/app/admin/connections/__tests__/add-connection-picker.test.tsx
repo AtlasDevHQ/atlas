@@ -40,7 +40,7 @@ interface FetchState {
 let fetchState: FetchState = { data: null, loading: false };
 let capturedPaths: string[] = [];
 
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: (path: string) => {
     capturedPaths.push(path);
     return {

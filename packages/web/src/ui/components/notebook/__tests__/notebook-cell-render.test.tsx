@@ -3,14 +3,14 @@ import React from "react";
 
 // Sortable handle requires SortableContext + SortableItemContext from `@dnd-kit/sortable`.
 // Stub it to a passthrough so we can render <NotebookCell> outside a Sortable parent.
-mock.module("@/components/ui/sortable", () => ({
+void mock.module("@/components/ui/sortable", () => ({
   SortableItemHandle: ({ children }: { children: React.ReactNode; asChild?: boolean }) =>
     React.createElement(React.Fragment, null, children),
 }));
 
 // The output region pulls in Markdown / TypingIndicator / ToolPart, which transitively load
 // the AI SDK. Stub it to a marker so pill-gating tests don't need that surface.
-mock.module("../notebook-cell-output", () => ({
+void mock.module("../notebook-cell-output", () => ({
   NotebookCellOutput: () => React.createElement("div", { "data-testid": "cell-output-stub" }),
 }));
 

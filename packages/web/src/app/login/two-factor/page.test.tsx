@@ -11,7 +11,7 @@ import { render, fireEvent, waitFor, cleanup, act, screen } from "@testing-libra
 
 // Stub out `./client` so loading the real two-factor-client module doesn't
 // pull Better Auth's createAuthClient through (network init at import time).
-mock.module("@/lib/auth/client", () => ({ authClient: {} }));
+void mock.module("@/lib/auth/client", () => ({ authClient: {} }));
 
 // Now safe to import the real module — captured before the override below
 // so the spread carries every named export (including `requireTwoFactorClient`,
@@ -39,7 +39,7 @@ const getTwoFactorClientMock = mock(() => ({
   generateBackupCodes: mock(async () => ({ data: null, error: null })),
 }));
 
-mock.module("@/lib/auth/two-factor-client", () => ({
+void mock.module("@/lib/auth/two-factor-client", () => ({
   ...realTwoFactorClient,
   getTwoFactorClient: () => getTwoFactorClientMock(),
 }));
@@ -47,7 +47,7 @@ mock.module("@/lib/auth/two-factor-client", () => ({
 const routerPushMock = mock((_path: string) => {});
 const navigatePostAuthMock = mock((_path: string) => {});
 const searchParamsGetMock = mock<(_key: string) => string | null>(() => null);
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useRouter: () => ({ push: routerPushMock, replace: () => {}, back: () => {} }),
   // Page reads `?callbackURL=...` to bounce the user back to the
   // surface that triggered the 2FA challenge (e.g. /admin/account-security
@@ -57,7 +57,7 @@ mock.module("next/navigation", () => ({
 }));
 // 2FA exits go through navigatePostAuth (hard nav). One mock point keeps
 // the policy assertions readable.
-mock.module("@/lib/auth/post-auth-nav", () => ({
+void mock.module("@/lib/auth/post-auth-nav", () => ({
   navigatePostAuth: navigatePostAuthMock,
 }));
 
@@ -72,7 +72,7 @@ const getPasskeySignInMock = mock<() => typeof signInPasskeyMock | null>(
   () => signInPasskeyMock,
 );
 
-mock.module("@/lib/auth/passkey-client", () => ({
+void mock.module("@/lib/auth/passkey-client", () => ({
   // PasskeyTile + PasskeyList consume getPasskeyClient — the 2FA page only
   // touches the sign-in shim. Keeping both exports stubbed prevents a
   // partial-mock SyntaxError if a sibling test imports the other.
@@ -85,7 +85,7 @@ const webAuthnSupportMock = mock<() => { kind: "supported" | "unsupported" | "un
   platformAuthenticator: true,
 }));
 
-mock.module("@/ui/hooks/use-webauthn-supported", () => ({
+void mock.module("@/ui/hooks/use-webauthn-supported", () => ({
   useWebAuthnSupported: () => webAuthnSupportMock(),
 }));
 

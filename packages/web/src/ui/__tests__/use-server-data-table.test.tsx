@@ -8,7 +8,7 @@ import { z } from "zod";
 import { useServerDataTable } from "../hooks/use-server-data-table";
 import { AtlasProvider } from "../context";
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/admin/audit",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),

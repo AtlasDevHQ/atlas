@@ -5,7 +5,7 @@ import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 let mockCookie = "";
 let mockHeaders: Record<string, string> = {};
 
-mock.module("next/headers", () => ({
+void mock.module("next/headers", () => ({
   cookies: async () => ({ toString: () => mockCookie }),
   headers: async () => ({ get: (k: string) => mockHeaders[k.toLowerCase()] ?? null }),
 }));

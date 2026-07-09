@@ -21,16 +21,16 @@ import { render, fireEvent, waitFor, cleanup, act, screen } from "@testing-libra
 // #4018 — "Open Atlas" hands off with a HARD nav (navigatePostAuth), mirroring
 // the login front-door, so the app re-bootstraps from the durable cookie.
 const navigatePostAuthMock = mock((_path: string) => {});
-mock.module("@/lib/auth/post-auth-nav", () => ({
+void mock.module("@/lib/auth/post-auth-nav", () => ({
   navigatePostAuth: navigatePostAuthMock,
 }));
 
 const getSessionMock = mock(async () => ({ data: null }));
-mock.module("@/lib/auth/client", () => ({
+void mock.module("@/lib/auth/client", () => ({
   authClient: { getSession: getSessionMock },
 }));
 
-mock.module("@/ui/hooks/use-trial-status", () => ({
+void mock.module("@/ui/hooks/use-trial-status", () => ({
   // Off-trial / self-hosted → TrialNotice renders nothing. Keeps the test
   // focused on the prompt section.
   useTrialStatus: () => ({ trial: null, loading: false }),
@@ -40,7 +40,7 @@ const PROMPTS = [
   "What is our total GMV?",
   "Who are our top customers by spend?",
 ] as const;
-mock.module("@/ui/hooks/use-success-starter-prompts", () => ({
+void mock.module("@/ui/hooks/use-success-starter-prompts", () => ({
   useSuccessStarterPrompts: () => ({
     prompts: PROMPTS,
     loading: false,
@@ -50,7 +50,7 @@ mock.module("@/ui/hooks/use-success-starter-prompts", () => ({
   }),
 }));
 
-mock.module("@/ui/components/signup/signup-shell", () => ({
+void mock.module("@/ui/components/signup/signup-shell", () => ({
   SignupShell: ({ children }: { children: unknown }) => <div>{children as never}</div>,
 }));
 

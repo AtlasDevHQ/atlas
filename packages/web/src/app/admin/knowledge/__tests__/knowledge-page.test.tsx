@@ -11,18 +11,18 @@ let fetchState: {
   error: unknown;
 } = { data: null, loading: false, error: null };
 
-mock.module("nuqs", () => ({
+void mock.module("nuqs", () => ({
   parseAsString: {},
   useQueryStates: () => useState<{ collection: string | null }>({ collection: null }),
 }));
 
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({ ...fetchState, setError: () => {}, refetch: () => {} }),
   useInProgressSet: () => ({ has: () => false, start: () => {}, stop: () => {} }),
   friendlyError: (e: unknown) => (e instanceof Error ? e.message : String(e)),
 }));
 
-mock.module("@/ui/hooks/use-admin-mutation", () => ({
+void mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: () => ({
     mutate: async () => ({ ok: true, data: {} }),
     saving: false,
@@ -31,7 +31,7 @@ mock.module("@/ui/hooks/use-admin-mutation", () => ({
   }),
 }));
 
-mock.module("@/lib/api-url", () => ({ getApiUrl: () => "" }));
+void mock.module("@/lib/api-url", () => ({ getApiUrl: () => "" }));
 
 const KnowledgePage = (await import("../page")).default;
 const { describeArchive, describeSync } = await import("../page");

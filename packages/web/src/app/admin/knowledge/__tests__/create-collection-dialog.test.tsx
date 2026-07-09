@@ -10,7 +10,7 @@ import { render, cleanup, screen, fireEvent, waitFor } from "@testing-library/re
  * field key or path would otherwise 400 in production with zero test failures.
  */
 
-mock.module("@/lib/api-url", () => ({ getApiUrl: () => "" }));
+void mock.module("@/lib/api-url", () => ({ getApiUrl: () => "" }));
 
 const CreateCollectionDialog = (await import("../create-collection-dialog")).CreateCollectionDialog;
 

@@ -3,37 +3,37 @@ import React from "react";
 import type { ReactNode } from "react";
 
 let mockedPath = "/admin";
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => mockedPath,
 }));
 
-mock.module("next/link", () => ({
+void mock.module("next/link", () => ({
   default: ({ href, children }: { href: string; children: React.ReactNode }) =>
     React.createElement("a", { href }, children),
 }));
 
-mock.module("@/components/ui/sidebar", () => ({
+void mock.module("@/components/ui/sidebar", () => ({
   SidebarTrigger: () => React.createElement("button", { "data-testid": "sidebar-trigger" }),
 }));
 
-mock.module("@/components/ui/separator", () => ({
+void mock.module("@/components/ui/separator", () => ({
   Separator: () => React.createElement("hr"),
 }));
 
 // OrgSwitcher hits the auth client at module load — stub to a stable label
 // so the breadcrumb is the only thing under test.
-mock.module("@/ui/components/org-switcher", () => ({
+void mock.module("@/ui/components/org-switcher", () => ({
   OrgSwitcher: () => React.createElement("span", { "data-testid": "org-switcher" }, "Acme"),
 }));
 
-mock.module("@/ui/components/user-menu", () => ({
+void mock.module("@/ui/components/user-menu", () => ({
   UserMenu: () => React.createElement("div", { "data-testid": "user-menu" }),
 }));
 
 // PendingChangesPill pulls in useAtlasConfig + use-mode-status; stub it out
 // here so the breadcrumb test stays focused on path resolution. The pill has
 // its own coverage in pending-changes-pill.test.tsx.
-mock.module("@/ui/components/admin/pending-changes-pill", () => ({
+void mock.module("@/ui/components/admin/pending-changes-pill", () => ({
   PendingChangesPill: () =>
     React.createElement("div", { "data-testid": "pending-changes-pill" }),
 }));

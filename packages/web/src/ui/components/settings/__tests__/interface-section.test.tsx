@@ -20,7 +20,7 @@ interface FetchState {
 let fetchState: FetchState = { data: undefined, loading: false, error: null };
 const refetch = mock(() => {});
 
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({
     data: fetchState.data,
     loading: fetchState.loading,
@@ -53,7 +53,7 @@ const mutation: MutationState = {
   result: { ok: true, data: { defaultLanding: "admin" } },
 };
 
-mock.module("@/ui/hooks/use-admin-mutation", () => ({
+void mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: (opts: MutateCallArg) => {
     mutation.capturedHookOpts = opts;
     return {

@@ -14,11 +14,11 @@ let modeStatusState: {
   loading: boolean;
 } = { data: null, loading: false };
 
-mock.module("@/ui/hooks/use-mode", () => ({
+void mock.module("@/ui/hooks/use-mode", () => ({
   useMode: () => ({ ...modeState, setMode: () => {} }),
 }));
 
-mock.module("@/ui/hooks/use-mode-status", () => ({
+void mock.module("@/ui/hooks/use-mode-status", () => ({
   useModeStatus: () => modeStatusState,
 }));
 

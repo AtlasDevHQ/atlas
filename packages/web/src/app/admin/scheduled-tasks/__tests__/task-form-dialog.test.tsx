@@ -15,7 +15,7 @@ import React, { type ReactNode } from "react";
 // env-picker.test.tsx uses for dropdown-menu. CLAUDE.md "Mock all exports"
 // applies: stub every named export so a sibling test importing a
 // different symbol doesn't trip a SyntaxError under the isolated runner.
-mock.module("@/components/ui/dialog", () => {
+void mock.module("@/components/ui/dialog", () => {
   const passthrough =
     (tag: string) =>
     ({ children, asChild: _asChild, open: _open, onOpenChange: _onOpenChange, ...rest }: {
@@ -40,7 +40,7 @@ mock.module("@/components/ui/dialog", () => {
   };
 });
 
-mock.module("@/components/ui/select", () => {
+void mock.module("@/components/ui/select", () => {
   const passthrough =
     (tag: string) =>
     ({ children, asChild: _asChild, value: _value, onValueChange: _onValueChange, ...rest }: {
@@ -65,7 +65,7 @@ mock.module("@/components/ui/select", () => {
   };
 });
 
-mock.module("@/ui/context", () => ({
+void mock.module("@/ui/context", () => ({
   useAtlasConfig: () => ({
     apiUrl: "http://localhost",
     isCrossOrigin: false,
@@ -79,7 +79,7 @@ type MutateResultLike =
   | { ok: false; error: { message: string } }
   | undefined;
 const mutateMock = mock(async (): Promise<MutateResultLike> => ({ ok: true, data: {} }));
-mock.module("@/ui/hooks/use-admin-mutation", () => ({
+void mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: () => ({
     mutate: mutateMock,
     saving: false,
@@ -89,7 +89,7 @@ mock.module("@/ui/hooks/use-admin-mutation", () => ({
   }),
 }));
 
-mock.module("@/ui/components/admin/mutation-error-surface", () => ({
+void mock.module("@/ui/components/admin/mutation-error-surface", () => ({
   MutationErrorSurface: () => null,
 }));
 

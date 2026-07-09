@@ -121,7 +121,7 @@ describe("useRunStatus (#3749)", () => {
       useRunStatus({ ...baseOpts, conversationId: "conv-1", enabled: true }),
     );
     await waitFor(() => expect(result.current.runStatus?.status).toBe("running"));
-    act(() => result.current.clear());
+    void act(() => result.current.clear());
     expect(result.current.runStatus).toBeNull();
   });
 

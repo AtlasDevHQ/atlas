@@ -12,7 +12,7 @@ import React, { type ReactNode } from "react";
 // Tooltip primitives portal their content; stub them to passthrough divs so
 // the error text is assertable in the rendered tree. CLAUDE.md "Mock all
 // exports" — the module exports exactly these four.
-mock.module("@/components/ui/tooltip", () => {
+void mock.module("@/components/ui/tooltip", () => {
   const passthrough =
     (tag: string) =>
     ({ children, asChild: _asChild, ...rest }: { children?: ReactNode; asChild?: boolean } & Record<string, unknown>) =>

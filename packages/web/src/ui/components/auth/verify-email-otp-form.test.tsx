@@ -19,7 +19,7 @@ import { render, fireEvent, waitFor, cleanup, act, screen } from "@testing-libra
 
 // ── Mocks ───────────────────────────────────────────────────────────────
 
-mock.module("@/components/ui/input-otp", () => ({
+void mock.module("@/components/ui/input-otp", () => ({
   InputOTP: ({
     value,
     onChange,
@@ -53,7 +53,7 @@ const getSessionMock = mock(async () => {
   return { data: { user: { id: "u1" } } };
 });
 
-mock.module("@/lib/auth/client", () => ({
+void mock.module("@/lib/auth/client", () => ({
   authClient: {
     emailOtp: { verifyEmail: verifyEmailMock, sendVerificationOtp: sendVerificationOtpMock },
     getSession: getSessionMock,

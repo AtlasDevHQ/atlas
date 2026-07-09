@@ -8,27 +8,27 @@ const mockPush = mock(() => {});
 // Module mocks must be set up before importing the component under test —
 // otherwise the real `next/navigation` runs at import time and the
 // `AppRouterContext` invariant throws during render.
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/",
   useRouter: () => ({ push: mockPush, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
 }));
 
-mock.module("@/ui/hooks/use-platform-admin-guard", () => ({
+void mock.module("@/ui/hooks/use-platform-admin-guard", () => ({
   useUserRole: () => "admin",
   usePlatformAdminGuard: () => ({ blocked: false }),
 }));
 
-mock.module("@/ui/hooks/use-deploy-mode", () => ({
+void mock.module("@/ui/hooks/use-deploy-mode", () => ({
   useDeployMode: () => ({ deployMode: "self-hosted", loading: false, error: null, resolved: true }),
 }));
 
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({ data: null, loading: false, error: null, refetch: () => {} }),
   friendlyError: (e: unknown) => (e instanceof Error ? e.message : String(e)),
 }));
 
-mock.module("@/ui/components/tour/guided-tour", () => ({
+void mock.module("@/ui/components/tour/guided-tour", () => ({
   useTourContext: () => null,
 }));
 

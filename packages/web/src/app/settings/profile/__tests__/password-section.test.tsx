@@ -26,7 +26,7 @@ import { render, fireEvent, waitFor, cleanup, act } from "@testing-library/react
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-mock.module("@/lib/auth/client", () => ({ authClient: {} }));
+void mock.module("@/lib/auth/client", () => ({ authClient: {} }));
 
 import { PasswordSection } from "@/ui/components/settings/password-section";
 import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";

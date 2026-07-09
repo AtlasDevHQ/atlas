@@ -9,7 +9,7 @@ import { describe, expect, test, afterEach, mock } from "bun:test";
 import React from "react";
 
 // Stub next/link to a plain anchor so we can read the href in jsdom.
-mock.module("next/link", () => ({
+void mock.module("next/link", () => ({
   __esModule: true,
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) =>
     React.createElement("a", { href, ...rest }, children),

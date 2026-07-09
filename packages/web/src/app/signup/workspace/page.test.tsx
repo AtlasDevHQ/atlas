@@ -18,7 +18,7 @@ import { render, fireEvent, waitFor, cleanup, act, screen } from "@testing-libra
 
 const routerPushMock = mock((_path: string) => {});
 const routerMock = { push: routerPushMock, replace: () => {}, back: () => {} };
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useRouter: () => routerMock,
 }));
 
@@ -27,13 +27,13 @@ const orgCreateMock = mock(async (_opts: { name: string; slug: string }) => ({
   error: null as { message?: string } | null,
 }));
 const setActiveMock = mock(async (_opts: { organizationId: string }) => ({ data: {}, error: null }));
-mock.module("@/lib/auth/client", () => ({
+void mock.module("@/lib/auth/client", () => ({
   authClient: {
     organization: { create: orgCreateMock, setActive: setActiveMock },
   },
 }));
 
-mock.module("@/ui/components/signup/signup-shell", () => ({
+void mock.module("@/ui/components/signup/signup-shell", () => ({
   SignupShell: ({ children }: { children: unknown }) => <div>{children as never}</div>,
 }));
 

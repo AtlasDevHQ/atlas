@@ -2,7 +2,7 @@ import { describe, expect, test, mock } from "bun:test";
 import { render, fireEvent } from "@testing-library/react";
 
 // Mock next/dynamic
-mock.module("next/dynamic", () => ({
+void mock.module("next/dynamic", () => ({
   default: () => {
     return function DynamicStub() {
       return <div data-testid="chart-placeholder" />;

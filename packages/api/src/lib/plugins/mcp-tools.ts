@@ -244,7 +244,7 @@ export class PluginMcpToolRegistry {
       ...(tool.actionCategory !== undefined && { actionCategory: tool.actionCategory }),
       ...(tool.minRole !== undefined && { minRole: tool.minRole }),
       ...(tool.destructive !== undefined && { destructive: tool.destructive }),
-      handler: ((args, ctx) => tool.handler(args, ctx)) as RegisteredPluginMcpTool["handler"],
+      handler: tool.handler as RegisteredPluginMcpTool["handler"],
     };
     this.tools.set(qualifiedName, entry);
     return entry;

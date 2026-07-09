@@ -24,7 +24,7 @@ const mockCreate = mock((_path: string, _opts?: Record<string, string>) =>
   }),
 );
 
-mock.module("@duckdb/node-api", () => ({
+void mock.module("@duckdb/node-api", () => ({
   DuckDBInstance: {
     create: mockCreate,
   },
@@ -40,7 +40,7 @@ mock.module("@duckdb/node-api", () => ({
 const listSpy = mock(async (_o: unknown) => [] as unknown[]);
 const profileSpy = mock(async (_o: unknown) => ({ profiles: [], errors: [] }));
 const realProfiler = await import("../src/profiler");
-mock.module("../src/profiler", () => ({
+void mock.module("../src/profiler", () => ({
   ...realProfiler,
   listDuckDBObjects: listSpy,
   profileDuckDB: profileSpy,

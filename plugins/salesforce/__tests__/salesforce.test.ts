@@ -47,7 +47,7 @@ const mockDescribeGlobal = mock(() =>
   }),
 );
 
-mock.module("jsforce", () => ({
+void mock.module("jsforce", () => ({
   Connection: class MockConnection {
     query = mockQuery;
     login = mockLogin;

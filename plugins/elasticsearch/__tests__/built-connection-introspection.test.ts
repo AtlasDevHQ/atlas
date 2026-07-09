@@ -19,7 +19,7 @@ import { describe, test, expect, mock } from "bun:test";
 const listSpy = mock(async (_o: unknown) => [] as unknown[]);
 const profileSpy = mock(async (_o: unknown) => ({ profiles: [], errors: [] }));
 const realProfiler = await import("../src/profiler");
-mock.module("../src/profiler", () => ({
+void mock.module("../src/profiler", () => ({
   ...realProfiler,
   listElasticsearchObjects: listSpy,
   profileElasticsearchObjects: profileSpy,

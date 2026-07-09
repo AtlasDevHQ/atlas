@@ -14,7 +14,7 @@
     "typescript/no-floating-promises": "error",
     "typescript/await-thenable": "error",
     "typescript/no-base-to-string": "warn",
-    "typescript/no-redundant-type-constituents": "warn",
+    "typescript/no-redundant-type-constituents": "error",
     "typescript/unbound-method": "warn",
     "typescript/restrict-template-expressions": "warn",
     "typescript/require-array-sort-compare": "error",

@@ -62,7 +62,7 @@ const mockQuery = mock((opts: { query: string; clickhouse_settings?: Record<stri
 const mockClose = mock(() => Promise.resolve());
 const mockCreateClient = mock(() => ({ query: mockQuery, close: mockClose }));
 
-mock.module("@clickhouse/client", () => ({ createClient: mockCreateClient }));
+void mock.module("@clickhouse/client", () => ({ createClient: mockCreateClient }));
 
 import { listClickHouseObjects, profileClickHouse } from "../src/profiler";
 

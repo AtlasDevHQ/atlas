@@ -53,13 +53,19 @@ does **not** implement `no-restricted-syntax` natively.
   reimplementations of `no-unsafe-optional-chaining` and `no-control-regex` are
   stricter than ESLint's and flagged 5 sites that ESLint passed clean. Rather
   than rewrite working, ESLint-green code to satisfy a stricter reimplementation
-  mid-swap, both rules are set to `warn` (surfaced, non-blocking). One genuine
-  redundancy oxlint's parser caught — a duplicate `import type React` in
-  `admin-layout.test.tsx` — was removed.
-- **Signal loss to revisit:** `@typescript-eslint/no-explicit-any` was a
-  *warning* under `tseslint.recommended`; it is not in oxlint's `correctness`
-  set, so the `any` lint signal is gone (type-check + review still cover it).
-  Re-adding `typescript/no-explicit-any: warn` is a candidate follow-up.
+  mid-swap, both rules were initially set to `warn`. One genuine redundancy
+  oxlint's parser caught — a duplicate `import type React` in
+  `admin-layout.test.tsx` — was removed. **Follow-up (post-cutover):**
+  `no-control-regex` was restored to `error` after switching the one flagged
+  site (tar NUL-padding strip in `bundle-archive.ts`) to a `\u0000` escape with
+  a justified `oxlint-disable-next-line`. `no-unsafe-optional-chaining` stays
+  `warn` — its 4 remaining sites are benign test assertions not worth the
+  non-null-assertion churn.
+- **Signal loss, now restored:** `@typescript-eslint/no-explicit-any` was a
+  *warning* under `tseslint.recommended` and is not in oxlint's `correctness`
+  set. **Follow-up (post-cutover):** re-added as `typescript/no-explicit-any:
+  warn` (root + template configs), reproducing the pre-oxlint signal — existing
+  `oxlint-disable` comments are honored, and new undisabled `any` warns again.
 - Scaffolded projects copy `.oxlintrc.json` (create-atlas's `copyDirRecursive`
   includes dotfiles) and depend on `oxlint`; `bun run lint` works standalone.
 - `typescript@6` stays for `.d.ts` emit (`packages/{types,sdk,plugin-sdk,

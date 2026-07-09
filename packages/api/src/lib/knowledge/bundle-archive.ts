@@ -294,7 +294,8 @@ function extractTar(
 
     // GNU long-name extension: this entry's data IS the next entry's full name.
     if (typeChar === "L") {
-      longName = readString(bytes, dataStart, size).replace(/\0+$/, "");
+      // oxlint-disable-next-line no-control-regex -- tar long-name fields are NUL-padded; matching \u0000 to strip the padding is intended.
+      longName = readString(bytes, dataStart, size).replace(/\u0000+$/, "");
       continue;
     }
     // pax extended headers ('x'/'g') and directories ('5') carry no concept file.

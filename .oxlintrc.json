@@ -10,7 +10,18 @@
     "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
     "@next/next/no-html-link-for-pages": "off",
     "typescript/no-explicit-any": "warn",
-    "no-unsafe-optional-chaining": "warn"
+    "no-unsafe-optional-chaining": "warn",
+    "typescript/no-floating-promises": "warn",
+    "typescript/await-thenable": "warn",
+    "typescript/no-base-to-string": "warn",
+    "typescript/no-redundant-type-constituents": "warn",
+    "typescript/unbound-method": "warn",
+    "typescript/restrict-template-expressions": "warn",
+    "typescript/require-array-sort-compare": "warn",
+    "typescript/no-misused-spread": "warn",
+    "typescript/no-useless-default-assignment": "warn",
+    "typescript/no-duplicate-type-constituents": "warn",
+    "typescript/no-implied-eval": "warn"
   },
   "overrides": [
     {

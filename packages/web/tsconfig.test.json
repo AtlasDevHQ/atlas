@@ -1,4 +1,13 @@
 {
+  // tsgolint routing artifact, not a buildable project (#4443, #4447):
+  // this config exists so oxlint --type-aware routes test files to a real
+  // program with @/* paths + bun/node types instead of inferred per-file
+  // programs. `composite` is load-bearing for the project-reference redirect
+  // from tsconfig.json; the file list is intentionally incomplete (tests pull
+  // app code into the program unlisted), so never build this with `tsc -b`.
+  // Keep `include` narrowed to test files only — a broader include claims
+  // app src files and redirects them OUT of the main program, silently
+  // emptying the web `type` gate (#4447).
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "composite": true,
@@ -6,6 +15,12 @@
     "outDir": "dist/tsconfig-test-build",
     "types": ["bun", "node"]
   },
-  "include": ["next-env.d.ts", "src/**/*.ts", "src/**/*.tsx"],
+  "include": [
+    "src/test-setup.ts",
+    "src/**/__tests__/**/*.ts",
+    "src/**/__tests__/**/*.tsx",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx"
+  ],
   "exclude": ["node_modules"]
 }

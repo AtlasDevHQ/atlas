@@ -660,6 +660,31 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     expect(zd?.endpointUrl).toBeNull();
     expect(zd?.sync).not.toBeNull();
   });
+
+  it("dispatches a Salesforce Knowledge collection to the connector engine and lists it as source 'salesforce-knowledge' (#4397)", async () => {
+    COLLECTION = {
+      install_id: "sf-kb",
+      catalog_id: "catalog:salesforce-knowledge",
+      status: "published",
+      config: { article_object: "Knowledge__kav", channel: "pkb" },
+    };
+    SYNC_STATES = [
+      { collection_id: "sf-kb", last_sync_at: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    ];
+    const syncRes = await adminKnowledge.request("/sf-kb/sync", { method: "POST" });
+    expect(syncRes.status).toBe(200);
+    expect(syncConnectorCollection).toHaveBeenCalledTimes(1);
+    expect(syncCollection).not.toHaveBeenCalled();
+
+    const listRes = await adminKnowledge.request("/", { method: "GET" });
+    const body = (await listRes.json()) as {
+      collections: Array<{ slug: string; source: string; endpointUrl: string | null; sync: unknown }>;
+    };
+    const sf = body.collections.find((c) => c.slug === "sf-kb");
+    expect(sf?.source).toBe("salesforce-knowledge");
+    expect(sf?.endpointUrl).toBeNull();
+    expect(sf?.sync).not.toBeNull();
+  });
 });
 
 describe("knowledge mirror invalidation (#4208)", () => {

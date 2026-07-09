@@ -72,12 +72,42 @@ export interface SalesforceQueryResult {
 }
 
 /**
+ * One raw SOQL result batch (#4397). Unlike {@link SalesforceQueryResult},
+ * this keeps jsforce's paging bookkeeping: Salesforce returns at most one
+ * batch (~2000 records, fewer for wide rows) per request, and the rest hangs
+ * off `nextRecordsUrl` via `queryMore`. `query()` above silently truncates at
+ * the first batch — fine for the agent tool (auto-LIMITed), unsound for a
+ * full enumeration like the Knowledge sync reconciliation crawl.
+ */
+export interface SalesforceQueryPage {
+  readonly records: readonly Record<string, unknown>[];
+  readonly done: boolean;
+  readonly nextRecordsUrl: string | null;
+}
+
+/** One object's `describe()` metadata — only the field list is exposed. */
+export interface SalesforceObjectDescribe {
+  readonly fields: readonly Record<string, unknown>[];
+}
+
+/**
  * Public shape exposed by the lazy-built Salesforce plugin instance.
  * Agent tooling calls `query` with a SOQL statement; the wrapper
  * handles session-expired retries via {@link refreshSalesforceToken}.
  */
 export interface SalesforcePluginInstance extends PluginLike {
   query(soql: string, timeoutMs?: number): Promise<SalesforceQueryResult>;
+  /**
+   * Raw paged SOQL (#4397, Knowledge sync connector): one batch per call with
+   * jsforce's `done`/`nextRecordsUrl` bookkeeping intact, continued via
+   * {@link queryMorePage}. Refresh-retried like `query`. Callers that need the
+   * FULL result set (sync crawls) use this pair; `query` is the one-shot,
+   * first-batch-only convenience for the auto-LIMITed agent tool.
+   */
+  queryPage(soql: string, timeoutMs?: number): Promise<SalesforceQueryPage>;
+  queryMorePage(nextRecordsUrl: string, timeoutMs?: number): Promise<SalesforceQueryPage>;
+  /** One object's field metadata over the OAuth session (refresh-retried). */
+  describeObject(objectName: string): Promise<SalesforceObjectDescribe>;
   /**
    * Introspection as a capability of the live OAuth connection (#3667, ADR-0017
    * universalization). `listObjects`/`profile` run over the SAME OAuth `jsforce`
@@ -122,11 +152,20 @@ function readInstanceUrl(config: Record<string, unknown>): string | null {
  * itself is an untyped optional peer dep loaded via {@link requireJsforce}).
  */
 interface JsforceConnection {
-  query(soql: string): Promise<{ records?: Record<string, unknown>[] }>;
+  query(soql: string): Promise<JsforceQueryResponse>;
+  /** Continue a paged SOQL result from its `nextRecordsUrl` locator (#4397). */
+  queryMore(nextRecordsUrl: string): Promise<JsforceQueryResponse>;
   // Describe surface used by the OAuth introspection (#3667). jsforce is an
   // untyped optional peer dep, so these are structural.
   describeGlobal(): Promise<{ sobjects?: ReadonlyArray<{ name?: string; queryable?: boolean }> }>;
   describe(objectName: string): Promise<{ fields?: readonly Record<string, unknown>[] }>;
+}
+
+/** jsforce's raw query/queryMore response — untrusted, every field optional. */
+interface JsforceQueryResponse {
+  readonly records?: Record<string, unknown>[];
+  readonly done?: boolean;
+  readonly nextRecordsUrl?: string | null;
 }
 
 /**
@@ -145,6 +184,43 @@ function requireJsforce(): any {
       "Salesforce integration requires the jsforce package. Install with: bun add jsforce",
     );
   }
+}
+
+/** Bound a jsforce call with the same timeout `query` has always applied. */
+async function raceTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Salesforce query timed out")), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer!));
+}
+
+/**
+ * Normalize jsforce's raw response into a {@link SalesforceQueryPage}. A
+ * response that claims more pages (`done: false`) but carries no locator is a
+ * truncation the caller cannot continue — it THROWS rather than masquerade as
+ * a complete page: a sync crawl that trusted it would feed a partial set to
+ * subtractive archiving. After that guard, locator presence is authoritative
+ * (a contradictory `done: true` + locator is continued — the safe direction,
+ * bounded by the caller's page cap).
+ */
+function toQueryPage(result: JsforceQueryResponse): SalesforceQueryPage {
+  const nextRecordsUrl =
+    typeof result.nextRecordsUrl === "string" && result.nextRecordsUrl !== ""
+      ? result.nextRecordsUrl
+      : null;
+  if (result.done === false && nextRecordsUrl === null) {
+    throw new Error(
+      "Salesforce returned done:false with no nextRecordsUrl — the paged query cannot be continued; refusing to treat a truncated result as complete.",
+    );
+  }
+  return {
+    records: result.records ?? [],
+    done: nextRecordsUrl === null,
+    nextRecordsUrl,
+  };
 }
 
 function isSessionExpiredError(err: unknown): boolean {
@@ -282,16 +358,7 @@ export function createSalesforceLazyBuilder(
 
       async query(soql: string, timeoutMs = 30_000): Promise<SalesforceQueryResult> {
         return withRetry(async (c) => {
-          let timer: ReturnType<typeof setTimeout>;
-          const result = await Promise.race([
-            c.query(soql),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(
-                () => reject(new Error("Salesforce query timed out")),
-                timeoutMs,
-              );
-            }),
-          ]).finally(() => clearTimeout(timer!));
+          const result = await raceTimeout(c.query(soql), timeoutMs);
 
           const records = result.records ?? [];
           if (records.length === 0) return { columns: [], rows: [] };
@@ -302,6 +369,28 @@ export function createSalesforceLazyBuilder(
             return out;
           });
           return { columns, rows };
+        });
+      },
+
+      async queryPage(soql: string, timeoutMs = 30_000): Promise<SalesforceQueryPage> {
+        return withRetry(async (c) => toQueryPage(await raceTimeout(c.query(soql), timeoutMs)));
+      },
+
+      async queryMorePage(
+        nextRecordsUrl: string,
+        timeoutMs = 30_000,
+      ): Promise<SalesforceQueryPage> {
+        return withRetry(async (c) =>
+          toQueryPage(await raceTimeout(c.queryMore(nextRecordsUrl), timeoutMs)),
+        );
+      },
+
+      async describeObject(objectName: string): Promise<SalesforceObjectDescribe> {
+        return withRetry(async (c) => {
+          // Bounded like the query paths — a hung describe would otherwise
+          // wedge the install request and the sync fiber indefinitely.
+          const described = await raceTimeout(c.describe(objectName), 30_000);
+          return { fields: described.fields ?? [] };
         });
       },
 

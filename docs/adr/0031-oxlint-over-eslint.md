@@ -103,6 +103,44 @@ does **not** implement `no-restricted-syntax` natively.
     `warn` → `error`** (0 repo-wide). *Caveat:* the patch is pinned to `bun-types@1.3.14`;
     a version bump that changes `test.d.ts` will fail to apply at install time (a loud,
     CI-caught failure) and the patch must be regenerated (`bun patch bun-types@<v>`).
+  - **Wave 4 (config-artifact tail: `no-redundant-type-constituents` 42 → 17, #4433 + #4434).**
+    Two independent fixes, each clearing findings that were *config artifacts* of the
+    per-package type-aware program — not code smells the sanctioned `bun run type` (root
+    tsgo) ever saw. **#4433 — `@types/json-schema` (2 findings).** `ai` re-exports
+    `JSONSchema7` from `@ai-sdk/provider` ← `json-schema`, but `@types/json-schema` was
+    installed nowhere in the tree (only as a nested devDep of `@ai-sdk/provider`), so
+    `JSONSchema7` resolved to an **error type that acts as `any`** — which absorbed the
+    `undefined` in `(t.inputSchema as JSONSchema7 | undefined) ?? {…}` at
+    `canonical-eval-mcp-llm.ts:308` / `canonical-eval-tool-selection.ts:307`, tripping
+    `no-redundant-type-constituents`. Fix: add `@types/json-schema` as a **root
+    devDependency**; `JSONSchema7` resolves to the real interface, both findings clear
+    honestly, and `bun run type` stays green (the real type introduced no new errors —
+    `jsonSchema(schema)` already accepted the shape). **#4434 — sdk/react per-package
+    programs (25 findings, 23 cleared).** *sdk (21 → 0):* `packages/sdk/tsconfig.json`
+    extended the root config (`lib: ["esnext"]`, no `types`), and tsgolint's per-package
+    program did **not** auto-include `@types/bun`, so the `URL`/`Request`/`Response` globals
+    in the fetch-mock test unions (`string | URL | Request`, `Promise<Response>`) resolved
+    to error-types-as-`any`. The unions themselves are **correct** — the fix is
+    `compilerOptions.types: ["bun", "node"]` (mirroring `packages/api`), which makes the
+    globals resolve; no test source touched. This surfaced 2 previously-masked genuine
+    `no-base-to-string` warnings (`String(calls[0]?.[0])` on a now-`string | URL | Request`
+    fetch arg) — left as `warn` (permanent genuine-`unknown` category). *react (3 → 1):*
+    react's tsconfig already carries `lib: ["dom", …]`, so its globals resolve — these were
+    **not** global-resolution findings. 2 were `AtlasMcpError` from `@useatlas/sdk`
+    resolving to an error type because the standalone type-aware program (no prior build)
+    hit the unbuilt `dist/index.d.ts`; fix: a `paths` mapping (`@useatlas/sdk` →
+    `../sdk/src/index.ts`) so the program resolves sdk to **source**, build-order-independent
+    and matching what the root program does (it includes sdk source directly). The library
+    build already externalizes `@useatlas/sdk`, so the mapping only redirects the
+    self-contained widget bundle to source (identical code) and the dts keeps the external
+    import by name — no source leak. The 3rd react finding (`unknown | "pending"` in a
+    mock-fetch signature) is a **genuine** redundant constituent — `unknown` swallows the
+    `"pending"` sentinel in *any* program, config or not — so it is **not** a config
+    artifact; left as `warn` per this wave's no-test-source-edits rule. **Not promoted:**
+    `no-redundant-type-constituents` (17) and `tsconfig-error` (16) remain non-zero
+    repo-wide (residuals in `packages/web`, `plugins/mcp`, `packages/oauth-helper`,
+    `packages/api` test files + the one genuine react finding), so both stay `warn` —
+    promotion to `error` is gated on 0 **repo-wide**, not 0 in the touched packages.
 
 ## Consequences
 

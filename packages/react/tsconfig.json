@@ -9,7 +9,11 @@
     "declarationMap": true,
     "sourceMap": true,
     "noEmit": true,
-    "incremental": false
+    "incremental": false,
+    "paths": {
+      "@useatlas/sdk": ["../sdk/src/index.ts"],
+      "@useatlas/sdk/*": ["../sdk/src/*"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
   "exclude": ["node_modules", "dist"]

@@ -131,9 +131,9 @@ describe("buildCustomSessionPayload()", () => {
     mockHasInternalDB = true;
     mockInternalQuery = () => Promise.resolve([{ role: "admin" }]);
     const out = await buildCustomSessionPayload({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture, mirrors Better Auth's User shape minimally
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture, mirrors Better Auth's User shape minimally
       user: { id: "usr_matt", email: "matt@useatlas.dev", role: "user" } as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture, mirrors Better Auth's Session shape minimally
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture, mirrors Better Auth's Session shape minimally
       session: { id: "sess_1", userId: "usr_matt", activeOrganizationId: "org_1" } as any,
     });
     const u = out.user as Record<string, unknown>;
@@ -145,9 +145,9 @@ describe("buildCustomSessionPayload()", () => {
     // No active org and no user.role — both sides empty. null (not
     // undefined) so the field is explicitly serialized over JSON.
     const out = await buildCustomSessionPayload({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
       user: { id: "usr_1", email: "a@b.com" } as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
       session: { id: "sess_1", userId: "usr_1" } as any,
     });
     expect((out.user as Record<string, unknown>).effectiveRole).toBeNull();
@@ -159,9 +159,9 @@ describe("buildCustomSessionPayload()", () => {
     mockHasInternalDB = true;
     mockInternalQuery = () => Promise.resolve([]);
     const out = await buildCustomSessionPayload({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
       user: { id: "usr_1", email: "a@b.com", role: "admin,extra" } as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
       session: { id: "sess_1", userId: "usr_1", activeOrganizationId: "org_1" } as any,
     });
     expect((out.user as Record<string, unknown>).effectiveRole).toBe("admin");
@@ -176,9 +176,9 @@ describe("buildCustomSessionPayload()", () => {
     mockInternalQuery = () => Promise.resolve([{ role: "member" }]);
     const out = await buildCustomSessionPayload({
       // A genuine platform_admin user — over the web they keep platform_admin.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
       user: { id: "usr_pa", email: "staff@useatlas.dev", role: "platform_admin" } as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
       session: { id: "sess_cli", userId: "usr_pa", activeOrganizationId: "org_1", origin: "cli" } as any,
     });
     // The downgrade fired: org role, never platform_admin. user.role is intact.
@@ -190,10 +190,10 @@ describe("buildCustomSessionPayload()", () => {
     mockHasInternalDB = true;
     mockInternalQuery = () => Promise.resolve([{ role: "member" }]);
     const out = await buildCustomSessionPayload({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
       user: { id: "usr_pa", email: "staff@useatlas.dev", role: "platform_admin" } as any,
       // No origin marker — a normal web session. platform_admin short-circuits.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
       session: { id: "sess_web", userId: "usr_pa", activeOrganizationId: "org_1" } as any,
     });
     expect((out.user as Record<string, unknown>).effectiveRole).toBe("platform_admin");

@@ -145,7 +145,7 @@ describe("suggestions routes", () => {
       mocks.hasInternalDB = false;
       const res = await req("GET", "/?table=orders");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.suggestions).toEqual([]);
       expect(body.total).toBe(0);
@@ -155,7 +155,7 @@ describe("suggestions routes", () => {
       mocks.hasInternalDB = false;
       const res = await req("GET", "/popular");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.suggestions).toEqual([]);
       expect(body.total).toBe(0);
@@ -172,7 +172,7 @@ describe("suggestions routes", () => {
 
       const res = await req("GET", "/?table=orders");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.suggestions).toBeArray();
       expect(body.total).toBe(2);
@@ -191,7 +191,7 @@ describe("suggestions routes", () => {
     it("returns 400 when no table param", async () => {
       const res = await req("GET", "/");
       expect(res.status).toBe(400);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.error).toContain("table");
     });
@@ -231,7 +231,7 @@ describe("suggestions routes", () => {
 
       const res = await req("GET", "/popular");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.suggestions).toBeArray();
       expect(body.total).toBe(2);

@@ -89,7 +89,7 @@ async function call(
   resolve: () => Promise<RestDatasource | null> = async () => datasource(),
 ): Promise<ExecuteRestOperationResult> {
   const t = createExecuteRestOperationTool({ resolveDatasource: resolve });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub for a unit invocation
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub for a unit invocation
   return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
 }
 

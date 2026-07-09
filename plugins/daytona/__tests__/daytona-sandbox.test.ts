@@ -72,7 +72,7 @@ const { daytonaSandboxPlugin, buildDaytonaSandboxPlugin } = await import(
 
 describe("config validation", () => {
   test("accepts valid config with apiKey", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     expect(plugin.id).toBe("daytona-sandbox");
     expect(plugin.types).toEqual(["sandbox"]);
@@ -80,7 +80,7 @@ describe("config validation", () => {
   });
 
   test("rejects empty apiKey", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => daytonaSandboxPlugin({ apiKey: "" } as any)).toThrow();
   });
 
@@ -88,27 +88,27 @@ describe("config validation", () => {
     const plugin = daytonaSandboxPlugin({
       apiKey: "test-key",
       apiUrl: "https://custom.daytona.io",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     expect(plugin.config?.apiUrl).toBe("https://custom.daytona.io");
   });
 
   test("accepts custom timeout", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key", timeoutSec: 60 } as any);
     expect(plugin.config?.timeoutSec).toBe(60);
   });
 
   test("rejects invalid URL", () => {
     expect(() =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       daytonaSandboxPlugin({ apiKey: "test-key", apiUrl: "not-a-url" } as any),
     ).toThrow();
   });
 
   test("rejects negative timeout", () => {
     expect(() =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       daytonaSandboxPlugin({ apiKey: "test-key", timeoutSec: -1 } as any),
     ).toThrow();
   });
@@ -120,7 +120,7 @@ describe("config validation", () => {
 
 describe("plugin shape", () => {
   test("createPlugin factory returns a valid plugin", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     expect(plugin.id).toBe("daytona-sandbox");
     expect(plugin.types).toEqual(["sandbox"]);
@@ -138,19 +138,19 @@ describe("plugin shape", () => {
   });
 
   test("isSandboxPlugin type guard passes", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     expect(isSandboxPlugin(plugin)).toBe(true);
   });
 
   test("sandbox.priority is 85", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     expect(plugin.sandbox.priority).toBe(85);
   });
 
   test("sandbox.create is a function", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     expect(typeof plugin.sandbox.create).toBe("function");
   });
@@ -162,25 +162,25 @@ describe("plugin shape", () => {
 
 describe("security metadata", () => {
   test("declares network isolation", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     expect(plugin.security?.networkIsolation).toBe(true);
   });
 
   test("declares filesystem isolation", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     expect(plugin.security?.filesystemIsolation).toBe(true);
   });
 
   test("declares unprivileged execution", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     expect(plugin.security?.unprivilegedExecution).toBe(true);
   });
 
   test("description contains Daytona", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     expect(plugin.security?.description).toContain("Daytona");
   });
@@ -200,7 +200,7 @@ describe("sandbox.create / exec / close", () => {
   });
 
   test("creates a Daytona sandbox and uploads files", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     const backend = await plugin.sandbox.create(TEST_SEMANTIC_ROOT);
     expect(backend).toBeDefined();
@@ -211,7 +211,7 @@ describe("sandbox.create / exec / close", () => {
   });
 
   test("exec delegates to sandbox.process.executeCommand", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     const backend = await plugin.sandbox.create(TEST_SEMANTIC_ROOT);
     // Set mock after sandbox.create so the mkdir -p call during create doesn't consume it
@@ -223,7 +223,7 @@ describe("sandbox.create / exec / close", () => {
   });
 
   test("exec returns error on command failure", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     const backend = await plugin.sandbox.create(TEST_SEMANTIC_ROOT);
     // Override after sandbox.create consumed the default mock for its internal calls
@@ -235,7 +235,7 @@ describe("sandbox.create / exec / close", () => {
   });
 
   test("close calls daytona.delete", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     const backend = await plugin.sandbox.create(TEST_SEMANTIC_ROOT);
     await backend.close!();
@@ -243,7 +243,7 @@ describe("sandbox.create / exec / close", () => {
   });
 
   test("close swallows errors", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     const backend = await plugin.sandbox.create(TEST_SEMANTIC_ROOT);
     mockDelete.mockRejectedValueOnce(new Error("network error"));
@@ -268,7 +268,7 @@ describe("healthCheck", () => {
     mockExecuteCommand.mockImplementation(() =>
       Promise.resolve({ result: "daytona-ok", exitCode: 0 }),
     );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     const result = await plugin.healthCheck!();
     expect(result.healthy).toBe(true);
@@ -277,7 +277,7 @@ describe("healthCheck", () => {
 
   test("returns unhealthy when sandbox creation fails", async () => {
     mockCreate.mockRejectedValueOnce(new Error("auth failed"));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "bad-key" } as any);
     const result = await plugin.healthCheck!();
     expect(result.healthy).toBe(false);
@@ -288,7 +288,7 @@ describe("healthCheck", () => {
     mockExecuteCommand.mockImplementation(() =>
       Promise.resolve({ result: "", exitCode: 1 }),
     );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     const result = await plugin.healthCheck!();
     expect(result.healthy).toBe(false);
@@ -302,7 +302,7 @@ describe("healthCheck", () => {
 
 describe("initialize", () => {
   test("logs plugin readiness", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = daytonaSandboxPlugin({ apiKey: "test-key" } as any);
     const logged: { level: string; msg: string }[] = [];
     const ctx = {

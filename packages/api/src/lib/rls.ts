@@ -218,7 +218,7 @@ function isPgFamilyDialect(dialect: string): boolean {
  * query and RLS targeting would be wrong (#3346, fail-closed).
  */
 function extractTableAliasMap(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- avoids narrowing boilerplate across the BaseFrom | Join | TableExpr | Dual union members
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- avoids narrowing boilerplate across the BaseFrom | Join | TableExpr | Dual union members
   from: any[],
   cteNames: ReadonlySet<string>,
   dialect: string,
@@ -339,7 +339,7 @@ interface InjectionTracker {
  * using the `combineWith` operator (AND or OR).
  */
 function injectIntoSelectAST(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- AST is mutated in place with hand-constructed condition nodes that don't conform to Binary type, and direct property assignment bypasses type narrowing
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- AST is mutated in place with hand-constructed condition nodes that don't conform to Binary type, and direct property assignment bypasses type narrowing
   ast: any,
   groups: RLSFilterGroup[],
   combineWith: "and" | "or",
@@ -372,10 +372,10 @@ function injectIntoSelectAST(
     const aliasMap = extractTableAliasMap(from, visible, dialect);
 
     // Build per-policy-group conditions
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructed AST condition nodes don't match Binary type exactly
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- constructed AST condition nodes don't match Binary type exactly
     const groupConditions: any[] = [];
     for (const group of groups) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accumulated binary_expr nodes built from plain objects
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- accumulated binary_expr nodes built from plain objects
       let groupCondition: any = null;
       for (const filter of group.filters) {
         const alias = aliasMap.get(filter.table.toLowerCase());
@@ -449,7 +449,7 @@ function injectIntoSelectAST(
  * Injects RLS conditions into any nested SELECT statements.
  */
 function walkWhereForSubqueries(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- recursive duck-typed traversal of AST nodes; a union type would require discriminant checks at each step that would obscure the traversal logic
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- recursive duck-typed traversal of AST nodes; a union type would require discriminant checks at each step that would obscure the traversal logic
   node: any,
   groups: RLSFilterGroup[],
   combineWith: "and" | "or",

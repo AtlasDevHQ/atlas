@@ -13,7 +13,7 @@ interface QueryCall {
 const calls: QueryCall[] = [];
 const queryResponses: unknown[][] = [];
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realInternal = require("@atlas/api/lib/db/internal");
 mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,

@@ -79,7 +79,7 @@ function makeStripeClient() {
       list: mock(() => Promise.resolve({ data: [] })),
       retrieve: mock(() => Promise.resolve({})),
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe double
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe double
   } as any;
 }
 

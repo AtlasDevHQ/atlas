@@ -275,7 +275,7 @@ const approveRoute = createRoute({
     "admin's user id and `approved_at` with the current timestamp. Idempotent — " +
     "re-approving an already-approved row bumps `approved_at` only.",
   request: { params: SuggestionIdParamSchema },
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mutationResponses() returns a generic record; cast to satisfy createRoute's strict schema typing without losing the sharing benefit
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mutationResponses() returns a generic record; cast to satisfy createRoute's strict schema typing without losing the sharing benefit
   responses: mutationResponses("Suggestion not found") as any,
 });
 
@@ -288,7 +288,7 @@ const hideRoute = createRoute({
     "Flips `approval_status` to `hidden`. Reversible via the unhide endpoint. " +
     "Preserves `approved_by` / `approved_at` so hide → unhide does not lose history.",
   request: { params: SuggestionIdParamSchema },
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mutationResponses() returns a generic record; cast to satisfy createRoute's strict schema typing
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mutationResponses() returns a generic record; cast to satisfy createRoute's strict schema typing
   responses: mutationResponses("Suggestion not found") as any,
 });
 
@@ -302,7 +302,7 @@ const unhideRoute = createRoute({
     "The auto-promote policy will not re-promote it back to pending on its own " +
     "once hidden — this endpoint is the only path back into review.",
   request: { params: SuggestionIdParamSchema },
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mutationResponses() returns a generic record; cast to satisfy createRoute's strict schema typing
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mutationResponses() returns a generic record; cast to satisfy createRoute's strict schema typing
   responses: mutationResponses("Suggestion not found") as any,
 });
 

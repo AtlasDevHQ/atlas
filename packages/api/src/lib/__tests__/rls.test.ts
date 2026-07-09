@@ -39,7 +39,7 @@ describe("resolveClaimPath", () => {
   });
 
   it("returns undefined when intermediate is null", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     expect(resolveClaimPath({ a: null } as Record<string, any>, "a.b")).toBeUndefined();
   });
 

@@ -558,7 +558,7 @@ describe("agent-auth capability execution (#4410)", () => {
         user: [user], session: [], account: [], verification: [],
         agent: agentRows, agentHost: [host], agentCapabilityGrant: grantRows, approvalRequest: [],
       }),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
       plugins: [plugin] as any[],
     });
   }

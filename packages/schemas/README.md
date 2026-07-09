@@ -33,8 +33,8 @@ belongs here.
 ```
 
 `@useatlas/schemas` must **never** import from `@atlas/api`, `@atlas/web`, or
-`@atlas/ee`. This is enforced by an ESLint `no-restricted-imports` rule in
-`eslint.config.mjs` scoped to `packages/schemas/**` — an upward import
+`@atlas/ee`. This is enforced by an oxlint `no-restricted-imports` rule in
+`.oxlintrc.json` scoped to `packages/schemas/**` — an upward import
 fails lint, not just review. Keeping `@useatlas/types` Zod-free preserves
 zero-dep imports for SDK consumers.
 

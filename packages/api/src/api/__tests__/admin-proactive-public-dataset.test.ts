@@ -61,7 +61,7 @@ let enterpriseEnabled = true;
 // afterAll; the `??=` here is the module-load contract, not teardown.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const effectMod = require("effect") as typeof import("effect");
 
 mock.module("@atlas/ee/layers", () => {
@@ -69,9 +69,9 @@ mock.module("@atlas/ee/layers", () => {
   return {
     EELayer: Layer.unwrapEffect(
       E.sync(() => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        // oxlint-disable-next-line @typescript-eslint/no-require-imports
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        // oxlint-disable-next-line @typescript-eslint/no-require-imports
         const { EnterpriseError } = require("@atlas/api/lib/effect/errors") as typeof import("@atlas/api/lib/effect/errors");
         const gate = Layer.succeed(services.ProactiveGate, {
           requireEnabled: () =>

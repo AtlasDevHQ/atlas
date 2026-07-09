@@ -552,7 +552,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
       { code: "INTERNAL_DB_UNREACHABLE", message: "internal db down" },
     ]);
     const config = await import("@atlas/api/lib/config");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
     config._setConfigForTest({ deployMode: "saas" } as any);
 
     const response = await app.fetch(healthRequest());
@@ -568,7 +568,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
     internalDBQueryImpl = () => Promise.reject(new Error("connection refused"));
     mockValidateEnvironment.mockResolvedValue([]);
     const config = await import("@atlas/api/lib/config");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
     config._setConfigForTest({ deployMode: "saas" } as any);
 
     const response = await app.fetch(healthRequest());
@@ -598,7 +598,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
       { code: "INTERNAL_DB_UNREACHABLE", message: "internal db down" },
     ]);
     const config = await import("@atlas/api/lib/config");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
     config._setConfigForTest({ deployMode: "self-hosted" } as any);
 
     const response = await app.fetch(healthRequest());
@@ -619,7 +619,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
       deployModeDowngraded: {
         reason: 'atlas.config.ts requested deployMode "saas" but enterprise is not enabled — see #1978',
       },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for this path
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for this path
     } as any);
 
     const response = await app.fetch(healthRequest());
@@ -634,7 +634,7 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
   it("omits deployModeDowngraded on a normal boot (#3184)", async () => {
     mockValidateEnvironment.mockResolvedValue([]);
     const config = await import("@atlas/api/lib/config");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
     config._setConfigForTest({ deployMode: "self-hosted" } as any);
 
     const response = await app.fetch(healthRequest());
@@ -741,7 +741,7 @@ describe("GET /api/health — plugin component", () => {
     // Plugin failures are observable in the dashboard but never page oncall.
     process.env.ATLAS_DEPLOY_MODE = "saas";
     const config = await import("@atlas/api/lib/config");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
     config._setConfigForTest({ deployMode: "saas" } as any);
 
     pluginDescribeImpl = () => [

@@ -66,11 +66,11 @@ export class AtlasAiModel extends Context.Tag("AtlasAiModel")<
  */
 function resolveModelFromSettings(): { model: LanguageModel; providerType: ProviderType; modelId: string } {
   // Read settings — in SaaS mode these may have been changed via admin UI
-  // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
   const { getSettingAuto } = require("@atlas/api/lib/settings") as {
     getSettingAuto: (key: string) => string | undefined;
   };
-  // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
   const { getModelForConfig } = require("@atlas/api/lib/providers") as {
     getModelForConfig: (provider?: string, model?: string) => { model: LanguageModel; providerType: ProviderType; modelId: string };
   };
@@ -108,7 +108,7 @@ export const AtlasAiModelLive: Layer.Layer<AtlasAiModel, Error> = Layer.effect(
     // Check if SaaS mode — if so, return a service that resolves dynamically
     let saas = false;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
+      // oxlint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
       const { getConfig } = require("@atlas/api/lib/config") as {
         getConfig: () => { deployMode?: string } | null;
       };

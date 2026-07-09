@@ -273,7 +273,7 @@ async function checkMysqlConnectivity(
     return;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
   let pool;
   try {
@@ -360,7 +360,7 @@ async function checkPostgresConnectivity(
     return;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Pool } = require("pg");
   const pool = new Pool({
     connectionString: url,
@@ -441,7 +441,7 @@ async function checkInternalDbConnectivity(errors: DiagnosticError[]): Promise<v
         message: "DATABASE_URL appears malformed. Expected format: postgresql://user:pass@host:5432/atlas",
       });
     } else {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      // oxlint-disable-next-line @typescript-eslint/no-require-imports
       const { Pool } = require("pg");
       const pool = new Pool({
         connectionString: process.env.DATABASE_URL,

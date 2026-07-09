@@ -290,7 +290,7 @@ export async function acquireWithColdConnectRetry<T>(
 }
 
 function createPostgresDB(config: ConnectionConfig): DBConnection {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Pool } = require("pg");
 
   const pgSchema = config.schema;
@@ -430,7 +430,7 @@ interface MySqlPoolConnection {
 }
 
 function createMySQLDB(config: ConnectionConfig): DBConnection {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
   const pool = mysql.createPool({
     uri: config.url,

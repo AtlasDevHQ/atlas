@@ -69,13 +69,13 @@ const bedrockSendSpy = mock(async (_command: { $name: string }) => {
 
 class MockListFoundationModelsCommand {
   readonly $name = "ListFoundationModelsCommand";
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors AWS SDK v3 command surface
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors AWS SDK v3 command surface
   constructor(public readonly input: any) {}
 }
 
 class MockBedrockClient {
   readonly region: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors AWS SDK v3 BedrockClient constructor
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mirrors AWS SDK v3 BedrockClient constructor
   constructor(opts: any) {
     this.region = opts.region;
   }

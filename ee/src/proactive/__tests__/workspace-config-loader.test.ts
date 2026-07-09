@@ -49,7 +49,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // ── DB internal mock ────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realInternal = require("@atlas/api/lib/db/internal") as typeof import("@atlas/api/lib/db/internal");
 
 const mockInternalQuery: Mock<
@@ -66,7 +66,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 // ── Module under test (loaded AFTER mocks via sync require) ──────────
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const loader = require("../workspace-config-loader") as typeof import("../workspace-config-loader");
 const { getWorkspaceProactiveConfig, getChannelProactiveConfigs } = loader;
 

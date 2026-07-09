@@ -128,7 +128,7 @@ describe("admin learned-patterns routes", () => {
       mocks.mockCheckRateLimit.mockImplementation(() => ({ allowed: false, retryAfterMs: 60000 }));
       const res = await req("GET", "/");
       expect(res.status).toBe(429);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.retryAfterSeconds).toBeDefined();
     });
@@ -141,7 +141,7 @@ describe("admin learned-patterns routes", () => {
       mocks.hasInternalDB = false;
       const res = await req("GET", "/");
       expect(res.status).toBe(404);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.error).toBe("not_available");
     });
@@ -162,7 +162,7 @@ describe("admin learned-patterns routes", () => {
 
       const res = await req("GET", "/");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.patterns).toBeArray();
       expect(body.total).toBe(2);
@@ -268,7 +268,7 @@ describe("admin learned-patterns routes", () => {
       mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([mockRow()]));
       const res = await req("GET", "/pat-1");
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.id).toBe("pat-1");
       expect(body.patternSql).toBe("SELECT COUNT(*) FROM orders");
@@ -302,7 +302,7 @@ describe("admin learned-patterns routes", () => {
 
       const res = await req("PATCH", "/pat-1", { description: "Updated" });
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.description).toBe("Updated");
     });
@@ -379,7 +379,7 @@ describe("admin learned-patterns routes", () => {
 
       const res = await req("POST", "/bulk", { ids: ["pat-1", "pat-2"], status: "approved" });
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.updated).toBeArray();
       expect(body.notFound).toBeArray();
@@ -400,7 +400,7 @@ describe("admin learned-patterns routes", () => {
 
       const res = await req("POST", "/bulk", { ids: ["pat-1", "pat-missing"], status: "approved" });
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.updated).toContain("pat-1");
       expect(body.notFound).toContain("pat-missing");
@@ -447,7 +447,7 @@ describe("admin learned-patterns routes", () => {
       );
       const res = await req("GET", "/");
       expect(res.status).toBe(400);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.error).toBe("bad_request");
       expect(body.message).toContain("active organization");
@@ -461,7 +461,7 @@ describe("admin learned-patterns routes", () => {
       mocks.mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB connection failed")));
       const res = await req("GET", "/");
       expect(res.status).toBe(500);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.error).toBe("internal_error");
       expect(typeof body.requestId).toBe("string");

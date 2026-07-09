@@ -17,7 +17,7 @@ import { describe, expect, it, beforeEach, afterEach, mock, type Mock } from "bu
 import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyResult = any;
 
 mock.module("@atlas/api/lib/semantic", () => ({
@@ -69,7 +69,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
 }));
 
 mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 

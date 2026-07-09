@@ -80,7 +80,7 @@ function createMockRegistryClass() {
 describe("ConnectionRegistry Live Layer lifecycle", () => {
   it("creates service and delegates list()", async () => {
     const mockRegistry = createMockRegistryClass();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only cast to class interface
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test-only cast to class interface
     const layer = makeConnectionRegistryLive(() => mockRegistry as any);
 
     const result = await Effect.runPromise(
@@ -95,7 +95,7 @@ describe("ConnectionRegistry Live Layer lifecycle", () => {
 
   it("shutdown is called when scope closes", async () => {
     const mockRegistry = createMockRegistryClass();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only cast to class interface
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test-only cast to class interface
     const layer = makeConnectionRegistryLive(() => mockRegistry as any);
 
     // Use a scoped effect so we can observe the finalizer
@@ -131,7 +131,7 @@ describe("ConnectionRegistry Live Layer lifecycle", () => {
     // fiber is interrupted at gen completion and the mock's
     // healthCheckCount stays at 0.
     const mockRegistry = createMockRegistryClass();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only cast to class interface
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test-only cast to class interface
     const layer = makeConnectionRegistryLive(() => mockRegistry as any);
 
     const rt = ManagedRuntime.make(Layer.scopedDiscard(Effect.gen(function* () {
@@ -150,7 +150,7 @@ describe("ConnectionRegistry Live Layer lifecycle", () => {
 
   it("delegates register() to underlying impl", async () => {
     const mockRegistry = createMockRegistryClass();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only cast to class interface
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test-only cast to class interface
     const layer = makeConnectionRegistryLive(() => mockRegistry as any);
 
     await Effect.runPromise(

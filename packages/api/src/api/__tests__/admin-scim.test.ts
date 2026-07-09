@@ -79,27 +79,27 @@ class MockEnterpriseError extends Error {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mocks flex across success/failure Effects
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mocks flex across success/failure Effects
 const mockListConnections: Mock<(orgId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed([]),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockDeleteConnection: Mock<(orgId: string, connectionId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed(true),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockGetSyncStatus: Mock<(orgId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed({ connections: 0, provisionedUsers: 0, lastSyncAt: null }),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockListGroupMappings: Mock<(orgId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed([]),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockCreateGroupMapping: Mock<(orgId: string, groupName: string, roleName: string) => Effect.Effect<any, any>> = mock(
   () => Effect.die(new Error("not configured")),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockDeleteGroupMapping: Mock<(orgId: string, mappingId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed(true),
 );
@@ -147,12 +147,12 @@ mock.module("@atlas/api/lib/audit/retention-errors", () => ({
 
 // Provide SCIMProvenance via EELayer Tag (slice 8/11 of #2017).
 mock.module("@atlas/ee/layers", () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
     EELayer: Layer.unwrapEffect(
       E.sync(() => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        // oxlint-disable-next-line @typescript-eslint/no-require-imports
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
         return Layer.succeed(services.SCIMProvenance, {
           available: true,

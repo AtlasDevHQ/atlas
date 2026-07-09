@@ -18,7 +18,7 @@ import { validateManaged } from "../managed";
 import { setSetting, _resetSettingsCache } from "@atlas/api/lib/settings";
 import { _setAuthInstance } from "../server";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock return type is intentionally untyped to simulate Better Auth session responses
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mock return type is intentionally untyped to simulate Better Auth session responses
 const mockGetSession = mock((): Promise<any> => Promise.resolve(null));
 
 describe("validateManaged()", () => {
@@ -27,7 +27,7 @@ describe("validateManaged()", () => {
   beforeEach(() => {
     mockGetSession.mockReset();
     // Inject a fake auth instance whose api.getSession is our mock
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
     _setAuthInstance({ api: { getSession: mockGetSession } } as any);
     // Internal-DB mock defaults: no DB available, no rows. Individual tests
     // override these closures to exercise the positive / failure paths.
@@ -158,13 +158,13 @@ describe("validateManaged()", () => {
   // bound org, org-role-only role capped at the mint ceiling, the member's RLS
   // claim, and a distinct api_key marker (origin stays cli).
   describe("workspace API key (#4046)", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock return is intentionally untyped to simulate Better Auth verifyApiKey
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mock return is intentionally untyped to simulate Better Auth verifyApiKey
     const mockVerifyApiKey = mock((): Promise<any> => Promise.resolve(null));
 
     function installAuth(): void {
       const instance = {
         api: { getSession: mockGetSession, verifyApiKey: mockVerifyApiKey },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock for testing
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock for testing
       } as any;
       _setAuthInstance(instance);
     }

@@ -36,7 +36,7 @@ Guidance for Codex when working in this repository.
 - [ ] **Prefer errors over silent fallbacks** — `catch { return false }` on a security check is a bug. Return 500, not a false negative
 
 ### Type Safety
-- [ ] **No explicit `any`** — Use proper types or `unknown` with narrowing. Keep `any` only where unavoidable (third-party constraints) with `eslint-disable` + justification comment
+- [ ] **No explicit `any`** — Use proper types or `unknown` with narrowing. Keep `any` only where unavoidable (third-party constraints) with `oxlint-disable` + justification comment
 - [ ] **Minimize non-null assertions** — Only use `!` when the value is provably non-null. Prefer optional chaining (`?.`) or explicit null checks
 
 ### Code Style
@@ -128,7 +128,7 @@ bun run dev              # Containers + Hono API (:3001) + Next.js (:3000)
 bun run dev:api          # Standalone Hono API
 bun run dev:web          # Standalone Next.js
 bun run build            # Production build
-bun run lint             # ESLint
+bun run lint             # oxlint
 bun run type             # TypeScript type-check (tsgo --noEmit)
 bun run test             # Full suite — @atlas/api then all other packages (isolated per-file)
 bun run test:api         # Just @atlas/api tests (serial, full)

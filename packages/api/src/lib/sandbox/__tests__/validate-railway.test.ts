@@ -53,7 +53,7 @@ describe("validateCredentials — railway dispatch", () => {
     if (result.valid) expect(result.displayName).toBe("Railway (staging)");
 
     // The request must target the fixed Railway endpoint with the env query
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const [url, init] = (fetchMock as any).mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://backboard.railway.com/graphql/v2");
     expect(String(init.headers && (init.headers as Record<string, string>).Authorization)).toBe(
@@ -90,7 +90,7 @@ describe("validateCredentials — railway dispatch", () => {
     expect(result.valid).toBe(true);
     if (result.valid) expect(result.displayName).toBe("Railway (Ada)");
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const [, init] = (fetchMock as any).mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(String(init.body)) as { query: string };
     expect(body.query).toContain("me { name }");

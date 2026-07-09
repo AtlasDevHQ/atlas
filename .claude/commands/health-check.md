@@ -247,7 +247,7 @@ Grep for: \.message\b in catch blocks — verify preceded by instanceof Error gu
 
 | Check | What to Verify |
 |-------|----------------|
-| No explicit `any` | Grep for `: any` in non-test `.ts`/`.tsx` files. Should be near zero. Remaining must have `eslint-disable` + justification |
+| No explicit `any` | Grep for `: any` in non-test `.ts`/`.tsx` files. Should be near zero. Remaining must have `oxlint-disable` + justification |
 | Minimal `!` assertions | Non-null assertions should be rare and justified. Prefer `?.` or explicit null checks |
 | No unused exports | Dead exports add confusion. Public API packages (`sdk`, `react`, `plugin-sdk`, `types`) are exceptions — external consumers may use them |
 

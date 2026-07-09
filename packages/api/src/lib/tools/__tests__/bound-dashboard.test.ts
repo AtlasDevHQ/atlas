@@ -139,10 +139,10 @@ const cardRow = {
 // over the inputSchema; calling it generically in tests requires escaping
 // the per-tool type. We `any`-cast at the boundary, then narrow via the
 // caller's generic. Same trade as create-dashboard.test.ts.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
   if (!tool?.execute) throw new Error("tool has no execute");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   return (await tool.execute(args, undefined as any)) as T;
 }
 
@@ -593,7 +593,7 @@ describe("createBoundDashboardTools", () => {
 
     it("emits a multimodal image-data part via toModelOutput", async () => {
       const tools = createBoundDashboardTools(ctxWithUser);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       const tool = tools.screenshotDashboard as any;
       const result = await runTool<{ kind: "ok"; _base64: string; mediaType: string }>(
         tool,

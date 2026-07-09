@@ -204,7 +204,7 @@ export default function ConsentPage() {
         <CardHeader className="flex flex-row items-center gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted">
             {client?.logo_uri ? (
-              // eslint-disable-next-line @next/next/no-img-element -- third-party logos can come from any host; sized box keeps layout stable
+              // oxlint-disable-next-line @next/next/no-img-element -- third-party logos can come from any host; sized box keeps layout stable
               <img
                 src={client.logo_uri}
                 alt=""

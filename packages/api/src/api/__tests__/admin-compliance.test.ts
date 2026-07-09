@@ -164,7 +164,7 @@ mock.module("@atlas/api/lib/compliance/errors", () => ({
 mock.module("@atlas/ee/layers", () => ({
   EELayer: Layer.unwrapEffect(
     Effect.sync(() => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      // oxlint-disable-next-line @typescript-eslint/no-require-imports
       const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
       type MaskingContext = import("@atlas/api/lib/effect/services").MaskingContext;
       const maskingLayer = Layer.succeed(services.MaskingPolicy, {

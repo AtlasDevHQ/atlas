@@ -86,7 +86,7 @@ function makeAuth(sent: SentOTP[]): ReturnType<typeof betterAuth> {
           sent.push({ email: data.email, type: data.type, otp: data.otp });
         },
       }),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types vary by combination
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types vary by combination
     ] as any,
     trustedOrigins: ["http://localhost:3000"],
     bootstrapAdmin: { mode: "none" },

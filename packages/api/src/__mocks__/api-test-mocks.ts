@@ -297,7 +297,7 @@ export function buildInternalDbMockDefaults(deps: {
 
 // ── Types ───────────────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentionally generic mock function type for test overrides
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- intentionally generic mock function type for test overrides
 type AnyFn = (...args: any[]) => any;
 
 /** Shape of the user object returned inside the authenticateRequest response. */

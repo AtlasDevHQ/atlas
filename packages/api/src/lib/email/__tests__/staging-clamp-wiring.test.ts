@@ -42,7 +42,7 @@ interface LogCall {
 // time. Reassigning would leave the logger pushing into an orphaned array.
 const warnCalls: LogCall[] = [];
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test logger shim
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test logger shim
 const record = (sink: LogCall[]) => (obj: any, msg?: any) => {
   sink.push({ obj, msg: typeof msg === "string" ? msg : String(obj) });
 };

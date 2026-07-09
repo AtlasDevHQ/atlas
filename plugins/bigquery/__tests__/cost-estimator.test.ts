@@ -5,7 +5,7 @@ import { describe, test, expect, mock, beforeEach } from "bun:test";
 // ---------------------------------------------------------------------------
 
 const mockCreateQueryJob = mock(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   (): Promise<any> =>
     Promise.resolve([
       {
@@ -17,7 +17,7 @@ const mockCreateQueryJob = mock(
 );
 
 const mockQuery = mock(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   (): Promise<any> =>
     Promise.resolve([
       [{ count: 42 }],

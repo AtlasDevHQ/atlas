@@ -70,7 +70,7 @@ const log = createLogger("effect:connection");
 // feedback_bun_test_async_mock_module). This helper preserves the
 // laziness, just dedups the boilerplate.
 function makeNotAvailable(message: string): () => import("@atlas/api/lib/effect/errors").EnterpriseError {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { EnterpriseError } = require("@atlas/api/lib/effect/errors") as {
     EnterpriseError: new (message?: string) => import("@atlas/api/lib/effect/errors").EnterpriseError;
   };
@@ -299,7 +299,7 @@ export function makeConnectionRegistryLive(
       const impl = createImpl
         ? createImpl()
         : yield* Effect.sync(() => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const mod = require("@atlas/api/lib/db/connection");
             return new mod.ConnectionRegistry() as ConnectionRegistryClass;
           });
@@ -618,7 +618,7 @@ function createPluginImpl(createImpl?: () => PluginRegistryClass) {
   return createImpl
     ? Effect.sync(createImpl)
     : Effect.sync(() => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        // oxlint-disable-next-line @typescript-eslint/no-require-imports
         const mod = require("@atlas/api/lib/plugins/registry");
         return new mod.PluginRegistry() as PluginRegistryClass;
       });
@@ -1293,7 +1293,7 @@ export class ResidencyResolver extends Context.Tag("ResidencyResolver")<
  */
 export const NoopResidencyResolverLayer: Layer.Layer<ResidencyResolver> =
   Layer.sync(ResidencyResolver, () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { ResidencyError: ResidencyErrorClass } = require("@atlas/api/lib/residency/errors") as {
       ResidencyError: new (args: { message: string; code: "not_configured" }) => ResidencyError;
     };
@@ -1503,7 +1503,7 @@ export class MaskingPolicy extends Context.Tag("MaskingPolicy")<
 export const NoopMaskingPolicyLayer: Layer.Layer<MaskingPolicy> = Layer.sync(
   MaskingPolicy,
   () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { ComplianceError: ComplianceErrorClass } = require("@atlas/api/lib/compliance/errors") as {
       ComplianceError: new (args: { message: string; code: "not_found" }) => ComplianceError;
     };
@@ -1560,7 +1560,7 @@ export class ComplianceReports extends Context.Tag("ComplianceReports")<
 >() {}
 export const NoopComplianceReportsLayer: Layer.Layer<ComplianceReports> =
   Layer.sync(ComplianceReports, () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { ReportError: ReportErrorClass } = require("@atlas/api/lib/compliance/errors") as {
       ReportError: new (args: { message: string; code: "not_available" }) => ReportError;
     };
@@ -1702,7 +1702,7 @@ export class ApprovalGate extends Context.Tag("ApprovalGate")<
 export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.sync(
   ApprovalGate,
   () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { ApprovalError: ApprovalErrorClass } = require("@atlas/api/lib/governance/errors") as {
       ApprovalError: new (args: { message: string; code: "not_found" }) => ApprovalError;
     };
@@ -1878,7 +1878,7 @@ export const NoopAbuseResponseLayer: Layer.Layer<AbuseResponse> = Layer.sync(
       reinstateWorkspace: () => Effect.succeed(null),
       getAbuseConfig: () =>
         Effect.sync(() => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const baseline = require("@atlas/api/lib/security/abuse-baseline") as typeof import("@atlas/api/lib/security/abuse-baseline");
           return baseline.getAbuseConfig();
         }),
@@ -2125,7 +2125,7 @@ export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.sync(
 // Lifecycle-only Tag for the daily purge cron worker. Originally a pair
 // of `() => void` methods bolted onto `AuditRetention`, which forced
 // `ee/src/audit/retention.ts` to `require("./purge-scheduler")` from a
-// top-level const (with `eslint-disable` for the require) to dodge the
+// top-level const (with `oxlint-disable` for the require) to dodge the
 // static cycle between the CRUD module and the scheduler module that
 // imports CRUD's purge helpers.
 //
@@ -2615,11 +2615,11 @@ export class RolesPolicy extends Context.Tag("RolesPolicy")<
 export const NoopRolesPolicyLayer: Layer.Layer<RolesPolicy> = Layer.sync(
   RolesPolicy,
   () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
       EnterpriseError: new (message?: string) => EnterpriseErrorForRoles;
     };
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { checkPermissionLegacy } = require("@atlas/api/lib/auth/permission-resolve") as typeof import("@atlas/api/lib/auth/permission-resolve");
     const notAvailable = (feature: string) =>
       new EnterpriseErrorClass(

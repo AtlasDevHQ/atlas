@@ -98,10 +98,10 @@ const cardRow = {
   updated_at: "2026-05-17T00:00:00.000Z",
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
   if (!tool?.execute) throw new Error("tool has no execute");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   return (await tool.execute(args, undefined as any)) as T;
 }
 

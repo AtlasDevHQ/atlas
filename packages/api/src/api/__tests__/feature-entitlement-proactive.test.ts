@@ -71,13 +71,13 @@ process.env.ATLAS_DEPLOY_MODE ??= "saas";
 // `beforeEach`.
 let availabilityGateOpen = true;
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const effectMod = require("effect") as typeof import("effect");
 mock.module("@atlas/ee/layers", () => {
   const { Layer } = effectMod;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { EnterpriseError } = require("@atlas/api/lib/effect/errors") as typeof import("@atlas/api/lib/effect/errors");
   return {
     EELayer: Layer.succeed(services.ProactiveGate, {

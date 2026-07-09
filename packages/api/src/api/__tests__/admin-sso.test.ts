@@ -49,18 +49,18 @@ class MockSSOEnforcementError extends Error {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock needs flexible return type for success/failure paths
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mock needs flexible return type for success/failure paths
 const mockVerifyDomain: Mock<(providerId: string, orgId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed({ status: "verified", message: "Domain verified successfully." }),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock needs flexible return type for success/failure paths
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mock needs flexible return type for success/failure paths
 const mockCheckDomainAvailability: Mock<(domain: string, orgId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed({ available: true }),
 );
 const mockCreateSSOProvider: Mock<(orgId: string, input: unknown) => Effect.Effect<SSOProvider>> = mock(
   () => Effect.die(new Error("not configured")),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock needs flexible return type for success/failure paths
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mock needs flexible return type for success/failure paths
 const mockUpdateSSOProvider: Mock<(orgId: string, providerId: string, input: unknown) => Effect.Effect<any, any>> = mock(
   () => Effect.die(new Error("not configured")),
 );
@@ -137,12 +137,12 @@ mock.module("@atlas/api/lib/audit/retention-errors", () => ({
 
 // Provide SSOPolicy via EELayer Tag (slice 8/11 of #2017).
 mock.module("@atlas/ee/layers", () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
     EELayer: Layer.unwrapEffect(
       E.sync(() => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        // oxlint-disable-next-line @typescript-eslint/no-require-imports
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
         return Layer.succeed(services.SSOPolicy, {
           available: true,
@@ -164,7 +164,7 @@ mock.module("@atlas/ee/layers", () => {
           findProviderByDomain: () => Effect.succeed(null),
           redactProvider: (p: unknown) => p,
           summarizeProvider: (p: unknown) => {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- handle generic provider shape
+            // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- handle generic provider shape
             const { config: _config, ...rest } = p as any;
             return rest;
           },
@@ -415,7 +415,7 @@ describe("admin SSO — domain verification", () => {
       );
 
       expect(res.status).toBe(201);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.provider.enabled).toBe(false);
       expect(body.provider.verificationToken).toStartWith("atlas-verify=");
@@ -444,7 +444,7 @@ describe("admin SSO — domain verification", () => {
       );
 
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.provider.domain).toBe("newdomain.com");
       expect(body.provider.domainVerified).toBe(false);
@@ -471,7 +471,7 @@ describe("admin SSO — domain verification", () => {
       );
 
       expect(res.status).toBe(400);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.message).toContain("domain is verified");
     });
@@ -492,7 +492,7 @@ describe("admin SSO — domain verification", () => {
       );
 
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.provider.enabled).toBe(true);
       expect(body.provider.domainVerified).toBe(true);
@@ -542,7 +542,7 @@ describe("Admin SSO Test Connection API", () => {
         adminRequest("/api/v1/admin/sso/providers/prov-1/test", "POST"),
       );
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.type).toBe("oidc");
       expect(body.success).toBe(true);
@@ -564,7 +564,7 @@ describe("Admin SSO Test Connection API", () => {
         adminRequest("/api/v1/admin/sso/providers/prov-1/test", "POST"),
       );
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.success).toBe(false);
       expect(body.errors[0]).toContain("timed out");
@@ -584,7 +584,7 @@ describe("Admin SSO Test Connection API", () => {
         adminRequest("/api/v1/admin/sso/providers/prov-2/test", "POST"),
       );
       expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.type).toBe("saml");
       expect(body.success).toBe(true);

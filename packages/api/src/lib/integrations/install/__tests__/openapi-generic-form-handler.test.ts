@@ -92,7 +92,7 @@ function makeProbeFetch(): { fetchImpl: typeof globalThis.fetch; calls: Array<{ 
     if (h) for (const [k, v] of Object.entries(h)) headers[k] = v;
     calls.push({ url, headers });
     return new Response(JSON.stringify(SPEC), { status: 200, headers: { "content-type": "application/json" } });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- minimal fetch stub
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- minimal fetch stub
   }) as any;
   return { fetchImpl, calls };
 }

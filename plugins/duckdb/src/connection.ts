@@ -59,7 +59,7 @@ export function createDuckDBConnection(
       instancePromise = (async () => {
         let DuckDBInstance: unknown;
         try {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           ({ DuckDBInstance } = require("@duckdb/node-api"));
         } catch (err) {
           const isNotFound =
@@ -94,7 +94,7 @@ export function createDuckDBConnection(
           options.access_mode = "READ_ONLY";
         }
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         const instance = await (DuckDBInstance as any).create(config.path, options);
         const connection = await instance.connect();
         return { instance, connection };
@@ -112,7 +112,7 @@ export function createDuckDBConnection(
       const { connection } = await getConnection();
 
       const runQuery = async () => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         const reader = await (connection as any).runAndReadAll(sql);
         const columns: string[] = reader.columnNames();
         const rowObjects: Record<string, unknown>[] = reader.getRowObjects();
@@ -143,9 +143,9 @@ export function createDuckDBConnection(
         try {
           const { connection, instance } = await instancePromise;
           // DuckDB Neo API uses synchronous cleanup methods
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          // oxlint-disable-next-line @typescript-eslint/no-explicit-any
           (connection as any).disconnectSync();
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          // oxlint-disable-next-line @typescript-eslint/no-explicit-any
           (instance as any).closeSync();
         } catch (err) {
           (config.logger ?? console).warn(`[duckdb-datasource] Failed to close DuckDB connection: ${err instanceof Error ? err.message : String(err)}`);

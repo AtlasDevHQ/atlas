@@ -156,7 +156,7 @@ describe("migrateAuthTables", () => {
     const { pool } = createTrackingPool();
     _resetPool(pool);
     const { instance, getMigrationCount } = createTrackingAuth();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
     _setAuthInstance(instance as any);
 
     await migrateAuthTables();
@@ -170,7 +170,7 @@ describe("migrateAuthTables", () => {
     const { pool, queries } = createTrackingPool();
     _resetPool(pool);
     const { instance, getMigrationCount } = createTrackingAuth();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
     _setAuthInstance(instance as any);
 
     await migrateAuthTables();
@@ -535,7 +535,7 @@ describe("migrateAuthTables", () => {
         betterAuthRanAt = ++counter;
       },
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
     _setAuthInstance(instance as any);
 
     await migrateAuthTables();
@@ -607,7 +607,7 @@ describe("migrateAuthTables", () => {
     _resetPool(pool);
 
     const { instance } = createTrackingAuth({ shouldThrow: true });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
     _setAuthInstance(instance as any);
 
     await migrateAuthTables();
@@ -698,7 +698,7 @@ describe("runBootMigrations", () => {
         authMigratedAtQueryCount = queries.length;
       },
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock
     _setAuthInstance(instance as any);
 
     await runBootMigrations();
@@ -728,7 +728,7 @@ describe("runBootMigrations", () => {
     const { pool, queries } = createTrackingPool();
     _resetPool(pool);
     const { instance, getMigrationCount } = createTrackingAuth();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock
     _setAuthInstance(instance as any);
 
     await runBootMigrations();
@@ -766,7 +766,7 @@ describe("runPostMigrationBootstrap (#3743 split)", () => {
     const { pool, queries } = createTrackingPool();
     _resetPool(pool);
     const { instance, getMigrationCount } = createTrackingAuth();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock
     _setAuthInstance(instance as any);
 
     await runBootMigrations();

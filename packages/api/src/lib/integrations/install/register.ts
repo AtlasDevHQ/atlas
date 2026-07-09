@@ -1087,7 +1087,7 @@ function registerGitHubDataOAuthDatasourceHandler(): void {
  */
 function isCatalogSlugEnabled(slug: string): boolean {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { getConfig } = require("@atlas/api/lib/config") as {
       getConfig: () => { catalog?: ReadonlyArray<{ slug: string; enabled: boolean }> } | null;
     };

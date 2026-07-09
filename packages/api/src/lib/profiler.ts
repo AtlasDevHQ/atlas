@@ -273,7 +273,7 @@ export async function listPostgresObjects({ url, schema = "public", logger: log 
 
 export async function listMySQLObjects({ url, logger: log = defaultLog }: NativeListObjectsOptions): Promise<DatabaseObject[]> {
   const connectionString = url;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
   const pool = mysql.createPool({
     uri: connectionString,
@@ -977,7 +977,7 @@ async function profileMySQLImpl({
   logger: log = defaultLog,
 }: NativeProfileOptions): Promise<ProfilingResult> {
   const connectionString = url;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
   const pool = mysql.createPool({
     uri: connectionString,

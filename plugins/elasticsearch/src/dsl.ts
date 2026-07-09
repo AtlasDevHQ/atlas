@@ -318,7 +318,7 @@ export function validateIndexAccess(
     // NOT denied — they're gated by the pattern-membership rule below. Control
     // chars are matched via the Unicode `\p{Cc}` class (C0+C1+DEL) under the `u`
     // flag rather than an `\x00-\x1f` literal range, which both widens coverage
-    // and avoids ESLint `no-control-regex` on a literal control escape.
+    // and avoids oxlint `no-control-regex` on a literal control escape.
     if (/[\p{Cc}/\\\s"'`<>|%]/u.test(seg)) {
       return {
         valid: false,

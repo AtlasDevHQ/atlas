@@ -30,7 +30,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Prefer errors over silent fallbacks** — `catch { return false }` on a security check is a bug. Return 500, not a false negative
 
 ### Type Safety
-- [ ] **No explicit `any`** — Use proper types or `unknown` with narrowing. `any` only where unavoidable (third-party) with `eslint-disable` + justification
+- [ ] **No explicit `any`** — Use proper types or `unknown` with narrowing. `any` only where unavoidable (third-party) with `oxlint-disable` + justification
 - [ ] **Minimize non-null assertions** — Only `!` when provably non-null. Prefer `?.` or explicit null checks
 
 ### Code Style
@@ -141,7 +141,7 @@ bun run dev              # Containers + Hono API (:3001) + Next.js (:3000)
 bun run dev:api          # Standalone Hono API
 bun run dev:web          # Standalone Next.js  (also: dev:www, dev:docs, dev:mcp)
 bun run build            # Production build
-bun run lint             # ESLint
+bun run lint             # oxlint
 bun run type             # Builds published packages, then tsgo --noEmit (+ web/www type)
 bun run test             # Full suite — @atlas/api then all other packages (isolated per-file)
 bun run test:api         # Just @atlas/api tests (serial, full)

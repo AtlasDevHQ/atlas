@@ -4,7 +4,7 @@
  * Tests use @ts-expect-error to verify that invalid assignments are rejected.
  * Runtime assertions prevent unused-variable warnings.
  */
-/* eslint-disable @typescript-eslint/no-unused-vars */
+/* oxlint-disable @typescript-eslint/no-unused-vars */
 import { describe, test, expect } from "bun:test";
 import { z } from "zod";
 import type {

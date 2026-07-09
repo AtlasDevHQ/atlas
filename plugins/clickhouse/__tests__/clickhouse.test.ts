@@ -1,7 +1,7 @@
 import { describe, test, expect, mock, beforeEach, spyOn } from "bun:test";
 
 // Mock @clickhouse/client before any imports that use it
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 const mockQuery = mock((): Promise<any> =>
   Promise.resolve({
     json: () =>

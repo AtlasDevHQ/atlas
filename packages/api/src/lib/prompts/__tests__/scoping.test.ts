@@ -234,7 +234,7 @@ describe("resolvePromptScope", () => {
     // strict equality keeps the scope decision pinned to real booleans.
     reset({ industry: "saas" });
     mockInternalQuery.mockImplementation(async () =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- simulating loose driver output
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- simulating loose driver output
       [{ active: "t" as any }],
     );
     const scope = await resolvePromptScope({ orgId: "org-1", mode: "published" });

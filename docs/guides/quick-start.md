@@ -89,7 +89,7 @@ See [Bring Your Own DB](bring-your-own-db.md) for production database setup incl
 | `bun run dev` | Start containers (Postgres + sidecar) + dev servers |
 | `bun run build` | Production build |
 | `bun run start` | Start production server |
-| `bun run lint` | ESLint |
+| `bun run lint` | oxlint |
 | `bun run type` | TypeScript type-check |
 | `bun run test` | Run tests |
 | `bun run db:up` | Start local Postgres + sandbox sidecar |

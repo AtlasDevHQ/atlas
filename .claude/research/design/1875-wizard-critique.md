@@ -96,7 +96,7 @@ This is the **densest, most over-built step** in the wizard.
 - Column table at expanded level uses `[10px]` text and `text-xs` everywhere. Hierarchy is muddled — everything looks equally small.
 - "Click to expand and edit YAML, descriptions, column types, and sample values" is a mini onboarding sentence that tries to do four things. Most users want to verify counts and continue. Editing belongs in the admin semantic editor — that's a 0.9.7 product.
 - Loading state shows `<Progress value={33} />` — hardcoded fake progress. Don't ship fake progress bars.
-- **`useEffect` runs on mount with `[]` deps but reads `entities`, `connectionId`, `selectedTables`** — eslint-react-hooks rule would normally flag, but the `cancelled` pattern saves it. Still, this is a code-smell to clean up while we're here.
+- **`useEffect` runs on mount with `[]` deps but reads `entities`, `connectionId`, `selectedTables`** — a react-hooks lint rule would normally flag, but the `cancelled` pattern saves it. Still, this is a code-smell to clean up while we're here.
 
 ### Step 4 — Preview
 

@@ -12,7 +12,7 @@ interface ObservedAuditCall {
 }
 const observedAuditCalls: ObservedAuditCall[] = [];
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realAuditAdmin = require("@atlas/api/lib/audit/admin");
 mock.module("@atlas/api/lib/audit/admin", () => ({
   ...realAuditAdmin,
@@ -25,7 +25,7 @@ mock.module("@atlas/api/lib/audit/admin", () => ({
 // a real Postgres pool; the audit emit fires BEFORE the DB-skip return.
 // Spread the real module so sibling tests that mock-module the same
 // path aren't corrupted by a partial-export factory.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realDbInternal = require("@atlas/api/lib/db/internal");
 mock.module("@atlas/api/lib/db/internal", () => ({
   ...realDbInternal,

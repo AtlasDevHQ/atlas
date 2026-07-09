@@ -243,7 +243,7 @@ function interceptResendFetch(): {
   const resendCalls: { url: string; body: string }[] = [];
   const mockId = `email-${crypto.randomUUID().slice(0, 8)}`;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).fetch = async (input: string | Request | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     // Parse hostname instead of substring match — "attacker.com/api.resend.com" must not route here.
@@ -796,7 +796,7 @@ describe("E2E: Action framework", () => {
           () =>
             toolObj.execute(
               { to: "user@blocked.com", subject: "Test", body: "<p>Test</p>" },
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              // oxlint-disable-next-line @typescript-eslint/no-explicit-any
               { toolCallId: "test", messages: [] } as any,
             ),
         );
@@ -833,7 +833,7 @@ describe("E2E: Action framework", () => {
           () =>
             toolObj.execute(
               { to: "user@example.com", subject: "Test", body: "<p>Test</p>" },
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              // oxlint-disable-next-line @typescript-eslint/no-explicit-any
               { toolCallId: "test", messages: [] } as any,
             ),
         );

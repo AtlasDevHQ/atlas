@@ -79,7 +79,7 @@ export async function createSnowflakePool(
   connectionString: string,
   max = 1,
 ) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const snowflake = require("snowflake-sdk") as typeof import("snowflake-sdk");
   snowflake.configure({ logLevel: "ERROR" });
 
@@ -129,7 +129,7 @@ export async function testDatabaseConnection(
 ): Promise<string> {
   switch (dbType) {
     case "mysql": {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      // oxlint-disable-next-line @typescript-eslint/no-require-imports
       const mysql = require("mysql2/promise");
       const testPool = mysql.createPool({
         uri: connStr,
@@ -150,7 +150,7 @@ export async function testDatabaseConnection(
     }
 
     case "clickhouse": {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      // oxlint-disable-next-line @typescript-eslint/no-require-imports
       const { createClient } = require("@clickhouse/client");
       const testClient = createClient({
         url: rewriteClickHouseUrl(connStr),

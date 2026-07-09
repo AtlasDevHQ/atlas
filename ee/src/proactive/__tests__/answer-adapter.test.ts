@@ -75,7 +75,7 @@ mock.module("@atlas/api/lib/agent", () => ({
   }) => {
     // Capture observed context inside the mocked runAgent so the test
     // can assert which identity the adapter bound to RequestContext.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { getRequestContext } = require("@atlas/api/lib/logger") as {
       getRequestContext: () => {
         requestId: string;
@@ -123,7 +123,7 @@ mock.module("@atlas/api/lib/agent", () => ({
 // functional). `createLogger` is replaced with a spy that records
 // every `error` / `warn` call's payload + message.
 //
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realLogger = require("@atlas/api/lib/logger") as Record<string, unknown>;
 mock.module("@atlas/api/lib/logger", () => ({
   ...realLogger,

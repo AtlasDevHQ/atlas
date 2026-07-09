@@ -56,12 +56,12 @@ export type DaytonaSandboxConfig = z.infer<typeof DaytonaSandboxConfigSchema>;
 // ---------------------------------------------------------------------------
 
 /** Lazy-load the Daytona SDK, or throw with a helpful message. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 function loadDaytonaSdk(): any {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   let DaytonaClass: any;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     ({ Daytona: DaytonaClass } = require("@daytonaio/sdk"));
   } catch (err) {
     const isNotFound =
@@ -93,7 +93,7 @@ function loadDaytonaSdk(): any {
 }
 
 /** Create a Daytona client instance from validated config. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any
 function createDaytonaClient(DaytonaClass: any, config: DaytonaSandboxConfig): any {
   return new DaytonaClass({
     apiKey: config.apiKey,
@@ -129,7 +129,7 @@ export function buildDaytonaSandboxPlugin(
         const daytona = createDaytonaClient(DaytonaClass, config);
 
         // Create sandbox
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         let sandbox: any;
         try {
           sandbox = await daytona.create();
@@ -240,9 +240,9 @@ export function buildDaytonaSandboxPlugin(
     // Note: each health check creates a Daytona sandbox instance.
     // Avoid calling at high frequency to minimize API costs.
     async healthCheck(): Promise<PluginHealthResult> {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       let sandbox: any = null;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       let daytonaRef: any = null;
 
       const cleanupSandbox = async () => {

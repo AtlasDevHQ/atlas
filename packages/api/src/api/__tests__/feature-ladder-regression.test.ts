@@ -98,11 +98,11 @@ process.env.ATLAS_DEPLOY_MODE ??= "saas";
 // observable; every other enterprise Tag falls through to its Noop default, so
 // the other probed features behave exactly as they did with no EE layer loaded.
 // `mock.module` factories must be sync (CLAUDE.md). See the file docstring.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const effectMod = require("effect") as typeof import("effect");
 mock.module("@atlas/ee/layers", () => {
   const { Layer } = effectMod;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
   return {
     EELayer: Layer.succeed(services.ProactiveGate, {

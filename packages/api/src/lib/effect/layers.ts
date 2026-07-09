@@ -1689,7 +1689,7 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
       intervalMs: resolveSettingsRefreshInterval,
       gate: {
         check: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { getConfig } = require("@atlas/api/lib/config") as { getConfig: () => { deployMode?: string } | null };
           return getConfig()?.deployMode === "saas";
         },
@@ -1789,7 +1789,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "onboarding_email",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS } = require("@atlas/api/lib/email/scheduler") as {
             DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS: number;
           };
@@ -1797,7 +1797,7 @@ export function makeSchedulerLive(
         },
         gate: {
           check: () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { isEmailSchedulerEnabled } = require("@atlas/api/lib/email/scheduler") as {
               isEmailSchedulerEnabled: () => boolean;
             };
@@ -1822,7 +1822,7 @@ export function makeSchedulerLive(
         // Settings-registry-backed (platform DB override > env > default);
         // boot-consumed, so retuning needs a restart (#3392/#3399).
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { getExpertSchedulerIntervalMs } = require("@atlas/api/lib/semantic/expert/scheduler") as {
             getExpertSchedulerIntervalMs: () => number;
           };
@@ -1830,7 +1830,7 @@ export function makeSchedulerLive(
         },
         gate: {
           check: () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { isExpertSchedulerEnabled } = require("@atlas/api/lib/semantic/expert/scheduler") as {
               isExpertSchedulerEnabled: () => boolean;
             };
@@ -1854,7 +1854,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "promote_decay",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { getPromoteDecaySchedulerIntervalMs } = require("@atlas/api/lib/learn/promote-decay-scheduler") as {
             getPromoteDecaySchedulerIntervalMs: () => number;
           };
@@ -1862,7 +1862,7 @@ export function makeSchedulerLive(
         },
         gate: {
           check: () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { isPromoteDecaySchedulerEnabled } = require("@atlas/api/lib/learn/promote-decay-scheduler") as {
               isPromoteDecaySchedulerEnabled: () => boolean;
             };
@@ -1912,7 +1912,7 @@ export function makeSchedulerLive(
         // runs the tick once at boot, then on the spacing — so a deploy also
         // doubles as an immediate reconcile.
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { getBillingReconcileIntervalMs } = require("@atlas/api/lib/billing/reconcile-plan-tiers") as {
             getBillingReconcileIntervalMs: () => number;
           };
@@ -1923,7 +1923,7 @@ export function makeSchedulerLive(
             if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_WEBHOOK_SECRET) {
               return false;
             }
-            // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
             const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
               hasInternalDB: () => boolean;
             };
@@ -1962,7 +1962,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "stripe_teardown_sweep",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as orphan_task_reconcile)
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as orphan_task_reconcile)
           const { STRIPE_TEARDOWN_SWEEP_INTERVAL_MS } = require("@atlas/api/lib/billing/reconcile-stripe-teardown") as {
             STRIPE_TEARDOWN_SWEEP_INTERVAL_MS: number;
           };
@@ -1971,7 +1971,7 @@ export function makeSchedulerLive(
         gate: {
           check: () => {
             if (!process.env.STRIPE_SECRET_KEY) return false;
-            // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
             const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
               hasInternalDB: () => boolean;
             };
@@ -2010,7 +2010,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "overage_report",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as stripe_teardown_sweep)
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as stripe_teardown_sweep)
           const { OVERAGE_REPORT_INTERVAL_MS } = require("@atlas/api/lib/billing/overage-meter") as {
             OVERAGE_REPORT_INTERVAL_MS: number;
           };
@@ -2019,7 +2019,7 @@ export function makeSchedulerLive(
         gate: {
           check: () => {
             if (!process.env.STRIPE_SECRET_KEY) return false;
-            // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
             const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
               hasInternalDB: () => boolean;
             };
@@ -2066,7 +2066,7 @@ export function makeSchedulerLive(
         // redeploy) — same shape as expert_scheduler (#3399). `Effect.repeat`
         // runs the tick once at boot, then on the spacing.
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { getUnclaimedGraceReapIntervalMs } = require("@atlas/api/lib/billing/reap-unclaimed-grace") as {
             getUnclaimedGraceReapIntervalMs: () => number;
           };
@@ -2128,7 +2128,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "byot_catalog_refresh",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as stripe_teardown_sweep)
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as stripe_teardown_sweep)
           const { getByotCatalogRefreshIntervalMs } = require("@atlas/api/lib/scheduler/byot-catalog-refresh") as {
             getByotCatalogRefreshIntervalMs: () => number;
           };
@@ -2136,7 +2136,7 @@ export function makeSchedulerLive(
         },
         gate: {
           check: () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
             const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
               hasInternalDB: () => boolean;
             };
@@ -2171,7 +2171,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "openapi_spec_refresh",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the settings-backed interval synchronously at build time
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the settings-backed interval synchronously at build time
           const { getSharedSpecRefreshIntervalMs } = require("@atlas/api/lib/scheduler/openapi-spec-refresh") as {
             getSharedSpecRefreshIntervalMs: () => number;
           };
@@ -2209,7 +2209,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "openapi_install_rediscover",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval synchronously at build time
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval synchronously at build time
           const { getInstallRediscoverIntervalMs } = require("@atlas/api/lib/scheduler/openapi-install-rediscover") as {
             getInstallRediscoverIntervalMs: () => number;
           };
@@ -2217,7 +2217,7 @@ export function makeSchedulerLive(
         },
         gate: {
           check: () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
             const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
               hasInternalDB: () => boolean;
             };
@@ -2291,7 +2291,7 @@ export function makeSchedulerLive(
         intervalMs: 60 * 1000,
         tick: Effect.try({
           try: () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { rateLimitCleanupTick } = require("@atlas/api/lib/auth/middleware") as {
               rateLimitCleanupTick: () => void;
             };
@@ -2306,7 +2306,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "demo_rate_limit_cleanup",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { DEMO_CLEANUP_INTERVAL_MS } = require("@atlas/api/lib/demo") as {
             DEMO_CLEANUP_INTERVAL_MS: number;
           };
@@ -2314,7 +2314,7 @@ export function makeSchedulerLive(
         },
         tick: Effect.tryPromise({
           try: async () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { demoCleanupTick } = require("@atlas/api/lib/demo") as {
               demoCleanupTick: () => Promise<void>;
             };
@@ -2334,7 +2334,7 @@ export function makeSchedulerLive(
         intervalMs: 60 * 1000,
         tick: Effect.tryPromise({
           try: async () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { contactCleanupTick } = require("@atlas/api/lib/contact") as {
               contactCleanupTick: () => Promise<void>;
             };
@@ -2356,7 +2356,7 @@ export function makeSchedulerLive(
         intervalMs: 60 * 1000,
         tick: Effect.tryPromise({
           try: async () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { trialAttemptCleanupTick } = require("@atlas/api/lib/trial-abuse") as {
               trialAttemptCleanupTick: () => Promise<void>;
             };
@@ -2371,7 +2371,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "abuse_cleanup",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { ABUSE_CLEANUP_INTERVAL_MS } = require("@atlas/api/lib/security/abuse") as {
             ABUSE_CLEANUP_INTERVAL_MS: number;
           };
@@ -2379,7 +2379,7 @@ export function makeSchedulerLive(
         },
         tick: Effect.try({
           try: () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { abuseCleanupTick } = require("@atlas/api/lib/security/abuse") as {
               abuseCleanupTick: () => void;
             };
@@ -2395,7 +2395,7 @@ export function makeSchedulerLive(
         name: "dashboard_rate_limit_cleanup",
         intervalMs: () => {
           try {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const mod = require("@atlas/api/api/routes/dashboards") as {
               DASHBOARD_RATE_CLEANUP_INTERVAL_MS: number;
             };
@@ -2407,7 +2407,7 @@ export function makeSchedulerLive(
         },
         tick: Effect.try({
           try: () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { dashboardRateLimitCleanupTick } = require("@atlas/api/api/routes/dashboards") as {
               dashboardRateLimitCleanupTick: () => void;
             };
@@ -2422,7 +2422,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "conversation_rate_sweep",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { CONVERSATION_RATE_SWEEP_INTERVAL_MS } = require("@atlas/api/api/routes/conversations") as {
             CONVERSATION_RATE_SWEEP_INTERVAL_MS: number;
           };
@@ -2430,7 +2430,7 @@ export function makeSchedulerLive(
         },
         tick: Effect.try({
           try: () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { conversationRateSweepTick } = require("@atlas/api/api/routes/conversations") as {
               conversationRateSweepTick: () => void;
             };
@@ -2445,7 +2445,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "region_probe_rate_sweep",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { REGION_PROBE_RATE_SWEEP_INTERVAL_MS } = require("@atlas/api/api/routes/region-routing") as {
             REGION_PROBE_RATE_SWEEP_INTERVAL_MS: number;
           };
@@ -2453,7 +2453,7 @@ export function makeSchedulerLive(
         },
         tick: Effect.try({
           try: () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { regionProbeRateSweepTick } = require("@atlas/api/api/routes/region-routing") as {
               regionProbeRateSweepTick: () => void;
             };
@@ -2468,7 +2468,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "share_token_cleanup",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { SHARE_CLEANUP_INTERVAL_MS } = require("@atlas/api/api/routes/conversations") as {
             SHARE_CLEANUP_INTERVAL_MS: number;
           };
@@ -2476,7 +2476,7 @@ export function makeSchedulerLive(
         },
         tick: Effect.tryPromise({
           try: () => {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports
             const { shareCleanupTick: tick } = require("@atlas/api/api/routes/conversations") as {
               shareCleanupTick: () => Promise<void>;
             };
@@ -2547,7 +2547,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "orphan_task_reconcile",
         intervalMs: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports
           const { ORPHAN_TASK_RECONCILE_INTERVAL_MS } = require("@atlas/api/lib/scheduler/orphan-task-reconcile") as {
             ORPHAN_TASK_RECONCILE_INTERVAL_MS: number;
           };
@@ -2579,7 +2579,7 @@ export function makeSchedulerLive(
       // www.useatlas.dev negligible. `Effect.repeat(Schedule.spaced)`
       // runs the tick once eagerly on boot, so the first sweep happens
       // within seconds of API start, not after the first 6h window.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      // oxlint-disable-next-line @typescript-eslint/no-require-imports
       const subProcessorPublisher = require("@atlas/api/lib/sub-processor-publisher") as {
         subProcessorPublisherTick: () => Promise<void>;
         SUBPROCESSOR_PUBLISH_INTERVAL_MS: number;
@@ -3423,7 +3423,7 @@ export function buildAppLayer(
   // heavyweight connection module out of layers.ts's eager import graph.
   const connectionRegistryLayer = makeConnectionRegistryLive(
     () => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      // oxlint-disable-next-line @typescript-eslint/no-require-imports
       const { connections } = require("@atlas/api/lib/db/connection");
       return connections;
     },
@@ -3438,7 +3438,7 @@ export function buildAppLayer(
   // plugins, an empty `PluginRegistryLive` backs the Tag as an ordering barrier.
   const pluginRegistryLayer = pluginWiring
     ? makeWiredPluginRegistryLive(pluginWiring, () => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        // oxlint-disable-next-line @typescript-eslint/no-require-imports
         const { plugins } = require("@atlas/api/lib/plugins/registry");
         return plugins;
       }).pipe(Layer.provide(Layer.merge(connectionRegistryLayer, migrationLayer)))

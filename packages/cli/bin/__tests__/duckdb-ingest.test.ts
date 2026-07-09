@@ -95,7 +95,7 @@ describe.skip("ingestIntoDuckDB", () => {
   it("ingests a Parquet file", async () => {
     const dir = createTmpDir();
     // Create a Parquet file using DuckDB
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { DuckDBInstance } = require("@duckdb/node-api");
     const inst: DuckDBInstanceType = await DuckDBInstance.create(":memory:");
     const c: DuckDBConnection = await inst.connect();

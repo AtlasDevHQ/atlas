@@ -162,7 +162,7 @@ const mockGetRoleByName = mock(() =>
 // methods the assignment path actually invokes.
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   const { makeTestEnterpriseLayer } =
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
     require("@atlas/api/__test-utils__/makeTestEnterpriseLayer") as typeof import("@atlas/api/__test-utils__/makeTestEnterpriseLayer");
   return makeTestEnterpriseLayer({
     RolesPolicy: {

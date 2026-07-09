@@ -72,7 +72,7 @@ beforeEach(() => {
   mockSaveCredentialBundle.mockClear();
   mockInternalQuery.mockClear();
   mockFetch.mockClear();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   globalThis.fetch = mockFetch as any;
 });
 

@@ -80,7 +80,7 @@ function makeRecordingSpan(name: string): Span {
 
 const recordingTracer = {
   startSpan: (name: string) => makeRecordingSpan(name),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- minimal startActiveSpan shim across the API overloads
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- minimal startActiveSpan shim across the API overloads
   startActiveSpan: (name: string, ...args: any[]) => {
     const fn = args[args.length - 1];
     return fn(makeRecordingSpan(name));

@@ -862,7 +862,7 @@ describe("updateSSOProvider — enable guard", () => {
 
 import type { SSOOidcProvider, SSOSamlProvider, SSOOidcTestDetails, SSOSamlTestDetails } from "@useatlas/types";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock needs to bypass fetch.preconnect type
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test mock needs to bypass fetch.preconnect type
 const mockFetch = (fn: (...args: any[]) => Promise<Response>) => {
   globalThis.fetch = mock(fn) as unknown as typeof fetch;
 };

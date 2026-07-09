@@ -157,10 +157,10 @@ export function normalizeBigQueryConfigFields(
 export function createBigQueryConnection(
   config: BigQueryConnectionConfig,
 ): PluginDBConnection {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   let BigQueryClass: any;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     ({ BigQuery: BigQueryClass } = require("@google-cloud/bigquery"));
   } catch (err) {
     const isNotFound =

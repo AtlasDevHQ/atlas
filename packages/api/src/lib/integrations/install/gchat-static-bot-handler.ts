@@ -280,7 +280,7 @@ export function parseServiceAccountJson(raw: string): GchatServiceAccount {
     // would let pino's default `err` serializer walk the chain and
     // surface the raw `SyntaxError.input` (which contains the SA
     // private key) in operator log streams.
-    // eslint-disable-next-line preserve-caught-error
+    // oxlint-disable-next-line preserve-caught-error
     throw new Error(`GCHAT_SERVICE_ACCOUNT_JSON is not valid JSON (${safeMessage}).`);
   }
   if (typeof parsed !== "object" || parsed === null) {

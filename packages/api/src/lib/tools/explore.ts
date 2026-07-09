@@ -101,7 +101,7 @@ function useNsjail(): boolean {
   if (_nsjailAvailable !== null) return _nsjailAvailable;
   // Auto-detect nsjail on PATH (deferred require to avoid loading module at startup)
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { isNsjailAvailable } = require("./backends/nsjail");
     _nsjailAvailable = isNsjailAvailable();
   } catch (err) {

@@ -1064,10 +1064,10 @@ export function createElasticsearchClient(
       return (await res.json()) as T;
     } catch (err) {
       if (controller.signal.aborted && !closed) {
-        // eslint-disable-next-line preserve-caught-error -- raw err may carry the credential (echoed Authorization header); a `cause` chain survives the message scrub. Deliberately no cause — see the scrub rationale below.
+        // oxlint-disable-next-line preserve-caught-error -- raw err may carry the credential (echoed Authorization header); a `cause` chain survives the message scrub. Deliberately no cause — see the scrub rationale below.
         throw new Error(`Elasticsearch ${label} request timed out after ${timeoutMs}ms`);
       }
-      // eslint-disable-next-line preserve-caught-error -- scrubElasticsearchError strips credentials; attaching `cause: err` would leak the raw error past the scrub.
+      // oxlint-disable-next-line preserve-caught-error -- scrubElasticsearchError strips credentials; attaching `cause: err` would leak the raw error past the scrub.
       throw new Error(scrubElasticsearchError(err, secrets));
     } finally {
       clearTimeout(timer);
@@ -1105,7 +1105,7 @@ export function createElasticsearchClient(
         return normalizeClusterInfo(await res.json());
       } catch (err) {
         if (controller.signal.aborted && !closed) {
-          // eslint-disable-next-line preserve-caught-error -- no cause: raw err may carry the credential; see the scrub rationale below.
+          // oxlint-disable-next-line preserve-caught-error -- no cause: raw err may carry the credential; see the scrub rationale below.
           throw new Error(
             `Elasticsearch cluster-info request timed out after ${timeoutMs}ms`,
           );
@@ -1114,7 +1114,7 @@ export function createElasticsearchClient(
         // echoed Authorization header), and a `cause` chain survives the message
         // scrub when a downstream serializer walks it. The scrubbed message
         // retains the actionable detail.
-        // eslint-disable-next-line preserve-caught-error -- intentional: see rationale above.
+        // oxlint-disable-next-line preserve-caught-error -- intentional: see rationale above.
         throw new Error(scrubElasticsearchError(err, secrets));
       } finally {
         clearTimeout(timer);
@@ -1230,13 +1230,13 @@ export function createElasticsearchClient(
         return normalizeSqlPages(pages, maxRows);
       } catch (err) {
         if (controller.signal.aborted && !closed) {
-          // eslint-disable-next-line preserve-caught-error -- no cause: raw err may carry the credential; see the scrub rationale below.
+          // oxlint-disable-next-line preserve-caught-error -- no cause: raw err may carry the credential; see the scrub rationale below.
           throw new Error(
             `Elasticsearch SQL query timed out after ${timeoutMs}ms`,
           );
         }
         // Scrub before surfacing — see the ping() rationale above (no cause chain).
-        // eslint-disable-next-line preserve-caught-error -- intentional: see rationale above.
+        // oxlint-disable-next-line preserve-caught-error -- intentional: see rationale above.
         throw new Error(scrubElasticsearchError(err, secrets));
       } finally {
         clearTimeout(timer);
@@ -1304,11 +1304,11 @@ export function createElasticsearchClient(
         return await res.json();
       } catch (err) {
         if (controller.signal.aborted && !closed) {
-          // eslint-disable-next-line preserve-caught-error -- no cause: raw err may carry the credential; see the scrub rationale below.
+          // oxlint-disable-next-line preserve-caught-error -- no cause: raw err may carry the credential; see the scrub rationale below.
           throw new Error(`Elasticsearch DSL query timed out after ${timeoutMs}ms`);
         }
         // Scrub before surfacing — see the ping() rationale (no cause chain).
-        // eslint-disable-next-line preserve-caught-error -- intentional: see rationale above.
+        // oxlint-disable-next-line preserve-caught-error -- intentional: see rationale above.
         throw new Error(scrubElasticsearchError(err, secrets));
       } finally {
         clearTimeout(timer);

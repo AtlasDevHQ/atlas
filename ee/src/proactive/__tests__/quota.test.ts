@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, type Mock } from "bu
 // Module mocks — sync factory; handles captured for per-test mutation.
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realInternal = require("@atlas/api/lib/db/internal") as typeof import("@atlas/api/lib/db/internal");
 
 const mockHasInternalDB: Mock<() => boolean> = mock(() => true);

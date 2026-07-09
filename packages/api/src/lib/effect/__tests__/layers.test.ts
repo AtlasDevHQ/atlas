@@ -277,11 +277,11 @@ describe("makeSchedulerLive", () => {
   // before providing `Scheduler`. The noop fails with `EnterpriseError`;
   // the boot site catches it and logs at debug so the boot Layer still
   // builds cleanly.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { NoopEnterpriseDefaultsLayer } = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { NoopDurableSessionLayer } = require("@atlas/api/lib/effect/durable-session") as typeof import("@atlas/api/lib/effect/durable-session");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { NoopDurableStateLayer } = require("@atlas/api/lib/effect/durable-state") as typeof import("@atlas/api/lib/effect/durable-state");
 
   // #3446 — `makeSchedulerLive` requires `Migration` as an ordering

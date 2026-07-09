@@ -92,7 +92,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 mock.module("@atlas/api/lib/config", () => ({ getConfig: () => ({}) }));

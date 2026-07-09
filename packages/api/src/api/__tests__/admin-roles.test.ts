@@ -82,35 +82,35 @@ class MockEnterpriseError extends Error {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mocks flex across success/failure Effects
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- mocks flex across success/failure Effects
 const mockListRoles: Mock<(orgId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed([]),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockGetRole: Mock<(orgId: string, roleId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed(null),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockGetRoleByName: Mock<(orgId: string, name: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed(null),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockCreateRole: Mock<(orgId: string, input: Record<string, unknown>) => Effect.Effect<any, any>> = mock(
   () => Effect.die(new Error("not configured")),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockUpdateRole: Mock<(orgId: string, roleId: string, input: Record<string, unknown>) => Effect.Effect<any, any>> = mock(
   () => Effect.die(new Error("not configured")),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockDeleteRole: Mock<(orgId: string, roleId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed(true),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockListRoleMembers: Mock<(orgId: string, roleId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed([]),
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see above
+// oxlint-disable-next-line @typescript-eslint/no-explicit-any -- see above
 const mockAssignRole: Mock<(orgId: string, userId: string, roleName: string) => Effect.Effect<any, any>> = mock(
   () => Effect.die(new Error("not configured")),
 );
@@ -135,7 +135,7 @@ mock.module("@atlas/api/lib/auth/roles-errors", () => ({
 // `await` mid-mock-resolution (feedback_bun_test_async_mock_module).
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   const { makeTestEnterpriseLayer } =
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
+    // oxlint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
     require("@atlas/api/__test-utils__/makeTestEnterpriseLayer") as typeof import("@atlas/api/__test-utils__/makeTestEnterpriseLayer");
   return makeTestEnterpriseLayer({
     RolesPolicy: {

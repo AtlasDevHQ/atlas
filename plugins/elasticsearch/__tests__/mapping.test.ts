@@ -165,7 +165,7 @@ describe("flattenMapping", () => {
   test("skips malformed properties with neither a type nor sub-properties", () => {
     const fields = flattenMapping({
       ok: { type: "keyword" },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       broken: {} as any,
     });
     expect(fields.map((f) => f.path)).toEqual(["ok"]);

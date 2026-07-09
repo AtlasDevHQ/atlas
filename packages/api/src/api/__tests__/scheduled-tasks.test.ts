@@ -453,7 +453,7 @@ describe("scheduled-tasks routes", () => {
       );
       // 422: Zod validation via OpenAPIHono createRoute rejects missing required field
       expect(response.status).toBe(422);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await response.json()) as any;
       expect(body.error).toBe("validation_error");
     });
@@ -566,7 +566,7 @@ describe("scheduled-tasks routes", () => {
 
     it("returns 400 invalid_connection_group when connectionGroupId belongs to another org (#2512)", async () => {
       const { verifyGroupBelongsToOrg } = await import("@atlas/api/lib/conversations");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
       (verifyGroupBelongsToOrg as any).mockResolvedValueOnce("not_found");
       const response = await app.fetch(
         new Request("http://localhost/api/v1/scheduled-tasks", {
@@ -587,7 +587,7 @@ describe("scheduled-tasks routes", () => {
 
     it("returns 500 internal_error when group ownership verification itself errors (#2512)", async () => {
       const { verifyGroupBelongsToOrg } = await import("@atlas/api/lib/conversations");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
       (verifyGroupBelongsToOrg as any).mockResolvedValueOnce("error");
       const response = await app.fetch(
         new Request("http://localhost/api/v1/scheduled-tasks", {
@@ -732,7 +732,7 @@ describe("scheduled-tasks routes", () => {
     // as a generic 500.
     it("returns 400 invalid_connection_group on cross-org connectionGroupId (#2512)", async () => {
       const { verifyGroupBelongsToOrg } = await import("@atlas/api/lib/conversations");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
       (verifyGroupBelongsToOrg as any).mockResolvedValueOnce("not_found");
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/scheduled-tasks/${VALID_ID}`, {
@@ -757,14 +757,14 @@ describe("scheduled-tasks routes", () => {
       // `""` → null is the un-scope PATCH, which delegates to the lib (200 in
       // mock-land). The previous behavior tripped a DB FK violation and 500'd.
       expect(response.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
       const callArgs = mockUpdateScheduledTask.mock.calls.at(-1) as any;
       expect(callArgs[2].connectionGroupId).toBeNull();
     });
 
     it("returns 500 internal_error when group ownership verification itself errors on PUT (#2512)", async () => {
       const { verifyGroupBelongsToOrg } = await import("@atlas/api/lib/conversations");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
       (verifyGroupBelongsToOrg as any).mockResolvedValueOnce("error");
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/scheduled-tasks/${VALID_ID}`, {

@@ -246,7 +246,7 @@ jobs:
       # program — ~20s vs ~34s single-checker, and 5-8 checkers regress
       # (~21-24s, oversubscription). --builders only affects `tsc -b` build
       # mode, which nothing here uses; the tsgo declaration-emit builds
-      # (types/sdk/plugin-sdk/webhook-publisher) and the www program are
+      # (types/plugin-sdk/sdk) and the www program are
       # sub-second, and the web program (~580 files, ~8s) runs the same
       # already-optimal default. Re-benchmark before adding flags if this job
       # moves to a higher-core runner class or tsgo's parallelism defaults

@@ -7,7 +7,8 @@ set -euo pipefail
 # so an over-broad include in tsconfig.test.json once left `tsgo --noEmit`
 # checking zero project files while exiting green. Assert the program still
 # contains a healthy number of this package's source files.
-# --listFilesOnly skips the check phase, so this costs well under a second.
+# --listFilesOnly skips the check phase, so this costs a small fraction of
+# the full check.
 
 cd "$(dirname "$0")/.."
 
@@ -44,6 +45,8 @@ case "$count" in
     ;;
 esac
 
+# The program is ~580 src files today; 100 is a generous floor — vacuation
+# drops it to ~0.
 min=100
 
 if [ "$count" -lt "$min" ]; then

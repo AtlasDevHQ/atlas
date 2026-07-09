@@ -16,7 +16,7 @@ import { resolve } from "path";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
 
 // Mock database drivers so ConnectionRegistry.register() works without real DBs
-mock.module("pg", () => ({
+void mock.module("pg", () => ({
   Pool: class MockPool {
     async query() { return { rows: [], fields: [] }; }
     async connect() {
@@ -26,7 +26,7 @@ mock.module("pg", () => ({
   },
 }));
 
-mock.module("mysql2/promise", () => ({
+void mock.module("mysql2/promise", () => ({
   createPool: () => ({
     async getConnection() {
       return { async execute() { return [[], []]; }, release() {} };

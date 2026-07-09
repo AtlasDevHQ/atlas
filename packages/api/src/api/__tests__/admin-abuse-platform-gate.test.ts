@@ -49,7 +49,7 @@ const mocks = createApiTestMocks({
   authMode: "managed",
 });
 
-mock.module("@atlas/api/lib/security/abuse", () => ({
+void mock.module("@atlas/api/lib/security/abuse", () => ({
   listFlaggedWorkspaces: mock(() => []),
   // F-33: returns the previous level on success (or null when not flagged)
   // so the route can audit the delta. The rejection matrix here doesn't

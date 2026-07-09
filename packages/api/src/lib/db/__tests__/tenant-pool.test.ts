@@ -17,7 +17,7 @@ function poolConnString(conn: import("../connection").DBConnection): string | un
 }
 
 // Mock pg
-mock.module("pg", () => ({
+void mock.module("pg", () => ({
   Pool: class MockPool {
     totalCount = 2;
     idleCount = 1;
@@ -30,7 +30,7 @@ mock.module("pg", () => ({
   },
 }));
 
-mock.module("mysql2/promise", () => ({
+void mock.module("mysql2/promise", () => ({
   createPool: () => ({
     async getConnection() {
       return { async execute() { return [[], []]; }, release() {} };

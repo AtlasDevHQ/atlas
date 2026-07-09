@@ -29,7 +29,7 @@ type LogCall = {
 };
 const logCalls: LogCall[] = [];
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     error: (payload: unknown, message: string) => logCalls.push({ level: "error", payload, message }),
     warn: (payload: unknown, message: string) => logCalls.push({ level: "warn", payload, message }),

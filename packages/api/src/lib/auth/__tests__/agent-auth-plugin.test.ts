@@ -37,7 +37,7 @@ type AgentPrivateKey = Awaited<ReturnType<typeof generateKeyPair>>["privateKey"]
 // runs; default it to "user_1 is a member of wsA only" so the cross-workspace
 // case (an agent bound to wsB) is denied.
 let workspacesForUser: (userId: string) => string[] = () => ["wsA"];
-mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
+void mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
   getOAuthClientScope: async () => "single",
   hasWorkspaceGrant: async () => false,
   userIsWorkspaceMember: async () => false,
@@ -53,7 +53,7 @@ mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
 // Default: enabled for every workspace.
 import * as gateReal from "@atlas/api/lib/auth/agent-auth-gate";
 let enabledForWorkspace: (orgId?: string) => boolean = () => true;
-mock.module("@atlas/api/lib/auth/agent-auth-gate", () => ({
+void mock.module("@atlas/api/lib/auth/agent-auth-gate", () => ({
   ...gateReal,
   isAgentAuthEnabled: async (orgId?: string) => enabledForWorkspace(orgId),
 }));

@@ -18,7 +18,7 @@ let mockMemberRows: { id: string }[] = [];
 let mockShouldThrow: Error | null = null;
 let mockQueryCalls: { sql: string; params: unknown[] | undefined }[] = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: async (sql: string, params?: unknown[]) => {
     mockQueryCalls.push({ sql, params });

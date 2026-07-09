@@ -34,7 +34,7 @@ const stubLogger = {
 };
 // Full export surface mocked (mock-all-exports). Middleware only uses
 // `createLogger`, but transitive imports may touch the rest at load time.
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   ACTOR_KINDS: ["human", "agent", "mcp", "scheduler"],
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
   getRequestContext: () => undefined,

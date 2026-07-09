@@ -23,12 +23,12 @@ function resetEntries() {
 }
 resetEntries();
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfigOverride,
   defineConfig: (c: unknown) => c,
 }));
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       list: () => mockEntries.map((e) => e.id),
@@ -42,7 +42,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -55,7 +55,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
   getCrossSourceJoins: () => [],
 }));
 
-mock.module("@atlas/api/lib/plugins/tools", () => ({
+void mock.module("@atlas/api/lib/plugins/tools", () => ({
   getContextFragments: () => [],
   getDialectHints: () => [],
   setContextFragments: () => {},
@@ -64,7 +64,7 @@ mock.module("@atlas/api/lib/plugins/tools", () => ({
   getPluginTools: () => undefined,
 }));
 
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+void mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   buildLearnedPatternsSection: async () => "",
   getRelevantPatterns: async () => [],
   buildRetrievalQuery: () => "",
@@ -75,7 +75,7 @@ mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
 }));
 
 // #3633 — agent.ts assembles the org-knowledge block via this module.
-mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
+void mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
   resolveOrgKnowledgeSection: async () => "",
 }));
 

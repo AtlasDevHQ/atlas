@@ -590,7 +590,7 @@ describe("runCatalogSeedBoot swallow path", () => {
     // running in the same process after this one (CLAUDE.md flags
     // `mock.module()` as cross-file via bun's module loader) still
     // resolves `internalQuery`, `MANAGED_AUTH_MIGRATIONS`, etc.
-    mock.module("@atlas/api/lib/db/internal", () => ({
+    void mock.module("@atlas/api/lib/db/internal", () => ({
       hasInternalDB: () => true,
       getInternalDB: () => ({
         query: async () => {
@@ -606,7 +606,7 @@ describe("runCatalogSeedBoot swallow path", () => {
       InternalDB: { _tag: "InternalDB" },
       loadSavedConnections: async () => 0,
     }));
-    mock.module("@atlas/api/lib/config", () => ({
+    void mock.module("@atlas/api/lib/config", () => ({
       getConfig: () => ({
         catalog: [
           {

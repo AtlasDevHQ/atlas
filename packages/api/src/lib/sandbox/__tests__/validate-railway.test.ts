@@ -59,7 +59,7 @@ describe("validateCredentials — railway dispatch", () => {
     expect(String(init.headers && (init.headers as Record<string, string>).Authorization)).toBe(
       "Bearer rw_tok",
     );
-    const body = JSON.parse(String(init.body)) as { query: string; variables?: { id: string } };
+    const body = JSON.parse((init.body as string)) as { query: string; variables?: { id: string } };
     expect(body.query).toContain("environment(id: $id)");
     expect(body.variables?.id).toBe("env-1");
   });
@@ -92,7 +92,7 @@ describe("validateCredentials — railway dispatch", () => {
 
     // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     const [, init] = (fetchMock as any).mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(String(init.body)) as { query: string };
+    const body = JSON.parse((init.body as string)) as { query: string };
     expect(body.query).toContain("me { name }");
   });
 });

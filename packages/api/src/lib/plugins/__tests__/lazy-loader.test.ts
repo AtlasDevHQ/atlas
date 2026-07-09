@@ -14,7 +14,7 @@ import { describe, test, expect, mock, beforeEach } from "bun:test";
 const mockRowsByKey = new Map<string, { config: unknown }>();
 const queryCalls: Array<{ sql: string; params: unknown[] }> = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: async (sql: string, params: unknown[]) => {
     queryCalls.push({ sql, params });

@@ -9,7 +9,7 @@ import { describe, test, expect, mock } from "bun:test";
 
 let mockConfigOverride: { deployMode?: "saas" | "self-hosted" } | null = null;
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfigOverride,
   defineConfig: (c: unknown) => c,
 }));

@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { resolve } from "path";
 
 // Mock pg so pool creation doesn't fail
-mock.module("pg", () => ({
+void mock.module("pg", () => ({
   Pool: class MockPool {
     async query() { return { rows: [], fields: [] }; }
     async connect() {
@@ -26,7 +26,7 @@ mock.module("pg", () => ({
   },
 }));
 
-mock.module("mysql2/promise", () => ({
+void mock.module("mysql2/promise", () => ({
   createPool: () => ({
     async getConnection() {
       return { async execute() { return [[], []]; }, release() {} };

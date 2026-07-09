@@ -7,10 +7,10 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 
 let SETTINGS: Record<string, string | undefined> = {};
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string) => SETTINGS[key],
 }));
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };

@@ -13,7 +13,7 @@ function mockFetch(
 ) {
   fetchCalls = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input.toString();
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const options = init ?? {};
     fetchCalls.push({ url, options });
     return handler(url, options);

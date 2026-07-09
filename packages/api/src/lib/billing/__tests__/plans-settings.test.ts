@@ -16,7 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 
 // Mutable backing store for the mocked settings registry. Keyed by setting key.
 let settingValues: Record<string, string | undefined> = {};
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string) => settingValues[key],
 }));
 

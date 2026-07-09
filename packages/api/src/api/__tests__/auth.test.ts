@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 let mockAuthMode: string = "none";
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => mockAuthMode,
   resetAuthModeCache: () => {},
 }));
@@ -23,7 +23,7 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 let mockHandler: (req: Request) => Response | Promise<Response> = () =>
   new Response("ok", { status: 200 });
 
-mock.module("@atlas/api/lib/auth/server", () => ({
+void mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => ({
     handler: (req: Request) => mockHandler(req),
   }),
@@ -33,26 +33,26 @@ mock.module("@atlas/api/lib/auth/server", () => ({
 // Mock modules needed by chat and health routes (loaded when importing ../index).
 // We do NOT mock @/lib/logger — it works fine and mocking it globally would
 // break other test files in the same bun test run.
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () =>
     Promise.resolve({ authenticated: true, mode: "none", user: undefined }),
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
 }));
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: () =>
     Promise.resolve({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
     }),
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: () => Promise.resolve([]),
   getStartupWarnings: () => [],
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -64,7 +64,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
 }));

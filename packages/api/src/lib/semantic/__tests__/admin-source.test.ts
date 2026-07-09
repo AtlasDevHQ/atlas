@@ -341,7 +341,7 @@ describe("mergeAdminEntities", () => {
     });
 
     expect(result.entities).toHaveLength(2);
-    const groups = result.entities.map((e) => e.connectionId).toSorted();
+    const groups = result.entities.map((e) => e.connectionId as string).toSorted();
     expect(groups).toEqual(["g_prod_eu", "g_prod_us"]);
     const descriptions = result.entities.map((e) => e.description).toSorted();
     expect(descriptions).toEqual(["EU prod", "US prod"]);

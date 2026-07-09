@@ -39,7 +39,7 @@ const mockCreateSubscription = mock(
 // forks each file so the leak doesn't bite, but we keep the file
 // robust under both runners. If you add a new export to
 // sub-processor-publisher, add a stub here.
-mock.module("@atlas/api/lib/sub-processor-publisher", () => ({
+void mock.module("@atlas/api/lib/sub-processor-publisher", () => ({
   createSubscription: mockCreateSubscription,
   SUBPROCESSOR_PUBLISH_INTERVAL_MS: 21_600_000,
   subProcessorPublisherTick: async () => {},

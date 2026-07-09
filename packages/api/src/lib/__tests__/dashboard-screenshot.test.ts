@@ -44,7 +44,7 @@ let dashboardResult: { ok: true; data: unknown } | { ok: false; reason: "no_db" 
   },
 };
 
-mock.module("@atlas/api/lib/dashboards", () => ({
+void mock.module("@atlas/api/lib/dashboards", () => ({
   getDashboard: mock(async () => dashboardResult),
   // Surface-complete partial mock — anything else we don't use is `never`.
   createDashboard: undefined as never,

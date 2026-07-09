@@ -69,7 +69,7 @@ const mockGetSSOProvider: Mock<(orgId: string, providerId: string) => Effect.Eff
 const mockTestSSOProvider: Mock<(orgId: string, providerId: string) => Effect.Effect<unknown, unknown>> =
   mock(() => Effect.succeed({ type: "oidc", success: true, testedAt: "2026-04-06T00:00:00.000Z", details: {} }));
 
-mock.module("@atlas/ee/auth/sso", () => ({
+void mock.module("@atlas/ee/auth/sso", () => ({
   // CRUD
   listSSOProviders: mock(() => Effect.succeed([])),
   getSSOProvider: mockGetSSOProvider,
@@ -111,32 +111,32 @@ mock.module("@atlas/ee/auth/sso", () => ({
 }));
 
 // Core error stubs — `EnterpriseLayer`'s no-op defaults lazy-require these.
-mock.module("@atlas/api/lib/auth/auth-errors", () => ({
+void mock.module("@atlas/api/lib/auth/auth-errors", () => ({
   IPAllowlistError: class extends Error { public readonly _tag = "IPAllowlistError" as const; },
   SSOError: MockSSOError,
   SSOEnforcementError: MockSSOEnforcementError,
   SCIMError: class extends Error { public readonly _tag = "SCIMError" as const; },
 }));
-mock.module("@atlas/api/lib/residency/errors", () => ({
+void mock.module("@atlas/api/lib/residency/errors", () => ({
   ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
 }));
-mock.module("@atlas/api/lib/compliance/errors", () => ({
+void mock.module("@atlas/api/lib/compliance/errors", () => ({
   ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
   ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
 }));
-mock.module("@atlas/api/lib/model-routing/errors", () => ({
+void mock.module("@atlas/api/lib/model-routing/errors", () => ({
   ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
   ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
 }));
-mock.module("@atlas/api/lib/governance/errors", () => ({
+void mock.module("@atlas/api/lib/governance/errors", () => ({
   ApprovalError: class extends Error { public readonly _tag = "ApprovalError" as const; },
 }));
-mock.module("@atlas/api/lib/audit/retention-errors", () => ({
+void mock.module("@atlas/api/lib/audit/retention-errors", () => ({
   RetentionError: class extends Error { public readonly _tag = "RetentionError" as const; },
 }));
 
 // Provide SSOPolicy via EELayer Tag (slice 8/11 of #2017).
-mock.module("@atlas/ee/layers", () => {
+void mock.module("@atlas/ee/layers", () => {
   // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {

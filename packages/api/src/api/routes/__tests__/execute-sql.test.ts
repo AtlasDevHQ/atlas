@@ -38,7 +38,7 @@ import type { UserQueryOutcome } from "@atlas/api/lib/tools/sql";
 
 let fakeAuth: (AuthResult & { authenticated: true }) | null = null;
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () =>
     Promise.resolve(
       fakeAuth ?? { authenticated: false, status: 401 as const, error: "anonymous" },
@@ -49,12 +49,12 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   rateLimitCleanupTick: () => {},
 }));
 
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: async () => null,
   isStrictRoutingEnabled: () => false,
 }));
 
-mock.module("@atlas/api/lib/residency/readonly", () => ({
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: async () => false,
 }));
 
@@ -62,7 +62,7 @@ mock.module("@atlas/api/lib/residency/readonly", () => ({
 // origin + actor.kind audit triple (ADR-0027 sub-decision 6) actually flows.
 let capturedContexts: Array<Record<string, unknown>> = [];
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -97,7 +97,7 @@ type GateResult =
 let gateImpl: (orgId: string | undefined) => Promise<GateResult> = async () => ({ allowed: true });
 let gateCalls: Array<string | undefined> = [];
 
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: (orgId: string | undefined) => {
     gateCalls.push(orgId);
     return gateImpl(orgId);
@@ -116,7 +116,7 @@ let rawSqlPolicy: "allow" | "block" | "throw" = "allow";
 let policyCalls: Array<string> = [];
 const ALL_CATEGORIES = ["datasource", "integration", "policy", "raw_sql"];
 
-mock.module("@atlas/api/lib/mcp/action-policy", () => ({
+void mock.module("@atlas/api/lib/mcp/action-policy", () => ({
   loadMcpActionPolicy: async (orgId: string) => {
     policyCalls.push(orgId);
     if (rawSqlPolicy === "throw") throw new Error("policy read boom");
@@ -155,7 +155,7 @@ let pipelineImpl: (opts: {
 });
 let pipelineCalls: Array<Record<string, unknown>> = [];
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   runUserQueryPipeline: (opts: { sql: string; explanation: string; connectionId?: string }) => {
     pipelineCalls.push(opts);
     return pipelineImpl(opts);

@@ -38,7 +38,7 @@ const mockGetClientIP: Mock<(req: Request) => string | null> = mock(
   () => null,
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mockGetClientIP,
@@ -96,11 +96,11 @@ function makeAgentResult(overrides?: {
 
 const mockRunAgent = mock(() => Promise.resolve(makeAgentResult()));
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mockRunAgent,
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -112,17 +112,17 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mockValidateEnvironment,
   getStartupWarnings: () => [],
 }));
@@ -134,7 +134,7 @@ const mockAddMessageQuery = mock(() => {});
 const mockGetConversationQuery = mock((): Promise<{ ok: boolean; reason?: string; data?: unknown }> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockGenerateTitleQuery = mock((q: string) => q.slice(0, 80));
 
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mockCreateConversationQuery,
   addMessage: mockAddMessageQuery,
   persistAssistantSteps: mock(() => {}),
@@ -208,7 +208,7 @@ type BillingGateVerdict =
 let billingGateVerdict: BillingGateVerdict = { allowed: true };
 const mockCheckAgentBillingGate = mock(async (_orgId: string | undefined) => billingGateVerdict);
 
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockCheckAgentBillingGate,
   BillingBlockedError: BillingBlockedErrorStub,
 }));
@@ -244,7 +244,7 @@ type ClaimGateVerdict =
 let claimGateVerdict: ClaimGateVerdict = { allowed: true };
 const mockCheckClaimGate = mock(async (_orgId?: string) => claimGateVerdict);
 
-mock.module("@atlas/api/lib/billing/claim-gate", () => ({
+void mock.module("@atlas/api/lib/billing/claim-gate", () => ({
   checkClaimGate: mockCheckClaimGate,
   ClaimRequiredError: ClaimRequiredErrorStub,
   ClaimCheckFailedError: ClaimCheckFailedErrorStub,

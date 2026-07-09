@@ -12,7 +12,7 @@ import type { AuthResult } from "@atlas/api/lib/auth/types";
 // Mocks — must be declared before importing the module under test
 // ---------------------------------------------------------------------------
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () =>
     Promise.resolve({ authenticated: true, mode: "none", user: undefined }),
   checkRateLimit: () => ({ allowed: true }),
@@ -21,7 +21,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   rateLimitCleanupTick: () => {},
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -33,12 +33,12 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: async () => null,
   isStrictRoutingEnabled: () => false,
 }));
 
-mock.module("@atlas/api/lib/residency/readonly", () => ({
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: async () => false,
 }));
 

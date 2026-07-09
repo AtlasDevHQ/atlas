@@ -12,7 +12,7 @@ const silentLogger = {
   child: () => silentLogger,
 };
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   ACTOR_KINDS: ["human", "agent", "mcp", "scheduler"] as const,
   createLogger: () => silentLogger,
   getLogger: () => silentLogger,
@@ -25,12 +25,12 @@ mock.module("@atlas/api/lib/logger", () => ({
   setLogLevel: () => true,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_name: string, _attrs: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /postgresql:\/\/|mysql:\/\/|sk-ant-/,
   maskConnectionUrl: (url: string) => url,
 }));
@@ -87,7 +87,7 @@ function setupSandboxMock(overrides: MockSandboxOverrides = {}) {
   mockStopCalls = 0;
   mockUpdateNetworkPolicyCalls = [];
 
-  mock.module("@vercel/sandbox", () => ({
+  void mock.module("@vercel/sandbox", () => ({
     Sandbox: {
       create: async (opts: unknown) => {
         mockCreateCalls.push(opts);

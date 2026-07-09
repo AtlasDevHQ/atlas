@@ -46,7 +46,7 @@ function makeStubLogger(): Record<string, unknown> {
 // oxlint-disable-next-line @typescript-eslint/no-require-imports
 const realLogger = require("@atlas/api/lib/logger") as Record<string, unknown>;
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   ...realLogger,
   createLogger: () => makeStubLogger(),
 }));

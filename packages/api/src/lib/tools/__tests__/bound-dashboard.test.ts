@@ -22,7 +22,7 @@ const validateSQLMock = mock(async (sql: string, _connectionId?: string) => {
   return { valid: true as const, classification: { tablesAccessed: [], columnsAccessed: [] } };
 });
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   validateSQL: validateSQLMock,
   // The bound-dashboard tools only import `validateSQL` — but other
   // modules transitively imported by the dashboards lib pull in this
@@ -53,7 +53,7 @@ const screenshotMock = mock(
 );
 const invalidateScreenshotMock = mock((_dashboardId: string) => {});
 
-mock.module("@atlas/api/lib/dashboard-screenshot", () => ({
+void mock.module("@atlas/api/lib/dashboard-screenshot", () => ({
   screenshotDashboard: screenshotMock,
   invalidateDashboardScreenshot: invalidateScreenshotMock,
   closeScreenshotBrowser: async () => {},

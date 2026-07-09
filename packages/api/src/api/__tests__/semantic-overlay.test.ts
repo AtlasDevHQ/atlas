@@ -110,7 +110,7 @@ const mockCheckRateLimit: Mock<(key: string) => { allowed: boolean; retryAfterMs
   () => ({ allowed: true }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mock(() => null),
@@ -119,17 +119,17 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "simple-key",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mock(() => Promise.resolve([])),
   getStartupWarnings: mock(() => []),
 }));
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       describe: () => [{ id: "default", dbType: "postgres", description: "Test DB" }],
@@ -138,7 +138,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -167,7 +167,7 @@ class _AdminEntityYamlErrorBase extends Error {
   }
 }
 
-mock.module("@atlas/api/lib/semantic/admin-source", () => ({
+void mock.module("@atlas/api/lib/semantic/admin-source", () => ({
   listAdminEntities: async (opts: { orgId?: string; mode?: string }) => {
     listOpts = opts;
     return listResult;
@@ -191,7 +191,7 @@ mock.module("@atlas/api/lib/semantic/admin-source", () => ({
 
 // Full-surface mock — partial mocks break unrelated imports that pull in
 // the same module transitively (admin-publish, admin-archive, etc.).
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   AmbiguousEntityError: class AmbiguousEntityError extends Error {
     readonly groups: ReadonlyArray<string | null>;
     constructor(over: { entityName?: string; groups?: ReadonlyArray<string | null> } | string = "", groups: ReadonlyArray<string | null> = []) {
@@ -228,7 +228,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
   makeInternalDBShimLayer: () =>
     makeMockInternalDBShimLayer(() => Promise.resolve([]), { available: true }),
@@ -270,7 +270,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: mock(async () => 0),
 }));
 
-mock.module("@atlas/api/lib/cache", () => ({
+void mock.module("@atlas/api/lib/cache", () => ({
   getCache: mock(() => ({ get: () => null, set: () => {}, delete: () => false, flush: () => {}, stats: () => ({}) })),
   cacheEnabled: mock(() => true),
   setCacheBackend: mock(() => {}),
@@ -280,11 +280,11 @@ mock.module("@atlas/api/lib/cache", () => ({
   buildCacheKey: mock(() => "mock-key"),
 }));
 
-mock.module("@atlas/api/lib/workspace", () => ({
+void mock.module("@atlas/api/lib/workspace", () => ({
   checkWorkspaceStatus: mock(async () => ({ allowed: true })),
 }));
 
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+void mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   buildLearnedPatternsSection: async () => "",
   getRelevantPatterns: async () => [],
   buildRetrievalQuery: () => "",
@@ -294,7 +294,7 @@ mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   _resetPatternCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     describe: () => [],
     get: () => undefined,
@@ -306,13 +306,13 @@ mock.module("@atlas/api/lib/plugins/registry", () => ({
   PluginRegistry: class {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
   explore: { type: "function" },
 }));
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(() =>
     Promise.resolve({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
@@ -321,12 +321,12 @@ mock.module("@atlas/api/lib/agent", () => ({
   ),
 }));
 
-mock.module("@atlas/api/lib/tools/actions", () => ({
+void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: { name: "createJiraTicket", description: "Mock", tool: { type: "function" } },
   sendEmailReport: { name: "sendEmailReport", description: "Mock", tool: { type: "function" } },
 }));
 
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve(null)),
   addMessage: mock(() => {}),
   persistAssistantSteps: mock(() => {}),
@@ -394,7 +394,7 @@ describe("GET /api/v1/semantic/entities — DB overlay", () => {
     const body = (await res.json()) as { entities: Array<Record<string, unknown>> };
     expect(body.entities).toHaveLength(2);
 
-    const tables = body.entities.map((e) => e.table).sort();
+    const tables = body.entities.map((e) => e.table as string).sort();
     expect(tables).toEqual(["orders", "users"]);
 
     const users = body.entities.find((e) => e.table === "users")!;

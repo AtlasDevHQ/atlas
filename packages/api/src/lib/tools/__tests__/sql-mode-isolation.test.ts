@@ -14,7 +14,7 @@ let mockAtlasMode: "published" | "developer" = "published";
 let mockActiveOrgId: string | undefined = "org-1";
 const mockIsVisible = mock(async (_orgId: string, _id: string, _mode: string) => true);
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -37,7 +37,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(["companies"]),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -54,7 +54,7 @@ const mockConn = {
   close: async () => {},
 };
 
-mock.module("@atlas/api/lib/db/connection", () => ({
+void mock.module("@atlas/api/lib/db/connection", () => ({
   ...createConnectionMock({
     connections: {
       // List includes a draft connection ID — the test verifies it must NOT
@@ -83,30 +83,30 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   isConnectionVisibleInMode: mockIsVisible,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_n: string, _a: Record<string, unknown>, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
+void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
-mock.module("@atlas/api/lib/auth/audit", () => ({
+void mock.module("@atlas/api/lib/auth/audit", () => ({
   logQueryAudit: () => {},
 }));
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => null,
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /__never_matches__/,
   maskConnectionUrl: (url: string) => url,
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
   getSettingAuto: () => undefined,
   getSettingLive: async () => undefined,
@@ -120,14 +120,14 @@ mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({ get: () => null, set: () => {} }),
   buildCacheKey: () => "k",
   cacheEnabled: () => false,
   getDefaultTtl: () => 60,
 }));
 
-mock.module("@atlas/api/lib/learn/pattern-proposer", () => ({
+void mock.module("@atlas/api/lib/learn/pattern-proposer", () => ({
   proposePatternIfNovel: () => {},
 }));
 

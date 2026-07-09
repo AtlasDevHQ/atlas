@@ -27,7 +27,7 @@ const mocks = createApiTestMocks();
 // Audit log capture — recordInvitationCreated routes through this.
 const mockLogAdminAction = mock<(args: Record<string, unknown>) => void>(() => {});
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mockLogAdminAction,
   logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: {
@@ -40,7 +40,7 @@ mock.module("@atlas/api/lib/audit", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/audit/admin", () => ({
+void mock.module("@atlas/api/lib/audit/admin", () => ({
   logAdminAction: mockLogAdminAction,
   logAdminActionAwait: mock(async () => {}),
 }));
@@ -52,12 +52,12 @@ const mockSendEmail = mock<(args: SendEmailArgs, orgId?: string) => Promise<{ su
   provider: "mock",
 }));
 
-mock.module("@atlas/api/lib/email/delivery", () => ({
+void mock.module("@atlas/api/lib/email/delivery", () => ({
   sendEmail: mockSendEmail,
 }));
 
 // Onboarding milestone trigger — no-op, just keep the import resolvable.
-mock.module("@atlas/api/lib/email/hooks", () => ({
+void mock.module("@atlas/api/lib/email/hooks", () => ({
   onTeamMemberInvited: mock(async () => {}),
 }));
 
@@ -66,7 +66,7 @@ const mockCheckResourceLimit = mock<
   (orgId: string, resource: string, count: number) => Promise<{ allowed: boolean; reason?: "cap_reached" | "check_failed"; errorMessage?: string; limit?: number }>
 >(async () => ({ allowed: true }));
 
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkResourceLimit: mockCheckResourceLimit,
   invalidatePlanCache: mock(() => {}),
   getCachedWorkspace: mock(async () => null),

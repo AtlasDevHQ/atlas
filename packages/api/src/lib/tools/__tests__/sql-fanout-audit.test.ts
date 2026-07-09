@@ -20,7 +20,7 @@ import { createConnectionMock } from "@atlas/api/testing/connection";
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyResult = any;
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -43,7 +43,7 @@ function mockDBFor(_connId: string) {
   };
 }
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBFor("default"),
     connections: {
@@ -59,7 +59,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (
     _name: string,
     _attrs: Record<string, unknown>,
@@ -68,13 +68,13 @@ mock.module("@atlas/api/lib/tracing", () => ({
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
+void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
 // Cache disabled — this test is about fanout audit rows, not caching.
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({ get: () => null, set: () => {}, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),
   buildCacheKey: () => "mock-key",
   cacheEnabled: () => false,
@@ -85,7 +85,7 @@ mock.module("@atlas/api/lib/cache/index", () => ({
 }));
 
 // Group routing — two members so `scope: "all"` produces a real fanout.
-mock.module("@atlas/api/lib/env-routing/lookup", () => ({
+void mock.module("@atlas/api/lib/env-routing/lookup", () => ({
   loadGroupRoutingContext: async (_orgId: string | undefined, currentMember: string) => ({
     groupId: "prod",
     members: ["us-int", "eu"] as const,
@@ -177,6 +177,6 @@ describe("executeSQL fanout parent audit duration (#3616)", () => {
       expect(child.parentAuditId).toBe(parents[0].id!);
       expect(typeof child.durationMs).toBe("number");
     }
-    expect(children.map((c) => c.sourceId).sort()).toEqual(["eu", "us-int"]);
+    expect(children.map((c) => c.sourceId as string).sort()).toEqual(["eu", "us-int"]);
   });
 });

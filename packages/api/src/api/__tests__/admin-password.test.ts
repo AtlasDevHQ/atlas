@@ -32,7 +32,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
@@ -41,19 +41,19 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "managed",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mock(() => Promise.resolve([])),
   getStartupWarnings: mock(() => []),
 }));
 
-mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
+void mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -73,7 +73,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   () => Promise.resolve([]),
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
   makeInternalDBShimLayer: () =>
     makeMockInternalDBShimLayer(mockInternalQuery, { available: mockHasInternalDB }),
@@ -125,7 +125,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: mock(async () => 0),
 }));
 
-mock.module("@atlas/api/lib/cache", () => ({
+void mock.module("@atlas/api/lib/cache", () => ({
   getCache: mock(() => ({ get: () => null, set: () => {}, delete: () => false, flush: () => {}, stats: () => ({}) })),
   cacheEnabled: mock(() => true),
   setCacheBackend: mock(() => {}),
@@ -135,11 +135,11 @@ mock.module("@atlas/api/lib/cache", () => ({
   buildCacheKey: mock(() => "mock-key"),
 }));
 
-mock.module("@atlas/api/lib/workspace", () => ({
+void mock.module("@atlas/api/lib/workspace", () => ({
   checkWorkspaceStatus: mock(async () => ({ allowed: true })),
 }));
 
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+void mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   buildLearnedPatternsSection: async () => "",
   getRelevantPatterns: async () => [],
   buildRetrievalQuery: () => "",
@@ -149,7 +149,7 @@ mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   _resetPatternCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   upsertProfileStatus: mock(() => Promise.resolve()),
   listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   listEntityRows: mock(() => Promise.resolve([])),
@@ -172,7 +172,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   ),
 }));
 
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     describe: () => [],
     get: () => undefined,
@@ -184,7 +184,7 @@ mock.module("@atlas/api/lib/plugins/registry", () => ({
   PluginRegistry: class {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
   explore: { type: "function" },
@@ -192,7 +192,7 @@ mock.module("@atlas/api/lib/tools/explore", () => ({
   invalidateOrgExploreBackends: () => {},
 }));
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(() =>
     Promise.resolve({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
@@ -201,8 +201,8 @@ mock.module("@atlas/api/lib/agent", () => ({
   ),
 }));
 
-mock.module("@atlas/api/lib/tools/actions", () => ({}));
-mock.module("@atlas/api/lib/semantic/diff", () => ({
+void mock.module("@atlas/api/lib/tools/actions", () => ({}));
+void mock.module("@atlas/api/lib/semantic/diff", () => ({
   runDiff: mock(() => Promise.resolve({})),
   // #2459: matches the admin route's new import alongside runDiff.
   runDriftDiff: mock(async () => ({
@@ -218,7 +218,7 @@ mock.module("@atlas/api/lib/semantic/diff", () => ({
   getYAMLSnapshots: () => ({ snapshots: new Map(), warnings: [] }),
 }));
 
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve(null)),
   addMessage: mock(() => {}),
   persistAssistantSteps: mock(() => {}),
@@ -255,7 +255,7 @@ const mockChangePassword: Mock<(opts: unknown) => Promise<unknown>> = mock(() =>
   Promise.resolve({}),
 );
 
-mock.module("@atlas/api/lib/auth/server", () => ({
+void mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => ({
     api: { changePassword: mockChangePassword },
   }),

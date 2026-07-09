@@ -24,14 +24,14 @@ const credBundleDeletes: Array<{ workspaceId: string; catalogId: string }> = [];
 const twentyDeletes: string[] = [];
 const discordDeletes: string[] = [];
 
-mock.module("@atlas/api/lib/slack/store", () => ({
+void mock.module("@atlas/api/lib/slack/store", () => ({
   deleteInstallation: async (teamId: string) => {
     slackDeletes.push(teamId);
   },
   saveInstallation: async () => {},
 }));
 
-mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
+void mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
   deleteCredentialBundle: async (workspaceId: string, catalogId: string) => {
     credBundleDeletes.push({ workspaceId, catalogId });
     return true;
@@ -40,7 +40,7 @@ mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
   readCredentialBundle: async () => null,
 }));
 
-mock.module("@atlas/api/lib/integrations/twenty/store", () => ({
+void mock.module("@atlas/api/lib/integrations/twenty/store", () => ({
   deleteTwentyIntegration: async (workspaceId: string) => {
     twentyDeletes.push(workspaceId);
     return true;
@@ -50,7 +50,7 @@ mock.module("@atlas/api/lib/integrations/twenty/store", () => ({
   getTwentyIntegrationWithSecret: async () => null,
 }));
 
-mock.module("@atlas/api/lib/discord/store", () => ({
+void mock.module("@atlas/api/lib/discord/store", () => ({
   getDiscordInstallation: async () => null,
   getDiscordInstallationByOrg: async () => null,
   saveDiscordInstallation: async () => {},

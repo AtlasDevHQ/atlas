@@ -13,7 +13,7 @@ type AnyResult = any;
 
 // --- Mock dependencies ---
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -25,11 +25,11 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/auth/audit", () => ({
+void mock.module("@atlas/api/lib/auth/audit", () => ({
   logQueryAudit: () => {},
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (
     _name: string,
     _attrs: Record<string, unknown>,
@@ -38,12 +38,12 @@ mock.module("@atlas/api/lib/tracing", () => ({
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
+void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
   dispatchMutableHook: async (
     _hookName: string,
@@ -72,7 +72,7 @@ function soqlValidator(query: string): { valid: boolean; reason?: string } {
 // Connections mock with getValidator support
 let validatorMap: Map<string, ((q: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>) | undefined>;
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockConn,
     connections: {
@@ -85,7 +85,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({ get: () => null, set: () => {}, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),
   buildCacheKey: () => "mock-key",
   cacheEnabled: () => false,
@@ -282,7 +282,7 @@ describe("custom query validation", () => {
     validatorMap.set("custom-conn", strictValidator);
 
     // The hook rewrites to include "FORBIDDEN" — custom validator should catch it
-    mock.module("@atlas/api/lib/plugins/hooks", () => ({
+    void mock.module("@atlas/api/lib/plugins/hooks", () => ({
       dispatchHook: async () => {},
       dispatchMutableHook: async (
         _hookName: string,
@@ -303,7 +303,7 @@ describe("custom query validation", () => {
     expect(result.error).toContain("contains forbidden keyword");
 
     // Restore original mock
-    mock.module("@atlas/api/lib/plugins/hooks", () => ({
+    void mock.module("@atlas/api/lib/plugins/hooks", () => ({
       dispatchHook: async () => {},
       dispatchMutableHook: async (
         _hookName: string,
@@ -323,7 +323,7 @@ describe("custom query validation", () => {
     validatorMap.set("async-revalidate", asyncStrictValidator);
 
     // Hook rewrites query to include "BLOCKED" — async validator should catch it during re-validation
-    mock.module("@atlas/api/lib/plugins/hooks", () => ({
+    void mock.module("@atlas/api/lib/plugins/hooks", () => ({
       dispatchHook: async () => {},
       dispatchMutableHook: async (
         _hookName: string,
@@ -343,7 +343,7 @@ describe("custom query validation", () => {
     expect(result.error).toContain("async: contains blocked keyword");
 
     // Restore original mock
-    mock.module("@atlas/api/lib/plugins/hooks", () => ({
+    void mock.module("@atlas/api/lib/plugins/hooks", () => ({
       dispatchHook: async () => {},
       dispatchMutableHook: async (
         _hookName: string,

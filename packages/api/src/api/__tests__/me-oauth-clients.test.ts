@@ -64,7 +64,7 @@ let mockConfigOverride: { deployMode?: "saas" | "self-hosted" } | null = {
   deployMode: "saas",
 };
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfigOverride,
   defineConfig: (c: unknown) => c,
 }));
@@ -80,7 +80,7 @@ interface AuditEntry {
 
 const mockLogAdminAction: Mock<(entry: AuditEntry) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,

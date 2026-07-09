@@ -24,7 +24,7 @@ const mockGetScheduledTask = mock(() =>
 );
 const mockUpdateRunDeliveryStatus = mock((): void => {});
 
-mock.module("@atlas/api/lib/scheduled-tasks", () => ({
+void mock.module("@atlas/api/lib/scheduled-tasks", () => ({
   getScheduledTask: mockGetScheduledTask,
   updateRunDeliveryStatus: mockUpdateRunDeliveryStatus,
   getTasksDueForExecution: mock(() => Promise.resolve([])),
@@ -58,7 +58,7 @@ const mockLoadActorUser = mock<(userId: string, orgId: string | null) => Promise
   }),
 );
 
-mock.module("@atlas/api/lib/auth/actor", () => ({
+void mock.module("@atlas/api/lib/auth/actor", () => ({
   loadActorUser: mockLoadActorUser,
   botActorUser: mock(() => ({ id: "slack-bot:T1", mode: "simple-key", label: "slack-bot:T1" })),
 }));
@@ -91,7 +91,7 @@ const mockExecuteAgentQuery = mock<(question: string, requestId?: string, option
   return Promise.resolve(result);
 });
 
-mock.module("@atlas/api/lib/agent-query", () => ({
+void mock.module("@atlas/api/lib/agent-query", () => ({
   executeAgentQuery: mockExecuteAgentQuery,
 }));
 
@@ -99,7 +99,7 @@ const mockDeliverResult = mock(() =>
   Promise.resolve({ attempted: 1, succeeded: 1, failed: 0, permanentFailures: 0, firstPermanentError: null as string | null }),
 );
 
-mock.module("../delivery", () => ({
+void mock.module("../delivery", () => ({
   deliverResult: mockDeliverResult,
 }));
 
@@ -121,7 +121,7 @@ class NoScheduledTaskGroupMembersErrorStub extends Error {
   }
 }
 
-mock.module("../group-resolve", () => ({
+void mock.module("../group-resolve", () => ({
   resolveScheduledTaskConnection: mockResolveScheduledTaskConnection,
   NoScheduledTaskGroupMembersError: NoScheduledTaskGroupMembersErrorStub,
 }));

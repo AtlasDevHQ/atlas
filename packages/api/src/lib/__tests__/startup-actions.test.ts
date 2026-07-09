@@ -8,18 +8,18 @@ import { mockIsSupportedProvider, mockGetMissingProviderConfig } from "./provide
 // and we can focus on action framework diagnostics (section 7).
 // ---------------------------------------------------------------------------
 
-mock.module("fs", () => ({
+void mock.module("fs", () => ({
   existsSync: () => false,
   readdirSync: () => ["orders.yml"],
 }));
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
   }),
 );
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",
   // Required-config SSOT (#3200) — startup.ts's checkProviderApiKey consumes the
   // set-based check; shared fixture mirrors real providers.ts semantics.
@@ -35,13 +35,13 @@ mock.module("@atlas/api/lib/providers", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({
+void mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({
   findNsjailBinary: () => null,
   testNsjailCapabilities: async () => ({ ok: true }),
   isNsjailAvailable: () => false,
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   markNsjailFailed: () => {},
   markSidecarFailed: () => {},
   getExploreBackendType: () => "just-bash",
@@ -49,14 +49,14 @@ mock.module("@atlas/api/lib/tools/explore", () => ({
   invalidateExploreBackend: () => {},
 }));
 
-mock.module("@atlas/api/lib/auth/migrate", () => ({
+void mock.module("@atlas/api/lib/auth/migrate", () => ({
   getMigrationError: () => null,
 }));
 
 // Mock the tool registry so we can control validateActionCredentials()
 let mockValidateActionCredentials: () => { action: string; missing: string[] }[] = () => [];
 
-mock.module("@atlas/api/lib/tools/registry", () => ({
+void mock.module("@atlas/api/lib/tools/registry", () => ({
   defaultRegistry: {
     validateActionCredentials: () => mockValidateActionCredentials(),
   },
@@ -71,7 +71,7 @@ mock.module("@atlas/api/lib/tools/registry", () => ({
 // Mock the config module so we can control getConfig()
 let mockConfig: Record<string, unknown> | null = null;
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfig,
   loadConfig: async () => {
     mockConfig = { source: "env" };

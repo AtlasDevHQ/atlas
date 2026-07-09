@@ -16,8 +16,8 @@ import { test, expect, mock } from "bun:test";
 
 // Stand-in mocks against the experiment's own files; values are
 // irrelevant — only that mock.module() RUNS before the env line below.
-mock.module("./_shared-target", () => ({ truth: () => "stub-1" }));
-mock.module("./pair-6-intermediate", () => ({
+void mock.module("./_shared-target", () => ({ truth: () => "stub-1" }));
+void mock.module("./pair-6-intermediate", () => ({
   truthIndirect: () => "stub-2",
 }));
 

@@ -34,11 +34,11 @@ type PlanVerdict =
 let planVerdict: PlanVerdict = { allowed: true };
 const mockCheckPlanLimits = mock(async (_orgId: string | undefined) => planVerdict);
 
-mock.module("@atlas/api/lib/workspace", () => ({
+void mock.module("@atlas/api/lib/workspace", () => ({
   checkWorkspaceStatus: mockCheckWorkspaceStatus,
 }));
 
-mock.module("@atlas/api/lib/security/abuse", () => ({
+void mock.module("@atlas/api/lib/security/abuse", () => ({
   checkAbuseStatus: mockCheckAbuseStatus,
   // Unused by the gate but mock.module replaces the whole module —
   // stub every value export so unrelated importers in the graph load.
@@ -56,7 +56,7 @@ mock.module("@atlas/api/lib/security/abuse", () => ({
   abuseCleanupTick: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkPlanLimits: mockCheckPlanLimits,
   // Unused by the gate — stubbed for module-graph completeness.
   getCachedWorkspace: mock(async () => null),
@@ -69,7 +69,7 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkChatIntegrationLimitAndInstall: mock(async () => ({ allowed: true, rows: [] })),
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 

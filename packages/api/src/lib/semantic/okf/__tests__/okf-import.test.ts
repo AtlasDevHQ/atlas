@@ -190,7 +190,7 @@ describe("importOkfBundle (foreign bundle)", () => {
     expect(catalog.name).toBe("shop");
     expect(String(catalog.description)).toContain("three months");
     const entities = catalog.entities as Array<Record<string, unknown>>;
-    expect(entities.map((e) => e.file).sort()).toEqual([
+    expect(entities.map((e) => e.file as string).sort()).toEqual([
       "entities/events.yml",
       "entities/users.yml",
     ]);

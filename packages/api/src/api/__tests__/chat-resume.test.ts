@@ -26,7 +26,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<AuthResult>> = moc
 const mockCheckRateLimit: Mock<(key: string) => { allowed: boolean; retryAfterMs?: number }> = mock(() => ({ allowed: true }));
 const mockGetClientIP: Mock<(req: Request) => string | null> = mock(() => null);
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mockGetClientIP,
@@ -40,7 +40,7 @@ const mockPrepareResume: Mock<() => Promise<PrepareResumeResult>> = mock(() =>
   }),
 );
 const mockFinishResume = mock(() => {});
-mock.module("@atlas/api/lib/durable-resume", () => ({
+void mock.module("@atlas/api/lib/durable-resume", () => ({
   prepareResume: mockPrepareResume,
   finishResume: mockFinishResume,
 }));
@@ -51,7 +51,7 @@ import * as realDurableSession from "@atlas/api/lib/durable-session";
 const mockLoadLatestRunStatus: Mock<() => Promise<LatestRunStatus>> = mock(() =>
   Promise.resolve({ status: "running" as const, runId: "run-abc", parkedReason: null }),
 );
-mock.module("@atlas/api/lib/durable-session", () => ({
+void mock.module("@atlas/api/lib/durable-session", () => ({
   ...realDurableSession,
   loadLatestRunStatus: mockLoadLatestRunStatus,
 }));
@@ -65,15 +65,15 @@ const mockRunAgent = mock(() =>
     text: Promise.resolve("answer"),
   }),
 );
-mock.module("@atlas/api/lib/agent", () => ({ runAgent: mockRunAgent }));
+void mock.module("@atlas/api/lib/agent", () => ({ runAgent: mockRunAgent }));
 
-mock.module("@atlas/api/lib/tools/python-stream", () => ({
+void mock.module("@atlas/api/lib/tools/python-stream", () => ({
   setStreamWriter: () => {},
   clearStreamWriter: () => {},
   getStreamWriter: () => undefined,
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -85,18 +85,18 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
   explore: { type: "function" },
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mock(() => Promise.resolve([])),
   getStartupWarnings: () => [],
 }));
@@ -110,7 +110,7 @@ const mockReserveConversationBudget = mock(
     Promise.resolve({ status: "ok", totalStepsBefore: 0 }),
 );
 const mockSettleConversationSteps = mock(() => {});
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve({ id: "conv-1" })),
   addMessage: mock(() => {}),
   persistAssistantSteps: mockPersistAssistantSteps,
@@ -141,7 +141,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
-mock.module("@atlas/api/lib/plugins/tools", () => ({
+void mock.module("@atlas/api/lib/plugins/tools", () => ({
   getPluginTools: mock(() => undefined),
   setPluginTools: () => {},
   getContextFragments: () => [],
@@ -150,14 +150,14 @@ mock.module("@atlas/api/lib/plugins/tools", () => ({
   setDialectHints: () => {},
 }));
 
-mock.module("@atlas/api/lib/residency/readonly", () => ({
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: mock(async () => false),
 }));
 
 // Billing/abuse/plan gate — allow by default; the resume route runs the same
 // gate as the chat route, so without this it fails closed against a real DB.
 const mockCheckAgentBillingGate = mock(() => Promise.resolve({ allowed: true as const }));
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   ...realAgentGate,
   checkAgentBillingGate: mockCheckAgentBillingGate,
 }));

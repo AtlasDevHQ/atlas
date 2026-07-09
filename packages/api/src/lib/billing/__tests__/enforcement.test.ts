@@ -56,7 +56,7 @@ let mockConnectCount = 0;
 /** Structured `log.error` calls captured for the #3428 bypass-alert assertions. */
 let errorLogs: Array<{ ctx: unknown; msg: unknown }> = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getWorkspaceDetails: async (orgId: string) => {
     if (mockWorkspaceDetailsShouldThrow) throw new Error("db error");
@@ -91,7 +91,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
-mock.module("@atlas/api/lib/metering", () => ({
+void mock.module("@atlas/api/lib/metering", () => ({
   getCurrentPeriodUsage: async () => {
     if (mockUsageShouldThrow) throw new Error("metering error");
     // Dollar enforcement (#4038) denominates on `costUsd`; the band cases below
@@ -122,7 +122,7 @@ const captureLogger = {
   level: "info",
 };
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => captureLogger,
   getLogger: () => captureLogger,
   getRequestContext: () => null,

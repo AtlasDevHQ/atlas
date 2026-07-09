@@ -16,12 +16,12 @@
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
   getRequestContext: () => undefined,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_n: string, _a: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));

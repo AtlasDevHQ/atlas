@@ -22,7 +22,7 @@ let mockInternalQueryResult: unknown[] = [];
 
 // Mock ONLY internal DB — leave secret-encryption intact so the real
 // AES-GCM surface is exercised.
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: mock((sql: string, params: unknown[] = []) => {
     capturedQueries.push({ sql, params });
@@ -39,7 +39,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 

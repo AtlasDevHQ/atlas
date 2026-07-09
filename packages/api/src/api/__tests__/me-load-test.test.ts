@@ -41,7 +41,7 @@ const logAdminAction = mock((..._args: unknown[]) => {});
 
 const { errorMessage: realErrorMessage } = await import("@atlas/api/lib/audit/error-scrub");
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction,
   logAdminActionAwait,
   errorMessage: realErrorMessage,
@@ -51,7 +51,7 @@ mock.module("@atlas/api/lib/audit", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/audit/admin", () => ({
+void mock.module("@atlas/api/lib/audit/admin", () => ({
   logAdminAction,
   logAdminActionAwait,
 }));

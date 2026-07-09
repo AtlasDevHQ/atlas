@@ -40,7 +40,7 @@ import { mock } from "bun:test";
 // fine for the existing suites but blocks the regression test for the
 // "platform-admin says active while chat is suspended" bug.
 const abuseStatusByWorkspace = new Map<string, AbuseLevel>();
-mock.module("@atlas/api/lib/security/abuse", () => ({
+void mock.module("@atlas/api/lib/security/abuse", () => ({
   listFlaggedWorkspaces: mock(() => []),
   reinstateWorkspace: mock(() => "warning" as const),
   getAbuseEvents: mock(async () => ({ events: [], status: "ok" })),
@@ -66,7 +66,7 @@ mock.module("@atlas/api/lib/security/abuse", () => ({
   abuseCleanupTick: mock(() => {}),
   ABUSE_CLEANUP_INTERVAL_MS: 300_000,
 }));
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mock(() => {}),
   logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: {
@@ -94,7 +94,7 @@ const stubLogger = {
   fatal: () => {},
   trace: () => {},
 };
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => stubLogger,
   getLogger: () => stubLogger,
   setLogLevel: () => false,

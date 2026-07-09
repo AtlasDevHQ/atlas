@@ -25,7 +25,7 @@ const { MockInternalDB, makeMockInternalDBShimLayer } = await import(
   "@atlas/api/testing/api-test-mocks"
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
   makeInternalDBShimLayer: () =>
     makeMockInternalDBShimLayer(mockInternalQuery, {
@@ -35,7 +35,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string, _orgId?: string) =>
     key === "ATLAS_DEMO_INDUSTRY" ? demoIndustryFixture : undefined,
   getSetting: () => undefined,

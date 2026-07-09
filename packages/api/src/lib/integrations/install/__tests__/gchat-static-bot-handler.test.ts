@@ -41,7 +41,7 @@ import type { WorkspaceId } from "@useatlas/types";
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
   () => Promise.resolve([]),
 );
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -69,7 +69,7 @@ const mockCheckChatLimitAndInstall: Mock<
 // Mock every value export — a partial `mock.module()` causes a `SyntaxError`
 // in other files importing the missing exports (per CLAUDE.md "Mock all
 // exports"). Only `checkChatIntegrationLimitAndInstall` is exercised here.
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
   CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
   checkResourceLimit: () => Promise.resolve({ allowed: true }),
@@ -112,7 +112,7 @@ const FAKE_SERVICE_ACCOUNT = {
 
 function setFetchOk(payload: Record<string, unknown> = { messageIds: ["msg-001"] }): void {
   globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-    fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+    fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
     return new Response(JSON.stringify(payload), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -126,7 +126,7 @@ function setFetchPubsubError(
   httpStatus = 403,
 ): void {
   globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
-    fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+    fetchCalls.push({ url: (typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url), ...(init ? { init } : {}) });
     return new Response(
       JSON.stringify({ error: { code: httpStatus, message, status } }),
       {
@@ -443,7 +443,7 @@ describe("GchatStaticBotInstallHandler.confirmInstall — reachability verificat
     expect(headers.Authorization || headers.authorization).toMatch(
       /^Bearer ya29\.fake-access-token-for-test$/,
     );
-    const body = JSON.parse(String(fetchCalls[0].init?.body ?? "{}")) as {
+    const body = JSON.parse((fetchCalls[0].init?.body ?? "{}") as string) as {
       messages: Array<{ data: string; attributes?: Record<string, string> }>;
     };
     expect(body.messages).toHaveLength(1);

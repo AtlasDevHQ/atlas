@@ -22,7 +22,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   Promise.resolve([]),
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),

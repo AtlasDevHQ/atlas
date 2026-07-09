@@ -41,7 +41,7 @@ const mockInternalExecute = mock((_sql: string, _params?: unknown[]) => {});
 /** Controls the activeOrganizationId returned by the mocked getRequestContext. */
 let mockActiveOrgId: string | undefined;
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntityRows: mockListEntities,
   listEntitiesWithOverlay: mock(() => Promise.resolve([])),
   listEntities: mock(async () => []),
@@ -52,7 +52,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   bulkUpsertEntities: mockBulkUpsertEntities,
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: mockInternalQuery,
   internalExecute: mockInternalExecute,
@@ -79,11 +79,11 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: mock(async () => 0),
 }));
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => null,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -112,7 +112,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   redactPaths: [],
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /^$/,
   maskConnectionUrl: (url: string) => url,
 }));

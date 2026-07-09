@@ -17,11 +17,11 @@ let mockHasInternalDB = true;
 // Post-#2571 (slice 9/11 of #2017) `lib/auth/server.ts` imports
 // `isEnterpriseEnabled` from `lib/effect/enterprise-config` to break
 // the static core → `@atlas/ee` edge.
-mock.module("@atlas/api/lib/effect/enterprise-config", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-config", () => ({
   isEnterpriseEnabled: () => mockEnterpriseEnabled,
 }));
 
-mock.module("@atlas/ee/index", () => ({
+void mock.module("@atlas/ee/index", () => ({
   isEnterpriseEnabled: () => mockEnterpriseEnabled,
   getEnterpriseLicenseKey: () => undefined,
   EnterpriseError: class extends Error { override name = "EnterpriseError"; },
@@ -38,7 +38,7 @@ const mockDbQuery: Mock<(sql: string, params?: unknown[]) => Promise<void>> = mo
   () => Promise.resolve(),
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: mockInternalQuery,
   internalExecute: mock(() => {}),
@@ -96,7 +96,7 @@ const mockCheckResourceLimit: Mock<(orgId: string | undefined, resource: string,
   () => Promise.resolve({ allowed: true }),
 );
 
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkResourceLimit: mockCheckResourceLimit,
   checkPlanLimits: async () => ({ allowed: true }),
   getCachedWorkspace: async () => null,
@@ -114,7 +114,7 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
 const mockLogWarn: Mock<(...args: unknown[]) => void> = mock(() => {});
 const mockLogInfo: Mock<(...args: unknown[]) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: mockLogInfo,
     warn: mockLogWarn,

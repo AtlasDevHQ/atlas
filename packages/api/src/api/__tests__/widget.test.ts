@@ -29,11 +29,11 @@ const mockedFs = {
     return (realFs.readFileSync as (...a: unknown[]) => unknown)(path, ...args);
   },
 };
-mock.module("node:fs", () => ({ ...mockedFs, default: mockedFs }));
+void mock.module("node:fs", () => ({ ...mockedFs, default: mockedFs }));
 
 // Capture Pino warn calls from the widget module for observability tests.
 const capturedWarnings: string[] = [];
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: (...args: unknown[]) => {

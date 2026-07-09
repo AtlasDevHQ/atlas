@@ -26,7 +26,7 @@ import type { AuthResult } from "@atlas/api/lib/auth/types";
 
 let fakeAuth: (AuthResult & { authenticated: true }) | null = null;
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () =>
     Promise.resolve(
       fakeAuth ?? { authenticated: false, status: 401 as const, error: "anonymous" },
@@ -37,12 +37,12 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   rateLimitCleanupTick: () => {},
 }));
 
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: async () => null,
   isStrictRoutingEnabled: () => false,
 }));
 
-mock.module("@atlas/api/lib/residency/readonly", () => ({
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: async () => false,
 }));
 
@@ -53,7 +53,7 @@ mock.module("@atlas/api/lib/residency/readonly", () => ({
 // the module's load-time shape complete). `ipAllowed` toggles the
 // `ip_not_allowed` 403 branch; default-allow keeps every other test green.
 let ipAllowed = true;
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   runEnterprise: async () => ({ allowed: ipAllowed }),
   EnterpriseLayer: undefined,
   getEnterpriseRuntime: () => null,
@@ -63,7 +63,7 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
 // origin=cli + actor.kind audit triple (ADR-0027 sub-decision 6) actually flows.
 let capturedContexts: Array<Record<string, unknown>> = [];
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -89,7 +89,7 @@ mock.module("@atlas/api/lib/logger", () => {
 let exploreImpl: (args: { command: string }) => Promise<string> = async () => "(no output)";
 let exploreCalls: Array<{ command: string }> = [];
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   explore: {
     description: "explore",
     execute: (args: { command: string }) => {

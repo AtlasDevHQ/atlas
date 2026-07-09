@@ -44,7 +44,7 @@ const mockInternalQuery = mock(async (sql: string, params?: unknown[]) => {
   return [];
 });
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: mockInternalQuery,
   internalExecute: async () => {},

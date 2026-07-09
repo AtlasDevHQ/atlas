@@ -361,7 +361,7 @@ describe("runBuiltinDatasourceCatalogSeedBoot (discriminated outcomes)", () => {
   // Track which `db/internal` shape we want for the current test.
   let hasInternalDBReturns = true;
 
-  mock.module("@atlas/api/lib/db/internal", () => ({
+  void mock.module("@atlas/api/lib/db/internal", () => ({
     hasInternalDB: () => hasInternalDBReturns,
     getInternalDB: () => ({ query: mockQuery }),
     // Re-export the encryption-key reset so the resolver test file's

@@ -30,7 +30,7 @@ const realInternal = await import("@atlas/api/lib/db/internal");
 let internalRows: Array<Record<string, unknown>> = [];
 const mockInternalQuery = mock<(...a: unknown[]) => Promise<unknown>>(async () => internalRows);
 const mockHasInternalDB = mock<() => boolean>(() => true);
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   internalQuery: mockInternalQuery,
   hasInternalDB: mockHasInternalDB,
@@ -39,13 +39,13 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // `provisionDatasource`'s plugin path never touches the ConnectionRegistry, but
 // `mcp-lifecycle` imports it at module load — mock it so no real pg pool spins.
 const registerSpy = mock<(id: string, cfg: unknown) => void>(() => {});
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({ connections: { register: registerSpy } }),
 );
 
 // catalogSlug → dbType: clickhouse maps 1:1; an unknown slug throws (the real
 // resolver's contract), which `resolveProvisionCapability` turns into `unsupported`.
-mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
+void mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
   catalogSlugToDbType: (slug: string) => {
     if (slug === "clickhouse") return "clickhouse";
     if (slug === "snowflake") return "snowflake";
@@ -66,7 +66,7 @@ let probeOutcome:
 const probeSpy = mock<(dbType: string, cfg: Record<string, unknown>) => Promise<unknown>>(
   async () => probeOutcome,
 );
-mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
+void mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   findDatasourcePluginConnection: mock(async () => pluginConn),
   isHandlerManagedDatasourceDbType: (dbType: string) => dbType === "salesforce",
   probePluginDatasourceConnection: probeSpy,
@@ -81,7 +81,7 @@ mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
 // real module so the form-install handler graph (pulled transitively via the
 // REST install seam) keeps every named export it imports.
 const realSecrets = await import("@atlas/api/lib/plugins/secrets");
-mock.module("@atlas/api/lib/plugins/secrets", () => ({
+void mock.module("@atlas/api/lib/plugins/secrets", () => ({
   ...realSecrets,
   parseConfigSchema: () => ({ state: "parsed", fields: [] }),
   decryptSecretFields: (c: Record<string, unknown>) => c,
@@ -105,7 +105,7 @@ const installDatasourceSpy = mock((_org: unknown, _slug: string, _opts: unknown)
 const InstallerTag = Context.GenericTag<{ installDatasource: typeof installDatasourceSpy }>(
   "WorkspaceInstaller",
 );
-mock.module("@atlas/api/lib/effect/workspace-installer", () => ({
+void mock.module("@atlas/api/lib/effect/workspace-installer", () => ({
   WorkspaceInstaller: InstallerTag,
   WorkspaceInstallerLive: Layer.succeed(InstallerTag, { installDatasource: installDatasourceSpy }),
   mapInstallError: (e: { message?: string }) => ({

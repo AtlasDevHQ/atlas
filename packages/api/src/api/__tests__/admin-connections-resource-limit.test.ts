@@ -35,7 +35,7 @@ const mockCheckResourceLimit = mock<
   (orgId: string | undefined, resource: string, count: number) => Promise<ResourceLimitResult>
 >(async () => ({ allowed: true }));
 
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkResourceLimit: mockCheckResourceLimit,
   getCachedWorkspace: mock(async () => null),
   invalidatePlanCache: mock(() => {}),

@@ -15,7 +15,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, mock, type Mock
 const mockReadCredentialBundle: Mock<(ws: string, cat: string) => Promise<unknown>> = mock(() =>
   Promise.resolve(null),
 );
-mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
+void mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
   readCredentialBundle: mockReadCredentialBundle,
   saveCredentialBundle: mock(() => Promise.resolve()),
   deleteCredentialBundle: mock(() => Promise.resolve(false)),
@@ -47,7 +47,7 @@ class TestReconnectError extends Error {
     this.upstreamError = args.upstreamError;
   }
 }
-mock.module("@atlas/api/lib/integrations/install/salesforce-token-refresh", () => ({
+void mock.module("@atlas/api/lib/integrations/install/salesforce-token-refresh", () => ({
   refreshSalesforceToken: mockRefreshSalesforceToken,
   IntegrationReconnectRequiredError: TestReconnectError,
   // Deprecated alias still exported by the real module (#2708) — mock the
@@ -74,7 +74,7 @@ class MockJsforceConnection {
   describeGlobal = mockDescribeGlobal;
   describe = mockDescribe;
 }
-mock.module("jsforce", () => ({
+void mock.module("jsforce", () => ({
   default: { Connection: MockJsforceConnection },
   Connection: MockJsforceConnection,
 }));
@@ -85,7 +85,7 @@ mock.module("jsforce", () => ({
 const mockEvict: Mock<(workspaceId: string, catalogId: string) => Promise<boolean>> = mock(() =>
   Promise.resolve(true),
 );
-mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
+void mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
   lazyPluginLoader: {
     evict: mockEvict,
     hasBuilder: mock(() => false),

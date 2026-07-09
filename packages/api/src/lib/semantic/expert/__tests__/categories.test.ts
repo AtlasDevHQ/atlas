@@ -131,7 +131,7 @@ describe("findCoverageGaps", () => {
 
     const results = findCoverageGaps(ctx);
     // Both groups get a proposal (profile-driven analyzer visits all copies)…
-    expect(results.map((r) => r.group).toSorted()).toEqual(["eu", "us"]);
+    expect(results.map((r) => r.group as string).toSorted()).toEqual(["eu", "us"]);
     // …but only EU's is marked stale by the EU-scoped rejection.
     expect(results.find((r) => r.group === "eu")?.staleness).toBe(0.8);
     expect(results.find((r) => r.group === "us")?.staleness).toBe(0);

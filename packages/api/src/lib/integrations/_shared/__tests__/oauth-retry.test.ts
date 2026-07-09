@@ -21,7 +21,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, mock, type Mock
 const mockEvict: Mock<(workspaceId: string, catalogId: string) => Promise<boolean>> = mock(() =>
   Promise.resolve(true),
 );
-mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
+void mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
   lazyPluginLoader: {
     evict: mockEvict,
     hasBuilder: mock(() => false),

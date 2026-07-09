@@ -18,7 +18,7 @@ let mockQueryCallCount = 0;
 let lastSql: string | undefined;
 
 const actualInternal = await import("@atlas/api/lib/db/internal");
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...actualInternal,
   internalQuery: async (sql: string) => {
     mockQueryCallCount++;

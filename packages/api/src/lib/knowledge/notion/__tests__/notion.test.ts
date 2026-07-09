@@ -65,13 +65,13 @@ function makeFakeNotion(state: FakeNotionState) {
     new Response(JSON.stringify(body), { status });
 
   const fetchImpl = asFetch(async (input, init) => {
-    const url = new URL(String(input));
+    const url = new URL((typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url));
     const path = url.pathname.replace(/^\/v1/, "");
     const method = init?.method ?? "GET";
     const headers = Object.fromEntries(
       Object.entries((init?.headers ?? {}) as Record<string, string>),
     );
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    const body = init?.body ? JSON.parse((init.body as string)) : undefined;
     calls.push({ method, path, headers, body });
 
     if (state.rateLimit && state.rateLimit > 0) {
@@ -450,7 +450,7 @@ describe("NotionVendorClient.fetchAll (reconciliation)", () => {
     const { fetchImpl } = makeFakeNotion({});
     // Override: a search response that claims has_more but returns no cursor.
     const badFetch = asFetch(async (input) => {
-      const path = new URL(String(input)).pathname.replace(/^\/v1/, "");
+      const path = new URL((typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)).pathname.replace(/^\/v1/, "");
       if (path === "/search") {
         return new Response(
           JSON.stringify({ object: "list", results: [], has_more: true, next_cursor: null }),
@@ -551,10 +551,10 @@ describe("NotionVendorClient.fetchChanges (incremental)", () => {
     });
     const searchBodies: Array<Record<string, unknown> | undefined> = [];
     const pagedFetch = asFetch(async (input, init) => {
-      const path = new URL(String(input)).pathname.replace(/^\/v1/, "");
+      const path = new URL((typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)).pathname.replace(/^\/v1/, "");
       if (path === "/search") {
         const body = init?.body
-          ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+          ? (JSON.parse((init.body as string)) as Record<string, unknown>)
           : undefined;
         searchBodies.push(body);
         const first = body?.start_cursor === undefined;

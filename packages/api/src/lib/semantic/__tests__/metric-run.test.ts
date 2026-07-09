@@ -18,7 +18,7 @@ let groupForConnection: Record<string, string | undefined> = {};
 // When set, internalQuery throws — simulating a transient internal-DB fault so
 // the resolver's degraded-routing path (#4109) can be exercised.
 let throwOnQuery: Error | null = null;
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: async (_sql: string, params: unknown[]) => {
     if (throwOnQuery) throw throwOnQuery;

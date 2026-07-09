@@ -20,7 +20,7 @@ let internalDBPresent = true;
 let queryRows: Record<string, unknown>[] = [];
 // Full internal-DB mock via the sanctioned helper (mock-all-exports
 // discipline) — a new export on db/internal must not break this file's load.
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({
     internalQuery: () => Promise.resolve(queryRows),
     hasInternalDB: () => internalDBPresent,

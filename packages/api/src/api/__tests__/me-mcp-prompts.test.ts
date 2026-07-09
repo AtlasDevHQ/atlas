@@ -62,7 +62,7 @@ let mockListThrow: Error | null = null;
 // `SyntaxError: Export named '<x>' not found` in the index startup log
 // (visible but non-fatal) and could break unrelated test files that
 // share the loader cache.
-mock.module("@atlas/mcp/prompts/listing", () => ({
+void mock.module("@atlas/mcp/prompts/listing", () => ({
   listMcpPrompts: async (opts: { workspaceId?: string }) => {
     listCalls.push({ workspaceId: opts.workspaceId });
     if (mockListThrow) throw mockListThrow;

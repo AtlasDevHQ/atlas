@@ -25,7 +25,7 @@ const mockSaveCredentialBundle: Mock<(ws: string, cat: string, bundle: unknown) 
   Promise.resolve(),
 );
 
-mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
+void mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
   readCredentialBundle: mockReadCredentialBundle,
   saveCredentialBundle: mockSaveCredentialBundle,
   deleteCredentialBundle: mock(() => Promise.resolve(false)),
@@ -34,7 +34,7 @@ mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(() =>
   Promise.resolve([]),
 );
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),

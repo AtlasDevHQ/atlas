@@ -32,15 +32,15 @@ const mockBillingGate: Mock<() => Promise<{ allowed: boolean; errorCode?: string
 // Capture the bound context so we can assert the actor identity + origin.
 let capturedContext: Record<string, unknown> | undefined;
 
-mock.module("@atlas/api/lib/agent", () => ({ runAgent: mockRunAgent }));
-mock.module("@atlas/api/lib/durable-resume", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({ runAgent: mockRunAgent }));
+void mock.module("@atlas/api/lib/durable-resume", () => ({
   prepareResume: mockPrepareResume,
   finishResume: mockFinishResume,
 }));
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockBillingGate,
 }));
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
   withRequestContext: async (ctx: Record<string, unknown>, fn: () => Promise<unknown>) => {
     capturedContext = ctx;

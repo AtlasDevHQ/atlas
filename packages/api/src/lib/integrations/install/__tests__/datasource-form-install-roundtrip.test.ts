@@ -48,7 +48,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   },
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
@@ -65,7 +65,7 @@ const mockLogger = {
   silent: () => {},
   child: () => mockLogger,
 };
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => mockLogger,
   getLogger: () => mockLogger,
   withRequestContext: <T>(_ctx: unknown, fn: () => T) => fn(),
@@ -91,7 +91,7 @@ let registeredPlugin: {
   validate?: unknown;
 } | null = null;
 
-mock.module("@atlas/api/lib/db/connection", () => ({
+void mock.module("@atlas/api/lib/db/connection", () => ({
   connections: {
     hasDirectForWorkspace: mock(() => false),
     registerDirectForWorkspace: mock(
@@ -139,7 +139,7 @@ const fakeClickhousePlugin = {
     },
   },
 };
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: { getAll: () => [fakeClickhousePlugin] },
 }));
 

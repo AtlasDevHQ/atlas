@@ -35,7 +35,7 @@ const mocks = createApiTestMocks({
 
 let mockConfigOverride: Record<string, unknown> | null = null;
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfigOverride,
   defineConfig: (c: unknown) => c,
 }));
@@ -147,7 +147,7 @@ const saasGuardDefaultImpl = () =>
   (mockConfigOverride as { deployMode?: string } | null)?.deployMode === "saas";
 const mockIsSaasModeForGuard = mock(saasGuardDefaultImpl);
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: mockGetSettingsForAdmin,
   getSettingsRegistry: mockGetSettingsRegistry,
   getSettingDefinition: mockGetSettingDefinition,

@@ -39,7 +39,7 @@ const mocks = createApiTestMocks({
 // can assert the route wiring. Registered before importing the app so the
 // route picks up the spy (later mock.module wins). All named exports mocked.
 const invalidatePatternCache = mock((_orgId: string | null) => {});
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+void mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   buildLearnedPatternsSection: async () => "",
   getRelevantPatterns: async () => [],
   buildRetrievalQuery: () => "",

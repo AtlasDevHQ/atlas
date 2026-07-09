@@ -22,7 +22,7 @@ let invalidatedOrgs: Array<string | null> = [];
 let failPromote = false;
 let failDemote = false;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => dbAvailable,
   getInternalDB: () => ({ query: async () => ({ rows: [] }), end: async () => {}, on: () => {} }),
   internalQuery: async () => settingsRows,
@@ -49,13 +49,13 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // invalidatePatternCache (in runPromoteDecayTick), which we observe here. It no
 // longer reads any default constant from pattern-cache (those moved to
 // learn-settings, #3722), so this mock stubs only the invalidation hook.
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+void mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   invalidatePatternCache: (orgId: string | null) => {
     invalidatedOrgs.push(orgId);
   },
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 

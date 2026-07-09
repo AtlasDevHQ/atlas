@@ -84,7 +84,7 @@ async function mutexStripeSubscriptionLock<T>(
   }
 }
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery: mockInternalQuery }),
   updateWorkspacePlanTier: mockUpdateWorkspacePlanTier,
   updateWorkspaceStatus: mockUpdateWorkspaceStatus,
@@ -92,7 +92,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   withStripeSubscriptionLock: mutexStripeSubscriptionLock,
 }));
 
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   runEnterprise: async () => undefined,
   getEnterpriseRuntime: () => ({ runPromise: async () => undefined }),
   EnterpriseLayer: {},

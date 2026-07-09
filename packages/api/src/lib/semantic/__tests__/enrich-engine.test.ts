@@ -38,8 +38,8 @@ const mockGenerateText = mock(async ({ prompt }: GenArgs) => {
   return { text, usage: { promptTokens: 11, completionTokens: 22, totalTokens: 33 } };
 });
 
-mock.module("ai", () => ({ ...aiActual, generateText: mockGenerateText }));
-mock.module("@atlas/api/lib/providers", () => ({ ...providersActual, getModel: () => ({ modelId: "test-model" }) }));
+void mock.module("ai", () => ({ ...aiActual, generateText: mockGenerateText }));
+void mock.module("@atlas/api/lib/providers", () => ({ ...providersActual, getModel: () => ({ modelId: "test-model" }) }));
 
 const { enrichSemanticLayer, enrichEntity, enrichEntityYaml } = await import("../enrich");
 

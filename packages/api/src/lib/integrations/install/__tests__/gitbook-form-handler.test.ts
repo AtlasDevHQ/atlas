@@ -26,8 +26,8 @@ const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<
   throw new Error(`unexpected SQL: ${sql.slice(0, 50)}`);
 });
 
-mock.module("@atlas/api/lib/db/internal", () => buildInternalDbMockDefaults({ internalQuery }));
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/db/internal", () => buildInternalDbMockDefaults({ internalQuery }));
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
@@ -36,7 +36,7 @@ mock.module("@atlas/api/lib/logger", () => {
 const saveSyncCredential = mock(async (_w: string, _c: string, _s: string) => {});
 const deleteSyncCredential = mock(async (_w: string, _c: string) => {});
 const readSyncCredential = mock(async () => null);
-mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
+void mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
   SYNC_CREDENTIAL_UPSERT_SQL: "INSERT ...",
   saveSyncCredential,
   deleteSyncCredential,
@@ -56,7 +56,7 @@ const VALID = { space_id: "space-123", api_token: "gitbook-token" };
 /** A fixture verify-fetch: the space lookup returns an object (or a status). */
 function verifyFetch(opts: { spaceId?: string | null; status?: number } = {}): typeof fetch {
   const impl = async (input: string | URL | Request): Promise<Response> => {
-    const url = new URL(typeof input === "string" ? input : input.toString());
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
     if (opts.status && opts.status !== 200) return new Response("", { status: opts.status });
     if (/\/v1\/spaces\/[^/]+$/.test(url.pathname)) {
       const id = opts.spaceId === undefined ? "space-123" : opts.spaceId;

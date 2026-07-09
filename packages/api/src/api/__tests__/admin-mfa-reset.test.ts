@@ -43,7 +43,7 @@ const mocks = createApiTestMocks({
 // can flip without rebuilding the whole mock graph. Later mock.module
 // wins, so this overrides the factory's detect stub.
 let currentAuthMode = "managed";
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => currentAuthMode,
   resetAuthModeCache: () => {},
 }));
@@ -59,7 +59,7 @@ interface AuditEntry {
 
 const mockLogAdminAction: Mock<(entry: AuditEntry) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
@@ -228,7 +228,7 @@ describe("admin reset-mfa — POST /users/:id/reset-mfa", () => {
         const m = q.sql.match(/(?:DELETE\s+FROM|UPDATE)\s+"?(\w+)"?/i);
         return m ? m[1] : null;
       });
-    expect([...new Set(tablesTouched)].sort()).toEqual([
+    expect(([...new Set(tablesTouched)] as string[]).sort()).toEqual([
       "passkey",
       "twoFactor",
       "user",

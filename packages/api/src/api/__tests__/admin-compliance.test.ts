@@ -51,7 +51,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
@@ -60,12 +60,12 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "managed",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   getInternalDB: () => ({
     query: () => Promise.resolve({ rows: [] }),
@@ -86,7 +86,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalExecute: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -111,7 +111,7 @@ interface CapturedAuditEntry {
 
 const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mockLogAdminAction,
   logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
@@ -152,7 +152,7 @@ const mockInvalidate: Mock<(orgId: string) => void> = mock(() => {});
 // both are already real classes from `@atlas/api/lib/compliance/errors`,
 // re-exporting through the mock keeps semantics identical and gives a
 // single place to swap if the test wants to inject a fake class later.
-mock.module("@atlas/api/lib/compliance/errors", () => ({
+void mock.module("@atlas/api/lib/compliance/errors", () => ({
   ComplianceError: RealComplianceError,
   ReportError: RealReportError,
 }));
@@ -161,7 +161,7 @@ mock.module("@atlas/api/lib/compliance/errors", () => ({
 // reaches the masking + report functions through `yield* MaskingPolicy`
 // / `yield* ComplianceReports`. `EnterpriseLayer` lazy-imports this
 // module, so the test's mocked aggregator wins over the no-op default.
-mock.module("@atlas/ee/layers", () => ({
+void mock.module("@atlas/ee/layers", () => ({
   EELayer: Layer.unwrapEffect(
     Effect.sync(() => {
       // oxlint-disable-next-line @typescript-eslint/no-require-imports
@@ -197,11 +197,11 @@ mock.module("@atlas/ee/layers", () => ({
 // Keep legacy `@atlas/ee/compliance/*` module mocks as no-op stubs for
 // any transitive EE re-export that still resolves them. Production code
 // no longer hits these paths post-#2566.
-mock.module("@atlas/ee/compliance/masking", () => ({
+void mock.module("@atlas/ee/compliance/masking", () => ({
   ComplianceError: RealComplianceError,
 }));
 
-mock.module("@atlas/ee/compliance/reports", () => ({
+void mock.module("@atlas/ee/compliance/reports", () => ({
   ReportError: RealReportError,
 }));
 

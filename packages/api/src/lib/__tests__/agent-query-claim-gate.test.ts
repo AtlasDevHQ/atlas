@@ -18,7 +18,7 @@ const mockRunAgent = mock(async () => ({
   totalUsage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
 }));
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mockRunAgent,
 }));
 
@@ -47,7 +47,7 @@ type GateResult =
 let gateResult: GateResult = { allowed: true };
 const mockCheckAgentBillingGate = mock(async (_orgId: string | undefined) => gateResult);
 
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockCheckAgentBillingGate,
   BillingBlockedError: BillingBlockedErrorStub,
 }));
@@ -82,7 +82,7 @@ type ClaimResult =
 let claimResult: ClaimResult = { allowed: true };
 const mockCheckClaimGate = mock(async (_orgId: string | undefined) => claimResult);
 
-mock.module("@atlas/api/lib/billing/claim-gate", () => ({
+void mock.module("@atlas/api/lib/billing/claim-gate", () => ({
   checkClaimGate: mockCheckClaimGate,
   ClaimRequiredError: ClaimRequiredErrorStub,
   ClaimCheckFailedError: ClaimCheckFailedErrorStub,

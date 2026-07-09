@@ -25,7 +25,7 @@ import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // Only `orders` is whitelisted. `secrets` is the non-whitelisted probe table.
 const whitelistedTables = new Set(["orders"]);
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => whitelistedTables,
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -47,7 +47,7 @@ const mockDBConnection = {
 // custom-validator branch is the ONLY thing that skips the whitelist.
 let registeredValidator: ((sql: string) => { valid: boolean; reason?: string }) | undefined;
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnection,
     connections: {
@@ -68,36 +68,36 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/auth/audit", () => ({ logQueryAudit: () => {} }));
+void mock.module("@atlas/api/lib/auth/audit", () => ({ logQueryAudit: () => {} }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /password|secret_value/i,
   maskConnectionUrl: (url: string) => url,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_name: string, _attrs: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
+void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Effect type is complex to express in mock
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   cacheEnabled: () => false,
   getCache: () => ({ get: () => null, set: () => {} }),
   buildCacheKey: () => "",
   getDefaultTtl: () => 60000,
 }));
 
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
   dispatchMutableHook: async (_name: string, ctx: { sql: string }) => ctx.sql,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
   getRequestContext: () => ({
     requestId: "test-ac4",
@@ -107,7 +107,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 let mockSettingValues: Record<string, string | undefined> = {};
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string) => mockSettingValues[key] ?? undefined,
   getSettingAuto: (key: string) => mockSettingValues[key] ?? undefined,
   getSettingLive: async (key: string) => mockSettingValues[key] ?? undefined,
@@ -122,7 +122,7 @@ mock.module("@atlas/api/lib/settings", () => ({
 }));
 
 // No RLS configured — keeps the focus on the whitelist branch.
-mock.module("@atlas/api/lib/config", () => ({ getConfig: () => ({}) }));
+void mock.module("@atlas/api/lib/config", () => ({ getConfig: () => ({}) }));
 
 const { runUserQueryPipeline } = await import("@atlas/api/lib/tools/sql");
 

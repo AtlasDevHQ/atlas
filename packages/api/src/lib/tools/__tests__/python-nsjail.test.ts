@@ -5,7 +5,7 @@ import { describe, expect, it, beforeEach, afterEach, mock } from "bun:test";
 // ---------------------------------------------------------------------------
 
 // Mock logger to avoid side effects
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     debug: () => {},
     info: () => {},
@@ -16,13 +16,13 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 // Mock tracing
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_name: string, _attrs: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
 // Mock fs operations to avoid real filesystem access
-mock.module("fs", () => ({
+void mock.module("fs", () => ({
   mkdirSync: () => undefined,
   writeFileSync: () => undefined,
   rmSync: () => undefined,
@@ -34,7 +34,7 @@ mock.module("fs", () => ({
 // "sandbox"-containing error instead of making a real API call to Vercel.
 // @vercel/sandbox is a real dep of @atlas/api, so dev machines that have
 // run `vercel login` would otherwise hit the live API and time out.
-mock.module("@vercel/sandbox", () => ({
+void mock.module("@vercel/sandbox", () => ({
   Sandbox: {
     create: () =>
       Promise.reject(new Error("Vercel sandbox stub: no real API call in tests")),

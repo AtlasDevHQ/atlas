@@ -102,7 +102,7 @@ const mockHealthCheck = mock(async (_id: string) => {
   return healthResult;
 });
 
-mock.module("@atlas/api/lib/db/connection", () => ({
+void mock.module("@atlas/api/lib/db/connection", () => ({
   connections: {
     register: mockRegister,
     unregister: mockUnregister,
@@ -122,7 +122,7 @@ mock.module("@atlas/api/lib/db/connection", () => ({
 // Plugin registry seam — the bridge lazy-imports this to find a datasource
 // plugin by dbType. `fakeDatasourcePlugins` is swapped per test.
 let fakeDatasourcePlugins: unknown[] = [];
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     getAll: () => fakeDatasourcePlugins,
   },

@@ -39,7 +39,7 @@ import {
 const mockLogWarn: Mock<(...args: unknown[]) => void> = mock(() => {});
 const mockLogInfo: Mock<(...args: unknown[]) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     warn: mockLogWarn,
     info: mockLogInfo,
@@ -70,7 +70,7 @@ const mockInternalQuery: Mock<
 > = mock(async () => []);
 const mockHasInternalDB: Mock<() => boolean> = mock(() => true);
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   internalQuery: (sql: string, params: unknown[]) =>
     mockInternalQuery(sql, params),

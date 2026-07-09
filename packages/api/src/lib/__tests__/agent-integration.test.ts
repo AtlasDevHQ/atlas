@@ -38,7 +38,7 @@ process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test
 
 let mockModel: InstanceType<typeof MockLanguageModelV3>;
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
   getProviderType: () => "anthropic" as const,
   getModelFromWorkspaceConfig: () => mockModel,
@@ -49,7 +49,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   isGatewayAnthropicModel: (modelId: string) => modelId.includes("anthropic") || modelId.includes("claude"),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -69,7 +69,7 @@ const mockDBConnectionObj = {
   query: (...args: [string, number?]) => mockDBQuery(...args),
   close: async () => {},
 };
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnectionObj,
     connections: {
@@ -85,7 +85,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
 // Mock just-bash to avoid OverlayFs/filesystem dependency in CI.
 // The mock Bash.exec() returns canned stdout for known commands and
 // simulates path-traversal rejection for `../` patterns.
-mock.module("just-bash", () => ({
+void mock.module("just-bash", () => ({
   Bash: class MockBash {
     constructor(_: unknown) {}
     async exec(command: string) {
@@ -118,7 +118,7 @@ mock.module("just-bash", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({ get: () => null, set: () => {}, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),
   buildCacheKey: () => "mock-key",
   cacheEnabled: () => false,

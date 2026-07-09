@@ -31,7 +31,7 @@ import {
 
 // ── Auth — admin shape so adminAuthPreamble admits the request ───────
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mock(() =>
     Promise.resolve({
       authenticated: true,
@@ -54,7 +54,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 
 // Misrouting — no-op for this end-to-end test; the dedicated 421
 // branch lives in `integrations.test.ts`.
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: () => Promise.resolve(null),
   isStrictRoutingEnabled: () => false,
   // `getApiRegion` is pulled transitively via the agent tool registry
@@ -67,7 +67,7 @@ mock.module("@atlas/api/lib/residency/misrouting", () => ({
 
 const warnCalls: unknown[][] = [];
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const warn = (...args: unknown[]) => {
     warnCalls.push(args);
@@ -82,7 +82,7 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: () => Effect.succeed({ allowed: true }),
 }));
 
@@ -139,7 +139,7 @@ const mockInternalQuery = mock(async (sql: string, _params?: unknown[]): Promise
   return [];
 });
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
   hasInternalDB: () => true,
   internalQuery: mockInternalQuery,
@@ -187,7 +187,7 @@ const mockDeleteSlackInstallation = mock(async (_teamId: string): Promise<void> 
   state.cacheClearedAt = Date.now();
 });
 
-mock.module("@atlas/api/lib/slack/store", () => ({
+void mock.module("@atlas/api/lib/slack/store", () => ({
   deleteInstallation: mockDeleteSlackInstallation,
   getInstallation: mock(() => Promise.resolve(null)),
   getInstallationByOrg: mock(() => Promise.resolve(null)),

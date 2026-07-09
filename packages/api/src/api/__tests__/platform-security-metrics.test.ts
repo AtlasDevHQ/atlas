@@ -35,7 +35,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
@@ -44,7 +44,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "managed",
   resetAuthModeCache: () => {},
 }));
@@ -57,7 +57,7 @@ let aggregateRows: unknown[] = [];
 let workspaceRows: unknown[] = [];
 let nextErr: Error | null = null;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({ query: () => Promise.resolve({ rows: [] }), end: async () => {}, on: () => {} }),
   internalQuery: async (sql: string, params: unknown[] = []) => {
@@ -72,7 +72,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   setWorkspaceRegion: mock(async () => {}),
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
   getRequestContext: () => null,

@@ -28,7 +28,7 @@ let MAX_BUNDLE_BYTES = 200_000;
 // runSyncAttempt (a settings-backend regression) for the never-throws pin.
 let LIMITS_THROW = false;
 
-mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
+void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   DEFAULT_INGEST_MAX_DOCS: 1000,
   DEFAULT_INGEST_MAX_DOC_BYTES: 1_000_000,
   DEFAULT_INGEST_MAX_BUNDLE_BYTES: 25_000_000,
@@ -52,7 +52,7 @@ const readSyncCredential = mock(async () => {
   if (CREDENTIAL_THROWS) throw new Error("decrypt boom");
   return CREDENTIAL;
 });
-mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
+void mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
   readSyncCredential,
   saveSyncCredential: async () => {},
   deleteSyncCredential: async () => {},
@@ -169,13 +169,13 @@ const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<
   throw new Error(`unexpected internalQuery SQL: ${sql.slice(0, 60)}`);
 });
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery }),
   hasInternalDB: () => HAS_INTERNAL_DB,
   getInternalDB: () => ({ connect: async () => fakeTxClient() }),
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
@@ -188,7 +188,7 @@ mock.module("@atlas/api/lib/logger", () => {
 // running the REAL module's fire-and-forget explore import as an untracked
 // side effect of every successful sync.
 const invalidateCalls: string[] = [];
-mock.module("@atlas/api/lib/semantic/sync", () => ({
+void mock.module("@atlas/api/lib/semantic/sync", () => ({
   // The ingestBundle seam busts only the knowledge subtree for plain syncs;
   // a full-root bust would come through invalidateOrgModeRoots. Both feed the
   // same counter — these tests assert THAT invalidation happened, not scope

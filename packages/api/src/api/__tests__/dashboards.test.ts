@@ -52,7 +52,7 @@ const capturingLogger = {
   bindings: () => ({}),
 };
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => capturingLogger,
   getLogger: () => capturingLogger,
   withRequestContext: <T>(_ctx: unknown, fn: () => T) => fn(),
@@ -83,7 +83,7 @@ const mockGetClientIP: Mock<(req: Request) => string | null> = mock(
   () => null,
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mockGetClientIP,
@@ -91,7 +91,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 
 // Skip EE IP allowlist check
 const { Effect: EffectLib } = await import("effect");
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: mock(() => EffectLib.succeed({ allowed: true })),
 }));
 
@@ -251,7 +251,7 @@ const mockRefreshDashboardCards = mock(
 // per CLAUDE.md ("Mock all exports — partial mocks cause SyntaxError").
 const realDashboards = await import("@atlas/api/lib/dashboards");
 
-mock.module("@atlas/api/lib/dashboards", () => ({
+void mock.module("@atlas/api/lib/dashboards", () => ({
   createDashboard: mockCreateDashboard,
   getDashboard: mockGetDashboard,
   listDashboards: mockListDashboards,
@@ -308,7 +308,7 @@ const mockPublishDraft = mock(
   (..._args: unknown[]): Promise<PublishResultT> =>
     Promise.resolve({ ok: true, opsApplied: 1, refreshCardIds: [] }),
 );
-mock.module("@atlas/api/lib/dashboard-versioning", () => ({
+void mock.module("@atlas/api/lib/dashboard-versioning", () => ({
   ...realVersioning,
   applyEditToDraft: mockApplyEditToDraft,
   loadDraft: mockLoadDraft,
@@ -331,7 +331,7 @@ const mockGetSessionTranscript = mock(
     Promise.resolve({ ok: false, reason: "not_found" }),
 );
 
-mock.module("@atlas/api/lib/bound-chat-context", () => ({
+void mock.module("@atlas/api/lib/bound-chat-context", () => ({
   bindConversationToDashboard: realBoundChatContext.bindConversationToDashboard,
   resolveBoundDashboard: realBoundChatContext.resolveBoundDashboard,
   listSessionsForDashboard: mockListSessionsForDashboard,
@@ -397,7 +397,7 @@ const mockExportDashboard = mock(
           },
     ),
 );
-mock.module("@atlas/api/lib/dashboard-screenshot", () => ({
+void mock.module("@atlas/api/lib/dashboard-screenshot", () => ({
   screenshotDashboard: mockScreenshotDashboard,
   exportDashboard: mockExportDashboard,
   invalidateDashboardScreenshot: () => {},
@@ -411,7 +411,7 @@ mock.module("@atlas/api/lib/dashboard-screenshot", () => ({
 
 // --- Other mocks required by app index.ts ---
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(() =>
     Promise.resolve({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
@@ -422,7 +422,7 @@ mock.module("@atlas/api/lib/agent", () => ({
   ),
 }));
 
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   listConversations: mock(() => Promise.resolve({ conversations: [], total: 0 })),
   getConversation: mock(() => Promise.resolve(null)),
   deleteConversation: mock(() => Promise.resolve(false)),
@@ -454,7 +454,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -466,7 +466,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
 }));
@@ -485,7 +485,7 @@ const mockRunUserQueryPipeline: Mock<(opts: { sql: string; connectionId?: string
     }) as UserQueryOutcomeMock,
 );
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   validateSQL: mock(async () => ({ valid: true, classification: { type: "select" } })),
   extractClassification: mock(() => ({ type: "select" })),
   parserDatabase: mock(() => "PostgreSQL"),
@@ -493,24 +493,24 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
   runUserQueryPipeline: mockRunUserQueryPipeline,
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mock(() => Promise.resolve([])),
   getStartupWarnings: () => [],
 }));
 
-mock.module("@atlas/api/lib/scheduler/engine", () => ({
+void mock.module("@atlas/api/lib/scheduler/engine", () => ({
   triggerTask: mock(() => Promise.resolve()),
   runTick: mock(() => Promise.resolve({ tasksFound: 0, tasksDispatched: 0, tasksCompleted: 0, tasksFailed: 0 })),
   getScheduler: () => ({ start: () => {}, stop: () => {}, isRunning: () => false }),
   _resetScheduler: () => {},
 }));
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: mock(() => ({})),
   loadConfig: mock(() => Promise.resolve({})),
   configFromEnv: mock(() => ({})),
@@ -524,7 +524,7 @@ import { createConnectionMock } from "@atlas/api/testing/connection";
 const mockIsConnectionVisibleInMode = mock(
   (..._args: unknown[]): Promise<boolean> => Promise.resolve(true),
 );
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({ isConnectionVisibleInMode: mockIsConnectionVisibleInMode }),
 );
 

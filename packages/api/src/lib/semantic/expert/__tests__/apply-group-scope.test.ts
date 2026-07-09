@@ -80,16 +80,16 @@ const syncEntityToDisk = mock(
 // Factories MUST be synchronous (bun loader deadlocks on an async mock.module
 // factory that awaits internally) — each returns a plain object referencing the
 // spies above.
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   getEntity,
   upsertEntityForGroup,
   createVersion,
   generateChangeSummary,
   AmbiguousEntityError,
 }));
-mock.module("@atlas/api/lib/semantic", () => ({ invalidateOrgWhitelist }));
-mock.module("@atlas/api/lib/semantic/sync", () => ({ syncEntityToDisk }));
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({ invalidateOrgWhitelist }));
+void mock.module("@atlas/api/lib/semantic/sync", () => ({ syncEntityToDisk }));
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 

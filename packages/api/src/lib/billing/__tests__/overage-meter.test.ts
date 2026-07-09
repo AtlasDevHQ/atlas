@@ -31,7 +31,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   () => Promise.resolve([]),
 );
 let hasDb = true;
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({
     internalQuery: mockInternalQuery,
     hasInternalDB: () => hasDb,
@@ -40,7 +40,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 // ── Mocked Stripe client (only the period sweep resolves it) ──────────────
 let stripeForSweep: Stripe | null = null;
-mock.module("@atlas/api/lib/billing/stripe-client", () => ({
+void mock.module("@atlas/api/lib/billing/stripe-client", () => ({
   getStripeClient: () => stripeForSweep,
   _resetStripeClientCache: () => {},
 }));
@@ -57,7 +57,7 @@ const stubLogger = {
   fatal: () => {},
   trace: () => {},
 };
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => stubLogger,
   getLogger: () => stubLogger,
   setLogLevel: () => false,

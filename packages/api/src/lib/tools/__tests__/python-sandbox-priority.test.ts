@@ -15,12 +15,12 @@
 import { describe, expect, it, beforeEach, afterEach, mock } from "bun:test";
 import { _setConfigForTest, _resetConfig, type ResolvedConfig } from "@atlas/api/lib/config";
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
   getRequestContext: () => undefined,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_n: string, _a: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
@@ -28,7 +28,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
 // Count sidecar dispatches so a pin that excludes the sidecar can prove Python
 // never touched it. Mock every export the import graph could reach.
 let sidecarExecCalls = 0;
-mock.module("@atlas/api/lib/tools/python-sidecar", () => ({
+void mock.module("@atlas/api/lib/tools/python-sidecar", () => ({
   executePythonViaSidecar: async () => {
     sidecarExecCalls += 1;
     return { success: true, output: "[sidecar]" };

@@ -27,7 +27,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
@@ -36,17 +36,17 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "simple-key",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mock(() => Promise.resolve([])),
   getStartupWarnings: mock(() => []),
 }));
 
-mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
+void mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
 
 // --- Internal DB mock ---
 
@@ -78,7 +78,7 @@ const mockInternalQuery: Mock<(...args: unknown[]) => Promise<unknown[]>> = mock
   () => Promise.resolve([]),
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getWorkspaceDetails: mockGetWorkspaceDetails,
   updateWorkspaceByot: mockUpdateWorkspaceByot,
@@ -108,7 +108,7 @@ const mockUsage = {
   periodSource: "utc-month" as const,
 };
 
-mock.module("@atlas/api/lib/metering", () => ({
+void mock.module("@atlas/api/lib/metering", () => ({
   getCurrentPeriodUsage: mock(() => Promise.resolve({ ...mockUsage })),
   logUsageEvent: () => {},
   aggregateUsageSummary: async () => {},
@@ -126,7 +126,7 @@ let mockSettingLiveValue: string | undefined = undefined;
 // default "continue"; a test sets "cutoff" to exercise the cutoff branch.
 let mockSpendPolicyValue: string | undefined = undefined;
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingLive: mock((key: string) =>
     Promise.resolve(
       key === "ATLAS_MODEL"
@@ -151,7 +151,7 @@ mock.module("@atlas/api/lib/settings", () => ({
 
 // --- Logger mock ---
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -164,7 +164,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // --- Semantic mock (required by some route imports) ---
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => [],
   loadSemanticLayer: () => {},
 }));

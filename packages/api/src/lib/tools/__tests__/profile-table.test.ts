@@ -23,7 +23,7 @@ let mockRequestContext:
   | undefined;
 
 const noopLog = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ ...noopLog, child: () => noopLog }),
   getLogger: () => ({ ...noopLog, child: () => noopLog }),
   withRequestContext: <T>(_ctx: unknown, fn: () => T) => fn(),
@@ -38,7 +38,7 @@ let whitelistedTables: Set<string>;
 let orgWhitelistedTables: Set<string>;
 const getOrgWhitelistedTablesSpy = mock(() => orgWhitelistedTables);
 const realSemantic = await import("@atlas/api/lib/semantic");
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   ...realSemantic,
   getOrgWhitelistedTables: getOrgWhitelistedTablesSpy,
   getWhitelistedTables: () => whitelistedTables,
@@ -47,7 +47,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
 // ── Mode-visibility gate, mutable per test ────────────────────────────
 let connectionVisible: boolean;
 const isConnectionVisibleInModeSpy = mock(async () => connectionVisible);
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({ isConnectionVisibleInMode: isConnectionVisibleInModeSpy }),
 );
 
@@ -80,7 +80,7 @@ function fakeConnection(dbType: string, profileResult: ProfilingResult | (() => 
 
 let resolvedCtx: ResolvedCtx;
 const resolveProfilingConnectionSpy = mock(async () => resolvedCtx);
-mock.module("@atlas/api/lib/datasources/profiling-connection", () => ({
+void mock.module("@atlas/api/lib/datasources/profiling-connection", () => ({
   resolveProfilingConnection: resolveProfilingConnectionSpy,
 }));
 

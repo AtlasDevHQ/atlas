@@ -17,7 +17,7 @@ import type { PluginLike, PluginContextLike } from "../registry";
 
 let testRegistry: PluginRegistry;
 
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     get size() { return testRegistry.size; },
     getAllHealthy: () => testRegistry.getAllHealthy(),
@@ -25,7 +25,7 @@ mock.module("@atlas/api/lib/plugins/registry", () => ({
   PluginRegistry,
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => null };

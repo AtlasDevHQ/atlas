@@ -28,7 +28,7 @@ const settings = new Map<string, string>();
 const workspaceSettings = new Map<string, string>();
 const wsKey = (key: string, orgId: string) => `${key}\0${orgId}`;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => hasInternalDB,
   internalExecute: () => {},
@@ -41,7 +41,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // The mock mirrors the real four-tier precedence the resolver relies on:
 // workspace override (key+orgId) > platform override (key) > registry default.
 const realSettings = await import("@atlas/api/lib/settings");
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   ...realSettings,
   getSettingAuto: (key: string, orgId?: string) =>
     (orgId !== undefined ? workspaceSettings.get(wsKey(key, orgId)) : undefined) ??

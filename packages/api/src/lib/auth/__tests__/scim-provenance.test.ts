@@ -26,7 +26,7 @@ const mockInternalQuery = mock(
   async (_sql: string, _params?: unknown[]): Promise<Record<string, unknown>[]> => [],
 );
 
-mock.module("@atlas/ee/index", () => ({
+void mock.module("@atlas/ee/index", () => ({
   isEnterpriseEnabled: () => mockEnterpriseEnabled,
 }));
 
@@ -42,7 +42,7 @@ mock.module("@atlas/ee/index", () => ({
 // afterAll; the `??=` here is the module-load contract, not teardown.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
-mock.module("@atlas/ee/layers", () => {
+void mock.module("@atlas/ee/layers", () => {
   // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
@@ -67,36 +67,36 @@ mock.module("@atlas/ee/layers", () => {
   };
 });
 
-mock.module("@atlas/api/lib/auth/auth-errors", () => ({
+void mock.module("@atlas/api/lib/auth/auth-errors", () => ({
   IPAllowlistError: class extends Error { public readonly _tag = "IPAllowlistError" as const; },
   SSOError: class extends Error { public readonly _tag = "SSOError" as const; },
   SSOEnforcementError: class extends Error { public readonly _tag = "SSOEnforcementError" as const; },
   SCIMError: class extends Error { public readonly _tag = "SCIMError" as const; },
 }));
-mock.module("@atlas/api/lib/residency/errors", () => ({
+void mock.module("@atlas/api/lib/residency/errors", () => ({
   ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
 }));
-mock.module("@atlas/api/lib/compliance/errors", () => ({
+void mock.module("@atlas/api/lib/compliance/errors", () => ({
   ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
   ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
 }));
-mock.module("@atlas/api/lib/model-routing/errors", () => ({
+void mock.module("@atlas/api/lib/model-routing/errors", () => ({
   ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
   ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
 }));
-mock.module("@atlas/api/lib/governance/errors", () => ({
+void mock.module("@atlas/api/lib/governance/errors", () => ({
   ApprovalError: class extends Error { public readonly _tag = "ApprovalError" as const; },
 }));
-mock.module("@atlas/api/lib/audit/retention-errors", () => ({
+void mock.module("@atlas/api/lib/audit/retention-errors", () => ({
   RetentionError: class extends Error { public readonly _tag = "RetentionError" as const; },
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: mockInternalQuery,
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (_key: string, _orgId?: string) => mockSettingValue,
 }));
 

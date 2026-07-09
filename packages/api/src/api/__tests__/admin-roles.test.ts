@@ -49,7 +49,7 @@ const mocks = createApiTestMocks({
 
 const mockLogAdminAction: Mock<(entry: Record<string, unknown>) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mockLogAdminAction,
   logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
@@ -121,7 +121,7 @@ const mockAssignRole: Mock<(orgId: string, userId: string, roleName: string) => 
 // `instanceof RoleError` checks in `domainError(RoleError)` resolve
 // against `MockRoleError` (the route code, the mock-CRUD functions
 // above, and the assertion path all share one class identity).
-mock.module("@atlas/api/lib/auth/roles-errors", () => ({
+void mock.module("@atlas/api/lib/auth/roles-errors", () => ({
   RoleError: MockRoleError,
 }));
 
@@ -133,7 +133,7 @@ mock.module("@atlas/api/lib/auth/roles-errors", () => ({
 // `require()` (not `await import()`) because `mock.module()`'s factory
 // must complete synchronously — bun's loader deadlocks on an inner
 // `await` mid-mock-resolution (feedback_bun_test_async_mock_module).
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   const { makeTestEnterpriseLayer } =
     // oxlint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
     require("@atlas/api/__test-utils__/makeTestEnterpriseLayer") as typeof import("@atlas/api/__test-utils__/makeTestEnterpriseLayer");
@@ -153,7 +153,7 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
 
 // Legacy module-mock stub for any transitive resolver chain. Slice 11
 // closeout #2573 will drop the EE module reference entirely.
-mock.module("@atlas/ee/auth/roles", () => ({
+void mock.module("@atlas/ee/auth/roles", () => ({
   RoleError: MockRoleError,
   listRoles: mockListRoles,
   getRole: mockGetRole,

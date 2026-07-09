@@ -24,7 +24,7 @@ const mockInternalQuery = mock(async (sql: string, params: unknown[]) => {
   return nextRows;
 });
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => hasInternalDBValue,
   internalQuery: mockInternalQuery,
   // The catalog-store doesn't touch the rest of internal.ts, but the

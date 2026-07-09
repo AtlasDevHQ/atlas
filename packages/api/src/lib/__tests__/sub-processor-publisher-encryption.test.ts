@@ -28,7 +28,7 @@ afterAll(() => {
 
 const insertCalls: { sql: string; params: unknown[] }[] = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: async (sql: string, params?: unknown[]) => {
     insertCalls.push({ sql, params: params ?? [] });

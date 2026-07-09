@@ -59,7 +59,7 @@ const capturingLogger = {
   bindings: () => ({}),
 };
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => capturingLogger,
   getLogger: () => capturingLogger,
   withRequestContext: <T>(_ctx: unknown, fn: () => T) => fn(),
@@ -90,7 +90,7 @@ const mockGetClientIP: Mock<(req: Request) => string | null> = mock(
   () => null,
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mockGetClientIP,
@@ -115,7 +115,7 @@ const mockForkConversation = mock((): Promise<CrudDataResult<{ id: string; messa
 const mockDeleteBranch = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockRenameBranch = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   listConversations: mockListConversations,
   getConversation: mockGetConversation,
   deleteConversation: mockDeleteConversation,
@@ -157,7 +157,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
 }));
 
 // Mock the agent module needed by chat route (imported via ../index)
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(() =>
     Promise.resolve({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
@@ -168,7 +168,7 @@ mock.module("@atlas/api/lib/agent", () => ({
   ),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -180,17 +180,17 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mock(() => Promise.resolve([])),
   getStartupWarnings: () => [],
 }));
@@ -200,7 +200,7 @@ mock.module("@atlas/api/lib/startup", () => ({
 // assert the user + orgId are forwarded to lib helpers without hitting a
 // real postgres. The same stub unblocks F-11 route-layer assertions.
 import { Effect as _EffectForAllowlistMock } from "effect";
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: () => _EffectForAllowlistMock.succeed({ allowed: true as const }),
 }));
 

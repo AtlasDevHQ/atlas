@@ -32,7 +32,7 @@ const mockedFs = {
     return (realFs.readFileSync as (...a: unknown[]) => unknown)(path, ...args);
   },
 };
-mock.module("node:fs", () => ({ ...mockedFs, default: mockedFs }));
+void mock.module("node:fs", () => ({ ...mockedFs, default: mockedFs }));
 
 const { widget } = await import("../routes/widget");
 

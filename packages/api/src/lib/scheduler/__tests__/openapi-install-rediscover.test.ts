@@ -33,7 +33,7 @@ let dbQueryCalls: Array<{ sql: string; params: unknown[] }> = [];
 
 // ── Mocks (declared before importing the SUT) ────────────────────────────────
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -43,7 +43,7 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasDB,
   internalQuery: async (sql: string, params: unknown[]) => {
     dbQueryCalls.push({ sql, params });
@@ -53,7 +53,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: () => ({}),
 }));
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => {
     auditCalls.push(entry);
   },
@@ -69,7 +69,7 @@ mock.module("@atlas/api/lib/audit", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/audit/error-scrub", () => ({
+void mock.module("@atlas/api/lib/audit/error-scrub", () => ({
   errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
   causeToError: (_cause: unknown) => undefined,
 }));

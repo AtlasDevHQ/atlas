@@ -14,7 +14,7 @@ const execCalls: Array<{ sql: string; params?: unknown[] }> = [];
 const queryCalls: Array<{ sql: string; params?: unknown[] }> = [];
 let queryRows: Array<Record<string, unknown>> = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => hasInternalDB,
   internalExecute: (sql: string, params?: unknown[]) => {

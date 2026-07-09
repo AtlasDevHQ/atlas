@@ -13,7 +13,7 @@ const VALID_ID = "550e8400-e29b-41d4-a716-446655440000";
 const mockReadSlots: Mock<(args: Record<string, unknown>) => Promise<unknown[]>> = mock(async () => []);
 const mockResetMemory: Mock<(args: Record<string, unknown>) => Promise<number>> = mock(async () => 0);
 
-mock.module("@atlas/api/lib/durable-state", () => ({
+void mock.module("@atlas/api/lib/durable-state", () => ({
   ...realDurable,
   readSessionMemorySlots: mockReadSlots,
   resetSessionMemory: mockResetMemory,
@@ -27,13 +27,13 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock((
   }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {

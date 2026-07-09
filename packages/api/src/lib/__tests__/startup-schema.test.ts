@@ -25,12 +25,12 @@ let mockMysqlSecondPoolQueryResult: unknown[] = [[]];
 // Mocks — must be set up before importing the module under test
 // ---------------------------------------------------------------------------
 
-mock.module("fs", () => ({
+void mock.module("fs", () => ({
   existsSync: () => false,
   readdirSync: () => ["orders.yml"],
 }));
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     detectDBType: (url: string) => {
       if (url.startsWith("mysql")) return "mysql";
@@ -40,7 +40,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",
   // Required-config SSOT (#3200) — startup.ts's checkProviderApiKey consumes the
   // set-based check; shared fixture mirrors real providers.ts semantics.
@@ -56,7 +56,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   },
 }));
 
-mock.module("pg", () => ({
+void mock.module("pg", () => ({
   Pool: class MockPool {
     async connect() {
       return {
@@ -68,7 +68,7 @@ mock.module("pg", () => ({
   },
 }));
 
-mock.module("mysql2/promise", () => ({
+void mock.module("mysql2/promise", () => ({
   createPool: () => {
     mockMysqlPoolCallCount++;
     const poolNum = mockMysqlPoolCallCount;
@@ -98,18 +98,18 @@ mock.module("mysql2/promise", () => ({
   setMaxParserCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({ source: "env" }),
   loadConfig: async () => ({ source: "env" }),
 }));
 
-mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({
+void mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({
   findNsjailBinary: () => null,
   testNsjailCapabilities: async () => ({ ok: true }),
   isNsjailAvailable: () => false,
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   markNsjailFailed: () => {},
   markSidecarFailed: () => {},
   getExploreBackendType: () => "just-bash",
@@ -117,7 +117,7 @@ mock.module("@atlas/api/lib/tools/explore", () => ({
   invalidateExploreBackend: () => {},
 }));
 
-mock.module("@atlas/api/lib/auth/migrate", () => ({
+void mock.module("@atlas/api/lib/auth/migrate", () => ({
   getMigrationError: () => null,
 }));
 

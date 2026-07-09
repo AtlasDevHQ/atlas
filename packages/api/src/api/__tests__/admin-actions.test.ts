@@ -22,7 +22,7 @@ const mocks = createApiTestMocks();
 
 // --- Mock the audit module (imported by admin routes) ---
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mock(() => {}),
   logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: {
@@ -44,12 +44,12 @@ mock.module("@atlas/api/lib/audit", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/audit/admin", () => ({
+void mock.module("@atlas/api/lib/audit/admin", () => ({
   logAdminAction: mock(() => {}),
   logAdminActionAwait: mock(async () => {}),
 }));
 
-mock.module("@atlas/api/lib/audit/actions", () => ({
+void mock.module("@atlas/api/lib/audit/actions", () => ({
   ADMIN_ACTIONS: {
     workspace: { suspend: "workspace.suspend" },
   },

@@ -16,7 +16,7 @@ let settingsStore: Record<string, string> = {};
 // rather than `process.env` directly, so the mock must honor the env tier or
 // the existing env-var fallback tests would break. Registry default (tier 4)
 // is omitted — the email resolvers supply their own default constant.
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string) => settingsStore[key] ?? process.env[key],
 }));
 
@@ -29,7 +29,7 @@ let mockOrgInstall: {
   config: Record<string, unknown>;
 } | null = null;
 
-mock.module("@atlas/api/lib/email/store", () => ({
+void mock.module("@atlas/api/lib/email/store", () => ({
   EMAIL_PROVIDERS: ["resend", "sendgrid", "postmark", "smtp", "ses"],
   getEmailInstallationByOrg: async () => mockOrgInstall,
   saveEmailInstallation: async () => {
@@ -38,7 +38,7 @@ mock.module("@atlas/api/lib/email/store", () => ({
   deleteEmailInstallationByOrg: async () => false,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -88,8 +88,8 @@ function installCapturingFetchMock(
 ): Array<{ url: string; body: Record<string, unknown> }> {
   const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
-    calls.push({ url: String(url), body });
+    const body = init?.body ? (JSON.parse((init.body as string)) as Record<string, unknown>) : {};
+    calls.push({ url: (typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url), body });
     return new Response(JSON.stringify(response.body), {
       status: response.status,
       headers: { "Content-Type": "application/json" },

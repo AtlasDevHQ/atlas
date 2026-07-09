@@ -56,7 +56,7 @@ const mockAuthenticate: Mock<() => Promise<{
   }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticate,
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
@@ -64,7 +64,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   rateLimitCleanupTick: () => {},
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -76,16 +76,16 @@ mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: async () => null,
   isStrictRoutingEnabled: () => false,
 }));
 
-mock.module("@atlas/api/lib/residency/readonly", () => ({
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: async () => false,
 }));
 
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: () => Effect.succeed({ allowed: true }),
 }));
 
@@ -142,7 +142,7 @@ const mockInternalExecute = mock((_sql: string, _params?: unknown[]) => {});
 // identity matches whatever `ContentModeRegistry` imports transitively.
 // `makeMockInternalDBShimLayer` routes query calls through mockInternalQuery
 // so the test fixtures (demo state + draft counts) still drive behavior.
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
   hasInternalDB: mockHasInternalDB,
   internalQuery: mockInternalQuery,
@@ -183,7 +183,7 @@ const mockGetSettingAuto: Mock<(key: string, orgId?: string) => string | undefin
   (key) => (key === "ATLAS_DEMO_INDUSTRY" ? demoIndustryFixture : undefined),
 );
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: mockGetSettingAuto,
   getSetting: mockGetSettingAuto,
 }));

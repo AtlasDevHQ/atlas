@@ -27,7 +27,7 @@ const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(
   () => {},
 );
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
@@ -62,7 +62,7 @@ const mockInvokeOnUninstallHookForInstallRow: Mock<
   return { invoked: [], failures: [] };
 });
 
-mock.module("@atlas/api/lib/plugins/uninstall-hook", () => ({
+void mock.module("@atlas/api/lib/plugins/uninstall-hook", () => ({
   invokeOnUninstallHook: mock(async () => ({ invoked: [], failures: [] })),
   invokeOnUninstallHookForInstallRow: mockInvokeOnUninstallHookForInstallRow,
   ON_UNINSTALL_HOOK_TIMEOUT_MS: 15_000,
@@ -101,7 +101,7 @@ const mockDeleteDedicatedCredentialStore = mock(
     credStoreCalls.push({ slug, workspaceId, catalogId, teamId });
   },
 );
-mock.module("@atlas/api/lib/plugins/teardown", () => ({
+void mock.module("@atlas/api/lib/plugins/teardown", () => ({
   tearDownWorkspaceInstall: mockTearDownWorkspaceInstall,
   deleteDedicatedCredentialStore: mockDeleteDedicatedCredentialStore,
   INTEGRATION_CREDENTIALS_SLUGS: new Set<string>(["salesforce", "jira", "linear"]),
@@ -112,7 +112,7 @@ mock.module("@atlas/api/lib/plugins/teardown", () => ({
 // doesn't export — load a minimal inline replica that just does the
 // "scrub userinfo + truncate" contract so decrypt-failure audit rows carry
 // usable strings.
-mock.module("@atlas/api/lib/audit/error-scrub", () => ({
+void mock.module("@atlas/api/lib/audit/error-scrub", () => ({
   errorMessage: (err: unknown): string => {
     const raw = err instanceof Error ? err.message : String(err);
     const scrubbed = raw.replace(/\b([a-z][a-z0-9+.-]*):\/\/[^\s@/]*@/gi, "$1://***@");
@@ -175,7 +175,7 @@ function makePipeable(effectValue: TestEffectPromise): TestPipeable {
   return pipeable;
 }
 
-mock.module("effect", () => {
+void mock.module("effect", () => {
   const Effect = {
     gen: (genFn: () => Generator) => {
       return { _tag: "EffectGen", genFn };
@@ -233,7 +233,7 @@ mock.module("effect", () => {
   return { Effect };
 });
 
-mock.module("@atlas/api/lib/effect/services", () => ({
+void mock.module("@atlas/api/lib/effect/services", () => ({
   AuthContext: fakeAuthContext,
   RequestContext: { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield { requestId: "test-req-1", startTime: Date.now() }; } },
   makeRequestContextLayer: () => ({}),
@@ -282,7 +282,7 @@ mock.module("@atlas/api/lib/effect/services", () => ({
 // receive a non-Tag and fail. Until this test stops stubbing the
 // services module, the inert stub below covers every export the
 // production module ships.
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   EnterpriseLayer: { _tag: "MockLayer" },
   // Never called because the shimmed `runEffect` above doesn't reach
   // the real runtime, but the imports must resolve.
@@ -294,7 +294,7 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   runEnterprise: () => Promise.resolve(undefined),
 }));
 
-mock.module("@atlas/api/lib/effect/hono", () => ({
+void mock.module("@atlas/api/lib/effect/hono", () => ({
   runEffect: async (_c: unknown, effect: { _tag: string; genFn: () => Generator }, _opts?: unknown) => {
     const gen = effect.genFn();
     let result = gen.next();
@@ -344,7 +344,7 @@ import { createMiddleware } from "hono/factory";
 
 const passthrough = createMiddleware(async (_c, next) => { await next(); });
 
-mock.module("./routes/middleware", () => ({
+void mock.module("./routes/middleware", () => ({
   adminAuth: passthrough,
   adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
@@ -353,7 +353,7 @@ mock.module("./routes/middleware", () => ({
   withRequestId: passthrough,
 }));
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mock(() =>
     Promise.resolve({
       authenticated: true,
@@ -368,12 +368,12 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "simple-key",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: mock(() => ({ allowed: true })),
   listIPAllowlistEntries: mock(async () => []),
   addIPAllowlistEntry: mock(async () => ({})),
@@ -390,7 +390,7 @@ const mockLazyEvict = mock(async (workspaceId: string, catalogId: string) => {
   evictCalls.push({ workspaceId, catalogId });
   return true;
 });
-mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
+void mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
   lazyPluginLoader: { evict: mockLazyEvict },
   LazyPluginLoader: class {},
   LazyPluginBuilderMissingError: class extends Error {},
@@ -455,7 +455,7 @@ const mockKeyset = () =>
         source: "ATLAS_ENCRYPTION_KEY",
       }
     : null;
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({
     query: () => Promise.resolve({ rows: [] }),
@@ -486,14 +486,14 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // needs a mock. Without this, `getEncryptionKeyset()` returns null, the
 // encrypt helpers degrade to plaintext passthrough, and the F-42
 // "encrypted at rest" assertions fail.
-mock.module("@atlas/api/lib/db/encryption-keys", () => ({
+void mock.module("@atlas/api/lib/db/encryption-keys", () => ({
   getEncryptionKey: () => (mockKeysetAvailable ? testEncryptionKey : null),
   getEncryptionKeyset: mockKeyset,
   activeKeyVersion: () => 1,
   _resetEncryptionKeyCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -512,7 +512,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 // `await import`) so the bun loader can't deadlock on the self-referential
 // module name.
 let mockDeployMode: "saas" | "self-hosted" | undefined;
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => (mockDeployMode ? { deployMode: mockDeployMode } : null),
 }));
 

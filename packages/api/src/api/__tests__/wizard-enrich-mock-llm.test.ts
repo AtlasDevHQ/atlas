@@ -71,7 +71,7 @@ const mockConnectionDescribe: Mock<() => Array<{ id: string; dbType: string; sta
   () => [{ id: "analytics", dbType: "clickhouse", status: "healthy" }],
 );
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       has: mockConnectionHas,
@@ -98,7 +98,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Recor
   ],
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   getInternalDB: () => ({ query: async () => ({ rows: [] }) }),
   internalQuery: mockInternalQuery,
@@ -132,18 +132,18 @@ const mockAuthenticate = mock(() =>
   }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticate,
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "managed",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => new Set(),
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
@@ -155,7 +155,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   upsertProfileStatus: mock(() => Promise.resolve()),
   listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   DEMO_CONNECTION_ID: "__demo__",
@@ -182,7 +182,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   restoreSingleConnection: async () => ({ ok: true as const, restored: 0 }),
 }));
 
-mock.module("@atlas/api/lib/semantic/sync", () => ({
+void mock.module("@atlas/api/lib/semantic/sync", () => ({
   syncEntityToDisk: async () => {},
   syncEntityDeleteFromDisk: async () => {},
   syncAllEntitiesToDisk: async () => 0,
@@ -190,14 +190,14 @@ mock.module("@atlas/api/lib/semantic/sync", () => ({
   reconcileAllOrgs: async () => {},
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
-mock.module("@atlas/api/lib/plugins/hooks", () => ({ dispatchHook: async () => {} }));
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({ dispatchHook: async () => {} }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
   getSettingAuto: () => undefined,
   getSettingLive: async () => undefined,
@@ -211,7 +211,7 @@ mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   getSecurityHeaders: () => ({}),
   applySecurityHeaders: () => {},
 }));
@@ -220,7 +220,7 @@ mock.module("@atlas/api/lib/security", () => ({
 // enrich engine's `generateText({ model })` calls our `doGenerate` (AC#6). No
 // missing config so the route's enrichment-availability gate passes.
 import * as _providersActual from "@atlas/api/lib/providers";
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   ..._providersActual,
   getModel: () => layerModel,
   getModelFromWorkspaceConfig: () => layerModel,
@@ -229,7 +229,7 @@ mock.module("@atlas/api/lib/providers", () => ({
 
 // Enterprise layer — no per-workspace BYOT, fall through to the env provider.
 import * as _enterpriseLayerActual from "@atlas/api/lib/effect/enterprise-layer";
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   ..._enterpriseLayerActual,
   runEnterprise: async () => null,
 }));
@@ -273,7 +273,7 @@ const mockListObjects = mock(async () => [{ name: "orders", type: "table" }]);
 // One profiler home (#3657): the wizard resolves a LIVE connection whose
 // introspection is bound to its creds. The clickhouse install resolves to a
 // connection exposing the (mock) listObjects/profile capability.
-mock.module("@atlas/api/lib/datasources/profiling-connection", () => ({
+void mock.module("@atlas/api/lib/datasources/profiling-connection", () => ({
   resolveProfilingConnection: async () => ({
     kind: "ok" as const,
     dbType: "clickhouse",

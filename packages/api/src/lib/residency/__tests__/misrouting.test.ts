@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 let mockWorkspaceRegion: string | null = null;
 let mockGetWorkspaceRegionError: Error | null = null;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   getWorkspaceRegion: async (orgId: string) => {
     if (mockGetWorkspaceRegionError) throw mockGetWorkspaceRegionError;
@@ -46,7 +46,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 let mockConfig: Record<string, unknown> | null = null;
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfig,
   configFromEnv: () => ({}),
   loadConfig: async () => ({}),
@@ -55,7 +55,7 @@ mock.module("@atlas/api/lib/config", () => ({
   _setConfigForTest: () => {},
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

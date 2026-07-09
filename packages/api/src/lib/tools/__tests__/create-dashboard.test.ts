@@ -37,7 +37,7 @@ const validateSQLMock = mock(async (sql: string, _connectionId?: string) => {
   return { valid: true as const, classification: { tablesAccessed: [], columnsAccessed: [] } };
 });
 
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   validateSQL: validateSQLMock,
   executeSQL: undefined as never,
   runUserQueryPipeline: undefined as never,

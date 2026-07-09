@@ -13,7 +13,7 @@ import type { AuthResult } from "@atlas/api/lib/auth/types";
 
 let fakeAuth: (AuthResult & { authenticated: true }) | null = null;
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () =>
     Promise.resolve(
       fakeAuth ?? { authenticated: false, status: 401 as const, error: "anonymous" },
@@ -24,16 +24,16 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   rateLimitCleanupTick: () => {},
 }));
 
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
+void mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: async () => null,
   isStrictRoutingEnabled: () => false,
 }));
 
-mock.module("@atlas/api/lib/residency/readonly", () => ({
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: async () => false,
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
@@ -57,7 +57,7 @@ type UserRow = { id: string; default_landing: string };
 let users: UserRow[] = [];
 const queryLog: Array<{ sql: string; params: unknown[] }> = [];
 
-mock.module("@atlas/api/lib/db/internal", () => {
+void mock.module("@atlas/api/lib/db/internal", () => {
   const notUsed = () => {
     throw new Error("internal.ts helper not used in this route");
   };

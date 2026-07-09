@@ -58,8 +58,8 @@ beforeAll(async () => {
   jwksUrl = `http://localhost:${server.port}/.well-known/jwks.json`;
 });
 
-afterAll(() => {
-  if (server) server.stop(true);
+afterAll(async () => {
+  if (server) await server.stop(true);
 });
 
 beforeEach(() => {

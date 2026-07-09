@@ -112,7 +112,7 @@ function agentSpan(): RecordedSpan | undefined {
 
 let mockModel: InstanceType<typeof MockLanguageModelV3>;
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
   getProviderType: () => "anthropic" as const,
   getModelFromWorkspaceConfig: () => mockModel,
@@ -124,7 +124,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   getSummaryModel: () => mockModel,
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -148,7 +148,7 @@ const mockDBConnectionObj = {
   },
   close: async () => {},
 };
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnectionObj,
     connections: {
@@ -161,7 +161,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("just-bash", () => ({
+void mock.module("just-bash", () => ({
   Bash: class MockBash {
     constructor(_: unknown) {}
     async exec() {
@@ -173,7 +173,7 @@ mock.module("just-bash", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({
     get: () => null,
     set: () => {},
@@ -191,7 +191,7 @@ mock.module("@atlas/api/lib/cache/index", () => ({
 // toggles the no-DB case (AC4); `internalExecute` is a sink we never assert on
 // here (agent-resume.test.ts owns the durable-write assertions).
 let hasInternalDB = true;
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => hasInternalDB,
   internalExecute: () => {},

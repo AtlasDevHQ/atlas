@@ -45,7 +45,7 @@ const mockInternalQuery = mock(async (sql: string, params?: unknown[]) => {
   return mockRows;
 });
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   internalExecute: mock(async () => 0),
@@ -135,7 +135,7 @@ describe("getEntity — backward compatible without group", () => {
       expect(caught.entityName).toBe("users");
       expect(caught.entityType).toBe("entity");
       // Groups should be sorted for deterministic error messages.
-      expect([...caught.groups].toSorted()).toEqual(["g_prod_eu", "g_prod_us"]);
+      expect(([...caught.groups] as string[]).toSorted()).toEqual(["g_prod_eu", "g_prod_us"]);
     }
   });
 

@@ -7,7 +7,7 @@ import {
 } from "@atlas/api/lib/auth/oauth-state";
 
 // Mock internal DB as unavailable — tests exercise the in-memory fallback
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => false,
   internalQuery: () => Promise.reject(new Error("should not be called")),
   setWorkspaceRegion: async () => {},
@@ -16,7 +16,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 // Mock logger to suppress output
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

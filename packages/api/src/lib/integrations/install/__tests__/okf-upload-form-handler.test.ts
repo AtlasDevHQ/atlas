@@ -27,8 +27,8 @@ const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<
   throw new Error(`unexpected SQL: ${sql.slice(0, 50)}`);
 });
 
-mock.module("@atlas/api/lib/db/internal", () => buildInternalDbMockDefaults({ internalQuery }));
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/db/internal", () => buildInternalDbMockDefaults({ internalQuery }));
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };

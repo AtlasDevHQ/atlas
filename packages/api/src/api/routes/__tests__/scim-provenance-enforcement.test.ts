@@ -73,7 +73,7 @@ const mockEvaluateSCIMGuard: Mock<(opts: { userId: string; orgId?: string; reque
   () => Effect.succeed({ kind: "non_scim" } as GuardDecision),
 );
 
-mock.module("@atlas/api/lib/auth/scim-provenance", () => ({
+void mock.module("@atlas/api/lib/auth/scim-provenance", () => ({
   evaluateSCIMGuardAsync: mockEvaluateSCIMGuardAsync,
   evaluateSCIMGuard: mockEvaluateSCIMGuard,
   // Re-export the shared block-body factory so tests assert the same shape
@@ -99,7 +99,7 @@ mock.module("@atlas/api/lib/auth/scim-provenance", () => ({
 // Audit logger — capture per-test so we can assert metadata.scim_override.
 const mockLogAdminAction: Mock<(entry: { metadata?: Record<string, unknown>; actionType?: string; status?: string }) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: mockLogAdminAction,
   logAdminActionAwait: mock(async () => {}),
   ADMIN_ACTIONS: new Proxy(
@@ -116,7 +116,7 @@ const mockBanUser = mock(async () => ({}));
 const mockRemoveUser = mock(async () => ({}));
 const mockRevokeSessions = mock(async () => ({}));
 
-mock.module("@atlas/api/lib/auth/server", () => ({
+void mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => ({
     api: {
       setRole: mockSetRole,
@@ -160,7 +160,7 @@ const mockGetRoleByName = mock(() =>
 // test layer through the shared helper — covers every Tag the middleware
 // chain yields with happy-path defaults; override the two RolesPolicy
 // methods the assignment path actually invokes.
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   const { makeTestEnterpriseLayer } =
     // oxlint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
     require("@atlas/api/__test-utils__/makeTestEnterpriseLayer") as typeof import("@atlas/api/__test-utils__/makeTestEnterpriseLayer");
@@ -172,7 +172,7 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   });
 });
 
-mock.module("@atlas/ee/auth/roles", () => ({
+void mock.module("@atlas/ee/auth/roles", () => ({
   PERMISSIONS: [
     "query",
     "query:raw_data",

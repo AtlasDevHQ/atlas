@@ -36,7 +36,7 @@ function fakeTxClient() {
 
 const internalQuery = mock(async (): Promise<unknown[]> => []);
 const reconcileCalls: string[] = [];
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery }),
   getInternalDB: () => ({ connect: async () => fakeTxClient() }),
   reconcileWorkspaceDatasources: async (orgId: string) => {
@@ -49,24 +49,24 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // `semantic/sync` (`invalidateOrgModeRoots`, the #4208 post-commit mirror
 // bust) and nothing else in this file imports the module.
 const invalidateCalls: string[] = [];
-mock.module("@atlas/api/lib/semantic/sync", () => ({
+void mock.module("@atlas/api/lib/semantic/sync", () => ({
   invalidateOrgModeRoots: (orgId: string) => {
     invalidateCalls.push(orgId);
   },
 }));
 
-mock.module("@atlas/api/lib/effect/hono", () => ({
+void mock.module("@atlas/api/lib/effect/hono", () => ({
   runHandler: async (_c: unknown, _label: string, fn: () => unknown) => fn(),
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
 });
 
 const auditCalls: Array<{ actionType: string; metadata: Record<string, unknown> }> = [];
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: { actionType: string; metadata: Record<string, unknown> }) => {
     auditCalls.push(entry);
   },
@@ -79,7 +79,7 @@ mock.module("@atlas/api/lib/audit", () => ({
 // `promotedCountsFromReports` (deep-path import stays unmocked) over a mini
 // registry tuple that mirrors the production key↔table mapping — so these
 // tests pin the actual projection, not a re-implementation of it.
-mock.module("@atlas/api/lib/content-mode", () => ({
+void mock.module("@atlas/api/lib/content-mode", () => ({
   CONTENT_MODE_TABLES: [
     { kind: "simple", key: "connections", table: "workspace_plugins" },
     { kind: "simple", key: "prompts", table: "prompt_collections" },
@@ -100,17 +100,17 @@ mock.module("@atlas/api/lib/content-mode", () => ({
   }),
 }));
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   archiveSingleConnection: async () => ({ status: "archived", entities: 0, prompts: 0 }),
   listIncompleteProfileLayers: async () => [],
   DEMO_CONNECTION_ID: "__demo__",
 }));
 
-mock.module("@atlas/api/lib/demo-industry", () => ({
+void mock.module("@atlas/api/lib/demo-industry", () => ({
   readDemoIndustry: () => ({ ok: true, value: null }),
 }));
 
-mock.module("../admin-router", () => ({
+void mock.module("../admin-router", () => ({
   createAdminRouter: () => new OpenAPIHono(),
   requireOrgContext: () =>
     async (c: { set: (k: string, v: unknown) => void; get?: unknown }, next: () => Promise<void>) => {

@@ -13,26 +13,26 @@ import { createConnectionMock } from "../../__mocks__/connection";
 
 // --- Mocks (same set as cors.test.ts, but with explicit CORS origin) ---
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () =>
     Promise.resolve({ authenticated: true, mode: "none", user: undefined }),
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
 }));
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: () =>
     Promise.resolve({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
     }),
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: () => Promise.resolve([]),
   getStartupWarnings: () => [],
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -44,7 +44,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
   explore: { type: "function" },
@@ -53,11 +53,11 @@ mock.module("@atlas/api/lib/tools/explore", () => ({
   markSidecarFailed: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({ resolveDatasourceUrl: () => "postgresql://mock:5432/test" }),
 );
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));
@@ -66,7 +66,7 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 // allowlist so the multi-origin path is exercised alongside the single-origin
 // path (https://app.example.com still matches, https://www.example.com is
 // the second entry).
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
   getSettingAuto: (key: string) => {
     if (key === "ATLAS_CORS_ORIGIN")

@@ -32,7 +32,7 @@ const mockConfirmInstall: Mock<
   (workspaceId: string, tenantId: string, proof?: string, extras?: unknown) => Promise<{ installRecord: { id: string } }>
 > = mock(() => Promise.resolve({ installRecord: { id: "teams-install-1" } }));
 
-mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
+void mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
   getInstallHandler: mock(() => ({ kind: "static-bot" as const, oauthShaped: true as const, confirmInstall: mockConfirmInstall })),
   hasFormInstallHandler: mock(() => false),
   registerOAuthHandler: mock(() => {}),
@@ -62,7 +62,7 @@ const mockCheckRateLimit: Mock<() => { allowed: boolean; retryAfterMs?: number }
   () => ({ allowed: true }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   checkRateLimit: mockCheckRateLimit,
   authenticateRequest: mockAuthenticateRequest,
   getClientIP: mock(() => "127.0.0.1"),

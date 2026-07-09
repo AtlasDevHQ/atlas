@@ -20,7 +20,7 @@ const mockLogger = {
   level: "info",
 };
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => mockLogger,
   getLogger: () => mockLogger,
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),

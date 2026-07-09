@@ -26,7 +26,7 @@ let mockRequestContext:
   | { user?: { activeOrganizationId?: string }; atlasMode?: string }
   | undefined;
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -47,7 +47,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 const realSemanticSync = await import("@atlas/api/lib/semantic/sync");
-mock.module("@atlas/api/lib/semantic/sync", () => ({
+void mock.module("@atlas/api/lib/semantic/sync", () => ({
   ...realSemanticSync,
   // Mode-dependent like the real implementation (`.orgs/{org}/modes/{mode}`)
   // so an org accumulates one cache key per atlasMode — the invalidation
@@ -57,12 +57,12 @@ mock.module("@atlas/api/lib/semantic/sync", () => ({
     `${realSemanticSync.getSemanticRoot()}/.orgs/${orgId}/modes/${mode}`,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async <T,>(_name: string, _attrs: unknown, fn: () => Promise<T>) => fn(),
   withEffectSpan: <T,>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
   dispatchMutableHook: async <
     T extends Record<string, unknown>,
@@ -76,7 +76,7 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
 
 const mockSettings = new Map<string, string>();
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string, _orgId?: string) => mockSettings.get(key),
   getSettingAuto: (key: string, _orgId?: string) => mockSettings.get(key),
   getSettingLive: async (key: string, _orgId?: string) => mockSettings.get(key),
@@ -101,7 +101,7 @@ let mockSandboxPlugins: Array<{
   [k: string]: unknown;
 }> = [];
 
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     getByType: (type: string) => (type === "sandbox" ? mockSandboxPlugins : []),
     getAllHealthy: () => [],
@@ -128,7 +128,7 @@ type ByocResult =
 let mockByocResult: ByocResult = { kind: "null" };
 let byocCalls: Array<{ orgId: string; backendId: string }> = [];
 
-mock.module("@atlas/api/lib/sandbox/runtime", () => ({
+void mock.module("@atlas/api/lib/sandbox/runtime", () => ({
   sandboxProviderForBackendId: () => null,
   missingCredentialFields: () => [],
   _scrubCredentialValuesForTest: (text: string) => text,

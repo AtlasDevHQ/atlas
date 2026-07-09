@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 const mockPoolQueryResults: Record<string, { rows: unknown[] }> = {};
 let mockPoolQueryError: Error | null = null;
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   getInternalDB: () => ({
     query: (sql: string, _params: unknown[]) => {
@@ -30,7 +30,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

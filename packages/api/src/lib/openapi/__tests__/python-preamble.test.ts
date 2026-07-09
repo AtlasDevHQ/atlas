@@ -27,8 +27,8 @@ async function pythonCompiles(source: string): Promise<{ ok: boolean; stderr: st
   } catch {
     return null; // python3 not installed
   }
-  proc.stdin.write(source);
-  proc.stdin.end();
+  await proc.stdin.write(source);
+  await proc.stdin.end();
   const stderr = await new Response(proc.stderr).text();
   const exitCode = await proc.exited;
   return { ok: exitCode === 0, stderr };

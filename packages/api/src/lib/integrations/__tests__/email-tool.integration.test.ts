@@ -55,7 +55,7 @@ import { EMAIL_CATALOG_ID } from "../install/email-secret-schema";
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
   () => Promise.resolve([]),
 );
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   getInternalDB: mock(() => null),
   getInternalPool: mock(() => null),

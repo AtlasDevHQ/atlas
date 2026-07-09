@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, beforeAll, afterAll, mock } from "bun
 
 // --- Internal DB mock ---
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   getInternalDB: () => ({ query: () => Promise.resolve({ rows: [] }), end: async () => {}, on: () => {} }),
   internalQuery: mock(() => Promise.resolve([])),
@@ -24,7 +24,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 const mockUnsubscribe = mock(() => Promise.resolve());
 const mockResubscribe = mock(() => Promise.resolve());
 
-mock.module("@atlas/api/lib/email/engine", () => ({
+void mock.module("@atlas/api/lib/email/engine", () => ({
   unsubscribeUser: mockUnsubscribe,
   resubscribeUser: mockResubscribe,
   isOnboardingEmailEnabled: () => true,
@@ -32,7 +32,7 @@ mock.module("@atlas/api/lib/email/engine", () => ({
 
 // --- Logger mock ---
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

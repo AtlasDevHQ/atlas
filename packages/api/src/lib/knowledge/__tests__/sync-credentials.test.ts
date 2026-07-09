@@ -23,11 +23,11 @@ const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<
   return [];
 });
 
-mock.module("@atlas/api/lib/db/internal", () => buildInternalDbMockDefaults({ internalQuery }));
+void mock.module("@atlas/api/lib/db/internal", () => buildInternalDbMockDefaults({ internalQuery }));
 
 // Reversible fake crypto — mock ALL exports of secret-encryption.
 class UnknownKeyVersionError extends Error {}
-mock.module("@atlas/api/lib/db/secret-encryption", () => ({
+void mock.module("@atlas/api/lib/db/secret-encryption", () => ({
   encryptSecret: (plaintext: string) => `enc:v7:${Buffer.from(plaintext).toString("base64")}`,
   decryptSecret: (stored: string) => {
     if (!stored.startsWith("enc:v7:")) throw new UnknownKeyVersionError(`corrupt ciphertext`);

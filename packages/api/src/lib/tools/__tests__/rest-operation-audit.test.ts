@@ -29,7 +29,7 @@ import type { ExecuteRestOperationResult } from "../rest-operation";
 import type { TwentyMock } from "@atlas/api/lib/openapi/__tests__/twenty-acceptance/mock-server";
 
 const mockLogQueryAudit: Mock<(entry: AuditEntry) => void> = mock(() => {});
-mock.module("@atlas/api/lib/auth/audit", () => ({ logQueryAudit: mockLogQueryAudit }));
+void mock.module("@atlas/api/lib/auth/audit", () => ({ logQueryAudit: mockLogQueryAudit }));
 
 // Import after the mock so the tool's audit call resolves to the spy.
 const { buildOperationGraph } = await import("@atlas/api/lib/openapi/spec");

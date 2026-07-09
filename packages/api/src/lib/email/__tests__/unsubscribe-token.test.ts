@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},

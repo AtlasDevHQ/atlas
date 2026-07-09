@@ -16,7 +16,7 @@ let memberRows: ReadonlyArray<{ group_id: string; id: string }>;
 let whitelistThrows = false;
 let membersThrow = false;
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   loadOrgWhitelist: async () => {
     if (whitelistThrows) throw new Error("whitelist load failed");
     return whitelistMap;
@@ -31,14 +31,14 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   listConnectionGroupMembers: async () => {
     if (membersThrow) throw new Error("members load failed");
     return memberRows;
   },
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 

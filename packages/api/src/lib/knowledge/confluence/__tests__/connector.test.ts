@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, mock } from "bun:test";
 
 let tokenResult: string | null | (() => never) = "secret-token";
 
-mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
+void mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
   SYNC_CREDENTIAL_UPSERT_SQL: "INSERT ...",
   saveSyncCredential: async () => {},
   deleteSyncCredential: async () => {},

@@ -2,7 +2,7 @@ import { describe, it, expect, mock, beforeEach } from "bun:test";
 
 // Mock logger — getRequestContext returns a controllable value
 let mockRequestId: string | undefined;
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     debug: () => {},
     info: () => {},

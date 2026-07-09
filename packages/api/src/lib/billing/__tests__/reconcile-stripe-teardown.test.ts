@@ -50,7 +50,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   },
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({
     internalQuery: mockInternalQuery,
     hasInternalDB: () => hasDb,
@@ -65,7 +65,7 @@ const stubLogger = {
   fatal: () => {},
   trace: () => {},
 };
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => stubLogger,
   getLogger: () => stubLogger,
   setLogLevel: () => false,
@@ -86,7 +86,7 @@ const customersDel: Mock<(id: string) => Promise<unknown>> = mock(async (id: str
   deleted: true,
 }));
 let stripeAvailable = true;
-mock.module("@atlas/api/lib/billing/stripe-client", () => ({
+void mock.module("@atlas/api/lib/billing/stripe-client", () => ({
   getStripeClient: () =>
     stripeAvailable
       ? { subscriptions: { cancel: subscriptionsCancel }, customers: { del: customersDel } }

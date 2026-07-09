@@ -55,7 +55,7 @@ delete process.env.DATABASE_URL; // keep hasInternalDB() false → skip DB prefl
 
 let mockModel: InstanceType<typeof MockLanguageModelV3>;
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
   getProviderType: () => "anthropic" as const,
   getModelFromWorkspaceConfig: () => mockModel,
@@ -66,7 +66,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   isGatewayAnthropicModel: (modelId: string) => modelId.includes("anthropic") || modelId.includes("claude"),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -79,7 +79,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
   getCrossSourceJoins: () => [],
 }));
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       describe: () => [{ id: "default", dbType: "postgres" as const }],
@@ -87,7 +87,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({ get: () => null, set: () => {}, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),
   buildCacheKey: () => "mock-key",
   cacheEnabled: () => false,
@@ -104,7 +104,7 @@ mock.module("@atlas/api/lib/cache/index", () => ({
 // openapi-install-acceptance suite); `activeDatasources` is set per mode in the
 // describe.each block below so the agent renders the mode under test.
 let activeDatasources: RestDatasource[] = [];
-mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
+void mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
   // Mock ALL exports — the tool + confirm route now import the strict
   // `…OrThrow` sibling (#2929 review) and the `RestDatasourceReconnectError`
   // class (#3030); omitting either trips "export not found". The resolvers here
@@ -585,8 +585,8 @@ describe("Twenty acceptance — sandbox-Python proof (generated client, gated)",
     } catch {
       return null;
     }
-    proc.stdin.write(source);
-    proc.stdin.end();
+    await proc.stdin.write(source);
+    await proc.stdin.end();
     const [stdout, stderr] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),

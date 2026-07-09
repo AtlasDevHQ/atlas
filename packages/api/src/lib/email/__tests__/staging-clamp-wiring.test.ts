@@ -47,7 +47,7 @@ const record = (sink: LogCall[]) => (obj: any, msg?: any) => {
   sink.push({ obj, msg: typeof msg === "string" ? msg : String(obj) });
 };
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   ...actualLogger,
   createLogger: () => ({
     info: () => {},

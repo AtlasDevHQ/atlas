@@ -102,22 +102,22 @@ const internalQuery = mock(async (sql: string, _params: unknown[] = []): Promise
 
 // Full internal-DB mock via the sanctioned helper (mock-all-exports discipline),
 // with `getInternalDB` overridden to hand back the in-memory transactional fake.
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery }),
   getInternalDB: () => ({ connect: async () => fakeTxClient() }),
 }));
 
-mock.module("@atlas/api/lib/effect/hono", () => ({
+void mock.module("@atlas/api/lib/effect/hono", () => ({
   runHandler: async (_c: unknown, _label: string, fn: () => unknown) => fn(),
 }));
 
-mock.module("@atlas/api/lib/logger", () => {
+void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
 });
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: () => {},
   ADMIN_ACTIONS: {
     knowledge: { ingest: "knowledge.ingest", sync: "knowledge.sync", uninstall: "knowledge.uninstall" },
@@ -141,7 +141,7 @@ const syncCollection = mock(
     rejected: [],
   }),
 );
-mock.module("@atlas/api/lib/knowledge/sync", () => ({
+void mock.module("@atlas/api/lib/knowledge/sync", () => ({
   syncCollection,
   runKnowledgeSyncCycle: async () => ({ inspected: 0, succeeded: 0, failed: 0, queryFailed: false }),
   getKnowledgeSyncFetchTimeoutMs: () => 60_000,
@@ -155,7 +155,7 @@ mock.module("@atlas/api/lib/knowledge/sync", () => ({
 // imports the module. Captures calls so the tests can assert the mirror
 // invalidation contract (#4208) on the ingest and uninstall paths.
 const invalidateCalls: string[] = [];
-mock.module("@atlas/api/lib/semantic/sync", () => ({
+void mock.module("@atlas/api/lib/semantic/sync", () => ({
   // The ingestBundle/uninstall seams bust only the knowledge subtree; a
   // publish busts the full roots. Both feed the same counter — these tests
   // assert THAT invalidation happened; scope is pinned in
@@ -170,7 +170,7 @@ mock.module("@atlas/api/lib/semantic/sync", () => ({
 
 // Only the catalog-id constant is consumed by the router; mock the handler
 // module so its (heavier) install-pipeline import graph stays out of this test.
-mock.module("@atlas/api/lib/integrations/install/bundle-sync-form-handler", () => ({
+void mock.module("@atlas/api/lib/integrations/install/bundle-sync-form-handler", () => ({
   BUNDLE_SYNC_SLUG: "bundle-sync",
   BUNDLE_SYNC_CATALOG_ID: "catalog:bundle-sync",
   BUNDLE_SYNC_AUTH_SCHEMES: ["none", "bearer", "basic"],
@@ -189,7 +189,7 @@ let NOTION_CONNECTOR: unknown = {
   vendor: "notion",
   createClient: () => ({}),
 };
-mock.module("@atlas/api/lib/knowledge/notion/connector", () => ({
+void mock.module("@atlas/api/lib/knowledge/notion/connector", () => ({
   NOTION_KNOWLEDGE_CATALOG_ID: "catalog:notion-knowledge",
   NOTION_KNOWLEDGE_SLUG: "notion-knowledge",
   NOTION_VENDOR: "notion",
@@ -198,7 +198,7 @@ mock.module("@atlas/api/lib/knowledge/notion/connector", () => ({
 }));
 const getKnowledgeSyncConnector = mock((_id: string) => NOTION_CONNECTOR);
 class ConnectorRateLimitError extends Error {}
-mock.module("@atlas/api/lib/knowledge/connectors", () => ({
+void mock.module("@atlas/api/lib/knowledge/connectors", () => ({
   getKnowledgeSyncConnector,
   registerKnowledgeSyncConnector: () => {},
   listKnowledgeSyncConnectorCatalogIds: () => ["catalog:notion-knowledge"],
@@ -221,14 +221,14 @@ const syncConnectorCollection = mock(async (params: { collectionSlug: string }) 
 // connector-sync (`syncConnectorCollection`); the isolated per-file runner
 // prevents cross-file leaks, and any other export reached later would fail
 // loudly as `undefined is not a function`.
-mock.module("@atlas/api/lib/knowledge/connector-sync", () => ({
+void mock.module("@atlas/api/lib/knowledge/connector-sync", () => ({
   syncConnectorCollection,
 }));
 
 // Partial mock, justified: this file's import graph reaches only the exports
 // stubbed below; the isolated per-file runner prevents cross-file leaks, and an
 // unmocked export reached later fails loudly as `undefined is not a function`.
-mock.module("@atlas/api/lib/content-mode", () => ({
+void mock.module("@atlas/api/lib/content-mode", () => ({
   CONTENT_MODE_TABLES: [],
   makeService: () => ({
     runPublishPhases: () =>
@@ -243,7 +243,7 @@ mock.module("@atlas/api/lib/content-mode", () => ({
 // reachable through this file's import graph — consumes `positiveIntSetting`,
 // so a getters-only partial mock would break at a distance on the next
 // import-graph change. Shape mirrors connector-sync.test.ts.
-mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
+void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   DEFAULT_INGEST_MAX_DOCS: 1000,
   DEFAULT_INGEST_MAX_DOC_BYTES: 1_000_000,
   DEFAULT_INGEST_MAX_BUNDLE_BYTES: 25_000_000,
@@ -257,7 +257,7 @@ mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   },
 }));
 
-mock.module("../admin-router", () => ({
+void mock.module("../admin-router", () => ({
   createAdminRouter: () => new OpenAPIHono(),
   requireOrgContext: () => async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {
     c.set("orgContext", { requestId: "test-req", orgId: CURRENT_ORG });

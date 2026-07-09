@@ -16,12 +16,12 @@ import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/
 
 // Heavy graph: keep the real modules, mock only the I/O boundaries.
 const realInternal = await import("@atlas/api/lib/db/internal");
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   internalQuery: mock(async () => []),
   hasInternalDB: mock(() => true),
 }));
-mock.module("@atlas/api/lib/db/connection", () => createConnectionMock({}));
+void mock.module("@atlas/api/lib/db/connection", () => createConnectionMock({}));
 
 // The openapi-generic form-install handler — fully controllable per test.
 let validateConfigImpl: (orgId: string, formData: Record<string, unknown>) => Promise<unknown> = async () => ({
@@ -29,12 +29,12 @@ let validateConfigImpl: (orgId: string, formData: Record<string, unknown>) => Pr
 });
 const validateConfigSpy = mock((orgId: string, formData: Record<string, unknown>) => validateConfigImpl(orgId, formData));
 const realDispatch = await import("@atlas/api/lib/integrations/install/dispatch");
-mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
+void mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
   ...realDispatch,
   getInstallHandler: mock(() => ({ kind: "form", validateConfig: validateConfigSpy })),
 }));
 const realRegister = await import("@atlas/api/lib/integrations/install/register");
-mock.module("@atlas/api/lib/integrations/install/register", () => ({
+void mock.module("@atlas/api/lib/integrations/install/register", () => ({
   ...realRegister,
   registerBuiltinInstallHandlers: mock(() => {}),
 }));

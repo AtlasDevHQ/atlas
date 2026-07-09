@@ -173,7 +173,7 @@ function rawConfigFromLegacy(legacy: {
 
 // Core ResidencyError stub — the residency Noop layer lazy-requires it
 // when EnterpriseLayer constructs (slice 2 #2564 contract).
-mock.module("@atlas/api/lib/residency/errors", () => ({
+void mock.module("@atlas/api/lib/residency/errors", () => ({
   ResidencyError: class ResidencyError extends Error {
     public readonly _tag = "ResidencyError" as const;
     constructor(args: { message: string; code: string }) {
@@ -185,7 +185,7 @@ mock.module("@atlas/api/lib/residency/errors", () => ({
 // Core model-routing errors mocked so the route's
 // `domainError(ModelConfigError, ...)` mapping uses the same class
 // instances the mocked ModelRouter throws.
-mock.module("@atlas/api/lib/model-routing/errors", () => ({
+void mock.module("@atlas/api/lib/model-routing/errors", () => ({
   ModelConfigError: MockModelConfigError,
   ModelConfigDecryptError: MockModelConfigDecryptError,
 }));
@@ -197,7 +197,7 @@ mock.module("@atlas/api/lib/model-routing/errors", () => ({
 // The mocked aggregator binds the test's `mockXxx` functions to the
 // Tag so existing test fixtures (mockSetWorkspaceModelConfig.mock.calls,
 // mockReconcileModelDeprecation, etc.) keep working.
-mock.module("@atlas/ee/layers", () => ({
+void mock.module("@atlas/ee/layers", () => ({
   EELayer: Layer.unwrapEffect(
     Effect.sync(() => {
       // oxlint-disable-next-line @typescript-eslint/no-require-imports
@@ -220,7 +220,7 @@ mock.module("@atlas/ee/layers", () => ({
 // leftover transitive import path (e.g. another EE module re-exporting
 // from it) loads without partial-export errors. The route no longer
 // imports from this path directly post-#2565.
-mock.module("@atlas/ee/platform/model-routing", () => ({
+void mock.module("@atlas/ee/platform/model-routing", () => ({
   getWorkspaceModelConfig: mockGetWorkspaceModelConfig,
   getWorkspaceModelConfigRaw: mockGetWorkspaceModelConfigRaw,
   setWorkspaceModelConfig: mockSetWorkspaceModelConfig,
@@ -249,7 +249,7 @@ const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(
   () => {},
 );
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
@@ -308,7 +308,7 @@ const mockInvalidateAnthropicCatalog: Mock<(orgId: string) => void> = mock(
   () => {},
 );
 
-mock.module("@atlas/api/lib/anthropic-catalog", () => ({
+void mock.module("@atlas/api/lib/anthropic-catalog", () => ({
   getAnthropicCatalog: mockGetAnthropicCatalog,
   invalidateAnthropicCatalog: mockInvalidateAnthropicCatalog,
   AnthropicCatalogUnauthorized: MockAnthropicCatalogUnauthorized,
@@ -364,7 +364,7 @@ const mockInvalidateOpenAICatalog: Mock<(orgId: string) => void> = mock(
   () => {},
 );
 
-mock.module("@atlas/api/lib/openai-catalog", () => ({
+void mock.module("@atlas/api/lib/openai-catalog", () => ({
   getOpenAICatalog: mockGetOpenAICatalog,
   invalidateOpenAICatalog: mockInvalidateOpenAICatalog,
   OpenAICatalogUnauthorized: MockOpenAICatalogUnauthorized,
@@ -421,7 +421,7 @@ const mockInvalidateBedrockCatalog: Mock<(orgId: string) => void> = mock(
   () => {},
 );
 
-mock.module("@atlas/api/lib/bedrock-catalog", () => ({
+void mock.module("@atlas/api/lib/bedrock-catalog", () => ({
   getBedrockCatalog: mockGetBedrockCatalog,
   invalidateBedrockCatalog: mockInvalidateBedrockCatalog,
   BedrockCatalogUnauthorized: MockBedrockCatalogUnauthorized,

@@ -37,7 +37,7 @@ const whitelist = new Set([
 // Mirror every value export of the `@atlas/api/lib/semantic` barrel
 // (lib/semantic/index.ts) — mock-all-exports so no consumer silently reads an
 // undefined. The `_resetOrg*` helpers live in whitelist.ts, not the barrel.
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => whitelist,
   getWhitelistedTablesStrict: () => whitelist,
   SemanticLayerScanError: class SemanticLayerScanError extends Error {},
@@ -54,7 +54,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
 // Mutable so the MySQL case can flip the resolved dialect for one test.
 let dbTypeForTest = "postgres";
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: { getDBType: () => dbTypeForTest },
     detectDBType: () => dbTypeForTest,

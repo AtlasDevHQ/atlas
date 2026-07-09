@@ -5,7 +5,7 @@ import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 // so the module picks up the mocked withSpan.
 const spanCalls: { name: string; attributes: Record<string, unknown> }[] = [];
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (
     name: string,
     attributes: Record<string, unknown>,

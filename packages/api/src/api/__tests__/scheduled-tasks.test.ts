@@ -35,7 +35,7 @@ const mockGetClientIP: Mock<(req: Request) => string | null> = mock(
   () => null,
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mockGetClientIP,
@@ -43,7 +43,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 
 // Skip EE IP allowlist check — no real DB in tests
 const { Effect: EffectLib } = await import("effect");
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: mock(() => EffectLib.succeed({ allowed: true })),
 }));
 
@@ -72,7 +72,7 @@ const mockListAllRuns = mock((): Promise<unknown> =>
 );
 const mockValidateCronExpression = mock((): unknown => ({ valid: true }));
 
-mock.module("@atlas/api/lib/scheduled-tasks", () => ({
+void mock.module("@atlas/api/lib/scheduled-tasks", () => ({
   createScheduledTask: mockCreateScheduledTask,
   getScheduledTask: mockGetScheduledTask,
   listScheduledTasks: mockListScheduledTasks,
@@ -87,7 +87,7 @@ mock.module("@atlas/api/lib/scheduled-tasks", () => ({
 // walk the real email/Slack resolution chains; the chain itself is covered
 // in lib/scheduler/__tests__/sender-preflight.test.ts.
 const mockCheckDeliverySenders = mock((): Promise<string[]> => Promise.resolve([]));
-mock.module("@atlas/api/lib/scheduler/sender-preflight", () => ({
+void mock.module("@atlas/api/lib/scheduler/sender-preflight", () => ({
   checkDeliverySenders: mockCheckDeliverySenders,
   EMAIL_NO_SENDER_WARNING: "email-warning-stub",
   SLACK_NO_SENDER_WARNING: "slack-warning-stub",
@@ -95,7 +95,7 @@ mock.module("@atlas/api/lib/scheduler/sender-preflight", () => ({
 
 // --- Other mocks (required by Hono app index.ts) ---
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(() =>
     Promise.resolve({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
@@ -106,7 +106,7 @@ mock.module("@atlas/api/lib/agent", () => ({
   ),
 }));
 
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   listConversations: mock(() => Promise.resolve({ conversations: [], total: 0 })),
   getConversation: mock(() => Promise.resolve(null)),
   deleteConversation: mock(() => Promise.resolve(false)),
@@ -138,7 +138,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -150,17 +150,17 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mock(() => Promise.resolve([])),
   getStartupWarnings: () => [],
 }));
@@ -169,7 +169,7 @@ const mockRunTick = mock((): Promise<{ tasksFound: number; tasksDispatched: numb
   Promise.resolve({ tasksFound: 0, tasksDispatched: 0, tasksCompleted: 0, tasksFailed: 0 }),
 );
 
-mock.module("@atlas/api/lib/scheduler/engine", () => ({
+void mock.module("@atlas/api/lib/scheduler/engine", () => ({
   triggerTask: mock(() => Promise.resolve()),
   runTick: mockRunTick,
   getScheduler: () => ({ start: () => {}, stop: () => {}, isRunning: () => false }),
@@ -177,7 +177,7 @@ mock.module("@atlas/api/lib/scheduler/engine", () => ({
 }));
 
 const mockGetConfig = mock(() => ({ scheduler: { backend: "bun" } }));
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: mockGetConfig,
   loadConfig: mock(() => Promise.resolve({})),
   configFromEnv: mock(() => ({})),

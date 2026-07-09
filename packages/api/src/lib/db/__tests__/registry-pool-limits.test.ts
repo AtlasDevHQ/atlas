@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { resolve } from "path";
 
 // Mock database drivers
-mock.module("pg", () => ({
+void mock.module("pg", () => ({
   Pool: class MockPool {
     constructor(public opts?: Record<string, unknown>) {}
     async query() { return { rows: [], fields: [] }; }
@@ -16,7 +16,7 @@ mock.module("pg", () => ({
   },
 }));
 
-mock.module("mysql2/promise", () => ({
+void mock.module("mysql2/promise", () => ({
   createPool: (opts: Record<string, unknown>) => ({
     _opts: opts,
     async getConnection() {

@@ -6,7 +6,7 @@ import * as path from "path";
 // Force the disk branch even when the test env has DATABASE_URL set —
 // the consolidated `listEntities` requires `orgId` whenever an internal
 // DB is configured, and these cases test the disk fallback explicitly.
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => false,
   internalQuery: async () => [],
   internalExecute: async () => {},

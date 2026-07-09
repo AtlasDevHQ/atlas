@@ -38,7 +38,7 @@ const mockGetClientIP: Mock<(req: Request) => string | null> = mock(
   () => null,
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mockGetClientIP,
@@ -56,18 +56,18 @@ const mockRunAgent = mock(() =>
   }),
 );
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mockRunAgent,
 }));
 
-mock.module("@atlas/api/lib/tools/python-stream", () => ({
+void mock.module("@atlas/api/lib/tools/python-stream", () => ({
   setStreamWriter: () => {},
   clearStreamWriter: () => {},
   getStreamWriter: () => undefined,
 }));
 
 // Mock modules needed by health and auth routes (loaded via ../index)
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -79,25 +79,25 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
   explore: { type: "function" },
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mockValidateEnvironment,
   getStartupWarnings: () => [],
 }));
 
 // Mock action tools so buildRegistry({ includeActions: true }) works
 // without needing JIRA/email credentials or external services.
-mock.module("@atlas/api/lib/tools/actions", () => ({
+void mock.module("@atlas/api/lib/tools/actions", () => ({
   createJiraTicket: {
     name: "createJiraTicket",
     description: "### Create JIRA Ticket\nMock",
@@ -164,7 +164,7 @@ const mockVerifyGroupBelongsToOrg = mock(
   (): Promise<"ok" | "not_found" | "no_db" | "error"> => Promise.resolve("ok"),
 );
 
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mockCreateConversation,
   addMessage: mockAddMessage,
   persistAssistantSteps: mockPersistAssistantSteps,
@@ -197,7 +197,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
 
 const mockGetPluginTools: Mock<() => unknown> = mock(() => undefined);
 
-mock.module("@atlas/api/lib/plugins/tools", () => ({
+void mock.module("@atlas/api/lib/plugins/tools", () => ({
   getPluginTools: mockGetPluginTools,
   setPluginTools: () => {},
   getContextFragments: () => [],
@@ -227,11 +227,11 @@ const mockCheckPlanLimits: Mock<() => Promise<PlanCheckMockResult>> = mock(
 // Residency precheck (chat.ts:~510) fires before the abuse gate when a
 // request carries `activeOrganizationId`. Default to "not migrating" so
 // the abuse branch is the only non-200 source in the #2269 test below.
-mock.module("@atlas/api/lib/residency/readonly", () => ({
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: mock(async () => false),
 }));
 
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkPlanLimits: mockCheckPlanLimits,
   // Mocking partial named exports causes a SyntaxError elsewhere in
   // the suite (per CLAUDE.md "Mock all exports"). These are no-ops
@@ -255,7 +255,7 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
 const mockCheckAbuseStatus: Mock<(orgId: string) => { level: string; throttleDelayMs?: number }> =
   mock(() => ({ level: "none" }));
 
-mock.module("@atlas/api/lib/security/abuse", () => ({
+void mock.module("@atlas/api/lib/security/abuse", () => ({
   checkAbuseStatus: mockCheckAbuseStatus,
   recordQueryEvent: mock(() => {}),
   listFlaggedWorkspaces: mock(() => []),

@@ -65,7 +65,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
@@ -74,17 +74,17 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "simple-key",
   resetAuthModeCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/startup", () => ({
+void mock.module("@atlas/api/lib/startup", () => ({
   validateEnvironment: mock(() => Promise.resolve([])),
   getStartupWarnings: mock(() => []),
 }));
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       get: () => null,
@@ -100,7 +100,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -120,7 +120,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   () => Promise.resolve([]),
 );
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
   makeInternalDBShimLayer: () =>
     makeMockInternalDBShimLayer(mockInternalQuery, { available: mockHasInternalDB }),
@@ -185,7 +185,7 @@ const mockDeleteEmailInstallationByOrg: Mock<(...args: unknown[]) => Promise<boo
   async () => true,
 );
 
-mock.module("@atlas/api/lib/email/store", () => ({
+void mock.module("@atlas/api/lib/email/store", () => ({
   EMAIL_PROVIDERS: EMAIL_PROVIDERS_MOCK,
   getEmailInstallationByOrg: mockGetEmailInstallationByOrg,
   saveEmailInstallation: mockSaveEmailInstallation,
@@ -208,7 +208,7 @@ const mockSendEmailWithTransport: Mock<(...args: unknown[]) => Promise<DeliveryR
   async () => ({ success: true, provider: "resend" } as DeliveryResult),
 );
 
-mock.module("@atlas/api/lib/email/delivery", () => ({
+void mock.module("@atlas/api/lib/email/delivery", () => ({
   sendEmail: mockSendEmail,
   sendEmailWithTransport: mockSendEmailWithTransport,
   // The baseline brand sender reuses this seam constant (#3889) — keep the
@@ -227,7 +227,7 @@ mock.module("@atlas/api/lib/email/delivery", () => ({
 
 // --- Other mocks needed by the admin router ---
 
-mock.module("@atlas/api/lib/cache", () => ({
+void mock.module("@atlas/api/lib/cache", () => ({
   getCache: mock(() => ({ get: () => null, set: () => {}, delete: () => false, flush: () => {}, stats: () => ({}) })),
   cacheEnabled: mock(() => true),
   setCacheBackend: mock(() => {}),
@@ -237,11 +237,11 @@ mock.module("@atlas/api/lib/cache", () => ({
   buildCacheKey: mock(() => "mock-key"),
 }));
 
-mock.module("@atlas/api/lib/workspace", () => ({
+void mock.module("@atlas/api/lib/workspace", () => ({
   checkWorkspaceStatus: mock(async () => ({ allowed: true })),
 }));
 
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+void mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   buildLearnedPatternsSection: async () => "",
   getRelevantPatterns: async () => [],
   buildRetrievalQuery: () => "",
@@ -251,7 +251,7 @@ mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   _resetPatternCache: () => {},
 }));
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: mock(() => []),
   getSettingsRegistry: mock(() => []),
   getSettingDefinition: mock(() => undefined),
@@ -266,7 +266,7 @@ mock.module("@atlas/api/lib/settings", () => ({
   isSaasModeForGuard: mock(() => false), // #3389 — admin settings write gates probe via this
 }));
 
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     describe: () => [],
     get: () => undefined,
@@ -281,7 +281,7 @@ mock.module("@atlas/api/lib/plugins/registry", () => ({
   PluginRegistry: class {},
 }));
 
-mock.module("@atlas/api/lib/plugins/settings", () => ({
+void mock.module("@atlas/api/lib/plugins/settings", () => ({
   loadPluginSettings: mock(async () => 0),
   savePluginEnabled: mock(async () => {}),
   savePluginConfig: mock(async () => {}),
@@ -289,11 +289,11 @@ mock.module("@atlas/api/lib/plugins/settings", () => ({
   getAllPluginSettings: mock(async () => []),
 }));
 
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: mock(async () => {}),
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
   explore: { type: "function" },
@@ -301,7 +301,7 @@ mock.module("@atlas/api/lib/tools/explore", () => ({
   invalidateOrgExploreBackends: () => {},
 }));
 
-mock.module("@atlas/api/lib/agent", () => ({
+void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(() =>
     Promise.resolve({
       toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
@@ -310,9 +310,9 @@ mock.module("@atlas/api/lib/agent", () => ({
   ),
 }));
 
-mock.module("@atlas/api/lib/tools/actions", () => ({}));
+void mock.module("@atlas/api/lib/tools/actions", () => ({}));
 
-mock.module("@atlas/api/lib/conversations", () => ({
+void mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve(null)),
   addMessage: mock(() => {}),
   persistAssistantSteps: mock(() => {}),
@@ -344,7 +344,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
-mock.module("@atlas/api/lib/auth/server", () => ({
+void mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthServer: mock(() => ({ handler: mock(() => Promise.resolve(new Response("{}"))) })),
 }));
 
@@ -368,7 +368,7 @@ const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(
   () => {},
 );
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,
@@ -378,7 +378,7 @@ mock.module("@atlas/api/lib/audit", async () => {
   };
 });
 
-mock.module("@atlas/api/lib/scheduler-store", () => ({
+void mock.module("@atlas/api/lib/scheduler-store", () => ({
   listScheduledTasks: mock(async () => []),
   getScheduledTask: mock(async () => null),
   createScheduledTask: mock(async () => ({})),
@@ -389,11 +389,11 @@ mock.module("@atlas/api/lib/scheduler-store", () => ({
   scheduledTaskBelongsToUser: mock(async () => false),
 }));
 
-mock.module("@atlas/api/lib/scheduler", () => ({
+void mock.module("@atlas/api/lib/scheduler", () => ({
   getSchedulerEngine: mock(() => null),
 }));
 
-mock.module("@atlas/api/lib/scheduler/preview", () => ({
+void mock.module("@atlas/api/lib/scheduler/preview", () => ({
   previewSchedule: () => [],
 }));
 

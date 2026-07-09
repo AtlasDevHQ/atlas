@@ -9,19 +9,19 @@ import { mockIsSupportedProvider, mockGetMissingProviderConfig } from "./provide
 // ---------------------------------------------------------------------------
 
 // Mock fs — semantic layer check passes, container detection skipped
-mock.module("fs", () => ({
+void mock.module("fs", () => ({
   existsSync: () => false,
   readdirSync: () => ["orders.yml"],
 }));
 
 // Mock db/connection — avoid real DB imports
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
   }),
 );
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",
   // Required-config SSOT (#3200) — startup.ts's checkProviderApiKey consumes the
   // set-based check; shared fixture mirrors real providers.ts semantics.
@@ -41,7 +41,7 @@ mock.module("@atlas/api/lib/providers", () => ({
 let mockNsjailBinaryPath: string | null = null;
 let mockCapabilityResult: { ok: boolean; error?: string } = { ok: true };
 
-mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({
+void mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({
   findNsjailBinary: () => mockNsjailBinaryPath,
   testNsjailCapabilities: async () => mockCapabilityResult,
   isNsjailAvailable: () => mockNsjailBinaryPath !== null,
@@ -51,7 +51,7 @@ mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({
 let mockMarkNsjailFailedCalled = false;
 let mockMarkSidecarFailedCalled = false;
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   markNsjailFailed: () => { mockMarkNsjailFailedCalled = true; },
   markSidecarFailed: () => { mockMarkSidecarFailedCalled = true; },
   getExploreBackendType: () => "just-bash",

@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -20,7 +20,7 @@ let mockInstallationByOrg:
   | null = null;
 let mockBotToken: string | null = null;
 
-mock.module("@atlas/api/lib/slack/store", () => ({
+void mock.module("@atlas/api/lib/slack/store", () => ({
   ENV_TEAM_ID: "env",
   KEY_PREFIX: "slack:installation:",
   FIELD: {
@@ -44,7 +44,7 @@ let mockListChannelsResult:
   | { ok: true; channels: SlackChannelSummary[] }
   | { ok: false; error: string } = { ok: true, channels: [] };
 
-mock.module("@atlas/api/lib/slack/api", () => ({
+void mock.module("@atlas/api/lib/slack/api", () => ({
   slackAPI: mock(async () => ({ ok: false, error: "not_mocked" })),
   postMessage: mock(async () => ({ ok: false, error: "not_mocked" })),
   updateMessage: mock(async () => ({ ok: false, error: "not_mocked" })),

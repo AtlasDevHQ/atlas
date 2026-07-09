@@ -98,7 +98,7 @@ function restDatasourceStub(id: string, groupId: string | null = null): RestData
   } as unknown as RestDatasource;
 }
 
-mock.module("@atlas/api/lib/providers", () => ({
+void mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
   getProviderType: () => "anthropic" as const,
   getModelFromWorkspaceConfig: () => mockModel,
@@ -109,7 +109,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   isGatewayAnthropicModel: (modelId: string) => modelId.includes("anthropic") || modelId.includes("claude"),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -134,7 +134,7 @@ function makeMockDB(id: string) {
   };
 }
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => makeMockDB("default"),
     connections: {
@@ -152,7 +152,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
 );
 
 // Inject a fixed routing context — three members, primary us-int.
-mock.module("@atlas/api/lib/env-routing/lookup", () => ({
+void mock.module("@atlas/api/lib/env-routing/lookup", () => ({
   loadGroupRoutingContext: async (_orgId: string | undefined, currentMember: string) =>
     // A sentinel connection that resolves to NO group (1×1, ungrouped) so the
     // #3044 "no environment context" path is reachable; everything else is the
@@ -162,7 +162,7 @@ mock.module("@atlas/api/lib/env-routing/lookup", () => ({
       : { groupId: "prod", members: ["us-int", "eu", "apac"], primaryMember: "us-int", currentMember, degraded: false },
 }));
 
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({ get: () => null, set: () => {}, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),
   buildCacheKey: () => "mock-key",
   cacheEnabled: () => false,
@@ -175,7 +175,7 @@ mock.module("@atlas/api/lib/cache/index", () => ({
 // #3044 — capture the agent loop's REST resolver call. Returns [] so the REST
 // block is a no-op (no representation built); the existing scope-routing tests
 // don't set an org id, so `agent.ts` short-circuits to [] before this is reached.
-mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
+void mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
   resolveWorkspaceRestDatasources: async (orgId: string, deps: unknown) => {
     capturedRestResolveArgs = { orgId, deps };
     return restResolveResult;
@@ -198,7 +198,7 @@ mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
 // module for an un-mocked name). The module's three remaining exports —
 // `RepresentationMode`, `AgentRepresentation`, `BuildRepresentationOptions` — are
 // type-only and erased at runtime, so there is nothing to stub for them.
-mock.module("@atlas/api/lib/openapi/representation", () => ({
+void mock.module("@atlas/api/lib/openapi/representation", () => ({
   REPRESENTATION_MODES: ["operation-graph", "semantic-yaml"] as const,
   RepresentationNotImplementedError: class extends Error {},
   buildAgentRepresentation: () => ({

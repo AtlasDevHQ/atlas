@@ -18,7 +18,7 @@ import type { ExecuteSqlSuccessResult } from "@useatlas/types";
 
 const whitelistedTables = new Set(["companies"]);
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => whitelistedTables,
   loadOrgWhitelist: async () => new Map(),
   invalidateOrgWhitelist: () => {},
@@ -43,7 +43,7 @@ const mockDBConnection = {
 // dashboard parameter binding is unsupported (fail-closed rejection).
 let mockDbType = "postgres";
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnection,
     connections: {
@@ -54,21 +54,21 @@ mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
-mock.module("@atlas/api/lib/auth/audit", () => ({
+void mock.module("@atlas/api/lib/auth/audit", () => ({
   logQueryAudit: () => {},
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /password|secret/i,
   maskConnectionUrl: (url: string) => url,
 }));
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_name: string, _attrs: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
+void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   withSourceSlot: <A, E>(_sourceId: string, effect: Effect.Effect<A, E>) => effect,
 }));
 
@@ -78,7 +78,7 @@ let cacheIsEnabled = false;
 let cacheEntry:
   | { columns: string[]; rows: Record<string, unknown>[]; cachedAt: number; ttl: number; executionMs?: number }
   | null = null;
-mock.module("@atlas/api/lib/cache/index", () => ({
+void mock.module("@atlas/api/lib/cache/index", () => ({
   cacheEnabled: () => cacheIsEnabled,
   getCache: () => ({ get: () => cacheEntry, set: () => {} }),
   buildCacheKey: () => "seam-test-key",
@@ -88,7 +88,7 @@ mock.module("@atlas/api/lib/cache/index", () => ({
 // Captures what SQL string the beforeQuery hook receives — the hook-input
 // contract test asserts the per-path derivation (original vs bound SQL).
 let hookSqlSeen: string[] = [];
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
   dispatchMutableHook: async (_name: string, ctx: { sql: string }) => {
     hookSqlSeen.push(ctx.sql);
@@ -98,7 +98,7 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
 
 // Row limit is a mutable knob so the auto-LIMIT test can pin a distinctive value.
 let rowLimitSetting = "1000";
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string) => {
     if (key === "ATLAS_ROW_LIMIT") return rowLimitSetting;
     if (key === "ATLAS_QUERY_TIMEOUT") return "30000";
@@ -119,7 +119,7 @@ mock.module("@atlas/api/lib/settings", () => ({
 // RLS — mutable knobs: disabled by default; the injection test enables it
 // and asserts the injected predicate reaches the driver.
 let rlsConfigEnabled = false;
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () =>
     rlsConfigEnabled
       ? { rls: { enabled: true, policies: [{ tables: ["*"], column: "tenant_id", claim: "tenantId" }] } }
@@ -134,7 +134,7 @@ let rlsGroupsSeen: unknown[] = [];
 // pins that the reuse branch surfaces the right tables — a stale/wrong set
 // would resolve the wrong RLS filters (an RLS-bypass class bug).
 let rlsTablesSeen: Set<string>[] = [];
-mock.module("@atlas/api/lib/rls", () => ({
+void mock.module("@atlas/api/lib/rls", () => ({
   resolveRLSFilters: (_user: unknown, queriedTables: Set<string>) => {
     rlsTablesSeen.push(queriedTables);
     return rlsConfigEnabled
@@ -155,7 +155,7 @@ let requestContextValue: {
   user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
 };
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -186,7 +186,7 @@ const mockHasApprovedRequest = mock(() => Effect.succeed(false));
 // module-load contract (docs/development/testing.md).
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
-mock.module("@atlas/api/lib/governance/errors", () => ({
+void mock.module("@atlas/api/lib/governance/errors", () => ({
   ApprovalError: class ApprovalError extends Error {
     public readonly _tag = "ApprovalError" as const;
     public readonly code: string;
@@ -197,19 +197,19 @@ mock.module("@atlas/api/lib/governance/errors", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/residency/errors", () => ({
+void mock.module("@atlas/api/lib/residency/errors", () => ({
   ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
 }));
-mock.module("@atlas/api/lib/compliance/errors", () => ({
+void mock.module("@atlas/api/lib/compliance/errors", () => ({
   ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
   ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
 }));
-mock.module("@atlas/api/lib/model-routing/errors", () => ({
+void mock.module("@atlas/api/lib/model-routing/errors", () => ({
   ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
   ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
 }));
 
-mock.module("@atlas/ee/layers", () => {
+void mock.module("@atlas/ee/layers", () => {
   // oxlint-disable-next-line @typescript-eslint/no-require-imports
   const { Layer, Effect: E } = require("effect") as typeof import("effect");
   return {
@@ -237,7 +237,7 @@ mock.module("@atlas/ee/layers", () => {
   };
 });
 
-mock.module("@atlas/ee/governance/approval", () => ({
+void mock.module("@atlas/ee/governance/approval", () => ({
   checkApprovalRequired: mockCheckApprovalRequired,
   createApprovalRequest: mockCreateApprovalRequest,
   hasApprovedRequest: mockHasApprovedRequest,

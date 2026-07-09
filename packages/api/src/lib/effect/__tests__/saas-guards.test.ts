@@ -34,7 +34,7 @@ let capturedLogWarns: Array<{ obj: unknown; msg: unknown }> = [];
 const recordWarn = (obj: unknown, msg?: unknown) => {
   capturedLogWarns.push({ obj, msg });
 };
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     error: recordError,
     warn: recordWarn,
@@ -57,7 +57,7 @@ let mockSettingProvider: string | undefined;
 // BillingConfigGuardLive tests (#3703) exercise the settings-backed price path
 // (a price set only in the registry, not in env). Cleared per billing test.
 let mockSettingOverrides: Record<string, string> = {};
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   // Mirror the real `getSetting` tier chain closely enough for the guards:
   // explicit test override → ATLAS_PROVIDER stub → env fallback. The price-ID
   // settings are platform-scoped with an env fallback tier, so falling through
@@ -110,7 +110,7 @@ import type {
 // getStripeClient() → null. Reset in each test's setup.
 let mockStripePrices: Record<string, { livemode: boolean }> = {};
 let mockStripeClientNull = false;
-mock.module("@atlas/api/lib/billing/stripe-client", () => ({
+void mock.module("@atlas/api/lib/billing/stripe-client", () => ({
   getStripeClient: () =>
     mockStripeClientNull
       ? null
@@ -133,7 +133,7 @@ mock.module("@atlas/api/lib/billing/stripe-client", () => ({
 // returns an all-allowed policy (reachable). Reset per test. Full export
 // surface mocked per mock-all-exports.
 let mockPolicyStoreThrows = false;
-mock.module("@atlas/api/lib/mcp/action-policy", () => ({
+void mock.module("@atlas/api/lib/mcp/action-policy", () => ({
   MCP_ACTION_CATEGORIES: [],
   MCP_ACTION_CATEGORY_META: [],
   isMcpActionCategory: () => false,

@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { resolve } from "path";
 
 // Mock pg — include pool stats properties
-mock.module("pg", () => ({
+void mock.module("pg", () => ({
   Pool: class MockPool {
     totalCount = 2;
     idleCount = 1;
@@ -18,7 +18,7 @@ mock.module("pg", () => ({
   },
 }));
 
-mock.module("mysql2/promise", () => ({
+void mock.module("mysql2/promise", () => ({
   createPool: () => ({
     async getConnection() {
       return { async execute() { return [[], []]; }, release() {} };

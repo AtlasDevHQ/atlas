@@ -15,7 +15,7 @@ let mockHasDB = true;
 const dbCalls: Array<{ sql: string; params: unknown[] }> = [];
 let nextRows: Record<string, unknown>[] = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasDB,
   internalQuery: async (sql: string, params: unknown[]) => {
     dbCalls.push({ sql, params });

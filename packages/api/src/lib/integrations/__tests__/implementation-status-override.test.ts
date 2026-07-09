@@ -395,12 +395,12 @@ describe("runImplementationStatusOverrideBoot (discriminated outcomes)", () => {
   let hasInternalDBReturns = true;
   let configReturns: { overrideImplementationStatus?: Record<string, "available" | "coming_soon"> } | null = {};
 
-  mock.module("@atlas/api/lib/db/internal", () => ({
+  void mock.module("@atlas/api/lib/db/internal", () => ({
     hasInternalDB: () => hasInternalDBReturns,
     getInternalDB: () => ({ query: mockQuery }),
   }));
 
-  mock.module("@atlas/api/lib/config", () => ({
+  void mock.module("@atlas/api/lib/config", () => ({
     getConfig: () => configReturns,
   }));
 

@@ -34,7 +34,7 @@ const mockGetScheduledTask = mock(() =>
 );
 const mockUpdateRunDeliveryStatus = mock((): void => {});
 
-mock.module("@atlas/api/lib/scheduled-tasks", () => ({
+void mock.module("@atlas/api/lib/scheduled-tasks", () => ({
   getScheduledTask: mockGetScheduledTask,
   updateRunDeliveryStatus: mockUpdateRunDeliveryStatus,
   getTasksDueForExecution: mock(() => Promise.resolve([])),
@@ -67,7 +67,7 @@ const mockLoadActorUser = mock<(userId: string, orgId: string | null) => Promise
     activeOrganizationId: "org-1",
   }),
 );
-mock.module("@atlas/api/lib/auth/actor", () => ({
+void mock.module("@atlas/api/lib/auth/actor", () => ({
   loadActorUser: mockLoadActorUser,
   botActorUser: mock(() => ({ id: "bot", mode: "simple-key", label: "bot" })),
 }));
@@ -80,14 +80,14 @@ const mockExecuteAgentQuery = mock(() => Promise.resolve({
   steps: 0,
   usage: { totalTokens: 0 },
 }));
-mock.module("@atlas/api/lib/agent-query", () => ({
+void mock.module("@atlas/api/lib/agent-query", () => ({
   executeAgentQuery: mockExecuteAgentQuery,
 }));
 
 const mockDeliverResult = mock(() =>
   Promise.resolve({ attempted: 0, succeeded: 0, failed: 0 }),
 );
-mock.module("../delivery", () => ({
+void mock.module("../delivery", () => ({
   deliverResult: mockDeliverResult,
 }));
 

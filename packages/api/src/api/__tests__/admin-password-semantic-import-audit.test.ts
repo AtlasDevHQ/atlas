@@ -41,7 +41,7 @@ const mockChangePassword: Mock<(opts: unknown) => Promise<unknown>> = mock(
   async () => ({ success: true }),
 );
 
-mock.module("@atlas/api/lib/auth/server", () => ({
+void mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => ({
     api: { changePassword: mockChangePassword },
   }),
@@ -56,7 +56,7 @@ mock.module("@atlas/api/lib/auth/server", () => ({
 const mockImportFromDisk: Mock<(orgId: string, opts?: { connectionId?: string; sourceDir?: string }) => Promise<unknown>> = mock(
   async () => ({ imported: 12, skipped: 3, total: 15, entries: [] }),
 );
-mock.module("@atlas/api/lib/semantic/sync", () => ({
+void mock.module("@atlas/api/lib/semantic/sync", () => ({
   syncEntityToDisk: mock(async () => {}),
   syncEntityDeleteFromDisk: async () => {},
   syncAllEntitiesToDisk: async () => 0,
@@ -82,7 +82,7 @@ interface AuditEntry {
 
 const mockLogAdminAction: Mock<(entry: AuditEntry) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/audit", async () => {
+void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
   return {
     logAdminAction: mockLogAdminAction,

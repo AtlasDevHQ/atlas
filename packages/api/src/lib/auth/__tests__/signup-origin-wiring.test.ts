@@ -45,7 +45,7 @@ const mockLogError: Mock<(...args: unknown[]) => void> = mock(() => {});
 const mockLogInfo: Mock<(...args: unknown[]) => void> = mock(() => {});
 const mockLogDebug: Mock<(...args: unknown[]) => void> = mock(() => {});
 
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   runEnterprise: (p: unknown) => runEnterpriseImpl(p),
   getEnterpriseRuntime: () => ({
     runPromise: <A, E>(p: Effect.Effect<A, E, never>) => Effect.runPromise(p),
@@ -56,7 +56,7 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   EnterpriseLayer: Layer.empty,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: mockLogInfo,
     warn: mockLogWarn,

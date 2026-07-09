@@ -19,7 +19,7 @@ import { ResidencyResolver, type ResidencyResolverShape } from "@atlas/api/lib/e
 // --- Mocks ---
 
 let mockAuthMode = "managed";
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => mockAuthMode,
   resetAuthModeCache: () => {},
 }));
@@ -38,7 +38,7 @@ const mockAuthenticate: Mock<() => Promise<{
   }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticate,
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
@@ -52,7 +52,7 @@ const mockRegister: Mock<(id: string, config: Record<string, unknown>) => void> 
 const mockUnregister: Mock<(id: string) => void> = mock(() => {});
 const mockHas: Mock<(id: string) => boolean> = mock(() => true);
 
-mock.module("@atlas/api/lib/db/connection", () =>
+void mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     connections: {
       healthCheck: mockHealthCheck,
@@ -83,7 +83,7 @@ const mockWithDemoSeedLock = mock(
 );
 const mockEncryptUrl: Mock<(url: string) => string> = mock((url: string) => `encrypted:${url}`);
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
   getInternalDB: () => ({ query: async () => ({ rows: [] }) }),
   internalQuery: mockInternalQuery,
@@ -109,7 +109,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: mock(async () => 0),
 }));
 
-mock.module("@atlas/api/lib/semantic", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => new Set(),
   getOrgWhitelistedTables: () => new Set(),
   loadOrgWhitelist: async () => new Map(),
@@ -125,11 +125,11 @@ const mockImportFromDisk: Mock<(orgId: string, options?: { connectionId?: string
   async () => ({ imported: 5, skipped: 0, errors: [], total: 5, dbFailures: 0 }),
 );
 
-mock.module("@atlas/api/lib/semantic/sync", () => ({
+void mock.module("@atlas/api/lib/semantic/sync", () => ({
   importFromDisk: mockImportFromDisk,
 }));
 
-mock.module("@atlas/api/lib/semantic/files", () => ({
+void mock.module("@atlas/api/lib/semantic/files", () => ({
   getSemanticRoot: () => "/mock/semantic",
 }));
 
@@ -137,7 +137,7 @@ mock.module("@atlas/api/lib/semantic/files", () => ({
 // filesystem. Per-test overrides (e.g. to exercise the dev fallback branch)
 // can swap `existsSyncImpl` before invoking the route.
 let existsSyncImpl: (path: string) => boolean = () => true;
-mock.module("fs", () => ({
+void mock.module("fs", () => ({
   existsSync: (path: string) => existsSyncImpl(path),
   promises: {
     readFile: async () => "",
@@ -148,7 +148,7 @@ mock.module("fs", () => ({
   },
 }));
 
-mock.module("@atlas/api/lib/security", () => ({
+void mock.module("@atlas/api/lib/security", () => ({
   maskConnectionUrl: (url: string) => url.replace(/\/\/.*@/, "//***@"),
 }));
 
@@ -162,7 +162,7 @@ const mockLogInfo = mock<LogFn>(() => {});
 const mockLogWarn = mock<LogFn>(() => {});
 const mockLogError = mock<LogFn>(() => {});
 const mockLogDebug = mock<LogFn>(() => {});
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: mockLogInfo,
     warn: mockLogWarn,
@@ -172,7 +172,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
 }));
 
@@ -185,7 +185,7 @@ const mockOnDemoActivated = mock(() => {});
 const mockOnFirstQueryExecuted = mock(() => {});
 const mockOnTeamMemberInvited = mock(() => {});
 const mockOnFeatureExplored = mock(() => {});
-mock.module("@atlas/api/lib/email/hooks", () => ({
+void mock.module("@atlas/api/lib/email/hooks", () => ({
   onUserSignup: mockOnUserSignup,
   onDatabaseConnected: mockOnDatabaseConnected,
   onDemoActivated: mockOnDemoActivated,
@@ -196,7 +196,7 @@ mock.module("@atlas/api/lib/email/hooks", () => ({
 
 const mockSetSetting: Mock<(key: string, value: string, userId?: string, orgId?: string) => Promise<void>> = mock(async () => {});
 
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
   getSettingAuto: () => undefined,
   getSettingLive: async () => undefined,
@@ -211,7 +211,7 @@ mock.module("@atlas/api/lib/settings", () => ({
 }));
 
 // Skip EE IP allowlist check — no real DB in tests
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: mock(() => Effect.succeed({ allowed: true })),
   listIPAllowlistEntries: mock(async () => []),
   addIPAllowlistEntry: mock(async () => ({})),
@@ -254,7 +254,7 @@ const testEnterpriseRuntime = ManagedRuntime.make(
   Layer.succeed(ResidencyResolver, fakeResidencyResolver),
 );
 const realEnterpriseLayer = await import("@atlas/api/lib/effect/enterprise-layer");
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+void mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   ...realEnterpriseLayer,
   getEnterpriseRuntime: () => testEnterpriseRuntime,
 }));

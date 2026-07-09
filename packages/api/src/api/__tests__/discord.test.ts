@@ -28,7 +28,7 @@ const mockSaveDiscordInstallation: Mock<
 
 // admin-integrations.ts still imports the by-org helpers (discord_installations
 // is not dropped by this slice). Mock every export so unrelated routes load.
-mock.module("@atlas/api/lib/discord/store", () => ({
+void mock.module("@atlas/api/lib/discord/store", () => ({
   saveDiscordInstallation: mockSaveDiscordInstallation,
   getDiscordInstallation: mock(() => Promise.resolve(null)),
   getDiscordInstallationByOrg: mock(() => Promise.resolve(null)),
@@ -43,7 +43,7 @@ const mockCheckRateLimit: Mock<() => { allowed: boolean; retryAfterMs?: number }
   () => ({ allowed: true }),
 );
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
+void mock.module("@atlas/api/lib/auth/middleware", () => ({
   checkRateLimit: mockCheckRateLimit,
   authenticateRequest: mockAuthenticateRequest,
   getClientIP: mock(() => "127.0.0.1"),

@@ -30,7 +30,7 @@ import { Hono } from "hono";
 // Both are consulted via dynamic import inside the routers, so mock.module
 // intercepts them; neither router statically imports these modules.
 import * as detectReal from "@atlas/api/lib/auth/detect";
-mock.module("@atlas/api/lib/auth/detect", () => ({
+void mock.module("@atlas/api/lib/auth/detect", () => ({
   ...detectReal,
   detectAuthMode: () => "managed",
 }));
@@ -57,7 +57,7 @@ const stubAuthInstance = {
 // routers consume ONLY `getAuthInstance` from this module — and only via dynamic
 // `import()` inside their handlers — so a light stub is sufficient and nothing
 // else in this test's graph needs the module's other exports.
-mock.module("@atlas/api/lib/auth/server", () => ({
+void mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => stubAuthInstance,
 }));
 
@@ -70,7 +70,7 @@ mock.module("@atlas/api/lib/auth/server", () => ({
 // that keeps a tenant from re-opening an operator-disabled feature (#4419).
 import * as settingsReal from "@atlas/api/lib/settings";
 const gateOrgIdCalls: Array<string | undefined> = [];
-mock.module("@atlas/api/lib/settings", () => ({
+void mock.module("@atlas/api/lib/settings", () => ({
   ...settingsReal,
   getSettingLive: async (_key: string, orgId?: string) => {
     gateOrgIdCalls.push(orgId);

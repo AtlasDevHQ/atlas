@@ -16,7 +16,7 @@ import type { ExploreBackend, ExecResult } from "../../tools/explore";
 // ---------------------------------------------------------------------------
 
 // Mock logger (all exports from @atlas/api/lib/logger)
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -47,13 +47,13 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 // Mock tracing (all exports from @atlas/api/lib/tracing)
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async <T>(_name: string, _attrs: unknown, fn: () => Promise<T>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
 // Mock hooks (all exports from @atlas/api/lib/plugins/hooks)
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
+void mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
   dispatchMutableHook: async <T extends Record<string, unknown>, K extends string & keyof T>(
     _hookName: string,
@@ -77,7 +77,7 @@ let mockSandboxPlugins: Array<{
   [k: string]: unknown;
 }> = [];
 
-mock.module("@atlas/api/lib/plugins/registry", () => ({
+void mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     getByType: (type: string) => {
       if (type === "sandbox") return mockSandboxPlugins;

@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 let inserts: Array<{ sql: string; params: unknown[] }> = [];
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   // The hook uses `internalExecute` (void, fire-and-forget). The capture
   // here mirrors the production-side queue — if the hook ever switches back
   // to a Promise-returning API, this mock must be updated to match.
@@ -22,7 +22,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
@@ -31,7 +31,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
-mock.module("@atlas/api/lib/audit/error-scrub", () => ({
+void mock.module("@atlas/api/lib/audit/error-scrub", () => ({
   errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
   causeToError: (cause: unknown) =>
     cause instanceof Error ? cause : new Error(String(cause)),

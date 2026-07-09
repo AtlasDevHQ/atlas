@@ -20,7 +20,7 @@ import { _resetClientRateLimitsForTests } from "../oauth-client";
 const auditCalls: Array<Record<string, unknown>> = [];
 let auditThrows = false;
 
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => {
     auditCalls.push(entry);
     if (auditThrows) {
@@ -43,7 +43,7 @@ mock.module("@atlas/api/lib/audit", () => ({
 let _hasInternalDB = false;
 let _circuitOpen = false;
 let _internalQueryThrows = false;
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => _hasInternalDB,
   internalQuery: async () => {
     if (_internalQueryThrows) throw new Error("synthetic DB outage");
@@ -60,7 +60,7 @@ const noopHistogram = { record: () => {} };
 // up an `undefined` symbol (the bun-test partial-mock failure mode).
 // Only the two rate-limit counters need real capture; the rest are
 // no-op stubs matching the OpenTelemetry surface.
-mock.module("@atlas/api/lib/metrics", () => ({
+void mock.module("@atlas/api/lib/metrics", () => ({
   abuseEscalations: noopCounter,
   mcpToolCalls: noopCounter,
   mcpToolLatency: noopHistogram,
@@ -88,7 +88,7 @@ const logCalls: Array<{
   obj: Record<string, unknown>;
   msg: string;
 }> = [];
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     warn: (obj: Record<string, unknown>, msg: string) =>
       logCalls.push({ level: "warn", obj, msg }),

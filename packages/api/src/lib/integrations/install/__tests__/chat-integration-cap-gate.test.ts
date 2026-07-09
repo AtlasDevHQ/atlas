@@ -29,7 +29,7 @@ const mockCheckChatLimitAndInstall: Mock<
 // Mock every value export — a partial `mock.module()` breaks other importers
 // of the module (CLAUDE.md "mock all exports"). Only the atomic gate is used;
 // the rest are inert no-ops.
-mock.module("@atlas/api/lib/billing/enforcement", () => ({
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
   checkChatIntegrationLimit: () => Promise.resolve({ allowed: true }),
   checkResourceLimit: () => Promise.resolve({ allowed: true }),

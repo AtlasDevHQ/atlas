@@ -51,16 +51,16 @@ const syncEntityToDisk = mock(
   async (_org: string, _name: string, _type: string, _yaml: string, _group?: string | null): Promise<void> => {},
 );
 
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   getEntity,
   upsertEntityForGroup,
   createVersion,
   generateChangeSummary,
   AmbiguousEntityError,
 }));
-mock.module("@atlas/api/lib/semantic", () => ({ invalidateOrgWhitelist }));
-mock.module("@atlas/api/lib/semantic/sync", () => ({ syncEntityToDisk }));
-mock.module("@atlas/api/lib/logger", () => ({
+void mock.module("@atlas/api/lib/semantic", () => ({ invalidateOrgWhitelist }));
+void mock.module("@atlas/api/lib/semantic/sync", () => ({ syncEntityToDisk }));
+void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 

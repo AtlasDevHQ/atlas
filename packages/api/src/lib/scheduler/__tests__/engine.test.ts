@@ -13,7 +13,7 @@ const mockGetScheduledTask = mock((): Promise<unknown> =>
 );
 const mockComputeNextRun = mock((): Date | null => new Date("2025-01-01T09:00:00Z"));
 
-mock.module("@atlas/api/lib/scheduled-tasks", () => ({
+void mock.module("@atlas/api/lib/scheduled-tasks", () => ({
   getTasksDueForExecution: mockGetTasksDueForExecution,
   lockTaskForExecution: mockLockTaskForExecution,
   createTaskRun: mockCreateTaskRun,
@@ -30,7 +30,7 @@ mock.module("@atlas/api/lib/scheduled-tasks", () => ({
   _resetScheduledTasksForTest: mock(() => {}),
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   internalExecute: mock(() => {}),
   internalQuery: mock(() => Promise.resolve([])),
   hasInternalDB: mock(() => true),
@@ -65,11 +65,11 @@ const mockExecuteResult = {
 };
 const mockExecuteScheduledTask = mock(() => Promise.resolve(mockExecuteResult));
 
-mock.module("../executor", () => ({
+void mock.module("../executor", () => ({
   executeScheduledTask: mockExecuteScheduledTask,
 }));
 
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({
     scheduler: {
       maxConcurrentTasks: 5,
@@ -85,7 +85,7 @@ const spanCalls: { name: string; attributes: Record<string, unknown> }[] = [];
 
 const { Effect: EffectModule } = await import("effect");
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (
     name: string,
     attributes: Record<string, unknown>,

@@ -372,7 +372,7 @@ export async function registerPrompts(
       Object.keys(argsSchema).length > 0
         ? { description: d.description, argsSchema }
         : { description: d.description },
-      async (args: Record<string, string> = {}) => {
+      async (args: Record<string, string>) => {
         const start = performance.now();
         let success = true;
         try {

@@ -1,12 +1,11 @@
 import { Badge } from "@/components/ui/badge";
-import type { AbuseLevel } from "@/ui/lib/types";
 
 /**
  * Renders a color-coded badge for an abuse level. Accepts any string so list
  * responses (where the server types the field as a string union) and strictly
  * typed `AbuseLevel` callers can share the same helper.
  */
-export function levelBadge(level: AbuseLevel | string) {
+export function levelBadge(level: string) {
   switch (level) {
     case "warning":
       return (

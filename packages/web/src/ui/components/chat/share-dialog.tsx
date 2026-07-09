@@ -99,7 +99,8 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
         if (!cancelled) setFetchingStatus(false);
       }
     }
-    fetchStatus();
+    // fire-and-forget: load existing share status on mount; errors handled inside
+    void fetchStatus();
 
     return () => { cancelled = true; };
   }, [open, conversationId, onGetShareStatus]);

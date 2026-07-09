@@ -393,7 +393,8 @@ export function UsersPage({ scope }: UsersPageProps) {
         if (!cancelled) setInvitationsLoading(false);
       }
     }
-    fetchInvitations();
+    // fire-and-forget: effect data load; cancellation guarded via `cancelled`
+    void fetchInvitations();
     return () => { cancelled = true; };
   }, [invitationsVersion]);
 
@@ -423,12 +424,14 @@ export function UsersPage({ scope }: UsersPageProps) {
         if (!cancelled) setOrgsLoading(false);
       }
     }
-    fetchOrgs();
+    // fire-and-forget: effect data load; cancellation guarded via `cancelled`
+    void fetchOrgs();
     return () => { cancelled = true; };
   }, [isPlatformScope, inviteOpen, apiUrl, credentials, orgs.length]);
 
   function handleSearch() {
-    setParams({ search: searchInput, page: 1 });
+    // fire-and-forget: URL state navigation
+    void setParams({ search: searchInput, page: 1 });
   }
 
   // Destructive-action handlers return `ok` so the confirm AlertDialog stays

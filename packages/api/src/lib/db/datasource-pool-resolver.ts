@@ -250,7 +250,7 @@ export function resolveDatasourcePoolConfig(
 ): DatasourcePoolConfig {
   if (row.pillar !== "datasource") {
     throw new Error(
-      `DatasourcePoolResolver: pillar must be 'datasource', got '${row.pillar}'`,
+      `DatasourcePoolResolver: pillar must be 'datasource', got '${String(row.pillar)}'`,
     );
   }
   const dbType = catalogSlugToDbType(row.catalogSlug);

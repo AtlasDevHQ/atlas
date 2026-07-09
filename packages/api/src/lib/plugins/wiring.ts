@@ -116,7 +116,7 @@ export async function wireDatasourcePlugins(
     // statically. (Entities/dialect hints attach to a static connection, so
     // they're skipped here too — DB-stored connections carry their own
     // validation dialect via ConnectionPluginMeta at register time.)
-    const createConn = plugin.connection.create;
+    const createConn = plugin.connection.create?.bind(plugin.connection);
     if (typeof createConn !== "function") {
       log.debug(
         { pluginId: plugin.id, dbType: plugin.connection.dbType },
@@ -129,7 +129,7 @@ export async function wireDatasourcePlugins(
       const meta = (plugin.connection.parserDialect || plugin.connection.forbiddenPatterns)
         ? { parserDialect: plugin.connection.parserDialect, forbiddenPatterns: plugin.connection.forbiddenPatterns }
         : undefined;
-      await connRegistry.registerDirect(
+      connRegistry.registerDirect(
         plugin.id,
         conn as Parameters<ConnectionRegistry["registerDirect"]>[1],
         plugin.connection.dbType as Parameters<ConnectionRegistry["registerDirect"]>[2],

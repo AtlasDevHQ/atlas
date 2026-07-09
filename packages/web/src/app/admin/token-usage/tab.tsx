@@ -90,12 +90,14 @@ export function TokenUsageTab() {
   const gateError = findGateError(summaryError, trendsError, usersError);
 
   function applyFilters() {
-    setParams({ from: filters.from, to: filters.to });
+    // fire-and-forget: URL state navigation
+    void setParams({ from: filters.from, to: filters.to });
   }
 
   function clearFilters() {
     setFilters({ from: "", to: "" });
-    setParams({ from: "", to: "" });
+    // fire-and-forget: URL state navigation
+    void setParams({ from: "", to: "" });
   }
 
   return (

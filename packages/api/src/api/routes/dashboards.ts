@@ -219,7 +219,7 @@ function crudFailResponse(reason: CrudFailReason, requestId?: string) {
       return { body: { error: "internal_error", message: "A database error occurred. Please try again.", ...(requestId && { requestId }) }, status: 500 as const };
     default: {
       const _exhaustive: never = reason;
-      return { body: { error: "internal_error", message: `Unexpected failure: ${_exhaustive}`, ...(requestId && { requestId }) }, status: 500 as const };
+      return { body: { error: "internal_error", message: `Unexpected failure: ${String(_exhaustive)}`, ...(requestId && { requestId }) }, status: 500 as const };
     }
   }
 }
@@ -321,7 +321,7 @@ function sharedDashboardFailResponse(reason: SharedDashboardFailReason) {
       return { body: { error: "internal_error", message: "A server error occurred. Please try again." }, status: 500 as const };
     default: {
       const _exhaustive: never = reason;
-      return { body: { error: "internal_error", message: `Unexpected failure: ${_exhaustive}` }, status: 500 as const };
+      return { body: { error: "internal_error", message: `Unexpected failure: ${String(_exhaustive)}` }, status: 500 as const };
     }
   }
 }
@@ -2993,7 +2993,7 @@ authed.openapi(getDashboardSessionRoute, async (c) => {
           return c.json({ error: "internal_error", message: "Could not load session transcript. Please retry.", requestId }, 500);
         default: {
           const _exhaustive: never = result.reason;
-          return c.json({ error: "internal_error", message: `Unhandled: ${_exhaustive}`, requestId }, 500);
+          return c.json({ error: "internal_error", message: `Unhandled: ${String(_exhaustive)}`, requestId }, 500);
         }
       }
     }
@@ -3056,7 +3056,7 @@ authed.openapi(screenshotDashboardRoute, async (c) => {
           return c.json({ error: "render_failed", message: result.message, requestId }, 500);
         default: {
           const _exhaustive: never = result.reason;
-          return c.json({ error: "internal_error", message: `Unhandled: ${_exhaustive}`, requestId }, 500);
+          return c.json({ error: "internal_error", message: `Unhandled: ${String(_exhaustive)}`, requestId }, 500);
         }
       }
     }
@@ -3169,7 +3169,7 @@ authed.openapi(exportDashboardRoute, async (c) => {
           return c.json({ error: "render_failed", message: result.message, requestId }, 500);
         default: {
           const _exhaustive: never = result.reason;
-          return c.json({ error: "internal_error", message: `Unhandled: ${_exhaustive}`, requestId }, 500);
+          return c.json({ error: "internal_error", message: `Unhandled: ${String(_exhaustive)}`, requestId }, 500);
         }
       }
     }

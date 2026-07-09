@@ -84,8 +84,8 @@ function toISOString(value: unknown, field: string): string {
 /** Map a DB row to a WorkspaceRegion wire type with defensive coercion. */
 function rowToWorkspaceRegion(row: Record<string, unknown>): WorkspaceRegion {
   return {
-    workspaceId: String(row.id ?? ""),
-    region: String(row.region ?? ""),
+    workspaceId: String((row.id ?? "") as string),
+    region: String((row.region ?? "") as string),
     assignedAt: toISOString(row.region_assigned_at, "region_assigned_at"),
   };
 }
@@ -199,7 +199,7 @@ export const getWorkspaceRegionAssignment = (
 
     return {
       workspaceId,
-      region: String(rows[0].region),
+      region: String(rows[0].region as string),
       assignedAt: toISOString(rows[0].region_assigned_at, "region_assigned_at"),
     };
   });

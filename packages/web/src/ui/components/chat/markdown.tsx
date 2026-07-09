@@ -19,7 +19,8 @@ function LazyCodeBlock({ language, dark, children }: { language: string; dark: b
 
   useEffect(() => {
     if (_highlighterCache) return;
-    Promise.all([
+    // fire-and-forget: lazy-load the syntax highlighter; setMod handles the result
+    void Promise.all([
       import("react-syntax-highlighter"),
       import("react-syntax-highlighter/dist/esm/styles/prism"),
     ]).then(([sh, styles]) => {
@@ -136,7 +137,7 @@ export const Markdown = memo(function Markdown({
           if (match) {
             return (
               <LazyCodeBlock language={match[1]} dark={dark}>
-                {String(children).replace(/\n$/, "")}
+                {String(children as string).replace(/\n$/, "")}
               </LazyCodeBlock>
             );
           }

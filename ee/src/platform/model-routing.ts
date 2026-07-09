@@ -242,7 +242,7 @@ function validateConfig(
   if (!isValidProvider(config.provider)) {
     return Effect.fail(
       new ModelConfigError({
-        message: `Invalid provider "${config.provider}". Supported: ${MODEL_CONFIG_PROVIDERS.join(", ")}`,
+        message: `Invalid provider "${String(config.provider)}". Supported: ${MODEL_CONFIG_PROVIDERS.join(", ")}`,
         code: "validation",
       }),
     );
@@ -910,7 +910,7 @@ export const testModelConfig = (
 
             default: {
               const _exhaustive: never = config.provider;
-              throw new Error(`Unknown provider: ${_exhaustive}`);
+              throw new Error(`Unknown provider: ${String(_exhaustive)}`);
             }
           }
         } catch (err) {

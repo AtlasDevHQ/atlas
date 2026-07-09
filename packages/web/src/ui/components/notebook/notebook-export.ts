@@ -30,7 +30,7 @@ function toMarkdownTable(
   const divider = `| ${columns.map(() => "---").join(" | ")} |`;
   const body = rows
     .slice(0, 100) // Cap at 100 rows for readability
-    .map((row) => `| ${columns.map((c) => escapeMarkdownTableCell(String(row[c] ?? ""))).join(" | ")} |`)
+    .map((row) => `| ${columns.map((c) => escapeMarkdownTableCell(String((row[c] as string | number | boolean | null | undefined) ?? ""))).join(" | ")} |`)
     .join("\n");
   const truncation =
     rows.length > 100 ? `\n\n*...and ${rows.length - 100} more rows*` : "";
@@ -48,7 +48,7 @@ function toHtmlTable(
     .slice(0, 100)
     .map(
       (row) =>
-        `<tr>${columns.map((c) => `<td>${escapeHtml(String(row[c] ?? ""))}</td>`).join("")}</tr>`,
+        `<tr>${columns.map((c) => `<td>${escapeHtml(String((row[c] as string | number | boolean | null | undefined) ?? ""))}</td>`).join("")}</tr>`,
     )
     .join("\n      ");
   const truncation =

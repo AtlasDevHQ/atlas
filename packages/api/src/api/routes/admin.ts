@@ -3699,7 +3699,7 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
     return c.json({ error: "invalid_request", message: "Missing 'value' in request body." }, 400);
   }
 
-  const value = String(body.value);
+  const value = String(body.value as string | number | boolean);
 
   // Type-specific validation
   if (def.type === "number") {

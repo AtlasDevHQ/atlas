@@ -21,7 +21,7 @@ export function normalizeValue(v: unknown): string | number | null {
   if (typeof v === "bigint") return Number(v);
   if (typeof v === "number") return v;
 
-  const s = String(v).trim();
+  const s = String(v as string).trim();
   if (s === "" || s.toLowerCase() === "null" || s.toLowerCase() === "none") return null;
 
   // Try parsing as number

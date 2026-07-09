@@ -61,6 +61,7 @@ export function parseCSV(csv: string): { headers: string[]; rows: string[][] } {
 /** Serialize columns + rows to a CSV string. Handles commas, quotes, and newlines in values. */
 export function toCsvString(columns: string[], rows: Record<string, unknown>[]): string {
   const escape = (v: unknown) => {
+    // oxlint-disable-next-line @typescript-eslint/no-base-to-string -- intentional default stringification of arbitrary cell values; object cells fall back to "[object Object]" (preserved behavior)
     const s = v == null ? "" : String(v);
     return s.includes(",") || s.includes('"') || s.includes("\n")
       ? `"${s.replace(/"/g, '""')}"`
@@ -142,6 +143,7 @@ export function coerceExcelCell(v: unknown): unknown {
   if (typeof v === "string" && ISO_DATE_RE.test(v) && !isNaN(Date.parse(v))) {
     return new Date(v);
   }
+  // oxlint-disable-next-line @typescript-eslint/no-base-to-string -- intentional default stringification of arbitrary cell values; object cells fall back to "[object Object]" (preserved behavior)
   return String(v);
 }
 
@@ -262,6 +264,7 @@ export function normalizeList<T>(
  * match exactly, so text / number categories never produce a false positive.
  */
 export function categoryMatchesSelection(cellValue: unknown, selectedValue: string): boolean {
+  // oxlint-disable-next-line @typescript-eslint/no-base-to-string -- intentional default stringification of an arbitrary cell value for exact-string comparison; object cells fall back to "[object Object]" (preserved behavior)
   const s = String(cellValue ?? "");
   if (s === selectedValue) return true;
   const datePrefix = /^(\d{4}-\d{2}-\d{2})[T ]/.exec(s);
@@ -276,5 +279,6 @@ export function formatCell(value: unknown): string {
       ? value.toLocaleString()
       : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
   }
+  // oxlint-disable-next-line @typescript-eslint/no-base-to-string -- intentional default stringification of an arbitrary cell value; object cells fall back to "[object Object]" (preserved behavior)
   return String(value);
 }

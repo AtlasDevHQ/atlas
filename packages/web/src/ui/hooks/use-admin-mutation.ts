@@ -308,7 +308,8 @@ export function useAdminMutation<TResponse = unknown>(
     onSuccess: () => {
       // Invalidate all admin-fetch queries so useAdminFetch consumers get fresh data.
       // This is intentionally broad — can be narrowed to specific keys if needed.
-      queryClient.invalidateQueries({ queryKey: [ADMIN_FETCH_QUERY_KEY] });
+      // fire-and-forget: cache invalidation kick-off, no need to await
+      void queryClient.invalidateQueries({ queryKey: [ADMIN_FETCH_QUERY_KEY] });
     },
   });
 

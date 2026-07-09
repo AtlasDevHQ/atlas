@@ -66,7 +66,7 @@ export function generateDeliveryPreview(task: ScheduledTask): DeliveryPreview {
     }
     default: {
       const _exhaustive: never = channel;
-      preview.fallbackMessage = `Unsupported delivery channel: ${_exhaustive}`;
+      preview.fallbackMessage = `Unsupported delivery channel: ${String(_exhaustive)}`;
     }
   }
 

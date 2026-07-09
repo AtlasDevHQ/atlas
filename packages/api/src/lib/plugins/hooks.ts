@@ -22,7 +22,7 @@ const log = createLogger("plugins:hooks");
 
 interface HookEntry<T> {
   matcher?: (ctx: T) => boolean;
-  handler: (ctx: T) => Promise<unknown> | unknown;
+  handler: (ctx: T) => unknown;
 }
 
 type HookName = "beforeQuery" | "afterQuery" | "beforeExplore" | "afterExplore" | "beforeToolCall" | "afterToolCall" | "onRequest" | "onResponse";

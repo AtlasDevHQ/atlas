@@ -43,7 +43,7 @@ export function formatEmailReport(
     const bodyRows = dataset.rows
       .map((row) => {
         const cells = dataset.columns
-          .map((col) => `<td style="padding:6px 12px;border-bottom:1px solid #e9ecef;font-size:13px;color:#212529;">${escapeHtml(String(row[col] ?? ""))}</td>`)
+          .map((col) => `<td style="padding:6px 12px;border-bottom:1px solid #e9ecef;font-size:13px;color:#212529;">${escapeHtml(String((row[col] ?? "") as string))}</td>`)
           .join("");
         return `<tr>${cells}</tr>`;
       })

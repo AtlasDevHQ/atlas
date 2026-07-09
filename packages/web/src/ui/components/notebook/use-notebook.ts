@@ -98,7 +98,10 @@ export function loadNotebookState(
     }
     console.warn(
       `Notebook state for ${conversationId} exists but has unexpected shape (version: ${
-        (parsed as Record<string, unknown>).version ?? "missing"
+        String(
+          (parsed as { version?: string | number | boolean | null }).version ??
+            "missing",
+        )
       }). Discarding saved state.`,
     );
     return null;

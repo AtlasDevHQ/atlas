@@ -1364,8 +1364,8 @@ function DecisionDrillDownPanel() {
   // `0 / 0 reacted` — identical to the legitimate "no calls in window"
   // state, hiding a real backend failure as fake-zero data.
   const refetchAll = () => {
-    events.refetch();
-    aggregate.refetch();
+    void events.refetch(); // fire-and-forget: retry handler, result not awaited
+    void aggregate.refetch(); // fire-and-forget: retry handler, result not awaited
   };
 
   return (

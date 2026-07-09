@@ -53,7 +53,8 @@ export default function AcceptInvitationPage({ params }: PageProps) {
     }
 
     let cancelled = false;
-    (async () => {
+    // fire-and-forget: async IIFE with internal try/catch; cancelled flag guards stale writes
+    void (async () => {
       try {
         const result = await authClient.organization.getInvitation({ query: { id: invitationId } });
         if (cancelled) return;

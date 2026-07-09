@@ -582,7 +582,7 @@ adminOrgs.openapi(listOrgsRoute, async (c) => {
       logo: (o.logo as string) ?? null, metadata: (o.metadata as Record<string, unknown>) ?? null,
       createdAt: String(o.createdAt), memberCount: countMap.get(o.id as string) ?? 0,
       workspaceStatus: (o.workspace_status as string) ?? "active", planTier: (o.plan_tier as string) ?? "free",
-      suspendedAt: o.suspended_at ? String(o.suspended_at) : null, deletedAt: o.deleted_at ? String(o.deleted_at) : null,
+      suspendedAt: o.suspended_at ? String(o.suspended_at as string) : null, deletedAt: o.deleted_at ? String(o.deleted_at as string) : null,
       abuseLevel: checkAbuseStatus(o.id as string).level,
     }));
 
@@ -608,7 +608,7 @@ adminOrgs.openapi(getOrgRoute, async (c) => {
     ]));
 
     return c.json({
-      organization: { id: org.id as string, name: org.name as string, slug: org.slug as string, logo: (org.logo as string) ?? null, metadata: (org.metadata as Record<string, unknown>) ?? null, createdAt: String(org.createdAt), workspaceStatus: (org.workspace_status as string) ?? "active", planTier: (org.plan_tier as string) ?? "free", suspendedAt: org.suspended_at ? String(org.suspended_at) : null, deletedAt: org.deleted_at ? String(org.deleted_at) : null, abuseLevel: checkAbuseStatus(org.id as string).level },
+      organization: { id: org.id as string, name: org.name as string, slug: org.slug as string, logo: (org.logo as string) ?? null, metadata: (org.metadata as Record<string, unknown>) ?? null, createdAt: String(org.createdAt), workspaceStatus: (org.workspace_status as string) ?? "active", planTier: (org.plan_tier as string) ?? "free", suspendedAt: org.suspended_at ? String(org.suspended_at as string) : null, deletedAt: org.deleted_at ? String(org.deleted_at as string) : null, abuseLevel: checkAbuseStatus(org.id as string).level },
       members: members.map((m) => ({ id: m.id as string, organizationId: m.organizationId as string, userId: m.userId as string, role: m.role as string, createdAt: String(m.createdAt), user: { id: m.userId as string, name: (m.user_name as string) ?? "", email: (m.user_email as string) ?? "", image: (m.user_image as string) ?? null } })),
       invitations: invitations.map((i) => ({ id: i.id as string, email: i.email as string, role: i.role as string, status: i.status as string, inviterId: i.inviterId as string, expiresAt: String(i.expiresAt), createdAt: String(i.createdAt) })),
     }, 200);

@@ -336,7 +336,7 @@ interface CatalogResponse {
 async function fetchCatalogForRow(
   row: StaleRow,
   apiKey: string,
-  bedrockBundle: unknown | null,
+  bedrockBundle: unknown,
 ): Promise<CatalogResponse> {
   if (row.provider === "anthropic") {
     const { getAnthropicCatalog } = await import("@atlas/api/lib/anthropic-catalog");

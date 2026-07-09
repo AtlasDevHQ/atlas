@@ -68,7 +68,7 @@ interface UseDataTableProps<TData>
 export function useDataTable<TData>(props: UseDataTableProps<TData>) {
   const {
     columns,
-    pageCount = -1,
+    pageCount,
     initialState,
     queryKeys,
     history = "replace",
@@ -165,9 +165,9 @@ export function useDataTable<TData>(props: UseDataTableProps<TData>) {
     (updaterOrValue: Updater<SortingState>) => {
       if (typeof updaterOrValue === "function") {
         const newSorting = updaterOrValue(sorting);
-        setSorting(newSorting as ExtendedColumnSort<TData>[]);
+        void setSorting(newSorting as ExtendedColumnSort<TData>[]);
       } else {
-        setSorting(updaterOrValue as ExtendedColumnSort<TData>[]);
+        void setSorting(updaterOrValue as ExtendedColumnSort<TData>[]);
       }
     },
     [sorting, setSorting],

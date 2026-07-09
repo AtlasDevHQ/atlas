@@ -17,7 +17,7 @@ export function ExploreCard({ part }: { part: unknown }) {
       >
         <span className="font-mono text-green-400">$</span>
         <span className="flex-1 truncate font-mono text-zinc-700 dark:text-zinc-300">
-          {String(args.command ?? "")}
+          {String((args.command ?? "") as string | number | boolean)}
         </span>
         {done ? (
           <span className="text-zinc-400 dark:text-zinc-600">{open ? "\u25BE" : "\u25B8"}</span>

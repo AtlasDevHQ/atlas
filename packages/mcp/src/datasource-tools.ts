@@ -210,7 +210,7 @@ export function registerDatasourceTools(
   // provisioning is the masked-elicitation step inside `create_datasource`'s
   // body (#3499) — it needs the resolved workspace + tool args, so it lives in
   // the tool, not the wrapper.
-  const { dispatch } = createMcpDispatch({
+  const dispatcher = createMcpDispatch({
     actor,
     transport,
     workspaceId,
@@ -218,6 +218,7 @@ export function registerDatasourceTools(
     ...(clientId ? { clientId } : {}),
     ...(scopes ? { scopes } : {}),
   });
+  const dispatch = dispatcher.dispatch.bind(dispatcher);
 
   // The bound workspace for governance + mutations. Unlike `workspaceId`
   // (which falls back to `actor.id` purely for OTel attribution when no org is

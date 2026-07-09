@@ -57,13 +57,13 @@ export function toUIMessage(msg: SharedMessage, id: string): UIMessage {
           return {
             type: "tool-invocation" as const,
             toolCallId,
-            toolName: String(p.toolName ?? "unknown"),
+            toolName: String((p.toolName as string) ?? "unknown"),
             state: "output-available" as const,
             input: p.args ?? {},
             output: p.result ?? null,
           };
         }
-        return { type: "text" as const, text: String(p.text ?? "") };
+        return { type: "text" as const, text: String((p.text as string) ?? "") };
       });
     return { id, role: msg.role as UIMessage["role"], parts };
   }

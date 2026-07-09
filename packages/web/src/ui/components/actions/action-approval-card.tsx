@@ -211,7 +211,7 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
       >
         <ActionStatusBadge status={effectiveStatus} />
         <span className="flex-1 truncate text-zinc-500 dark:text-zinc-400">
-          {toolResult.summary ?? String(args.description ?? "Action")}
+          {toolResult.summary ?? (typeof args.description === "string" ? args.description : "Action")}
         </span>
         <span className="text-zinc-400 dark:text-zinc-600">{open ? "\u25BE" : "\u25B8"}</span>
       </button>

@@ -225,12 +225,12 @@ function formatAmendment(type: string, amendment: Record<string, unknown>): stri
     if (typeof value === "object" && !Array.isArray(value)) {
       lines.push(`${key}:`);
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        lines.push(`  ${k}: ${String(v)}`);
+        lines.push(`  ${k}: ${String(v as string)}`);
       }
     } else if (Array.isArray(value)) {
       lines.push(`${key}: [${value.join(", ")}]`);
     } else {
-      lines.push(`${key}: ${String(value)}`);
+      lines.push(`${key}: ${String(value as string)}`);
     }
   }
   return lines.join("\n") || `(${type})`;
@@ -265,13 +265,13 @@ function extractProposals(messages: UIMessage[]): Proposal[] {
               : undefined;
           proposals.push({
             index: idx++,
-            entityName: String(args.entityName ?? "unknown"),
-            category: String(args.category ?? ""),
-            amendmentType: String(args.amendmentType ?? ""),
+            entityName: String((args.entityName as string) ?? "unknown"),
+            category: String((args.category as string) ?? ""),
+            amendmentType: String((args.amendmentType as string) ?? ""),
             amendment: (args.amendment as Record<string, unknown>) ?? {},
-            rationale: String(args.rationale ?? ""),
+            rationale: String((args.rationale as string) ?? ""),
             diff,
-            testQuery: args.testQuery ? String(args.testQuery) : undefined,
+            testQuery: args.testQuery ? String(args.testQuery as string) : undefined,
             testResult,
             confidence: Number(args.confidence ?? 0.5),
             impact: Number(args.impact ?? 0.5),
@@ -389,7 +389,8 @@ export default function SemanticImprovePage() {
         itemId: `${label}-${proposal.dbId}`,
         body: { decision },
       });
-      if (result.ok) refetchPending();
+      // fire-and-forget: refresh pending amendments list after review
+      if (result.ok) void refetchPending();
     } else {
       const chatDecision = decision === "approved" ? "accepted" as const : "rejected" as const;
       const chatPath = decision === "approved" ? "approve" : "reject";

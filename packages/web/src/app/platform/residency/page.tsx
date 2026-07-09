@@ -64,7 +64,7 @@ function ResidencyPageContent() {
   } = useAdminFetch("/api/v1/platform/residency/assignments", { schema: AssignmentsResponseSchema });
 
   const { mutate: assignRegion, saving: assigning, error: assignError, clearError: clearAssignError } = useAdminMutation<WorkspaceRegion>({
-    invalidates: () => { refetchRegions(); refetchAssignments(); },
+    invalidates: () => { void refetchRegions(); void refetchAssignments(); }, // fire-and-forget: background cache invalidation
   });
 
   const [assignDialog, setAssignDialog] = useState<{ workspaceId: string; workspaceName?: string } | null>(null);

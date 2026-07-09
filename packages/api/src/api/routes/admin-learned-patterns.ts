@@ -50,7 +50,7 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
     reviewedBy: (row.reviewed_by as string) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
-    reviewedAt: row.reviewed_at ? String(row.reviewed_at) : null,
+    reviewedAt: row.reviewed_at ? String(row.reviewed_at as string) : null,
     type: (row.type as LearnedPattern["type"]) ?? "query_pattern",
     amendmentPayload: row.amendment_payload
       ? (() => {

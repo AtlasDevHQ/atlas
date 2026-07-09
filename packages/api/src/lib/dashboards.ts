@@ -116,11 +116,11 @@ function rowToDashboard(r: Record<string, unknown>): Dashboard {
     title: r.title as string,
     description: (r.description as string) ?? null,
     shareToken: (r.share_token as string) ?? null,
-    shareExpiresAt: r.share_expires_at ? String(r.share_expires_at) : null,
+    shareExpiresAt: r.share_expires_at ? String(r.share_expires_at as Date | string) : null,
     shareMode: (r.share_mode as ShareMode) ?? "public",
     refreshSchedule: (r.refresh_schedule as string) ?? null,
-    lastRefreshAt: r.last_refresh_at ? String(r.last_refresh_at) : null,
-    nextRefreshAt: r.next_refresh_at ? String(r.next_refresh_at) : null,
+    lastRefreshAt: r.last_refresh_at ? String(r.last_refresh_at as Date | string) : null,
+    nextRefreshAt: r.next_refresh_at ? String(r.next_refresh_at as Date | string) : null,
     parameters: parseParameters(r.parameters, r.id),
     cardCount: typeof r.card_count === "number" ? r.card_count : (typeof r.card_count === "string" ? parseInt(r.card_count, 10) : 0),
     createdAt: String(r.created_at),
@@ -199,7 +199,7 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
     annotations: parseAnnotations(r.annotations, r.id),
     cachedColumns,
     cachedRows,
-    cachedAt: r.cached_at ? String(r.cached_at) : null,
+    cachedAt: r.cached_at ? String(r.cached_at as Date | string) : null,
     connectionGroupId: (r.connection_group_id as string) ?? null,
     layout,
     createdAt: String(r.created_at),
@@ -913,7 +913,7 @@ export async function getShareStatus(
       data: {
         shared: token !== null,
         token,
-        expiresAt: row.share_expires_at ? String(row.share_expires_at) : null,
+        expiresAt: row.share_expires_at ? String(row.share_expires_at as Date | string) : null,
         shareMode: (row.share_mode as ShareMode) ?? "public",
       },
     };
@@ -1051,7 +1051,7 @@ export async function getSharedDashboard(
 
     // Check expiry
     if (dash.share_expires_at) {
-      const expiresAt = new Date(String(dash.share_expires_at));
+      const expiresAt = new Date(String(dash.share_expires_at as Date | string));
       if (expiresAt < new Date()) return { ok: false, reason: "expired" };
     }
 

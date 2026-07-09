@@ -176,7 +176,8 @@ export default function SessionsPage() {
                   value={search}
                   onChange={(e) => {
                     table.setPageIndex(0);
-                    setParams({ search: e.target.value });
+                    // fire-and-forget: URL state navigation
+                    void setParams({ search: e.target.value });
                   }}
                   className="h-9 pl-8"
                 />
@@ -188,7 +189,8 @@ export default function SessionsPage() {
                   className="h-9"
                   onClick={() => {
                     table.setPageIndex(0);
-                    setParams({ search: "" });
+                    // fire-and-forget: URL state navigation
+                    void setParams({ search: "" });
                   }}
                 >
                   <X className="mr-1.5 size-3.5" />
@@ -215,7 +217,8 @@ export default function SessionsPage() {
               hasFilters={hasFilters}
               onClearFilters={() => {
                 table.setPageIndex(0);
-                setParams({ search: "" });
+                // fire-and-forget: URL state navigation
+                void setParams({ search: "" });
               }}
             />
           </div>

@@ -126,7 +126,7 @@ export type OrgErrorCode =
   | "INVITER_IS_NO_LONGER_A_MEMBER_OF_THE_ORGANIZATION";
 export type OrgResult<T> = {
   data: T | null;
-  error: { message: string; code?: OrgErrorCode | string; status?: number } | null;
+  error: { message: string; code?: OrgErrorCode | (string & {}); status?: number } | null;
 };
 
 // Re-export Better Auth's status union so consumers have one import site.

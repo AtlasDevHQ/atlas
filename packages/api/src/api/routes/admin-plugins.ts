@@ -505,8 +505,8 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
           if (typeof value !== "boolean") errors.push(`"${field.key}" must be a boolean.`);
           break;
         case "select":
-          if (field.options && !field.options.includes(String(value))) {
-            errors.push(`"${field.key}" must be one of: ${field.options.join(", ")}.`);
+          if (field.options && !field.options.includes(String(value as string))) {
+            errors.push(`"${field.key}" must be one of: ${(field.options as string[]).join(", ")}.`);
           }
           break;
       }

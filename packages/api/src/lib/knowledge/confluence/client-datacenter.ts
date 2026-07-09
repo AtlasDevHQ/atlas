@@ -312,7 +312,7 @@ class ConfluenceDcApi {
       limit: String(PAGE_LIMIT),
       expand,
     });
-    let nextUrl: string | null = `${this.base}/rest/api/content?${params}`;
+    let nextUrl: string | null = `${this.base}/rest/api/content?${String(params)}`;
 
     const pages: EnumeratedPage[] = [];
     let skippedMalformed = 0;

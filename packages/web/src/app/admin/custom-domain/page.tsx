@@ -254,7 +254,8 @@ function CustomDomainPageContent() {
                     value={newDomain}
                     onChange={(e) => setNewDomain(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAdd();
+                      // fire-and-forget: Enter-key submit mirrors the button click
+                      if (e.key === "Enter") void handleAdd();
                     }}
                     autoFocus
                   />

@@ -409,7 +409,7 @@ function printProposal(index: number, r: AnalysisResult): void {
   );
 
   // Show amendment details
-  const amendment = r.amendment as Record<string, unknown>;
+  const amendment = r.amendment as Record<string, string>;
   if (amendment.name) {
     console.log(`   Name: ${pc.bold(String(amendment.name))}`);
   }

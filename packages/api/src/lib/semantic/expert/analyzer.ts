@@ -45,7 +45,7 @@ export function analyzeSemanticLayer(
   // against its own row. `??""` keys the default/legacy group consistently.
   const seen = new Set<string>();
   const deduped = allResults.filter((r) => {
-    const key = `${r.group ?? ""}:${r.entityName}:${r.amendmentType}:${String((r.amendment as Record<string, unknown>).name ?? "")}`;
+    const key = `${r.group ?? ""}:${r.entityName}:${r.amendmentType}:${String(((r.amendment as Record<string, unknown>).name ?? "") as string)}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

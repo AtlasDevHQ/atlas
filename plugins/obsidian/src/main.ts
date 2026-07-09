@@ -134,7 +134,7 @@ export default class AtlasPlugin extends Plugin {
       for (const row of display) {
         const tr = tbody.createEl("tr");
         for (const col of columns)
-          tr.createEl("td", { text: String(row[col] ?? "") });
+          tr.createEl("td", { text: String((row[col] ?? "") as string) });
       }
 
       if (rows.length > MAX_DISPLAY_ROWS) {

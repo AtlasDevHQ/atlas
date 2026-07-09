@@ -380,7 +380,8 @@ function AtlasChatInner({
 
   // Fetch conversation list after auth is resolved
   useEffect(() => {
-    if (sidebar) convos.fetchList();
+    // fire-and-forget: background load of the conversation list for the sidebar
+    if (sidebar) void convos.fetchList();
   }, [authMode, sidebar, convos.fetchList]);
 
   // Check if managed auth user needs to change their default password.

@@ -443,7 +443,7 @@ const MYSQL_FORBIDDEN_PATTERNS = [
  * Falls back to the hardcoded switch for known types, and defaults to
  * "PostgresQL" for unknown/custom dbType strings (plugin escape hatch).
  */
-export function parserDatabase(dbType: DBType | string, connectionId?: string, workspaceId?: string): string {
+export function parserDatabase(dbType: DBType, connectionId?: string, workspaceId?: string): string {
   // 1. Plugin metadata takes precedence. Scoped to (workspace, install_id) so a
   //    shared install_id can't apply a sibling's plugin dialect — native
   //    per-workspace configs return undefined here and fall through to the
@@ -478,7 +478,7 @@ export function parserDatabase(dbType: DBType | string, connectionId?: string, w
  * Falls back to the hardcoded arrays for known types, and returns an empty
  * array for unknown/custom dbType strings.
  */
-function getExtraPatterns(dbType: DBType | string, connectionId?: string, workspaceId?: string): RegExp[] {
+function getExtraPatterns(dbType: DBType, connectionId?: string, workspaceId?: string): RegExp[] {
   // 1. Plugin metadata takes precedence. Workspace-scoped for the same reason as
   //    parserDatabase — a native per-workspace config returns [] here so the
   //    dbType switch below supplies the right base patterns (#3109).
@@ -625,7 +625,7 @@ export async function validateSQL(
   // Resolve DB type for this connection. When an explicit connectionId is given
   // but not found, return a validation error instead of silently falling back —
   // wrong parser mode is a security risk.
-  let dbType: DBType | string;
+  let dbType: DBType;
   if (connectionId) {
     try {
       dbType = connections.getDBType(connectionId, workspaceId);
@@ -1032,7 +1032,7 @@ function resolveConnectionEffect(
 function runQueryValidationEffect(
   sql: string,
   connId: string,
-  dbType: DBType | string,
+  dbType: DBType,
   customValidator: CustomValidator | undefined,
   workspaceId?: string,
   executionTarget?: ExecutionTarget,
@@ -1083,7 +1083,7 @@ function runQueryValidationEffect(
 function applyRLSEffect(
   sql: string,
   connId: string,
-  dbType: DBType | string,
+  dbType: DBType,
   targetHost: string | undefined,
   validatedParse?: ValidatedParse,
 ): Effect.Effect<string, RLSError> {

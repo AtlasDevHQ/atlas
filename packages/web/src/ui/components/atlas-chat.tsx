@@ -401,7 +401,9 @@ export function AtlasChat({
 
   // Fetch conversation list after auth is resolved
   useEffect(() => {
-    convos.fetchList();
+    // fire-and-forget: background fetch of the conversation list; the effect
+    // doesn't await it and errors are handled inside the hook.
+    void convos.fetchList();
   }, [authMode, convos.fetchList]);
 
   // Check if managed auth user needs to change their default password.

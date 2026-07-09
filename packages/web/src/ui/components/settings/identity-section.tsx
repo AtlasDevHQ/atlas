@@ -66,7 +66,7 @@ export function IdentitySection() {
         setError(result.error.message ?? "Failed to update name.");
         return;
       }
-      session.refetch?.();
+      void session.refetch?.(); // fire-and-forget: background session refresh after name update
       setSavedAt(Date.now());
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

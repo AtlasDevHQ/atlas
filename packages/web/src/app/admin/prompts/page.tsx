@@ -193,7 +193,7 @@ export default function PromptsPage() {
       }
     }
 
-    fetchCollections();
+    void fetchCollections(); // fire-and-forget: effect-scoped async loader
     return () => {
       cancelled = true;
     };
@@ -241,7 +241,7 @@ export default function PromptsPage() {
       }
     }
 
-    fetchCounts();
+    void fetchCounts(); // fire-and-forget: effect-scoped async loader
     return () => {
       cancelled = true;
     };
@@ -282,7 +282,7 @@ export default function PromptsPage() {
       }
     }
 
-    fetchItems();
+    void fetchItems(); // fire-and-forget: effect-scoped async loader
     return () => {
       cancelled = true;
     };
@@ -514,7 +514,7 @@ export default function PromptsPage() {
                 value={params.industry}
                 onValueChange={(v) => {
                   table.setPageIndex(0);
-                  setParams({ industry: v, page: 1 });
+                  void setParams({ industry: v, page: 1 }); // fire-and-forget: URL state setter
                 }}
               >
                 <TabsList>
@@ -533,7 +533,7 @@ export default function PromptsPage() {
                 className="h-9"
                 onClick={() => {
                   table.setPageIndex(0);
-                  setParams({ industry: "", page: 1 });
+                  void setParams({ industry: "", page: 1 }); // fire-and-forget: URL state setter
                 }}
               >
                 <X className="mr-1.5 size-3.5" />
@@ -892,7 +892,7 @@ export default function PromptsPage() {
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
-                if (deleteTarget) deleteCollection(deleteTarget.id);
+                if (deleteTarget) void deleteCollection(deleteTarget.id); // fire-and-forget: click handler
               }}
             >
               Delete
@@ -921,7 +921,7 @@ export default function PromptsPage() {
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
-                if (deleteItemTarget) deleteItem(deleteItemTarget);
+                if (deleteItemTarget) void deleteItem(deleteItemTarget); // fire-and-forget: click handler
               }}
             >
               Delete

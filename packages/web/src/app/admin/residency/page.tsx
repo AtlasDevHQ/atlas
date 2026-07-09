@@ -183,24 +183,24 @@ function ResidencyPageContent() {
     path: "/api/v1/admin/residency/migrate",
     method: "POST",
     invalidates: () => {
-      refetch();
-      refetchMigration();
+      void refetch(); // fire-and-forget: cache invalidation
+      void refetchMigration(); // fire-and-forget: cache invalidation
     },
   });
 
   const retryMutation = useAdminMutation({
     method: "POST",
     invalidates: () => {
-      refetch();
-      refetchMigration();
+      void refetch(); // fire-and-forget: cache invalidation
+      void refetchMigration(); // fire-and-forget: cache invalidation
     },
   });
 
   const cancelMutation = useAdminMutation({
     method: "POST",
     invalidates: () => {
-      refetch();
-      refetchMigration();
+      void refetch(); // fire-and-forget: cache invalidation
+      void refetchMigration(); // fire-and-forget: cache invalidation
     },
   });
 
@@ -219,7 +219,7 @@ function ResidencyPageContent() {
     // After a failed migrate/retry/cancel the server state may have
     // advanced to "failed" while our cached migration snapshot is pre-request.
     // Dismissing the banner should resync so the UI doesn't lie.
-    refetchMigration();
+    void refetchMigration(); // fire-and-forget: resync after dismiss
   }
 
   const handleAssign = async (region: string) => {

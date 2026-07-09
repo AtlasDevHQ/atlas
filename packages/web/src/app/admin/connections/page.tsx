@@ -685,7 +685,8 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
 
   useEffect(() => {
     cancelledRef.current = false;
-    fetchMetrics();
+    // fire-and-forget: point-in-time fetch driven by useEffect; guarded by cancelledRef
+    void fetchMetrics();
     return () => { cancelledRef.current = true; };
     // Pool stats are a point-in-time snapshot by design — no interval here.
     // Admins refresh manually via the Refresh button (fix #5); avoids
@@ -699,7 +700,8 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
         if (!data?.drained) {
           onError(data?.message || "Drain failed");
         }
-        fetchMetrics();
+        // fire-and-forget: refresh pool metrics after drain
+        void fetchMetrics();
       },
     });
     if (!result.ok) {
@@ -1019,13 +1021,15 @@ export default function ConnectionsPage() {
 
     if (installed === "salesforce") {
       toast.success("Salesforce connected");
-      refetch();
+      // fire-and-forget: refresh connection list after OAuth return
+      void refetch();
     }
     if (reconnect === "salesforce") {
       toast.warning("Salesforce install completed but credentials didn't persist", {
         description: "Click Reconnect on the Salesforce row to retry the OAuth dance.",
       });
-      refetch();
+      // fire-and-forget: refresh connection list after OAuth return
+      void refetch();
     }
     if (errParam === "salesforce") {
       const description =
@@ -1143,7 +1147,8 @@ export default function ConnectionsPage() {
   }
 
   function handleMutationSuccess() {
-    refetch();
+    // fire-and-forget: refresh connection list after mutation
+    void refetch();
   }
 
   // Picker routing. A database pick opens the URL-form dialog pre-pointed at
@@ -1163,7 +1168,8 @@ export default function ConnectionsPage() {
   // new connection belongs in the main list without a reload.
   function handleFormInstallInstalled() {
     handleDatasourceInstalled();
-    refetch();
+    // fire-and-forget: refresh connection list after form install
+    void refetch();
   }
 
   // Derive env-dropdown choices from the connections list — one entry

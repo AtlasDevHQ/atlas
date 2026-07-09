@@ -1073,7 +1073,7 @@ function validatePlugins(plugins: unknown[]): void {
 
     // Build label upfront: use plugin id if available, otherwise index
     const hasId = "id" in obj && typeof obj.id === "string" && obj.id.trim();
-    const label = hasId ? `plugin "${obj.id}" (index ${i})` : `plugin at index ${i}`;
+    const label = hasId ? `plugin "${String(obj.id)}" (index ${i})` : `plugin at index ${i}`;
 
     // id
     if (!("id" in obj) || typeof obj.id !== "string") {
@@ -1220,7 +1220,7 @@ function formatIssue(issue: Issue, rawInput: unknown): string {
 
   switch (issue.code) {
     case "invalid_type": {
-      const expected = String(issueObj.expected ?? "unknown");
+      const expected = typeof issueObj.expected === "string" ? issueObj.expected : "unknown";
       const received = extractReceived(issue) ?? typeof inputAtPath;
       const expectedLabel = hint ? `${expected} (${hint})` : expected;
       line = `Config error at ${fieldPath}: expected ${expectedLabel}, got ${received}`;
@@ -1243,8 +1243,14 @@ function formatIssue(issue: Issue, rawInput: unknown): string {
               }
             }
             // Zod v3 uses "invalid_literal" with "expected"
-            if (subObj.code === "invalid_literal" && subObj.expected !== undefined) {
-              const opt = `"${subObj.expected}"`;
+            const expectedLiteral = subObj.expected;
+            if (
+              subObj.code === "invalid_literal" &&
+              (typeof expectedLiteral === "string" ||
+                typeof expectedLiteral === "number" ||
+                typeof expectedLiteral === "boolean")
+            ) {
+              const opt = `"${String(expectedLiteral)}"`;
               if (!validOptions.includes(opt)) validOptions.push(opt);
             }
           }
@@ -1261,7 +1267,7 @@ function formatIssue(issue: Issue, rawInput: unknown): string {
       // Zod v4 uses "invalid_value" for enums and literals
       const values = issueObj.values as unknown[] | undefined;
       if (values && values.length > 0) {
-        line = `Config error at ${fieldPath}: invalid value. Valid options: ${values.map((o) => `"${o}"`).join(", ")}`;
+        line = `Config error at ${fieldPath}: invalid value. Valid options: ${values.map((o) => `"${String(o)}"`).join(", ")}`;
       } else {
         line = `Config error at ${fieldPath}: ${issue.message}`;
       }

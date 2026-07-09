@@ -791,7 +791,7 @@ export function buildSystemParam(
       return content;
     default: {
       const _exhaustive: never = cacheProvider;
-      throw new Error(`Unknown provider type: ${_exhaustive}`);
+      throw new Error(`Unknown provider type: ${String(_exhaustive)}`);
     }
   }
 }
@@ -872,7 +872,7 @@ export function applyCacheControl(
       return messages;
     default: {
       const _exhaustive: never = cacheProvider;
-      throw new Error(`Unknown provider type: ${_exhaustive}`);
+      throw new Error(`Unknown provider type: ${String(_exhaustive)}`);
     }
   }
 }

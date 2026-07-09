@@ -26,7 +26,7 @@ export function buildDataTableCard(props: DataTableCardProps): {
   const truncated = rows.length > maxRows;
 
   const tableRows = displayRows.map((row) =>
-    columns.map((col) => String(row[col] ?? "")),
+    columns.map((col) => String((row[col] ?? "") as string)),
   );
 
   const jsx = (
@@ -49,7 +49,7 @@ export function buildDataTableCard(props: DataTableCardProps): {
   const header = `| ${columns.join(" | ")} |`;
   const separator = `| ${columns.map(() => "---").join(" | ")} |`;
   const dataLines = displayRows.map(
-    (row) => `| ${columns.map((col) => String(row[col] ?? "")).join(" | ")} |`,
+    (row) => `| ${columns.map((col) => String((row[col] ?? "") as string)).join(" | ")} |`,
   );
   let fallbackText = [header, separator, ...dataLines].join("\n");
   if (truncated) {

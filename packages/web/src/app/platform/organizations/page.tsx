@@ -140,7 +140,8 @@ export default function OrganizationsPage() {
   }
 
   function handleSearch() {
-    setParams({ search: searchInput, page: 1 });
+    // fire-and-forget: nuqs URL state update
+    void setParams({ search: searchInput, page: 1 });
   }
 
   // Returns `ok` so destructive confirms stay open on failure — the inline

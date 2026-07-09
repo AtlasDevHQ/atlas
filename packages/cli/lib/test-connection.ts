@@ -184,7 +184,7 @@ export async function testDatabaseConnection(
           testPool,
           "SELECT CURRENT_VERSION() as V",
         );
-        return `Snowflake ${result.rows[0]?.V ?? "unknown"}`;
+        return `Snowflake ${(result.rows[0]?.V as string | undefined) ?? "unknown"}`;
       } catch (err) {
         throw new Error(
           `Cannot connect to Snowflake: ${err instanceof Error ? err.message : String(err)}`,

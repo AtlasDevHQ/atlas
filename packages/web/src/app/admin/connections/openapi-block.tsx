@@ -309,7 +309,8 @@ export function OpenApiProviderBlock({ demoReadOnly, onAdd, onChange }: OpenApiP
   });
 
   const refresh = () => {
-    listQuery.refetch();
+    // fire-and-forget: refresh list; callers don't await the refetch
+    void listQuery.refetch();
     onChange();
   };
 

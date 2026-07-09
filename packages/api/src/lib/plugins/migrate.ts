@@ -223,7 +223,7 @@ export async function getAppliedMigrations(db: MigrateDB): Promise<Set<string>> 
   );
   const applied = new Set<string>();
   for (const row of result.rows) {
-    applied.add(`${row.plugin_id}:${row.table_name}:${row.sql_hash}`);
+    applied.add(`${row.plugin_id as string}:${row.table_name as string}:${row.sql_hash as string}`);
   }
   return applied;
 }

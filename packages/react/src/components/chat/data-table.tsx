@@ -77,8 +77,8 @@ function DataTableInner({
         if (av == null && bv == null) return 0;
         if (av == null) return 1;
         if (bv == null) return -1;
-        const aStr = String(av).trim();
-        const bStr = String(bv).trim();
+        const aStr = String(av as string | number | boolean).trim();
+        const bStr = String(bv as string | number | boolean).trim();
         if (aStr === "" && bStr === "") return 0;
         if (aStr === "") return 1;
         if (bStr === "") return -1;

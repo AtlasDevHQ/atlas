@@ -360,7 +360,7 @@ function buildModel(provider: ConfigProvider, modelId: string): LanguageModel {
 
     default: {
       const _exhaustive: never = provider;
-      throw new Error(`Unknown provider "${_exhaustive}"`);
+      throw new Error(`Unknown provider "${String(_exhaustive)}"`);
     }
   }
 }
@@ -469,7 +469,7 @@ function workspaceProviderType(provider: ModelConfigProvider): ProviderType {
       return "bedrock";
     default: {
       const _exhaustive: never = provider;
-      throw new Error(`Unknown workspace provider: ${_exhaustive}`);
+      throw new Error(`Unknown workspace provider: ${String(_exhaustive)}`);
     }
   }
 }

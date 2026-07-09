@@ -56,7 +56,7 @@ export function applyAmendmentToEntity(
         } else {
           return {
             updated,
-            warning: `dimension "${String(amendment.dimension)}" not found in ${result.entityName} — description not updated`,
+            warning: `dimension "${String(amendment.dimension as string)}" not found in ${result.entityName} — description not updated`,
           };
         }
       } else {

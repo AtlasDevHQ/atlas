@@ -56,11 +56,16 @@ export function parseOverview(json: Record<string, unknown>): OverviewData {
       typeof json.queriesLast24h === "number" ? json.queriesLast24h : null,
     workspace: ws
       ? {
-          id: String(ws.id ?? ""),
-          name: String(ws.name ?? ""),
-          slug: String(ws.slug ?? ""),
-          planTier: String(ws.planTier ?? "free"),
-          planDisplayName: String(ws.planDisplayName ?? ws.planTier ?? ""),
+          id: typeof ws.id === "string" ? ws.id : "",
+          name: typeof ws.name === "string" ? ws.name : "",
+          slug: typeof ws.slug === "string" ? ws.slug : "",
+          planTier: typeof ws.planTier === "string" ? ws.planTier : "free",
+          planDisplayName:
+            typeof ws.planDisplayName === "string"
+              ? ws.planDisplayName
+              : typeof ws.planTier === "string"
+                ? ws.planTier
+                : "",
           trialEndsAt:
             typeof ws.trialEndsAt === "string" ? ws.trialEndsAt : null,
           trialEndsAtEffective:

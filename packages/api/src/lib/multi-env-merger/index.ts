@@ -137,7 +137,7 @@ export function mergeMemberResults(
         if (v == null) {
           out[col] = null;
         } else if (coercedColumns.has(col)) {
-          out[col] = String(v);
+          out[col] = String(v as string | number | boolean | bigint);
         } else {
           out[col] = v;
         }

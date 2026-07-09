@@ -238,7 +238,7 @@ export function TaskFormDialog({
         if (!cancelled) setConnectionError(`Could not load environments: ${message}`);
       }
     }
-    fetchGroups();
+    void fetchGroups(); // fire-and-forget: effect-scoped async loader
     return () => { cancelled = true; };
   }, [open, apiUrl, credentials, isEdit, fetchAttempt]);
 

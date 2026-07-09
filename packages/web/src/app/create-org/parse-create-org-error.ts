@@ -92,7 +92,7 @@ export function parseCreateOrgError(input: CreateOrgErrorInput): CreateOrgErrorS
       };
     }
     const message =
-      input.thrown instanceof Error ? input.thrown.message : String(input.thrown);
+      input.thrown instanceof Error ? input.thrown.message : String(input.thrown as string);
     return {
       kind: "unknown",
       title: UNKNOWN_FALLBACK.title,

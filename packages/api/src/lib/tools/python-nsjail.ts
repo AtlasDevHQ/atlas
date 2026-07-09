@@ -122,8 +122,9 @@ export function createPythonNsjailBackend(nsjailPath: string): PythonBackend {
 
         // Write data to stdin
         try {
-          proc.stdin.write(stdinPayload);
-          proc.stdin.end();
+          // fire-and-forget: Bun FileSink write/end return number|Promise; original code never awaited and relies on Bun's buffering
+          void proc.stdin.write(stdinPayload);
+          void proc.stdin.end();
         } catch (err) {
           const detail = err instanceof Error ? err.message : String(err);
           log.warn({ err: detail, execId }, "stdin write error during Python execution");

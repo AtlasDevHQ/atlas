@@ -141,7 +141,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
   // every tool routes through `dispatch(...)`. `explore` is a metadata read
   // (no billing); `executeSQL` reaches a datasource so it declares
   // `checksBilling`. Both are member-callable reads (`requiresWrite: false`).
-  const { dispatch } = createMcpDispatch({
+  const dispatcher = createMcpDispatch({
     actor,
     transport,
     workspaceId,
@@ -149,6 +149,8 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
     ...(clientId ? { clientId } : {}),
     ...(scopes ? { scopes } : {}),
   });
+  const dispatch: typeof dispatcher.dispatch = (...args) =>
+    dispatcher.dispatch(...args);
 
   // --- explore ---
   server.registerTool(
@@ -297,7 +299,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
               });
             }
 
-            const rawError = String(obj.error ?? obj.message ?? "");
+            const rawError = String((obj.error ?? obj.message ?? "") as string);
             const code = classifyExecuteSqlError(rawError);
             const extras: { request_id?: string; retry_after?: number } = {};
             if (code === "internal_error") extras.request_id = requestId;

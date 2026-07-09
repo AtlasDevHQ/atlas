@@ -161,7 +161,8 @@ export function AdminActionsTab() {
   const hasFilters = !!(params.actor || params.actionType || params.targetType || params.from || params.to || params.search);
 
   function clearFilters() {
-    setParams({ actor: "", actionType: "", targetType: "", from: "", to: "", search: "", page: 1 });
+    // fire-and-forget: nuqs URL update; navigation state settles asynchronously
+    void setParams({ actor: "", actionType: "", targetType: "", from: "", to: "", search: "", page: 1 });
   }
 
   async function handleExport() {
@@ -219,7 +220,7 @@ export function AdminActionsTab() {
       {exportError && (
         <ErrorBanner
           message={exportError}
-          onRetry={() => { setExportError(null); handleExport(); }}
+          onRetry={() => { setExportError(null); void handleExport(); }}
         />
       )}
 

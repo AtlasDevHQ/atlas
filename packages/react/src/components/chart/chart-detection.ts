@@ -299,7 +299,7 @@ export function categoryFromPieClick(
   const payload = (data?.payload ?? null) as Record<string, unknown> | null;
   const value = payload?.[categoryKey];
   if (value == null || value === "") return null;
-  return String(value);
+  return String(value as string);
 }
 
 /* ------------------------------------------------------------------ */

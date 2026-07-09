@@ -109,7 +109,7 @@ export function parseBundleSyncConfig(
   ) {
     return {
       ok: false,
-      error: `Unknown auth scheme "${String(rawScheme)}" on the collection config — edit the collection to fix it.`,
+      error: `Unknown auth scheme "${String(rawScheme as unknown)}" on the collection config — edit the collection to fix it.`,
     };
   }
   return { ok: true, endpointUrl, authScheme: rawScheme as BundleSyncAuthScheme };

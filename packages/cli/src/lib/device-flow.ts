@@ -92,7 +92,7 @@ export async function requestDeviceCode(
   return {
     device_code: body.device_code,
     user_code: body.user_code,
-    verification_uri: String(body.verification_uri ?? ""),
+    verification_uri: String((body.verification_uri as string | undefined) ?? ""),
     verification_uri_complete:
       typeof body.verification_uri_complete === "string" ? body.verification_uri_complete : undefined,
     expires_in: typeof body.expires_in === "number" ? body.expires_in : 1800,

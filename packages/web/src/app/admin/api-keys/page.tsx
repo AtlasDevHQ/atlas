@@ -132,7 +132,8 @@ export default function ApiKeysPage() {
       onSuccess: (data) => {
         if (!data) return;
         setCreatedKey({ key: data.key, name: data.name ?? values.name });
-        refetch();
+        // fire-and-forget: refresh list after create; UI already updated optimistically
+        void refetch();
       },
     });
   }

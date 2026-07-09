@@ -139,7 +139,7 @@ export function formatActionResult(
         ? chatEmoji.stop
         : chatEmoji.x;
 
-  let text = `${statusEmoji} **Action ${status}**: ${(action.summary || action.type).slice(0, 200)}`;
+  let text = `${String(statusEmoji)} **Action ${status}**: ${(action.summary || action.type).slice(0, 200)}`;
   if (error) text += `\n_${error.slice(0, 200)}_`;
   return text;
 }
@@ -589,7 +589,7 @@ export async function dispatchApproveDenyAction(
     // Try to update the original message with an error
     try {
       await event.adapter.editMessage(event.threadId, event.messageId, {
-        markdown: `${chatEmoji.warning} Failed to process action. Please try again or use the web UI.`,
+        markdown: `${String(chatEmoji.warning)} Failed to process action. Please try again or use the web UI.`,
       });
     } catch (editErr) {
       log.warn(
@@ -1412,7 +1412,7 @@ export function createChatBridge(
     let thinkingMsg;
     try {
       thinkingMsg = await event.channel.post({
-        markdown: `${chatEmoji.hourglass} Thinking about: _${question.slice(0, 150)}_...`,
+        markdown: `${String(chatEmoji.hourglass)} Thinking about: _${question.slice(0, 150)}_...`,
       });
     } catch (postErr) {
       log.error(

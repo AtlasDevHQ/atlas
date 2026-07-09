@@ -117,7 +117,7 @@ export function resultToMarkdown(
   if (columns.length === 0) return "*No results*";
 
   const escape = (v: unknown) =>
-    String(v ?? "")
+    String((v ?? "") as string)
       .replace(/\\/g, "\\\\")
       .replace(/\|/g, "\\|")
       .replace(/\n/g, " ");

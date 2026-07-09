@@ -163,7 +163,7 @@ function BannerShell({
       <Button
         size="sm"
         variant={buttonVariant}
-        onClick={() => goToPlanPicker(router.push)}
+        onClick={() => goToPlanPicker((href) => router.push(href))}
         className="shrink-0"
       >
         Upgrade

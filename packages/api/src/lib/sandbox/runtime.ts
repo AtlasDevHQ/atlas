@@ -587,7 +587,7 @@ export async function tryCreateByocPythonBackend(
   const provider = sandboxProviderForBackendId(backendId);
   if (!provider) return null;
 
-  const createPython = PROVIDER_RUNTIMES[provider].createPython;
+  const createPython = PROVIDER_RUNTIMES[provider].createPython?.bind(PROVIDER_RUNTIMES[provider]);
   if (!createPython) {
     log.debug(
       { orgId, provider, backendId },

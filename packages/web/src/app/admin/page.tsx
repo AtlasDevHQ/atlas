@@ -91,7 +91,8 @@ export default function AdminOverview() {
   useEffect(() => {
     cancelledRef.current = false;
     setLoading(true);
-    fetchOverview().finally(() => {
+    // fire-and-forget: initial overview load; cleanup guards against unmount
+    void fetchOverview().finally(() => {
       if (!cancelledRef.current) setLoading(false);
     });
     return () => {

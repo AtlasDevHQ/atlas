@@ -124,7 +124,7 @@ export function ForkBranchSelector({
                     className="flex items-center gap-1 px-2 py-1.5"
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") commitRename();
+                      if (e.key === "Enter") void commitRename();
                       if (e.key === "Escape") cancelRename();
                     }}
                   >

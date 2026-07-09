@@ -102,7 +102,8 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
       setError(null);
       setCopied(false);
       setConfirmingRotate(false);
-      fetchShareStatus();
+      // fire-and-forget: refresh share status on dialog open; component state updates on resolve
+      void fetchShareStatus();
     }
   }, [open, fetchShareStatus]);
 

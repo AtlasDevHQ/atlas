@@ -174,7 +174,7 @@ export function resolveRLSFilters(
         }
       } else {
         // Scalar claim: SQL-escape single quotes and convert to string
-        const strValue = String(rawValue).replace(/'/g, "''");
+        const strValue = String(rawValue as string | number | boolean).replace(/'/g, "''");
         for (const table of matchingTables) {
           filters.push({ table, column: condition.column, value: strValue });
         }

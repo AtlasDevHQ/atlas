@@ -593,7 +593,8 @@ function ReportsTab() {
               <Select
                 value={params.reportType}
                 onValueChange={(v) => {
-                  setParams({ reportType: v as ComplianceReportType });
+                  // fire-and-forget: nuqs URL update; no need to await navigation
+                  void setParams({ reportType: v as ComplianceReportType });
                   setDataAccessReport(null);
                   setUserActivityReport(null);
                 }}

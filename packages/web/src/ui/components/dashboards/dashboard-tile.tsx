@@ -55,7 +55,7 @@ const ResultChart = dynamic(
 );
 
 function toStringRows(columns: string[], rows: Record<string, unknown>[]): string[][] {
-  return rows.map((row) => columns.map((col) => (row[col] == null ? "" : String(row[col]))));
+  return rows.map((row) => columns.map((col) => (row[col] == null ? "" : String(row[col] as string))));
 }
 
 /** #4321 — text colour for the age caption per tone. Muted → amber → red. */
@@ -225,7 +225,7 @@ function drilldownValueFromRow(
   if (!categoryColumn || Array.isArray(row)) return null;
   const value = row[categoryColumn];
   if (value == null || value === "") return null;
-  return String(value);
+  return String(value as string);
 }
 
 /**
@@ -248,7 +248,7 @@ export function distinctCategoryValues(
   for (const row of rows) {
     const value = row[categoryColumn];
     if (value == null || value === "") continue;
-    const s = String(value);
+    const s = String(value as string);
     if (seen.has(s)) continue;
     seen.add(s);
     out.push(s);

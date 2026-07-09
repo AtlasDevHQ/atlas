@@ -233,7 +233,7 @@ export async function startStreamableHttpServer(
     },
     async close() {
       await store.reset();
-      bunServer.stop(true);
+      await bunServer.stop(true);
     },
     _sessionCount() {
       return store.size;

@@ -76,7 +76,7 @@ export function NewDashboardDialog({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") handleCreate();
+              if (e.key === "Enter") void handleCreate();
             }}
             autoFocus
           />

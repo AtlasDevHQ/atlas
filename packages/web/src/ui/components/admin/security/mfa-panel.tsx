@@ -105,7 +105,7 @@ export function MfaPanel({ reauthRedirectTo }: MfaPanelProps) {
     // Better Auth refreshes session state automatically after
     // twoFactor.enable / disable; this hook gives downstream pages a
     // chance to refetch if they cache the flag.
-    session.refetch?.();
+    void session.refetch?.();
     invalidateMfaGateSignal();
   }
 
@@ -113,7 +113,7 @@ export function MfaPanel({ reauthRedirectTo }: MfaPanelProps) {
     void refreshPasskeys();
     // Session claims include `passkeyCount` — refetch so the MFA gate
     // sees the new count without a hard reload.
-    session.refetch?.();
+    void session.refetch?.();
     invalidateMfaGateSignal();
   }
 

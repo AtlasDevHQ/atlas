@@ -37,7 +37,7 @@ export async function slackAPI(
   const requestBody = isOauth
     ? new URLSearchParams(
         Object.entries(body).reduce<Record<string, string>>((acc, [k, v]) => {
-          if (v !== undefined && v !== null) acc[k] = String(v);
+          if (v !== undefined && v !== null) acc[k] = String(v as string | number | boolean);
           return acc;
         }, {}),
       ).toString()
@@ -58,7 +58,7 @@ export async function slackAPI(
     const data = (await resp.json()) as Record<string, unknown>;
     if (!data.ok) {
       log.warn({ method, error: data.error }, "Slack API returned error");
-      return { ok: false, error: String(data.error ?? "unknown_error") };
+      return { ok: false, error: String((data.error as string | undefined) ?? "unknown_error") };
     }
     return data as SlackAPIResponse;
   } catch (err) {
@@ -165,7 +165,7 @@ async function fetchChannelPages(
           { method: "conversations.list", error: data.error },
           "Slack API returned error",
         );
-        return { ok: false, error: String(data.error ?? "unknown_error") };
+        return { ok: false, error: String((data.error as string | undefined) ?? "unknown_error") };
       }
       const rawChannels = Array.isArray(data.channels) ? data.channels : [];
       for (const raw of rawChannels) {

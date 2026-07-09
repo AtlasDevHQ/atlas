@@ -112,7 +112,7 @@ export function registerSemanticTools(
   // three metadata tools (listEntities / describeEntity / searchGlossary) read
   // semantic YAML — no billing; `runMetric` executes datasource SQL so it
   // declares `checksBilling`. All are member-callable reads.
-  const { dispatch } = createMcpDispatch({
+  const dispatcher = createMcpDispatch({
     actor,
     transport,
     workspaceId,
@@ -120,6 +120,8 @@ export function registerSemanticTools(
     ...(clientId ? { clientId } : {}),
     ...(scopes ? { scopes } : {}),
   });
+  const dispatch: typeof dispatcher.dispatch = (...args) =>
+    dispatcher.dispatch(...args);
 
   // --- listEntities ---
   server.registerTool(
@@ -531,7 +533,7 @@ export function registerSemanticTools(
             }
 
             const rawError = String(
-              result.error ?? result.message ?? "Metric execution failed.",
+              (result.error ?? result.message ?? "Metric execution failed.") as string,
             );
             const code = classifyExecuteSqlError(rawError);
             const extras: { request_id?: string; retry_after?: number } = {};

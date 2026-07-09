@@ -7,6 +7,7 @@
     "watchPatterns": [
       "bun.lock",
       "package.json",
+      "patches/**",
       "brand.css",
       "apps/docs/**",
       "deploy/docs/**",

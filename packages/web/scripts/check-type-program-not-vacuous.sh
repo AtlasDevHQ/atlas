@@ -45,9 +45,10 @@ case "$count" in
     ;;
 esac
 
-# The program is ~580 src files today; 100 is a generous floor — vacuation
-# drops it to ~0.
-min=100
+# The program is ~580 src files today. 450 allows real code shrinkage but
+# trips on partial vacuation (a reference claiming a whole subtree like
+# src/ui/** would drop hundreds of files), not just the total wipe-out.
+min=450
 
 if [ "$count" -lt "$min" ]; then
   echo "check-type-program-not-vacuous: FAIL — only $count packages/web/src files in the type program (expected >= $min)." >&2
@@ -55,5 +56,13 @@ if [ "$count" -lt "$min" ]; then
   echo "or tsgo's --listFilesOnly output format changed — inspect the raw file list." >&2
   exit 1
 fi
+
+# Also assert the test project (the tsgolint routing artifact the main
+# config references — see tsconfig.test.json) still loads as a program, so
+# the #4443 file->program routing can't silently break either.
+"$TSGO" -p tsconfig.test.json --listFilesOnly > /dev/null || {
+  echo "check-type-program-not-vacuous: FAIL — tsconfig.test.json no longer loads as a program (tsgolint test-file routing is broken; see #4443/#4447)." >&2
+  exit 1
+}
 
 echo "check-type-program-not-vacuous: OK ($count src files in the type program)"

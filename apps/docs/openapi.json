@@ -56651,7 +56651,8 @@
                               "confluence",
                               "confluence-datacenter",
                               "gitbook",
-                              "zendesk"
+                              "zendesk",
+                              "salesforce-knowledge"
                             ]
                           },
                           "description": {

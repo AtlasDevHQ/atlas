@@ -310,7 +310,7 @@ describe("LazyPluginLoader.evict", () => {
 });
 
 describe("LazyPluginLoader readInstallConfig", () => {
-  test("treats workspace_plugins.enabled = false as not-installed (filter is in the SQL)", () => {
+  test("treats workspace_plugins.enabled = false as not-installed (filter is in the SQL)", async () => {
     const loader = new LazyPluginLoader();
     loader.registerBuilder("salesforce", ({ workspaceId, catalogId, config }) =>
       buildPlugin({ id: `${catalogId}@${workspaceId}`, config }),
@@ -319,7 +319,7 @@ describe("LazyPluginLoader readInstallConfig", () => {
     // The mocked `internalQuery` returns rows only when `mockRowsByKey`
     // has an entry — by not staging a row we model a disabled install
     // being filtered out. The assertion that matters is the SQL itself.
-    expect(loader.getOrInstantiate("ws-1", "salesforce")).rejects.toThrow(
+    await expect(loader.getOrInstantiate("ws-1", "salesforce")).rejects.toThrow(
       /no enabled install/i,
     );
 

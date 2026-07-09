@@ -770,8 +770,8 @@ describe("datasource plugin entities and dialect", () => {
     } satisfies AtlasDatasourcePlugin);
 
     expect(plugin.connection.validate).toBeDefined();
-    expect(await plugin.connection.validate!("SELECT Id FROM Account")).toEqual({ valid: true });
-    expect(await plugin.connection.validate!("DELETE FROM Account")).toEqual({ valid: false, reason: "Only SELECT queries allowed" });
+    expect(plugin.connection.validate!("SELECT Id FROM Account")).toEqual({ valid: true });
+    expect(plugin.connection.validate!("DELETE FROM Account")).toEqual({ valid: false, reason: "Only SELECT queries allowed" });
   });
 
   test("accepts async connection.validate function", async () => {
@@ -871,8 +871,8 @@ describe("datasource plugin entities and dialect", () => {
 
     const instance = sfPlugin({ instanceUrl: "https://example.my.salesforce.com" });
     expect(instance.connection.validate).toBeDefined();
-    expect(await instance.connection.validate!("SELECT Id FROM Account")).toEqual({ valid: true });
-    expect(await instance.connection.validate!("DESCRIBE Account")).toEqual({ valid: false, reason: "Must start with SELECT" });
+    expect(instance.connection.validate!("SELECT Id FROM Account")).toEqual({ valid: true });
+    expect(instance.connection.validate!("DESCRIBE Account")).toEqual({ valid: false, reason: "Must start with SELECT" });
   });
 
   test("accepts parserDialect string", () => {

@@ -120,7 +120,7 @@ describe("ConnectionRegistry", () => {
         async query() { return { columns: [], rows: [] }; },
         async close() {},
       };
-      await connections.registerDirect("bench", mockConn, "postgres");
+      connections.registerDirect("bench", mockConn, "postgres");
       expect(connections.get("bench")).toBe(mockConn);
       expect(connections.getDBType("bench")).toBe("postgres");
     });
@@ -136,8 +136,8 @@ describe("ConnectionRegistry", () => {
         async close() {},
       };
 
-      await connections.registerDirect("bench", firstConn, "postgres");
-      await connections.registerDirect("bench", secondConn, "postgres");
+      connections.registerDirect("bench", firstConn, "postgres");
+      connections.registerDirect("bench", secondConn, "postgres");
 
       expect(closeCalled).toBe(1);
       expect(connections.get("bench")).toBe(secondConn);
@@ -148,7 +148,7 @@ describe("ConnectionRegistry", () => {
         async query() { return { columns: [], rows: [] }; },
         async close() {},
       };
-      await connections.registerDirect("bench", mockConn, "duckdb", "Benchmark DB");
+      connections.registerDirect("bench", mockConn, "duckdb", "Benchmark DB");
 
       const meta = connections.describe();
       const benchMeta = meta.find((m) => m.id === "bench");
@@ -253,7 +253,7 @@ describe("ConnectionRegistry", () => {
 
     it("returns correct type for plugin-registered connection", async () => {
       const conn = { async query() { return { columns: [], rows: [] }; }, async close() {} };
-      await connections.registerDirect("ch", conn, "clickhouse");
+      connections.registerDirect("ch", conn, "clickhouse");
       expect(connections.getDBType("ch")).toBe("clickhouse");
     });
 

@@ -12,7 +12,7 @@
     "typescript/no-explicit-any": "warn",
     "no-unsafe-optional-chaining": "warn",
     "typescript/no-floating-promises": "error",
-    "typescript/await-thenable": "warn",
+    "typescript/await-thenable": "error",
     "typescript/no-base-to-string": "warn",
     "typescript/no-redundant-type-constituents": "warn",
     "typescript/unbound-method": "warn",

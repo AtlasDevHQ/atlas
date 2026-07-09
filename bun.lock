@@ -937,6 +937,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "bun-types@1.3.14": "patches/bun-types@1.3.14.patch",
+  },
   "packages": {
     "@ai-sdk/amazon-bedrock": ["@ai-sdk/amazon-bedrock@4.0.119", "", { "dependencies": { "@ai-sdk/anthropic": "3.0.85", "@ai-sdk/openai": "3.0.73", "@ai-sdk/provider": "3.0.10", "@ai-sdk/provider-utils": "4.0.30", "@smithy/eventstream-codec": "^4.0.1", "@smithy/util-utf8": "^4.0.0", "aws4fetch": "^1.0.20" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-DgJugGl0Euja2g+60p3eV+2k4kQvtLtJFeYskVrAlt0KgpVGYot0XEPCOBgjDsn6aAEuyibWDSIddxJU8k9wug=="],
 

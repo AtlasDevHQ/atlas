@@ -13,6 +13,7 @@
     "deployment",
     "integrations",
     "security",
+    "agent-auth",
     "platform-ops",
     "architecture",
     "comparisons",

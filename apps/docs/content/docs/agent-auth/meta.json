@@ -1,0 +1,6 @@
+{
+  "title": "Agent Auth",
+  "description": "Capability-based authorization for AI agents on top of OAuth 2.1 — grants, approval strengths, and autonomous-mode caveats",
+  "icon": "KeyRound",
+  "pages": ["index"]
+}

@@ -56,7 +56,8 @@ FAIL=0
 # the non-composite test-check sibling (#4450). Returns the tree path.
 scaffold() {
   local n="$1" tmp i
-  tmp="$(mktemp -d)"
+  # Guard the substitution: an empty $tmp would scatter fixture files at /src.
+  tmp="$(mktemp -d)" || return 1
   mkdir -p "$tmp/src"
   for ((i = 1; i <= n; i++)); do
     printf 'export const v%d = %d;\n' "$i" "$i" > "$tmp/src/f$i.ts"
@@ -214,18 +215,42 @@ else
 fi
 rm -rf "$tree" "$stderr_file"
 
+# --- non-numeric test-check floor override ---------------------------------------
+
+# Same discipline for the second floor: a typo'd TEST_MIN must fail loudly.
+tree="$(scaffold 5)"
+stderr_file="$(mktemp)"
+status=0
+(PATH="$TSGO_PATH:$PATH" TYPE_PROGRAM_GUARD_ROOT="$tree" \
+  TYPE_PROGRAM_GUARD_MIN=3 TYPE_PROGRAM_GUARD_TEST_MIN="2O" \
+  "$BASH_BIN" "$SCRIPT" >/dev/null 2>"$stderr_file") || status=$?
+if [ "$status" -ne 0 ] && grep -qF "non-numeric TYPE_PROGRAM_GUARD_TEST_MIN" "$stderr_file"; then
+  echo "  ok   non-numeric test-check floor override fails loudly (expected fail)"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL non-numeric test-check floor override — status=$status, stderr:" >&2
+  sed 's/^/    /' "$stderr_file" >&2
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$tree" "$stderr_file"
+
 # --- real tree sanity ----------------------------------------------------------
 
 # The actual repo must pass with no overrides (default ROOT + 450/200 floors).
+# Capture stderr so a CI failure here is attributable to a branch, not a bare
+# status code.
+stderr_file="$(mktemp)"
 real_status=0
-(bash "$SCRIPT" >/dev/null 2>&1) || real_status=$?
+("$BASH_BIN" "$SCRIPT" >/dev/null 2>"$stderr_file") || real_status=$?
 if [ "$real_status" -eq 0 ]; then
   echo "  ok   real repo passes the guard (expected pass)"
   PASS=$((PASS + 1))
 else
-  echo "  FAIL real repo does not pass the guard — status=$real_status" >&2
+  echo "  FAIL real repo does not pass the guard — status=$real_status, stderr:" >&2
+  sed 's/^/    /' "$stderr_file" >&2
   FAIL=$((FAIL + 1))
 fi
+rm -rf "$stderr_file"
 
 echo ""
 echo "check-type-program-not-vacuous.test.sh: $PASS passed, $FAIL failed"

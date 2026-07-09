@@ -219,7 +219,8 @@ export interface ZendeskAccountParams {
 
 /**
  * Enumerate the account's brands — ALSO the install-time credential check
- * (one authenticated request; loud on every failure). A bad token surfaces as
+ * (the first authenticated request doubles as it; loud on every failure). A
+ * bad token surfaces as
  * a 401 error, a wrong subdomain typically as a 404, both actionable and
  * host-redacted; the install handler maps them to field-level 400s so
  * "invalid credentials fail the install loudly."
@@ -382,8 +383,8 @@ class ZendeskApi {
         else skippedMalformed++;
       }
       // The feed's cursor is time-shaped: `end_time` is the next `start_time`.
-      // Stop on an empty page, a missing/absent next page, or a cursor that
-      // did not advance (guards an infinite loop on a stuck feed).
+      // Stop on an empty page, a missing next page, or a time cursor that is
+      // absent or did not advance (guards an infinite loop on a stuck feed).
       const endTime = typeof body.end_time === "number" ? body.end_time : null;
       const hasNext = typeof body.next_page === "string" && body.next_page !== "";
       if (raws.length === 0 || !hasNext || endTime === null || endTime <= startTime) break;
@@ -584,7 +585,7 @@ class ZendeskHttp {
 
     if (response.status === 429) {
       throw new ConnectorRateLimitError(
-        `Zendesk rate-limited the request to ${hostForLog(this.base)} (Zendesk rate limits apply — the incremental feed is capped at 10 requests/minute).`,
+        `Zendesk rate-limited the request to ${hostForLog(this.base)} (Zendesk rate limits apply; the incremental feed in particular is capped at 10 requests/minute).`,
         parseRetryAfter(response.headers.get("retry-after")),
       );
     }
@@ -604,7 +605,9 @@ class ZendeskHttp {
       );
     }
     if (!response.ok) {
-      throw new Error(`Zendesk returned HTTP ${response.status} from ${hostForLog(this.base)}.`);
+      throw new Error(
+        `Zendesk returned HTTP ${response.status} from ${hostForLog(this.base)} — an unexpected Zendesk API response; if it persists, re-install the collection or check Zendesk's API status.`,
+      );
     }
     try {
       return (await response.json()) as T;

@@ -181,6 +181,22 @@ describe("fetchAll (reconciliation)", () => {
     await expect(c.fetchAll()).rejects.toThrow(/pointing off|refusing to follow/i);
   });
 
+  it("fails loud on a stuck cursor that keeps returning empty pages (page bound)", async () => {
+    // A same-origin `next` with has_more forever and zero articles never grows
+    // the article count — only the page-count bound stops the walk.
+    const impl = (async (): Promise<Response> =>
+      jsonResponse({
+        articles: [],
+        meta: { has_more: true },
+        links: { next: `${BASE}/api/v2/help_center/articles.json?page[after]=stuck` },
+      })) as unknown as typeof globalThis.fetch;
+    const c = createZendeskVendorClient(
+      { brandSubdomain: "acme", email: "ops@acme.test", apiToken: "tok", collectionSlug: "zendesk-acme" },
+      { fetchImpl: impl },
+    );
+    await expect(c.fetchAll()).rejects.toThrow(/did not terminate/i);
+  });
+
   it("skips draft articles and draft translations (unpublish = absent = archived)", async () => {
     const { c } = client({
       articles: [

@@ -237,7 +237,20 @@ jobs:
 
       # `bun run type` builds the SDK packages it needs internally
       # (@useatlas/types, plugin-sdk, sdk, react), runs tsgo --noEmit, and
-      # finishes with `@atlas/web type` — self-contained, no pre-build.
+      # finishes with `@atlas/web type` + `@atlas/www type` — self-contained,
+      # no pre-build.
+      #
+      # tsgo parallelism (--checkers/--builders) was benchmarked and declined
+      # (#4446): on this 4-vCPU runner class the tsgo default (4 checkers, as
+      # of the pinned 7.0.0-dev preview) is already optimal for the root
+      # program — ~20s vs ~34s single-checker, and 5-8 checkers regress
+      # (~21-24s, oversubscription). --builders only affects `tsc -b` build
+      # mode, which nothing here uses; the tsgo declaration-emit builds
+      # (types/plugin-sdk/sdk) and the www program are
+      # sub-second, and the web program (~580 files, ~8s) runs the same
+      # already-optimal default. Re-benchmark before adding flags if this job
+      # moves to a higher-core runner class or tsgo's parallelism defaults
+      # change.
       - name: Type check
         run: bun run type
 

@@ -34,9 +34,10 @@ Run 4 agents in parallel, one per audit domain. Each agent reads docs pages and 
 ### Steps
 
 1. Extract ALL `process.env.*` reads from `packages/api/src/lib/config.ts` (the `configFromEnv()` function) AND from across `packages/api/src/` — this is the authoritative list of what the code actually reads. Include ALL prefixes (ATLAS_*, DATABASE_*, BETTER_AUTH_*, SLACK_*, GOOGLE_*, GITHUB_*, MICROSOFT_*, OPENAI_*, OLLAMA_*, OTEL_*, PORT, NODE_ENV, VERCEL, etc.)
-2. Extract all env vars from `.env.example`
-3. Extract all env vars mentioned in `apps/docs/content/shared/reference/environment-variables.mdx`
-4. Cross-reference:
+2. Extract all **settings-registry keys** from `packages/api/src/lib/settings.ts` (`key: "ATLAS_..."` entries). These are runtime-controllable knobs read via the registry, NOT via `process.env` — the grep in step 1 misses them. Each needs docs coverage AND correct framing: precedence is `workspace > platform > env > default`, so docs must not describe a registry-backed knob as env-only (on SaaS it's set in the Admin console, never by redeploy)
+3. Extract all env vars from `.env.example`
+4. Extract all env vars mentioned in `apps/docs/content/shared/reference/environment-variables.mdx`
+5. Cross-reference:
 
 | Check | How |
 |-------|-----|
@@ -280,7 +281,7 @@ Pick the 5 most recently changed guides across ALL THREE trees (by git log) and 
 
 ### Grep patterns
 ```bash
-# Find recently modified guides (all three trees)
+# Find recently modified guides (all three trees) — use $LAST_TAG..HEAD when running end-of-cycle (Part K)
 git log --oneline --since="2 weeks ago" -- apps/docs/content/docs/guides/ apps/docs/content/self-hosted/ apps/docs/content/shared/guides/ | head -10
 
 # Check import paths in code examples
@@ -357,9 +358,14 @@ When a feature is undocumented, note which tree the missing page belongs in: Saa
 
 ### J2. New internal DB tables without docs
 
+Internal-DB tables are created by SQL migrations (`db/migrations/####_*.sql`), NOT inline in `internal.ts` — grep the migrations:
+
 ```bash
-# All CREATE TABLE statements in internal.ts — these represent features
-grep -oP "CREATE TABLE IF NOT EXISTS (\w+)" packages/api/src/lib/db/internal.ts
+# All tables created by migrations — these represent features
+grep -hoP "CREATE TABLE( IF NOT EXISTS)? \"?\w+" packages/api/src/lib/db/migrations/*.sql | sort -u
+
+# When scoping to a release cycle (Part K), only the migrations added since the last tag:
+git diff --name-only --diff-filter=A $(git describe --tags --abbrev=0)..HEAD -- packages/api/src/lib/db/migrations/
 ```
 
 Each table represents a user-facing feature. Check if there's a corresponding docs page or section explaining the feature (usage_events → usage metering docs, sso_providers → SSO guide, demo_leads → demo mode docs, etc.)
@@ -379,6 +385,54 @@ Check if new top-level features (ee/, signup flow, demo mode) have corresponding
 ### J4. Recently shipped features
 
 Read `.claude/research/ROADMAP.md` and find all `[x]` items in the most recent milestone(s). For each shipped feature, verify there's a corresponding docs page or section. This catches features that were built but never documented.
+
+---
+
+## Part K: Release-Cycle Scoping (end-of-cycle runs)
+
+When running this audit at the end of a code cycle (before `/release`), scope the discovery parts to what actually changed since the last tag, and add the release-specific checks below. The full-repo parts (A–G) still run unscoped — reference drift accumulates regardless of when it was introduced.
+
+### K1. Establish the cycle window
+
+```bash
+git fetch --tags origin          # remote/ephemeral clones often lack tags — fetch first
+LAST_TAG=$(git describe --tags --abbrev=0)
+git log --oneline "$LAST_TAG"..HEAD | wc -l          # cycle size
+git log "$LAST_TAG"..HEAD --pretty='%s' | grep -P '^(feat|fix)' # customer-visible candidates
+```
+
+Use `$LAST_TAG..HEAD` as the window everywhere a recency filter appears (Part H's "5 most recent guides", J2's new migrations, this part). Per ADR-0008, customer-visible changes since the tag are what forces the next tag's semver position — the audit's shipped-feature list doubles as that input.
+
+### K2. Per-feature docs coverage for the cycle
+
+For each customer-visible commit/PR in the window (dedupe by feature — use PR titles, milestone issues via `gh api repos/AtlasDevHQ/atlas/milestones`, and ROADMAP `[x]` items from J4):
+
+| Check | How |
+|-------|-----|
+| **Docs exist** | Feature has a page/section in the correct audience tree (see layout table at top) → missing = HIGH |
+| **Docs updated, not just existing** | If the feature *changed* an already-documented behavior, was the page touched in the same window? `git log $LAST_TAG..HEAD -- apps/docs/content/` vs the feature's code paths |
+| **Generated surfaces regenerated** | New/changed routes → openapi.json + api-reference MDX regenerated (Part D); SAAS_ENV_KEYS changes → saas-environment-variables.mdx regenerated (Part A2) |
+
+### K3. Stability commitments
+
+**Docs:** `apps/docs/content/shared/reference/stability.mdx`
+
+If any commit in the window touched a contract that page documents as stable (wire types, REST endpoints, plugin SDK, MCP tools), flag it CRITICAL — it either needs a docs update, a semver decision, or both. Contract breaks are reserved for major versions.
+
+### K4. Chat-plugin × Atlas contract doc (milestone-closeout blocker)
+
+**Docs:** `docs/architecture/chat-plugin-atlas-contract.md`
+
+If the window includes commits touching `plugins/chat/src/`, `packages/api/src/lib/slack/`, or `packages/api/src/lib/integrations/install/*-oauth-handler.ts`, the contract table must have been updated in those same commits. Also check for open ⚠ rows — they block milestone closeout regardless of this audit.
+
+```bash
+git log "$LAST_TAG"..HEAD --oneline -- plugins/chat/src/ packages/api/src/lib/slack/ 'packages/api/src/lib/integrations/install/*-oauth-handler.ts'
+grep -n '⚠' docs/architecture/chat-plugin-atlas-contract.md
+```
+
+### K5. Changelog material (hand-off, not a fix)
+
+The per-tag changelog entry (`apps/docs/src/components/changelog-data.ts` `releases[]`) is written by `/release`, not here — don't add it. But the audit's shipped-feature list from K2 is the raw material: include it in the report under a "Changelog input" heading so `/release` doesn't re-derive it.
 
 ---
 
@@ -407,6 +461,9 @@ Read `.claude/research/ROADMAP.md` and find all `[x]` items in the most recent m
 
 ## Up-to-Date (Verified Accurate)
 - [section]: X items verified against source
+
+## Changelog input (end-of-cycle runs only — Part K5)
+- Shipped features since <last tag> with docs status, for /release to consume
 ```
 
 ---
@@ -415,10 +472,12 @@ Read `.claude/research/ROADMAP.md` and find all `[x]` items in the most recent m
 
 Run 4 agents in parallel:
 
-1. **Env + Config agent** — Parts A + C (both reference `config.ts`)
-2. **CLI + API agent** — Parts B + D (route and command verification)
+1. **Env + Config agent** — Parts A + C (both reference `config.ts`; A includes A2 + settings-registry keys)
+2. **CLI + API agent** — Parts B + D (route and command verification, both CLI binaries)
 3. **Plugin + SDK agent** — Parts E + F + G (package exports and error codes)
-4. **Guides + Cross-cutting + Discovery agent** — Parts H + I + J (spot-checks, link verification, and undocumented feature discovery)
+4. **Guides + Cross-cutting + Discovery agent** — Parts H + I + J (spot-checks, link verification, audience drift, and undocumented feature discovery)
+
+For end-of-cycle runs, do Part K1 (establish `$LAST_TAG` and the commit window) **before** spawning agents and pass the window into each agent's prompt; K2–K5 fold into agent 4's scope.
 
 Each agent should:
 - Read the docs page(s)

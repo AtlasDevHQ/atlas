@@ -80,8 +80,9 @@ export default function TheConnectorYouDontWrite() {
           Atlas can mirror a customer&apos;s Notion workspace or Confluence
           spaces into its Knowledge Base, pulling their docs in on a schedule so
           the agent can read them. The code that teaches Atlas a new source of
-          truth like that is called a connector. Writing one is smaller than you
-          would guess, and the reason it is small is the whole point.
+          truth like that is called a connector. Writing one is a smaller job
+          than you would guess, and what makes it small is the part you never
+          have to write.
         </Lead>
 
         <StatStrip
@@ -174,7 +175,7 @@ export default function TheConnectorYouDontWrite() {
 
         <H2>Why deletions live in exactly one place</H2>
         <P>
-          Here is the part that justifies all of the above. A connector can
+          Everything above exists to make one operation safe. A connector can
           remove documents from a Knowledge Base collection when they vanish
           from the source. That is the single most dangerous thing it does, and
           it is allowed to happen in exactly one situation: a reconciliation
@@ -198,9 +199,9 @@ export default function TheConnectorYouDontWrite() {
           skipped deletions wait for it. That flag came out of a review pass over
           this milestone: without it, a depth-capped crawl would report as
           complete and archive every live document it never reached, behind a
-          green checkmark. An empty crawl gets the same treatment turned up to
-          eleven. It is always an error, and it archives nothing, because one bad
-          vendor response must never be able to empty a collection.
+          green checkmark. An empty crawl is the starkest case: it is always an
+          error, and it archives nothing, because one bad vendor response must
+          never be able to empty a collection.
         </P>
 
         <PullQuote>
@@ -218,22 +219,23 @@ export default function TheConnectorYouDontWrite() {
           human upload. Adding a new connector widens the set of possible source
           values and can never widen the set that is allowed to publish. So
           everything a connector pulls in lands as a draft, waiting behind the
-          same review gate a human&apos;s upload would. A machine that syncs your
-          docs every night is never a machine that publishes them.
+          same review gate a human&apos;s upload would. A connector can pull your
+          docs in every night and still never push a word of them live.
         </P>
 
         <H2>From a blog post to three vendors in a week</H2>
         <P>
-          A few weeks ago I argued that the{" "}
+          A week and a half ago I argued that the{" "}
           <a href="/blog/why-the-semantic-layer-is-yaml" className="link-accent">
             semantic layer should be a plain file
           </a>
-          . Days later Google shipped the Open Knowledge Format and I wrote about{" "}
+          , and found out the day after it went up that Google had already
+          shipped the Open Knowledge Format on the same idea. I wrote about{" "}
           <a href="/blog/atlas-speaks-okf" className="link-accent">
             what Atlas did with it
           </a>
           : import, export, and a new Knowledge Base pillar built on the format.
-          A pillar is only worth as much as what fills it, though, and on the day
+          A pillar is only worth as much as what fills it, though, and the day
           that post went up nothing did.
         </P>
         <P>

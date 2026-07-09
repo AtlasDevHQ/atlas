@@ -170,7 +170,14 @@ does **not** implement `no-restricted-syntax` natively.
     `packages/web/tsconfig.json`. The web `type` gate and `next build` still check the
     unchanged main config; web tests now get a real program (which surfaced one
     `no-meaningless-void-operator` error — a `void act(...)` whose callee now resolves
-    as `void`-returning; the `void` was dropped). *The last 6 findings were genuine,
+    as `void`-returning; the `void` was dropped). **Correction (#4447):** the
+    "unchanged main config" claim was wrong — because `tsconfig.test.json`'s
+    `include` claimed *all* of `src/**`, project-reference semantics redirected
+    every src file out of the referencing program, leaving the web `type` gate
+    checking zero project files (vacuously green). Fixed by narrowing the test
+    project's `include` to the test files it exists to route; a
+    `check-type-program-not-vacuous.sh` guard now runs inside the web `type`
+    script so a future config change can't silently re-empty the program. *The last 6 findings were genuine,
     not config artifacts* — wave 4's classification of the mcp/api residuals as config
     artifacts turned out wrong: they persist under fully-healthy programs
     (`packages/api`'s program already had `types: ["bun", "node"]`) because `unknown`

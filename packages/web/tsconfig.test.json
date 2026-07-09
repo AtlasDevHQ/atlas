@@ -6,6 +6,12 @@
     "outDir": "dist/tsconfig-test-build",
     "types": ["bun", "node"]
   },
-  "include": ["next-env.d.ts", "src/**/*.ts", "src/**/*.tsx"],
+  "include": [
+    "src/test-setup.ts",
+    "src/**/__tests__/**/*.ts",
+    "src/**/__tests__/**/*.tsx",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx"
+  ],
   "exclude": ["node_modules"]
 }

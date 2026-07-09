@@ -7,7 +7,7 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "type": "tsgo --noEmit",
+    "type": "tsgo --noEmit && bash scripts/check-type-program-not-vacuous.sh",
     "test": "bun scripts/test-isolated.ts"
   },
   "exports": {

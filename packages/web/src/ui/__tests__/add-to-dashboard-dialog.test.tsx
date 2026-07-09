@@ -40,7 +40,7 @@ let dashboardsData: { dashboards: Array<{ id: string; title: string; cardCount: 
 let groupsData: { groups: ConnectionGroup[] } | null = { groups: [] };
 let mutateCalls: CapturedCall[] = [];
 
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: (path: string) => {
     if (path === "/api/v1/dashboards") {
       return { data: dashboardsData, loading: false, error: null, refetch: () => {} };
@@ -52,7 +52,7 @@ mock.module("@/ui/hooks/use-admin-fetch", () => ({
   },
 }));
 
-mock.module("@/ui/hooks/use-admin-mutation", () => ({
+void mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: () => ({
     mutate: async (opts: { path: string; method?: string; body?: Record<string, unknown> }) => {
       mutateCalls.push({ path: opts.path, method: opts.method, body: opts.body });

@@ -22,7 +22,7 @@ const mockInitTelemetry = mock((opts?: { serviceName?: string }) =>
 
 // Sync factory (bun:test async mock.module factories deadlock the loader).
 // Mock ALL exports of the real module per CLAUDE.md.
-mock.module("@atlas/api/lib/telemetry", () => ({
+void mock.module("@atlas/api/lib/telemetry", () => ({
   initTelemetry: mockInitTelemetry,
   shutdownTelemetry: mockShutdown,
 }));

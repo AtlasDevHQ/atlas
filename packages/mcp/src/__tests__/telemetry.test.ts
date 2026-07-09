@@ -23,7 +23,7 @@ const spanCalls: { name: string; attributes: Record<string, unknown>; resultAttr
 const counterCalls: { metric: string; value: number; attributes: Record<string, unknown> }[] = [];
 const histogramCalls: { metric: string; value: number; attributes: Record<string, unknown> }[] = [];
 
-mock.module("@atlas/api/lib/tracing", () => ({
+void mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (
     name: string,
     attributes: Record<string, unknown>,
@@ -51,7 +51,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
   withEffectSpan: <A>(_name: string, _attributes: Record<string, unknown>, e: A): A => e,
 }));
 
-mock.module("@atlas/api/lib/metrics", () => ({
+void mock.module("@atlas/api/lib/metrics", () => ({
   abuseEscalations: { add: () => {} },
   mcpToolCalls: {
     add: (value: number, attributes: Record<string, unknown>) => {
@@ -89,15 +89,15 @@ const mockExecuteSQLExecute = mock<(...args: unknown[]) => Promise<unknown>>(
   }),
 );
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   explore: { description: "explore", execute: mockExploreExecute },
 }));
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   executeSQL: { description: "executeSQL", execute: mockExecuteSQLExecute },
 }));
 
 // `runMetric` resolves the metric definition through these helpers.
-mock.module("@atlas/api/lib/semantic/lookups", () => ({
+void mock.module("@atlas/api/lib/semantic/lookups", () => ({
   // #2150: `listEntities` was consolidated into `semantic/entities.ts`
   // (mocked separately below). The remaining lookups stay here.
   getEntityByName: () => null,
@@ -121,7 +121,7 @@ mock.module("@atlas/api/lib/semantic/lookups", () => ({
 }));
 
 // #2150: stub the consolidated `listEntities` for the MCP listEntities tool.
-mock.module("@atlas/api/lib/semantic/entities", () => ({
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: async () => [],
   listEntityRows: async () => [],
   listEntitiesWithOverlay: async () => [],
@@ -192,7 +192,7 @@ describe("MCP OTel coverage (#2029)", () => {
 
     const runs = spanCalls.filter((s) => s.name === "atlas.mcp.tool.run");
     expect(runs.length).toBe(2);
-    const tools = runs.map((r) => r.attributes["tool.name"]).sort();
+    const tools = runs.map((r) => r.attributes["tool.name"] as string).sort();
     expect(tools).toEqual(["executeSQL", "explore"]);
   });
 
@@ -346,7 +346,7 @@ describe("MCP OTel coverage (#2029)", () => {
       (c) => c.metric === "atlas.mcp.activations",
     );
     const ids = activations
-      .map((a) => a.attributes["workspace.id"])
+      .map((a) => a.attributes["workspace.id"] as string)
       .sort();
     expect(ids).toEqual(["org_a", "org_b"]);
   });
@@ -430,7 +430,7 @@ describe("MCP OTel coverage (#2029)", () => {
 
     const toolNames = spanCalls
       .filter((s) => s.name === "atlas.mcp.tool.run")
-      .map((s) => s.attributes["tool.name"])
+      .map((s) => s.attributes["tool.name"] as string)
       .sort();
     expect(toolNames).toEqual([
       "describeEntity",

@@ -43,7 +43,7 @@ const mockExecuteAgentQuery = mock<(...args: unknown[]) => Promise<AgentResult>>
   async () => DEFAULT_RESULT,
 );
 
-mock.module("@atlas/api/lib/agent-query", () => ({
+void mock.module("@atlas/api/lib/agent-query", () => ({
   executeAgentQuery: mockExecuteAgentQuery,
 }));
 
@@ -111,12 +111,12 @@ type GateVerdict =
 let billingGateVerdict: GateVerdict = { allowed: true };
 const mockCheckAgentBillingGate = mock(async (_orgId: string | undefined) => billingGateVerdict);
 
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockCheckAgentBillingGate,
   BillingBlockedError,
 }));
 
-mock.module("@atlas/api/lib/billing/claim-gate", () => ({
+void mock.module("@atlas/api/lib/billing/claim-gate", () => ({
   buildClaimUrl: (email?: string) => `https://app.useatlas.dev/claim?email=${email ?? ""}`,
   ClaimRequiredError,
   ClaimCheckFailedError,

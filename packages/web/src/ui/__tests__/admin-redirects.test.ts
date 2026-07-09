@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   redirect: (url: string) => {
     const err = new Error("NEXT_REDIRECT") as Error & { url: string };
     err.url = url;

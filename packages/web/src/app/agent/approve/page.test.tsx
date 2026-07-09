@@ -37,7 +37,7 @@ const sessionStore: { value: Session } = {
   value: { isPending: false, data: { user: { id: "user_1", email: "dev@useatlas.dev" } } },
 };
 
-mock.module("@/lib/auth/client", () => ({
+void mock.module("@/lib/auth/client", () => ({
   authClient: {
     useSession: () => sessionStore.value,
   },
@@ -47,14 +47,14 @@ const searchParamsStore: Record<string, string | null> = {
   agent_id: "agent_1",
   code: "ABCD-2345",
 };
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useSearchParams: () => ({ get: (k: string) => searchParamsStore[k] ?? null }),
 }));
 
 // Spread the real module so every named export stays present (repo rule),
 // overriding only `getApiUrl` to a fixed cross-origin API host.
 import * as apiUrlReal from "@/lib/api-url";
-mock.module("@/lib/api-url", () => ({
+void mock.module("@/lib/api-url", () => ({
   ...apiUrlReal,
   getApiUrl: () => "https://api.useatlas.dev",
 }));

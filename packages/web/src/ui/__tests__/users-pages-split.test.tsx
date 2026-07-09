@@ -37,13 +37,13 @@ let mockSession: MockSession = {
 let mockGuardBlocked = false;
 const mockReplace = mock(() => {});
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/admin/users",
   useRouter: () => ({ push: () => {}, replace: mockReplace, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
 }));
 
-mock.module("@/ui/hooks/use-platform-admin-guard", () => ({
+void mock.module("@/ui/hooks/use-platform-admin-guard", () => ({
   useUserRole: () => mockSession.data?.user?.role,
   usePlatformAdminGuard: () => ({ blocked: mockGuardBlocked }),
 }));
@@ -51,19 +51,19 @@ mock.module("@/ui/hooks/use-platform-admin-guard", () => ({
 // useAtlasConfig is consulted both by the routing wrapper (for
 // `authClient.useSession()`) and by the inner UsersPage (for `apiUrl` /
 // `isCrossOrigin`). One mock covers both.
-mock.module("@/ui/context", () => ({
+void mock.module("@/ui/context", () => ({
   useAtlasConfig: () => ({
     apiUrl: "http://localhost",
     isCrossOrigin: false,
     authClient: { useSession: () => mockSession },
   }),
 }));
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({ data: null, loading: false, error: null, refetch: () => {} }),
   useInProgressSet: () => ({ has: () => false, add: () => {}, remove: () => {} }),
   friendlyError: (err: { message?: string }) => err?.message ?? "error",
 }));
-mock.module("@/ui/hooks/use-admin-mutation", () => ({
+void mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: () => ({
     mutate: async () => ({ ok: true }),
     saving: false,

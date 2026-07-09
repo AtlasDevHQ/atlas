@@ -232,7 +232,7 @@ interface FakeRow extends Record<string, unknown> {
 /** Build a fake query that returns the given rows per lower-cased email param. */
 function fakeQuery(byEmail: Record<string, FakeRow[]>): RowQuery {
   return (async <T extends Record<string, unknown>>(_sql: string, params?: unknown[]) => {
-    const email = String(params?.[0] ?? "");
+    const email = (params?.[0] ?? "") as string;
     return (byEmail[email] ?? []) as unknown as T[];
   }) as RowQuery;
 }

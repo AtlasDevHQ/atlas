@@ -1,7 +1,7 @@
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { renderHook, waitFor, cleanup } from "@testing-library/react";
 
-mock.module("@/lib/api-url", () => ({
+void mock.module("@/lib/api-url", () => ({
   getApiUrl: () => "http://localhost:3001",
   isCrossOrigin: () => false,
 }));

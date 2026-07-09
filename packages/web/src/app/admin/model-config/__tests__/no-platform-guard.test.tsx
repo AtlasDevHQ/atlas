@@ -32,13 +32,13 @@ let mockSession: MockSession = {
 };
 const mockReplace = mock(() => {});
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/admin/model-config",
   useRouter: () => ({ push: () => {}, replace: mockReplace, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
 }));
 
-mock.module("@/ui/context", () => ({
+void mock.module("@/ui/context", () => ({
   useAtlasConfig: () => ({
     apiUrl: "http://localhost",
     isCrossOrigin: false,
@@ -53,7 +53,7 @@ mock.module("@/ui/context", () => ({
 // free-tier-unconfigured CTA below) override `billingData` per-test so
 // only the `/api/v1/billing` call returns shaped data; siblings stay null.
 let billingData: unknown = null;
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: (path: string) => ({
     data: path === "/api/v1/billing" ? billingData : null,
     loading: false,
@@ -62,7 +62,7 @@ mock.module("@/ui/hooks/use-admin-fetch", () => ({
   }),
   friendlyError: (err: { message?: string }) => err?.message ?? "error",
 }));
-mock.module("@/ui/hooks/use-admin-mutation", () => ({
+void mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: () => ({
     mutate: async () => ({ ok: true }),
     saving: false,

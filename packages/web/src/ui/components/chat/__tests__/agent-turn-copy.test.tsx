@@ -13,7 +13,7 @@ import type { TurnPart } from "../turn-partitioner";
 // Stub the heavy leaf renderers — this test pins the copy affordance, not
 // card internals. CLAUDE.md "Mock all exports": tool-part.tsx exports only
 // ToolPart; markdown.tsx exports only Markdown.
-mock.module("@/ui/components/chat/tool-part", () => ({
+void mock.module("@/ui/components/chat/tool-part", () => ({
   ToolPart: ({ part }: { part: unknown }) =>
     React.createElement(
       "div",
@@ -21,7 +21,7 @@ mock.module("@/ui/components/chat/tool-part", () => ({
       String((part as { type?: string }).type),
     ),
 }));
-mock.module("@/ui/components/chat/markdown", () => ({
+void mock.module("@/ui/components/chat/markdown", () => ({
   Markdown: ({ content }: { content: string }) =>
     React.createElement("div", null, content),
 }));

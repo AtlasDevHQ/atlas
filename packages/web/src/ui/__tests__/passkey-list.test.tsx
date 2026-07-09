@@ -16,7 +16,7 @@ const deletePasskeyMock = mock(async (_opts?: unknown) => ({
 const addPasskeyMock = mock(async (_opts?: unknown) => ({ data: null, error: null }));
 const listUserPasskeysMock = mock(async () => ({ data: [], error: null }));
 
-mock.module("@/lib/auth/passkey-client", () => ({
+void mock.module("@/lib/auth/passkey-client", () => ({
   getPasskeyClient: () => ({
     addPasskey: addPasskeyMock,
     updatePasskey: updatePasskeyMock,

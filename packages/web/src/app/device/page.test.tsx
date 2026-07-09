@@ -42,7 +42,7 @@ const sessionStore: { value: Session } = {
   value: { isPending: false, data: { user: { email: "dev@useatlas.dev" } } },
 };
 
-mock.module("@/lib/auth/client", () => ({
+void mock.module("@/lib/auth/client", () => ({
   authClient: {
     useSession: () => sessionStore.value,
     device: deviceClaimMock,
@@ -50,7 +50,7 @@ mock.module("@/lib/auth/client", () => ({
 }));
 
 const searchParamsStore: Record<string, string | null> = { user_code: "SRVPR7QG" };
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useSearchParams: () => ({ get: (k: string) => searchParamsStore[k] ?? null }),
 }));
 

@@ -56,7 +56,7 @@ const updateUserMock = mock(
   }),
 );
 
-mock.module("@/lib/auth/client", () => ({
+void mock.module("@/lib/auth/client", () => ({
   authClient: {
     updateUser: (opts: { name: string }) => updateUserMock(opts),
     useSession: () => ({

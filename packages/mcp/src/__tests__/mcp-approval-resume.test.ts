@@ -40,7 +40,7 @@ const __mockedConfig = {
   semanticLayer: "./semantic",
   source: "env",
 };
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   initializeConfig: mock(async () => __mockedConfig),
   getConfig: mock(() => __mockedConfig),
   loadConfig: mock(async () => __mockedConfig),
@@ -59,7 +59,7 @@ mock.module("@atlas/api/lib/config", () => ({
 // so the dispatch gate consults the per-workspace policy. Stub it all-allowed
 // (no real `mcp_action_policy` table here) — mock ALL runtime exports so a
 // sibling test loading the real module doesn't inherit a partial mock (CLAUDE.md).
-mock.module("@atlas/api/lib/mcp/action-policy", () => ({
+void mock.module("@atlas/api/lib/mcp/action-policy", () => ({
   loadMcpActionPolicy: async () => ({ isBlocked: () => false }),
   mcpActionDenialCopy: (category: string) => ({
     message: `MCP '${category}' actions are disabled for this workspace by an administrator.`,
@@ -73,7 +73,7 @@ mock.module("@atlas/api/lib/mcp/action-policy", () => ({
   setMcpActionCategoryStatus: async () => {},
 }));
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   explore: {
     description: "Explore the semantic layer",
     execute: mock(async () => "catalog.yml"),
@@ -89,7 +89,7 @@ mock.module("@atlas/api/lib/tools/explore", () => ({
 const { BillingBlockedError: RealBillingBlockedError } = await import(
   "@atlas/api/lib/billing/agent-gate"
 );
-mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mock(async () => ({ allowed: true })),
   BillingBlockedError: RealBillingBlockedError,
 }));
@@ -99,7 +99,7 @@ mock.module("@atlas/api/lib/billing/agent-gate", () => ({
 // drives the park→approve transition deterministically.
 let executeCalls = 0;
 const APPROVAL_REQUEST_ID = "appr_req_3750";
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   executeSQL: {
     description: "Execute SQL",
     execute: mock(async () => {

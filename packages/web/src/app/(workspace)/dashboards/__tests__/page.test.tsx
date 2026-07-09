@@ -2,7 +2,7 @@ import { describe, expect, test, mock, afterEach, beforeEach } from "bun:test";
 
 const replaceCalls: string[] = [];
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useRouter: () => ({
     push: () => {},
     replace: (url: string) => replaceCalls.push(url),

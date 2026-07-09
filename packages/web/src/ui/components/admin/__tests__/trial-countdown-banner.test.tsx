@@ -4,7 +4,7 @@ import { render, fireEvent } from "@testing-library/react";
 // The Upgrade CTA navigates via next's router when the plan-picker anchor
 // isn't on the current page (#3418).
 const mockPush: Mock<(href: string) => void> = mock(() => {});
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useRouter: () => ({ push: mockPush }),
 }));
 

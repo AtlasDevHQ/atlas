@@ -66,7 +66,7 @@ dimensions:
   // DB stub pool returns synthetic audit rows so fetchAuditLog yields
   // non-empty output (otherwise handleLearn short-circuits before
   // reaching the --suggestions branch).
-  mock.module("@atlas/api/lib/db/internal", () => {
+  void mock.module("@atlas/api/lib/db/internal", () => {
     const pool = {
       query: async () => ({
         rows: [
@@ -101,7 +101,7 @@ dimensions:
     };
   });
 
-  mock.module("@atlas/api/lib/learn/suggestions", () => ({
+  void mock.module("@atlas/api/lib/learn/suggestions", () => ({
     generateSuggestions: async (
       orgId: string | null,
       options: { autoApprove?: boolean } = {},

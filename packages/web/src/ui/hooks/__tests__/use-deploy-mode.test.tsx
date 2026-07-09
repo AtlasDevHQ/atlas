@@ -15,7 +15,7 @@ let fetchReturn: {
   refetch: () => void;
 } = { data: null, loading: false, error: null, refetch: () => {} };
 
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: (_path: string, opts?: { enabled?: boolean }) => {
     lastOpts = opts;
     return fetchReturn;

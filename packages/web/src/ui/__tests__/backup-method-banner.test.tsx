@@ -23,13 +23,13 @@ let mockData: MfaFactors | null = null;
 let mockLoading = false;
 let mockError: { message: string; status?: number } | null = null;
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/admin/account-security",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
 }));
 
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({
     data: mockError ? null : mockData,
     loading: mockLoading,

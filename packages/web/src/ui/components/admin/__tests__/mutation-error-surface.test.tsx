@@ -8,7 +8,7 @@ import type { FetchError } from "@/ui/lib/fetch-error";
 // stable mode. The features used here are non-SaaS-exclusive (SSO/Custom
 // Domains), so the mode never flips the copy — the stub just severs the
 // provider/network dependency.
-mock.module("@/ui/hooks/use-deploy-mode", () => ({
+void mock.module("@/ui/hooks/use-deploy-mode", () => ({
   useDeployMode: () => ({
     deployMode: "self-hosted",
     loading: false,

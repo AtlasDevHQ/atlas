@@ -28,7 +28,7 @@ const routerPushMock = mock((_path: string) => {});
 // is referentially stable, which the page's `useCallback(..., [router])`
 // relies on. A fresh object per call would churn the load effect.
 const routerMock = { replace: routerReplaceMock, push: routerPushMock, back: () => {} };
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useRouter: () => routerMock,
 }));
 
@@ -37,7 +37,7 @@ mock.module("next/navigation", () => ({
 // step repoints the browser (and can simulate a rejected base). Mock EVERY
 // named value export (repo rule: partial mocks SyntaxError other files).
 const applyRegionSignalMock = mock((_region: string, _apiUrl: string) => true);
-mock.module("@/lib/api-url", () => ({
+void mock.module("@/lib/api-url", () => ({
   getApiUrl: () => "",
   isCrossOrigin: () => false,
   applyRegionSignal: applyRegionSignalMock,
@@ -52,11 +52,11 @@ mock.module("@/lib/api-url", () => ({
 // The region→account transition is a HARD nav (rebuilds the regional auth
 // client). Mock the one centralized hard-nav helper so we can assert the target.
 const navigatePostAuthMock = mock((_path: string) => {});
-mock.module("@/lib/auth/post-auth-nav", () => ({
+void mock.module("@/lib/auth/post-auth-nav", () => ({
   navigatePostAuth: navigatePostAuthMock,
 }));
 
-mock.module("@/ui/components/signup/signup-shell", () => ({
+void mock.module("@/ui/components/signup/signup-shell", () => ({
   SignupShell: ({ children, back }: { children: unknown; back?: { href: string } }) => (
     <div>
       {back ? <a href={back.href}>Back</a> : null}
@@ -65,7 +65,7 @@ mock.module("@/ui/components/signup/signup-shell", () => ({
   ),
 }));
 
-mock.module("@/ui/components/region-picker", () => ({
+void mock.module("@/ui/components/region-picker", () => ({
   // Interactive passthrough: render a select button per region so a test can
   // pick a NON-default region (the page preselects only the default).
   RegionCardGrid: ({

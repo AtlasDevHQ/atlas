@@ -9,7 +9,7 @@ import { render, cleanup, screen, fireEvent, waitFor } from "@testing-library/re
  * `format`).
  */
 
-mock.module("@/lib/api-url", () => ({ getApiUrl: () => "" }));
+void mock.module("@/lib/api-url", () => ({ getApiUrl: () => "" }));
 
 const UploadBundleDialog = (await import("../upload-bundle-dialog")).UploadBundleDialog;
 

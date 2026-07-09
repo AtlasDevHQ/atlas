@@ -14,10 +14,10 @@ import { describe, expect, test, mock } from "bun:test";
 
 // proxy.ts pulls in next/server + better-auth/cookies at import; stub them so
 // the import has no heavy side effects (the predicate under test needs neither).
-mock.module("next/server", () => ({
+void mock.module("next/server", () => ({
   NextResponse: { next: () => ({}), redirect: () => ({}) },
 }));
-mock.module("better-auth/cookies", () => ({
+void mock.module("better-auth/cookies", () => ({
   getSessionCookie: () => null,
 }));
 

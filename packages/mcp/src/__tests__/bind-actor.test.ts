@@ -26,7 +26,7 @@ const resolveCalls: Array<{
   activeOrganizationId: string | undefined;
 }> = [];
 
-mock.module("@atlas/api/lib/auth/effective-role", () => ({
+void mock.module("@atlas/api/lib/auth/effective-role", () => ({
   resolveEffectiveRole: (
     userRole: AtlasRole | undefined,
     userId: string,

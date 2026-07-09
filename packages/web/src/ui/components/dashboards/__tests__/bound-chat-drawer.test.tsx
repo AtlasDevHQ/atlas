@@ -24,7 +24,7 @@ let chatStatus = "ready";
 const setMessagesSpy = mock((_m: unknown) => {});
 const sendMessageSpy = mock(async (_m: unknown) => {});
 
-mock.module("@ai-sdk/react", () => ({
+void mock.module("@ai-sdk/react", () => ({
   useChat: () => ({
     messages: chatMessages,
     setMessages: setMessagesSpy,
@@ -34,7 +34,7 @@ mock.module("@ai-sdk/react", () => ({
   }),
 }));
 
-mock.module("@/ui/context", () => ({
+void mock.module("@/ui/context", () => ({
   useAtlasConfig: () => ({ apiUrl: "", isCrossOrigin: false }),
 }));
 
@@ -42,7 +42,7 @@ mock.module("@/ui/context", () => ({
 let adminFetchData: unknown = null;
 let adminFetchError: { message: string } | null = null;
 let adminFetchLoading = false;
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({
     data: adminFetchData,
     loading: adminFetchLoading,
@@ -52,16 +52,16 @@ mock.module("@/ui/hooks/use-admin-fetch", () => ({
 }));
 
 // Stub the shared renderer + feed so we assert ROUTING, not their internals.
-mock.module("@/ui/components/chat/agent-turn", () => ({
+void mock.module("@/ui/components/chat/agent-turn", () => ({
   AgentTurn: ({ streaming }: { streaming?: boolean }) =>
     React.createElement("div", { "data-testid": "agent-turn", "data-streaming": String(!!streaming) }),
 }));
-mock.module("@/ui/components/chat/working-activity", () => ({
+void mock.module("@/ui/components/chat/working-activity", () => ({
   WorkingActivity: () => React.createElement("div", { "data-testid": "working-activity" }),
   showPreStreamActivity: (loading: boolean, role: string | undefined) =>
     loading && role !== "assistant",
 }));
-mock.module("@/ui/components/chat/follow-up-chips", () => ({
+void mock.module("@/ui/components/chat/follow-up-chips", () => ({
   FollowUpChips: ({ suggestions }: { suggestions: string[] }) =>
     React.createElement("div", { "data-testid": "chips" }, suggestions.join("|")),
 }));

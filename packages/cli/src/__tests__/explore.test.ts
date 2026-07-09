@@ -29,7 +29,7 @@ function stubFetch(
 ): { fetchImpl: typeof fetch; calls: Array<{ url: string; init?: RequestInit }> } {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-    calls.push({ url: typeof url === "string" ? url : url.toString(), init });
+    calls.push({ url: typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url, init });
     return new Response(JSON.stringify(body), {
       status,
       headers: { "Content-Type": "application/json" },
@@ -85,14 +85,14 @@ describe("runExplore — request shaping", () => {
     expect(calls[0].init?.method).toBe("POST");
     const headers = new Headers(calls[0].init?.headers);
     expect(headers.get("authorization")).toBe("Bearer sess_abc");
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ command: "cat catalog.yml" });
+    expect(JSON.parse(calls[0].init?.body as string)).toEqual({ command: "cat catalog.yml" });
   });
 
   it("joins multiple positional args into one command, ignoring flags", async () => {
     const { fetchImpl, calls } = stubFetch(200, { output: "ok" });
     const { io } = capture();
     await runExplore(["explore", "grep", "-r", "revenue", "entities/", "--json"], deps(fetchImpl), io);
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ command: "grep -r revenue entities/" });
+    expect(JSON.parse(calls[0].init?.body as string)).toEqual({ command: "grep -r revenue entities/" });
   });
 
   it("preserves a ---style command argument (only the CLI's own flags are stripped)", async () => {
@@ -105,7 +105,7 @@ describe("runExplore — request shaping", () => {
       deps(fetchImpl),
       io,
     );
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+    expect(JSON.parse(calls[0].init?.body as string)).toEqual({
       command: "grep --include=*.yml -r revenue .",
     });
   });
@@ -138,7 +138,7 @@ describe("runExplore — workspace API key (#4112 unattended CI)", () => {
     const headers = new Headers(calls[0].init?.headers);
     expect(headers.get("x-api-key")).toBe("flag_key");
     // Neither the flag nor its value pollutes the explore command the server runs.
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ command: "ls entities/" });
+    expect(JSON.parse(calls[0].init?.body as string)).toEqual({ command: "ls entities/" });
   });
 
   it("accepts the inline --api-key=<key> form and strips it from the command", async () => {
@@ -152,7 +152,7 @@ describe("runExplore — workspace API key (#4112 unattended CI)", () => {
     expect(code).toBe(0);
     const headers = new Headers(calls[0].init?.headers);
     expect(headers.get("x-api-key")).toBe("inline_key");
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ command: "cat catalog.yml" });
+    expect(JSON.parse(calls[0].init?.body as string)).toEqual({ command: "cat catalog.yml" });
   });
 
   it("the api-key path takes precedence over a stored session", async () => {
@@ -275,7 +275,7 @@ describe("runExplore — HTTP error handling", () => {
     // `HTTP <status>` fallback rather than crashing on parse.
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-      calls.push({ url: typeof url === "string" ? url : url.toString(), init });
+      calls.push({ url: typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url, init });
       return new Response("<html>502 Bad Gateway</html>", {
         status: 502,
         headers: { "Content-Type": "text/html" },

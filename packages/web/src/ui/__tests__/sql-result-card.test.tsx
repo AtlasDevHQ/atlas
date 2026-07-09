@@ -3,7 +3,7 @@ import { render, fireEvent } from "@testing-library/react";
 import { SQLResultCard } from "../components/chat/sql-result-card";
 
 // Mock next/dynamic to render children synchronously (avoids async chunk loading)
-mock.module("next/dynamic", () => ({
+void mock.module("next/dynamic", () => ({
   default: (_loader: () => Promise<{ default: unknown }>) => {
     // Return a placeholder component — we test chart rendering via chart-detection tests
     return function DynamicStub() {

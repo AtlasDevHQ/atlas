@@ -5,7 +5,7 @@ import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 // of the method-presence guard.
 const authClientStub: { twoFactor?: unknown } = {};
 
-mock.module("./client", () => ({
+void mock.module("./client", () => ({
   authClient: authClientStub,
 }));
 

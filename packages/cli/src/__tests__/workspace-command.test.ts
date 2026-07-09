@@ -29,10 +29,10 @@ let sessionToReturn: StoredSession | null = null;
 let readSessionArg: string | undefined;
 
 // Mock the two IO-touching helpers BEFORE importing the shell under test.
-mock.module("../lib/api-base", () => ({
+void mock.module("../lib/api-base", () => ({
   resolveApiBaseUrl: () => baseUrlToReturn,
 }));
-mock.module("../lib/credentials", () => ({
+void mock.module("../lib/credentials", () => ({
   defaultConfigDir: () => "/tmp/atlas-test",
   credentialsPath: () => "/tmp/atlas-test/credentials.json",
   normalizeBaseUrl: (u: string) => u,

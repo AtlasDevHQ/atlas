@@ -43,11 +43,11 @@ const mockInternalQuery = mock<
   (sql: string, params?: unknown[]) => Promise<unknown[]>
 >(async () => []);
 
-mock.module("@atlas/api/lib/auth/actor", () => ({
+void mock.module("@atlas/api/lib/auth/actor", () => ({
   loadActorUser: mockLoadActorUser,
 }));
 
-mock.module("@atlas/ee/governance/approval", () => ({
+void mock.module("@atlas/ee/governance/approval", () => ({
   anyApprovalRuleEnabled: mockAnyApprovalRuleEnabled,
 }));
 
@@ -56,7 +56,7 @@ mock.module("@atlas/ee/governance/approval", () => ({
 // breaking sibling test files that need the real `@atlas/api/lib/db/internal`
 // surface (encryption helpers, pool lifecycle, etc.).
 const realInternal = await import("@atlas/api/lib/db/internal");
-mock.module("@atlas/api/lib/db/internal", () => ({
+void mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   internalQuery: mockInternalQuery,
 }));

@@ -5,7 +5,7 @@ import { render } from "@testing-library/react";
 // The factory returns a function that reads `mockDeployMode` at call time, so
 // flipping it between tests changes what `useDeployMode()` reports at render.
 let mockDeployMode: "saas" | "self-hosted" = "self-hosted";
-mock.module("@/ui/hooks/use-deploy-mode", () => ({
+void mock.module("@/ui/hooks/use-deploy-mode", () => ({
   useDeployMode: () => ({
     deployMode: mockDeployMode,
     loading: false,

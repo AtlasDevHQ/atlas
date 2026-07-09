@@ -9,7 +9,7 @@ import type { DashboardCard } from "@/ui/lib/types";
 // drilldown plumbing, and surfaces `thresholds` (#3208) via a data-attribute so
 // a test can assert the goal-line prop is wired through the tile — both without
 // a real recharts chart.
-mock.module("@/ui/components/chart/result-chart", () => ({
+void mock.module("@/ui/components/chart/result-chart", () => ({
   ResultChart: ({
     onCategoryClick,
     thresholds,
@@ -41,7 +41,7 @@ mock.module("@/ui/components/chart/result-chart", () => ({
     </>
   ),
 }));
-mock.module("next/dynamic", () => ({
+void mock.module("next/dynamic", () => ({
   default: (loader: () => Promise<{ default: React.ComponentType }>) => {
     let Comp: React.ComponentType | null = null;
     void loader().then((m) => {
@@ -53,7 +53,7 @@ mock.module("next/dynamic", () => ({
   },
 }));
 
-mock.module("@/ui/hooks/use-dark-mode", () => ({
+void mock.module("@/ui/hooks/use-dark-mode", () => ({
   useDarkMode: () => false,
 }));
 

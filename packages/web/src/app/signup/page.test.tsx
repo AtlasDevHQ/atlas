@@ -20,14 +20,14 @@ const routerPushMock = mock((_path: string) => {});
 const routerReplaceMock = mock((_path: string) => {});
 const routerMock = { push: routerPushMock, replace: routerReplaceMock, back: () => {} };
 let searchString = "";
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useRouter: () => routerMock,
   useSearchParams: () => new URLSearchParams(searchString),
 }));
 
 const savePlanIntentMock = mock((_plan: string | null) => {});
 // Mock EVERY value export (repo rule: partial mocks SyntaxError other files).
-mock.module("@/lib/billing/plan-intent", () => ({
+void mock.module("@/lib/billing/plan-intent", () => ({
   savePlanIntent: savePlanIntentMock,
   PAID_TIERS: ["starter", "pro", "business"] as const,
   isPlanIntent: () => false,
@@ -36,13 +36,13 @@ mock.module("@/lib/billing/plan-intent", () => ({
 
 const saveDraftMock = mock((_draft: { email: string; invitationId?: string }) => {});
 const readDraftMock = mock((): { email: string; invitationId?: string } | null => null);
-mock.module("@/lib/signup-draft", () => ({
+void mock.module("@/lib/signup-draft", () => ({
   saveSignupDraft: saveDraftMock,
   readSignupDraft: readDraftMock,
   clearSignupDraft: () => {},
 }));
 
-mock.module("@/ui/components/signup/signup-shell", () => ({
+void mock.module("@/ui/components/signup/signup-shell", () => ({
   SignupShell: ({ children }: { children: unknown }) => <div>{children as never}</div>,
 }));
 

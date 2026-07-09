@@ -31,7 +31,7 @@ let modeReturn: {
   resolved: boolean;
 } = { deployMode: "saas", loading: false, error: null, resolved: true };
 
-mock.module("@/ui/hooks/use-deploy-mode", () => ({
+void mock.module("@/ui/hooks/use-deploy-mode", () => ({
   useDeployMode: () => modeReturn,
 }));
 
@@ -57,7 +57,7 @@ function makeStatus(overrides: Partial<SandboxStatus> = {}): SandboxStatus {
 // `useConfigForm`'s render-time re-baseline relies on that — a fresh object
 // per render would re-baseline forever.
 const stableStatus = makeStatus();
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({
     data: stableStatus,
     loading: false,
@@ -73,7 +73,7 @@ mock.module("@/ui/hooks/use-admin-fetch", () => ({
   friendlyError: (e: FetchError) => e.message,
 }));
 
-mock.module("@/ui/hooks/use-admin-mutation", () => ({
+void mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: () => ({
     mutate: async () => ({ ok: true as const, data: undefined }),
     saving: false,

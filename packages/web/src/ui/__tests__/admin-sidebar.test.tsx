@@ -3,7 +3,7 @@ import React from "react";
 import type { ReactNode } from "react";
 
 // Mock next/navigation — must mock ALL named exports used
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/admin",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
@@ -13,24 +13,24 @@ mock.module("next/navigation", () => ({
 }));
 
 // Mock next/link to render a plain anchor
-mock.module("next/link", () => ({
+void mock.module("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
     <a href={href} {...rest}>{children}</a>
   ),
 }));
 
 // Mock useBranding — no custom branding by default
-mock.module("@/ui/hooks/use-branding", () => ({
+void mock.module("@/ui/hooks/use-branding", () => ({
   useBranding: () => ({ branding: null, loading: false }),
 }));
 
 // Mock useDeployMode — default to self-hosted
-mock.module("@/ui/hooks/use-deploy-mode", () => ({
+void mock.module("@/ui/hooks/use-deploy-mode", () => ({
   useDeployMode: () => ({ deployMode: "self-hosted", loading: false, error: null, resolved: true }),
 }));
 
 // Mock shadcn sidebar — complex component with deep dependency chain (radix-ui, hooks, etc.)
-mock.module("@/components/ui/sidebar", () => {
+void mock.module("@/components/ui/sidebar", () => {
 
   return {
     SidebarProvider: ({ children }: { children: React.ReactNode }) => React.createElement("div", { "data-testid": "sidebar-provider" }, children),
@@ -56,14 +56,14 @@ mock.module("@/components/ui/sidebar", () => {
 });
 
 // Mock shadcn collapsible
-mock.module("@/components/ui/collapsible", () => ({
+void mock.module("@/components/ui/collapsible", () => ({
   Collapsible: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
   CollapsibleTrigger: ({ children }: { children: React.ReactNode; asChild?: boolean }) => React.createElement("div", null, children),
   CollapsibleContent: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
 }));
 
 // Mock shadcn separator
-mock.module("@/components/ui/separator", () => {
+void mock.module("@/components/ui/separator", () => {
 
   return { Separator: () => React.createElement("hr") };
 });

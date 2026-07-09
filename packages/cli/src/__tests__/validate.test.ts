@@ -6,7 +6,7 @@ import * as path from "path";
 // Mock @clack/prompts — must mock ALL named exports
 import { mock } from "bun:test";
 
-mock.module("@clack/prompts", () => ({
+void mock.module("@clack/prompts", () => ({
   intro: () => {},
   outro: () => {},
   cancel: () => {},
@@ -27,7 +27,7 @@ mock.module("@clack/prompts", () => ({
   updateSettings: () => {},
 }));
 
-mock.module("picocolors", () => ({
+void mock.module("picocolors", () => ({
   default: {
     green: (s: string) => s,
     red: (s: string) => s,

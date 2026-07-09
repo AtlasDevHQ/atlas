@@ -99,7 +99,7 @@ import { startEvalAuthServer, type EvalAuthFixture } from "../eval/auth";
 
 // Audit emission is observability-only for the eval. Drop to in-memory.
 const auditEntries: AdminActionEntry[] = [];
-mock.module("@atlas/api/lib/audit", () => ({
+void mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: {
     mcp_session: {
       start: "mcp_session.start",
@@ -130,7 +130,7 @@ mock.module("@atlas/api/lib/audit", () => ({
 // so the eval validates the MCP wrapping (envelope shape, success path,
 // truncation flag) without standing up a Postgres pool. SQL correctness
 // is the existing deterministic eval's job; this eval owns the MCP path.
-mock.module("@atlas/api/lib/tools/sql", () => ({
+void mock.module("@atlas/api/lib/tools/sql", () => ({
   executeSQL: {
     description:
       "Execute a SELECT query against the configured analytics database. Returns columns + rows.",
@@ -149,7 +149,7 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 
 // Avoid pulling the full sandbox stack — `explore` isn't exercised by
 // canonical questions but the MCP server still registers it.
-mock.module("@atlas/api/lib/tools/explore", () => ({
+void mock.module("@atlas/api/lib/tools/explore", () => ({
   explore: {
     description: "Explore the semantic layer (read-only).",
     execute: async () => "catalog.yml\nentities/\nmetrics/\nglossary.yml",
@@ -172,7 +172,7 @@ const mockedConfig: MockedConfig = {
   semanticLayer: "./semantic",
   source: "env",
 };
-mock.module("@atlas/api/lib/config", () => ({
+void mock.module("@atlas/api/lib/config", () => ({
   initializeConfig: async () => mockedConfig,
   getConfig: () => mockedConfig,
   loadConfig: async () => mockedConfig,

@@ -22,7 +22,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import type { PlatformSecurityMetrics } from "../lib/admin-schemas";
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/platform/security",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
@@ -32,7 +32,7 @@ let mockData: PlatformSecurityMetrics | null = null;
 let mockLoading = false;
 let guardBlocked = false;
 
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({
     data: mockData,
     loading: mockLoading,
@@ -43,7 +43,7 @@ mock.module("@/ui/hooks/use-admin-fetch", () => ({
   friendlyError: (err: { message?: string }) => err?.message ?? "error",
 }));
 
-mock.module("@/ui/hooks/use-platform-admin-guard", () => ({
+void mock.module("@/ui/hooks/use-platform-admin-guard", () => ({
   usePlatformAdminGuard: () => ({ blocked: guardBlocked }),
   useUserRole: () => "platform_admin",
 }));

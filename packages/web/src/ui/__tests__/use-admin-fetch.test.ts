@@ -10,7 +10,7 @@ import {
   useMfaGate,
 } from "../components/admin/mfa-gate-context";
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/admin/users",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
@@ -289,7 +289,7 @@ describe("useAdminFetch", () => {
     expect(result.current.data).toEqual({ n: 1 });
 
     await act(async () => {
-      result.current.refetch();
+      void result.current.refetch();
     });
 
     await waitFor(() => {
@@ -322,7 +322,7 @@ describe("useAdminFetch", () => {
 
     // Refetch returns HTTP 500 — stale data must be cleared
     await act(async () => {
-      result.current.refetch();
+      void result.current.refetch();
     });
 
     await waitFor(() => {
@@ -358,7 +358,7 @@ describe("useAdminFetch", () => {
 
     // Refetch throws network error — stale data must be cleared
     await act(async () => {
-      result.current.refetch();
+      void result.current.refetch();
     });
 
     await waitFor(() => {
@@ -539,7 +539,7 @@ describe("useAdminFetch", () => {
 
     // Refetch returns invalid data — stale data must be cleared
     await act(async () => {
-      result.current.refetch();
+      void result.current.refetch();
     });
 
     await waitFor(() => {

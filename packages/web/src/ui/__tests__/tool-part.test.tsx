@@ -3,7 +3,7 @@ import { render } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 // Mock the ai package — must mock ALL named exports
-mock.module("ai", () => ({
+void mock.module("ai", () => ({
   getToolName: (part: Record<string, unknown>) => {
     if (!part || typeof part.toolName !== "string") throw new Error("No tool name");
     return part.toolName;
@@ -15,7 +15,7 @@ mock.module("ai", () => ({
 }));
 
 // Mock next/dynamic
-mock.module("next/dynamic", () => ({
+void mock.module("next/dynamic", () => ({
   default: () => {
     return function DynamicStub() {
       return <div data-testid="chart-placeholder" />;

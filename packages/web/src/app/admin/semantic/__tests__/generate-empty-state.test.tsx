@@ -17,13 +17,13 @@ import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => "/admin/semantic",
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
 }));
 
-mock.module("@/ui/context", () => ({
+void mock.module("@/ui/context", () => ({
   useAtlasConfig: () => ({
     apiUrl: "http://localhost",
     isCrossOrigin: false,
@@ -31,20 +31,20 @@ mock.module("@/ui/context", () => ({
   }),
 }));
 
-mock.module("@/ui/hooks/use-deploy-mode", () => ({
+void mock.module("@/ui/hooks/use-deploy-mode", () => ({
   useDeployMode: () => ({ deployMode: "saas", loading: false, error: null, resolved: true }),
 }));
 
-mock.module("@/ui/hooks/use-demo-readonly", () => ({
+void mock.module("@/ui/hooks/use-demo-readonly", () => ({
   useDemoReadonly: () => ({ readOnly: false, demoIndustry: null }),
   demoIndustryLabel: () => null,
 }));
 
-mock.module("@/ui/hooks/use-dev-mode-no-drafts", () => ({
+void mock.module("@/ui/hooks/use-dev-mode-no-drafts", () => ({
   useDevModeNoDrafts: () => false,
 }));
 
-mock.module("@/ui/hooks/use-admin-mutation", () => ({
+void mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: () => ({
     mutate: mock(async () => ({ ok: true as const, data: null })),
     saving: false,
@@ -54,16 +54,16 @@ mock.module("@/ui/hooks/use-admin-mutation", () => ({
   }),
 }));
 
-mock.module("@/ui/components/admin/semantic-health-widget", () => ({
+void mock.module("@/ui/components/admin/semantic-health-widget", () => ({
   SemanticHealthWidget: () => null,
 }));
-mock.module("@/ui/components/admin/semantic-file-tree", () => ({
+void mock.module("@/ui/components/admin/semantic-file-tree", () => ({
   SemanticFileTree: () => createElement("div", { "data-testid": "semantic-file-tree" }),
 }));
-mock.module("@/ui/components/admin/entity-version-history", () => ({
+void mock.module("@/ui/components/admin/entity-version-history", () => ({
   EntityVersionHistory: () => null,
 }));
-mock.module("@/ui/components/admin/entity-editor-dialog", () => ({
+void mock.module("@/ui/components/admin/entity-editor-dialog", () => ({
   EntityEditorDialog: () => null,
   formValuesToEntityBody: () => ({}),
 }));

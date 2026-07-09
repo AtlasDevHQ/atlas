@@ -6,20 +6,20 @@ import type { DashboardCard } from "@/ui/lib/types";
 // in DashboardGrid (mobile single-column vs RGL freeform) is the only thing
 // under test.
 let widthOverride = 1024;
-mock.module("react-grid-layout", () => ({
+void mock.module("react-grid-layout", () => ({
   GridLayout: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="rgl-root">{children}</div>
   ),
   useContainerWidth: () => ({ width: widthOverride, mounted: true, containerRef: { current: null } }),
   noCompactor: () => [],
 }));
-mock.module("react-grid-layout/css/styles.css", () => ({}));
+void mock.module("react-grid-layout/css/styles.css", () => ({}));
 
-mock.module("@/ui/components/chart/result-chart", () => ({
+void mock.module("@/ui/components/chart/result-chart", () => ({
   ResultChart: () => <div data-testid="result-chart">chart</div>,
 }));
 
-mock.module("@/ui/hooks/use-dark-mode", () => ({
+void mock.module("@/ui/hooks/use-dark-mode", () => ({
   useDarkMode: () => false,
 }));
 

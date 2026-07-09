@@ -12,7 +12,7 @@ import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/re
 // Mock api-url: spread real exports, spy on applyRegionSignal.
 import * as realApiUrl from "@/lib/api-url";
 const applyRegionSignalMock = mock((_region: string, _apiUrl: string): boolean => true);
-mock.module("@/lib/api-url", () => ({
+void mock.module("@/lib/api-url", () => ({
   ...realApiUrl,
   applyRegionSignal: (region: string, apiUrl: string) => applyRegionSignalMock(region, apiUrl),
 }));

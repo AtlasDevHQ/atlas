@@ -1,7 +1,7 @@
 import { describe, expect, test, afterEach, mock } from "bun:test";
 import type { ReactNode } from "react";
 
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   usePathname: () => "/dashboards/d-1",
   useSearchParams: () => new URLSearchParams(),
@@ -10,7 +10,7 @@ mock.module("next/navigation", () => ({
   notFound: () => {},
 }));
 
-mock.module("next/link", () => ({
+void mock.module("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: ReactNode }) => (
     <a href={href} {...rest}>
       {children}

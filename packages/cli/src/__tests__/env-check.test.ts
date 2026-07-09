@@ -9,7 +9,7 @@ const mockLogSuccess = mock(() => {});
 const mockCancel = mock(() => {});
 const mockIsCancel = mock(() => false);
 
-mock.module("@clack/prompts", () => ({
+void mock.module("@clack/prompts", () => ({
   confirm: mockConfirm,
   isCancel: mockIsCancel,
   cancel: mockCancel,

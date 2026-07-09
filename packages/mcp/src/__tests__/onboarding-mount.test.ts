@@ -149,7 +149,7 @@ describe("onboarding + hosted mounted together (#3886)", () => {
         expect(tools.map((t) => t.name)).toEqual(["start_trial"]);
         await client.close();
       } finally {
-        server.stop(true);
+        await server.stop(true);
       }
     },
   );

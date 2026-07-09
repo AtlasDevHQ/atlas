@@ -1,17 +1,17 @@
 import { describe, expect, test, mock, beforeEach } from "bun:test";
 import React from "react";
 
-mock.module("sonner", () => ({
+void mock.module("sonner", () => ({
   toast: { error: () => {} },
 }));
 
-mock.module("@/ui/hooks/use-dark-mode", () => ({
+void mock.module("@/ui/hooks/use-dark-mode", () => ({
   setTheme: () => {},
   useThemeMode: () => "system",
 }));
 
 let sessionData: { user?: { name?: string; email?: string; role?: string } } | null = null;
-mock.module("@/ui/context", () => ({
+void mock.module("@/ui/context", () => ({
   useAtlasConfig: () => ({
     apiUrl: "http://localhost:3001",
     isCrossOrigin: false,

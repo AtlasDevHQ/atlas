@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test";
 
 // Mock pg before importing doctor — mock.module is process-global
 // CLAUDE.md: mock ALL named exports
-mock.module("pg", () => ({
+void mock.module("pg", () => ({
   Pool: MockPool,
   Client: class {},
   Query: class {},
@@ -12,7 +12,7 @@ mock.module("pg", () => ({
   escapeLiteral: (s: string) => `'${s}'`,
 }));
 
-mock.module("mysql2/promise", () => ({
+void mock.module("mysql2/promise", () => ({
   createPool: mockMysqlCreatePool,
   createConnection: async () => ({}),
   createPoolCluster: () => ({}),

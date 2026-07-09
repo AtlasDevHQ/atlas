@@ -36,7 +36,7 @@ const okSignOut = async (): Promise<SignOutResult> => ({ data: { success: true }
 let signOutImpl: () => Promise<SignOutResult> = okSignOut;
 const signOutMock = mock(() => signOutImpl());
 
-mock.module("@/lib/auth/client", () => ({
+void mock.module("@/lib/auth/client", () => ({
   authClient: {
     useSession: () => sessionState,
     signOut: signOutMock,
@@ -45,19 +45,19 @@ mock.module("@/lib/auth/client", () => ({
 
 let pathname = "/";
 const routerReplaceMock = mock((_path: string) => {});
-mock.module("next/navigation", () => ({
+void mock.module("next/navigation", () => ({
   usePathname: () => pathname,
   useRouter: () => ({ replace: routerReplaceMock, push: () => {}, back: () => {} }),
 }));
 
-mock.module("@/lib/api-url", () => ({
+void mock.module("@/lib/api-url", () => ({
   getApiUrl: () => "http://localhost:3001",
   isCrossOrigin: () => false,
 }));
 
 // Render children directly — the real provider pulls unrelated deps and we
 // only care about the guard's recovery effect here.
-mock.module("@/ui/context", () => ({
+void mock.module("@/ui/context", () => ({
   AtlasProvider: ({ children }: { children: React.ReactNode }) => children,
   useAtlasConfig: () => ({}),
   useActionAuth: () => null,

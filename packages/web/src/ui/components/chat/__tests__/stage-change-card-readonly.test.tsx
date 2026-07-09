@@ -7,7 +7,7 @@
 
 import { describe, expect, test, afterEach, mock } from "bun:test";
 
-mock.module("@/ui/context", () => ({
+void mock.module("@/ui/context", () => ({
   useAtlasConfig: () => ({ apiUrl: "", isCrossOrigin: false }),
 }));
 

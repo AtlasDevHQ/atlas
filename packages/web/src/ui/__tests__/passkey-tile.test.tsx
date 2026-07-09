@@ -10,7 +10,7 @@ const updatePasskeyMock = mock(async (_opts?: unknown) => ({ data: null, error: 
 const listUserPasskeysMock = mock(async () => ({ data: [], error: null }));
 const deletePasskeyMock = mock(async (_opts?: unknown) => ({ data: { status: true }, error: null }));
 
-mock.module("@/lib/auth/passkey-client", () => ({
+void mock.module("@/lib/auth/passkey-client", () => ({
   getPasskeyClient: () => ({
     addPasskey: addPasskeyMock,
     updatePasskey: updatePasskeyMock,
@@ -33,7 +33,7 @@ const useSessionMock = mock(() => ({
   data: { user: { email: "admin@useatlas.dev" } },
 }));
 
-mock.module("@/lib/auth/client", () => ({
+void mock.module("@/lib/auth/client", () => ({
   authClient: {
     useSession: useSessionMock,
     signIn: { email: signInEmailMock },

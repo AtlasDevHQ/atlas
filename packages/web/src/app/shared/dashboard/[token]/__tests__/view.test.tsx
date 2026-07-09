@@ -5,13 +5,13 @@ import type { SharedDashboard } from "../types";
 // SharedTile mounts a dynamic chart + useDarkMode at import; stub them so an
 // empty-card board renders in jsdom without pulling recharts. (The summary UI
 // under test lives in the header and renders regardless of the card grid.)
-mock.module("@/ui/components/chart/result-chart", () => ({
+void mock.module("@/ui/components/chart/result-chart", () => ({
   ResultChart: () => <div data-testid="result-chart">chart</div>,
 }));
-mock.module("next/dynamic", () => ({
+void mock.module("next/dynamic", () => ({
   default: () => () => <div data-testid="result-chart">chart</div>,
 }));
-mock.module("@/ui/hooks/use-dark-mode", () => ({ useDarkMode: () => false }));
+void mock.module("@/ui/hooks/use-dark-mode", () => ({ useDarkMode: () => false }));
 
 import { SharedDashboardView } from "../view";
 

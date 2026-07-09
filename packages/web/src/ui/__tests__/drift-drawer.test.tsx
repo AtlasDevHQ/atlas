@@ -20,7 +20,7 @@ let mockData: DiffResponse | null = null;
 let mockLoading = false;
 let mockError: { message: string; status?: number } | null = null;
 
-mock.module("@/ui/hooks/use-admin-fetch", () => ({
+void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({
     data: mockError ? null : mockData,
     loading: mockLoading,
@@ -36,7 +36,7 @@ mock.module("@/ui/hooks/use-admin-fetch", () => ({
 // the contract under test is the diff-render path, not the network layer.
 const mockReconcileMutate = mock(async () => ({ ok: true as const, data: undefined }));
 
-mock.module("@/ui/hooks/use-admin-mutation", () => ({
+void mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: () => ({
     mutate: mockReconcileMutate,
     saving: false,
@@ -50,11 +50,11 @@ mock.module("@/ui/hooks/use-admin-mutation", () => ({
   }),
 }));
 
-mock.module("@/ui/components/admin/mutation-error-surface", () => ({
+void mock.module("@/ui/components/admin/mutation-error-surface", () => ({
   MutationErrorSurface: () => null,
 }));
 
-mock.module("@/ui/lib/fetch-error", () => ({
+void mock.module("@/ui/lib/fetch-error", () => ({
   friendlyError: (err: { message?: string }) => err?.message ?? "error",
   friendlyErrorOrNull: (err: { message?: string } | null | undefined) =>
     err?.message ?? null,

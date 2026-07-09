@@ -63,8 +63,13 @@ describe("links", () => {
     );
   });
 
-  it("drops javascript: hrefs but keeps the anchor text", () => {
+  it("drops javascript:/data:/vbscript: hrefs but keeps the anchor text", () => {
     expect(md('<p><a href="javascript:alert(1)">click me</a></p>')).toBe("click me");
+    expect(md('<p><a href="data:text/html,<script>x()</script>">click me</a></p>')).toBe("click me");
+    expect(md('<p><a href="vbscript:MsgBox(1)">click me</a></p>')).toBe("click me");
+    // Control chars / whitespace inside the scheme must not defeat the check.
+    expect(md('<p><a href="java\nscript:alert(1)">click me</a></p>')).toBe("click me");
+    expect(md('<p><a href=" DATA:text/html,x">click me</a></p>')).toBe("click me");
   });
 
   it("passes every href through the cross-link rewriting hook", () => {

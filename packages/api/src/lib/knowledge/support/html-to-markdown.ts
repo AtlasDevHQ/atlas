@@ -57,9 +57,10 @@ export interface HtmlConvertOptions {
   readonly pageUrl: string;
   /**
    * Cross-link rewriting hook: every RENDERED `<a href>` is passed through it
-   * before rendering (empty and `javascript:` hrefs are dropped first and
-   * never reach it). Vendors absolutize relative article links here (e.g.
-   * resolve `/hc/en-us/articles/123` against the brand host). Default: identity.
+   * before rendering (empty and unsafe-scheme hrefs — `javascript:`, `data:`,
+   * `vbscript:` — are dropped first and never reach it). Vendors absolutize
+   * relative article links here (e.g. resolve `/hc/en-us/articles/123`
+   * against the brand host). Default: identity.
    */
   readonly rewriteLink?: (href: string) => string;
 }
@@ -411,7 +412,7 @@ function renderInlineNode(node: ChildNode, ctx: Ctx): string {
     case "a": {
       const href = node.attribs.href?.trim() ?? "";
       const text = inner().trim();
-      if (href === "" || href.toLowerCase().startsWith("javascript:")) return text;
+      if (href === "" || hasUnsafeLinkScheme(href)) return text;
       return `[${text || href}](${ctx.rewriteLink(href)})`;
     }
     default:
@@ -424,6 +425,24 @@ function renderInlineNode(node: ChildNode, ctx: Ctx): string {
 // ---------------------------------------------------------------------------
 // Text utilities
 // ---------------------------------------------------------------------------
+
+/**
+ * True for hrefs whose scheme executes or smuggles content when the mirrored
+ * markdown is later rendered in a web surface — `javascript:`, `data:`, and
+ * `vbscript:` links are dropped (their anchor TEXT is kept, so no prose is
+ * lost). Control characters and whitespace are stripped before the check
+ * because HTML parsers ignore them inside a scheme (`java\nscript:` is live
+ * in a browser), so a naive prefix test would be bypassable.
+ */
+function hasUnsafeLinkScheme(href: string): boolean {
+  // oxlint-disable-next-line no-control-regex -- stripping control chars from an untrusted href IS the point (browsers ignore them inside a scheme)
+  const normalized = href.replace(/[\u0000-\u0020]+/g, "").toLowerCase();
+  return (
+    normalized.startsWith("javascript:") ||
+    normalized.startsWith("data:") ||
+    normalized.startsWith("vbscript:")
+  );
+}
 
 function wrapNonEmpty(inner: string, delim: string): string {
   const trimmed = inner.trim();

@@ -16,6 +16,16 @@ export interface Post {
 
 export const POSTS: Post[] = [
   {
+    slug: "the-connector-you-dont-write",
+    title: "The connector you don't write",
+    description:
+      "Atlas can mirror a customer's Notion or Confluence into its Knowledge Base. Writing a connector for a new source means two methods and a converter — the engine keeps the scheduling, the rate-limit backoff, and the one place a document can ever be deleted. Here's the seam, and why it turned the OKF pillar into connectors for Notion, Confluence, and GitBook in a matter of days.",
+    isoDate: "2026-07-09",
+    dateLabel: "July 9, 2026",
+    readingTime: "6 min read",
+    tag: "How it works",
+  },
+  {
     slug: "seven-layers-and-a-sandbox",
     title: "Seven layers and a sandbox",
     description:

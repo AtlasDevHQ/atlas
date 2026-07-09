@@ -4,12 +4,9 @@
     "ignoreDeprecations": "6.0",
     "lib": ["dom", "dom.iterable", "esnext"],
     "jsx": "react-jsx",
-    "outDir": "dist",
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
     "noEmit": true,
     "incremental": false,
+    "types": ["bun", "node"],
     "paths": {
       "@useatlas/sdk": ["../sdk/src/index.ts"],
       "@useatlas/sdk/*": ["../sdk/src/*"]

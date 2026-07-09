@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 const mockSendMessage = mock(() => Promise.resolve());
 const mockSetMessages = mock();
 
-mock.module("@ai-sdk/react", () => ({
+void mock.module("@ai-sdk/react", () => ({
   useChat: () => ({
     messages: [],
     setMessages: mockSetMessages,
@@ -18,7 +18,7 @@ mock.module("@ai-sdk/react", () => ({
   }),
 }));
 
-mock.module("ai", () => ({
+void mock.module("ai", () => ({
   DefaultChatTransport: class {
     constructor(public opts: Record<string, unknown>) {}
   },

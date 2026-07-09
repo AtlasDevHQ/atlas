@@ -36,7 +36,7 @@ class StubAtlasMcpError extends Error {
   }
 }
 
-mock.module("@useatlas/sdk", () => ({
+void mock.module("@useatlas/sdk", () => ({
   AtlasMcpError: StubAtlasMcpError,
   beginConnect: (...args: unknown[]) => beginConnectImpl(...(args as [])),
   completeConnect: (...args: unknown[]) => completeConnectImpl(...(args as [])),

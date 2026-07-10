@@ -665,7 +665,7 @@ const KnowledgeCollectionSyncStatusSchema = z.object({
 
 export const KnowledgeCollectionSchema = z.object({
   slug: z.string(),
-  source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "intercom", "front"]),
+  source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "intercom", "front", "helpscout"]),
   description: z.string().nullable(),
   installedAt: z.string().nullable(),
   endpointUrl: z.string().nullable(),

@@ -30,6 +30,7 @@ import {
   BUILTIN_SALESFORCE_KNOWLEDGE_CATALOG_ROW,
   BUILTIN_INTERCOM_CATALOG_ROW,
   BUILTIN_FRONT_CATALOG_ROW,
+  BUILTIN_HELPSCOUT_CATALOG_ROW,
   BUILTIN_KNOWLEDGE_CATALOG_ROWS,
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
@@ -253,6 +254,29 @@ describe("BUILTIN_FRONT_CATALOG_ROW (#4400)", () => {
   });
 });
 
+describe("BUILTIN_HELPSCOUT_CATALOG_ROW (#4398)", () => {
+  it("is the `helpscout` form install: a single secret Docs API key, NO host/subdomain", () => {
+    const row = BUILTIN_HELPSCOUT_CATALOG_ROW;
+    expect(row.slug).toBe("helpscout");
+    expect(row.id).toBe("catalog:helpscout");
+    expect(row.installModel).toBe("form");
+    expect(row.autoInstall).toBe(false);
+    const keys = row.configSchema.map((f) => f.key);
+    expect(keys).toContain("api_key");
+    expect(keys).toContain("description");
+    // Fixed vendor host + auto-discovered sites — no free-form URL, no subdomain
+    // field, no email (a single Docs API key is the whole credential).
+    expect(keys).not.toContain("base_url");
+    expect(keys).not.toContain("subdomain");
+    expect(keys).not.toContain("email");
+    // Exactly one secret field: the Docs API key (never echoed).
+    expect(row.configSchema.filter((f) => f.secret === true).map((f) => f.key)).toEqual([
+      "api_key",
+    ]);
+    expect(row.configSchema.find((f) => f.key === "api_key")?.required).toBe(true);
+  });
+});
+
 describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
   it("issues one INSERT per built-in row with type 'context' and pillar 'knowledge'", async () => {
     const { db, captured } = captureDb();
@@ -279,6 +303,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "salesforce-knowledge",
       "intercom",
       "front",
+      "helpscout",
     ]);
   });
 
@@ -309,6 +334,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "salesforce-knowledge",
       "intercom",
       "front",
+      "helpscout",
     ]);
     // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).
     const reboot = await seedBuiltinKnowledgeCatalog(captureDb(false).db);

@@ -735,6 +735,31 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     expect(front?.endpointUrl).toBeNull();
     expect(front?.sync).not.toBeNull();
   });
+
+  it("dispatches a Help Scout collection to the connector engine and lists it as source 'helpscout' (#4398)", async () => {
+    COLLECTION = {
+      install_id: "hs-docs",
+      catalog_id: "catalog:helpscout",
+      status: "published",
+      config: { site_id: "site-1", site_name: "Acme Docs", subdomain: "acme" },
+    };
+    SYNC_STATES = [
+      { collection_id: "hs-docs", last_sync_at: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    ];
+    const syncRes = await adminKnowledge.request("/hs-docs/sync", { method: "POST" });
+    expect(syncRes.status).toBe(200);
+    expect(syncConnectorCollection).toHaveBeenCalledTimes(1);
+    expect(syncCollection).not.toHaveBeenCalled();
+
+    const listRes = await adminKnowledge.request("/", { method: "GET" });
+    const body = (await listRes.json()) as {
+      collections: Array<{ slug: string; source: string; endpointUrl: string | null; sync: unknown }>;
+    };
+    const hs = body.collections.find((c) => c.slug === "hs-docs");
+    expect(hs?.source).toBe("helpscout");
+    expect(hs?.endpointUrl).toBeNull();
+    expect(hs?.sync).not.toBeNull();
+  });
 });
 
 describe("knowledge mirror invalidation (#4208)", () => {

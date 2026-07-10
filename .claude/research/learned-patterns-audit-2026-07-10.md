@@ -6,6 +6,7 @@
 - **Live product:** NOT available for this run (no Docker/Postgres in the audit environment) — the UX dimension is code-reading only, no screenshots. Every finding stands on `file:line` anchors instead.
 - **Anchor findings hand-verified by the orchestrator** (re-read at the cited lines): the `getApprovedPatterns` type-filter + NULL-org gaps (H1), the amendment sentinel `pattern_sql` + approved-status write, the `getRelevantPatterns` 0.7 confidence gate (H3), the missing `admin:semantic` permission gate (H2a), the NULL-org clause asymmetry vs `reviewSemanticAmendment`, and the absence of `logAdminAction` in the bulk handler (H2c). These carry `verified`.
 - **Issue filed this pass (fix-invariant only):** **#4534** — `getApprovedPatterns` injects non-query-pattern and NULL-org rows into agent context. One issue; everything else carries a design question the grill must settle and stays in this doc.
+- **Filed during the grill (2026-07-10):** **#4569** — fold amendments out of the learned-patterns route (query_pattern-only); settles H2 per grill Q2 decision (option a), lands as an unlisted #4502 slice in milestone v0.0.47, sub-issue of the PRD. Resolves H2a/H2b/H2d/H2e for amendment rows, M7's conflation, and M9; H2f dissolves via #4534's `type` filter. The query_pattern half of H2c (bulk audit rows) remains this elevation's scope.
 
 ## Scope boundary — this is NOT the amendment elevation
 
@@ -146,7 +147,24 @@ The design questions the findings force, for the `/grill-with-docs` session. Phr
 
 ---
 
-## Handoff
+## Grill outcomes (2026-07-10)
+
+The grill session walked the full agenda; vocabulary pinned in **CONTEXT.md § Learned query patterns**. Decisions, in agenda order:
+
+1. **Coexistence with #4502 (agenda 2, H2):** amendments **fold out** — the learned-patterns route/page become strictly `type='query_pattern'`; #4502's decide seam is the only amendment door. Filed as **#4569** (milestone v0.0.47, sub-issue of PRD #4502). H2f dissolves via #4534's `type` filter (amendment flips stop affecting the pattern cache). The query_pattern half of H2c (bulk audit rows) remains this elevation's scope.
+2. **Approve semantics (agenda 1, H3):** approval = **injection-eligibility bypass** — human-approved patterns skip the confidence gate; confidence is never written by human decisions (stays the machine evidence meter). The bypass must reach the SQL pre-cut, not just the in-memory filter.
+3. **SaaS lifecycle (agenda 3, M3):** auto-promotion becomes a **workspace-scoped, per-workspace opt-in settings-registry knob, off by default** — same SaaS-first posture as #4502's scheduler; the env-only platform knob retires. M6 discoverability (badge, explainer) is a complement, not an alternative.
+4. **Efficacy (agenda 4, M1):** **attribution substrate only** — record which pattern IDs entered which turn; surface per-pattern injection counts in the cockpit. Crediting adapted SQL to its source and demotion signals are explicitly deferred (PRD Out of Scope) until attribution data exists.
+5. **Identity (agenda 5, M4 + L1):** DB-enforced — partial unique index on (org, group, normalized fingerprint) over `type='query_pattern'`, inserts via `ON CONFLICT` increment (NULL handling via `NULLS NOT DISTINCT`/coalesced expressions — slice detail). Seen-once rows persist but sit below the default review queue and all promotion gates.
+6. **Cockpit trust floor (agenda 6, H4/H5/L10/M6/M7/M8/L8/L9):** sort gets **implemented** (whitelisted API `sort` param), not removed; confidence-range filter exposed; in-sheet/toast mutation errors + "Dismiss" relabel; nav pending badge + one-sentence approval explainer + injection counts; resolved reviewer names; `connectionGroupId` on the wire + group column for multi-group workspaces; `useAdminFetch`-idiom stats; keyboard-openable rows.
+7. **Wire contract (agenda 7, M5):** settled by repo convention, not a fork — `LearnedPattern*` moves to `@useatlas/schemas`, route imports it, page uses the validated `useServerDataTable` variant.
+8. **Retrieval (agenda 8, M2):** remove the arbitrary `LIMIT 100` pre-cut — fetch the full eligible set per (workspace, group) with a high safety cap, ordered human-approved-first → confidence → last-observed; keep in-memory scoring + cache. **FTS deferred**, adopted on evidence.
+
+No ADR: nothing here is hard-to-reverse in the ADR sense; the load-bearing semantics live in CONTEXT.md § Learned query patterns. Residual findings that ride slices without needing decisions: L2 (CHECK constraints ride the identity migration), L3 (SQL-fold pg-fixture test), L4 (candidate-cap ordering), L6 (audit description edits), L7 (conceptual docs guide + stale admin-console section), M10 (org-scope guard parity — joins #4502's shared clause helper/reader enumeration), L5 (document the two-pipeline split as intentional), L11/L12 (informational).
+
+**Next: `/to-prd`** — this section plus the ranked findings are the PRD's inputs; #4534, #4569 attach as sub-issues alongside the slices.
+
+## Handoff (pre-grill, superseded by the section above)
 
 **Next: run `/grill-with-docs` with this doc.** The findings are not purely presentational or page-scoped — the central questions (the payoff model, the #4502 coexistence, the SaaS lifecycle) are design decisions that need the user in the loop and that will update CONTEXT.md § Semantic improvement and possibly a new ADR. Do **not** `/revamp` this — the dead sort and hidden-error UX bugs (H4, H5) are real but they are the smallest part of the story.
 

@@ -13,9 +13,8 @@ import * as yaml from "js-yaml";
 import { loadYaml } from "../semantic/yaml";
 import { createTwoFilesPatch } from "diff";
 import { hasInternalDB, insertSemanticAmendment } from "@atlas/api/lib/db/internal";
-import { connections, getDB } from "@atlas/api/lib/db/connection";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
-import { validateSQL } from "@atlas/api/lib/tools/sql";
+import { runUserQueryPipeline } from "@atlas/api/lib/tools/sql";
 import type { AmendmentPayload, AmendmentType } from "@useatlas/types";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 
@@ -174,51 +173,43 @@ The amendment object should match the YAML structure for that type (e.g., { name
       const filePath = `semantic/entities/${entityName}.yml`;
       const diff = createTwoFilesPatch(filePath, filePath, beforeNormalized, afterYaml, "", "", { context: 3 });
 
-      // Run test query if provided — validate through SQL pipeline first
+      // Run test query if provided — route through the full production
+      // pipeline (validation → approval → RLS → auto-LIMIT → audit + masking),
+      // exactly like validateProposal (#3338). NEVER a raw `db.query`: the old
+      // path validated against the default datasource but executed against the
+      // org connection, skipping RLS, the auto-LIMIT row cap, and PII masking,
+      // then persisted the raw, unmasked rows into
+      // learned_patterns.amendment_payload — an RLS bypass + unbounded-scan +
+      // unmasked-data-at-rest vector (#4485). The persisted `sampleRows` below
+      // are therefore the pipeline's masked, capped output.
       let testResult: AmendmentPayload["testResult"];
       if (testQuery) {
-        try {
-          // Validate test query through the same SQL pipeline as executeSQL
-          const validation = await validateSQL(testQuery);
-          if (!validation.valid) {
-            testResult = {
-              success: false,
-              rowCount: 0,
-              sampleRows: [],
-              error: validation.error ?? "SQL validation failed",
-            };
-            log.warn(
-              { testQuery, error: validation.error },
-              "Amendment test query failed SQL validation",
-            );
-          } else {
-            const reqCtx = getRequestContext();
-            const orgId = connections.isOrgPoolingEnabled()
-              ? reqCtx?.user?.activeOrganizationId
-              : undefined;
+        const outcome = await runUserQueryPipeline({
+          sql: testQuery,
+          connectionId: "default",
+          explanation: `Semantic amendment proposal test query (${entityName})`,
+        });
 
-            const db = orgId
-              ? connections.getForOrg(orgId)
-              : getDB();
-
-            const result = await db.query(testQuery, 30000);
-            testResult = {
-              success: true,
-              rowCount: result.rows.length,
-              sampleRows: result.rows.slice(0, 5) as Record<string, unknown>[],
-            };
-          }
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
+        if (outcome.kind === "ok") {
+          testResult = {
+            success: true,
+            rowCount: outcome.rowCount,
+            // Masked, auto-LIMITed pipeline output — capped at 5 for the
+            // review UI. These are the rows persisted into amendment_payload.
+            sampleRows: outcome.rows.slice(0, 5),
+          };
+        } else {
+          // Any non-ok outcome (validation_failed, approval_required, rls_failed,
+          // …) fails closed: no rows are captured or persisted.
           testResult = {
             success: false,
             rowCount: 0,
             sampleRows: [],
-            error: errMsg,
+            error: outcome.message,
           };
           log.warn(
-            { err: errMsg, testQuery },
-            "Amendment test query failed",
+            { testQuery, kind: outcome.kind, error: outcome.message },
+            "Amendment test query blocked or failed in the query pipeline",
           );
         }
       }

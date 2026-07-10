@@ -27,6 +27,20 @@ void mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => mockDetectAuthMode.current,
 }));
 
+// Resolved deploy mode read by the /.well-known/security.txt gate (#4467).
+// `undefined` models a deployment where atlas.config.ts never resolved.
+const mockDeployMode: { current: "saas" | "self-hosted" | undefined } = {
+  current: "self-hosted",
+};
+
+void mock.module("@atlas/api/lib/config", () => ({
+  getConfig: () =>
+    mockDeployMode.current === undefined
+      ? null
+      : { deployMode: mockDeployMode.current },
+  defineConfig: (c: unknown) => c,
+}));
+
 // Well-known.ts dynamically imports the auth instance + the
 // oauth-provider helpers. We stub both with handlers that return a
 // well-shaped response so the route's wiring can be exercised without
@@ -97,6 +111,7 @@ afterAll(() => {
 
 beforeEach(() => {
   mockDetectAuthMode.current = "managed";
+  mockDeployMode.current = "self-hosted";
 });
 
 async function startServer() {
@@ -338,6 +353,66 @@ describe("well-known — helpers fail to load", () => {
           },
         }),
       }));
+    }
+  });
+});
+
+describe("well-known — /.well-known/security.txt (#4467)", () => {
+  // RFC 9116 is per-origin: the api/mcp origins must answer
+  // /.well-known/security.txt themselves. On SaaS they redirect to the
+  // canonical www copy (the SSOT — RFC 9116 §3 permits redirects) instead
+  // of serving a second file that could drift.
+  it("302-redirects to the canonical www copy on SaaS deploys", async () => {
+    mockDeployMode.current = "saas";
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/.well-known/security.txt`, {
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe(
+        "https://www.useatlas.dev/.well-known/security.txt",
+      );
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it("does not depend on the auth mode (a researcher probes unauthenticated)", async () => {
+    mockDeployMode.current = "saas";
+    mockDetectAuthMode.current = "none";
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/.well-known/security.txt`, {
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it("404s on self-hosted deploys (Atlas's security contact is not the operator's)", async () => {
+    mockDeployMode.current = "self-hosted";
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/.well-known/security.txt`);
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("not_found");
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it("404s when no config resolved (fails closed to self-hosted behavior)", async () => {
+    mockDeployMode.current = undefined;
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/.well-known/security.txt`);
+      expect(res.status).toBe(404);
+    } finally {
+      await handle.close();
     }
   });
 });

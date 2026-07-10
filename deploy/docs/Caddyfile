@@ -63,6 +63,13 @@
 	@wellKnownJson path /.well-known/agent-skills/index.json /.well-known/mcp/server-card.json /.well-known/oauth-protected-resource
 	header @wellKnownJson Content-Type "application/json; charset=utf-8"
 
+	# RFC 9116 security.txt (#4467) — per-origin, so the docs origin must
+	# answer /.well-known/security.txt itself. Redirect to the canonical www
+	# copy (the SSOT; RFC 9116 §3 permits redirects) instead of shipping a
+	# second file that could drift. 302 — the policy location, not this
+	# origin's paths, is what may change.
+	redir /.well-known/security.txt https://www.useatlas.dev/.well-known/security.txt 302
+
 	# /guides/mcp-hosted/* was consolidated into /guides/mcp under the
 	# hosted/self-hosted tabs. The :rest* equivalent in Caddy is path_regexp +
 	# {re.NAME.N}; bare and trailing-slash variants each need their own rule.

@@ -1,6 +1,6 @@
 # Agent workflow: Atlas commands × Engineering skills
 
-How `/next`, `/tidy`, `/investigate`, `/kickoff`, `/closeout`, `/ci`, `/pr` (Atlas project rituals) compose with the Matt Pocock engineering skills (`/diagnose`, `/tdd`, `/to-prd`, `/to-issues`, `/triage`, `/grill-with-docs`, `/grill-me`, `/improve-codebase-architecture`, `/zoom-out`, `/prototype`, `/handoff`).
+How `/next`, `/tidy`, `/investigate`, `/elevate`, `/kickoff`, `/closeout`, `/ci`, `/pr` (Atlas project rituals) compose with the Matt Pocock engineering skills (`/diagnose`, `/tdd`, `/to-prd`, `/to-issues`, `/triage`, `/grill-with-docs`, `/grill-me`, `/improve-codebase-architecture`, `/zoom-out`, `/prototype`, `/handoff`).
 
 The Atlas commands own **project rituals** — ROADMAP, milestones, CI/PR gates, deploy. The engineering skills own **craft loops** inside each phase. They don't duplicate — they layer.
 
@@ -15,11 +15,12 @@ The Atlas commands own **project rituals** — ROADMAP, milestones, CI/PR gates,
 | Situation | Use |
 | --- | --- |
 | Spotted a bug, rough edge, or tech debt | `/investigate` (Atlas) — light: research → file issue → park-or-fix |
+| A shipped surface works but is beneath its potential | `/elevate` (Atlas) — parallel multi-dimension audit → ranked findings doc in `.claude/research/` → hand off to `/grill-with-docs` |
 | Have a half-formed idea worth designing | `/to-prd` — synthesise the current conversation into a PRD issue |
 | Have a plan but want it stress-tested first | `/grill-me` — interview until every branch of the decision tree is resolved |
 | Plan touches domain terminology or contradicts a past decision | `/grill-with-docs` — grill + update `CONTEXT.md` and `docs/adr/` inline |
 
-**Decision rule:** if the finding fits in one issue (< half a day of work), use `/investigate`. If it would span a milestone or change architecture, use `/to-prd` (optionally after `/grill-with-docs`).
+**Decision rule:** three tiers by size of the itch. One-issue-sized (< half a day of work) → `/investigate`. Surface-sized — a whole feature beneath its potential, problems likely at the seams → `/elevate`, whose findings doc feeds `/grill-with-docs` → `/to-prd` → `/to-issues` (the chat answer-styles cycle #4292 and the 2026-07-04 dashboard elevation are the worked examples). Already know what to build → `/to-prd` directly (optionally after `/grill-with-docs`). Purely presentational, page-scoped itch → `/revamp` skips the cycle entirely.
 
 ### Phase 2 — Plan
 

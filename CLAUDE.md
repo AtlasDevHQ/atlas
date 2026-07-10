@@ -358,7 +358,7 @@ See `.env.example` for the full list. Key vars: `ATLAS_PROVIDER`, `ATLAS_MODEL`,
 
 ## Agent skills
 
-- **Workflow** — how Atlas commands (`/next`, `/tidy`, `/investigate`, `/kickoff`, `/closeout`, `/ci`, `/pr`) compose with the Matt Pocock skills (`/diagnose`, `/tdd`, `/to-prd`, `/to-issues`, `/triage`, `/grill-with-docs`, `/improve-codebase-architecture`, `/zoom-out`, `/prototype`, `/handoff`). See `docs/agents/workflow.md`
+- **Workflow** — how Atlas commands (`/next`, `/tidy`, `/investigate`, `/elevate`, `/kickoff`, `/closeout`, `/ci`, `/pr`) compose with the Matt Pocock skills (`/diagnose`, `/tdd`, `/to-prd`, `/to-issues`, `/triage`, `/grill-with-docs`, `/improve-codebase-architecture`, `/zoom-out`, `/prototype`, `/handoff`). See `docs/agents/workflow.md`
 - **Issue tracker** — GitHub issues at `AtlasDevHQ/atlas` via `gh` (always `-R AtlasDevHQ/atlas`). Atlas body format (`## Key files / ## Acceptance criteria / ## Dependencies`); labels on two axes (kind+area AND triage state). See `docs/agents/issue-tracker.md`
 - **Triage labels** — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix` (created lazily). Orthogonal to kind/area. See `docs/agents/triage-labels.md`
 - **Audit commands** — `/docs-audit`, `/www-audit`, `/prod-audit`, `/contracts-audit` share conventions in `docs/agents/audits.md`: Step-0 self-check (each command verifies its own references before trusting its checks), discover-don't-enumerate, guard-first (run existing CI gates, audit only the residue), the promote-to-CI ratchet for repeat findings, and the pre-tag battery (which audits to run before `/release`)

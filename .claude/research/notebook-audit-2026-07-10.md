@@ -194,3 +194,9 @@ The findings force these design questions. Phrased as questions — the grill wa
 ## Handoff
 
 **Next: run `/grill-with-docs` with this doc.** The findings are not purely presentational and not page-scoped — they turn on load-bearing design decisions (the cell/document model, the share projection, the fork data model, save semantics), so the grill is warranted. Do not slice these into issues yet; `/to-issues` will cut different slices than the audit found, and the grill will settle the model first.
+
+---
+
+## Grill outcome (2026-07-10)
+
+The grill resolved the question *above* the agenda: **the notebook surface is retired** ([ADR-0035](../../docs/adr/0035-retire-the-notebook-surface.md)). Post ADR-0029/0034, dashboards own the agent-built shareable-artifact job; branching exploration is dropped with no successor; the memo/report deliverable is deferred to a future frozen-dashboard extension (vocabulary pinned in CONTEXT.md § Notebooks, retired). The seven agenda questions are therefore moot — the findings above stand as **evidence for the retirement**, not as a fix backlog. #4535 was closed as superseded by the retirement.

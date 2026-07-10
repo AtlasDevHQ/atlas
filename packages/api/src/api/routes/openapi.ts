@@ -346,7 +346,7 @@ export const staticPaths: Record<string, unknown> = {
       description:
         "Anonymous pre-auth MCP endpoint (ADR-0018). A dedicated, unauthenticated " +
         "MCP server exposing exactly ONE tool — `start_trial`, which provisions a " +
-        "trial workspace and returns `{ workspaceId, connectUrl, state }`. No bearer " +
+        "trial workspace and returns `{ workspaceId, connectUrl, claimUrl, state }`. No bearer " +
         "token is required (there is no identity yet); after provisioning, clients " +
         "complete the normal OAuth connect flow against `connectUrl`. " +
         "Same Streamable HTTP transport as `/mcp/{workspace_id}` — the URL also " +
@@ -354,7 +354,7 @@ export const staticPaths: Record<string, unknown> = {
         "legacy `/mcp/onboarding/sse` alias still resolves. " +
         "SaaS-only: on a self-hosted deploy the handler refuses per-request with a " +
         "structured 404 (there is no trial funnel to onboard onto). " +
-        "Trial attempts are rate-limited per client IP.",
+        "Trial attempts are rate-limited per client IP and per email.",
       tags: ["MCP"],
       security: [],
       requestBody: {

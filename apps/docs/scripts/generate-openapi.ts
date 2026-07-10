@@ -141,17 +141,17 @@ try {
     tagTitleMap[toSlug(tag.name)] = tag["x-displayName"] ?? tag.name;
   }
 
+  // Fallback for directories not in spec tags: title-case the slug
+  const titleFor = (dir: string) =>
+    tagTitleMap[dir] ??
+    dir
+      .split("-")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+
   for (const dir of tagDirs) {
     const tagDir = path.join(outputDir, dir);
-    // Fallback for directories not in spec tags: title-case the slug
-    const title =
-      tagTitleMap[dir] ??
-      dir
-        .split("-")
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(" ");
-
-    const tagMeta: Record<string, unknown> = { title };
+    const tagMeta: Record<string, unknown> = { title: titleFor(dir) };
     fs.writeFileSync(
       path.join(tagDir, "meta.json"),
       JSON.stringify(tagMeta, null, 2) + "\n",
@@ -161,20 +161,19 @@ try {
   // Overview page at /api-reference — tag directories have no index of their
   // own (they're sidebar groups), so each link targets the tag's first
   // generated operation page. Without this file the bare URL 404s (#4475).
-  const titleFor = (dir: string) =>
-    tagTitleMap[dir] ??
-    dir
-      .split("-")
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(" ");
-
   const indexLinks = pages
     .map((dir) => {
       const firstPage = fs
         .readdirSync(path.join(outputDir, dir))
         .filter((f) => f.endsWith(".mdx"))
         .toSorted()[0];
-      if (!firstPage) return null;
+      if (!firstPage) {
+        console.warn(
+          `Warning: tag directory "${dir}" contains no .mdx pages — ` +
+            `omitting it from the overview index (it remains in the sidebar).`,
+        );
+        return null;
+      }
       const slug = firstPage.replace(/\.mdx$/, "");
       return `- [${titleFor(dir)}](/api-reference/${dir}/${slug})`;
     })
@@ -199,7 +198,7 @@ ${indexLinks.join("\n")}
   );
 } catch (err) {
   console.error(
-    "Failed to generate sidebar meta.json files:",
+    "Failed to generate sidebar meta.json files / overview index.mdx:",
     err instanceof Error ? err.message : String(err),
   );
   process.exit(1);

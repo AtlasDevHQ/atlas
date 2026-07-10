@@ -13,7 +13,7 @@
  * anonymous caller can do exactly one thing: provision a trial Workspace.
  *
  * The call *produces* a real user + Workspace via `provisionTrialWorkspace`
- * (the shared lib seam) and returns `{ workspaceId, connectUrl, state }`. A
+ * (the shared lib seam) and returns `{ workspaceId, connectUrl, claimUrl, state }`. A
  * normal *hosted* actor then takes over via the DCR/PKCE connect against
  * `connectUrl` — at which point every read/write/setup tool runs the full
  * dispatch gate (action policy → `mcp:write` → RBAC → approval). This tool

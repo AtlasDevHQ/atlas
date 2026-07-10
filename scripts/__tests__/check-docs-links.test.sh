@@ -4,14 +4,16 @@
 # self-hosted — the real mount layout) and runs the checker against it via
 # --content-dir, exercising the real scan path, not a mocked one.
 #
-# Locks in: broken internal paths and broken anchors FAIL with file:line
-# output; github-slugger parity holds for the double-dash (`A / B`) and
-# duplicate-heading (`-1` suffix) cases; the tree-mounting rules are respected
-# (shared pages dual-mount, /self-hosted links resolve only against the
-# self-hosted mount); audience conditionals scope both link occurrences and
-# anchor targets per mount; code fences and custom `[#id]` heading ids are
-# honored; and relative links resolve file-style through the merged virtual
-# namespace.
+# Locks in, among others: broken internal paths and broken anchors FAIL with
+# file:line output; github-slugger parity holds for the double-dash (`A / B`),
+# duplicate-heading (`-1` suffix), and inline-markup (`start_trial`) cases; the
+# tree-mounting rules are respected (shared pages dual-mount, /self-hosted
+# links resolve only against the self-hosted mount); audience conditionals
+# scope both link occurrences and anchor targets per mount; <AudienceLink>
+# hrefs validate per mount; code fences, MDX comments, frontmatter, and custom
+# `[#id]` heading ids are honored; relative links resolve file-style through
+# the merged virtual namespace; and an empty content dir fails loudly rather
+# than vacuously passing.
 
 set -euo pipefail
 
@@ -26,12 +28,17 @@ fi
 PASS=0
 FAIL=0
 
-# run_case EXPECTED NAME SETUP_FN [GREP_PATTERN]
+# run_case EXPECTED NAME SETUP_FN [GREP_PATTERN] [ABSENT_PATTERN]
 # SETUP_FN is called with the fixture content dir as $1 and must create
 # docs/ shared/ self-hosted/ trees. When GREP_PATTERN is given, the checker's
 # combined output must match it (used to pin the file:line violation format).
+# When ABSENT_PATTERN is given, the output must NOT match it (pins that a
+# valid neighbor of the broken construct is not also flagged).
+# Every fail case additionally requires the "[docs-links] FAIL:" summary line —
+# bun exits 1 on an uncaught exception too, so exit code alone cannot
+# distinguish "violation reported" from "checker crashed".
 run_case() {
-  local expected="$1" name="$2" setup_fn="$3" grep_pattern="${4:-}"
+  local expected="$1" name="$2" setup_fn="$3" grep_pattern="${4:-}" absent_pattern="${5:-}"
   local tmp out status=0
   tmp="$(mktemp -d)"
   mkdir -p "$tmp/docs" "$tmp/shared" "$tmp/self-hosted"
@@ -42,7 +49,9 @@ run_case() {
   local ok=1
   if [ "$expected" = "pass" ] && [ "$status" -ne 0 ]; then ok=0; fi
   if [ "$expected" = "fail" ] && [ "$status" -ne 1 ]; then ok=0; fi
+  if [ "$expected" = "fail" ] && ! grep -qF '[docs-links] FAIL:' <<<"$out"; then ok=0; fi
   if [ -n "$grep_pattern" ] && ! grep -qE "$grep_pattern" <<<"$out"; then ok=0; fi
+  if [ -n "$absent_pattern" ] && grep -qE "$absent_pattern" <<<"$out"; then ok=0; fi
 
   if [ "$ok" = 1 ]; then
     echo "  ok   $name (expected $expected)"
@@ -58,19 +67,37 @@ run_case() {
 # ── clean content across all three trees passes ────────────────────────────
 setup_clean() {
   cat > "$1/docs/index.mdx" <<'EOF'
+---
+title: Intro
+# a yaml comment — not a heading, and [not a link](/nowhere)
+description: has [link-like](/nowhere) text that must be skipped
+---
+
 # Intro
 
 A [guide link](/guides/setup) and a [shared link](/concepts) and a
 [shared anchor](/concepts#core-idea) and the [self-hosted docs](/self-hosted).
-An [external link](https://example.com/x) is ignored.
+An [external link](https://example.com/x) is ignored, as is
+<Card href={dynamicExpr} /> (not statically resolvable).
+
+{/* a commented-out [broken link](/guides/nope) must not be flagged,
+    even across lines */}
+And a [real link after the comment](/guides/setup) is still checked.
 EOF
   mkdir -p "$1/docs/guides"
   cat > "$1/docs/guides/setup.mdx" <<'EOF'
+---
+title: Setup
+---
+
 # Setup
 
 ## Core Steps
 
-A [relative link](../index.mdx) and a [same-page anchor](#core-steps).
+## Using `start_trial` here
+
+A [relative link](../index.mdx) and a [same-page anchor](#core-steps) and an
+[inline-markup slug keeps its mid-word underscore](#using-start_trial-here).
 
 ```bash
 # not a heading, and [not a link](/nowhere) either
@@ -242,7 +269,9 @@ setup_audiencelink_bad() {
 <AudienceLink saas="/guides/setup" selfHosted="/self-hosted/nope">Setup</AudienceLink>
 EOF
 }
-run_case fail "AudienceLink selfHosted href to a missing page" setup_audiencelink_bad 'al\.mdx:3'
+# The valid saas href on the same tag must NOT be flagged (each attr validates
+# against its own mount only).
+run_case fail "AudienceLink selfHosted href to a missing page" setup_audiencelink_bad 'al\.mdx:3' '/guides/setup'
 
 # ── relative links resolve file-style in the merged namespace ───────────────
 setup_relative_bad() {
@@ -255,6 +284,73 @@ setup_relative_bad() {
 EOF
 }
 run_case fail "relative link to a page absent from the mount" setup_relative_bad 'dev\.mdx:3'
+
+# ── literal href="…" attributes are extracted (Card grids etc.) ─────────────
+setup_href_bad() {
+  setup_clean "$1"
+  cat > "$1/docs/cards.mdx" <<'EOF'
+# Cards
+
+<Card title="X" href="/guides/nope" />
+EOF
+}
+run_case fail "broken href attribute on a JSX component" setup_href_bad 'cards\.mdx:3: broken link "/guides/nope"'
+
+# ── a heading-like line inside frontmatter mints no phantom anchor ───────────
+setup_frontmatter_phantom() {
+  setup_clean "$1"
+  cat > "$1/docs/fm.mdx" <<'EOF'
+---
+title: FM
+# Phantom Heading
+---
+
+# FM
+
+[frontmatter is not a heading source](#phantom-heading)
+EOF
+}
+run_case fail "anchor to a frontmatter comment line" setup_frontmatter_phantom 'fm\.mdx:8'
+
+# ── generated api-reference pages: existence checked, anchors skipped ────────
+setup_api_ref() {
+  setup_clean "$1"
+  mkdir -p "$1/docs/api-reference"
+  cat > "$1/docs/api-reference/getFoo.mdx" <<'EOF'
+---
+title: Get Foo
+---
+
+<APIPage document={"./openapi.json"} />
+EOF
+  cat > "$1/docs/api-links.mdx" <<'EOF'
+# API Links
+
+[any anchor is accepted on a generated page](/api-reference/getFoo#whatever)
+EOF
+}
+run_case pass "api-reference anchor skip (existence still checked)" setup_api_ref
+
+setup_api_ref_bad() {
+  setup_api_ref "$1"
+  cat >> "$1/docs/api-links.mdx" <<'EOF'
+[missing api page](/api-reference/nope)
+EOF
+}
+run_case fail "missing api-reference page still fails existence" setup_api_ref_bad 'api-links\.mdx:4'
+
+# ── reference-style link definitions are validated ───────────────────────────
+setup_ref_def_bad() {
+  setup_clean "$1"
+  cat > "$1/docs/refstyle.mdx" <<'EOF'
+# Ref
+
+See [the guide][g].
+
+[g]: /guides/nope
+EOF
+}
+run_case fail "reference-style definition to a missing page" setup_ref_def_bad 'refstyle\.mdx:5'
 
 # ── a ``` line inside a ```` fence stays fenced (CommonMark close rules) ────
 setup_nested_fence() {

@@ -19,20 +19,26 @@
  * AUDIENCE AWARENESS: a link inside a `<WhenSelfHosted>` block only renders on
  * the self-hosted mount (and vice versa), so it is only checked there — and a
  * link inside e.g. `<WhenSelfHosted>` in a saas-only page renders nowhere and
- * is skipped. Anchor targets are computed per mount with the SAME
+ * is skipped. (Exception: `<AudienceLink>` hrefs are always checked, each on
+ * its own mount, even inside a `<When…>` block — deliberately over-strict; see
+ * the extraction comment.) Anchor targets are computed per mount with the SAME
  * `stripInactiveAudienceBlocks` the llms/toc surfaces use, so a heading that
  * is stripped on a mount is not a valid anchor there.
  *
- * ANCHOR PARITY: heading ids are computed with the repo-pinned
- * `github-slugger@2.0.0` — the same slugger the Fumadocs heading-id pass uses —
- * including the duplicate `-1`/`-2` suffixes and the `--` double-dash cases
+ * ANCHOR PARITY: heading ids are computed with `github-slugger@2.0.0`, pinned
+ * exactly at the root so it resolves to the one lockfile entry fumadocs-core's
+ * heading-id pass uses (`^2.0.0`, fumadocs-core 16.9.3) — including the
+ * duplicate `-1`/`-2` suffixes and the `--` double-dash cases
  * (`Data Center / Server` → `data-center--server`). Fumadocs' custom-id
- * syntax (`## Heading [#custom-id]`) is honored.
+ * syntax (`## Heading [#custom-id]`) is honored. The fixture suite's
+ * double-dash / `-1`-suffix cases are the real parity lock: they catch a
+ * slugging divergence regardless of how the versions drift.
  *
  * OUT OF SCOPE: external URLs (flaky — a separate audit concern), `href={...}`
- * JSX expressions (not statically resolvable), and anchors on generated
- * `api-reference` pages (their body is a JSX `<APIPage>`; page existence is
- * still checked).
+ * JSX expressions and `[x](</path with spaces>)` angle-bracket destinations
+ * (neither form exists in content today; not statically extracted), and
+ * anchors on generated `api-reference` pages (their body is a JSX
+ * `<APIPage>`; page existence is still checked).
  *
  * Exit 0 = clean; exit 1 with one `file:line: message` per violation.
  * `--content-dir <dir>` overrides the content root (used by the adversarial
@@ -79,11 +85,15 @@ const repoRoot = resolve(import.meta.dir, "..");
 
 function parseArgs(): { contentDir: string } {
   const idx = process.argv.indexOf("--content-dir");
-  const contentDir =
-    idx >= 0 && process.argv[idx + 1]
-      ? resolve(process.argv[idx + 1])
-      : join(repoRoot, "apps/docs/content");
-  return { contentDir };
+  if (idx === -1) return { contentDir: join(repoRoot, "apps/docs/content") };
+  const value = process.argv[idx + 1];
+  // A present-but-valueless flag must not silently fall back to the real
+  // content tree — in the fixture harness that would validate the wrong dir.
+  if (!value || value.startsWith("-")) {
+    console.error("[docs-links] --content-dir requires a directory argument");
+    process.exit(2);
+  }
+  return { contentDir: resolve(value) };
 }
 
 const { contentDir } = parseArgs();
@@ -109,7 +119,7 @@ function walkMdx(dir: string): string[] {
 }
 
 function collectTree(tree: Tree): Page[] {
-  const root = join(contentDir, tree === "docs" ? "docs" : tree);
+  const root = join(contentDir, tree);
   return walkMdx(root).map((file) => ({
     tree,
     virtualPath: file
@@ -135,24 +145,57 @@ function mountUrl(baseUrl: string, virtualPath: string): string {
   return url === "" ? "/" : url;
 }
 
+/** One of the two URL spaces. `name`/`audience` pair 1:1 by construction —
+ * `MOUNTS` below is the single statement of that mapping, so absolute-link
+ * routing (`mountFor`) and relative-link routing (`MOUNTS[audience]`) can
+ * never disagree. */
+interface Mount {
+  readonly name: "root" | "/self-hosted";
+  readonly audience: Audience;
+  readonly byUrl: ReadonlyMap<string, Page>;
+  readonly byVirtualPath: ReadonlyMap<string, Page>;
+}
+
+// Two different source files claiming one URL on the same mount — the
+// taxonomy build gate rejects un-marked cross-audience duplicates, but a
+// silent last-writer-wins here would make anchor checks run against the
+// wrong file's headings. Collected during index build (before the violation
+// machinery exists), reported with the other violations.
+const urlCollisions: { page: Page; message: string }[] = [];
+
 /** URL → page, and virtual path (ext-stripped) → page, for one mount. */
 function buildMount(baseUrl: string, collections: readonly Page[][]) {
   const byUrl = new Map<string, Page>();
   const byVirtualPath = new Map<string, Page>();
   for (const pages of collections) {
     for (const p of pages) {
-      byUrl.set(mountUrl(baseUrl, p.virtualPath), p);
+      const url = mountUrl(baseUrl, p.virtualPath);
+      const prior = byUrl.get(url);
+      if (prior && prior.file !== p.file) {
+        urlCollisions.push({
+          page: p,
+          message: `duplicate URL claim — "${url || "/"}" is also served by ${relToRepo(prior.file)} on this mount`,
+        });
+      }
+      byUrl.set(url, p);
       byVirtualPath.set(p.virtualPath, p);
     }
   }
   return { byUrl, byVirtualPath };
 }
 
-const rootMount = buildMount("", [docsPages, sharedPages]);
-const selfHostedMount = buildMount("/self-hosted", [
-  selfHostedPages,
-  sharedPages,
-]);
+const MOUNTS: Record<Audience, Mount> = {
+  saas: {
+    name: "root",
+    audience: "saas",
+    ...buildMount("", [docsPages, sharedPages]),
+  },
+  "self-hosted": {
+    name: "/self-hosted",
+    audience: "self-hosted",
+    ...buildMount("/self-hosted", [selfHostedPages, sharedPages]),
+  },
+};
 
 /** The mounts a source file renders on (drives which links exist at all). */
 function fileAudiences(tree: Tree): readonly Audience[] {
@@ -237,20 +280,25 @@ const slugCache = new Map<string, Set<string>>();
  * a fresh per-page GithubSlugger (duplicate headings get `-1`, `-2`, … exactly
  * as the rendered ids do). */
 function headingSlugs(page: Page, audience: Audience): Set<string> {
-  const key = `${page.file} ${audience}`;
+  const key = `${page.file}\u0000${audience}`;
   const cached = slugCache.get(key);
   if (cached) return cached;
 
-  const raw = readFileSync(page.file, "utf8");
+  // CRLF-normalize before stripFrontmatter (its pattern is LF-anchored, like
+  // the strip's own internal normalization).
+  const raw = readFileSync(page.file, "utf8").replace(/\r\n/g, "\n");
   // Throws ResidualAudienceTagError on a malformed audience block — but any
-  // such page already fails the docs build itself, so let it propagate.
+  // such page already fails the docs build itself (every SSG page render runs
+  // this same strip via filterTocByAudience in section-docs-page.tsx), so let
+  // it propagate. The build strips PROCESSED markdown while we strip raw
+  // source — a divergence there fails loud here, never silent.
   const scoped = stripInactiveAudienceBlocks(stripFrontmatter(raw), audience);
   const noFences = removeFencedBlocks(scoped);
 
   const slugger = new GithubSlugger();
   const slugs = new Set<string>();
   for (const m of noFences.matchAll(
-    /^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/gm,
+    /^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/gm,
   )) {
     const text = m[2];
     const custom = CUSTOM_HEADING_ID.exec(text);
@@ -281,8 +329,11 @@ interface FoundLink {
 
 // Markdown link/image target: `](target)` or `](target "title")`.
 const MD_LINK = /\]\(([^)\s]+)(?:[ \t]+"[^"]*")?\)/g;
-// Literal href attribute (JSX or HTML). `href={...}` expressions are skipped.
-const HREF_ATTR = /\bhref="([^"]+)"/g;
+// Reference-style link definition: `[label]: target` ([^label]: footnotes excluded).
+const REF_DEF = /^ {0,3}\[[^\]^]+\]:[ \t]*(\S+)/;
+// Literal href attribute (JSX or HTML), double- or single-quoted.
+// `href={...}` expressions are skipped (not statically resolvable).
+const HREF_ATTR = /\bhref=(?:"([^"]+)"|'([^']+)')/g;
 // <AudienceLink saas="…" selfHosted="…"> — each attr is a link on that mount.
 const AUDIENCE_LINK_TAG = /<AudienceLink\b([^>]*)>/g;
 
@@ -377,6 +428,9 @@ function extractLinks(page: Page): FoundLink[] {
 
     // <AudienceLink> carries one href per mount; validate each on its own
     // mount regardless of the enclosing block (the component resolves itself).
+    // Deliberately over-strict: one nested in an inactive <When…> block never
+    // renders, but its href is still checked — fails toward a spurious CI
+    // error, never toward a missed break.
     for (const m of line.matchAll(AUDIENCE_LINK_TAG)) {
       const saasHref = audienceLinkAttr(m[1], "saas");
       const shHref = audienceLinkAttr(m[1], "selfHosted");
@@ -392,8 +446,16 @@ function extractLinks(page: Page): FoundLink[] {
     for (const m of masked.matchAll(MD_LINK)) {
       links.push({ line: lineNo, target: m[1], audiences: blockAudiences });
     }
+    const refDef = REF_DEF.exec(masked);
+    if (refDef) {
+      links.push({ line: lineNo, target: refDef[1], audiences: blockAudiences });
+    }
     for (const m of masked.matchAll(HREF_ATTR)) {
-      links.push({ line: lineNo, target: m[1], audiences: blockAudiences });
+      links.push({
+        line: lineNo,
+        target: m[1] ?? m[2],
+        audiences: blockAudiences,
+      });
     }
   }
   return links;
@@ -404,15 +466,15 @@ function extractLinks(page: Page): FoundLink[] {
 const violations: Violation[] = [];
 // A shared page renders on both mounts, so the same broken link can fail
 // twice; merge into one row with both mounts named.
-const violationMounts = new Map<string, Set<string>>();
+const violationMounts = new Map<string, Set<Audience>>();
 
 function violation(
   page: Page,
   line: number,
   message: string,
-  mount?: string,
+  mount?: Audience,
 ): void {
-  const key = `${page.file} ${line} ${message}`;
+  const key = `${page.file}\u0000${line}\u0000${message}`;
   const existing = violationMounts.get(key);
   if (existing) {
     if (mount) existing.add(mount);
@@ -421,6 +483,9 @@ function violation(
   violationMounts.set(key, new Set(mount ? [mount] : []));
   violations.push({ file: relToRepo(page.file), line, message, key });
 }
+
+// Index-build collisions become ordinary violations now that the machinery exists.
+for (const c of urlCollisions) violation(c.page, 1, c.message);
 
 function isExternal(target: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("//");
@@ -431,14 +496,13 @@ function normalizePath(path: string): string {
   return noQuery.length > 1 ? noQuery.replace(/\/+$/, "") : noQuery;
 }
 
-function mountFor(path: string): {
-  name: string;
-  audience: Audience;
-  byUrl: Map<string, Page>;
-} {
-  return path === "/self-hosted" || path.startsWith("/self-hosted/")
-    ? { name: "/self-hosted", audience: "self-hosted", byUrl: selfHostedMount.byUrl }
-    : { name: "root", audience: "saas", byUrl: rootMount.byUrl };
+/** The mount an absolute URL addresses (relative links route via MOUNTS[audience]). */
+function mountFor(path: string): Mount {
+  return MOUNTS[
+    path === "/self-hosted" || path.startsWith("/self-hosted/")
+      ? "self-hosted"
+      : "saas"
+  ];
 }
 
 function checkAnchor(
@@ -497,7 +561,8 @@ for (const page of [...docsPages, ...sharedPages, ...selfHostedPages]) {
         violation(
           page,
           line,
-          `broken link "${target}" — no page at "${path}" on the ${mount.name} mount`,
+          `broken link "${target}" — no page at "${path}"`,
+          mount.audience,
         );
         continue;
       }
@@ -523,8 +588,7 @@ for (const page of [...docsPages, ...sharedPages, ...selfHostedPages]) {
       continue;
     }
     for (const audience of audiences) {
-      const mount = audience === "saas" ? rootMount : selfHostedMount;
-      const mountName = audience === "saas" ? "root" : "/self-hosted";
+      const mount = MOUNTS[audience];
       const targetPage =
         mount.byVirtualPath.get(resolved) ??
         mount.byVirtualPath.get(`${resolved}/index`);
@@ -532,7 +596,7 @@ for (const page of [...docsPages, ...sharedPages, ...selfHostedPages]) {
         violation(
           page,
           line,
-          `broken link "${target}" — resolves to "${resolved}", not a page on the ${mountName} mount`,
+          `broken link "${target}" — resolves to "${resolved}", not a page`,
           audience,
         );
         continue;
@@ -562,7 +626,7 @@ if (violations.length > 0) {
       mounts.length === 0
         ? ""
         : mounts.length === 1
-          ? ` (${mounts[0]} mount)`
+          ? ` (${MOUNTS[mounts[0]].name} mount)`
           : ` (both mounts)`;
     console.error(`${v.file}:${v.line}: ${v.message}${suffix}`);
   }

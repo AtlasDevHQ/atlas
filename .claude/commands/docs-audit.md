@@ -312,7 +312,8 @@ link against the tree mounts and every anchor against `github-slugger`-computed
 heading slugs, per mount. Run the gate first; this audit checks only the residue
 the gate can't see:
 
-- `href={...}` JSX expressions (not statically resolvable)
+- `href={...}` JSX expressions and `[x](</path>)` angle-bracket
+  destinations (not statically resolvable / extracted)
 - Anchors into generated `api-reference/` pages (JSX `<APIPage>` body — the
   gate checks page existence only)
 - A `shared/` page hard-linking a saas-only page with a root path: the link

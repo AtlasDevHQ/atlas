@@ -21,7 +21,7 @@ Atlas caches query results in-memory so that identical queries return instantly 
    - **Org ID** (multi-tenant isolation)
    - **User claims** (RLS context — e.g., `role: "admin"` vs `role: "member"`)
 2. The key is a SHA-256 hash of these components, so different orgs or RLS contexts never share cached results
-3. On a **cache hit**, the stored result is returned instantly (0ms query duration, marked `cached: true` in audit logs)
+3. On a **cache hit**, the stored result is returned instantly. The tool response is marked `cached: true`, and the audit log records the query's *original* execution duration (not 0ms), so slow-query analytics stay honest across hits
 4. On a **cache miss**, the query runs against the database, and the result is stored in the cache for the configured TTL
 
 ---

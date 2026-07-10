@@ -364,6 +364,11 @@ The MCP server runs the same agent tools as the chat app, so the same governance
 - **Agent origin** — the invocation channel a query or mutation reached the agent through: `chat` / `mcp` / `scheduler` / `slack`. Approval rules match on it and the audit log records it. See [ADR-0015](./docs/adr/0015-agent-origin-not-surface.md).
   _Avoid_: "approval surface" and bare "surface" (reserved for the pillar admin page); "source" (a deprecated alias for Connection group); conflating with **Lead source** below — agent origin is about *agent traffic* (approval/audit), lead source is about *CRM acquisition* (marketing attribution). Both can say "mcp"; they are different concepts.
 
+## Query Cache
+
+- **Query Cache** — the per-region, in-process store of `executeSQL` result rows (`lib/cache/`), keyed by (SQL, Datasource connection, Workspace, user claims) so entries are tenant-isolated by construction. One per API process, shared by every Workspace in the region. Distinct from the chat-SDK state store (`chat_cache:*` keys — Workspace Connection credentials, not query results) and from a dashboard card's **cached data** (persisted per-card snapshots, refreshed by publish/cron — see "Dashboard editing").
+  _Avoid_: bare "cache" in cross-subsystem prose (say Query Cache); "chat cache" for this concept (`chat_cache` is credential storage).
+
 ## Lead source (CRM acquisition)
 
 - **Lead source** — *how a prospect/lead first reached Atlas*, as recorded in the CRM. Carried on the `LeadEvent` discriminated union's `source` field (`demo` / `signup` / `conversion` / …) — defined once in `plugins/twenty/src/lead-normalizer.ts` (`LeadEventSchema`, the SSOT for the `crm_outbox` payload wire shape; the `SaasCrm.upsertLead` contract aliases it as `SaasCrmLeadInput`) and mapped by the Twenty normalizer onto two Person fields: **`atlasFirstSource`** (sticky first-touch — never overwritten once set) and **`atlasLastSource`** (last-touch — updated each event). A self-serve trial signup emits a `signup` lead through `SaasCrm.upsertLead`; a Stripe-paid conversion stamps `conversion`. A signup arriving over MCP is the **same lead-source concept reached by a different method** — it flows through the identical `upsertLead` → `crm_outbox` → Twenty pipeline, distinguished (if at all) by its `source` value, never by a new pipeline.

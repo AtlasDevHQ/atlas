@@ -140,7 +140,23 @@ The design questions the findings force — the grill walks this list. Phrased a
 
 ---
 
-## Handoff
+## Grill outcomes (2026-07-10 session — all 9 agenda items resolved)
+
+1. **Knobs → settings registry** (Q1): `ATLAS_CACHE_MAX_SIZE` platform-scoped; `ATLAS_CACHE_ENABLED`/`ATLAS_CACHE_TTL` workspace-scoped with platform fallback. Backend recreates/resizes on change (un-freezes H2.3; fixes M8 — `stats()` reports the resolved TTL). **Config-file `cache:` block deprecated two-phase** (Q1b): boot warning in release N ("ignored — migrate to settings/env"), schema removal in N+1; SaaS pin in `deploy/api/atlas.config.ts` deleted. M5 dissolves — one documented precedence chain with the registry's visible `source`.
+2. **Hit surfacing** (Q2): `cacheAgeMs` on the hit response; chip renders "cached · Xm ago"; tool description documents `cached`/age so the agent caveats time-sensitive answers; fanout `cached: false` hardcode fixed (L1); `bypassCache` tool input ("only when the user explicitly asks for fresh data") whose fresh result re-freshens the shared entry.
+3. **Governance principle** (Q3) — **ADR-0033**: the key captures row-determining inputs (resolved RLS config hashes into the key — fixes H3 by construction, rejected flush-on-event); hits re-apply presentation governance; veto seams run before the cache check (plugin `beforeQuery` moves above it — M11); `afterQuery` + connection metrics stay live-only, documented.
+4. **Invalidation** (Q4, absorbing Q7): scope joins the `CacheBackend` contract — `set()` takes `{orgId, connectionId}` tags, `flushByOrg()` added; LRU implements via a `Map<orgId, Set<key>>` side index. Tenant admin flush is org-scoped (own count shown); fleet-wide flush is platform_admin-only with blast-radius disclosure; org deletion + residency migration use exact-scope purge; stats bucket by org (kills L13). No cooldown needed.
+5. **Hit rate** (Q5): per-org buckets carry since-labeled lifetime + last-hour rate (two-generation lazy rotation). No reset verb. Counters carried across ttl/maxSize backend recreation; plugin swap keeps zero-and-log.
+6. **Admin page** (Q6): workspace `enabled`/`ttl` knobs inline on the cache page via the sandbox-page pattern (`saasVisible: false, saasWritable: true`); entry-inspection table (age, row count, connection, ~200-char SQL preview) + per-entry delete — most cuttable item; refused flush returns **409** and the page branches on the body (M4). L-sweep (L2, L3, L4, L7) rides along. Design-pass note: order/animate entries by LRU position & hit count ("bubbling") — the org index makes it cheap.
+7. **Flush contract** — folded into Q4.
+8. **Plugin backend** (Q8): `CacheBackend` goes fully async (one breaking change with Q4's scope additions); H4's phantom-hit dies structurally; `setCacheBackend` validates shape and **a bad backend fails the plugin's init** (red in plugin health) while the cache degrades to the in-process LRU. Test stub + "e.g. Redis" docblocks fixed.
+9. **Config precedence** (Q9) — dissolved by Q1b.
+
+Docs: `caching.mdx` 0ms-audit-log falsehood fixed in-session; remaining M9 items (env-guidance audience, blast-radius disclosure, restart note) land with the implementation slices they describe. CONTEXT.md gained the **Query Cache** term. #4532/#4533 remain independent.
+
+**Next: `/to-prd` → `/to-issues`** — slice along: (1) registry knobs + deprecation, (2) key/governance (ADR-0033: RLS-in-key, beforeQuery ordering), (3) contract redesign (async + scope + org index), (4) cockpit (stats window, org flush, entry table, knobs inline), (5) hit surfacing + bypass.
+
+## Original handoff (pre-grill)
 
 **Next: run `/grill-with-docs` with this doc.**
 

@@ -1582,8 +1582,12 @@ export async function insertSemanticAmendment(amendment: {
    * the default (flat `entities/`) group. Persisted so the admin approve path,
    * which rebuilds the proposal from the stored row's `source_entity` alone,
    * can recover the group and apply the amendment against the correct scope
-   * (no 409, no default-scope corruption). The interactive `proposeAmendment`
-   * tool omits it — it reads the flat root, so the default scope is correct.
+   * (no 409, no default-scope corruption). Every DB-backed caller supplies it:
+   * the scheduler passes the finding's group, and the interactive
+   * `proposeAmendment` tool passes the `applyGroupId` its baseline was
+   * resolved from via `resolveAmendmentBaseline` (#4488, #4498) — so
+   * human-reviewed approves resolve the same row the propose-time diff was
+   * computed against, never the unscoped fallback.
    */
   connectionGroupId?: string | null;
 }): Promise<{ id: string; status: "approved" | "pending" }> {

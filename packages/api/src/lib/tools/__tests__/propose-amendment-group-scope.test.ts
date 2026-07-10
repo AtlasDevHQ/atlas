@@ -65,8 +65,11 @@ void mock.module("@atlas/api/lib/semantic", () => ({ invalidateOrgWhitelist }));
 void mock.module("@atlas/api/lib/semantic/sync", () => ({ syncEntityToDisk }));
 
 const insertSemanticAmendment = mock(
-  (_args: { sourceEntity: string; amendmentPayload: AmendmentPayload }) =>
-    Promise.resolve({ id: "prop-1", status: "approved" }),
+  (_args: {
+    sourceEntity: string;
+    amendmentPayload: AmendmentPayload;
+    connectionGroupId?: string | null;
+  }) => Promise.resolve({ id: "prop-1", status: "approved" }),
 );
 const revertAmendmentToPending = mock(() => Promise.resolve(true));
 
@@ -181,5 +184,61 @@ describe("proposeAmendment baseline resolution is org/group-aware (#4488)", () =
     expect(persisted.sourceEntity).toBe("orders");
     expect(persisted.amendmentPayload.amendment).toMatchObject({ name: "region" });
     expect(revertAmendmentToPending).not.toHaveBeenCalled();
+  });
+
+  it("persists the resolved applyGroupId as the row's connection_group_id (#4498)", async () => {
+    await run();
+    // The stored row must carry the group the baseline was resolved from —
+    // NOT NULL. A NULL group forces the human-review approve into the
+    // default-scope → unscoped-fallback path, which 409s the moment the
+    // entity name exists in a second group (elevation-audit M5 dead-end).
+    const persisted = insertSemanticAmendment.mock.calls[0][0];
+    expect(persisted.connectionGroupId).toBe("eu_prod");
+  });
+
+  it("human-review approve of the persisted row resolves the same group-scoped row, no unscoped fallback (#4498)", async () => {
+    // Queue the proposal instead of auto-approving, so the ONLY apply in this
+    // test is the simulated human review below.
+    insertSemanticAmendment.mockResolvedValue({ id: "prop-1", status: "pending" });
+    const result = await run();
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe("queued");
+    expect(upsertEntityForGroup).not.toHaveBeenCalled();
+
+    // Replay the review-route approve (admin-semantic-improve.ts, POST
+    // /amendments/:id/review) against the persisted row: it applies with the
+    // row's `connection_group_id ?? null`.
+    const persisted = insertSemanticAmendment.mock.calls[0][0];
+    getEntity.mockClear();
+    const { applyAmendmentFromPayload } = await import("@atlas/api/lib/semantic/expert/apply");
+    await applyAmendmentFromPayload({
+      orgId: "org-1",
+      sourceEntity: persisted.sourceEntity,
+      connectionGroupId: persisted.connectionGroupId ?? null,
+      rawPayload: persisted.amendmentPayload,
+      requestId: "req-review",
+      label: "prop-1",
+    });
+
+    // Every lookup during the review apply is SCOPED to the persisted group —
+    // the unscoped back-compat fallback (4th arg undefined) never runs. The
+    // getEntity mock only resolves `group === "eu_prod"`, so a NULL persisted
+    // group (the pre-fix behavior: default scope → scoped miss → unscoped
+    // fallback → miss) would have thrown "Entity not found" above.
+    expect(getEntity.mock.calls.length).toBeGreaterThan(0);
+    for (const call of getEntity.mock.calls) {
+      expect(call[3]).toBe("eu_prod");
+    }
+
+    // And the write lands in the same row the propose-time diff was computed
+    // against: the eu_prod scope, with the DB baseline plus the new dimension.
+    expect(upsertEntityForGroup).toHaveBeenCalledTimes(1);
+    expect(upsertEntityForGroup.mock.calls[0][4]).toBe("eu_prod");
+    const parsed = loadYaml(upsertEntityForGroup.mock.calls[0][3]) as {
+      description?: string;
+      dimensions?: Array<{ name?: string }>;
+    };
+    expect(parsed.description).toBe("Orders (eu_prod DB-backed)");
+    expect((parsed.dimensions ?? []).map((d) => d.name)).toContain("region");
   });
 });

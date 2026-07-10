@@ -220,6 +220,12 @@ The review loop through which AI-proposed changes to the semantic layer become r
 - **Improvement conversation** — the admin's chat with the expert agent on the improve surface. It is a conversation, not a stored resource: nothing durable hangs off it except the Amendments it creates.
   _Avoid_: "improvement session" — implies a stored, addressable resource; there is none (deleted rather than made durable — any future resumability rides ADR-0020 durable agent sessions, never a bespoke store). The CLI's interactive loop keeps local REPL state; that is not a session either.
 
+- **Rejection memory** — the org's rejected Amendment identities, which suppress re-proposal on every path (chat, scheduler, CLI). Enforced where an Amendment is created — a hit refuses the insert — never by prompt advice alone. A rejection is **permanent until an admin reconsiders it**; it does not age out.
+  _Avoid_: time-windowed expiry; treating "the model was told not to" as suppression.
+
+- **Reconsider** — the admin action that lifts a rejection: it returns a rejected Amendment to the Pending queue and removes its identity from rejection memory. The only way a rejected change comes back.
+  _Avoid_: "unreject"; silent re-proposal by the agent (rejection memory forbids it by construction).
+
 ## Chat turn presentation
 
 How one agent turn is presented in the chat transcript. A turn has two faces: the **activity** (everything the agent did on the way) and the **answer** (what the turn exists to deliver). Presentation is answer-first: the answer is the visually dominant element; activity is live while the agent works, then settles into a collapsed receipt. Vocabulary pinned by PRD #4292 (answer-first chat turn presentation); the receipt/promotion mechanics shipped with #4298 (finished turns, notebook convergence #4301) and #4300 (live working phase), so the present-tense descriptions below are shipped behavior — remaining #4292 slices (answer styles, editorial voice) note their own status.

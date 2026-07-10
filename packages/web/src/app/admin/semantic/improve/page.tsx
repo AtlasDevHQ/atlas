@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useRef, useMemo } from "react";
-import { useChat, type UIMessage } from "@ai-sdk/react";
+import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
-import { getToolArgs, getToolResult } from "@/ui/lib/helpers";
+import { extractProposals, type Proposal, type TestResult } from "./proposals";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -32,31 +32,6 @@ import Link from "next/link";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface TestResult {
-  success: boolean;
-  rowCount: number;
-  sampleRows: Record<string, unknown>[];
-  error?: string;
-}
-
-interface Proposal {
-  index: number;
-  entityName: string;
-  category: string;
-  amendmentType: string;
-  amendment: Record<string, unknown>;
-  rationale: string;
-  diff?: string;
-  testQuery?: string;
-  testResult?: TestResult;
-  confidence: number;
-  impact?: number;
-  score?: number;
-  decision: "accepted" | "rejected" | "skipped" | null;
-  /** DB row id for pending amendments loaded from previous sessions. */
-  dbId?: string;
-}
 
 interface PendingAmendment {
   id: string;
@@ -237,63 +212,18 @@ function formatAmendment(type: string, amendment: Record<string, unknown>): stri
 }
 
 // ---------------------------------------------------------------------------
-// Extract proposals from assistant messages
-// ---------------------------------------------------------------------------
-
-/** Try to parse proposals from tool call results in the messages. */
-function extractProposals(messages: UIMessage[]): Proposal[] {
-  const proposals: Proposal[] = [];
-  let idx = 0;
-
-  for (const msg of messages) {
-    if (msg.role !== "assistant") continue;
-    for (const part of msg.parts) {
-      if (isToolUIPart(part)) {
-        let name: string;
-        try { name = getToolName(part as Parameters<typeof getToolName>[0]); } catch { /* intentionally ignored: skip unrecognizable tool parts */ continue; }
-        if (name !== "proposeAmendment") continue;
-        const args = getToolArgs(part);
-        if (args.entityName) {
-          // Extract diff and testResult from tool result if available
-          const result = getToolResult(part) as Record<string, unknown> | null;
-          const diff = typeof result?.diff === "string" ? result.diff : undefined;
-          const rawTR = result?.testResult;
-          const testResult: Proposal["testResult"] | undefined =
-            rawTR && typeof rawTR === "object" && !Array.isArray(rawTR) &&
-            "success" in rawTR && typeof (rawTR as Record<string, unknown>).rowCount === "number"
-              ? (rawTR as Proposal["testResult"])
-              : undefined;
-          proposals.push({
-            index: idx++,
-            entityName: String((args.entityName as string) ?? "unknown"),
-            category: String((args.category as string) ?? ""),
-            amendmentType: String((args.amendmentType as string) ?? ""),
-            amendment: (args.amendment as Record<string, unknown>) ?? {},
-            rationale: String((args.rationale as string) ?? ""),
-            diff,
-            testQuery: args.testQuery ? String(args.testQuery as string) : undefined,
-            testResult,
-            confidence: Number(args.confidence ?? 0.5),
-            impact: Number(args.impact ?? 0.5),
-            score: Number(args.score ?? 0.5),
-            decision: null,
-          });
-        }
-      }
-    }
-  }
-  return proposals;
-}
-
-// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
 export default function SemanticImprovePage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const [inputValue, setInputValue] = useState("");
+  // Keyed by the proposal's DB row id (`dbId`) so a decision made on a
+  // chat-streamed card survives re-renders and pending-list refetches — the
+  // card is re-derived from the message stream each render, so an index-keyed
+  // decision would drift as proposals stream in.
   const [proposalDecisions, setProposalDecisions] = useState<
-    Map<number, "accepted" | "rejected">
+    Map<string, "accepted" | "rejected">
   >(new Map());
 
   // Transport for the semantic expert agent endpoint
@@ -349,7 +279,7 @@ export default function SemanticImprovePage() {
   // Extract proposals from current chat session messages
   const chatProposals = extractProposals(messages).map((p) => ({
     ...p,
-    decision: proposalDecisions.get(p.index) ?? p.decision,
+    decision: (p.dbId ? proposalDecisions.get(p.dbId) : undefined) ?? p.decision,
   }));
 
   // Show chat proposals when a session is active, otherwise show DB pending
@@ -382,25 +312,25 @@ export default function SemanticImprovePage() {
   }
 
   async function handleReview(proposal: Proposal, decision: "approved" | "rejected") {
+    // Every rendered proposal — chat-streamed or loaded from the pending list —
+    // carries the `learned_patterns` row id, so all reviews go through the one
+    // working DB-backed path. The in-memory `/proposals/{index}` route is never
+    // populated in the web flow and always 404s.
+    const dbId = proposal.dbId;
+    if (!dbId) return;
     const label = decision === "approved" ? "approve" : "reject";
-    if (proposal.dbId) {
-      const result = await mutate({
-        path: `/api/v1/admin/semantic-improve/amendments/${proposal.dbId}/review`,
-        itemId: `${label}-${proposal.dbId}`,
-        body: { decision },
-      });
-      // fire-and-forget: refresh pending amendments list after review
-      if (result.ok) void refetchPending();
-    } else {
-      const chatDecision = decision === "approved" ? "accepted" as const : "rejected" as const;
-      const chatPath = decision === "approved" ? "approve" : "reject";
-      const result = await mutate({
-        path: `/api/v1/admin/semantic-improve/proposals/${proposal.index}/${chatPath}`,
-        itemId: `${label}-${proposal.index}`,
-      });
-      if (result.ok) {
-        setProposalDecisions((prev) => new Map(prev).set(proposal.index, chatDecision));
-      }
+    const result = await mutate({
+      path: `/api/v1/admin/semantic-improve/amendments/${dbId}/review`,
+      itemId: `${label}-${dbId}`,
+      body: { decision },
+    });
+    if (result.ok) {
+      // Mark the card decided (chat cards persist across renders) and refresh
+      // the pending list so a reviewed row drops out of it.
+      setProposalDecisions((prev) =>
+        new Map(prev).set(dbId, decision === "approved" ? "accepted" : "rejected"),
+      );
+      void refetchPending();
     }
   }
 

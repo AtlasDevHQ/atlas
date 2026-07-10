@@ -710,6 +710,31 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     expect(ic?.endpointUrl).toBeNull();
     expect(ic?.sync).not.toBeNull();
   });
+
+  it("dispatches a Front collection to the connector engine and lists it as source 'front' (#4400)", async () => {
+    COLLECTION = {
+      install_id: "front-support",
+      catalog_id: "catalog:front",
+      status: "published",
+      config: { knowledge_base_id: "kb_1", knowledge_base_name: "Support" },
+    };
+    SYNC_STATES = [
+      { collection_id: "front-support", last_sync_at: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    ];
+    const syncRes = await adminKnowledge.request("/front-support/sync", { method: "POST" });
+    expect(syncRes.status).toBe(200);
+    expect(syncConnectorCollection).toHaveBeenCalledTimes(1);
+    expect(syncCollection).not.toHaveBeenCalled();
+
+    const listRes = await adminKnowledge.request("/", { method: "GET" });
+    const body = (await listRes.json()) as {
+      collections: Array<{ slug: string; source: string; endpointUrl: string | null; sync: unknown }>;
+    };
+    const front = body.collections.find((c) => c.slug === "front-support");
+    expect(front?.source).toBe("front");
+    expect(front?.endpointUrl).toBeNull();
+    expect(front?.sync).not.toBeNull();
+  });
 });
 
 describe("knowledge mirror invalidation (#4208)", () => {

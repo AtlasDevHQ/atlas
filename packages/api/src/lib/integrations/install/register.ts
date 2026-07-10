@@ -57,6 +57,8 @@ import {
 import { registerSalesforceKnowledgeConnector } from "@atlas/api/lib/knowledge/salesforce/connector";
 import { IntercomFormInstallHandler, INTERCOM_SLUG } from "./intercom-form-handler";
 import { registerIntercomKnowledgeConnector } from "@atlas/api/lib/knowledge/intercom/connector";
+import { FrontFormInstallHandler, FRONT_SLUG } from "./front-form-handler";
+import { registerFrontKnowledgeConnector } from "@atlas/api/lib/knowledge/front/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -336,6 +338,18 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(INTERCOM_SLUG, new IntercomFormInstallHandler());
   registerIntercomKnowledgeConnector();
   log.info("Registered IntercomFormInstallHandler + knowledge sync connector");
+  // Knowledge Base (Front) — the built-in `front` connector install (#4400,
+  // PRD #4395). Knowledge-pillar, multi-instance: ONE install fans out to one
+  // collection per KNOWLEDGE BASE. Config = per-KB binding; the Bearer API token
+  // lands in `knowledge_sync_credentials` (encrypted, one row per KB collection),
+  // never in `workspace_plugins.config`. Front's Core API is a fixed vendor host
+  // → SSRF gated at install and fetch. Registering the FORM handler + the
+  // CONNECTOR together (as with the other knowledge vendors) keeps a half-wired
+  // deploy from having an installable card whose scheduled sync has no registered
+  // vendor client. No env gate.
+  registerFormHandler(FRONT_SLUG, new FrontFormInstallHandler());
+  registerFrontKnowledgeConnector();
+  log.info("Registered FrontFormInstallHandler + knowledge sync connector");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

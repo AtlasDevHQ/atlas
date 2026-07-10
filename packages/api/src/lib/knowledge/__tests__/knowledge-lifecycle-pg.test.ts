@@ -41,6 +41,7 @@ import { CONFLUENCE_DC_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/in
 import { GITBOOK_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/gitbook-form-handler";
 import { ZENDESK_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/zendesk-form-handler";
 import { INTERCOM_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/intercom-form-handler";
+import { FRONT_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/front-form-handler";
 import { SALESFORCE_KNOWLEDGE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/salesforce-knowledge-form-handler";
 import { SYNC_CYCLE_INSTALLS_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
 import {
@@ -643,6 +644,31 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     // one collection, so the config carries only the optional description.
     expect(row.rows[0]?.config).not.toHaveProperty("access_token");
     expect(row.rows[0]?.config).toEqual({ description: "Support docs" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("installs a Front per-KB connector collection against the live schema (#4400)", async () => {
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+       VALUES ('catalog:front', 'Knowledge Base (Front)', 'front', 'context', 'knowledge', 'form')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    const installed = await pool.query<{ id: string }>(FRONT_INSTALL_UPSERT_SQL, [
+      "row-front",
+      ws,
+      "catalog:front",
+      "front-support",
+      JSON.stringify({ knowledge_base_id: "kb_1", knowledge_base_name: "Support" }),
+    ]);
+    expect(installed.rows[0]?.id).toBe("row-front");
+    const row = await pool.query<{ pillar: string; status: string; config: Record<string, unknown> }>(
+      `SELECT pillar, status, config FROM workspace_plugins
+        WHERE workspace_id = $1 AND install_id = 'front-support'`,
+      [ws],
+    );
+    expect(row.rows[0]).toMatchObject({ pillar: "knowledge", status: "published" });
+    // The token is NEVER persisted in the install config.
+    expect(row.rows[0]?.config).not.toHaveProperty("api_token");
+    expect(row.rows[0]?.config).toMatchObject({ knowledge_base_id: "kb_1", knowledge_base_name: "Support" });
   }, PG_TEST_TIMEOUT_MS);
 
   it("the cycle's install listing returns ONLY enabled, non-archived bundle-sync installs (#4211)", async () => {

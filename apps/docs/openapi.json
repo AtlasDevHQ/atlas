@@ -56691,7 +56691,8 @@
                               "gitbook",
                               "zendesk",
                               "salesforce-knowledge",
-                              "intercom"
+                              "intercom",
+                              "front"
                             ]
                           },
                           "description": {

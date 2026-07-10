@@ -48,6 +48,7 @@ import { GITBOOK_CATALOG_ID } from "@atlas/api/lib/knowledge/gitbook/config";
 import { ZENDESK_CATALOG_ID } from "@atlas/api/lib/knowledge/zendesk/config";
 import { SALESFORCE_KNOWLEDGE_CATALOG_ID } from "@atlas/api/lib/knowledge/salesforce/config";
 import { INTERCOM_CATALOG_ID } from "@atlas/api/lib/knowledge/intercom/config";
+import { FRONT_CATALOG_ID } from "@atlas/api/lib/knowledge/front/config";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -151,7 +152,7 @@ describe("registerBuiltinInstallHandlers — knowledge sync connector pairing (#
   // walk dispatches on the connector registry, not the form handler). Pin that
   // one call to registerBuiltinInstallHandlers() registers every vendor's
   // connector alongside its form handler. No env gate on any.
-  it("registers the Confluence, Confluence DC, Notion, GitBook, Zendesk, Salesforce Knowledge, and Intercom sync connectors alongside their form handlers", () => {
+  it("registers the Confluence, Confluence DC, Notion, GitBook, Zendesk, Salesforce Knowledge, Intercom, and Front sync connectors alongside their form handlers", () => {
     registerBuiltinInstallHandlers();
     expect(getKnowledgeSyncConnector(CONFLUENCE_CATALOG_ID)).toBeDefined();
     expect(getKnowledgeSyncConnector(CONFLUENCE_DC_CATALOG_ID)).toBeDefined();
@@ -160,6 +161,7 @@ describe("registerBuiltinInstallHandlers — knowledge sync connector pairing (#
     expect(getKnowledgeSyncConnector(ZENDESK_CATALOG_ID)).toBeDefined();
     expect(getKnowledgeSyncConnector(SALESFORCE_KNOWLEDGE_CATALOG_ID)).toBeDefined();
     expect(getKnowledgeSyncConnector(INTERCOM_CATALOG_ID)).toBeDefined();
+    expect(getKnowledgeSyncConnector(FRONT_CATALOG_ID)).toBeDefined();
     expect(getInstallHandler({ slug: "confluence", install_model: "form" }).kind).toBe("form");
     expect(getInstallHandler({ slug: "confluence-datacenter", install_model: "form" }).kind).toBe("form");
     expect(getInstallHandler({ slug: "notion-knowledge", install_model: "form" }).kind).toBe("form");
@@ -167,6 +169,7 @@ describe("registerBuiltinInstallHandlers — knowledge sync connector pairing (#
     expect(getInstallHandler({ slug: "zendesk", install_model: "form" }).kind).toBe("form");
     expect(getInstallHandler({ slug: "salesforce-knowledge", install_model: "form" }).kind).toBe("form");
     expect(getInstallHandler({ slug: "intercom", install_model: "form" }).kind).toBe("form");
+    expect(getInstallHandler({ slug: "front", install_model: "form" }).kind).toBe("form");
   });
 });
 

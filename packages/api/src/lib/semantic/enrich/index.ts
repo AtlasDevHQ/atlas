@@ -14,6 +14,7 @@
 
 import { generateText } from "ai";
 import { getModel } from "@atlas/api/lib/providers";
+import type { RawTokenCounts } from "@atlas/api/lib/billing/token-weighting";
 import type { TableProfile } from "@useatlas/types";
 import * as fs from "fs";
 import * as path from "path";
@@ -179,6 +180,17 @@ export interface EnrichEntityYamlResult {
   yaml: string;
   /** True when LLM fields were merged in; false when the input was returned as-is. */
   enriched: boolean;
+  /**
+   * Raw token spend of THIS enrichment call (#4489), surfaced so an API caller
+   * (the wizard `/enrich` route) can meter it against the workspace budget via
+   * `logUsageEvent` — the same {@link RawTokenCounts} shape `toOutputEquivalentTokens`
+   * consumes, so it feeds the budget weighting without a re-pack. Present on BOTH
+   * the merged and the unparseable-response paths — tokens are spent whenever the
+   * LLM call itself succeeds, regardless of whether the output was mergeable.
+   * Distinct from the optional {@link TokenUsage} accumulator param, which is the
+   * CLI cross-table summary sink (still in active use on the file-based path).
+   */
+  usage: RawTokenCounts;
 }
 
 /**
@@ -263,12 +275,21 @@ Important:
 
   if (usage) addUsage(usage, result.usage);
 
+  // Raw per-call token spend for workspace-budget metering (#4489). The AI SDK
+  // usage shape is inputTokens/outputTokens (undefined when a provider omits
+  // counts → coalesce to 0). Captured before the parse branches so it rides
+  // BOTH return paths — the tokens were charged either way.
+  const callUsage = {
+    inputTokens: result.usage.inputTokens ?? 0,
+    outputTokens: result.usage.outputTokens ?? 0,
+  };
+
   const yamlText = extractYamlBlock(result.text);
   const enriched = safeParse(yamlText);
 
   if (!enriched) {
     // Successful call, unusable response — keep the mechanical baseline.
-    return { yaml: existingContent, enriched: false };
+    return { yaml: existingContent, enriched: false, usage: callUsage };
   }
 
   // `loadYaml` preserves v4's undefined-on-empty (v5 throws on a blank file);
@@ -276,7 +297,7 @@ Important:
   const existingYaml = (loadYaml(existingContent) ?? {}) as Record<string, unknown>;
   const merged = deepMerge(existingYaml, enriched);
   const output = yaml.dump(merged, { lineWidth: 120, noRefs: true });
-  return { yaml: output, enriched: true };
+  return { yaml: output, enriched: true, usage: callUsage };
 }
 
 export async function enrichEntity(

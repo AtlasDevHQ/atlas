@@ -118,6 +118,29 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: mock(async () => 0),
 }));
 
+// #4489 — the /enrich route now gates on billing before spend and meters token
+// usage after. This suite drives the REAL enrich engine through the mock LLM, so
+// stub the gate to allow and metering to a no-op spy (the internal-DB mock above
+// intentionally omits `isInternalCircuitOpen`, which real `logUsageEvent` reads).
+// Billing-block arms are covered by wizard-enrich-billing.test.ts.
+const mockCheckAgentBillingGate = mock(async (_orgId?: string) => ({ allowed: true as const }));
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+  checkAgentBillingGate: mockCheckAgentBillingGate,
+  BillingBlockedError: class BillingBlockedError extends Error {
+    override readonly name = "BillingBlockedError";
+  },
+}));
+
+const mockLogUsageEvent = mock((_event: unknown) => {});
+void mock.module("@atlas/api/lib/metering", () => ({
+  logUsageEvent: mockLogUsageEvent,
+  emitLoginEvent: async () => {},
+  aggregateUsageSummary: async () => {},
+  getCurrentPeriodUsage: async () => ({}),
+  getUsageHistory: async () => [],
+  getUsageBreakdown: async () => [],
+}));
+
 const mockAuthenticate = mock(() =>
   Promise.resolve({
     authenticated: true,
@@ -315,6 +338,8 @@ describe("wizard two-phase generate via the mock-LLM test layer (#3621 AC#6, cli
     mockProfile.mockClear();
     mockListObjects.mockClear();
     mockModel.doGenerateCalls.length = 0;
+    mockCheckAgentBillingGate.mockClear();
+    mockLogUsageEvent.mockClear();
   });
 
   it("phase 1 — mechanical generate emits entity YAML and makes NO LLM call", async () => {
@@ -350,6 +375,18 @@ describe("wizard two-phase generate via the mock-LLM test layer (#3621 AC#6, cli
     // once — the two-phase flow's LLM step genuinely ran through the AI test layer.
     expect(mockProfile).toHaveBeenCalledTimes(1);
     expect(mockModel.doGenerateCalls.length).toBe(1);
+    // #4489 — the gate ran before spend, and the real engine's surfaced token
+    // usage (mock LLM: 50 in + 30 out) was metered as a `token` usage event.
+    expect(mockCheckAgentBillingGate).toHaveBeenCalledTimes(1);
+    expect(mockLogUsageEvent).toHaveBeenCalledTimes(1);
+    const event = mockLogUsageEvent.mock.calls[0][0] as {
+      eventType: string;
+      quantity: number;
+      workspaceId: string | null;
+    };
+    expect(event.eventType).toBe("token");
+    expect(event.quantity).toBe(80);
+    expect(event.workspaceId).toBe("org-1");
   });
 
   it("the AtlasAiModel test layer is the model source (sanity: layer resolves our mock)", async () => {

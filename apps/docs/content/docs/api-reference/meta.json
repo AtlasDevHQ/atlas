@@ -2,6 +2,7 @@
   "title": "API Reference",
   "root": true,
   "pages": [
+    "index",
     "auth",
     "widget",
     "well-known",

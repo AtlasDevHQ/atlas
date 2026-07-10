@@ -305,6 +305,76 @@ export const staticPaths: Record<string, unknown> = {
     },
   },
 
+  "/.well-known/agent-configuration": {
+    get: {
+      operationId: "wellKnownAgentConfiguration",
+      summary: "Agent Auth Protocol discovery document",
+      description:
+        "Agent Auth Protocol discovery document (§6.1). Proxies the `agentAuth()` " +
+        "plugin's canonical `/api/auth/agent-configuration` output so the discovery " +
+        "doc can never drift from the endpoints the plugin actually serves. " +
+        "Gated by the hot-reloadable `ATLAS_AGENT_AUTH_ENABLED` setting (default off): " +
+        "when the setting is off — or auth mode is not `managed` — the surface does " +
+        "not exist and this returns 404. Fail-closed: settings errors resolve to off.",
+      tags: ["Well-Known"],
+      security: [],
+      responses: {
+        "200": {
+          description: "Agent Auth discovery document (JSON)",
+          content: { "application/json": { schema: { type: "object" } } },
+        },
+        "404": errorResponse("Agent Auth is disabled or auth mode is not `managed`"),
+        "503": errorResponse("Discovery generation failed (transient — includes requestId)"),
+      },
+    },
+  },
+
+  // -------------------------------------------------------------------
+  // Onboarding MCP — anonymous self-serve trial endpoint (ADR-0018)
+  //
+  // The single pre-auth carve-out from the hosted MCP path space: the static
+  // `onboarding` segment is matched before the /mcp/{workspace_id} param
+  // route, so it is NOT a workspace id. Same Streamable HTTP transport as the
+  // hosted endpoint (one URL handling POST/GET/DELETE with an
+  // `mcp-session-id` header); the legacy /mcp/onboarding/sse alias still
+  // resolves.
+  // -------------------------------------------------------------------
+  "/mcp/onboarding": {
+    post: {
+      operationId: "onboardingMcpRequest",
+      summary: "Onboarding MCP — anonymous self-serve trial (start_trial)",
+      description:
+        "Anonymous pre-auth MCP endpoint (ADR-0018). A dedicated, unauthenticated " +
+        "MCP server exposing exactly ONE tool — `start_trial`, which provisions a " +
+        "trial workspace and returns `{ workspaceId, connectUrl, claimUrl, state }`. No bearer " +
+        "token is required (there is no identity yet); after provisioning, clients " +
+        "complete the normal OAuth connect flow against `connectUrl`. " +
+        "Same Streamable HTTP transport as `/mcp/{workspace_id}` — the URL also " +
+        "answers GET (notification stream) and DELETE (session termination), and the " +
+        "legacy `/mcp/onboarding/sse` alias still resolves. " +
+        "SaaS-only: on a self-hosted deploy the handler refuses per-request with a " +
+        "structured 404 (there is no trial funnel to onboard onto). " +
+        "Trial attempts are rate-limited per client IP and per email.",
+      tags: ["MCP"],
+      security: [],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": { schema: { type: "object" } },
+        },
+      },
+      responses: {
+        "200": {
+          description: "JSON-RPC response (or 202 acknowledgment for notifications)",
+          content: { "application/json": { schema: { type: "object" } } },
+        },
+        "404": errorResponse("Not a SaaS deployment, or unknown mcp-session-id"),
+        "500": errorResponse("Onboarding request handling failed (includes requestId)"),
+        "503": errorResponse("Onboarding session cap reached"),
+      },
+    },
+  },
+
   // -------------------------------------------------------------------
   // Hosted MCP — Streamable HTTP transport for MCP clients
   //
@@ -339,6 +409,9 @@ export const staticPaths: Record<string, unknown> = {
         "`workspace_id`. " +
         "Concurrent session count is bounded by `ATLAS_MCP_MAX_SESSIONS` (default 100); " +
         "exceeding it returns `503 too_many_sessions`. " +
+        "The static `onboarding` segment is carved out of this path space — " +
+        "`/mcp/onboarding` is the anonymous self-serve trial endpoint, never a " +
+        "workspace id. " +
         "See the [MCP guide](/guides/mcp) for the full agent-onboarding flow.",
       tags: ["MCP"],
       security: [{ bearerAuth: [] }],

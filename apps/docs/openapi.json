@@ -56693,7 +56693,8 @@
                               "salesforce-knowledge",
                               "intercom",
                               "front",
-                              "helpscout"
+                              "helpscout",
+                              "freshdesk"
                             ]
                           },
                           "description": {

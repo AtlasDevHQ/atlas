@@ -55,7 +55,7 @@ export interface KnowledgeDocumentCounts {
  * "Sync now". Only `bundle-sync` additionally exposes an `endpointUrl` /
  * `authScheme`; connector collections (`notion`, `confluence`,
  * `confluence-datacenter`, `gitbook`, `zendesk`, `salesforce-knowledge`,
- * `intercom`, `front`, `helpscout`) carry neither (their credential is a token — or, for
+ * `intercom`, `front`, `helpscout`, `freshdesk`) carry neither (their credential is a token — or, for
  * `salesforce-knowledge`, the reused OAuth install — not an endpoint).
  */
 export type KnowledgeCollectionSource =
@@ -69,7 +69,8 @@ export type KnowledgeCollectionSource =
   | "salesforce-knowledge"
   | "intercom"
   | "front"
-  | "helpscout";
+  | "helpscout"
+  | "freshdesk";
 
 /**
  * Bundle-endpoint auth schemes for `bundle-sync` collections — the one wire

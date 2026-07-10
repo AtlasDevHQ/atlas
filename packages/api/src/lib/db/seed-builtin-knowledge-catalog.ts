@@ -48,6 +48,7 @@ import {
 } from "@atlas/api/lib/knowledge/salesforce/config";
 import { FRONT_CATALOG_ID, FRONT_SLUG } from "@atlas/api/lib/knowledge/front/config";
 import { HELPSCOUT_CATALOG_ID, HELPSCOUT_SLUG } from "@atlas/api/lib/knowledge/helpscout/config";
+import { FRESHDESK_CATALOG_ID, FRESHDESK_SLUG } from "@atlas/api/lib/knowledge/freshdesk/config";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
@@ -606,6 +607,57 @@ export const BUILTIN_HELPSCOUT_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
   ],
 };
 
+/**
+ * The Freshdesk Solutions connector Knowledge Base catalog row (#4401,
+ * PRD #4395). A form install that enumerates the account's Solutions categories
+ * and creates one review-gated collection per category; the Scheduler
+ * dispatches the registered Freshdesk connector on a cadence (delta-less
+ * reconciliation-diff over a category folder→article tree-walk) and every
+ * synced article translation lands `draft`.
+ *
+ * `api_key` is `secret: true` but is NOT stored in `workspace_plugins.config`
+ * — the install handler routes it to `knowledge_sync_credentials` (encrypted,
+ * one row per category collection). Hosts are composed from the validated
+ * subdomain label (`*.freshdesk.com`), so there is no free-form base-URL field;
+ * every request still goes through the SSRF egress guard. The id/slug are the
+ * config SSOT (`FRESHDESK_CATALOG_ID` / `FRESHDESK_SLUG`).
+ */
+export const BUILTIN_FRESHDESK_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: FRESHDESK_CATALOG_ID,
+  slug: FRESHDESK_SLUG,
+  name: "Knowledge Base (Freshdesk Solutions)",
+  description:
+    "Mirror your Freshdesk Solutions help center into review-gated knowledge collections (one per category); Atlas syncs published articles and their language translations on a schedule and queues changes for review.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "subdomain",
+      type: "string",
+      label: "Freshdesk subdomain",
+      required: true,
+      description:
+        'The "acme" in acme.freshdesk.com (you can paste the full URL). Solutions categories are discovered automatically — one collection per category.',
+    },
+    {
+      key: "api_key",
+      type: "string",
+      secret: true,
+      label: "API key",
+      required: true,
+      description:
+        "Your Freshdesk API key (Profile settings → Your API Key). Stored encrypted; never returned.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this knowledge collection.",
+    },
+  ],
+};
+
 /** Every built-in Knowledge Base catalog row, in seed order. */
 export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatalogRow> = [
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
@@ -619,6 +671,7 @@ export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatal
   BUILTIN_INTERCOM_CATALOG_ROW,
   BUILTIN_FRONT_CATALOG_ROW,
   BUILTIN_HELPSCOUT_CATALOG_ROW,
+  BUILTIN_FRESHDESK_CATALOG_ROW,
 ];
 
 /**

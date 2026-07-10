@@ -61,6 +61,8 @@ import { FrontFormInstallHandler, FRONT_SLUG } from "./front-form-handler";
 import { registerFrontKnowledgeConnector } from "@atlas/api/lib/knowledge/front/connector";
 import { HelpScoutFormInstallHandler, HELPSCOUT_SLUG } from "./helpscout-form-handler";
 import { registerHelpScoutKnowledgeConnector } from "@atlas/api/lib/knowledge/helpscout/connector";
+import { FreshdeskFormInstallHandler, FRESHDESK_SLUG } from "./freshdesk-form-handler";
+import { registerFreshdeskKnowledgeConnector } from "@atlas/api/lib/knowledge/freshdesk/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -367,6 +369,19 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(HELPSCOUT_SLUG, new HelpScoutFormInstallHandler());
   registerHelpScoutKnowledgeConnector();
   log.info("Registered HelpScoutFormInstallHandler + knowledge sync connector");
+  // Knowledge Base (Freshdesk Solutions) — the built-in `freshdesk` connector
+  // install (#4401, PRD #4395). Knowledge-pillar, multi-instance: ONE install
+  // fans out to one collection per SOLUTIONS CATEGORY. Config = account
+  // subdomain + per-category binding; the API key lands in
+  // `knowledge_sync_credentials` (encrypted, one row per category collection),
+  // never in `workspace_plugins.config`. Hosts are composed `*.freshdesk.com`
+  // labels → SSRF gated at install and fetch. Registering the FORM handler +
+  // the CONNECTOR together (as with the other knowledge vendors) keeps a
+  // half-wired deploy from having an installable card whose scheduled sync has
+  // no registered vendor client. No env gate.
+  registerFormHandler(FRESHDESK_SLUG, new FreshdeskFormInstallHandler());
+  registerFreshdeskKnowledgeConnector();
+  log.info("Registered FreshdeskFormInstallHandler + knowledge sync connector");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

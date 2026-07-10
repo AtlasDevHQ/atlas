@@ -258,6 +258,19 @@ The review loop through which AI-proposed changes to the semantic layer become r
 
 - **An Amendment has exactly one workspace owner.** Every path that creates one stamps the workspace it belongs to; a NULL-owner row is legacy self-hosted data — tolerated on read there, never produced anew anywhere.
 
+## Learned query patterns
+
+The capture-and-payoff loop through which SQL query shapes observed in live execution become reusable knowledge for the agent: successful queries are captured as pending patterns, promotion (human or machine) makes them injectable, and relevant approved patterns are injected into future agent prompts. Vocabulary pinned by the learned-patterns elevation grill (2026-07-10, audit `.claude/research/learned-patterns-audit-2026-07-10.md`).
+
+- **Query pattern** — the durable unit of learned query knowledge: a normalized SQL shape captured from a successful live execution, scoped to one workspace and one connection group. Lifecycle `pending → approved | rejected`. The learned-patterns surface shows query patterns **only** — Amendments are a different concept that historically shares the storage table, reviewed exclusively on the improve surface (#4569).
+  _Avoid_: "learned pattern" and "query pattern" as different things (one concept; "learned" describes how it was born); treating an Amendment as a kind of pattern or vice versa.
+
+- **Approval (of a query pattern)** — a human grant of **injection eligibility**: "this pattern is correct — inject it whenever it's relevant." An approved-by-human pattern is always eligible regardless of confidence; relevance still decides which eligible patterns enter a given turn. Approval never rewrites confidence.
+  _Avoid_: stamping a floor confidence on approve (overloads the evidence meter with a trust signal); an approval whose effect the admin cannot observe.
+
+- **Confidence** — the machine's evidence meter for a query pattern, derived from observed repetition. It gates **machine** promotion and ranks retrieval; it is never written by human decisions and never encodes trust. Human approval and machine confidence are the two independent roads to injection eligibility.
+  _Avoid_: reading confidence as correctness or human endorsement; any human action that mutates it.
+
 ## Chat turn presentation
 
 How one agent turn is presented in the chat transcript. A turn has two faces: the **activity** (everything the agent did on the way) and the **answer** (what the turn exists to deliver). Presentation is answer-first: the answer is the visually dominant element; activity is live while the agent works, then settles into a collapsed receipt. Vocabulary pinned by PRD #4292 (answer-first chat turn presentation); the receipt/promotion mechanics shipped with #4298 (finished turns, notebook convergence #4301) and #4300 (live working phase), so the present-tense descriptions below are shipped behavior — remaining #4292 slices (answer styles, editorial voice) note their own status.

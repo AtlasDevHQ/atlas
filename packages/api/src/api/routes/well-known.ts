@@ -1,8 +1,10 @@
 /**
- * `.well-known` metadata endpoints for the OAuth 2.1 / OIDC provider and
- * the MCP resource server (#2024).
+ * `.well-known` endpoints served by the API origin: the OAuth 2.1 / OIDC
+ * provider and MCP resource-server discovery documents (#2024), plus the
+ * other per-origin `.well-known` surfaces — `/agent-configuration` (#4409)
+ * and `/security.txt` (#4467), documented at their routes below.
  *
- * Three routes live here:
+ * The three OAuth/MCP discovery routes:
  *
  *   /.well-known/oauth-authorization-server/api/auth
  *     RFC 8414 — published by the authorization server. Tells clients
@@ -507,8 +509,9 @@ function notFoundAgentConfig(): Response {
 // RFC 9116 is per-origin, and the api/mcp origins are exactly where a
 // researcher who found a vulnerability goes looking for a disclosure
 // contact (#4467). The canonical policy lives on www
-// (apps/www/public/.well-known/security.txt — the SSOT, including the
-// Expires refresh reminder from #1923); every other Atlas-hosted origin
+// (apps/www/public/.well-known/security.txt — the SSOT; its `Expires:`
+// refresh procedure lives in docs/guides/pgp-key-procedure.md, #1923).
+// Every other Atlas-hosted origin
 // redirects there instead of serving a second copy that could drift.
 // RFC 9116 §3 explicitly permits serving the file via redirect.
 //

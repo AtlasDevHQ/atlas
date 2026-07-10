@@ -18,6 +18,7 @@ import {
   afterAll,
   mock,
 } from "bun:test";
+import { readFileSync } from "node:fs";
 
 // ── Mocks ──────────────────────────────────────────────────────────
 
@@ -28,18 +29,19 @@ void mock.module("@atlas/api/lib/auth/detect", () => ({
 }));
 
 // Resolved deploy mode read by the /.well-known/security.txt gate (#4467).
-// `undefined` models a deployment where atlas.config.ts never resolved.
-const mockDeployMode: { current: "saas" | "self-hosted" | undefined } = {
-  current: "self-hosted",
-};
+// Driven through the real config module via `_setConfigForTest` (the
+// health.test.ts pattern) rather than a partial `mock.module` — the real
+// `getConfig()` null path is what the fail-closed test exercises.
+const { _setConfigForTest } = await import("@atlas/api/lib/config");
 
-void mock.module("@atlas/api/lib/config", () => ({
-  getConfig: () =>
-    mockDeployMode.current === undefined
-      ? null
-      : { deployMode: mockDeployMode.current },
-  defineConfig: (c: unknown) => c,
-}));
+function setDeployModeForTest(mode: "saas" | "self-hosted" | undefined) {
+  if (mode === undefined) {
+    _setConfigForTest(null);
+    return;
+  }
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+  _setConfigForTest({ deployMode: mode } as any);
+}
 
 // Well-known.ts dynamically imports the auth instance + the
 // oauth-provider helpers. We stub both with handlers that return a
@@ -106,12 +108,13 @@ const { wellKnown } = await import("../routes/well-known");
 const { Hono } = await import("hono");
 
 afterAll(() => {
+  _setConfigForTest(null);
   mock.restore();
 });
 
 beforeEach(() => {
   mockDetectAuthMode.current = "managed";
-  mockDeployMode.current = "self-hosted";
+  setDeployModeForTest("self-hosted");
 });
 
 async function startServer() {
@@ -363,7 +366,7 @@ describe("well-known — /.well-known/security.txt (#4467)", () => {
   // canonical www copy (the SSOT — RFC 9116 §3 permits redirects) instead
   // of serving a second file that could drift.
   it("302-redirects to the canonical www copy on SaaS deploys", async () => {
-    mockDeployMode.current = "saas";
+    setDeployModeForTest("saas");
     const handle = await startServer();
     try {
       const res = await fetch(`${handle.url}/.well-known/security.txt`, {
@@ -373,13 +376,21 @@ describe("well-known — /.well-known/security.txt (#4467)", () => {
       expect(res.headers.get("location")).toBe(
         "https://www.useatlas.dev/.well-known/security.txt",
       );
+      // ...and the literal above must BE the SSOT's own Canonical URL, so a
+      // move of the canonical policy location fails here and forces the
+      // route to move with it (same drift lock as the docs-origin test in
+      // apps/docs/src/lib/__tests__/security-txt-redirect.test.ts).
+      expect(res.headers.get("location")).toBe(readWwwCanonicalUrl());
+      // Crawler-friendly cache pinned — a refactor that drops the header
+      // (or fat-fingers the TTL) should not pass silently.
+      expect(res.headers.get("cache-control")).toBe("public, max-age=3600");
     } finally {
       await handle.close();
     }
   });
 
   it("does not depend on the auth mode (a researcher probes unauthenticated)", async () => {
-    mockDeployMode.current = "saas";
+    setDeployModeForTest("saas");
     mockDetectAuthMode.current = "none";
     const handle = await startServer();
     try {
@@ -393,7 +404,7 @@ describe("well-known — /.well-known/security.txt (#4467)", () => {
   });
 
   it("404s on self-hosted deploys (Atlas's security contact is not the operator's)", async () => {
-    mockDeployMode.current = "self-hosted";
+    setDeployModeForTest("self-hosted");
     const handle = await startServer();
     try {
       const res = await fetch(`${handle.url}/.well-known/security.txt`);
@@ -406,7 +417,7 @@ describe("well-known — /.well-known/security.txt (#4467)", () => {
   });
 
   it("404s when no config resolved (fails closed to self-hosted behavior)", async () => {
-    mockDeployMode.current = undefined;
+    setDeployModeForTest(undefined);
     const handle = await startServer();
     try {
       const res = await fetch(`${handle.url}/.well-known/security.txt`);
@@ -416,3 +427,24 @@ describe("well-known — /.well-known/security.txt (#4467)", () => {
     }
   });
 });
+
+/**
+ * Read the `Canonical:` URL out of the www SSOT copy
+ * (apps/www/public/.well-known/security.txt) so the redirect target the API
+ * advertises is pinned to the file it points at, not to a second literal.
+ */
+function readWwwCanonicalUrl(): string {
+  // packages/api/src/api/__tests__ -> repo root
+  const ssotPath = new URL(
+    "../../../../../apps/www/public/.well-known/security.txt",
+    import.meta.url,
+  );
+  const body = readFileSync(ssotPath, "utf8");
+  const match = body.match(/^Canonical:\s*(\S+)\s*$/m);
+  if (!match) {
+    throw new Error(
+      "No Canonical field in apps/www/public/.well-known/security.txt — cannot derive the expected redirect target",
+    );
+  }
+  return match[1];
+}

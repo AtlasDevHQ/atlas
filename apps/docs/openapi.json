@@ -56690,7 +56690,8 @@
                               "confluence-datacenter",
                               "gitbook",
                               "zendesk",
-                              "salesforce-knowledge"
+                              "salesforce-knowledge",
+                              "front"
                             ]
                           },
                           "description": {

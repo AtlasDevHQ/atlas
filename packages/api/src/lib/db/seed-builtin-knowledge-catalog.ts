@@ -45,6 +45,7 @@ import {
   SALESFORCE_KNOWLEDGE_CATALOG_ID,
   SALESFORCE_KNOWLEDGE_SLUG,
 } from "@atlas/api/lib/knowledge/salesforce/config";
+import { FRONT_CATALOG_ID, FRONT_SLUG } from "@atlas/api/lib/knowledge/front/config";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
@@ -471,6 +472,48 @@ export const BUILTIN_SALESFORCE_KNOWLEDGE_CATALOG_ROW: BuiltinKnowledgeCatalogRo
   ],
 };
 
+/**
+ * The Front Knowledge Base connector catalog row (#4400, PRD #4395). A form
+ * install that enumerates the company's knowledge bases and creates one
+ * review-gated collection per KB; the Scheduler dispatches the registered Front
+ * connector on a cadence (delta-less reconciliation-diff) and every synced
+ * article locale lands `draft`.
+ *
+ * `api_token` (a Bearer token) is `secret: true` but is NOT stored in
+ * `workspace_plugins.config` — the install handler routes it to
+ * `knowledge_sync_credentials` (encrypted, one row per KB collection). Front's
+ * Core API is a fixed vendor host, so there is no free-form base-URL field;
+ * every request still goes through the SSRF egress guard. The id/slug are the
+ * config SSOT (`FRONT_CATALOG_ID` / `FRONT_SLUG`).
+ */
+export const BUILTIN_FRONT_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: FRONT_CATALOG_ID,
+  slug: FRONT_SLUG,
+  name: "Knowledge Base (Front)",
+  description:
+    "Mirror your Front knowledge bases into review-gated knowledge collections (one per knowledge base); Atlas syncs published articles and their locale translations on a schedule and queues changes for review.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "api_token",
+      type: "string",
+      secret: true,
+      label: "API token",
+      required: true,
+      description:
+        "A Front API token with the knowledge_bases:read scope (Front → Settings → Developers → API tokens). Knowledge bases are discovered automatically — one collection per KB. Stored encrypted; never returned.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this knowledge collection.",
+    },
+  ],
+};
+
 /** Every built-in Knowledge Base catalog row, in seed order. */
 export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatalogRow> = [
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
@@ -481,6 +524,7 @@ export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatal
   BUILTIN_GITBOOK_CATALOG_ROW,
   BUILTIN_ZENDESK_CATALOG_ROW,
   BUILTIN_SALESFORCE_KNOWLEDGE_CATALOG_ROW,
+  BUILTIN_FRONT_CATALOG_ROW,
 ];
 
 /**

@@ -107,6 +107,36 @@ describe("extractProposals", () => {
     expect(extractProposals([userMsg, otherTool])).toEqual([]);
   });
 
+  // #4499 — a card must not offer a decision the server cannot accept. An
+  // `auto_approved` result was already applied in-flow (its `learned_patterns`
+  // row is `approved`), so `/amendments/{id}/review` — which claims
+  // `WHERE status='pending'` — would 404 on it.
+  it("renders an auto_approved result as already applied (no review actions)", () => {
+    const proposals = extractProposals([
+      assistantWithTool(baseInput, { proposalId: "amd-1", status: "auto_approved" }),
+    ]);
+
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({ dbId: "amd-1", decision: "applied" });
+  });
+
+  it("renders a queued result as approvable (decision null)", () => {
+    const proposals = extractProposals([
+      assistantWithTool(baseInput, { proposalId: "amd-1", status: "queued" }),
+    ]);
+
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({ dbId: "amd-1", decision: null });
+  });
+
+  it("renders a result with no status field as approvable (decision null)", () => {
+    const proposals = extractProposals([
+      assistantWithTool(baseInput, { proposalId: "amd-1" }),
+    ]);
+
+    expect(proposals[0]?.decision).toBeNull();
+  });
+
   it("preserves a valid testResult and drops a malformed one", () => {
     const good = extractProposals([
       assistantWithTool(baseInput, {

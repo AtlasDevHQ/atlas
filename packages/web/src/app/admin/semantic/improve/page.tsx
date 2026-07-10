@@ -121,10 +121,15 @@ function ProposalCard({
             </span>
             {decided && (
               <Badge
-                variant={proposal.decision === "accepted" ? "default" : "secondary"}
+                variant={
+                  proposal.decision === "accepted" || proposal.decision === "applied"
+                    ? "default"
+                    : "secondary"
+                }
                 className="text-[10px]"
               >
-                {proposal.decision}
+                {/* "applied" = auto-approved in-flow, already live (#4499) */}
+                {proposal.decision === "applied" ? "auto-approved" : proposal.decision}
               </Badge>
             )}
           </div>

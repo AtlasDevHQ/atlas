@@ -1578,14 +1578,21 @@ export async function insertSemanticAmendment(amendment: {
   confidence: number;
   amendmentPayload: Record<string, unknown>;
   /**
-   * Connection group the amendment targets (ADR-0012, #3284). NULL/omitted =
-   * the default (flat `entities/`) group. Persisted so the admin approve path,
-   * which rebuilds the proposal from the stored row's `source_entity` alone,
-   * can recover the group and apply the amendment against the correct scope
-   * (no 409, no default-scope corruption). The interactive `proposeAmendment`
-   * tool omits it — it reads the flat root, so the default scope is correct.
+   * Connection group the amendment targets (ADR-0012, #3284). NULL = the
+   * default (flat `entities/`) group. Persisted so the admin approve paths,
+   * which rebuild the proposal from the stored row (the group is not
+   * derivable from `source_entity`), can recover the group and apply the
+   * amendment against the correct scope (no 409, no default-scope
+   * corruption). Required so the invariant is compile-enforced, not
+   * doc-enforced: the scheduler and the CLI `improve` command pass the
+   * finding's group (the CLI's flat-root findings map to NULL), and the
+   * interactive `proposeAmendment` tool passes the `applyGroupId` its
+   * baseline was resolved from via `resolveAmendmentBaseline` (#4488, #4498)
+   * — so human-reviewed approves resolve the same scoped row the
+   * propose-time diff was computed against, rather than depending on the
+   * unscoped fallback (which remains only for stale group labels).
    */
-  connectionGroupId?: string | null;
+  connectionGroupId: string | null;
 }): Promise<{ id: string; status: "approved" | "pending" }> {
   // #3392 — thread the amendment's org through so a per-workspace
   // auto-approve override (admin settings page) governs its own proposals.
@@ -1629,7 +1636,7 @@ export async function insertSemanticAmendment(amendment: {
       amendment.confidence,
       status,
       JSON.stringify(amendment.amendmentPayload),
-      amendment.connectionGroupId ?? null,
+      amendment.connectionGroupId,
     ],
   );
 

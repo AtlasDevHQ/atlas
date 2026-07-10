@@ -369,6 +369,10 @@ export async function handleImprove(args: string[]): Promise<void> {
             orgId: null, // CLI runs in single-org mode
             description: `[${r.amendmentType}] ${r.entityName}: ${r.rationale}`,
             sourceEntity: r.entityName,
+            // The CLI analyzes the flat `entities/` dir, so findings are
+            // normally the default (NULL) group; map any explicit group label
+            // the same way the scheduler does (#3284, #4498).
+            connectionGroupId: r.group && r.group !== "default" ? r.group : null,
             confidence: r.confidence,
             amendmentPayload: {
               entityName: r.entityName,

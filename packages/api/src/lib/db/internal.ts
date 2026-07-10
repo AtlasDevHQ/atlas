@@ -1495,6 +1495,27 @@ function requireGetSetting(): (key: string, orgId?: string) => string | undefine
 }
 
 /**
+ * Lazily resolve `isSaasModeForGuard` from the settings module — same
+ * circular-import avoidance as `requireGetSetting` (settings.ts statically
+ * imports db/internal.ts).
+ *
+ * `isSaasModeForGuard()` is the guard-oriented, fail-CLOSED SaaS probe:
+ * `saas` → true, `errored` → true (assume SaaS), `self-hosted`/`unloaded`
+ * → false. The amendment read/review functions below (#4487) use it to
+ * drop the `OR org_id IS NULL` arm on SaaS so a NULL-org ("global scope")
+ * row can never surface in — or be reviewed by — any tenant workspace.
+ * Fail-closed is the secure direction here: if config resolution is
+ * uncertain, we withhold the global rows rather than leak them.
+ */
+function requireIsSaasModeForGuard(): () => boolean {
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency (settings.ts imports db/internal.ts)
+  const { isSaasModeForGuard } = require("@atlas/api/lib/settings") as {
+    isSaasModeForGuard: () => boolean;
+  };
+  return isSaasModeForGuard;
+}
+
+/**
  * Parse the auto-approve threshold. Returns a value > 1 (disabled) if not
  * set or invalid. Single source of truth for the threshold logic.
  *
@@ -1654,11 +1675,17 @@ export async function revertAmendmentToPending(id: string): Promise<boolean> {
 export async function getPendingAmendmentCount(orgId: string | null): Promise<number> {
   if (!hasInternalDB()) return 0;
 
+  const saas = requireIsSaasModeForGuard()();
+  // SaaS: NULL-org ("global scope") rows must never surface in any workspace
+  // (#4487). Refuse the org-less path outright, and below drop the
+  // `OR org_id IS NULL` arm so a workspace only ever counts its own rows.
+  if (saas && !orgId) return 0;
+
   const rows = await internalQuery<{ count: string }>(
     orgId
       ? `SELECT COUNT(*)::text AS count FROM learned_patterns
          WHERE type = 'semantic_amendment' AND status = 'pending'
-         AND (org_id = $1 OR org_id IS NULL)`
+         AND ${saas ? "org_id = $1" : "(org_id = $1 OR org_id IS NULL)"}`
       : `SELECT COUNT(*)::text AS count FROM learned_patterns
          WHERE type = 'semantic_amendment' AND status = 'pending'
          AND org_id IS NULL`,
@@ -1691,12 +1718,17 @@ export type PendingAmendmentRow = Record<string, unknown> & {
 export async function getPendingAmendments(orgId: string | null): Promise<PendingAmendmentRow[]> {
   if (!hasInternalDB()) return [];
 
+  const saas = requireIsSaasModeForGuard()();
+  // SaaS: withhold NULL-org rows from every workspace (#4487) — refuse the
+  // org-less path and drop the `OR org_id IS NULL` arm below.
+  if (saas && !orgId) return [];
+
   return internalQuery<PendingAmendmentRow>(
     orgId
       ? `SELECT id, source_entity, connection_group_id, description, confidence, amendment_payload, created_at::text
          FROM learned_patterns
          WHERE type = 'semantic_amendment' AND status = 'pending'
-         AND (org_id = $1 OR org_id IS NULL)
+         AND ${saas ? "org_id = $1" : "(org_id = $1 OR org_id IS NULL)"}
          ORDER BY created_at DESC`
       : `SELECT id, source_entity, connection_group_id, description, confidence, amendment_payload, created_at::text
          FROM learned_patterns
@@ -1729,12 +1761,18 @@ export async function reviewSemanticAmendment(
     throw new Error("Internal database is not configured. Amendment review requires DATABASE_URL.");
   }
 
+  const saas = requireIsSaasModeForGuard()();
+  // SaaS: a NULL-org row is unreviewable from any workspace (#4487). Refuse
+  // the org-less path (returns null → 404 at the route) and drop the
+  // `OR org_id IS NULL` arm so no tenant admin can approve/reject a global row.
+  if (saas && !orgId) return null;
+
   const rows = await internalQuery<ReviewedAmendmentRow>(
     orgId
       ? `UPDATE learned_patterns
          SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now()
          WHERE id = $3 AND type = 'semantic_amendment' AND status = 'pending'
-         AND (org_id = $4 OR org_id IS NULL)
+         AND ${saas ? "org_id = $4" : "(org_id = $4 OR org_id IS NULL)"}
          RETURNING id, source_entity, amendment_payload`
       : `UPDATE learned_patterns
          SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now()

@@ -5,6 +5,8 @@ import {
   DEFAULT_EXPERT_SCHEDULER_INTERVAL_MS,
 } from "../scheduler";
 import { loadSettings, _resetSettingsCache } from "@atlas/api/lib/settings";
+import type { ResolvedConfig } from "@atlas/api/lib/config";
+import { _setConfigForTest, _resetConfig } from "@atlas/api/lib/config";
 
 // Mock internal DB. `dbAvailable` / `settingsRows` are mutable so the
 // #3392 tests below can seed the settings cache via loadSettings() (the
@@ -67,6 +69,49 @@ describe("isExpertSchedulerEnabled", () => {
   it("returns false for other values", () => {
     process.env.ATLAS_EXPERT_SCHEDULER_ENABLED = "yes";
     expect(isExpertSchedulerEnabled()).toBe(false);
+  });
+});
+
+// #4487 — the scheduler inserts NULL-org ("global scope") amendment rows,
+// which are only sound on self-hosted. In `saas` deploy mode the scheduler is
+// force-disabled regardless of the setting, so it can never produce global
+// rows that would leak into every workspace's pending list.
+describe("isExpertSchedulerEnabled — SaaS boot-guard (#4487)", () => {
+  // Fully-typed `ResolvedConfig` so a `deployMode` typo can't compile silently.
+  function configWithDeployMode(deployMode: "saas" | "self-hosted"): ResolvedConfig {
+    return {
+      datasources: {},
+      tools: ["explore", "executeSQL"],
+      auth: "managed",
+      semanticLayer: "./semantic",
+      maxTotalConnections: 100,
+      source: "file",
+      deployMode,
+    };
+  }
+
+  beforeEach(() => {
+    process.env.ATLAS_EXPERT_SCHEDULER_ENABLED = "true";
+  });
+
+  afterEach(() => {
+    delete process.env.ATLAS_EXPERT_SCHEDULER_ENABLED;
+    _resetConfig();
+  });
+
+  it("returns false in saas deploy mode even when the setting is enabled", () => {
+    _setConfigForTest(configWithDeployMode("saas"));
+    expect(isExpertSchedulerEnabled()).toBe(false);
+  });
+
+  it("returns true in self-hosted deploy mode when the setting is enabled", () => {
+    _setConfigForTest(configWithDeployMode("self-hosted"));
+    expect(isExpertSchedulerEnabled()).toBe(true);
+  });
+
+  it("returns true when config is unloaded (self-hosted default) and the setting is enabled", () => {
+    _resetConfig();
+    expect(isExpertSchedulerEnabled()).toBe(true);
   });
 });
 

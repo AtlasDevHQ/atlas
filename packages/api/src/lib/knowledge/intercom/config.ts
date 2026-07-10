@@ -23,7 +23,15 @@ export const INTERCOM_CATALOG_ID = "catalog:intercom";
 /** Vendor slug stamped into `atlas_source` as `connector:intercom`. */
 export const INTERCOM_VENDOR = "intercom";
 
-/** The Intercom REST base — a fixed vendor host, never customer-supplied. */
+/**
+ * The Intercom REST base — a fixed vendor host, never customer-supplied.
+ *
+ * NOTE: Intercom serves EU/AU data-residency workspaces from regional hosts
+ * (`api.eu.intercom.io`, `api.au.intercom.io`). This slice targets the default
+ * US host only; a token for an EU/AU workspace will 401/403 against it. Regional
+ * host selection is deliberately out of scope here (a future config field), not
+ * an oversight.
+ */
 export const INTERCOM_API_BASE = "https://api.intercom.io";
 
 /**

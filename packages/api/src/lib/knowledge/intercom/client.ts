@@ -391,7 +391,7 @@ function nextPageUrl(pages: RawPages | null | undefined): string | null {
   return `${INTERCOM_API_BASE}/articles?per_page=${PAGE_SIZE}&starting_after=${encodeURIComponent(cursor)}`;
 }
 
-/** Stringify an untrusted vendor id — scalars only (`null`/objects = malformed). */
+/** Stringify an untrusted vendor id — string/number only (anything else = malformed → ""). */
 function idOf(raw: number | string | undefined): string {
   return typeof raw === "number" || typeof raw === "string" ? String(raw) : "";
 }

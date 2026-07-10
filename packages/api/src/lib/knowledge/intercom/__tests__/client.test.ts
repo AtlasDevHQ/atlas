@@ -279,6 +279,37 @@ describe("fetchChanges (incremental reconciliation-diff)", () => {
     const changes = await c.fetchChanges({ since: "2026-07-05T00:00:00.000Z", cursor: null });
     expect(changes.documents).toHaveLength(2);
   });
+
+  it("picks up a translation-only edit: a locale newer than its article bumps the mark AND passes the since filter", async () => {
+    // The delta-less posture's whole point — an edit to a single translation
+    // bumps only the locale's updated_at, NOT the article's. Filtering on the
+    // article timestamp alone would silently drop it.
+    const { c } = client({
+      articles: [
+        {
+          id: 5,
+          state: "published",
+          updated_at: T_JUL1, // article stamp is OLD
+          default_locale: "en",
+          translated_content: {
+            type: "translated_content",
+            en: content({ updated_at: T_JUL1 }),
+            fr: content({ title: "Nouveau", updated_at: T_JUL5 }), // one locale edited later
+          },
+        },
+      ],
+    });
+    // The mark reflects the newest locale, not the stale article stamp.
+    const full = await c.fetchAll();
+    expect(full.highWaterMark).toBe("2026-07-05T08:00:00.000Z");
+    // A since strictly between the two timestamps still selects the article
+    // (its effective updatedAt is the fr locale's), and emits BOTH locales.
+    const inc = await c.fetchChanges({ since: "2026-07-03T00:00:00.000Z", cursor: null });
+    expect(inc.documents.map((d) => d.path).toSorted()).toEqual([
+      "intercom-docs/en/getting-started-5.md",
+      "intercom-docs/fr/nouveau-5.md",
+    ]);
+  });
 });
 
 describe("authentication", () => {
@@ -309,6 +340,16 @@ describe("vendor failure mapping", () => {
     );
     expect(err).toBeInstanceOf(IntercomAuthError);
     expect((err as Error).message).toMatch(/rejected the credentials \(401\)/i);
+  });
+
+  it("maps a 403 (token valid but missing Articles scope) to the same typed auth error", async () => {
+    const { c } = client({ failFirst: { status: 403 } });
+    const err = await c.fetchAll().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(IntercomAuthError);
+    expect((err as Error).message).toMatch(/rejected the credentials \(403\)/i);
   });
 
   it("never leaks the token in an error message", async () => {

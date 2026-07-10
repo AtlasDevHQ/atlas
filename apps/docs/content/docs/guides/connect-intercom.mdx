@@ -9,7 +9,7 @@ import { Steps, Step } from "fumadocs-ui/components/steps";
 An **Intercom** connector mirrors your Intercom help center's articles into a [Knowledge Base](/guides/knowledge-base) collection. Atlas pulls your articles on a schedule, converts each one's HTML body to plain markdown, and queues every article as a **draft** for review — the same review gate as every other knowledge source. Connectors never publish on their own.
 
 <Callout title="Prerequisites">
-The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). The API host is fixed (`api.intercom.io`), so there is no base-URL field. Images and other media are **not** mirrored (text-first); they are replaced with links back to the source article.
+The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). The API host is fixed to Intercom's default US region (`api.intercom.io`); EU/AU data-residency workspaces are not yet supported. Images and other media are **not** mirrored (text-first); they are replaced with links back to the source article.
 </Callout>
 
 ---

@@ -107,7 +107,7 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
     }
 
     // 4. Insert proposals — insertSemanticAmendment resolves status (approved/pending) based on threshold
-    const { insertSemanticAmendment } =
+    const { insertSemanticAmendment, revertAmendmentToPending } =
       await import("@atlas/api/lib/db/internal");
 
     // 5. Process each proposal
@@ -119,7 +119,7 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
         // maps to a NULL `connection_group_id` like everywhere else.
         const connectionGroupId =
           proposal.group && proposal.group !== "default" ? proposal.group : null;
-        const { status } = await insertSemanticAmendment({
+        const { id, status } = await insertSemanticAmendment({
           orgId: null, // global scope for self-hosted
           description: proposal.rationale,
           sourceEntity: proposal.entityName,
@@ -144,9 +144,30 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
               "Auto-approved and applied semantic amendment",
             );
           } catch (applyErr) {
+            // Revert the row so it never lingers as `approved`-but-unapplied —
+            // the invariant "status='approved' ⇒ applied" must hold on this
+            // path too (#4486). Reverting re-queues it for admin review.
+            const reverted = await revertAmendmentToPending(id).catch(
+              (revertErr: unknown) => {
+                log.warn(
+                  {
+                    err: revertErr instanceof Error ? revertErr : new Error(String(revertErr)),
+                    entity: proposal.entityName,
+                    id,
+                  },
+                  "Failed to revert auto-approved amendment to pending after apply failure — row may remain approved-but-unapplied",
+                );
+                return false;
+              },
+            );
             log.warn(
-              { err: applyErr instanceof Error ? applyErr : new Error(String(applyErr)), entity: proposal.entityName },
-              "Failed to apply auto-approved amendment",
+              {
+                err: applyErr instanceof Error ? applyErr : new Error(String(applyErr)),
+                entity: proposal.entityName,
+                id,
+                reverted,
+              },
+              "Failed to apply auto-approved amendment — reverted to pending for admin review",
             );
             result.errors++;
           }

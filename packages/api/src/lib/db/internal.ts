@@ -1622,6 +1622,32 @@ export async function insertSemanticAmendment(amendment: {
 }
 
 /**
+ * Revert an auto-approved semantic amendment back to `pending` after its apply
+ * failed (#4486). `insertSemanticAmendment` stamps eligible rows `approved` at
+ * insert time and both auto-approve paths (the scheduler and the interactive
+ * `proposeAmendment` tool) apply immediately afterward. If that apply throws,
+ * the row must NOT be left `approved` — `approved` is terminal for the pending
+ * queue, so it would leave the invariant "status='approved' ⇒ applied" violated
+ * and the proposal invisible to admins. Reverting to `pending` re-enters it into
+ * the review queue so an admin can retry (and see the same failure). Returns
+ * true when a row was reverted; false when no matching `approved` row exists
+ * (already reviewed / not found) or no internal DB is configured.
+ */
+export async function revertAmendmentToPending(id: string): Promise<boolean> {
+  if (!hasInternalDB()) return false;
+
+  const rows = await internalQuery<{ id: string }>(
+    `UPDATE learned_patterns
+       SET status = 'pending', updated_at = now()
+     WHERE id = $1 AND type = 'semantic_amendment' AND status = 'approved'
+     RETURNING id`,
+    [id],
+  );
+
+  return rows.length > 0;
+}
+
+/**
  * Count pending semantic amendment proposals for an org.
  * Returns 0 when no internal DB is available.
  */

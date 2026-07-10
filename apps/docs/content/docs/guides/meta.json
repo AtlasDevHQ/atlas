@@ -27,6 +27,7 @@
     "connect-zendesk",
     "connect-salesforce-knowledge",
     "connect-intercom",
+    "connect-helpscout",
     "developer-mode",
     "demo-mode",
     "guided-tour",

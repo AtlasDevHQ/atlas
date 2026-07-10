@@ -47,6 +47,7 @@ import {
   SALESFORCE_KNOWLEDGE_SLUG,
 } from "@atlas/api/lib/knowledge/salesforce/config";
 import { FRONT_CATALOG_ID, FRONT_SLUG } from "@atlas/api/lib/knowledge/front/config";
+import { HELPSCOUT_CATALOG_ID, HELPSCOUT_SLUG } from "@atlas/api/lib/knowledge/helpscout/config";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
@@ -561,6 +562,50 @@ export const BUILTIN_FRONT_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
   ],
 };
 
+/**
+ * The Help Scout Docs connector Knowledge Base catalog row (#4398, PRD #4395 —
+ * the simplest install in the support tier). A form install that enumerates the
+ * account's Docs SITES and creates one review-gated collection per site; the
+ * Scheduler dispatches the registered Help Scout connector on a cadence
+ * (`sort=updatedAt` incremental + full reconciliation) and every synced article
+ * lands `draft`.
+ *
+ * `api_key` is `secret: true` but is NOT stored in `workspace_plugins.config` —
+ * the install handler routes it to `knowledge_sync_credentials` (encrypted, one
+ * row per site collection). The Docs API host is a fixed vendor constant
+ * (`docsapi.helpscout.net`), so there is no free-form base-URL field and no
+ * subdomain field (sites are discovered automatically); every request still
+ * goes through the SSRF egress guard. The id/slug are the config SSOT
+ * (`HELPSCOUT_CATALOG_ID` / `HELPSCOUT_SLUG`).
+ */
+export const BUILTIN_HELPSCOUT_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: HELPSCOUT_CATALOG_ID,
+  slug: HELPSCOUT_SLUG,
+  name: "Knowledge Base (Help Scout Docs)",
+  description:
+    "Mirror your Help Scout Docs help center into review-gated knowledge collections (one per site); Atlas syncs published articles on a schedule (incremental + reconciliation) and queues changes for review.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "api_key",
+      type: "string",
+      secret: true,
+      label: "Docs API key",
+      required: true,
+      description:
+        "A Help Scout Docs API key (Help Scout → Your Profile → Authentication → API Keys). Sites are discovered automatically — one collection per Docs site. Stored encrypted; never returned.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this knowledge collection.",
+    },
+  ],
+};
+
 /** Every built-in Knowledge Base catalog row, in seed order. */
 export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatalogRow> = [
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
@@ -573,6 +618,7 @@ export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatal
   BUILTIN_SALESFORCE_KNOWLEDGE_CATALOG_ROW,
   BUILTIN_INTERCOM_CATALOG_ROW,
   BUILTIN_FRONT_CATALOG_ROW,
+  BUILTIN_HELPSCOUT_CATALOG_ROW,
 ];
 
 /**

@@ -59,6 +59,8 @@ import { IntercomFormInstallHandler, INTERCOM_SLUG } from "./intercom-form-handl
 import { registerIntercomKnowledgeConnector } from "@atlas/api/lib/knowledge/intercom/connector";
 import { FrontFormInstallHandler, FRONT_SLUG } from "./front-form-handler";
 import { registerFrontKnowledgeConnector } from "@atlas/api/lib/knowledge/front/connector";
+import { HelpScoutFormInstallHandler, HELPSCOUT_SLUG } from "./helpscout-form-handler";
+import { registerHelpScoutKnowledgeConnector } from "@atlas/api/lib/knowledge/helpscout/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -350,6 +352,21 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(FRONT_SLUG, new FrontFormInstallHandler());
   registerFrontKnowledgeConnector();
   log.info("Registered FrontFormInstallHandler + knowledge sync connector");
+  // Knowledge Base (Help Scout Docs) — the built-in `helpscout` connector
+  // install (#4398, PRD #4395). Knowledge-pillar, multi-instance: ONE install
+  // fans out to one collection per Docs SITE. Config = site id + name (+ optional
+  // subdomain/description); the Docs API key lands in
+  // `knowledge_sync_credentials` (encrypted, one row per site
+  // collection), never in `workspace_plugins.config`. The Docs API host is a
+  // fixed vendor constant (`docsapi.helpscout.net`), so there is no
+  // customer-supplied base URL — every request still routes through the SSRF
+  // egress guard at fetch time. Registering the FORM handler + the CONNECTOR
+  // together (as with the other knowledge vendors) keeps a half-wired deploy
+  // from having an installable card whose scheduled sync has no registered
+  // vendor client. No env gate.
+  registerFormHandler(HELPSCOUT_SLUG, new HelpScoutFormInstallHandler());
+  registerHelpScoutKnowledgeConnector();
+  log.info("Registered HelpScoutFormInstallHandler + knowledge sync connector");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

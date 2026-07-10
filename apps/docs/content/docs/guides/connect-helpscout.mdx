@@ -1,0 +1,98 @@
+---
+title: Connect Help Scout Docs
+description: Mirror your Help Scout Docs help center into review-gated Knowledge Base collections — a single Docs API key, one collection per site, and an updatedAt watermark.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+A **Help Scout Docs** connector mirrors your help center's published articles into [Knowledge Base](/guides/knowledge-base) collections. Atlas pulls articles on a schedule, converts each article's HTML to markdown, and queues every document as a **draft** for review — the same review gate as every other knowledge source. Connectors never publish on their own. This is the simplest connector to install in the support tier: a single Docs API key, no OAuth, no host to configure.
+
+<Callout title="Prerequisites">
+The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). Your account needs at least one **Docs site**. Atlas only ever talks to the fixed Help Scout Docs host (`docsapi.helpscout.net`) — distinct from the Mailbox API. Images and embedded media are **not** mirrored (text-first); they are replaced with links back to the source article.
+</Callout>
+
+---
+
+## Create a Docs API key
+
+Atlas authenticates with a single Help Scout **Docs API key** over HTTP Basic auth (the key is the username; the password is a dummy value).
+
+<Steps>
+<Step>
+In Help Scout, go to **Your Profile → Authentication → API Keys** and generate a key. Give it a recognizable label like `atlas-knowledge`.
+</Step>
+<Step>
+Copy the key immediately, and confirm your account includes **Docs** — the key must have Docs access.
+</Step>
+</Steps>
+
+---
+
+## Install
+
+Navigate to **Admin → Integrations**, choose **Knowledge Base (Help Scout Docs)**, and provide:
+
+- **Docs API key** — stored encrypted at rest; never shown again.
+
+At install time Atlas verifies the key and enumerates your account's **Docs sites**. A bad key, or an account with no Docs site, fails the install **loudly** with an actionable message. On success, collections are created and the first sync is scheduled.
+
+### One collection per site
+
+Help Scout Docs is multi-site, and Atlas mirrors that: the install discovers every **Docs site** and creates one collection per site, so each site's articles are independently searchable with their own review queue.
+
+- An account with one site gets one collection under the plain slug (default `helpscout`).
+- With several sites, each collection is suffixed with the site's subdomain (or its id when it has none): `helpscout-acme`, `helpscout-support`.
+
+<Callout type="warn" title="Adding a site later">
+Sites added after install are not discovered automatically — **re-install the connector** to fan out to new sites (the install is idempotent; existing collections are unaffected). One edge to know: if an account goes from one site to several, the re-install creates site-suffixed collections and the original plain-slug collection stays behind — uninstall it by hand.
+</Callout>
+
+---
+
+## How sync works
+
+Atlas runs two kinds of cycle, decided per collection:
+
+- **Incremental** (the common, cheap cycle) — the Docs article list is fetched **newest-first** (`sort=updatedAt`), so Atlas walks each collection only until it reaches an article at or before the collection's high-water mark, then stops. The list is bodyless, so Atlas fetches the full body of **only the changed articles** — never a full re-download. The Docs API allows roughly 200–400 requests/minute (scaling with site count); Atlas honors `429` / `Retry-After` signals with bounded backoff. Deletions are invisible here.
+- **Reconciliation** (the correctness anchor, weekly by default, and always on the first sync) — enumerates every published article across the site's collections. This is the only cycle that **archives** articles that were deleted or unpublished in Help Scout, and the only one that validates the ingest caps over the full set.
+
+Each collection card shows the last sync's status and time, with a **Sync now** button for an on-demand pull. If a crawl comes back knowingly incomplete (an article vanished between listing and body fetch), Atlas upserts what it got but defers all archiving until a clean crawl — deletions are never inferred from a partial view.
+
+### What syncs — published articles
+
+Only **published** content syncs: the article list is filtered to `status=published`, so an unpublished (`notpublished`) or deleted article is never pulled and is archived on the next reconciliation. Each published article is its own document, filed under its source collection (`helpscout/onboarding/getting-started-<id>.md`).
+
+### Paths, and what a rename does
+
+A document's path is built from its **source collection, title, and article id** (`helpscout/billing/reset-your-password-<id>.md`). Two consequences:
+
+- **Renaming an article's title archives the old path and re-drafts the new one** for re-review — expected churn; nothing is ever hard-deleted.
+- **Moving an article to a different Docs collection changes its path** (old path archived, new one drafted) — the same churn posture.
+
+### HTML, images, and honest conversion
+
+Article HTML converts structurally — headings, lists, tables, code blocks, quotes. Images, videos, iframes, and other embeds **degrade to visible placeholders that link back to the source article** and are counted — never silently dropped (text-first). Relative links inside an article are rewritten to absolute URLs against the article's public URL, so cross-references in mirrored documents stay live.
+
+---
+
+## Review and publish
+
+Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article whose content changes in Help Scout and had already been published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, site, article id, last-modified time) travels with every document so any answer traces back to its help-center article.
+
+---
+
+## Caps and limits
+
+A very large help center can overflow the Knowledge Base ingest caps. When that happens, reconciliation fails with the **actual document count** and names the knob to raise:
+
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` — maximum documents per collection (default 1000).
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` — maximum size of a single document. An oversized document is rejected individually (visible in the sync report) rather than failing the cycle, and its previously-synced version is never archived out from under it.
+
+Raise the cap in the settings registry, or keep sites in separate collections (the default) so each stays under it. The reconciliation cadence is the `ATLAS_KNOWLEDGE_SYNC_RECONCILE_INTERVAL_HOURS` knob (weekly default); the incremental cadence is `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` (nightly default).
+
+---
+
+## Uninstall
+
+Uninstalling a Help Scout collection **archives** its documents (never hard-deletes) and removes the stored key and sync bookkeeping for that site. Re-installing re-syncs it, which brings the archived articles back as drafts for re-review.

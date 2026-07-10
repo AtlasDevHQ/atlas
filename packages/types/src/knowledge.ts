@@ -46,13 +46,16 @@ export interface KnowledgeDocumentCounts {
  *   - `front` — the #4400 Knowledge Sync Connector (a scheduled pull of Front
  *     knowledge bases via a Bearer token; one collection per KB, one document
  *     per published article locale; delta-less reconciliation-diff).
+ *   - `helpscout` — the #4398 Knowledge Sync Connector (a scheduled pull of the
+ *     Help Scout Docs API via a single Docs API key; one collection per Docs
+ *     site, one document per published article).
  *
  * Every value except `upload` is a "synced" collection: its content is owned by
  * an external source, it has last-sync bookkeeping, and it can be re-pulled with
  * "Sync now". Only `bundle-sync` additionally exposes an `endpointUrl` /
  * `authScheme`; connector collections (`notion`, `confluence`,
  * `confluence-datacenter`, `gitbook`, `zendesk`, `salesforce-knowledge`,
- * `intercom`, `front`) carry neither (their credential is a token — or, for
+ * `intercom`, `front`, `helpscout`) carry neither (their credential is a token — or, for
  * `salesforce-knowledge`, the reused OAuth install — not an endpoint).
  */
 export type KnowledgeCollectionSource =
@@ -65,7 +68,8 @@ export type KnowledgeCollectionSource =
   | "zendesk"
   | "salesforce-knowledge"
   | "intercom"
-  | "front";
+  | "front"
+  | "helpscout";
 
 /**
  * Bundle-endpoint auth schemes for `bundle-sync` collections — the one wire

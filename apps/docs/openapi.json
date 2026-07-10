@@ -56692,7 +56692,8 @@
                               "zendesk",
                               "salesforce-knowledge",
                               "intercom",
-                              "front"
+                              "front",
+                              "helpscout"
                             ]
                           },
                           "description": {

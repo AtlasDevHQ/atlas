@@ -300,7 +300,7 @@ How a dashboard is edited and made visible to a team. **Target-state vocabulary*
 
 - **Dashboard**:
   A persistent, shareable grid of **cards** with an optional top-level **parameter bar**. The unit that is created, shared, and published.
-  _Avoid_: "board" (informal only), "report" (a separate shared-conversation concept).
+  _Avoid_: "board" (informal only), "report" (a distinct point-in-time deliverable with no current home — see § Notebooks, retired).
 
 - **Card**:
   The unit on the grid. A **chart card** carries a SQL query + visualization; a **text card** carries markdown (section headers, explainers) and no data.
@@ -357,6 +357,18 @@ How a dashboard is edited and made visible to a team. **Target-state vocabulary*
 - **Publish** is not **refresh**. Publish promotes *definitions* (SQL, layout, config); refresh re-executes a card's SQL to update its *cached data*. A publish that changes SQL must trigger a refresh or the **shared view** shows new definitions over stale data.
 - The **shared view** is data-only by construction, not by redaction-after-the-fact — the public projection is built from a minimal DTO, so a field can't leak by being forgotten. Raw SQL never reaches the wire on this surface.
 - The **shared view** has a single **as-of** instant (decided 2026-07-10): every piece of temporal framing a share viewer sees — parameter chips, "data as of" captions — derives from the shown data's capture instant, never from view time or dashboard creation time. When a refresh updates the rows, all framing moves with them; the page can never contradict itself about what window the numbers cover.
+
+## Notebooks (retired)
+
+The notebook surface was retired on 2026-07-10 ([ADR-0035](./docs/adr/0035-retire-the-notebook-surface.md)), killed in the pre-customer window after its elevation audit. These terms are pinned so the words don't dangle.
+
+- **Notebook**:
+  Retired surface — a cell-based analysis document painted over a chat transcript. Nothing new is built on it: exploration lives in chat; persistent, shareable, agent-built artifacts are **dashboards**.
+  _Avoid_: proposing notebook features; branching/forking a conversation died with the surface, deliberately — it has no successor.
+
+- **Report**:
+  The point-in-time narrated analysis deliverable — linear prose interleaved with evidence, all written about one as-of instant (the *memo*, where a dashboard is the *monitor*). Has **no home in Atlas today**: deferred to a future dashboard extension whose price of admission is a frozen (never-refreshed, as-of-pinned) presentation, because prose cites numbers and refresh moves them out from under it.
+  _Avoid_: "report" for a dashboard, a shared view, or a shared chat transcript (the retired "Share as Report" misnomer — it shipped a raw transcript).
 
 ## MCP & agent governance
 

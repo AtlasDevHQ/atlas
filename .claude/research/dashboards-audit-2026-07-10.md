@@ -379,4 +379,57 @@ walks this list):
 
 ---
 
-**Next: run `/grill-with-docs` with this doc.**
+## Grill outcomes (2026-07-10)
+
+The grill ran same-day and resolved the full agenda. Decisions (vocabulary
+pinned in `CONTEXT.md` § *Dashboard editing*; the two structural ones recorded
+in [ADR-0034](../../docs/adr/0034-dashboard-draft-cache-single-edit-mechanism.md)):
+
+1. **Draft data (Q1)** — both: the draft render/refresh path becomes reachable
+   for draft-only cards (the `getCard` 404 gate yields to draft resolution),
+   AND draft cards carry their own persisted cached data — the **draft cache**
+   (new glossary term). Draft executions never touch published cached data or
+   the Query Cache.
+2. **Exec timing (Q2)** — tool-side seed + lazy fallback: `createDashboard` /
+   bound `addCard` execute each staged card inside the tool call (concurrent,
+   wall-clock-budgeted, fail-soft per card), report per-card outcomes to the
+   agent, and anything unseeded falls back to a canvas-mount draft render.
+   Resolves M2 alongside C1.
+3. **View mode (Q3)** — View is strictly read-only for the definition:
+   Remove/Rename/Duplicate/drag move to Edit; View keeps refresh, fullscreen,
+   CSV, parameters. A browsing gesture must never fork a draft. (Verified
+   during the grill: View-mode mutations were already draft-routed —
+   `routes/dashboards.ts:2082-2093` — so M4's worst case was UX confusion, not
+   data loss.) New glossary term: **View / Edit (canvas modes)**.
+4. **Edit model (Q4)** — collapse into the draft; retire the stage tracker
+   (`dashboard_stage_changes`, two-phase drop). Destructive bound ops land in
+   the draft with inline undo. (Verified during the grill: publish merges the
+   draft only — pending stages were silently stranded, resolving this doc's
+   open question.) Reverses #2365; rationale in ADR-0034.
+5. **Card parity (Q5)** — parity via one shared card union: define the card
+   input union (chart | text, + layout) once in `@useatlas/schemas`; both
+   `createDashboard` and bound `addCard`/`updateCard` consume it.
+6. **Outward face (Q6)** — both link and embed: mirror the conversation embed
+   (`/shared/dashboard/:token/embed`, same any-origin frame-ancestors posture,
+   same token/DTO/revocation) + an Embed tab in the share dialog.
+7. **As-of promise (Q7)** — single as-of contract: all temporal framing on the
+   shared view (parameter chips, captions) derives from the shown data's
+   capture instant; "Captured {creation date}" retires. (#4538 is the
+   fix-invariant piece.)
+8. **Tool scoping (Q8)** — `createDashboard` gates by default to surfaces that
+   own a dashboards route; embed/SDK hosts opt in by supplying a dashboard-URL
+   resolver for the handoff link.
+9. **Creation origin (new, raised in-grill)** — the dashboards surface is a
+   first-class creation origin: "New dashboard" (switcher, empty state) lands
+   on the canvas with the **bound editor open**, and the empty-canvas copy
+   invites building there instead of bouncing to main chat
+   (`new-dashboard-dialog.tsx:104` routes without `?openChat=true`;
+   `page.tsx:1285-1287` points back to main chat). Main-chat `createDashboard`
+   stays as the second origin.
+
+H1's direction was already decided by the pinned Canvas contract
+(`CONTEXT.md`: the canvas "renders the caller's draft when they have one") —
+it's a conform-to-contract fix, not a design question.
+
+**Next: run `/to-prd` from this doc + grill outcomes; `/to-issues` folds in
+the four filed fix-invariant issues as sub-issues of the PRD.**

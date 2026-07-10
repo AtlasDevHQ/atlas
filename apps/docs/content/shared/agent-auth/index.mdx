@@ -1,22 +1,41 @@
 ---
 title: Agent Auth
 description: Capability-based authorization for AI agents on top of OAuth 2.1 — grants, approval strengths, and autonomous-mode caveats.
+audience: shared
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
 Agent Auth is an **experimental** authorization layer for AI agents, built on the
 [Agent Auth Protocol](https://agentauthprotocol.com) and layered on top of Atlas's
-[OAuth 2.1 MCP surface](/guides/mcp). Where OAuth 2.1 answers _"is this token valid for
-this resource?"_, Agent Auth answers _"which narrow capabilities did the user approve,
-with what step-up, for which agent identity?"_
+<AudienceLink saas="/guides/mcp">OAuth 2.1 MCP surface</AudienceLink>.
+
+Where OAuth 2.1 answers _"is this token valid for this resource?"_, Agent Auth answers
+_"which narrow capabilities did the user approve, with what step-up, for which agent
+identity?"_
 
 The whole surface is gated by a single hot-reloadable setting, `ATLAS_AGENT_AUTH_ENABLED`,
 which is **off by default**. When it is off, every agent-auth path and the
 `/.well-known/agent-configuration` discovery document return `404` — there is no reachable
-surface. The operator/workspace on-off model (an operator kill-switch plus a workspace
-opt-out) is documented separately in
-[Agent Auth Enablement](/platform-ops/agent-auth-enablement).
+surface.
+
+<WhenSaaS>
+
+The operator/workspace on-off model (an operator kill-switch plus a workspace opt-out) is
+documented separately in [Agent Auth Enablement](/platform-ops/agent-auth-enablement).
+
+</WhenSaaS>
+
+<WhenSelfHosted>
+
+On a self-hosted deployment you control the switch directly. `ATLAS_AGENT_AUTH_ENABLED`
+lives in the runtime settings registry (default `false`), so you can flip it from the
+Admin console (Settings → MCP) or set the `ATLAS_AGENT_AUTH_ENABLED` environment
+variable — the settings-registry value takes precedence over the env var. The setting
+hot-reloads within seconds; no restart or redeploy is needed. Leave it off unless you are
+actively experimenting with the agent-auth surface.
+
+</WhenSelfHosted>
 
 <Callout type="warn" title="Experimental — pinned to an upstream 0.x spec">
   The Agent Auth Protocol is still in heavy development upstream, and Atlas pins
@@ -29,8 +48,8 @@ opt-out) is documented separately in
 
 You want OAuth 2.1 alone — not Agent Auth — for the common case: a person connecting Claude
 Desktop, Cursor, ChatGPT, or Claude Code to their Atlas workspace and asking questions in a
-session they're watching. That flow is fully covered by the [MCP server](/guides/mcp) and
-needs nothing here.
+session they're watching. That flow is fully covered by the
+<AudienceLink saas="/guides/mcp">MCP server</AudienceLink> and needs nothing here.
 
 Reach for Agent Auth when you need one of the things OAuth scopes can't express:
 
@@ -52,7 +71,7 @@ The two protocols complement rather than compete — OAuth 2.1 establishes the t
 identity, and Agent Auth adds a capability-and-approval model on top. They answer different
 questions:
 
-| | OAuth 2.1 ([MCP guide](/guides/mcp)) | Agent Auth (this page) |
+| | OAuth 2.1 (<AudienceLink saas="/guides/mcp">MCP guide</AudienceLink>) | Agent Auth (this page) |
 |---|---|---|
 | **Question answered** | Is this token valid for this resource? | Which capabilities did the user approve, with what step-up, for which agent? |
 | **Unit of authorization** | Scope (coarse, e.g. `workspace-read`) | Capability (narrow: name, description, JSON-Schema input, optional per-capability `location`) |
@@ -100,8 +119,14 @@ may belong to several workspaces) and carries a *proposed* workspace on its agen
 at each execution the proposal is honored only if that owning user is a live member of it. So an agent bound to workspace A
 can never resolve a capability that reads workspace B's data. That isolation is enforced at
 capability **execution** (`onExecute`), which is the point where the workspace is known and
-membership-verified — see the enforcement discussion in
+membership-verified.
+
+<WhenSaaS>
+
+For the full enforcement discussion, see
 [Agent Auth Enablement](/platform-ops/agent-auth-enablement).
+
+</WhenSaaS>
 
 ## Approval strengths
 
@@ -112,18 +137,19 @@ method, and the write strength differs by deploy tier:
 | Method class | `approvalStrength` (core / AGPL) | `approvalStrength` (enterprise) | What the user does |
 |---|---|---|---|
 | `GET` / `HEAD` (reads) | `session` | `session` | Approve on the existing authenticated session |
-| Non-read methods (`POST` / `PUT` / `PATCH` / `DELETE`, writes) | `session` | `webauthn` | Complete a [passkey](/security/passkeys) / WebAuthn step-up |
+| Non-read methods (`POST` / `PUT` / `PATCH` / `DELETE`, writes) | `session` | `webauthn` | Complete a <AudienceLink saas="/security/passkeys">passkey</AudienceLink> / WebAuthn step-up |
 
 **Reads always approve on the session.** On the **core (AGPL)** build, writes keep the same
 `session` default — there is no WebAuthn enforcement. Only on an **enterprise** deployment
 are write-method capabilities stamped `webauthn` and backed by proof-of-presence, so a write
 requires a live passkey step-up that an autonomous agent cannot self-satisfy. The stronger
 mechanisms — `webauthn` step-up enforcement and CIBA — are
-[enterprise-gated](/platform-ops/agent-auth-enablement); the core surface ships the plugin
-wiring, capability model, JWT verification, and device-authorization approval. This mirrors
-Atlas's broader [approval workflows](/guides/approval-workflows) for write actions. (Recall
-from above that writes are not a reachable surface yet — this policy governs them once they
-are.)
+<AudienceLink saas="/platform-ops/agent-auth-enablement">enterprise-gated</AudienceLink>;
+the core surface ships the plugin wiring, capability model, JWT verification, and
+device-authorization approval. This mirrors Atlas's broader
+<AudienceLink saas="/guides/approval-workflows">approval workflows</AudienceLink> for write
+actions. (Recall from above that writes are not a reachable surface yet — this policy
+governs them once they are.)
 
 <Callout type="info" title="On enterprise, the write step-up is a floor, not a ceiling">
   Where a capability is stamped `webauthn` (enterprise writes), it always requires the
@@ -202,8 +228,8 @@ things to know when reading these rows:
 
 ## See also
 
-- [MCP Server](/guides/mcp) — the OAuth 2.1 + DCR + PKCE surface Agent Auth layers on top of
-- [Agent Auth Enablement](/platform-ops/agent-auth-enablement) — the operator kill-switch and workspace opt-out on-off model
-- [Approval Workflows](/guides/approval-workflows) — approval-gated write actions in the analyst agent
-- [Passkeys](/security/passkeys) — the WebAuthn credentials that back `webauthn` approval strength
+- <AudienceLink saas="/guides/mcp">MCP Server</AudienceLink> — the OAuth 2.1 + DCR + PKCE surface Agent Auth layers on top of
+- <AudienceLink saas="/platform-ops/agent-auth-enablement">Agent Auth Enablement</AudienceLink> — the operator kill-switch and workspace opt-out on-off model
+- <AudienceLink saas="/guides/approval-workflows">Approval Workflows</AudienceLink> — approval-gated write actions in the analyst agent
+- <AudienceLink saas="/security/passkeys">Passkeys</AudienceLink> — the WebAuthn credentials that back `webauthn` approval strength
 - [Agent Auth Protocol](https://agentauthprotocol.com) — the upstream spec

@@ -39,7 +39,7 @@ Atlas runs two kinds of cycle, decided per collection:
 - **Incremental** (the common, cheap cycle) — one indexed `SystemModstamp` query picks up article versions modified since the collection's high-water mark (minus a small overlap window that absorbs clock skew). Deletions are invisible here.
 - **Reconciliation** (the correctness anchor, weekly by default, and always on the first sync) — enumerates every published (`Online`) article version, paging with `queryMore`. This is the only cycle that **archives** articles that were deleted, archived, unpublished, or moved out of the channel scope in Salesforce, and the only one that validates the ingest caps over the full set.
 
-Each collection card shows the last sync's status and time, with a **Sync now** button for an on-demand pull. If the org's daily API request allocation runs out, Salesforce's `REQUEST_LIMIT_EXCEEDED` signal is honored with bounded backoff — the sync backs off and retries rather than erroring the collection.
+Each collection card shows the last sync's status and time, with a **Sync now** button for an on-demand pull. If the org's daily API request allocation runs out, Salesforce's `REQUEST_LIMIT_EXCEEDED` signal is honored with bounded backoff; if the allocation stays exhausted, the sync records an error on the collection and the next scheduled cycle retries — nothing is lost, and no documents are archived off a failed cycle. If a crawl comes back knowingly incomplete (Salesforce returned malformed rows), Atlas upserts what it got but defers all archiving until a clean crawl — deletions are never inferred from a partial view.
 
 ### What syncs — published articles, per language
 
@@ -57,16 +57,16 @@ A document's path is built from its **language, title, and article number** (`sa
 
 ## Review and publish
 
-Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article republished in Salesforce whose Atlas copy was already published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, article id and number, version, locale, sync time, plus a link to the article in Lightning) travels with every document so any answer traces back to its Salesforce article.
+Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article republished in Salesforce whose Atlas copy was already published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, article id and number, version, locale, last-modified time, plus a link to the article in Lightning) travels with every document so any answer traces back to its Salesforce article.
 
 ---
 
 ## Caps and limits
 
-A very large knowledge base can overflow the Knowledge Base ingest caps. When that happens, reconciliation fails with the **actual article count** and names the knob to raise:
+A very large knowledge base can overflow the Knowledge Base ingest caps. When that happens, reconciliation fails with the **actual document count** (one per published language) and names the knob to raise:
 
 - `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` — maximum documents per collection (default 1000).
-- `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` — maximum size of a single document.
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` — maximum size of a single document. An oversized document is rejected individually (visible in the sync report) rather than failing the cycle, and its previously-synced version is never archived out from under it.
 
 Narrow the connector's scope (a single channel, or one article type per collection) or raise the cap in the settings registry. The reconciliation cadence itself is the `ATLAS_KNOWLEDGE_SYNC_RECONCILE_INTERVAL_HOURS` knob (weekly default); the incremental cadence is `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` (nightly default).
 

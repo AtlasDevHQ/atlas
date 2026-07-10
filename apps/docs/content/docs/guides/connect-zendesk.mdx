@@ -46,11 +46,11 @@ At install time Atlas verifies the credentials and enumerates your account's **b
 
 Zendesk is multi-brand, and Atlas mirrors that: the install discovers every **active brand with a Guide help center** and creates one collection per brand, so each brand's articles are independently searchable with their own review queue.
 
-- A single-brand account gets one collection under the plain slug (default `zendesk`).
-- A multi-brand account gets one collection per brand, suffixed with the brand's subdomain (`zendesk-acme`, `zendesk-support`).
+- An account with one help-center-enabled brand gets one collection under the plain slug (default `zendesk`).
+- With several help-center-enabled brands, each collection is suffixed with its brand's subdomain (`zendesk-acme`, `zendesk-support`).
 
 <Callout type="warn" title="Adding a brand later">
-Brands added after install are not discovered automatically — **re-install the connector** to fan out to new brands (the install is idempotent; existing collections are unaffected). One edge to know: if a single-brand account later becomes multi-brand, the re-install creates brand-suffixed collections and the original plain-slug collection stays behind — uninstall it by hand.
+Brands added (or Guide-enabled) after install are not discovered automatically — **re-install the connector** to fan out to new brands (the install is idempotent; existing collections are unaffected). One edge to know: if an account goes from one help-center-enabled brand to several, the re-install creates brand-suffixed collections and the original plain-slug collection stays behind — uninstall it by hand.
 </Callout>
 
 ---
@@ -62,11 +62,11 @@ Atlas runs two kinds of cycle, decided per collection:
 - **Incremental** (the common, cheap cycle) — uses Zendesk's **native incremental article feed**, which reports articles changed since the collection's high-water mark; Atlas then fetches the changed articles' translations. Zendesk caps this feed at **10 requests/minute** — Atlas honors the `429` / `Retry-After` signals with bounded backoff rather than hammering it. Deletions are invisible here.
 - **Reconciliation** (the correctness anchor, weekly by default, and always on the first sync) — enumerates every published article with its translations. This is the only cycle that **archives** articles that were deleted or unpublished (set back to draft in Zendesk), and the only one that validates the ingest caps over the full set.
 
-Each collection card shows the last sync's status and time, with a **Sync now** button for an on-demand pull.
+Each collection card shows the last sync's status and time, with a **Sync now** button for an on-demand pull. If a crawl comes back knowingly incomplete (Zendesk returned malformed entries), Atlas upserts what it got but defers all archiving until a clean crawl — deletions are never inferred from a partial view.
 
 ### What syncs — published articles, per language
 
-Only **published** content syncs: a draft article — or a draft translation of a published article — is never pulled. Each published translation is its own document, filed under its locale (`en-us/getting-started-123.md`, `de/erste-schritte-123.md`), so a multi-language help center mirrors as a per-locale tree.
+Only **published** content syncs: a draft article — or a draft translation of a published article — is never pulled. Each published translation is its own document, filed under its locale (`zendesk/en-us/getting-started-123.md`, `zendesk/de/erste-schritte-123.md`), so a multi-language help center mirrors as a per-locale tree.
 
 ### Paths, and what a rename does
 
@@ -83,16 +83,16 @@ Article HTML converts structurally — headings, lists, tables, code blocks, quo
 
 ## Review and publish
 
-Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article whose content changes in Zendesk and had already been published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, brand, article id, locale, sync time) travels with every document so any answer traces back to its help-center article.
+Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article whose content changes in Zendesk and had already been published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, brand, article id, locale, last-modified time) travels with every document so any answer traces back to its help-center article.
 
 ---
 
 ## Caps and limits
 
-A very large help center can overflow the Knowledge Base ingest caps. When that happens, reconciliation fails with the **actual article count** and names the knob to raise:
+A very large help center can overflow the Knowledge Base ingest caps. When that happens, reconciliation fails with the **actual document count** (one per published translation — a 700-article, 3-locale help center is ~2100 documents) and names the knob to raise:
 
 - `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` — maximum documents per collection (default 1000).
-- `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` — maximum size of a single document.
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` — maximum size of a single document. An oversized document is rejected individually (visible in the sync report) rather than failing the cycle, and its previously-synced version is never archived out from under it.
 
 Raise the cap in the settings registry, or keep brands in separate collections (the default) so each stays under it. The reconciliation cadence itself is the `ATLAS_KNOWLEDGE_SYNC_RECONCILE_INTERVAL_HOURS` knob (weekly default); the incremental cadence is `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` (nightly default).
 

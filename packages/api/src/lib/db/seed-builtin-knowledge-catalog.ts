@@ -41,6 +41,7 @@ import {
 } from "@atlas/api/lib/knowledge/notion/connector";
 import { GITBOOK_CATALOG_ID, GITBOOK_SLUG } from "@atlas/api/lib/knowledge/gitbook/config";
 import { ZENDESK_CATALOG_ID, ZENDESK_SLUG } from "@atlas/api/lib/knowledge/zendesk/config";
+import { INTERCOM_CATALOG_ID, INTERCOM_SLUG } from "@atlas/api/lib/knowledge/intercom/config";
 import {
   SALESFORCE_KNOWLEDGE_CATALOG_ID,
   SALESFORCE_KNOWLEDGE_SLUG,
@@ -473,6 +474,52 @@ export const BUILTIN_SALESFORCE_KNOWLEDGE_CATALOG_ROW: BuiltinKnowledgeCatalogRo
 };
 
 /**
+ * The Intercom connector Knowledge Base catalog row (#4399, PRD #4395). A form
+ * install that mirrors the workspace's Intercom Articles into a review-gated
+ * collection; the Scheduler dispatches the registered Intercom connector on a
+ * cadence and every synced article translation lands `draft`.
+ *
+ * Intercom has no server-side change feed and no multi-brand concept, so this is
+ * the tier's simplest install: a single `access_token` plus an optional
+ * description — one workspace maps to one collection, and the connector
+ * reconciliation-diffs `updated_at` against the high-water mark each cycle.
+ *
+ * `access_token` is `secret: true` but is NOT stored in
+ * `workspace_plugins.config` — the install handler routes it to
+ * `knowledge_sync_credentials` (encrypted). The Intercom API host is a fixed
+ * vendor constant, so there is no base-URL field; every request still goes
+ * through the SSRF egress guard at fetch time. The id/slug are the config SSOT
+ * (`INTERCOM_CATALOG_ID` / `INTERCOM_SLUG`).
+ */
+export const BUILTIN_INTERCOM_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: INTERCOM_CATALOG_ID,
+  slug: INTERCOM_SLUG,
+  name: "Knowledge Base (Intercom)",
+  description:
+    "Mirror your Intercom help center's published articles (all locales) into a review-gated knowledge collection; Atlas syncs on a schedule and queues changes for review.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "access_token",
+      type: "string",
+      secret: true,
+      label: "Access token",
+      required: true,
+      description:
+        "An Intercom access token (Settings → Developers → your app → Authentication). Stored encrypted; never returned.",
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this knowledge collection.",
+    },
+  ],
+};
+
+/**
  * The Front Knowledge Base connector catalog row (#4400, PRD #4395). A form
  * install that enumerates the company's knowledge bases and creates one
  * review-gated collection per KB; the Scheduler dispatches the registered Front
@@ -524,6 +571,7 @@ export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatal
   BUILTIN_GITBOOK_CATALOG_ROW,
   BUILTIN_ZENDESK_CATALOG_ROW,
   BUILTIN_SALESFORCE_KNOWLEDGE_CATALOG_ROW,
+  BUILTIN_INTERCOM_CATALOG_ROW,
   BUILTIN_FRONT_CATALOG_ROW,
 ];
 

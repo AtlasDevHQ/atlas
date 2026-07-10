@@ -55,6 +55,8 @@ import {
   SALESFORCE_KNOWLEDGE_SLUG,
 } from "./salesforce-knowledge-form-handler";
 import { registerSalesforceKnowledgeConnector } from "@atlas/api/lib/knowledge/salesforce/connector";
+import { IntercomFormInstallHandler, INTERCOM_SLUG } from "./intercom-form-handler";
+import { registerIntercomKnowledgeConnector } from "@atlas/api/lib/knowledge/intercom/connector";
 import { FrontFormInstallHandler, FRONT_SLUG } from "./front-form-handler";
 import { registerFrontKnowledgeConnector } from "@atlas/api/lib/knowledge/front/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
@@ -321,6 +323,21 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(SALESFORCE_KNOWLEDGE_SLUG, new SalesforceKnowledgeFormInstallHandler());
   registerSalesforceKnowledgeConnector();
   log.info("Registered SalesforceKnowledgeFormInstallHandler + knowledge sync connector");
+  // Knowledge Base (Intercom) — the built-in `intercom` connector install
+  // (#4399, PRD #4395). Knowledge-pillar, multi-instance: ONE workspace maps to
+  // ONE collection (Intercom has no multi-brand concept). Config = an optional
+  // description; the access token lands in `knowledge_sync_credentials`
+  // (encrypted), never in `workspace_plugins.config`. Intercom exposes no
+  // server-side change feed, so the connector reconciliation-diffs `updated_at`
+  // against the high-water mark; the API host is a fixed vendor constant, so
+  // there is no base URL — every request still routes through the SSRF egress
+  // guard at fetch time. Registering the FORM handler + the CONNECTOR together
+  // (as with the other knowledge vendors) keeps a half-wired deploy from having
+  // an installable card whose scheduled sync has no registered vendor client.
+  // No env gate.
+  registerFormHandler(INTERCOM_SLUG, new IntercomFormInstallHandler());
+  registerIntercomKnowledgeConnector();
+  log.info("Registered IntercomFormInstallHandler + knowledge sync connector");
   // Knowledge Base (Front) — the built-in `front` connector install (#4400,
   // PRD #4395). Knowledge-pillar, multi-instance: ONE install fans out to one
   // collection per KNOWLEDGE BASE. Config = per-KB binding; the Bearer API token

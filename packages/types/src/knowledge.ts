@@ -38,6 +38,11 @@ export interface KnowledgeDocumentCounts {
  *     SOQL pull of published Salesforce Knowledge article versions over the
  *     workspace's EXISTING Salesforce OAuth install — no credential of its
  *     own; one document per published article-version language).
+ *   - `intercom` — the #4399 Knowledge Sync Connector (a scheduled full-walk
+ *     pull of the workspace's Intercom Articles via an access token; one
+ *     collection per workspace, one document per published article locale.
+ *     Intercom has no server-side change feed, so the connector
+ *     reconciliation-diffs `updated_at` against the high-water mark).
  *   - `front` — the #4400 Knowledge Sync Connector (a scheduled pull of Front
  *     knowledge bases via a Bearer token; one collection per KB, one document
  *     per published article locale; delta-less reconciliation-diff).
@@ -47,7 +52,7 @@ export interface KnowledgeDocumentCounts {
  * "Sync now". Only `bundle-sync` additionally exposes an `endpointUrl` /
  * `authScheme`; connector collections (`notion`, `confluence`,
  * `confluence-datacenter`, `gitbook`, `zendesk`, `salesforce-knowledge`,
- * `front`) carry neither (their credential is a token — or, for
+ * `intercom`, `front`) carry neither (their credential is a token — or, for
  * `salesforce-knowledge`, the reused OAuth install — not an endpoint).
  */
 export type KnowledgeCollectionSource =
@@ -59,6 +64,7 @@ export type KnowledgeCollectionSource =
   | "gitbook"
   | "zendesk"
   | "salesforce-knowledge"
+  | "intercom"
   | "front";
 
 /**

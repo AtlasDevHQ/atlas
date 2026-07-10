@@ -26,6 +26,7 @@
     "connect-gitbook",
     "connect-zendesk",
     "connect-salesforce-knowledge",
+    "connect-intercom",
     "developer-mode",
     "demo-mode",
     "guided-tour",

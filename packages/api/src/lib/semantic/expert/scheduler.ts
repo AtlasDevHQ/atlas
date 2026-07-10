@@ -6,7 +6,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { getSetting } from "@atlas/api/lib/settings";
+import { getSetting, isSaasModeForGuard } from "@atlas/api/lib/settings";
 
 const log = createLogger("semantic-expert-scheduler");
 
@@ -32,8 +32,17 @@ export interface ExpertTickResult {
  * default). Consumed once at boot — changes require a restart
  * (`requiresRestart` in the registry); the scheduler layer sequences
  * after `loadSettings()` so the DB override is visible here.
+ *
+ * SaaS boot-guard (#4487): the scheduler's proposals are inserted with
+ * `orgId: null` ("global scope for self-hosted"). A NULL-org row is only
+ * sound on self-hosted; on SaaS it is the leak vector — no workspace should
+ * ever produce global amendment rows. So the scheduler is force-disabled in
+ * `saas` deploy mode regardless of the setting. Fail-CLOSED
+ * (`isSaasModeForGuard` treats `errored` as SaaS) is the safe direction:
+ * if we cannot confirm we're self-hosted, do not produce global rows.
  */
 export function isExpertSchedulerEnabled(): boolean {
+  if (isSaasModeForGuard()) return false;
   const v = getSetting("ATLAS_EXPERT_SCHEDULER_ENABLED");
   return v === "true" || v === "1";
 }

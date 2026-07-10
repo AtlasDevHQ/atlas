@@ -160,6 +160,46 @@ This is deliberately narrow: a long-lived grant for _"read the daily-orders summ
 very different risk than a standing `webauthn` bypass, and Agent Auth only offers the
 former.
 
+## Audit trail
+
+Every significant mutation in the agent lifecycle — register → enroll → request →
+approve/deny → execute → revoke — writes a row to the workspace's admin action log, the
+same log every other admin surface writes to. The rows carry `agent.*` action types:
+
+| Action | Written when |
+|---|---|
+| `agent.register` | An agent identity is registered |
+| `agent.revoke` | An agent identity is revoked |
+| `agent.host.enroll` | An agent is enrolled to a host |
+| `agent.host.revoke` | A host enrollment is revoked (metadata records how many agents it covered) |
+| `agent.capability.request` | A capability grant is requested (metadata records the requested capabilities and whether approval is pending or was auto-approved) |
+| `agent.capability.approve` | A capability grant is approved |
+| `agent.capability.deny` | A capability grant is denied — a normal decision outcome, so the row's status is still `success` |
+| `agent.capability.revoke` | A capability grant is revoked (metadata records the revoked grant ids) |
+| `agent.capability.execute` | A granted capability is executed — see the sampling note below |
+
+The row's target id is the agent id (the host id for the two `agent.host.*` actions). A few
+things to know when reading these rows:
+
+- **Identity lives in the row's metadata, not its columns.** These events fire from the
+  auth layer, outside a normal Atlas request, so the log's `actor` / workspace columns read
+  `unknown`. The trustworthy identifiers travel in the row metadata instead: `actorId` (the
+  owning or approving user), `actorType`, `agentId`, `hostId`, and `orgId` when the event
+  carries one; execute rows add `userId`.
+- **Execution is summarized, never per-call.** Successful executes are high-volume, so one
+  `agent.capability.execute` row is written per 25 successful executions of the same
+  agent + capability pair, with `metadata.representedExecuteCount` recording how many calls
+  the row stands for and `metadata.sampled: true` marking it a summary. Execute **failures**
+  bypass the sampler — every failure writes a row with status `failure` and a scrubbed,
+  truncated error message.
+- **Capability arguments and output are never recorded.** They can carry customer SQL and
+  query results, so only the capability name and the outcome are auditable.
+- **Off means silent.** When `ATLAS_AGENT_AUTH_ENABLED` is off (the default — this surface
+  is experimental), no `agent.*` row is ever written, matching the rest of the surface
+  returning `404`. And because Agent Auth is pinned to an upstream `0.x` spec, lifecycle
+  events outside the catalog above (agent updates, key rotations, …) are deliberately not
+  audited yet.
+
 ## See also
 
 - [MCP Server](/guides/mcp) — the OAuth 2.1 + DCR + PKCE surface Agent Auth layers on top of

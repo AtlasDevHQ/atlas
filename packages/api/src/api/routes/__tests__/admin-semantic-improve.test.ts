@@ -258,7 +258,12 @@ describe("admin-semantic-improve", () => {
     });
 
     it("approves a proposal: applies the YAML then flips the same row to approved (one identity)", async () => {
-      mockPendingAmendments = [row("amd-1")];
+      // Group-scoped row: the route must thread the STORED row's
+      // `connection_group_id` into the apply (#4498) — an interactive
+      // proposeAmendment row persists the group its baseline was resolved
+      // from, and dropping it here would send the apply through the
+      // default-scope → unscoped-fallback path (409 on ambiguous names).
+      mockPendingAmendments = [{ ...row("amd-1"), connection_group_id: "eu_prod" }];
 
       const res = await adminSemanticImprove.request("/amendments/amd-1/review", {
         method: "POST",
@@ -270,9 +275,14 @@ describe("admin-semantic-improve", () => {
       const body = (await res.json()) as { ok: boolean; id: string; decision: string };
       expect(body).toEqual({ ok: true, id: "amd-1", decision: "approved" });
 
-      // YAML applied from the row's payload before the status flip.
+      // YAML applied from the row's payload before the status flip — scoped to
+      // the row's own Connection group, never NULL for a group-scoped row.
       expect(applyPayloadCalls).toHaveLength(1);
-      expect(applyPayloadCalls[0]).toMatchObject({ sourceEntity: "orders", label: "amd-1" });
+      expect(applyPayloadCalls[0]).toMatchObject({
+        sourceEntity: "orders",
+        label: "amd-1",
+        connectionGroupId: "eu_prod",
+      });
 
       // The same learned_patterns row is flipped to approved — no stale
       // pending row left behind.

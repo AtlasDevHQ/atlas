@@ -216,9 +216,10 @@ The amendment object should match the YAML structure for that type (e.g., { name
           amendmentPayload: payload as unknown as Record<string, unknown>,
           // Persist the group the baseline was resolved from (the row's OWN
           // `connection_group_id`) so a HUMAN-reviewed approve — which applies
-          // with the stored row's group (admin-semantic-improve.ts) — targets
-          // the same row this diff was computed against, instead of falling
-          // back to unscoped resolution (409 on ambiguous names) (#4498).
+          // with the stored row's group via `applyAmendmentFromPayload`, the
+          // seam every admin approve path shares — targets the same row this
+          // diff was computed against, instead of falling back to unscoped
+          // resolution (409 on ambiguous names) (#4498).
           connectionGroupId: applyGroupId,
         });
 

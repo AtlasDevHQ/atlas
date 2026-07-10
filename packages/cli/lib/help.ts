@@ -213,6 +213,10 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
         flag: "--connection <id>",
         description: "Query a specific datasource",
       },
+      {
+        flag: "--api-key <key>",
+        description: "Use a workspace API key instead of your `atlas login` session (also: ATLAS_API_KEY)",
+      },
     ],
     examples: [
       'atlas query "How many users signed up last month?"',
@@ -240,6 +244,10 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       {
         flag: "--csv",
         description: "CSV output (headers + rows, pipe-friendly)",
+      },
+      {
+        flag: "--api-key <key>",
+        description: "Use a workspace API key instead of your `atlas login` session (also: ATLAS_API_KEY)",
       },
     ],
     examples: [
@@ -480,6 +488,7 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       { flag: "--schema <s>", description: "(create) Schema to scope to (e.g. a Postgres schema)" },
       { flag: "--group <id>", description: "(create) Attach to an existing environment/group" },
       { flag: "--new-group <name>", description: "(create) Create a new inline environment/group" },
+      { flag: "--api-key <key>", description: "Use a workspace API key instead of your `atlas login` session (also: ATLAS_API_KEY)" },
     ],
     examples: [
       "atlas datasource list",
@@ -514,6 +523,7 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     flags: [
       { flag: "--connection <id>", description: "Run against a specific datasource in the metric's group" },
       { flag: "--json", description: "Machine-readable JSON output" },
+      { flag: "--api-key <key>", description: "Use a workspace API key instead of your `atlas login` session (also: ATLAS_API_KEY)" },
     ],
     examples: [
       "atlas metric run total_gmv",
@@ -619,11 +629,37 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
         description:
           "Run the full agent loop (slower, nondeterministic) instead of calling typed semantic-layer reads directly",
       },
+      {
+        flag: "--mcp-llm",
+        description:
+          "Dispatch each question through the real MCP route via an LLM (mutually exclusive with --llm)",
+      },
+      {
+        flag: "--baseline <path>",
+        description:
+          "Override the per-question latency baseline file for --mcp-llm runs (default: eval/canonical-questions/mcp-llm-baseline.json)",
+      },
+      {
+        flag: "--write-baseline",
+        description:
+          "Write the run's per-question latencies back to the baseline file (only with --mcp-llm)",
+      },
+      {
+        flag: "--tool-selection",
+        description:
+          "Run the held-out tool-selection grader instead of the question set (requires --mcp-llm)",
+      },
+      {
+        flag: "--tool-selection-fixture <path>",
+        description:
+          "Override the tool-selection fixture path (default: eval/canonical-questions/tool-selection.json)",
+      },
       { flag: "--json", description: "JSON summary output" },
     ],
     examples: [
       "atlas canonical-eval",
       "atlas canonical-eval --llm",
+      "atlas canonical-eval --mcp-llm --write-baseline",
     ],
   },
   smoke: {

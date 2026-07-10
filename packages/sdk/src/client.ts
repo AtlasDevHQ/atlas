@@ -155,6 +155,24 @@ export interface QueryResponse {
   steps: number;
   usage: { totalTokens: number };
   conversationId?: string;
+  /**
+   * Identifier of the underlying agent run. Present whenever the agent loop
+   * ran; useful for correlating with durable-session records and server logs.
+   */
+  runId?: string;
+  /**
+   * Set when one or more SQL queries matched an approval rule and were
+   * enqueued for admin approval instead of executed. The run is NOT a
+   * complete answer in this case — the queued query runs only after
+   * approval. `requestId` is null when no approval-queue row could be
+   * created.
+   */
+  pendingApproval?: {
+    requestId: string | null;
+    ruleName: string;
+    matchedRules: string[];
+    message: string;
+  };
   pendingActions?: Array<{
     id: string;
     type: string;

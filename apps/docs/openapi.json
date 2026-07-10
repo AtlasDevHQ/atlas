@@ -2387,6 +2387,44 @@
                         "totalTokens"
                       ]
                     },
+                    "conversationId": {
+                      "type": "string",
+                      "description": "Conversation the question and answer were persisted to. Present when the deployment has an internal database and persistence succeeded — either the (verified) conversationId from the request, or a newly created conversation. Absent when there is no internal database or persistence failed."
+                    },
+                    "runId": {
+                      "type": "string",
+                      "description": "Identifier of the underlying agent run. Present whenever the agent loop ran; useful for correlating with durable-session records and server logs."
+                    },
+                    "pendingApproval": {
+                      "type": "object",
+                      "properties": {
+                        "requestId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ruleName": {
+                          "type": "string"
+                        },
+                        "matchedRules": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "requestId",
+                        "ruleName",
+                        "matchedRules",
+                        "message"
+                      ],
+                      "description": "Set when one or more SQL queries matched an approval rule and were enqueued for admin approval instead of executed. The run is NOT a complete answer in this case — the queued query runs only after approval. requestId is null when no approval-queue row could be created."
+                    },
                     "pendingActions": {
                       "type": "array",
                       "items": {

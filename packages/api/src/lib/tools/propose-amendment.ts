@@ -231,8 +231,9 @@ The amendment object should match the YAML structure for that type (e.g., { name
       let status: "queued" | "auto_approved";
 
       if (hasInternalDB()) {
+        const orgId = getRequestContext()?.user?.activeOrganizationId ?? null;
         const result = await insertSemanticAmendment({
-          orgId: getRequestContext()?.user?.activeOrganizationId ?? null,
+          orgId,
           description: `[${amendmentType}] ${entityName}: ${rationale}`,
           sourceEntity: entityName,
           confidence,
@@ -240,7 +241,71 @@ The amendment object should match the YAML structure for that type (e.g., { name
         });
 
         proposalId = result.id;
-        status = result.status === "approved" ? "auto_approved" : "queued";
+
+        if (result.status === "approved") {
+          // Auto-approve resolved this to `approved` at insert time. `approved`
+          // is terminal for the pending queue, so — exactly like the scheduler
+          // path (semantic/expert/scheduler.ts) — we MUST apply it now, or the
+          // row claims applied while the semantic layer is unchanged and the
+          // diff shown to the user is fiction (#4486). On apply failure, revert
+          // the row to `pending` so the invariant "status='approved' ⇒ applied"
+          // holds and an admin still sees the proposal in the review queue.
+          try {
+            // Dynamic imports (matching the scheduler + admin approve path):
+            // keeps the apply/revert seam out of this tool's static graph, so
+            // the many partial `mock.module("…/db/internal")` test stubs that
+            // don't exercise the auto-approve branch don't have to add the
+            // export just to link.
+            const { applyAmendmentFromPayload } = await import(
+              "@atlas/api/lib/semantic/expert/apply"
+            );
+            await applyAmendmentFromPayload({
+              orgId,
+              sourceEntity: entityName,
+              // Interactive proposals read the flat semantic root, so the
+              // default (NULL) Connection group is the correct apply scope.
+              connectionGroupId: null,
+              // `rawPayload` is typed `unknown`, so the AmendmentPayload passes
+              // through directly (matches the admin approve call sites).
+              rawPayload: payload,
+              requestId: getRequestContext()?.requestId ?? `propose-${Date.now()}`,
+              label: proposalId,
+            });
+            status = "auto_approved";
+          } catch (applyErr) {
+            // Surface the failure: revert the row so it never lingers as
+            // `approved`-but-unapplied, and log — never swallow.
+            const { revertAmendmentToPending } = await import(
+              "@atlas/api/lib/db/internal"
+            );
+            const reverted = await revertAmendmentToPending(proposalId).catch(
+              (revertErr: unknown) => {
+                log.error(
+                  {
+                    err: revertErr instanceof Error ? revertErr.message : String(revertErr),
+                    proposalId,
+                    entityName,
+                  },
+                  "Failed to revert auto-approved amendment to pending after apply failure — row may remain approved-but-unapplied",
+                );
+                return false;
+              },
+            );
+            log.warn(
+              {
+                err: applyErr instanceof Error ? applyErr.message : String(applyErr),
+                entityName,
+                amendmentType,
+                proposalId,
+                reverted,
+              },
+              "Auto-approved amendment failed to apply — reverted to pending for admin review",
+            );
+            status = "queued";
+          }
+        } else {
+          status = "queued";
+        }
       } else {
         proposalId = `local-${Date.now()}`;
         status = "queued";

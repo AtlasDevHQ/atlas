@@ -238,6 +238,9 @@ The review loop through which AI-proposed changes to the semantic layer become r
 - **Baseline profile / LLM profile** — the two tracked tiers of knowing a connection. The baseline profile is cheap and deterministic (schema, types, counts, samples) and runs automatically when a profilable connection is created (REST datasources excluded). The LLM profile is the enrichment pass — never automatic, billing-gated, tracked per connection (when, over what).
   _Avoid_: one boolean "profiled"; running LLM enrichment implicitly.
 
+- **Live diff** — the diff an admin reviews, always computed against the entity's *current* baseline at render time. The propose-time diff stored on an Amendment is a record of intent, never the thing approved. A baseline that changes mid-review means one more human look at an updated live diff — a continuation of review, not an error.
+  _Avoid_: approving the stored diff; auto-rebasing or "compatible change" heuristics (a changed baseline always gets a human look).
+
 ### Anti-confusions
 
 - **Amendments refine; enrich grows.** Nothing an Amendment can do adds an entity or expands the queryable table set — that containment is what makes auto-approve and the scheduler safe to contemplate. A column or table with **no** semantic coverage is shown honestly as uncovered and routes to the enrich flow (a human-initiated act with whitelist consequences), never to an "add entity" amendment type.

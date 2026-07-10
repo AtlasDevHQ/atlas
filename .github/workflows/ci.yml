@@ -153,6 +153,12 @@ jobs:
       - name: Check apex agent-discovery artifacts drift (auth.md + oauth-protected-resource)
         run: bash scripts/check-apex-discovery-drift.sh
 
+      - name: Check docs internal links + anchors (#4480)
+        run: bun scripts/check-docs-links.ts
+
+      - name: Test the docs-links gate itself (adversarial fixtures)
+        run: bash scripts/__tests__/check-docs-links.test.sh
+
   lint:
     name: lint
     runs-on: ubuntu-latest

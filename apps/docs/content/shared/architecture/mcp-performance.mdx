@@ -7,7 +7,7 @@ description: Latency curves, throughput at saturation, bottleneck analysis, and 
 
 ## Why this page exists
 
-`ATLAS_MCP_MAX_SESSIONS=100` is the documented default ([env vars](/reference/environment-variables#mcp)). The number reflected operational feel — Railway's `numReplicas: 1` constraint plus the in-memory session map plus a "feels safe" guess. Issue [#2070](https://github.com/AtlasDevHQ/atlas/issues/2070) asked the obvious follow-up: **has anyone actually measured it?** And: where does the curve break?
+`ATLAS_MCP_MAX_SESSIONS=100` is the documented default ([env vars](/reference/environment-variables#mcp-transport)). The number reflected operational feel — Railway's `numReplicas: 1` constraint plus the in-memory session map plus a "feels safe" guess. Issue [#2070](https://github.com/AtlasDevHQ/atlas/issues/2070) asked the obvious follow-up: **has anyone actually measured it?** And: where does the curve break?
 
 This page is the answer. The first enterprise prospect who asks "can your hosted MCP endpoint handle 500 concurrent agents?" gets a measured response with the bottleneck identified and the tuning lever surfaced — not a hand-wave.
 

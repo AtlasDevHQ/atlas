@@ -86,7 +86,7 @@ promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
 `plugin-count`, `enforcement-parity`, `schema-drift`, `migration-rename`,
 `oauth-helper-drift`, `ee-imports`, `twenty-resolver`, `no-admin-plugin`,
 `no-legacy-connections`, `test-discipline`, `settings-readers`, `saas-env-doc`,
-`auth-md-parity`, `openapi-drift`, `gate-fixtures` (the adversarial
+`docs-links`, `auth-md-parity`, `openapi-drift`, `gate-fixtures` (the adversarial
 `scripts/__tests__/*.test.sh` suites), `published-symbols`, `unpublished-versions`,
 and the full `test` suite.
 

@@ -15,7 +15,7 @@ On [app.useatlas.dev](https://app.useatlas.dev), multi-tenancy is built in. Your
 
 <WhenSelfHosted>
 <Callout title="Self-hosted prerequisites">
-- [Managed auth](/self-hosted/deployment/authentication#managed-auth) enabled (`BETTER_AUTH_SECRET` set)
+- [Managed auth](/self-hosted/deployment/authentication#managed-auth-self-hosted-setup) enabled (`BETTER_AUTH_SECRET` set)
 - An internal database (`DATABASE_URL`) — organizations and their data are stored here
 - At least one analytics datasource (`ATLAS_DATASOURCE_URL`)
 </Callout>
@@ -416,7 +416,7 @@ LRU eviction automatically frees pools for inactive orgs, but under sustained lo
 
 ## See Also
 
-- <AudienceLink selfHosted="/self-hosted/deployment/authentication#managed-auth">Authentication</AudienceLink> — Set up managed auth (required for organizations)
+- <AudienceLink selfHosted="/self-hosted/deployment/authentication#managed-auth-self-hosted-setup">Authentication</AudienceLink> — Set up managed auth (required for organizations)
 - <AudienceLink saas="/guides/admin-console">Admin Console</AudienceLink> — Manage organizations, members, and connections via the web UI
 - <AudienceLink saas="/deployment/multi-datasource">Multi-Datasource Routing</AudienceLink> — Configure multiple databases per deployment
 - [Configuration Reference](/reference/config) — All `atlas.config.ts` fields including `pool.perOrg`

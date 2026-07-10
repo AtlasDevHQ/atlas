@@ -306,15 +306,18 @@ grep -rP '@atlas/web|@atlas/cli|@atlas/mcp' apps/docs/content/ --include='*.mdx'
 
 ### I2. Dead Links (Internal)
 
-```bash
-# Find all internal doc links across ALL content trees
-grep -rhoP '\]\((/[^)#]+)' apps/docs/content/ --include='*.mdx' | sort -u
-```
+Internal-path and `#anchor` resolution is now a CI gate (promoted per the
+ratchet — #4480): `bun scripts/check-docs-links.ts` validates every internal
+link against the tree mounts and every anchor against `github-slugger`-computed
+heading slugs, per mount. Run the gate first; this audit checks only the residue
+the gate can't see:
 
-Resolution rules follow the mounts (`apps/docs/src/lib/source.ts`):
-- A `/self-hosted/...` link must resolve to a page in `content/self-hosted/` OR `content/shared/`
-- A root link (`/...` without the prefix) must resolve to a page in `content/docs/` OR `content/shared/`
-- A `shared/` page renders in BOTH trees — if it hard-links to a saas-only page with a root path, that link is broken for `/self-hosted` readers. Shared pages should link to shared or use audience-appropriate phrasing
+- `href={...}` JSX expressions (not statically resolvable)
+- Anchors into generated `api-reference/` pages (JSX `<APIPage>` body — the
+  gate checks page existence only)
+- A `shared/` page hard-linking a saas-only page with a root path: the link
+  *resolves* (no 404), but sends a `/self-hosted` reader on a cross-section
+  jump — judge whether audience-appropriate phrasing or `<AudienceLink>` fits
 
 ### I3. Notebook Docs Currency
 

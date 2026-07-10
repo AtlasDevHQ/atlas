@@ -12,19 +12,15 @@ import type { AmendmentPayload } from "@useatlas/types";
 
 // --- Mocks (registered before importing the module under test) ---
 
-// A real on-disk entity YAML so the tool reaches the test-query stage.
-const entityYaml = [
-  "name: companies",
-  "description: Customer companies",
-  "dimensions:",
-  "  - name: id",
-  "    type: number",
-].join("\n");
-
-void mock.module("fs", () => ({
-  existsSync: () => true,
-  readFileSync: () => entityYaml,
-}));
+// Parsed entity baseline the DB-backed resolver returns (#4488). With an
+// internal DB present the tool resolves the baseline through
+// `resolveAmendmentBaseline`, NOT the flat disk root — so the test stubs that
+// resolver rather than `fs`.
+const companiesEntity: Record<string, unknown> = {
+  name: "companies",
+  description: "Customer companies",
+  dimensions: [{ name: "id", type: "number" }],
+};
 
 const mockInsertSemanticAmendment: Mock<
   (args: Record<string, unknown>) => Promise<{ id: string; status: string }>
@@ -47,8 +43,38 @@ const mockApplyAmendmentFromPayload: Mock<(args: Record<string, unknown>) => Pro
   () => Promise.resolve(),
 );
 
+// The baseline resolver (#4488): the tool reads the current entity through the
+// SAME org/group-aware DB read the apply path uses. Returns the default-scope
+// (NULL group) companies row here.
+const mockResolveAmendmentBaseline: Mock<
+  (
+    orgId: string | null,
+    entityName: string,
+    group: string | undefined,
+  ) => Promise<{ row: Record<string, unknown>; targetGroupId: string | null; parsed: Record<string, unknown> }>
+> = mock(() =>
+  Promise.resolve({
+    row: { id: "companies-row", connection_group_id: null },
+    targetGroupId: null,
+    parsed: structuredClone(companiesEntity),
+  }),
+);
+
+// The authoritative mutation (#4488): the tool applies the amendment through
+// the shared `applyAmendment`, not a divergent local copy. Stubbed to a minimal
+// add_dimension so the tool has a non-trivial "after" to diff/serialize.
+function stubApplyAmendment(entity: Record<string, unknown>): Record<string, unknown> {
+  const clone = structuredClone(entity);
+  const dims = (clone.dimensions ?? []) as Record<string, unknown>[];
+  dims.push({ name: "region", type: "string", description: "Region" });
+  clone.dimensions = dims;
+  return clone;
+}
+
 void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   applyAmendmentFromPayload: mockApplyAmendmentFromPayload,
+  resolveAmendmentBaseline: mockResolveAmendmentBaseline,
+  applyAmendment: stubApplyAmendment,
 }));
 
 void mock.module("@atlas/api/lib/logger", () => ({

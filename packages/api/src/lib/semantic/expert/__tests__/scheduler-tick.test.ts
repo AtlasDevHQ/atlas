@@ -70,6 +70,9 @@ void mock.module("@atlas/api/lib/logger", () => ({
 
 void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
+  // scheduler.ts now reads this to force-disable on SaaS (#4487); the tick
+  // tests exercise the self-hosted path, so keep it false (not SaaS).
+  isSaasModeForGuard: () => false,
 }));
 
 const { runExpertSchedulerTick } = await import("../scheduler");

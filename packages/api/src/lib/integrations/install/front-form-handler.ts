@@ -253,6 +253,15 @@ export class FrontFormInstallHandler implements FormBasedInstallHandler {
       // Roll back the just-written credential so a secret can't outlive a
       // failed install. Best-effort — a re-install overwrites it either way; a
       // cleanup failure is logged, never masks the original error.
+      //
+      // Narrow re-install caveat (shared with the Zendesk/Confluence handlers):
+      // when the row upsert is an ON-CONFLICT UPDATE of a PRE-EXISTING
+      // collection, `saveSyncCredential` has already overwritten that live
+      // collection's credential, so this rollback deletes a credential the
+      // still-existing row depends on — leaving it credential-less until the
+      // admin retries (the row upsert failing after the credential write is a
+      // rare same-transaction-window DB error). Self-healing on retry, and kept
+      // identical across the connector tier rather than diverging here.
       this.log.error(
         {
           workspaceId,

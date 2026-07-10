@@ -52,7 +52,7 @@ export interface FrontArticleLocale {
   readonly bodyHtml: string;
   /** Canonical ISO instant (`toIsoInstant`) — never the raw vendor string. */
   readonly lastEdited: string;
-  /** Canonical article URL. */
+  /** The article's own URL, or a canonical API resource path when it omits one. */
   readonly url: string;
 }
 

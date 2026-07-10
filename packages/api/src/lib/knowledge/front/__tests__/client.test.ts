@@ -275,6 +275,17 @@ describe("fetchChanges (incremental)", () => {
     expect(changes.highWaterMark).toBe("2026-07-08T00:00:00.000Z");
   });
 
+  it("re-emits an article edited exactly at the high-water mark (>= is inclusive)", async () => {
+    const since = "2026-07-05T00:00:00.000Z";
+    const { c } = client({
+      kb: { id: KB, locales: ["en"] },
+      articlesByLocale: { en: [art({ id: "art_5", name: "Edge", last_edited: since })] },
+    });
+    const changes = await c.fetchChanges({ since, cursor: null });
+    // A regression to `>` would silently drop an article touched at the mark.
+    expect(changes.documents.map((d) => d.path)).toEqual(["front-support/en/edge-art_5.md"]);
+  });
+
   it("serves a null since as a full crawl (defensive)", async () => {
     const { c } = client({
       kb: { id: KB, locales: ["en"] },

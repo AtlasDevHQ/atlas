@@ -221,7 +221,7 @@ export async function listFrontKnowledgeBases(
     }
     const body: KnowledgeBaseListResponse =
       await http.getJson<KnowledgeBaseListResponse>(url);
-    for (const raw of body._results ?? []) {
+    for (const raw of asArray(body._results)) {
       const id = typeof raw.id === "string" ? raw.id.trim() : "";
       if (id === "") {
         skippedMalformed++;
@@ -315,10 +315,11 @@ class FrontApi {
     // Only PUBLISHED variants are candidate documents; on incremental, narrow to
     // those edited at-or-after `since`. Draft/archived variants are simply absent
     // — the reconciliation crawl's subtractive diff archives their stale paths.
+    // `reconciliation === (opts.since === null)`, so the reconciliation path
+    // keeps every published variant; incremental keeps those edited at-or-after
+    // the mark (>= is inclusive so an article edited exactly at `since` re-emits).
     const candidates = collected.filter(
-      (a) =>
-        a.status === "published" &&
-        (reconciliation || opts.since === null || a.lastEdited >= opts.since),
+      (a) => a.status === "published" && (opts.since === null || a.lastEdited >= opts.since),
     );
 
     // Reject an over-cap FULL published set on reconciliation BEFORE fetching
@@ -415,7 +416,7 @@ class FrontApi {
         `Front knowledge base "${this.config.knowledgeBaseId}" was not found or is not visible to this token — check the KB id and the token's permissions.`,
       );
     }
-    const locales = (kb.locales ?? [])
+    const locales = asArray(kb.locales)
       .filter((l): l is string => typeof l === "string" && l.trim() !== "")
       .map((l) => l.trim());
     if (locales.length > MAX_LOCALES) {
@@ -443,7 +444,7 @@ class FrontApi {
         );
       }
       const body: ArticleListResponse = await this.http.getJson<ArticleListResponse>(url);
-      for (const raw of body._results ?? []) {
+      for (const raw of asArray(body._results)) {
         const normalized = this.normalizeArticle(raw, walkLocale);
         if (normalized !== null) articles.push(normalized);
         else skippedMalformed++;
@@ -475,6 +476,11 @@ class FrontApi {
       id,
       status: typeof raw.status === "string" ? raw.status.trim().toLowerCase() : "",
       lastEdited,
+      // Null-vs-empty contract: a PRESENT string (incl. `""`) is the genuine
+      // body — an empty one assembles to a contentless skip. Only an ABSENT /
+      // non-string field is `null`, which triggers the per-article fallback
+      // fetch (never a silent empty-body emit that a reconciliation could then
+      // wrongly archive — mirrors gitbook/client.ts).
       htmlContent: typeof raw.html_content === "string" ? raw.html_content : null,
       title: typeof raw.name === "string" ? raw.name : "",
       locale: (rawLocale ?? "default").toLowerCase(),
@@ -489,6 +495,16 @@ class FrontApi {
     const localeQuery = walkLocale !== null ? `?locale=${encodeURIComponent(walkLocale)}` : "";
     return `${FRONT_API_BASE}/knowledge_bases/${encodeURIComponent(this.config.knowledgeBaseId)}/articles/${encodeURIComponent(id)}${localeQuery}`;
   }
+}
+
+/**
+ * Coerce an untrusted vendor field to a readonly array — a non-array `_results`
+ * / `locales` (an object, a string) would otherwise throw a bare TypeError at
+ * the `for…of`; treating it as empty keeps the walk's own bounds + coverage
+ * flagging in charge of anomalous responses.
+ */
+function asArray<T>(value: readonly T[] | undefined): readonly T[] {
+  return Array.isArray(value) ? value : [];
 }
 
 /** Stringify an untrusted vendor id — scalars only (`null`/objects = malformed). */

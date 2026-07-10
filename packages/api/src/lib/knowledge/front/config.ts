@@ -31,7 +31,7 @@ export const FRONT_API_BASE = "https://api2.frontapp.com";
 
 /** The non-secret config persisted on each per-KB `workspace_plugins` row. */
 export interface FrontCollectionConfig {
-  /** The Front knowledge base this collection mirrors (one KB per install). */
+  /** The Front knowledge base this collection mirrors (one KB per collection). */
   readonly knowledge_base_id: string;
   /** Human KB name, for the admin surface. */
   readonly knowledge_base_name: string;

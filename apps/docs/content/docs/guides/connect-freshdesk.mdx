@@ -1,0 +1,82 @@
+---
+title: Connect Freshdesk
+description: Mirror your Freshdesk Solutions help center's published articles into review-gated Knowledge Base collections — API-key install, one collection per category, all languages, and the sync + review model.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+A **Freshdesk** connector mirrors your Freshdesk **Solutions** help center's articles into [Knowledge Base](/guides/knowledge-base) collections. Atlas pulls your articles on a schedule, converts each one's HTML body to plain markdown, and queues every article as a **draft** for review — the same review gate as every other knowledge source. Connectors never publish on their own.
+
+<Callout title="Prerequisites">
+The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). Atlas composes the API host from your account subdomain (`<subdomain>.freshdesk.com`) — there is no free-form URL field, so the egress surface stays `*.freshdesk.com` by construction. Images and other media are **not** mirrored (text-first); they are replaced with links back to the source article.
+</Callout>
+
+---
+
+## Get your API key
+
+Atlas authenticates to Freshdesk with your account API key (HTTP Basic auth).
+
+<Steps>
+<Step>
+In Freshdesk, click your avatar and open **Profile settings**.
+</Step>
+<Step>
+Copy **Your API Key** from the right-hand column. It carries your own agent permissions, so make sure your account can read the Solutions knowledge base.
+</Step>
+</Steps>
+
+<Callout type="warn" title="One collection per category">
+Freshdesk is a **multi-category** vendor. A single install enumerates every Solutions category (`GET /api/v2/solutions/categories`) and creates **one collection per category** — a single category gets the collection slug you choose; multiple categories fan out to `<slug>-<category-slug>`. Within each category, Atlas walks the full **category → folder → subfolder → article** tree; each article's language translations come along, each an independently-reviewable document.
+</Callout>
+
+---
+
+## Install
+
+Navigate to **Admin → Integrations**, choose **Knowledge Base (Freshdesk Solutions)**, and provide:
+
+- **Freshdesk subdomain** — the `acme` in `acme.freshdesk.com` (you can paste the full URL and Atlas reduces it to the label). Solutions categories are discovered automatically.
+- **API key** — stored encrypted at rest; never shown again.
+- **Description** *(optional)* — a human note about what these collections cover.
+
+Atlas verifies the connection at install time by enumerating your Solutions categories with the key. A bad key or subdomain points you at the offending field — the install fails **loudly** rather than creating collections that silently never sync. On success one collection is created per category and their first syncs are scheduled.
+
+---
+
+## How sync works
+
+Freshdesk exposes **no server-side "changed since" feed** for Solutions articles, so Atlas uses a **reconciliation-diff** posture: every cycle walks each category's full folder→subfolder→article tree and diffs each article's `updated_at` against the collection's high-water mark. Only articles with a **published** status (`status=2`) are ingested. Two cadences are decided per collection:
+
+- **Incremental** (the common, cheap cycle) — the same tree-walk, but only articles updated since the high-water mark (minus a small overlap window that absorbs clock skew) contribute documents.
+- **Reconciliation** (the correctness anchor, weekly by default, and always on the first sync) — every published article translation is emitted. This is the only cycle that **archives** articles that were deleted or unpublished, and the only one that validates the ingest caps over the full set. A per-folder `articles_count` completeness check holds archiving back if a walk came up short, so deletions are never inferred from a partial view.
+
+Each collection card shows the last sync's status and time, with a **Sync now** button for an on-demand pull. Freshdesk `429`s (its plan-tiered rate limit) are honored with bounded backoff automatically.
+
+### Languages, paths, and what a rename does
+
+Each **language translation** of an article is a distinct document at `<language>/<title-slug>-<article-id>.md`; the account's supported languages are discovered from `/settings/helpdesk` (single-language accounts pay nothing). When a previously-published article is unpublished or deleted, the reconciliation crawl archives its document. Because a document's path follows the article's title, **retitling an article archives the old path and re-drafts the new one** for re-review. That churn is expected and safe — nothing is ever hard-deleted. Each document's provenance (`atlas:` — connector, category, category id, article id, language, updated-at time) travels with it so any answer traces back to its Freshdesk article.
+
+---
+
+## Review and publish
+
+Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article whose content changes in Freshdesk and had already been published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live.
+
+---
+
+## Caps and limits
+
+A very large help center can overflow the Knowledge Base ingest caps. When that happens, reconciliation fails with the **actual document count** and names the knob to raise:
+
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` — maximum documents per collection (default 1000).
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` — maximum size of a single document. An oversized document is rejected individually (visible in the sync report) rather than failing the cycle.
+
+Raise the cap in the settings registry if a category is genuinely large. The reconciliation cadence itself is the `ATLAS_KNOWLEDGE_SYNC_RECONCILE_INTERVAL_HOURS` knob (weekly default); the incremental cadence is `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` (nightly default).
+
+---
+
+## Uninstall
+
+Uninstalling a Freshdesk collection **archives** its documents (never hard-deletes) and removes the stored key and sync bookkeeping. Re-installing re-syncs the category, which brings the archived articles back as drafts for re-review.

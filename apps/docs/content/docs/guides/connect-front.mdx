@@ -1,0 +1,81 @@
+---
+title: Connect Front
+description: Mirror your Front knowledge bases' published articles into review-gated Knowledge Base collections — Bearer-token install, one collection per knowledge base, all locales, and the sync + review model.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+A **Front** connector mirrors your Front knowledge bases' articles into [Knowledge Base](/guides/knowledge-base) collections. Atlas pulls your articles on a schedule, converts each one's HTML body to plain markdown, and queues every article as a **draft** for review — the same review gate as every other knowledge source. Connectors never publish on their own.
+
+<Callout title="Prerequisites">
+The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). Atlas talks to Front's Core API at its fixed host (`api2.frontapp.com`). Images and other media are **not** mirrored (text-first); they are replaced with links back to the source article.
+</Callout>
+
+---
+
+## Create an API token
+
+Atlas authenticates to Front with a company API token (Bearer auth).
+
+<Steps>
+<Step>
+In Front, go to **Settings → Developers → API tokens**.
+</Step>
+<Step>
+Create a token with the **`knowledge_bases:read`** scope and copy it. The token grants read access to your company's knowledge bases and articles.
+</Step>
+</Steps>
+
+<Callout type="warn" title="One collection per knowledge base">
+Front is a **multi-KB** vendor. A single install enumerates every knowledge base the token can read (`GET /knowledge_bases`) and creates **one collection per KB** — a single knowledge base gets the collection slug you choose; multiple KBs fan out to `<slug>-<kb-slug>`. Each article's locale translations come along, each an independently-reviewable document.
+</Callout>
+
+---
+
+## Install
+
+Navigate to **Admin → Integrations**, choose **Knowledge Base (Front)**, and provide:
+
+- **API token** — a Front token with the `knowledge_bases:read` scope. Stored encrypted at rest; never shown again.
+- **Description** *(optional)* — a human note about what these collections cover.
+
+Atlas verifies the connection at install time by enumerating your knowledge bases with the token. A bad token points you at the token field — the install fails **loudly** rather than creating collections that silently never sync. On success one collection is created per knowledge base and their first syncs are scheduled.
+
+---
+
+## How sync works
+
+Front exposes **no server-side "changed since" feed**, so Atlas uses a **reconciliation-diff** posture: every cycle walks the full article list of each knowledge base (cursor-paginated via `_pagination.next`, pinned same-origin) and diffs each article's `last_edited` timestamp against the collection's high-water mark. Two cadences are decided per collection:
+
+- **Incremental** (the common, cheap cycle) — the same full walk, but only articles edited since the high-water mark (minus a small overlap window that absorbs clock skew) contribute documents.
+- **Reconciliation** (the correctness anchor, weekly by default, and always on the first sync) — every published article locale is emitted. This is the only cycle that **archives** articles or locales that were deleted, unpublished, or moved to draft, and the only one that validates the ingest caps over the full set.
+
+Each collection card shows the last sync's status and time, with a **Sync now** button for an on-demand pull. Front `429`s are honored with bounded backoff automatically. If a crawl comes back knowingly incomplete, Atlas upserts what it got but defers all archiving until a clean crawl — deletions are never inferred from a partial view.
+
+### Locales, paths, and what a rename does
+
+Each **published locale** of an article is a distinct document at `<locale>/<title-slug>-<article-id>.md`. A `draft` or `archived` article — or an unpublished locale — is **never** ingested; when a previously-published article changes `status`, the reconciliation crawl archives its document. Because a document's path follows the article's title, **retitling an article archives the old path and re-drafts the new one** for re-review. That churn is expected and safe — nothing is ever hard-deleted. Each document's provenance (`atlas:` — connector, knowledge base, article id, locale, last-edited time) travels with it so any answer traces back to its Front article.
+
+---
+
+## Review and publish
+
+Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article whose content changes in Front and had already been published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live.
+
+---
+
+## Caps and limits
+
+A very large help center can overflow the Knowledge Base ingest caps. When that happens, reconciliation fails with the **actual document count** and names the knob to raise:
+
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` — maximum documents per collection (default 1000).
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` — maximum size of a single document. An oversized document is rejected individually (visible in the sync report) rather than failing the cycle.
+
+Raise the cap in the settings registry if your knowledge base is genuinely large. The reconciliation cadence itself is the `ATLAS_KNOWLEDGE_SYNC_RECONCILE_INTERVAL_HOURS` knob (weekly default); the incremental cadence is `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` (nightly default).
+
+---
+
+## Uninstall
+
+Uninstalling a Front collection **archives** its documents (never hard-deletes) and removes the stored token and sync bookkeeping. Re-installing re-syncs the knowledge base, which brings the archived articles back as drafts for re-review.

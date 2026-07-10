@@ -250,6 +250,8 @@ The review loop through which AI-proposed changes to the semantic layer become r
 
 - **Amendment approval IS the publish gate for that change.** Approving applies to the published entity directly — a recorded content-mode carve-out; the evidence-backed, admin-approved queue is review of publish grade, and routing its output into a second draft→publish wait would park approved changes invisibly. If a draft of the entity exists, the approve applies to the draft too (convergent by upsert-by-identity), so a later publish cannot clobber the approved change; a draft-side miss (the draft removed the target) is visibly skipped, never silent.
 
+- **A glossary term binds to a group, and the glossary is amendable.** The glossary is a group-scoped document in the same semantic store as entities; a glossary Amendment (`add_glossary_term` / `update_glossary_term`) targets that document with the same lifecycle, rejection-memory identity, and eligibility rules as any other Amendment type — no special cases, and never a silent no-op (a type the apply cannot write must not be proposable).
+
 - **An Amendment has exactly one workspace owner.** Every path that creates one stamps the workspace it belongs to; a NULL-owner row is legacy self-hosted data — tolerated on read there, never produced anew anywhere.
 
 ## Chat turn presentation

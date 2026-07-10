@@ -248,6 +248,8 @@ The review loop through which AI-proposed changes to the semantic layer become r
 
 - **Amendments refine; enrich grows.** Nothing an Amendment can do adds an entity or expands the queryable table set — that containment is what makes auto-approve and the scheduler safe to contemplate. A column or table with **no** semantic coverage is shown honestly as uncovered and routes to the enrich flow (a human-initiated act with whitelist consequences), never to an "add entity" amendment type.
 
+- **Amendment approval IS the publish gate for that change.** Approving applies to the published entity directly — a recorded content-mode carve-out; the evidence-backed, admin-approved queue is review of publish grade, and routing its output into a second draft→publish wait would park approved changes invisibly. If a draft of the entity exists, the approve applies to the draft too (convergent by upsert-by-identity), so a later publish cannot clobber the approved change; a draft-side miss (the draft removed the target) is visibly skipped, never silent.
+
 - **An Amendment has exactly one workspace owner.** Every path that creates one stamps the workspace it belongs to; a NULL-owner row is legacy self-hosted data — tolerated on read there, never produced anew anywhere.
 
 ## Chat turn presentation

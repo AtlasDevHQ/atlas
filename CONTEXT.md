@@ -214,6 +214,9 @@ The review loop through which AI-proposed changes to the semantic layer become r
 - **Amendment** — the durable, reviewable unit of proposed semantic-layer change, and the *only* identity a proposed change has — the same one across every path that can create it (admin chat, scheduler, CLI). Lifecycle `pending → approved | rejected`, where **approved means applied**: a stamped-but-unapplied amendment is a bug, not a state.
   _Avoid_: "proposal" as a distinct noun — to propose is to create a *pending* Amendment; there is no second, in-memory thing. "Pattern" (the storage table's historical name).
 
+- **Pending queue** — the org's pending Amendments; the single collection the review panel shows and the pending badge counts, regardless of which path created each Amendment. An Amendment created mid-conversation appears *in* the queue (marked as from this conversation), never in a parallel list.
+  _Avoid_: "chat proposals" vs "pending amendments" as two collections — there is one queue with presentation markers.
+
 - **Improvement conversation** — the admin's chat with the expert agent on the improve surface. It is a conversation, not a stored resource: nothing durable hangs off it except the Amendments it creates.
   _Avoid_: "improvement session" — implies a stored, addressable resource; there is none (deleted rather than made durable — any future resumability rides ADR-0020 durable agent sessions, never a bespoke store). The CLI's interactive loop keeps local REPL state; that is not a session either.
 

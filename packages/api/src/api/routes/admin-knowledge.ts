@@ -60,6 +60,7 @@ import { CONFLUENCE_DC_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/co
 import { GITBOOK_CATALOG_ID } from "@atlas/api/lib/knowledge/gitbook/config";
 import { ZENDESK_CATALOG_ID } from "@atlas/api/lib/knowledge/zendesk/config";
 import { SALESFORCE_KNOWLEDGE_CATALOG_ID } from "@atlas/api/lib/knowledge/salesforce/config";
+import { FRONT_CATALOG_ID } from "@atlas/api/lib/knowledge/front/config";
 import { syncCollection } from "@atlas/api/lib/knowledge/sync";
 import { getKnowledgeSyncConnector } from "@atlas/api/lib/knowledge/connectors";
 import { syncConnectorCollection } from "@atlas/api/lib/knowledge/connector-sync";
@@ -129,6 +130,7 @@ function sourceOf(catalogId: string): KnowledgeSource {
   if (catalogId === GITBOOK_CATALOG_ID) return "gitbook";
   if (catalogId === ZENDESK_CATALOG_ID) return "zendesk";
   if (catalogId === SALESFORCE_KNOWLEDGE_CATALOG_ID) return "salesforce-knowledge";
+  if (catalogId === FRONT_CATALOG_ID) return "front";
   return "unknown";
 }
 
@@ -141,7 +143,8 @@ function isSyncedSource(source: KnowledgeSource): boolean {
     source === "confluence-datacenter" ||
     source === "gitbook" ||
     source === "zendesk" ||
-    source === "salesforce-knowledge"
+    source === "salesforce-knowledge" ||
+    source === "front"
   );
 }
 
@@ -162,7 +165,7 @@ const CollectionListResponseSchema = z.object({
   collections: z.array(
     z.object({
       slug: z.string(),
-      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge"]),
+      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "front"]),
       description: z.string().nullable(),
       installedAt: z.string().nullable(),
       endpointUrl: z.string().nullable(),

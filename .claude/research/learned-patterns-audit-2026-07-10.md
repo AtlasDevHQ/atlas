@@ -6,6 +6,7 @@
 - **Live product:** NOT available for this run (no Docker/Postgres in the audit environment) — the UX dimension is code-reading only, no screenshots. Every finding stands on `file:line` anchors instead.
 - **Anchor findings hand-verified by the orchestrator** (re-read at the cited lines): the `getApprovedPatterns` type-filter + NULL-org gaps (H1), the amendment sentinel `pattern_sql` + approved-status write, the `getRelevantPatterns` 0.7 confidence gate (H3), the missing `admin:semantic` permission gate (H2a), the NULL-org clause asymmetry vs `reviewSemanticAmendment`, and the absence of `logAdminAction` in the bulk handler (H2c). These carry `verified`.
 - **Issue filed this pass (fix-invariant only):** **#4534** — `getApprovedPatterns` injects non-query-pattern and NULL-org rows into agent context. One issue; everything else carries a design question the grill must settle and stays in this doc.
+- **Filed during the grill (2026-07-10):** **#4569** — fold amendments out of the learned-patterns route (query_pattern-only); settles H2 per grill Q2 decision (option a), lands as an unlisted #4502 slice in milestone v0.0.47, sub-issue of the PRD. Resolves H2a/H2b/H2d/H2e for amendment rows, M7's conflation, and M9; H2f dissolves via #4534's `type` filter. The query_pattern half of H2c (bulk audit rows) remains this elevation's scope.
 
 ## Scope boundary — this is NOT the amendment elevation
 

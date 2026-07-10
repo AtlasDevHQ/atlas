@@ -1,5 +1,9 @@
 # Dashboards use a draft-first, publish-gated editing model
 
+> Amended by [ADR-0034](./0034-dashboard-draft-cache-single-edit-mechanism.md)
+> (2026-07-10): draft cards carry their own cached data (the *draft cache*),
+> and the stage tracker retires — the draft is the only edit mechanism.
+
 Every edit to a dashboard — direct manipulation (drag, rename, delete) *and*
 agent/chat edits alike — lands in the caller's private per-user **draft**; the
 **canvas** renders that draft while editing; **publish** is the single gated

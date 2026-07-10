@@ -685,6 +685,31 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     expect(sf?.endpointUrl).toBeNull();
     expect(sf?.sync).not.toBeNull();
   });
+
+  it("dispatches an Intercom collection to the connector engine and lists it as source 'intercom' (#4399)", async () => {
+    COLLECTION = {
+      install_id: "intercom-kb",
+      catalog_id: "catalog:intercom",
+      status: "published",
+      config: { description: "Support docs" },
+    };
+    SYNC_STATES = [
+      { collection_id: "intercom-kb", last_sync_at: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    ];
+    const syncRes = await adminKnowledge.request("/intercom-kb/sync", { method: "POST" });
+    expect(syncRes.status).toBe(200);
+    expect(syncConnectorCollection).toHaveBeenCalledTimes(1);
+    expect(syncCollection).not.toHaveBeenCalled();
+
+    const listRes = await adminKnowledge.request("/", { method: "GET" });
+    const body = (await listRes.json()) as {
+      collections: Array<{ slug: string; source: string; endpointUrl: string | null; sync: unknown }>;
+    };
+    const ic = body.collections.find((c) => c.slug === "intercom-kb");
+    expect(ic?.source).toBe("intercom");
+    expect(ic?.endpointUrl).toBeNull();
+    expect(ic?.sync).not.toBeNull();
+  });
 });
 
 describe("knowledge mirror invalidation (#4208)", () => {

@@ -28,6 +28,7 @@ import {
   BUILTIN_CONFLUENCE_DC_CATALOG_ROW,
   BUILTIN_ZENDESK_CATALOG_ROW,
   BUILTIN_SALESFORCE_KNOWLEDGE_CATALOG_ROW,
+  BUILTIN_INTERCOM_CATALOG_ROW,
   BUILTIN_KNOWLEDGE_CATALOG_ROWS,
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
@@ -211,6 +212,25 @@ describe("BUILTIN_SALESFORCE_KNOWLEDGE_CATALOG_ROW (#4397)", () => {
   });
 });
 
+describe("BUILTIN_INTERCOM_CATALOG_ROW (#4399)", () => {
+  it("is the `intercom` form install: a required secret access_token + optional description, NO base URL", () => {
+    const row = BUILTIN_INTERCOM_CATALOG_ROW;
+    expect(row.slug).toBe("intercom");
+    expect(row.id).toBe("catalog:intercom");
+    expect(row.installModel).toBe("form");
+    expect(row.autoInstall).toBe(false);
+    const keys = row.configSchema.map((f) => f.key);
+    expect(keys).toContain("access_token");
+    expect(keys).toContain("description");
+    // The access token is the only secret; the API host is a fixed vendor
+    // constant, so there is no free-form base-URL field.
+    expect(row.configSchema.find((f) => f.key === "access_token")?.secret).toBe(true);
+    expect(row.configSchema.find((f) => f.key === "access_token")?.required).toBe(true);
+    expect(keys).not.toContain("base_url");
+    expect(keys).not.toContain("subdomain");
+  });
+});
+
 describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
   it("issues one INSERT per built-in row with type 'context' and pillar 'knowledge'", async () => {
     const { db, captured } = captureDb();
@@ -235,6 +255,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "gitbook",
       "zendesk",
       "salesforce-knowledge",
+      "intercom",
     ]);
   });
 
@@ -263,6 +284,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "gitbook",
       "zendesk",
       "salesforce-knowledge",
+      "intercom",
     ]);
     // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).
     const reboot = await seedBuiltinKnowledgeCatalog(captureDb(false).db);

@@ -55,6 +55,8 @@ import {
   SALESFORCE_KNOWLEDGE_SLUG,
 } from "./salesforce-knowledge-form-handler";
 import { registerSalesforceKnowledgeConnector } from "@atlas/api/lib/knowledge/salesforce/connector";
+import { IntercomFormInstallHandler, INTERCOM_SLUG } from "./intercom-form-handler";
+import { registerIntercomKnowledgeConnector } from "@atlas/api/lib/knowledge/intercom/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -319,6 +321,21 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(SALESFORCE_KNOWLEDGE_SLUG, new SalesforceKnowledgeFormInstallHandler());
   registerSalesforceKnowledgeConnector();
   log.info("Registered SalesforceKnowledgeFormInstallHandler + knowledge sync connector");
+  // Knowledge Base (Intercom) — the built-in `intercom` connector install
+  // (#4399, PRD #4395). Knowledge-pillar, multi-instance: ONE workspace maps to
+  // ONE collection (Intercom has no multi-brand concept). Config = an optional
+  // description; the access token lands in `knowledge_sync_credentials`
+  // (encrypted), never in `workspace_plugins.config`. Intercom exposes no
+  // server-side change feed, so the connector reconciliation-diffs `updated_at`
+  // against the high-water mark; the API host is a fixed vendor constant, so
+  // there is no base URL — every request still routes through the SSRF egress
+  // guard at fetch time. Registering the FORM handler + the CONNECTOR together
+  // (as with the other knowledge vendors) keeps a half-wired deploy from having
+  // an installable card whose scheduled sync has no registered vendor client.
+  // No env gate.
+  registerFormHandler(INTERCOM_SLUG, new IntercomFormInstallHandler());
+  registerIntercomKnowledgeConnector();
+  log.info("Registered IntercomFormInstallHandler + knowledge sync connector");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

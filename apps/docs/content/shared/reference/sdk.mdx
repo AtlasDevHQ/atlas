@@ -125,6 +125,20 @@ for (const table of tables) {
 }
 ```
 
+Pass `connectionId` to scope the list to a specific connection (or group). The returned set matches exactly what SQL validation enforces for that connection — the group-scoped whitelist. An unknown `connectionId` is rejected with a 404 rather than silently falling back to the global list; omitting it resolves to the default group.
+
+```typescript
+const { tables } = await atlas.listTables({ connectionId: "prod-replica" });
+```
+
+### Options
+
+```typescript
+interface ListTablesOptions {
+  connectionId?: string; // Scope to a connection or group; omit for the default group
+}
+```
+
 ### Response
 
 ```typescript
@@ -413,6 +427,10 @@ interface Conversation {
   connectionId: string | null;
   connectionGroupId: string | null;
   routingMode?: ConversationRoutingMode | null; // "auto" | "pin" | "all"
+  restExcludedDatasourceIds?: string[]; // REST datasources excluded from this conversation (absent = none excluded)
+  restFocusDatasourceId?: string | null; // REST-only focus target; null/absent = not focused
+  groupReach?: string | null; // Focused connection group; null/absent = all sources
+  answerStyle?: AnswerStyle | null; // "plain-english" | "analyst" | "executive" | "conversational"; null = workspace/surface default
   starred: boolean;
   createdAt: string;
   updatedAt: string;

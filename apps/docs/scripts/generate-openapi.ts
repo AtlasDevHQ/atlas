@@ -123,10 +123,12 @@ try {
   }
 
   // Root meta.json — makes api-reference a separate sidebar tab (isolated from main docs navigation)
+  // "index" is the generated overview page below — listed first so the bare
+  // /api-reference URL resolves and the tab has a landing page.
   const rootMeta = {
     title: "API Reference",
     root: true,
-    pages,
+    pages: ["index", ...pages],
   };
   fs.writeFileSync(
     path.join(outputDir, "meta.json"),
@@ -155,6 +157,41 @@ try {
       JSON.stringify(tagMeta, null, 2) + "\n",
     );
   }
+
+  // Overview page at /api-reference — tag directories have no index of their
+  // own (they're sidebar groups), so each link targets the tag's first
+  // generated operation page. Without this file the bare URL 404s (#4475).
+  const titleFor = (dir: string) =>
+    tagTitleMap[dir] ??
+    dir
+      .split("-")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+
+  const indexLinks = pages
+    .map((dir) => {
+      const firstPage = fs
+        .readdirSync(path.join(outputDir, dir))
+        .filter((f) => f.endsWith(".mdx"))
+        .toSorted()[0];
+      if (!firstPage) return null;
+      const slug = firstPage.replace(/\.mdx$/, "");
+      return `- [${titleFor(dir)}](/api-reference/${dir}/${slug})`;
+    })
+    .filter((l): l is string => l !== null);
+
+  const indexMdx = `---
+title: Overview
+description: REST API reference for Atlas, generated from the OpenAPI specification.
+---
+
+This reference documents every HTTP endpoint the Atlas API serves, generated
+from the same OpenAPI spec the routes declare (\`apps/docs/openapi.json\`).
+Endpoints are grouped by area — pick one below or browse the sidebar.
+
+${indexLinks.join("\n")}
+`;
+  fs.writeFileSync(path.join(outputDir, "index.mdx"), indexMdx);
 
   console.log(
     `Generated API reference docs in ${outputDir} ` +

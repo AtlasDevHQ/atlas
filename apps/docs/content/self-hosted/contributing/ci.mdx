@@ -20,10 +20,11 @@ description: GitHub Actions workflows that run on every Atlas pull request, plus
 - **Drizzle schema ↔ migration drift** — `scripts/check-schema-drift.sh`.
 - **Builds** — SDKs, widget bundle, then the root build. The OpenAPI ↔ api-reference drift check runs after the builds because `extract-openapi.ts` needs the built dependencies at import time.
 - **Type check** — `bun run type` (root) and `bun run --filter '@atlas/web' type`.
-- **Lint** — `bun run lint`.
+- **Lint** — `bun run lint` (oxlint).
+- **Type-aware lint** — `bun run lint:type-aware` (tsgolint). A separate CI-blocking `lint-type-aware` job, kept out of the fast lint job because it builds full TypeScript programs.
 - **Test** — `@atlas/api` tests run in a parallel `api-tests` matrix sharded 4 ways. Other workspace test suites run serially in the main job.
 
-The local equivalent is the `/ci` slash-command — runs lint, type, test, syncpack, template-drift, and railway-watch in one shot. The workflow runs additional drift checks (Dockerfile pins, security headers, schema, OpenAPI) that local `/ci` doesn't cover but rarely flag.
+The local equivalent is the `/ci` slash-command, which runs `scripts/ci-local.sh` — the same ~27 gates in three stages: stage 0 type-check + SDK dist build (serial), stage 1 the read-only drift/lint gates in parallel (lint, type-aware lint, syncpack, Dockerfile pins, template/schema/security-headers/OpenAPI/auth-md drift, ee-imports, migration-rename discipline, published-symbols, and more), stage 2 the full isolated test suite. All must pass before opening a PR.
 
 ### Fast local feedback
 

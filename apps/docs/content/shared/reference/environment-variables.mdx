@@ -48,7 +48,7 @@ LLM provider and model configuration.
 | `AWS_REGION` | — | AWS region for `bedrock` provider (e.g. `us-east-1`) |
 | `AI_GATEWAY_API_KEY` | — | API key for `gateway` provider (Vercel AI Gateway) |
 | `ATLAS_BYOT_CATALOG_TTL_MS` | `21600000` (6h) | TTL in milliseconds for the cached model catalog when using `anthropic`, `openai`, or `bedrock` BYOT mode. Atlas calls each provider's catalog endpoint and caches the result in the internal database (L2) per workspace; raising the TTL reduces upstream catalog calls at the cost of slower discovery of newly-published models |
-| `ATLAS_GATEWAY_CATALOG_TTL_MS` | (gateway default) | TTL in milliseconds for the cached Vercel AI Gateway catalog. Same role as `ATLAS_BYOT_CATALOG_TTL_MS` but for the `gateway` provider |
+| `ATLAS_GATEWAY_CATALOG_TTL_MS` | `1800000` (30 min) | TTL in milliseconds for the cached Vercel AI Gateway catalog (in-memory). Same role as `ATLAS_BYOT_CATALOG_TTL_MS` but for the `gateway` provider |
 
 When `ATLAS_PROVIDER` is not set, the default depends on the runtime environment. On Vercel (detected via the platform-set `VERCEL` env var), the default is `gateway`. Everywhere else, the default is `anthropic`.
 

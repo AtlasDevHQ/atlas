@@ -429,6 +429,35 @@ void mock.module("@atlas/api/lib/bedrock-catalog", () => ({
   BedrockCatalogUnavailable: MockBedrockCatalogUnavailable,
 }));
 
+// --- Gateway catalog mock. The real module fetches
+// https://ai-gateway.vercel.sh with a 10s abort — longer than bun's 5s
+// per-test timeout, so on a network that black-holes the request the
+// backward-compat case flaked (#4451). The route only cares about the
+// `{ models, fetchedAt, fallback }` envelope, so stub it deterministically. ---
+const mockGetGatewayCatalog: Mock<() => unknown> = mock(async () => ({
+  models: [
+    {
+      id: "anthropic/claude-sonnet-5",
+      name: "Claude Sonnet 5",
+      provider: "anthropic",
+      type: "language",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      inputPrice: null,
+      outputPrice: null,
+      recommended: true,
+    },
+  ],
+  fetchedAt: "2026-05-11T00:00:00.000Z",
+  fallback: false,
+}));
+
+void mock.module("@atlas/api/lib/gateway-catalog", () => ({
+  getGatewayCatalog: mockGetGatewayCatalog,
+  __resetGatewayCatalogCacheForTests: mock(() => {}),
+  __getRecommendedIdsForTests: mock(() => new Set<string>()),
+}));
+
 // --- Import the app AFTER all mocks ---
 const { app } = await import("../index");
 
@@ -490,6 +519,7 @@ beforeEach(() => {
   mockInvalidateOpenAICatalog.mockClear();
   mockGetBedrockCatalog.mockClear();
   mockInvalidateBedrockCatalog.mockClear();
+  mockGetGatewayCatalog.mockClear();
   mockGetBedrockCatalog.mockImplementation(async () => ({
     models: [
       {
@@ -1123,23 +1153,24 @@ describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
   });
 
   it("?provider=gateway and the default still return the gateway catalog (backward compat)", async () => {
-    // Default path (no provider param) — should hit the gateway catalog flow,
-    // not touch getWorkspaceModelConfigRaw or getAnthropicCatalog.
-    const res = await app.fetch(adminRequest("GET", "/api/v1/admin/model-config/catalog"));
-    // The real `getGatewayCatalog` is invoked here — it'll either reach the
-    // gateway (test env: false) or fall back to the bundled subset. Either
-    // way we get a 200 with `fallback: true|false`.
-    expect([200, 500]).toContain(res.status);
-    if (res.status === 200) {
+    // Both the default path (no provider param) and the explicit
+    // ?provider=gateway path should hit the gateway catalog flow, not
+    // touch getWorkspaceModelConfigRaw or getAnthropicCatalog. The
+    // gateway catalog is mocked (#4451) — the route only forwards the
+    // `{ models, fetchedAt, fallback }` envelope.
+    for (const path of [
+      "/api/v1/admin/model-config/catalog",
+      "/api/v1/admin/model-config/catalog?provider=gateway",
+    ]) {
+      const res = await app.fetch(adminRequest("GET", path));
+      expect(res.status).toBe(200);
       const body = (await res.json()) as { fallback: boolean };
-      expect(typeof body.fallback).toBe("boolean");
+      expect(body.fallback).toBe(false);
     }
+    expect(mockGetGatewayCatalog).toHaveBeenCalledTimes(2);
     expect(mockGetWorkspaceModelConfigRaw).not.toHaveBeenCalled();
     expect(mockGetAnthropicCatalog).not.toHaveBeenCalled();
-    // 15s: the real gateway fetch self-aborts at FETCH_TIMEOUT_MS (10s) and
-    // falls back — on a network that black-holes the request (sandboxed/proxied
-    // CI containers), bun's default 5s test timeout fired before the fallback.
-  }, 15_000);
+  });
 });
 
 // ---------------------------------------------------------------------------

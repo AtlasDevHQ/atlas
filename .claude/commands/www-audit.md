@@ -6,6 +6,8 @@ Cross-reference the marketing site (`apps/www/`) against source code, vendor rea
 
 **Why this is its own command:** The www site is *legal* and *marketing* surface. Drift here is more dangerous than docs drift — it can mislead a buyer, misstate a vendor name in a DPA, or claim a certification we don't hold. The verification anchors are different too (billing code, vendor reality, OpenStatus monitors, deployed regions).
 
+**Before starting:** read [docs/agents/audits.md](../../docs/agents/audits.md) (shared audit conventions) and run its **Step 0 self-check** against this command file — fix any drifted references in this file as part of the run. *Last verified against the codebase: 2026-07-09.*
+
 ---
 
 ## Execution Strategy
@@ -14,7 +16,9 @@ Run 4 agents in parallel, one per audit domain. Each agent reads www pages and c
 
 The www pages live under `apps/www/src/app/<route>/page.tsx` (Next.js App Router). Public assets live under `apps/www/public/`.
 
-Surface as of this writing: `/`, `/pricing`, `/privacy`, `/terms`, `/dpa`, `/aup`, `/sla`, `/status`, `/blog/*`, plus `/.well-known/security.txt`. Discover from disk first; don't trust this list.
+Surface as of this writing: `/`, `/pricing`, `/privacy`, `/terms`, `/dpa`, `/aup`, `/security`, `/why-atlas`, `/blog/*`, `/sub-processors/data.json` + `/sub-processors/feed.xml` (machine feeds, no HTML page), plus `/.well-known/security.txt`. There are NO `/sla` or `/status` pages — status is an external link (`NEXT_PUBLIC_STATUS_URL`, default `atlas.openstatus.dev`, wired in `src/components/footer.tsx`). Discover from disk first; don't trust this list.
+
+**Memory-file caveat:** several parts below cite session-memory files (`memory/railway.md`, `reference_openstatus.md`, `feedback_legal_doc_vendor_grep.md`). Those live in user-level memory and may not exist in a remote/fresh session — when absent, fall back to the in-repo sources named alongside them (the `deploy/` directory is the SSOT for deployed services) and note "operator should verify" for anything only memory could answer.
 
 ---
 
@@ -51,25 +55,25 @@ Memory: PR #1934 (#1929) shipped a "pricing claims match billing code" pass. Ver
 
 ## Part B: Legal Pages (CRITICAL — legal correctness)
 
-**Pages:** `apps/www/src/app/privacy/page.tsx`, `terms/page.tsx`, `dpa/page.tsx`, `aup/page.tsx`, `sla/page.tsx`
+**Pages:** `apps/www/src/app/privacy/page.tsx`, `terms/page.tsx`, `dpa/page.tsx`, `aup/page.tsx`, `security/page.tsx`
 **Sources of truth:**
-- Vendor reality (grep + ask user; see `feedback_legal_doc_vendor_grep.md`)
-- `packages/api/src/lib/db/schema.ts:735+` (audit retention default — currently 365 days per #1927)
+- Vendor reality (grep + ask user; see `feedback_legal_doc_vendor_grep.md` if available)
+- `packages/api/src/lib/db/schema.ts` (audit retention default — grep for the retention setting, don't trust a line number; 365 days per #1927)
 - `packages/api/src/lib/auth/` (TOTP MFA per #1925, password reset per #1946)
-- Deployed regions (3 regions live per #1154; confirm current list)
+- Deployed regions — `deploy/` directory (`api`, `api-eu`, `api-apac` services) is the in-repo region list
 
 ### Steps
 
 1. **Vendor names** — extract every vendor mention from each legal page (`grep -P 'Anthropic|OpenAI|Stripe|Resend|Railway|...'`). For each: is this a vendor Atlas actually uses today? Don't trust the page — verify against:
    - `packages/api/src/lib/email/delivery.ts` (email transports)
    - `packages/api/src/lib/billing/` (Stripe usage)
-   - `ee/src/sso/` (IdP providers)
+   - `ee/src/auth/sso.ts` (IdP providers)
    - `packages/api/src/lib/db/connection.ts` (datasource clients)
    - Memory: `feedback_legal_doc_vendor_grep.md` — prototype copy lists vendors a hypothetical SaaS would use, NOT Atlas's actual stack
 2. **Audit retention** — every retention claim must match the 365-day default (#1927). If the page hasn't been updated since 1.3.0, flag it.
 3. **MFA / auth flow claims** — TOTP MFA (#1925) and password reset (#1946) shipped in 1.3.0. If legal copy still says "username/password only" or omits MFA, flag.
 4. **Effective dates / version numbers** — every legal doc should have an effective date. Stale "Effective March 2025" on a 1.3.0 era doc is a flag (the user just shipped the legal pages design pass in 1.3.0 Bucket 8 — confirm dates moved).
-5. **DPA pre-signed PDF** — issue #1922 tracks `apps/www/public/dpa/DPA-v2.4-pre-signed.pdf`. If the DPA page references the PDF but the PDF doesn't exist → CRITICAL (broken link on a contract).
+5. **DPA pre-signed PDF** — issue #1922 tracks a pre-signed DPA PDF (originally planned at `apps/www/public/dpa/`; no such directory exists today). Grep the DPA page for any PDF href — if it references a PDF that doesn't exist on disk → CRITICAL (broken link on a contract). If no PDF link exists, check #1922's state before flagging.
 
 Memory: PR #1933 cleaned up "license, regions, retention, AUP, certifications" — verify those didn't regress.
 
@@ -77,8 +81,8 @@ Memory: PR #1933 cleaned up "license, regions, retention, AUP, certifications" �
 
 ## Part C: Compliance & Certification Claims (CRITICAL — legal risk)
 
-**Pages:** All legal + landing + pricing
-**Source of truth:** **Reality.** Atlas does not currently hold SOC 2 Type II, ISO 27001, or any third-party security certification. Issue #1928 tracks the certification *program* — it is not done.
+**Pages:** All legal + landing + pricing + `/security` (the dedicated trust page — highest-risk surface for this part)
+**Source of truth:** **Reality — verify it fresh, don't trust this paragraph.** As of last writing Atlas held no third-party certification; issue #1928 tracks the certification *program*. Check #1928's current state (and `ee/src/compliance/` for what the product actually reports) before judging a claim — the program may have progressed since this command was written.
 
 ### Steps
 
@@ -99,26 +103,25 @@ Memory: PR #1933 cleaned this once. The risk is regression — a marketing itera
 
 ## Part D: Status & SLA (HIGH)
 
-**Pages:** `apps/www/src/app/sla/page.tsx`, `apps/www/src/app/status/page.tsx`, landing `/sla` link
-**Source of truth:** `memory/reference_openstatus.md` (status page IDs, monitor IDs, free-tier limits, env vars)
+**Pages:** there are NO `/sla` or `/status` pages on disk. The status surface is the external OpenStatus page linked from the footer (`NEXT_PUBLIC_STATUS_URL` in `src/components/footer.tsx`, default `atlas.openstatus.dev`). Uptime/SLA *claims* may appear on `/pricing`, `/security`, or landing copy — grep for them (`grep -rEn '99\.|uptime|SLA' apps/www/src/`).
+**Source of truth:** `memory/reference_openstatus.md` if available (status page IDs, monitor IDs, free-tier limits); otherwise curl the status URL and note "operator should verify monitor inventory"
 
 ### Steps
 
-1. **SLA uptime claims** — pricing page or SLA page may claim "99.9% uptime" or similar. Verify:
-   - The OpenStatus integration is actually monitoring all the endpoints the SLA covers.
-   - The monitor list matches what's claimed (e.g., if SLA covers "API + Web + Docs" but only API + Web are monitored).
-   - Free-tier OpenStatus limits per `reference_openstatus.md` — does the public status page expose enough monitors to back the claim?
-2. **`/sla` redirect target** — PR #1935 fixed `/sla` to point at `atlas.openstatus.dev` (status.useatlas.dev had no TLS). Confirm it still resolves.
-3. **Cross-check with #1936** — open issue debating whether to upgrade OpenStatus to Starter tier (per-region monitors). If the SLA page promises per-region uptime, but Starter isn't active yet, flag.
+1. **SLA uptime claims** — wherever a "99.9% uptime" or similar claim appears. Verify:
+   - The OpenStatus integration is actually monitoring all the endpoints the claim covers.
+   - The monitor list matches what's claimed (e.g., if the claim covers "API + Web + Docs" but only API + Web are monitored).
+2. **Status link target** — confirm `NEXT_PUBLIC_STATUS_URL` (and its default) resolves with TLS. Check the deployed env value in `deploy/www/` if set there.
+3. **Per-region promises** — if any page promises per-region uptime, confirm per-region monitors actually exist (#1936 tracked the OpenStatus tier upgrade — check its current state).
 
 ---
 
 ## Part E: Domains & Regions (HIGH)
 
-**Pages:** All; especially landing, deploy/install, /sla, /status
+**Pages:** All; especially landing, deploy/install, /pricing, /security
 **Source of truth:**
-- `memory/railway.md` — production domains (`api.useatlas.dev`, `app.useatlas.dev`, `docs.useatlas.dev`, `useatlas.dev`)
-- 1.0.0 launched 3 regions (US/EU/APAC) per #1154 — confirm current region list
+- `deploy/` directory — one subdirectory per deployed service (`api`, `api-eu`, `api-apac`, `web`, `www`, `docs`, `dns`); this is the in-repo SSOT for services and regions (`memory/railway.md` supplements it when available)
+- Production domains: `api.useatlas.dev` (+ regional `api-eu`/`api-apac`), `app.useatlas.dev`, `docs.useatlas.dev`, `useatlas.dev`
 
 ### Steps
 
@@ -171,12 +174,12 @@ Memory: PR #1933 cleaned this once. The risk is regression — a marketing itera
 
 ## Part H: Sub-processor List (HIGH)
 
-**Pages:** `apps/www/src/app/privacy/page.tsx`, `apps/www/src/app/dpa/page.tsx` (both may have sub-processor tables)
-**Source of truth:** Real vendor list (cross-reference Part B vendor grep)
+**Pages:** `apps/www/src/app/privacy/page.tsx`, `apps/www/src/app/dpa/page.tsx` (rendered tables)
+**Data SSOT:** `apps/www/data/sub-processors.json` — the single source consumed by the rendered pages AND the machine feeds at `/sub-processors/data.json` + `/sub-processors/feed.xml` (route handlers under `src/app/sub-processors/`)
 
 ### Steps
 
-1. Find the sub-processor table on /privacy or /dpa.
+1. Read `apps/www/data/sub-processors.json`, then confirm the rendered tables on /privacy and /dpa actually derive from it (hand-copied duplicates drift → flag).
 2. Each row should be a vendor Atlas actually uses for processing customer data:
    - LLM providers (Anthropic, OpenAI, etc. — only if customers' queries reach them; flag overclaim)
    - Email (Resend or platform email provider per `lib/email/delivery.ts`)
@@ -185,7 +188,7 @@ Memory: PR #1933 cleaned this once. The risk is regression — a marketing itera
    - Database (Postgres on Railway — usually internal, not user data, depending on the customer's deployment)
    - Observability (OTel collectors, Sentry — only if active)
 3. **CRITICAL:** Every listed sub-processor must be one Atlas actually contracts with for customer data. Listing an extra vendor is a DPA contract violation.
-4. **Sub-processor change-feed** (#1924) — open issue tracks RSS/webhook/Slack delivery for sub-processor changes. If the page promises notifications but the feed doesn't exist, flag.
+4. **Sub-processor change-feed** (#1924 — SHIPPED as `/sub-processors/feed.xml` + `data.json` + the webhook subscribe button, `src/components/sub-processor-webhook-button.tsx`). Check the feed routes return valid RSS/JSON built from the SSOT file, and that whatever notification promise the DPA/privacy pages make matches what the feed + webhook actually deliver.
 
 ---
 
@@ -196,11 +199,11 @@ Memory: PR #1933 cleaned this once. The risk is regression — a marketing itera
 The same fact (plan tier, region count, plugin count, datasource list) is repeated across:
 - `apps/www/src/app/page.tsx` (landing claims)
 - `apps/www/src/app/pricing/page.tsx`
-- `apps/docs/content/docs/` (docs claims)
+- `apps/docs/content/` — ALL THREE docs trees: `docs/` (SaaS, served at `/`), `self-hosted/` (served at `/self-hosted`), `shared/` (mounted in both). www claims about self-hosted ("always free", deploy targets) must match the `self-hosted/` tree specifically
 - Root `README.md`
 - `apps/docs/content/shared/comparisons/*.mdx` (competitor pages)
 
-Pick 3-4 high-leverage facts (plugin count, datasource count, region count, plan tier names) and verify all four sources agree.
+Pick 3-4 high-leverage facts (plugin count, datasource count, region count, plan tier names) and verify all sources agree.
 
 ### I2. Stale internal package references
 
@@ -221,7 +224,7 @@ For each `href="/foo"`, confirm a matching route exists. For each `#anchor`, con
 
 ### I4. Outbound links to docs / docs site
 
-Every `href="https://docs.useatlas.dev/foo"` from www must resolve to a real docs page. Confirm by checking `apps/docs/content/docs/foo.mdx` exists (after stripping locale prefix if any).
+Every `href="https://docs.useatlas.dev/foo"` from www must resolve to a real docs page. Resolution follows the docs three-tree mounts: a root path `/foo` resolves to `apps/docs/content/docs/foo.mdx` OR `apps/docs/content/shared/foo.mdx`; a `/self-hosted/foo` path resolves to `apps/docs/content/self-hosted/foo.mdx` OR `apps/docs/content/shared/foo.mdx`.
 
 ---
 
@@ -241,7 +244,7 @@ ls apps/www/public/dpa/ 2>/dev/null
 For each route, check:
 - Does the landing page link to it?
 - Does the docs site cross-link to it (where appropriate, e.g. /pricing)?
-- Is it indexed by `apps/www/sitemap.xml` (if present)?
+- Is it indexed by the generated sitemap (`apps/www/src/app/sitemap.ts`)?
 
 ### J2. Recently-shipped public-page work
 

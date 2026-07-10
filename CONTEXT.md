@@ -277,6 +277,9 @@ The capture-and-payoff loop through which SQL query shapes observed in live exec
 - **Injection** — the payoff act: eligible, relevant query patterns rendered into an agent turn's prompt. Every injection is **attributed** — which patterns entered which turn is recorded — so a pattern's usage is observable evidence, in the cockpit and for any future feedback design. Crediting adapted queries back to their source pattern, and demoting patterns on bad outcomes, are explicitly deferred until attribution data exists.
   _Avoid_: unattributed injection (an approval whose effect nobody can observe); inferring usefulness from confidence.
 
+- **Pattern identity** — what makes two observations the *same* query pattern: (workspace, connection group, normalized SQL fingerprint), enforced by the database. A repeat observation increments the existing pattern — it can never mint a second row. A seen-once pattern is captured but sits below the default review queue and below every promotion gate until it repeats.
+  _Avoid_: application-side read-then-insert as the only dedup; timestamp uniquifiers; a review queue full of seen-once noise.
+
 ## Chat turn presentation
 
 How one agent turn is presented in the chat transcript. A turn has two faces: the **activity** (everything the agent did on the way) and the **answer** (what the turn exists to deliver). Presentation is answer-first: the answer is the visually dominant element; activity is live while the agent works, then settles into a collapsed receipt. Vocabulary pinned by PRD #4292 (answer-first chat turn presentation); the receipt/promotion mechanics shipped with #4298 (finished turns, notebook convergence #4301) and #4300 (live working phase), so the present-tense descriptions below are shipped behavior — remaining #4292 slices (answer styles, editorial voice) note their own status.

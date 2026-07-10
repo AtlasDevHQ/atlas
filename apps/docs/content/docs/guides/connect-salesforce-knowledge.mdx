@@ -57,7 +57,7 @@ A document's path is built from its **language, title, and article number** (`sa
 
 ## Review and publish
 
-Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article republished in Salesforce whose Atlas copy was already published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, article id and number, version, locale, last-modified time, plus a link to the article in Lightning) travels with every document so any answer traces back to its Salesforce article.
+Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article republished in Salesforce whose Atlas copy was already published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, a link to the article in Lightning, last-modified time) travels with every document so any answer traces back to its Salesforce article; the locale and article number also ride in the document's path.
 
 ---
 

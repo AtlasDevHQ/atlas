@@ -83,7 +83,7 @@ Article HTML converts structurally — headings, lists, tables, code blocks, quo
 
 ## Review and publish
 
-Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article whose content changes in Zendesk and had already been published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, brand, article id, locale, last-modified time) travels with every document so any answer traces back to its help-center article.
+Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article whose content changes in Zendesk and had already been published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, source article URL, last-modified time) travels with every document so any answer traces back to its help-center article; the locale and article id also ride in the document's path.
 
 ---
 

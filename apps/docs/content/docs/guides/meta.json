@@ -28,6 +28,8 @@
     "connect-salesforce-knowledge",
     "connect-intercom",
     "connect-helpscout",
+    "connect-front",
+    "connect-freshdesk",
     "developer-mode",
     "demo-mode",
     "guided-tour",

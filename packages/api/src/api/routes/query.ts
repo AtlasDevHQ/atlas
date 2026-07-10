@@ -65,6 +65,29 @@ export const QueryResponseSchema = z.object({
   usage: z.object({
     totalTokens: z.number().int(),
   }),
+  conversationId: z
+    .string()
+    .optional()
+    .describe(
+      "Conversation the question and answer were persisted to. Present when the deployment has an internal database and persistence succeeded — either the (verified) conversationId from the request, or a newly created conversation. Absent when there is no internal database or persistence failed.",
+    ),
+  runId: z
+    .string()
+    .optional()
+    .describe(
+      "Identifier of the underlying agent run. Present whenever the agent loop ran; useful for correlating with durable-session records and server logs.",
+    ),
+  pendingApproval: z
+    .object({
+      requestId: z.string().nullable(),
+      ruleName: z.string(),
+      matchedRules: z.array(z.string()),
+      message: z.string(),
+    })
+    .optional()
+    .describe(
+      "Set when one or more SQL queries matched an approval rule and were enqueued for admin approval instead of executed. The run is NOT a complete answer in this case — the queued query runs only after approval. requestId is null when no approval-queue row could be created.",
+    ),
   pendingActions: z
     .array(
       z.object({

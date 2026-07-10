@@ -226,6 +226,13 @@ The review loop through which AI-proposed changes to the semantic layer become r
 - **Reconsider** — the admin action that lifts a rejection: it returns a rejected Amendment to the Pending queue and removes its identity from rejection memory. The only way a rejected change comes back.
   _Avoid_: "unreject"; silent re-proposal by the agent (rejection memory forbids it by construction).
 
+- **Anchor** — what an Improvement conversation optionally starts from: a **group**, an **entity**, or a **column**. The anchor scopes the agent's briefing and persists as context for the conversation; it is a launcher into the chat, never a cage — the admin can always converse free-form. A sweep ("find improvements") is simply the anchorless start.
+  _Avoid_: modeling entry points as separate surfaces or modes — every entry point starts the same conversation with a different anchor.
+
+### Anti-confusions
+
+- **Amendments refine; enrich grows.** Nothing an Amendment can do adds an entity or expands the queryable table set — that containment is what makes auto-approve and the scheduler safe to contemplate. A column or table with **no** semantic coverage is shown honestly as uncovered and routes to the enrich flow (a human-initiated act with whitelist consequences), never to an "add entity" amendment type.
+
 ## Chat turn presentation
 
 How one agent turn is presented in the chat transcript. A turn has two faces: the **activity** (everything the agent did on the way) and the **answer** (what the turn exists to deliver). Presentation is answer-first: the answer is the visually dominant element; activity is live while the agent works, then settles into a collapsed receipt. Vocabulary pinned by PRD #4292 (answer-first chat turn presentation); the receipt/promotion mechanics shipped with #4298 (finished turns, notebook convergence #4301) and #4300 (live working phase), so the present-tense descriptions below are shipped behavior — remaining #4292 slices (answer styles, editorial voice) note their own status.

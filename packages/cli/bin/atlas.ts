@@ -408,13 +408,13 @@ async function main() {
 
   // Operator-only commands (ops/seed/proactive/export/learn) moved to the
   // separate `atlas-operator` binary so the published `atlas` CLI never ships
-  // tenant-destructive direct-DB tooling (ADR-0026 step 4, #4045). Redirect
+  // tenant-destructive direct-DB tooling (ADR-0025 step 4, #4045). Redirect
   // rather than a bare "Unknown command" so operator muscle memory lands somewhere useful.
   if (OPERATOR_COMMANDS.has(command)) {
     console.error(
       `[atlas] "${command}" is an operator-only command and has moved to the operator CLI.\n` +
         `Run it with:  bun run atlas-operator -- ${command} ${args.slice(1).join(" ")}`.trimEnd() +
-        `\n(Operator tooling touches tenant data directly and is not shipped to workspaces — ADR-0026.)`,
+        `\n(Operator tooling touches tenant data directly and is not shipped to workspaces — ADR-0025.)`,
     );
     process.exit(1);
   }

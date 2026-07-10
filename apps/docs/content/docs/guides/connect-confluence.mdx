@@ -9,7 +9,7 @@ import { Steps, Step } from "fumadocs-ui/components/steps";
 A **Confluence Cloud** connector mirrors one Confluence space into a [Knowledge Base](/guides/knowledge-base) collection. Atlas pulls the space's pages on a schedule, converts each page's storage format to markdown, and queues every page as a **draft** for review — the same review gate as every other knowledge source. Connectors never publish on their own.
 
 <Callout title="Prerequisites">
-The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). Confluence is **Cloud only** in v1 (REST v2, storage format); Data Center / Server is a recorded follow-up. Attachments and images are **not** mirrored in v1 — they are replaced with links back to the source page (text-first).
+The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). This guide covers **Confluence Cloud** (REST v2, storage format); **Data Center / Server** is supported via the separate **Knowledge Base (Confluence Data Center)** integration, which authenticates with a personal access token instead of an Atlassian API token. Attachments and images are **not** mirrored in v1 — they are replaced with links back to the source page (text-first).
 </Callout>
 
 ---

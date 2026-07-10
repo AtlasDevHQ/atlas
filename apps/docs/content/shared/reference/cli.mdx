@@ -239,7 +239,7 @@ bun run atlas -- switch acme-analytics
 
 ## sql
 
-Run a single validated `SELECT` against your logged-in workspace. This is the **advanced** surface — prefer [`atlas query`](#query) for natural-language questions; `sql` is for callers who already have the exact query. It is a thin HTTP client over `POST /api/v1/execute-sql`; the server is the sole security boundary and runs the same 4-layer validation pipeline (regex → AST single-`SELECT` → table whitelist), RLS injection, auto-`LIMIT`, statement timeout, and read-only connection as the agent loop, audited `origin=cli`.
+Run a single validated `SELECT` against your logged-in workspace. This is the **advanced** surface — prefer [`atlas query`](#query) for natural-language questions; `sql` is for callers who already have the exact query. It is a thin HTTP client over `POST /api/v1/execute-sql`; the server is the sole security boundary and runs the same 4-layer validation pipeline (empty check → regex → AST single-`SELECT` → table whitelist), RLS injection, auto-`LIMIT`, statement timeout, and read-only connection as the agent loop, audited `origin=cli`.
 
 ```bash
 bun run atlas -- sql "SELECT ..." [options]

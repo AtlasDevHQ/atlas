@@ -120,11 +120,11 @@ them — changing them *is* a deploy:
 | `ATLAS_RATE_LIMIT_RPM` | `RateLimitGuardLive` refuses to boot a region without a positive value (DDoS floor). Hot-reload would re-open the hole. |
 | `ATLAS_EMAIL_PROVIDER` | DPA guard runs at boot; hot-reload would bypass it. (Changed via Admin → Email provider, takes effect next boot.) |
 
-> `ATLAS_DEPLOY_MODE` and `ATLAS_ENTERPRISE_ENABLED` are **not** set on SaaS — `deploy/api/atlas.config.ts` resolves both (`deployMode: "saas"`, `enterprise.enabled: true`) and the resolution paths consult the config file first. Dropped from the Railway services in #3702.
+> `ATLAS_DEPLOY_MODE` and `ATLAS_ENTERPRISE_ENABLED` are **not** set on SaaS — `deploy/api/atlas.config.ts` resolves both (`deployMode: "saas"`, `enterprise.enabled: true`) and the resolution paths consult the config file first. Dropped from the Railway services in #3702. `ATLAS_DEPLOY_MODE` is nonetheless the third member of `SAAS_IMMUTABLE_KEYS` — locked from runtime mutation so a settings write can never flip a region's deploy mode.
 
 ## What you change at runtime instead
 
-Roughly 55 settings are **already runtime-controllable** through the settings
+Over 100 settings are **already runtime-controllable** through the settings
 registry (`lib/settings.ts`) — the env var, if any, is only a fallback. Precedence
 is `workspace DB override > platform DB override > env var > default`, and SaaS
 hot-reloads within ~30s (no redeploy). Edit these in the **Admin console**, not in

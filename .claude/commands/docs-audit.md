@@ -4,7 +4,7 @@ Cross-reference documentation (`apps/docs/content/`) against source code to find
 
 **Mode:** Read-only audit — generate a report with findings. Fix trivial issues (< 5 lines) directly. File GH issues for larger gaps.
 
-**Before starting:** read [docs/agents/audits.md](../../docs/agents/audits.md) (shared audit conventions) and run its **Step 0 self-check** against this command file — fix any drifted references in this file as part of the run. *Last verified against the codebase: 2026-07-09.*
+**Before starting:** read [docs/agents/audits.md](../../docs/agents/audits.md) (shared audit conventions) and run its **Step 0 self-check** against this command file — fix any drifted references in this file as part of the run. *Last verified against the codebase: 2026-07-10.*
 
 ## Docs Layout: Three Audience Trees (PRD #4257)
 
@@ -149,7 +149,8 @@ Don't use a hardcoded list. Read the `AtlasConfigSchema` from `packages/api/src/
 The API reference docs are generated, NOT hand-maintained. The pipeline is:
 
 ```
-packages/api/src/api/routes/openapi.ts    ← SOURCE OF TRUTH (Zod → JSON Schema)
+OpenAPIHono typed routes (auto-generated) + staticPaths in routes/openapi.ts (hand-curated)
+    ↓  merged by buildAtlasOpenApiDocument() in packages/api/src/api/index.ts
     ↓  bun packages/api/scripts/extract-openapi.ts
 apps/docs/openapi.json                    ← GENERATED ARTIFACT (never edit directly!)
     ↓  cd apps/docs && bun ./scripts/generate-openapi.ts
@@ -162,8 +163,8 @@ To add/fix endpoints: edit `openapi.ts`, then run the extraction + generation sc
 ### Steps
 
 1. Extract all route paths from `packages/api/src/api/index.ts` (the route mounting file)
-2. Extract all endpoints defined in `packages/api/src/api/routes/openapi.ts` (the `buildSpec()` function)
-3. Cross-reference — every mounted route should have a corresponding entry in `openapi.ts`:
+2. Extract all endpoints in the spec: the bulk is auto-generated from OpenAPIHono typed route definitions; hand-curated static entries for plain-Hono routes live in `packages/api/src/api/routes/openapi.ts` (`staticPaths`/`staticTags`); the merge happens in `buildAtlasOpenApiDocument()` (`packages/api/src/api/index.ts`)
+3. Cross-reference — every mounted route should appear in the merged spec (plain-`Hono` routers are structurally excluded, and routes can opt out via `hide: true` with a rationale — check for those conventions before flagging):
 
 | Check | How |
 |-------|-----|
@@ -176,7 +177,7 @@ To add/fix endpoints: edit `openapi.ts`, then run the extraction + generation sc
 ### Fixing missing endpoints
 
 1. Read the route handler in `packages/api/src/api/routes/<handler>.ts`
-2. Add the endpoint definition to `openapi.ts`'s `buildSpec()` function, using Zod schemas where available (import and use `toJsonSchema()`)
+2. For an OpenAPIHono-mounted route, fix/extend its typed zod-openapi route definition; for a plain-Hono route, add a static entry to `staticPaths` in `openapi.ts`
 3. Run `bun packages/api/scripts/extract-openapi.ts` to regenerate `apps/docs/openapi.json`
 4. Run `cd apps/docs && bun ./scripts/generate-openapi.ts` to regenerate MDX pages
 5. Commit all generated files alongside the source change
@@ -335,7 +336,7 @@ The taxonomy gate validates *placement*; this check validates *content* against 
 | **SaaS instructions in shared/** | A `content/shared/` page telling readers to edit env vars / redeploy / `docker compose` — those steps don't apply to SaaS readers, where config lives in the Admin console (settings registry). Shared pages must be audience-neutral or branch explicitly |
 | **Self-hosted-only features in the SaaS tree** | `content/docs/` pages describing `.env`-only knobs, `atlas.config.ts`, nsjail, sidecar, etc. that SaaS customers can't touch → move or re-scope |
 | **SaaS-only features in shared/ or self-hosted/** | Marketplace, residency, billing plans, SSO/SCIM (SaaS flavors), platform-ops surfaces described as if available self-hosted → mis-scoped |
-| **Fork pairs drifted** | Files sharing a `fork:` frontmatter key are deliberately divergent duplicates. `grep -rn '^fork:' apps/docs/content/` — for each pair, check both sides were updated when the underlying feature changed (the gate only checks the markers exist) |
+| **Fork pairs drifted** | Files sharing a `fork:` frontmatter key are deliberately divergent duplicates. `grep -rn '^fork:' apps/docs/content/` — for each pair, check both sides were updated when the underlying feature changed (the gate only checks the markers exist). As of 2026-07 **zero fork pairs exist** — audience branching is done in-page via `<WhenSaaS>`/`<WhenSelfHosted>`/`<AudienceLink>` components, so an empty grep is a PASS, not a broken check |
 
 ---
 

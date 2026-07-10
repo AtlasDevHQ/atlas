@@ -58,7 +58,7 @@ Most findings stay in the doc. File a GitHub issue immediately **only** when BOT
 
 Worked boundary (from the dashboard audit): a cookieless SSR fetch 403-ing every org-share viewer, or a validation error silently downgrading an org share to public — **file** (the fix is the fix, grill or no grill). Agent-built dashboards rendering an empty canvas — **doc only**: plainly broken, but the fix is entangled with the draft-model design the grill exists to settle; filing it standalone would pre-decide the design.
 
-File per `/investigate` conventions (type + area labels, milestone, Atlas body format), and list the filed issues in the findings doc with their links so the grill still sees the complete picture. Fix nothing — `/elevate` mutates no product code.
+File per `/investigate` conventions (type + area labels, milestone, Atlas body format), and list the filed issues in the findings doc — a dedicated **"Filed this run"** list in the header, each with issue number, link, and the finding it came from — so the grill still sees the complete picture **and** the downstream `/to-issues` pass can fold them in: when the elevation's PRD is sliced, every issue filed here gets attached as a **sub-issue of the PRD** alongside the slices (they're part of the elevation's delivery even though their fixes proceed independently, and any slice that assumes one merged first names it in "Blocked by"). Fix nothing — `/elevate` mutates no product code.
 
 ## Step 5 — Write the findings doc
 

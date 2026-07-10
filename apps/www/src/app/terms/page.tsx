@@ -54,7 +54,7 @@ const SECTIONS: LegalSectionData[] = [
     id: "service",
     title: "The Service",
     legal: [
-      "Atlas provides a hosted text-to-SQL platform. Customer authenticates against its own data warehouse and identity provider; Atlas executes queries on Customer’s behalf in read-only mode (or write mode where Customer has explicitly granted such permission).",
+      "Atlas provides a hosted text-to-SQL platform. Customer authenticates against its own data warehouse and identity provider; Atlas executes queries on Customer’s behalf in read-only mode.",
       "Atlas may modify, add, or remove features at any time, but will not materially reduce the functionality of any feature included in Customer’s plan during the current paid term without 30 days’ notice.",
       'Beta and "Labs" features are provided as-is and may be removed at any time.',
     ],

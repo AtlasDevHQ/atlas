@@ -362,7 +362,7 @@ $ bun run dev`}</CodeBlock>
 
         <P>
           Read the{" "}
-          <a href="https://docs.useatlas.dev/getting-started/quick-start" className="link-accent">
+          <a href="https://docs.useatlas.dev/self-hosted/getting-started/quick-start" className="link-accent">
             quick start guide
           </a>{" "}
           for the full walkthrough, or jump straight to{" "}

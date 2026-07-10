@@ -158,11 +158,11 @@ const SECTIONS: LegalSectionData[] = [
     id: "transfers",
     title: "International transfers",
     legal: [
-      "Atlas Cloud is hosted in three Customer-selectable regions on the Business plan: United States (Ashburn, Virginia), Europe (Eemshaven, Netherlands), and Asia Pacific (Singapore). Customer Data does not leave the selected region except for transactional services (billing, status email) which are processed in the United States.",
+      "Atlas Cloud is hosted in three Customer-selectable regions, available on every paid plan: United States (Ashburn, Virginia), Europe (Eemshaven, Netherlands), and Asia Pacific (Singapore). Customer Data does not leave the selected region except for transactional services (billing, status email) which are processed in the United States.",
       "Where personal data is transferred from the EEA, UK, or Switzerland to the US, we rely on Standard Contractual Clauses and the EU-US Data Privacy Framework where available. Custom enterprise contracts can negotiate additional regions.",
     ],
     plain:
-      "Customer Data stays in the region you select (United States, Europe, or Asia Pacific on Business). Billing and outbound email are processed in the US under Standard Contractual Clauses where applicable.",
+      "Customer Data stays in the region you select at signup (United States, Europe, or Asia Pacific — any paid plan). Billing and outbound email are processed in the US under Standard Contractual Clauses where applicable.",
   },
   {
     id: "retention",
@@ -184,7 +184,7 @@ const SECTIONS: LegalSectionData[] = [
       "Suspected security incidents may be reported to security@useatlas.dev. Our disclosure policy is published at useatlas.dev/.well-known/security.txt (RFC 9116). Encrypted reports may use the PGP key at useatlas.dev/.well-known/atlas-security.asc (fingerprint: B00E 2A64 12E9 3CDF 9624 29CF 3970 0A61 1481 92C7).",
     ],
     plain:
-      "TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM, TOTP two-factor required for admin accounts. Working toward formal SOC 2 Type II + ISO 27001 certifications. Report suspected issues to security@useatlas.dev (PGP key at useatlas.dev/.well-known/atlas-security.asc).",
+      "TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM, TOTP two-factor required for admin accounts. We do not hold SOC 2 Type II or ISO 27001 certification today; formal certification is on the roadmap. Report suspected issues to security@useatlas.dev (PGP key at useatlas.dev/.well-known/atlas-security.asc).",
   },
   {
     id: "cookies",

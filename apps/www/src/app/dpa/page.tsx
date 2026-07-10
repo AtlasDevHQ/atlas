@@ -262,8 +262,8 @@ export default function DPAPage() {
                 // subscribe to changes
               </p>
               <p className="mb-3 text-[13px] leading-relaxed text-fg-muted">
-                We email account admins automatically. Procurement teams can
-                subscribe via:
+                Pick your channel — join the email notification list, poll the
+                machine-readable feed, or register a signed webhook:
               </p>
               <a
                 href="mailto:legal@useatlas.dev?subject=Subscribe%20to%20sub-processor%20notifications&body=Please%20add%20the%20following%20address%20to%20the%20sub-processor%20notification%20list%3A%0A"
@@ -277,7 +277,7 @@ export default function DPAPage() {
                   href="/sub-processors/feed.xml"
                   className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-bg-sunken px-3 py-2 text-xs font-medium text-fg-muted transition-colors hover:border-border-strong hover:text-fg"
                 >
-                  RSS
+                  Feed
                 </a>
                 <SubProcessorWebhookButton />
               </div>

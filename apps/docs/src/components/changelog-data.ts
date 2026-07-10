@@ -20,6 +20,38 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.46",
+    title: "KB Support Center Connectors",
+    date: "2026-07-10",
+    summary:
+      "The support-center connector tier is complete. Front, Intercom Articles, Help Scout Docs, and Freshdesk Solutions join the earlier Zendesk Guide and Salesforce Knowledge connectors, so your help-center articles can feed the Knowledge Base directly. All six run on one shared HTML-to-markdown converter — each connector is a thin vendor client, and every one syncs with the same review-gated draft flow, caps, and uninstall behavior.",
+    highlights: [
+      "Front Knowledge Base connector — Bearer-token install, multiple knowledge bases and locales (#4400)",
+      "Intercom Articles connector — access-token install, multi-locale articles (#4399)",
+      "Help Scout Docs connector — Docs API key, multi-site, incremental sync on an updatedAt watermark (#4398)",
+      "Freshdesk Solutions connector — API-key install, category tree-walk enumeration (#4401)",
+      "One shared support HTML-to-markdown converter under the whole tier, so vendor quirks can't fork the pipeline",
+      "Connector guides for Front and Freshdesk complete the docs set — every shipped connector now has a setup guide",
+    ],
+  },
+  {
+    version: "v0.0.45",
+    title: "OKF Importers + KB Connectors",
+    date: "2026-07-10",
+    summary:
+      "The Knowledge Base now syncs from where your docs already live. A source-neutral importer core turns Fumadocs, Mintlify, MkDocs, and Docusaurus sites into knowledge bundles, and the first server-side sync connectors keep collections current from Notion, Confluence Cloud, Confluence Data Center, and GitBook — incremental sync with reconciliation, landing as review-gated drafts. Zendesk Guide and Salesforce Knowledge connectors shipped early in the same train. A hardening pass over the semantic-layer improvement surface routes amendment test queries through the full user query pipeline and scopes amendments correctly per workspace.",
+    highlights: [
+      "Server-side Knowledge Base sync connectors: Notion, Confluence Cloud, Confluence Data Center/Server, and GitBook — token installs, incremental sync + reconciliation, review-gated ingest (#4378, #4377, #4394, #4393)",
+      "Connector spine: document-level ingest, catalog dispatch, and a reconciliation engine shared by every connector (#4376)",
+      "Incomplete-crawl guard — a depth-capped or partial enumeration can no longer archive live documents behind a green sync (#4389)",
+      "Source-neutral OKF importers: @atlas/okf-bundle core with Fumadocs, Mintlify, MkDocs, and Docusaurus adapters (#4373, #4391, #4392)",
+      "Zendesk Guide and Salesforce Knowledge connectors shipped early, with the shared support HTML-to-markdown converter (#4396, #4397)",
+      "Semantic-improve hardening: amendment test queries run through the full user query pipeline (row-level security, masking, limits, audit), and amendments are scoped per workspace (#4485, #4487)",
+      "Docs link rot now fails CI — internal links and anchors are checked on every build (#4480)",
+      "Setup guides for every shipped connector, plus an agent-auth guide covering OAuth 2.1 vs Agent Auth",
+    ],
+  },
+  {
     version: "v0.0.44",
     title: "Search scale & safety hardening",
     date: "2026-07-05",

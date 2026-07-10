@@ -90,13 +90,14 @@ export function KnowledgeBase() {
           <p className="m-0 mb-4 text-base leading-[1.65] text-fg-muted">
             Your schema says what the data is; your team knows what it means.
             Upload runbooks, metric definitions, and business rules as
-            plain-markdown collections — or point a collection at your docs
-            repo and Atlas keeps it in sync nightly. The agent reads them
-            alongside your semantic layer when it answers.
+            plain-markdown collections — point a collection at your docs repo,
+            or connect Notion, Confluence, or GitBook directly — and Atlas
+            keeps it in sync nightly. The agent reads them alongside your
+            semantic layer when it answers.
           </p>
           <p className="m-0 mb-6 text-base leading-[1.65] text-fg-muted">
-            Every upload lands as a draft a human reviews before the agent can
-            see it. And knowledge only ever <em>informs</em> answers — it never
+            Every document lands as a draft a human reviews before the agent
+            can see it. And knowledge only ever <em>informs</em> answers — it never
             runs as SQL and never overrides your semantic layer.
           </p>
           <div className="flex flex-wrap gap-2.5">

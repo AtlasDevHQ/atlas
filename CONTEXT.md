@@ -271,6 +271,9 @@ The capture-and-payoff loop through which SQL query shapes observed in live exec
 - **Confidence** — the machine's evidence meter for a query pattern, derived from observed repetition. It gates **machine** promotion and ranks retrieval; it is never written by human decisions and never encodes trust. Human approval and machine confidence are the two independent roads to injection eligibility.
   _Avoid_: reading confidence as correctness or human endorsement; any human action that mutates it.
 
+- **Auto-promotion** — the machine road to injection eligibility: a **workspace-scoped, per-workspace opt-in, off by default** — the same SaaS-first posture as autonomous improvement, with self-hosted's single workspace as the degenerate case. Capture is always-on everywhere (it is free and deterministic); auto-promotion is the workspace's one trust dial. Decay is its counterpart and never touches human approvals.
+  _Avoid_: a platform-scoped or env-only promotion switch (a tenant-behavior knob belongs in the workspace settings registry); "the loop is self-maintaining" on a workspace that hasn't opted in.
+
 ## Chat turn presentation
 
 How one agent turn is presented in the chat transcript. A turn has two faces: the **activity** (everything the agent did on the way) and the **answer** (what the turn exists to deliver). Presentation is answer-first: the answer is the visually dominant element; activity is live while the agent works, then settles into a collapsed receipt. Vocabulary pinned by PRD #4292 (answer-first chat turn presentation); the receipt/promotion mechanics shipped with #4298 (finished turns, notebook convergence #4301) and #4300 (live working phase), so the present-tense descriptions below are shipped behavior — remaining #4292 slices (answer styles, editorial voice) note their own status.

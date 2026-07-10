@@ -16,7 +16,7 @@ A curated set of ~20 canonical questions in `eval/canonical-questions/questions.
 - **Joins** — DTC vs marketplace revenue (joins `order_items` → `products`), top customers by spend (joins `customers` → `orders`)
 - **Time-series** — monthly GMV trend, new customers by month
 - **Virtual dimensions** — `orders.order_size_bucket`, `products.price_tier`
-- **Glossary disambiguation** — `revenue`, `status`, `price` are `status: ambiguous` and must trigger the disambiguation contract documented in [the typed MCP tools](../platform-ops/mcp-tools), never resolve to a single mapping
+- **Glossary disambiguation** — `revenue`, `status`, `price` are `status: ambiguous` and must trigger the disambiguation contract documented in [the typed MCP tools](/guides/mcp#searchglossary), never resolve to a single mapping
 - **Filtered query_patterns** — `orders.orders_with_promotions` (`WHERE status != 'cancelled'`), `products.dtc_vs_marketplace` (`WHERE status = 'active'`)
 
 ## Running locally
@@ -98,7 +98,7 @@ Atlas canonical-question eval
 
 | Trigger | Behavior |
 |---|---|
-| Pull request to `main` | Informational. `continue-on-error: true` — a regression posts the `X/N passing` line in the run log but doesn't block merge. Mirrors the [Lighthouse budget](#lighthouse-budget-advisory) first-month policy. |
+| Pull request to `main` | Informational. `continue-on-error: true` — a regression posts the `X/N passing` line in the run log but doesn't block merge. Mirrors the [Lighthouse budget](/self-hosted/contributing/ci#lighthouse-budget-advisory) first-month policy. |
 | Tag push (`v*.*.*`) | Blocking. `continue-on-error` flips off. A regression on a release tag trips the workflow red. |
 
 The LLM mode (`--llm`) is **not** run in CI. We keep the gate stable and deterministic; the LLM mode exists for local exploration when debugging an agent regression.

@@ -235,7 +235,7 @@ Three settings, one rule: **`saas` requires enterprise**. Without it, deploy mod
 | `saas` (explicit) | `saas` | `self-hosted` (silent fallback) |
 | `auto` (default) | `saas` if `DATABASE_URL` set, else `self-hosted` | `self-hosted` |
 
-See [Environment Variables](/reference/environment-variables#deploy-mode) for the full env-var schema.
+See [Environment Variables](/reference/environment-variables#enterprise) for the full env-var schema.
 
 ---
 
@@ -375,5 +375,5 @@ When `ATLAS_ENTERPRISE_ENABLED=true` but `@atlas/ee/layers` fails to import at r
 - [Reference: Environment Variables](/reference/environment-variables) — `ATLAS_ENTERPRISE_ENABLED`, `ATLAS_ENTERPRISE_LICENSE_KEY`, `ATLAS_DEPLOY_MODE`
 - [Architecture: Entitlements](/architecture/entitlements) — plan-tier gating and the operator-workspace bypass that consumes the EE-aware admin surfaces
 - [Architecture: Sandbox](/architecture/sandbox) — companion design doc on the runtime sandbox boundary
-- [Comparisons: Metabase](/comparisons/metabase#license) — split-license positioning vs other AGPL BI tools
+- [Comparisons: Metabase](/comparisons/metabase#licensing) — split-license positioning vs other AGPL BI tools
 - [`ee/LICENSE`](https://github.com/AtlasDevHQ/atlas/blob/main/ee/LICENSE) — the commercial license verbatim

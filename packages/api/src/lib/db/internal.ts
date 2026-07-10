@@ -1584,7 +1584,8 @@ export async function insertSemanticAmendment(amendment: {
    * derivable from `source_entity`), can recover the group and apply the
    * amendment against the correct scope (no 409, no default-scope
    * corruption). Required so the invariant is compile-enforced, not
-   * doc-enforced: the scheduler passes the finding's group, and the
+   * doc-enforced: the scheduler and the CLI `improve` command pass the
+   * finding's group (the CLI's flat-root findings map to NULL), and the
    * interactive `proposeAmendment` tool passes the `applyGroupId` its
    * baseline was resolved from via `resolveAmendmentBaseline` (#4488, #4498)
    * — so human-reviewed approves resolve the same scoped row the

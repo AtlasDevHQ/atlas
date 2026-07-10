@@ -2,7 +2,7 @@
 
 Revamp a cluttered admin or SaaS page using the `.impeccable.md` toolkit — the same workflow that turned `/admin/integrations` from a wall of ten open forms into a clean progressive-disclosure surface.
 
-**Use this when:** a page feels like wall-of-cards, wall-of-forms, or is otherwise visually monotonous / overwhelming in its empty state.
+**Use this when:** a page feels like wall-of-cards, wall-of-forms, or is otherwise visually monotonous / overwhelming in its empty state. If the itch is more than presentational — the surface's behavior, data model, or agent path is beneath its potential — use `/elevate` instead; a revamp is a presentational pass only.
 
 **Argument:** path or URL of the page to revamp (e.g. `/admin/integrations`, `packages/web/src/app/admin/billing/page.tsx`).
 

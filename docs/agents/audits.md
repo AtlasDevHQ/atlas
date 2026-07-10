@@ -2,6 +2,8 @@
 
 Conventions shared by the `-audit` family — `/docs-audit` (docs vs code), `/www-audit` (marketing/legal vs reality), `/prod-audit` (runtime readiness vs prod requirements), `/contracts-audit` (code vs stability commitments — semver evidence for `/release`). Each command reads this file before spawning its agents.
 
+**A borrower, not a member:** `/elevate` (feature elevation audits, Phase 1 of `workflow.md`) reads this file and applies Step 0, discover-don't-enumerate, snapshot-decay, and cite-don't-refile — but it is **not** in the `-audit` family or the pre-tag battery. Its job is elevation (find what's beneath potential), not verification (check claims against reality), and its report discipline differs: findings stay in a `.claude/research/` doc for a grill session; issues are filed only when the fix is invariant under the grill's outcome.
+
 **The pre-tag battery:** at the end of a code cycle, before `/release`: `/docs-audit` (with Part K) + `/contracts-audit` always; `/www-audit` when the window touched pricing/legal/marketing surfaces; `/prod-audit` (with Part F, the security seam sweep) when it touched infra, boot, or security seams. `/contracts-audit`'s output — the semver recommendation and any policy violations — feeds the tag decision directly.
 
 **Why this file exists:** a 2026-07 sweep found all three commands had drifted from the codebase — dead file paths, shipped features still described as open issues, checks that silently matched nothing (a grep against a file that no longer contained the pattern), and a security check whose success criterion was inverted for SaaS. Audit commands are snapshots of reality, and reality moves. These conventions are the mechanics that make drift self-announcing instead of silent.

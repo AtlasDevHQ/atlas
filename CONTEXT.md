@@ -229,6 +229,15 @@ The review loop through which AI-proposed changes to the semantic layer become r
 - **Anchor** — what an Improvement conversation optionally starts from: a **group**, an **entity**, or a **column**. The anchor scopes the agent's briefing and persists as context for the conversation; it is a launcher into the chat, never a cage — the admin can always converse free-form. A sweep ("find improvements") is simply the anchorless start.
   _Avoid_: modeling entry points as separate surfaces or modes — every entry point starts the same conversation with a different anchor.
 
+- **Briefing** — the deterministic context the expert agent is handed at turn one of an Improvement conversation: health score, analyzer findings, audit-pattern summary, rejection memory, the Pending queue, and whatever the Anchor scopes in (a group's entity inventory, an entity's YAML, a column's profile). Served from tracked profiles with a staleness marker — never recomputed against the customer database just to start a chat.
+  _Avoid_: making the agent rediscover deterministic facts through tool calls; "context dump" (the briefing is curated, anchor-scoped).
+
+- **Dialect specialist** — engine-specific expertise (Postgres, MySQL, ClickHouse, …) as a composable prompt module keyed by dbType, shipped by the datasource plugin, and resolved into the conversation for the groups in scope. One agent, composed prompt: the specialist module knows the engine; the expert persona owns the semantic layer and Amendments.
+  _Avoid_: separate per-engine agents handing off to each other; "the Postgres agent" as a distinct actor (it is a module in the one agent's prompt, in the same way an answer style is).
+
+- **Baseline profile / LLM profile** — the two tracked tiers of knowing a connection. The baseline profile is cheap and deterministic (schema, types, counts, samples) and runs automatically when a profilable connection is created (REST datasources excluded). The LLM profile is the enrichment pass — never automatic, billing-gated, tracked per connection (when, over what).
+  _Avoid_: one boolean "profiled"; running LLM enrichment implicitly.
+
 ### Anti-confusions
 
 - **Amendments refine; enrich grows.** Nothing an Amendment can do adds an entity or expands the queryable table set — that containment is what makes auto-approve and the scheduler safe to contemplate. A column or table with **no** semantic coverage is shown honestly as uncovered and routes to the enrich flow (a human-initiated act with whitelist consequences), never to an "add entity" amendment type.

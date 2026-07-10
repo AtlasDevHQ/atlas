@@ -42,6 +42,7 @@ import { GITBOOK_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/
 import { ZENDESK_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/zendesk-form-handler";
 import { INTERCOM_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/intercom-form-handler";
 import { FRONT_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/front-form-handler";
+import { FRESHDESK_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/freshdesk-form-handler";
 import { SALESFORCE_KNOWLEDGE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/salesforce-knowledge-form-handler";
 import { HELPSCOUT_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/helpscout-form-handler";
 import { SYNC_CYCLE_INSTALLS_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
@@ -695,6 +696,35 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     // The Docs API key is NEVER persisted in the install config.
     expect(row.rows[0]?.config).not.toHaveProperty("api_key");
     expect(row.rows[0]?.config).toMatchObject({ site_id: "site-1", subdomain: "acme" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("installs a Freshdesk per-category connector collection against the live schema (#4401)", async () => {
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+       VALUES ('catalog:freshdesk', 'Knowledge Base (Freshdesk Solutions)', 'freshdesk', 'context', 'knowledge', 'form')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    const installed = await pool.query<{ id: string }>(FRESHDESK_INSTALL_UPSERT_SQL, [
+      "row-freshdesk",
+      ws,
+      "catalog:freshdesk",
+      "freshdesk-support",
+      JSON.stringify({ subdomain: "acme", category_id: "80000001", category_name: "Support" }),
+    ]);
+    expect(installed.rows[0]?.id).toBe("row-freshdesk");
+    const row = await pool.query<{ pillar: string; status: string; config: Record<string, unknown> }>(
+      `SELECT pillar, status, config FROM workspace_plugins
+        WHERE workspace_id = $1 AND install_id = 'freshdesk-support'`,
+      [ws],
+    );
+    expect(row.rows[0]).toMatchObject({ pillar: "knowledge", status: "published" });
+    // The API key is NEVER persisted in the install config.
+    expect(row.rows[0]?.config).not.toHaveProperty("api_key");
+    expect(row.rows[0]?.config).toMatchObject({
+      subdomain: "acme",
+      category_id: "80000001",
+      category_name: "Support",
+    });
   }, PG_TEST_TIMEOUT_MS);
 
   it("the cycle's install listing returns ONLY enabled, non-archived bundle-sync installs (#4211)", async () => {

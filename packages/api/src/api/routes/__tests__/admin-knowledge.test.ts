@@ -760,6 +760,31 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     expect(hs?.endpointUrl).toBeNull();
     expect(hs?.sync).not.toBeNull();
   });
+
+  it("dispatches a Freshdesk collection to the connector engine and lists it as source 'freshdesk' (#4401)", async () => {
+    COLLECTION = {
+      install_id: "freshdesk-support",
+      catalog_id: "catalog:freshdesk",
+      status: "published",
+      config: { subdomain: "acme", category_id: "80000001", category_name: "Support" },
+    };
+    SYNC_STATES = [
+      { collection_id: "freshdesk-support", last_sync_at: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    ];
+    const syncRes = await adminKnowledge.request("/freshdesk-support/sync", { method: "POST" });
+    expect(syncRes.status).toBe(200);
+    expect(syncConnectorCollection).toHaveBeenCalledTimes(1);
+    expect(syncCollection).not.toHaveBeenCalled();
+
+    const listRes = await adminKnowledge.request("/", { method: "GET" });
+    const body = (await listRes.json()) as {
+      collections: Array<{ slug: string; source: string; endpointUrl: string | null; sync: unknown }>;
+    };
+    const freshdesk = body.collections.find((c) => c.slug === "freshdesk-support");
+    expect(freshdesk?.source).toBe("freshdesk");
+    expect(freshdesk?.endpointUrl).toBeNull();
+    expect(freshdesk?.sync).not.toBeNull();
+  });
 });
 
 describe("knowledge mirror invalidation (#4208)", () => {

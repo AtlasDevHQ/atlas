@@ -31,6 +31,7 @@ import {
   BUILTIN_INTERCOM_CATALOG_ROW,
   BUILTIN_FRONT_CATALOG_ROW,
   BUILTIN_HELPSCOUT_CATALOG_ROW,
+  BUILTIN_FRESHDESK_CATALOG_ROW,
   BUILTIN_KNOWLEDGE_CATALOG_ROWS,
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
@@ -277,6 +278,29 @@ describe("BUILTIN_HELPSCOUT_CATALOG_ROW (#4398)", () => {
   });
 });
 
+describe("BUILTIN_FRESHDESK_CATALOG_ROW (#4401)", () => {
+  it("is the `freshdesk` form install: a subdomain + a single secret API key, NO base URL", () => {
+    const row = BUILTIN_FRESHDESK_CATALOG_ROW;
+    expect(row.slug).toBe("freshdesk");
+    expect(row.id).toBe("catalog:freshdesk");
+    expect(row.installModel).toBe("form");
+    expect(row.autoInstall).toBe(false);
+    const keys = row.configSchema.map((f) => f.key);
+    expect(keys).toContain("subdomain");
+    expect(keys).toContain("api_key");
+    expect(keys).toContain("description");
+    // Hosts are composed from the subdomain label (`*.freshdesk.com`) — no
+    // free-form URL field, and no category field: categories are enumerated at
+    // install time (one collection per category).
+    expect(keys).not.toContain("base_url");
+    expect(keys).not.toContain("category_id");
+    // Exactly one secret field: the API key (never echoed).
+    expect(row.configSchema.filter((f) => f.secret === true).map((f) => f.key)).toEqual(["api_key"]);
+    expect(row.configSchema.find((f) => f.key === "api_key")?.required).toBe(true);
+    expect(row.configSchema.find((f) => f.key === "subdomain")?.required).toBe(true);
+  });
+});
+
 describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
   it("issues one INSERT per built-in row with type 'context' and pillar 'knowledge'", async () => {
     const { db, captured } = captureDb();
@@ -304,6 +328,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "intercom",
       "front",
       "helpscout",
+      "freshdesk",
     ]);
   });
 
@@ -335,6 +360,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "intercom",
       "front",
       "helpscout",
+      "freshdesk",
     ]);
     // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).
     const reboot = await seedBuiltinKnowledgeCatalog(captureDb(false).db);

@@ -15,73 +15,11 @@ import { createTwoFilesPatch } from "diff";
 import { hasInternalDB, insertSemanticAmendment } from "@atlas/api/lib/db/internal";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { runUserQueryPipeline } from "@atlas/api/lib/tools/sql";
-import type { AmendmentPayload, AmendmentType } from "@useatlas/types";
+import type { AmendmentPayload } from "@useatlas/types";
+import type { AnalysisResult } from "@atlas/api/lib/semantic/expert/types";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 
 const log = createLogger("tool:propose-amendment");
-
-/** Apply an amendment to a parsed entity object and return the updated object. */
-function applyAmendment(
-  entity: Record<string, unknown>,
-  amendmentType: AmendmentType,
-  amendment: Record<string, unknown>,
-): Record<string, unknown> {
-  const updated = structuredClone(entity);
-
-  switch (amendmentType) {
-    case "add_dimension": {
-      const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
-      dims.push(amendment);
-      updated.dimensions = dims;
-      break;
-    }
-    case "add_measure": {
-      const measures = (updated.measures ?? []) as Record<string, unknown>[];
-      measures.push(amendment);
-      updated.measures = measures;
-      break;
-    }
-    case "add_join": {
-      const joins = (updated.joins ?? []) as Record<string, unknown>[];
-      joins.push(amendment);
-      updated.joins = joins;
-      break;
-    }
-    case "add_query_pattern": {
-      const patterns = (updated.query_patterns ?? []) as Record<string, unknown>[];
-      patterns.push(amendment);
-      updated.query_patterns = patterns;
-      break;
-    }
-    case "update_description": {
-      if (amendment.field === "table") {
-        updated.description = amendment.description;
-      } else if (amendment.dimension) {
-        const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
-        const target = dims.find((d) => d.name === amendment.dimension);
-        if (target) target.description = amendment.description;
-      }
-      break;
-    }
-    case "update_dimension": {
-      const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
-      const target = dims.find((d) => d.name === amendment.name);
-      if (target) Object.assign(target, amendment);
-      break;
-    }
-    case "add_virtual_dimension": {
-      const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
-      dims.push({ ...amendment, virtual: true });
-      updated.dimensions = dims;
-      break;
-    }
-    case "add_glossary_term":
-      // Glossary amendments don't modify entity files — handled separately
-      break;
-  }
-
-  return updated;
-}
 
 export const proposeAmendment = tool({
   description: `Propose a semantic layer YAML change. Generates a unified diff and writes to the review queue.
@@ -128,35 +66,74 @@ The amendment object should match the YAML structure for that type (e.g., { name
     confidence,
   }) => {
     try {
-      // Load current entity YAML
-      const entityPath = path.join(
-        getSemanticRoot(),
-        "entities",
-        `${entityName}.yml`,
-      );
+      // Content scope for this turn: the org + Connection group the request
+      // resolves entities against (#2345). Threaded into the baseline read so
+      // the diff is computed against the SAME document approval will mutate.
+      const orgId = getRequestContext()?.user?.activeOrganizationId ?? null;
+      const connectionGroupId = getRequestContext()?.connectionGroupId;
 
-      let beforeYaml: string;
+      // Load the current entity baseline.
+      //
+      // When an internal DB is present (SaaS + self-hosted-with-DB), entities
+      // live in `semantic_entities` — org entities and group entities are
+      // ABSENT from the flat disk root (ADR-0012). Read them through the SAME
+      // org/group-aware resolver the apply path uses, so the diff the admin
+      // reviews describes exactly what approval writes (#4488). The resolved
+      // `targetGroupId` is the row's OWN group — threaded into the auto-approve
+      // apply below so the write lands in the scope the diff was computed from.
       let entity: Record<string, unknown>;
+      let applyGroupId: string | null = null;
 
-      if (fs.existsSync(entityPath)) {
-        beforeYaml = fs.readFileSync(entityPath, "utf-8");
+      if (hasInternalDB()) {
+        const { resolveAmendmentBaseline } = await import(
+          "@atlas/api/lib/semantic/expert/apply"
+        );
+        const baseline = await resolveAmendmentBaseline(
+          orgId,
+          entityName,
+          connectionGroupId,
+        );
+        entity = baseline.parsed;
+        applyGroupId = baseline.targetGroupId;
+      } else {
+        // No internal DB (self-hosted preview only): entities live on disk in
+        // the flat root and the apply path never runs (the DB-backed insert +
+        // apply seam below is skipped), so there is no diff-vs-apply scope to
+        // reconcile. Read the flat-root mirror for the preview.
+        const entityPath = path.join(getSemanticRoot(), "entities", `${entityName}.yml`);
+        if (!fs.existsSync(entityPath)) {
+          return {
+            error: `Entity file not found: ${entityPath}. Check that the entity name matches a YAML file in the semantic layer.`,
+          };
+        }
         // `loadYaml` returns undefined for an empty file (v5 would throw),
         // routing it into the tailored "empty or malformed" error below.
-        const raw = loadYaml(beforeYaml);
+        const raw = loadYaml(fs.readFileSync(entityPath, "utf-8"));
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
           return {
             error: `Entity file ${entityName}.yml could not be parsed as a YAML mapping. The file may be empty or malformed.`,
           };
         }
         entity = raw as Record<string, unknown>;
-      } else {
-        return {
-          error: `Entity file not found: ${entityPath}. Check that the entity name matches a YAML file in the semantic layer.`,
-        };
       }
 
-      // Apply amendment
-      const updated = applyAmendment(entity, amendmentType, amendment);
+      // Apply the amendment through the SAME authoritative mutation the apply
+      // path uses (upsertByIdentity, throw-on-missing-target) — no divergent
+      // local copy that could preview a clean append where apply replaces, or
+      // "no change" where apply errors (#4488).
+      const { applyAmendment } = await import("@atlas/api/lib/semantic/expert/apply");
+      const updated = applyAmendment(entity, {
+        category: "coverage_gaps",
+        entityName,
+        group: connectionGroupId ?? "default",
+        amendmentType,
+        amendment,
+        rationale,
+        impact: 0,
+        confidence,
+        staleness: 0,
+        score: 0,
+      } satisfies AnalysisResult);
 
       // Normalize both sides through yaml.dump() with identical options so
       // the diff only shows actual content changes, not formatting drift
@@ -231,7 +208,6 @@ The amendment object should match the YAML structure for that type (e.g., { name
       let status: "queued" | "auto_approved";
 
       if (hasInternalDB()) {
-        const orgId = getRequestContext()?.user?.activeOrganizationId ?? null;
         const result = await insertSemanticAmendment({
           orgId,
           description: `[${amendmentType}] ${entityName}: ${rationale}`,
@@ -262,9 +238,11 @@ The amendment object should match the YAML structure for that type (e.g., { name
             await applyAmendmentFromPayload({
               orgId,
               sourceEntity: entityName,
-              // Interactive proposals read the flat semantic root, so the
-              // default (NULL) Connection group is the correct apply scope.
-              connectionGroupId: null,
+              // Thread the SAME group the baseline was resolved from (the
+              // resolved row's own `connection_group_id`) so approval writes
+              // the scope the diff was computed against — never the flat/NULL
+              // default for an org/group-scoped entity (#4488).
+              connectionGroupId: applyGroupId,
               // `rawPayload` is typed `unknown`, so the AmendmentPayload passes
               // through directly (matches the admin approve call sites).
               rawPayload: payload,
@@ -319,7 +297,12 @@ The amendment object should match the YAML structure for that type (e.g., { name
       };
     } catch (err) {
       log.warn(
-        { err: err instanceof Error ? err.message : String(err), entityName, amendmentType },
+        {
+          err: err instanceof Error ? err.message : String(err),
+          entityName,
+          amendmentType,
+          requestId: getRequestContext()?.requestId,
+        },
         "proposeAmendment failed",
       );
       return {

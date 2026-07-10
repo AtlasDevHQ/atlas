@@ -10,6 +10,7 @@ import { loadYaml } from "../yaml";
 import { ANALYSIS_CATEGORIES, type AnalysisResult, type AnalysisCategory } from "./types";
 import { AMENDMENT_TYPES, type AmendmentType } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { SemanticEntityRow } from "@atlas/api/lib/semantic/entities";
 
 const log = createLogger("semantic-expert-apply");
 
@@ -30,11 +31,92 @@ function groupToLookupScope(group: string | undefined): string | null | undefine
 }
 
 /**
+ * Resolve the current entity ROW + parsed YAML baseline for an amendment,
+ * scoped to its Connection group (ADR-0012, #3284). This is the SINGLE resolver
+ * both the diff preview (`proposeAmendment`) and the write
+ * (`applyAmendmentToEntity`) go through — identical org/group scoping on both,
+ * so the document an admin reviews is the one approval mutates (each path does
+ * its own DB read, so a concurrent write between them is not excluded — but the
+ * scope can no longer diverge, which is the flat-root-vs-DB bug this closes:
+ * the tool diffed a stale/absent file while apply mutated the org's DB row,
+ * #4488).
+ *
+ * Lookup:
+ * - scoped lookup via `groupToLookupScope(group)` — an explicit group avoids
+ *   the unscoped ambiguity 409 for a name shared across groups; an undefined
+ *   group keeps the legacy unscoped behavior for the interactive path;
+ * - on a scoped miss (`group !== undefined`), fall back to the back-compat
+ *   UNSCOPED lookup, which resolves a unique match (and only throws
+ *   `AmbiguousEntityError` on genuine cross-group ambiguity).
+ *
+ * The returned `targetGroupId` is the resolved row's OWN `connection_group_id`
+ * — authoritative for every write-back, and the group callers must thread to
+ * the apply so it lands in the exact scope the baseline was read from.
+ *
+ * @throws when the entity is absent for this org, or its stored YAML is not a
+ *   mapping. An `AmbiguousEntityError` from an unscoped multi-group lookup
+ *   propagates too — the apply/approve route path maps it to 409; the
+ *   `proposeAmendment` tool catches it and returns a generic error result.
+ */
+export async function resolveAmendmentBaseline(
+  orgId: string | null,
+  entityName: string,
+  group: string | undefined,
+): Promise<{
+  row: SemanticEntityRow;
+  targetGroupId: string | null;
+  parsed: Record<string, unknown>;
+}> {
+  // Self-hosted (null orgId) uses empty string as sentinel for global scope
+  const effectiveOrgId = orgId ?? "";
+
+  const { getEntity } = await import("@atlas/api/lib/semantic/entities");
+
+  const lookupScope = groupToLookupScope(group);
+  let row = await getEntity(effectiveOrgId, "entity", entityName, lookupScope);
+  if (!row && lookupScope !== undefined) {
+    // The persisted group didn't resolve to a row — e.g. an interactive
+    // `proposeAmendment` row (NULL group) whose flat-root entity was imported
+    // under a datasource group, or a stale group label. Fall back to the
+    // back-compat UNSCOPED lookup. Log the fallback so a wrong-scope diagnosis
+    // isn't silent — the write-back below still targets the resolved row's OWN
+    // group, so this only widens the read, never the write.
+    log.debug(
+      { entityName, requestedScope: lookupScope },
+      "scoped amendment baseline lookup missed — falling back to unscoped resolve",
+    );
+    row = await getEntity(effectiveOrgId, "entity", entityName);
+  }
+  if (!row) {
+    throw new Error(
+      `Entity "${entityName}" not found for org ${orgId ?? "self-hosted (global)"}`,
+    );
+  }
+
+  // The row's OWN group is authoritative for every write-back — whether we
+  // resolved it by explicit scope or via the unscoped fallback, this is the
+  // exact row we read, so the amendment can never be written into a different
+  // (e.g. default) scope than the one it was analyzed against (#3284).
+  const targetGroupId = row.connection_group_id ?? null;
+
+  // Parse current YAML.
+  // `loadYaml` returns undefined for a document-less row (v5 would throw),
+  // routing it into the "expected a mapping" guard below.
+  const parsed = loadYaml(row.yaml_content) as Record<string, unknown>;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Failed to parse YAML for entity "${entityName}": expected a mapping`);
+  }
+
+  return { row, targetGroupId, parsed };
+}
+
+/**
  * Apply an amendment from an AnalysisResult to the org's semantic entity.
  *
  * 1. Read current YAML from DB — scoped to the finding's Connection group
- *    (`result.group`) so a group entity resolves without a 409 (#3284)
- * 2. Parse, apply amendment, serialize back
+ *    (`result.group`) so a group entity resolves without a 409 (#3284), via the
+ *    shared {@link resolveAmendmentBaseline} the diff preview also uses (#4488)
+ * 2. Apply amendment, serialize back
  * 3. Upsert entity + create version snapshot — written back to the row's OWN
  *    `connection_group_id`, so the amendment can never land in the wrong scope
  * 4. Invalidate caches and sync to disk (same group)
@@ -47,6 +129,14 @@ export async function applyAmendmentToEntity(
   // Self-hosted (null orgId) uses empty string as sentinel for global scope
   const effectiveOrgId = orgId ?? "";
 
+  // Read the baseline through the shared resolver so the diff preview and this
+  // write agree on the exact row + scope (#4488). Returns the row's OWN group.
+  const { row: entity, targetGroupId, parsed } = await resolveAmendmentBaseline(
+    orgId,
+    result.entityName,
+    result.group,
+  );
+
   const {
     getEntity,
     upsertEntityForGroup,
@@ -54,41 +144,6 @@ export async function applyAmendmentToEntity(
     generateChangeSummary,
     AmbiguousEntityError,
   } = await import("@atlas/api/lib/semantic/entities");
-
-  // Look the entity up in its Connection group (ADR-0012, #3284). An explicit
-  // group avoids the unscoped ambiguity 409 for a name shared across groups;
-  // an undefined group keeps the legacy unscoped behavior for the interactive
-  // path. `getEntity` may still throw AmbiguousEntityError (undefined group,
-  // 2+ groups) — that propagates to the route as a 409 with `groups`.
-  const lookupScope = groupToLookupScope(result.group);
-  let entity = await getEntity(effectiveOrgId, "entity", result.entityName, lookupScope);
-  if (!entity && lookupScope !== undefined) {
-    // The persisted group didn't resolve to a row — e.g. an interactive
-    // `proposeAmendment` row (NULL group) whose flat-root entity was imported
-    // under a datasource group, or a stale group label. Fall back to the
-    // back-compat UNSCOPED lookup, which resolves a unique match (and only
-    // throws AmbiguousEntityError → 409 on genuine cross-group ambiguity). The
-    // write-back below still targets the resolved row's OWN group, so a wrong
-    // scope is never written.
-    entity = await getEntity(effectiveOrgId, "entity", result.entityName);
-  }
-  if (!entity) {
-    throw new Error(`Entity "${result.entityName}" not found for org ${orgId}`);
-  }
-
-  // The row's OWN group is authoritative for every write-back below — whether
-  // we resolved it by explicit scope or via the unscoped fallback, this is the
-  // exact row we read, so the amendment can never be written into a different
-  // (e.g. default) scope than the one it was analyzed against (#3284).
-  const targetGroupId = entity.connection_group_id ?? null;
-
-  // Parse current YAML
-  // `loadYaml` returns undefined for a document-less row (v5 would throw),
-  // routing it into the "expected a mapping" guard below.
-  const parsed = loadYaml(entity.yaml_content) as Record<string, unknown>;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`Failed to parse YAML for entity "${result.entityName}": expected a mapping`);
-  }
 
   // Apply amendment (same logic as CLI's apply-amendment)
   const updated = applyAmendment(parsed, result);

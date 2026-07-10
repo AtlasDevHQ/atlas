@@ -181,6 +181,24 @@ const nextConfig: NextConfig = {
     ];
   },
   // SECURITY-HEADERS-END
+  // RFC 9116 security.txt (#4467): per-origin, so the app origin must answer
+  // /.well-known/security.txt itself. When ATLAS_SECURITY_TXT_URL is set at
+  // build time (deploy/web/Dockerfile pins it to the canonical www copy for
+  // app.useatlas.dev), the path 307-redirects there — the redirect keeps the
+  // www file the single source of truth, which RFC 9116 §3 permits. Unset
+  // (the self-hosted default) adds no route: Atlas's security contact is not
+  // the operator's, and an operator with their own policy can set the var.
+  async redirects() {
+    const securityTxtUrl = process.env.ATLAS_SECURITY_TXT_URL?.trim();
+    if (!securityTxtUrl) return [];
+    return [
+      {
+        source: "/.well-known/security.txt",
+        destination: securityTxtUrl,
+        permanent: false,
+      },
+    ];
+  },
   // When NEXT_PUBLIC_ATLAS_API_URL is set, the frontend talks directly to the API
   // (cross-origin), so no server-side rewrite is needed. When unset, Next.js proxies
   // /api/* to the Hono API server (ATLAS_API_URL, default localhost:3001).

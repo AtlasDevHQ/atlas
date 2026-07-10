@@ -98,10 +98,17 @@ ARG NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=atlas
 # var onto this `--build-arg` automatically. Empty default = no widget (correct
 # for self-hosted / any deploy that doesn't set it).
 ARG NEXT_PUBLIC_TURNSTILE_SITE_KEY=
+# RFC 9116 security.txt (#4467): app.useatlas.dev must answer
+# /.well-known/security.txt per-origin. next.config.ts reads this at build
+# time and adds a 307 redirect to the canonical www copy (the SSOT); the
+# default stays empty in packages/web so self-hosted builds add no route.
+# Server-side only (redirects() runs at build) — deliberately NOT NEXT_PUBLIC.
+ARG ATLAS_SECURITY_TXT_URL=https://www.useatlas.dev/.well-known/security.txt
 ENV NEXT_PUBLIC_ATLAS_API_URL=$NEXT_PUBLIC_ATLAS_API_URL
 ENV NEXT_PUBLIC_ATLAS_AUTH_MODE=$NEXT_PUBLIC_ATLAS_AUTH_MODE
 ENV NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=$NEXT_PUBLIC_ATLAS_COOKIE_PREFIX
 ENV NEXT_PUBLIC_TURNSTILE_SITE_KEY=$NEXT_PUBLIC_TURNSTILE_SITE_KEY
+ENV ATLAS_SECURITY_TXT_URL=$ATLAS_SECURITY_TXT_URL
 RUN cd packages/web && bun run build
 
 # --- runner ---

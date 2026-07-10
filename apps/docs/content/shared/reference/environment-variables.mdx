@@ -211,7 +211,7 @@ Caps and cadence for hosted <AudienceLink saas="/guides/knowledge-base">Knowledg
 
 ## Security
 
-Query safety and SQL validation settings. See <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink> for how these are enforced.
+Query safety, SQL validation, and security-disclosure settings. See <AudienceLink saas="/security/sql-validation">SQL Validation Pipeline</AudienceLink> for how the query-safety settings are enforced.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -228,6 +228,7 @@ Query safety and SQL validation settings. See <AudienceLink saas="/security/sql-
 | `ATLAS_CACHE_TTL` | `300000` | Cache TTL in milliseconds (default: 5 minutes) |
 | `ATLAS_CACHE_MAX_SIZE` | `1000` | Maximum number of cached query results |
 | `ATLAS_ORG_WHITELIST_TTL_MS` | `60000` (60s) | TTL in milliseconds for the per-org semantic-layer table-whitelist cache. The whitelist is built from `semantic/entities/*.yml` (and the per-org `semantic_entities` table in multi-tenant mode); a longer TTL reduces semantic-layer scans at the cost of slower visibility for newly-added entities. Invalidate the cache by restarting the API or, in multi-tenant mode, publishing a draft entity (which invalidates the org's cache atomically) |
+| `ATLAS_SECURITY_TXT_URL` | — | RFC 9116 `security.txt` redirect for the web frontend (#4467). **Build-time**, read by `packages/web/next.config.ts` `redirects()`: when set, `/.well-known/security.txt` on the web origin 307-redirects to this URL. Atlas's hosted app build (`deploy/web/Dockerfile`) pins it to the canonical `https://www.useatlas.dev/.well-known/security.txt`. Unset (the self-hosted default) adds no route — set it to your own published policy URL to advertise a disclosure contact on your web origin. The API origin needs no var: on `saas` deploys it serves an equivalent redirect (302) to the same canonical URL automatically |
 
 <Callout type="warn">
 Non-SELECT SQL (INSERT, UPDATE, DELETE, DROP, etc.) is **always rejected** — there is no toggle to disable this. The `ATLAS_TABLE_WHITELIST` setting only controls whether queries are restricted to semantic layer tables.

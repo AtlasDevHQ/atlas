@@ -1,8 +1,10 @@
 /**
- * `.well-known` metadata endpoints for the OAuth 2.1 / OIDC provider and
- * the MCP resource server (#2024).
+ * `.well-known` endpoints served by the API origin: the OAuth 2.1 / OIDC
+ * provider and MCP resource-server discovery documents (#2024), plus the
+ * other per-origin `.well-known` surfaces — `/agent-configuration` (#4409)
+ * and `/security.txt` (#4467), documented at their routes below.
  *
- * Three routes live here:
+ * The three OAuth/MCP discovery routes:
  *
  *   /.well-known/oauth-authorization-server/api/auth
  *     RFC 8414 — published by the authorization server. Tells clients
@@ -39,6 +41,7 @@ import { Hono } from "hono";
 import { createLogger } from "@atlas/api/lib/logger";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { getConfig } from "@atlas/api/lib/config";
 
 const log = createLogger("well-known");
 
@@ -501,6 +504,38 @@ function notFoundAgentConfig(): Response {
     { status: 404, headers: { "Content-Type": "application/json" } },
   );
 }
+
+// ── /.well-known/security.txt ────────────────────────────────────────
+// RFC 9116 is per-origin, and the api/mcp origins are exactly where a
+// researcher who found a vulnerability goes looking for a disclosure
+// contact (#4467). The canonical policy lives on www
+// (apps/www/public/.well-known/security.txt — the SSOT; its `Expires:`
+// refresh procedure lives in docs/guides/pgp-key-procedure.md, #1923).
+// Every other Atlas-hosted origin points there instead of serving a
+// second copy that could drift. RFC 9116 §3 explicitly permits serving
+// the file via redirect.
+//
+// Gated on the resolved SaaS deploy mode: on a self-hosted deployment
+// Atlas's security contact is NOT the operator's, so advertising it would
+// misdirect vulnerability reports — the path stays 404 there, unchanged.
+const WWW_SECURITY_TXT_URL =
+  "https://www.useatlas.dev/.well-known/security.txt";
+
+wellKnown.get("/security.txt", (c) => {
+  if (getConfig()?.deployMode !== "saas") {
+    return c.json(
+      {
+        error: "not_found",
+        message: "security.txt is not published on this deployment.",
+      },
+      404,
+    );
+  }
+  // Modest cache so crawlers don't hammer the origin; short enough that a
+  // future move of the canonical copy propagates within an hour.
+  c.header("Cache-Control", "public, max-age=3600");
+  return c.redirect(WWW_SECURITY_TXT_URL, 302);
+});
 
 // CORS preflight — MCP Inspector and some browser MCP UIs probe before
 // fetching. Same shape as the production response, no body.

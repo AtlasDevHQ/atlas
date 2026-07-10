@@ -256,6 +256,10 @@ describe("proposeAmendment auto-approve applies in the same flow (#4486)", () =>
     // Apply succeeded → the row legitimately stays approved; no revert.
     expect(mockRevertAmendmentToPending).not.toHaveBeenCalled();
     expect(result.status).toBe("auto_approved");
+    // Pin the wire contract the web relies on (#4499): an auto_approved result
+    // still carries the row id — `extractProposals` drops results without a
+    // `proposalId`, so losing it would silently hide the applied card.
+    expect(result.proposalId).toBe("prop-approved");
   });
 
   it("reverts the row to pending and reports queued when the auto-approve apply fails", async () => {

@@ -31,7 +31,13 @@ export interface Proposal {
   confidence: number;
   impact?: number;
   score?: number;
-  decision: "accepted" | "rejected" | "skipped" | null;
+  /**
+   * `null` = awaiting review (Approve/Reject shown). `accepted`/`rejected` =
+   * decided by the admin in this session. `applied` = the tool auto-approved
+   * and applied the amendment in-flow (#4499) — already live, nothing to
+   * review. `skipped` is reserved (legacy in-memory flow).
+   */
+  decision: "accepted" | "rejected" | "skipped" | "applied" | null;
   /**
    * The proposal's `learned_patterns` row id — the key every review routes on.
    * Set for every rendered proposal: chat-streamed cards derive it from the
@@ -55,6 +61,12 @@ export interface Proposal {
  * bad/missing entity file, or a persist error — so no row exists) has no
  * `proposalId`, and an in-flight call has no result yet; both lack a `dbId` and
  * are skipped so no unapprovable card is rendered.
+ *
+ * A result with `status: "auto_approved"` was already applied in-flow — its
+ * `learned_patterns` row is `approved`, so `/amendments/{id}/review` (which
+ * claims `WHERE status='pending'`) would 404 on it. It surfaces as
+ * `decision: "applied"` — a decided card with no review actions (#4499).
+ * `status: "queued"` (or a legacy result with no status) stays approvable.
  */
 export function extractProposals(messages: UIMessage[]): Proposal[] {
   const proposals: Proposal[] = [];
@@ -92,7 +104,7 @@ export function extractProposals(messages: UIMessage[]): Proposal[] {
             confidence: Number(args.confidence ?? 0.5),
             impact: Number(args.impact ?? 0.5),
             score: Number(args.score ?? 0.5),
-            decision: null,
+            decision: result?.status === "auto_approved" ? "applied" : null,
             dbId,
           });
         }

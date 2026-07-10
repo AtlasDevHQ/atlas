@@ -207,6 +207,16 @@ The semantic layer (entity YAMLs, glossary, metrics) describes the schema of a *
 
 - "source" / `connection:` / `--source` — historically the entity-group scope wore three different names: the YAML `connection:` field, the CLI `--source` flag, and the admin/API `source` (computed as the group id, defaulting to `"default"`). All three denote the **Connection group**. Canonical surface term: **group**; the aliases are deprecated and being unified.
 
+## Semantic improvement
+
+The review loop through which AI-proposed changes to the semantic layer become real: an expert agent (interactive) or the scheduler (autonomous) proposes, an admin reviews, an approval applies.
+
+- **Amendment** — the durable, reviewable unit of proposed semantic-layer change, and the *only* identity a proposed change has — the same one across every path that can create it (admin chat, scheduler, CLI). Lifecycle `pending → approved | rejected`, where **approved means applied**: a stamped-but-unapplied amendment is a bug, not a state.
+  _Avoid_: "proposal" as a distinct noun — to propose is to create a *pending* Amendment; there is no second, in-memory thing. "Pattern" (the storage table's historical name).
+
+- **Improvement conversation** — the admin's chat with the expert agent on the improve surface. It is a conversation, not a stored resource: nothing durable hangs off it except the Amendments it creates.
+  _Avoid_: "improvement session" — implies a stored, addressable resource; there is none (deleted rather than made durable — any future resumability rides ADR-0020 durable agent sessions, never a bespoke store). The CLI's interactive loop keeps local REPL state; that is not a session either.
+
 ## Chat turn presentation
 
 How one agent turn is presented in the chat transcript. A turn has two faces: the **activity** (everything the agent did on the way) and the **answer** (what the turn exists to deliver). Presentation is answer-first: the answer is the visually dominant element; activity is live while the agent works, then settles into a collapsed receipt. Vocabulary pinned by PRD #4292 (answer-first chat turn presentation); the receipt/promotion mechanics shipped with #4298 (finished turns, notebook convergence #4301) and #4300 (live working phase), so the present-tense descriptions below are shipped behavior — remaining #4292 slices (answer styles, editorial voice) note their own status.

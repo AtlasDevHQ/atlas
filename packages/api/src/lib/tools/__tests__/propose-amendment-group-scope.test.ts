@@ -152,6 +152,15 @@ describe("proposeAmendment baseline resolution is org/group-aware (#4488)", () =
     const writtenGroup = upsertEntityForGroup.mock.calls[0][4];
     expect(writtenGroup).toBe("eu_prod");
 
+    // Both the preview read AND the apply re-read (+ the refreshed post-upsert
+    // read) resolve the SAME scope — the "single shared resolver" contract. If
+    // the apply path scoped its read differently from the preview, the diff
+    // would no longer describe what apply wrote.
+    expect(getEntity.mock.calls.length).toBeGreaterThan(1);
+    for (const call of getEntity.mock.calls) {
+      expect(call[3]).toBe("eu_prod");
+    }
+
     // The YAML apply persisted parses to the SAME structural change the diff
     // previewed: the original `id` dimension plus the new `region` dimension,
     // both derived from the one DB baseline.

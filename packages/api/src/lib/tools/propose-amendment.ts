@@ -297,7 +297,12 @@ The amendment object should match the YAML structure for that type (e.g., { name
       };
     } catch (err) {
       log.warn(
-        { err: err instanceof Error ? err.message : String(err), entityName, amendmentType },
+        {
+          err: err instanceof Error ? err.message : String(err),
+          entityName,
+          amendmentType,
+          requestId: getRequestContext()?.requestId,
+        },
         "proposeAmendment failed",
       );
       return {

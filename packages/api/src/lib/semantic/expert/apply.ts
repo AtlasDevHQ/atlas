@@ -32,12 +32,14 @@ function groupToLookupScope(group: string | undefined): string | null | undefine
 
 /**
  * Resolve the current entity ROW + parsed YAML baseline for an amendment,
- * scoped to its Connection group (ADR-0012, #3284). This is the SINGLE read
+ * scoped to its Connection group (ADR-0012, #3284). This is the SINGLE resolver
  * both the diff preview (`proposeAmendment`) and the write
- * (`applyAmendmentToEntity`) go through, so the document an admin reviews is
- * provably the one approval mutates — no more flat-root-vs-DB divergence where
- * the tool diffed a stale/absent file while apply mutated the org's DB row
- * (#4488).
+ * (`applyAmendmentToEntity`) go through — identical org/group scoping on both,
+ * so the document an admin reviews is the one approval mutates (each path does
+ * its own DB read, so a concurrent write between them is not excluded — but the
+ * scope can no longer diverge, which is the flat-root-vs-DB bug this closes:
+ * the tool diffed a stale/absent file while apply mutated the org's DB row,
+ * #4488).
  *
  * Lookup:
  * - scoped lookup via `groupToLookupScope(group)` — an explicit group avoids
@@ -45,15 +47,16 @@ function groupToLookupScope(group: string | undefined): string | null | undefine
  *   group keeps the legacy unscoped behavior for the interactive path;
  * - on a scoped miss (`group !== undefined`), fall back to the back-compat
  *   UNSCOPED lookup, which resolves a unique match (and only throws
- *   `AmbiguousEntityError` → 409 on genuine cross-group ambiguity).
+ *   `AmbiguousEntityError` on genuine cross-group ambiguity).
  *
  * The returned `targetGroupId` is the resolved row's OWN `connection_group_id`
  * — authoritative for every write-back, and the group callers must thread to
  * the apply so it lands in the exact scope the baseline was read from.
  *
- * @throws when the entity is absent for this org (an `AmbiguousEntityError`
- *   from an unscoped multi-group lookup propagates to the route as 409), or its
- *   stored YAML is not a mapping.
+ * @throws when the entity is absent for this org, or its stored YAML is not a
+ *   mapping. An `AmbiguousEntityError` from an unscoped multi-group lookup
+ *   propagates too — the apply/approve route path maps it to 409; the
+ *   `proposeAmendment` tool catches it and returns a generic error result.
  */
 export async function resolveAmendmentBaseline(
   orgId: string | null,
@@ -75,11 +78,19 @@ export async function resolveAmendmentBaseline(
     // The persisted group didn't resolve to a row — e.g. an interactive
     // `proposeAmendment` row (NULL group) whose flat-root entity was imported
     // under a datasource group, or a stale group label. Fall back to the
-    // back-compat UNSCOPED lookup.
+    // back-compat UNSCOPED lookup. Log the fallback so a wrong-scope diagnosis
+    // isn't silent — the write-back below still targets the resolved row's OWN
+    // group, so this only widens the read, never the write.
+    log.debug(
+      { entityName, requestedScope: lookupScope },
+      "scoped amendment baseline lookup missed — falling back to unscoped resolve",
+    );
     row = await getEntity(effectiveOrgId, "entity", entityName);
   }
   if (!row) {
-    throw new Error(`Entity "${entityName}" not found for org ${orgId}`);
+    throw new Error(
+      `Entity "${entityName}" not found for org ${orgId ?? "self-hosted (global)"}`,
+    );
   }
 
   // The row's OWN group is authoritative for every write-back — whether we

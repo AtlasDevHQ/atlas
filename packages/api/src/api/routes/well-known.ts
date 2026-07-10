@@ -511,9 +511,9 @@ function notFoundAgentConfig(): Response {
 // contact (#4467). The canonical policy lives on www
 // (apps/www/public/.well-known/security.txt — the SSOT; its `Expires:`
 // refresh procedure lives in docs/guides/pgp-key-procedure.md, #1923).
-// Every other Atlas-hosted origin
-// redirects there instead of serving a second copy that could drift.
-// RFC 9116 §3 explicitly permits serving the file via redirect.
+// Every other Atlas-hosted origin points there instead of serving a
+// second copy that could drift. RFC 9116 §3 explicitly permits serving
+// the file via redirect.
 //
 // Gated on the resolved SaaS deploy mode: on a self-hosted deployment
 // Atlas's security contact is NOT the operator's, so advertising it would

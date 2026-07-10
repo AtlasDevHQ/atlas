@@ -19,6 +19,7 @@ The notebook shipped as a cell-based curation layer painted over a chat transcri
 
 ## Consequences
 
+- Existing notebook conversations (two internal workspaces only) are **converted to chat** (`surface: "web"`), preserving their message history — a deploy never silently destroys user-visible history, even in the clean-break window. Fork children become ordinary standalone chats (their " (fork)" titles are cosmetic); the branch pointers die with `notebook_state`.
 - The removal deletes the notebook routes/components, the fork/branch endpoints and `branches` JSONB pointers, the chat→notebook conversion, the "Share as Report" path, and (two-phase, per migration discipline) the `notebook_state` column and `"notebook"` `Surface` value. The `partitionTurn` → `AssistantTurn`/`AgentTurn` render convergence (#4301) is chat's renderer and survives; the add-to-dashboard bridge survives wherever chat uses it.
 - The audit's findings stand as evidence for this decision, not as a fix backlog; the one filed issue (#4535, notebook↔dashboard association stripped on save) is closed as superseded.
 - The glossary's reserved "report — a separate shared-conversation concept" is retired and re-pinned as the deferred memo deliverable (CONTEXT.md § Notebooks, retired).

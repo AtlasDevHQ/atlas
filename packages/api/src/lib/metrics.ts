@@ -10,10 +10,10 @@
  * with no enclosing HTTP request, so they need a Meter to feed dashboards
  * and alerting hooks.
  *
- * SDK initialization lives in telemetry.ts. Adding a metric here without
- * also wiring a `metricReader` into the NodeSDK means the value is
- * collected but not exported — operators who want abuse counters in their
- * Grafana board need to extend telemetry.ts with an OTLP metrics exporter.
+ * SDK initialization lives in telemetry.ts, which wires a
+ * `PeriodicExportingMetricReader` + OTLP metrics exporter (60s cadence) into
+ * the NodeSDK — metrics defined here are exported to the same collector as
+ * traces whenever OTEL_EXPORTER_OTLP_ENDPOINT is set.
  */
 
 import { metrics, type Counter, type Gauge, type Histogram } from "@opentelemetry/api";

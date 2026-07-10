@@ -161,7 +161,11 @@ teams.openapi(installRoute, async (c) => {
       "Failed to save OAuth state for Teams install",
     );
     return c.json(
-      { error: "state_save_failed", message: "Could not initiate OAuth flow. Please try again." },
+      {
+        error: "state_save_failed",
+        message: "Could not initiate OAuth flow. Please try again.",
+        requestId,
+      },
       500,
     );
   }

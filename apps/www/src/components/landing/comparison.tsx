@@ -19,7 +19,7 @@ const ROWS: ReadonlyArray<Row> = [
   {
     feature: "Agent-native",
     atlas:
-      "MCP server first (stdio + SSE): Claude Desktop, Cursor, Continue with bunx @useatlas/mcp init; read tools open, datasource writes gated by OAuth scope + RBAC",
+      "MCP server first (stdio + Streamable HTTP): Claude Desktop, Cursor, Continue with bunx @useatlas/mcp init; read tools open, datasource writes gated by OAuth scope + RBAC",
     bi: "Bolted-on AI feature",
     textToSql: "Standalone chat UI",
   },

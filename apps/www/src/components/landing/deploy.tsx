@@ -96,7 +96,7 @@ function SelfHostCard() {
       </ul>
 
       <a
-        href="https://docs.useatlas.dev/getting-started/quick-start"
+        href="https://docs.useatlas.dev/self-hosted/getting-started/quick-start"
         className="mt-auto inline-flex items-center justify-center rounded-lg border border-border bg-transparent px-4 py-3 text-[13.5px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-bg-sunken"
       >
         read the docs →
@@ -134,7 +134,7 @@ function CloudCard() {
       </header>
 
       <p className="m-0 mb-5 text-sm leading-[1.6] text-fg-muted">
-        We run it. Weekly updates, monitored connections.
+        We run it. Managed updates, monitored connections.
         <br />
         Live in 3 minutes.
       </p>
@@ -146,16 +146,9 @@ function CloudCard() {
         className="mb-5 flex items-center justify-between rounded-lg border border-border px-[18px] py-4 transition-colors hover:border-border-strong"
         style={{ background: "var(--bg-sunken)" }}
       >
-        <div className="flex items-center gap-2.5">
-          <span
-            className="h-2 w-2 rounded-full"
-            style={{ background: "var(--accent)" }}
-            aria-hidden="true"
-          />
-          <span className="font-mono text-[11px] tracking-[0.04em] text-fg-muted">
-            live status
-          </span>
-        </div>
+        <span className="font-mono text-[11px] tracking-[0.04em] text-fg-muted">
+          live status
+        </span>
         <span className="text-[13px] font-medium text-fg">
           atlas.openstatus.dev →
         </span>
@@ -163,9 +156,9 @@ function CloudCard() {
 
       <ul className="m-0 mb-6 flex list-none flex-col gap-2 p-0">
         {[
-          "SSO · SAML · SCIM",
-          "Audit log export",
-          "Priority support",
+          "$20/seat AI-usage credit included",
+          "Data residency (3 regions)",
+          "SSO · SCIM · audit on Business",
         ].map((item) => (
           <li key={item} className="flex items-center gap-2.5 text-[13.5px] text-fg">
             <span aria-hidden className="font-mono text-[12px] text-accent">✓</span>

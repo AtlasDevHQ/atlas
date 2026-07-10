@@ -261,15 +261,23 @@ const CUSTOM_HEADING_ID = /\[#([^[\]\s]+)\][ \t]*$/;
  * title-to-title comparison, wrong for slug input).
  */
 function headingTextContent(raw: string): string {
-  return raw
+  const flattened = raw
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1") // image → alt text
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // [text](url) → text
     .replace(/`([^`]*)`/g, "$1") // inline code → content
     .replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1") // *em* / **strong**
-    .replace(/(?<![A-Za-z0-9])_{1,3}([^_]+)_{1,3}(?![A-Za-z0-9])/g, "$1")
-    .replace(/<[^>\n]+>/g, "") // raw inline JSX/HTML tags
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/(?<![A-Za-z0-9])_{1,3}([^_]+)_{1,3}(?![A-Za-z0-9])/g, "$1");
+  // Strip raw inline JSX/HTML tags to a fixpoint: removing one tag can expose
+  // another spanning the removal (`<<b>i>` → `<i>`), so one pass is not enough
+  // (CodeQL js/incomplete-multi-character-sanitization; here it's slug
+  // fidelity, not sanitization — the output feeds github-slugger, never HTML).
+  let out = flattened;
+  let prev: string;
+  do {
+    prev = out;
+    out = out.replace(/<[^>\n]+>/g, "");
+  } while (out !== prev);
+  return out.replace(/\s+/g, " ").trim();
 }
 
 const slugCache = new Map<string, Set<string>>();

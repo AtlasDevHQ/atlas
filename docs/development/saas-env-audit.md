@@ -137,8 +137,10 @@ contract and is dropped from the Railway services only:
   Never in `SAAS_ENV_KEYS`/the boot-smoke fixture — a Railway-only var removal.
 
 ### Tier 4 — Documentation hygiene
-- `.env.example` (718 lines) stays the self-host reference, but should be clearly
-  framed as such; the SaaS operator surface is the short derived page.
+- `.env.example` (924 lines as of 2026-07-10) stays the self-host reference, and
+  is now clearly framed as such — its header states the inclusion policy
+  (#4473, see the 2026-07-10 addendum below); the SaaS operator surface is the
+  short derived page.
 - Auto-generate + drift-check the SaaS operator reference from `SAAS_ENV_KEYS`
   (the SSOT already has compile-time exhaustiveness; the doc should not drift).
 
@@ -279,6 +281,40 @@ Pilot: **Slack** (`#3704`/`#3735`). All chat platforms now ship: **Discord**
 addition. Remaining action targets: **Jira, Linear, GitHub App, Salesforce** (set
 `catalogSlug: null`) — these need a per-workspace credential design pass first
 (`#3765`) and are not yet in the registry.
+
+## Docs-audit follow-up (2026-07-10)
+
+The 2026-07-10 `/docs-audit` (#4473, PR #4478) closed the Tier-4 `.env.example`
+items and re-baselined the counts:
+
+- **`.env.example` now states its inclusion policy in its header**: every
+  env-read knob is enumerated, registry-backed entries are env seeds/fallbacks
+  below Admin-console values (precedence `workspace > platform > env > default`),
+  with a pointer-instead-of-enumerate exception for sections that say so. This
+  resolves the Tier-4 "clearly framed as the self-host reference" item and the
+  ambiguity the audit tripped on (registry knobs in or out — they're **in**).
+- **Every sibling-present/sibling-missing family split is closed** — ~30
+  registry-backed knobs added: the durable-sessions family (`ATLAS_DURABILITY_*`,
+  `ATLAS_MEMORY_*`, ADR-0020), `ATLAS_COMPACTION_SUMMARY_MODEL`, all 7
+  `ATLAS_KNOWLEDGE_*`, the remaining `ATLAS_LEARN_*` (including the two #3636
+  knobs flagged in the 2026-06-17 review above — that Tier-4 gap is done), the
+  dashboard knobs, `ATLAS_DEFAULT_ANSWER_STYLE`, `ATLAS_DEMO_MODEL`,
+  `ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS`, `ATLAS_AGENT_AUTH_ENABLED`,
+  `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`, and the SaaS billing knobs
+  (`ATLAS_SPEND_POLICY`, `ATLAS_ABUSE_CEILING`, sweep intervals).
+- **The only registry keys deliberately absent from `.env.example`** are the
+  nine `STRIPE_*_PRICE_ID`s — the Stripe section points at
+  Admin → Settings → Billing instead of enumerating (its stale "six" count
+  corrected to nine). New counts: 924 lines, ~312 declared vars.
+- **New reduction-backlog item — #4479**: the sweep surfaced a near-duplicate
+  knob pair with opposite unset defaults (`ATLAS_EMAIL_ALLOWED_DOMAINS`,
+  env-only, fail-open, gating the `sendEmailReport` action vs the registry's
+  `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`, fail-closed, gating the `sendEmail`
+  integration tool). #4479 covers consolidating the pair plus a full env-knob
+  consolidation pass (duplicate names, registry-bypass `process.env` reads,
+  env-only knobs that should be registry-backed per the principle, and a
+  possible inverse `check-settings-readers` ratchet). Its findings fold back
+  into this document.
 
 ## Tracked work
 

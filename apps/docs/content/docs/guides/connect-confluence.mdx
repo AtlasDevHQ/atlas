@@ -1,6 +1,6 @@
 ---
 title: Connect Confluence
-description: Mirror a Confluence Cloud space into a review-gated Knowledge Base collection — API-token install, per-space scope, and the sync + review model.
+description: Mirror a Confluence space into a review-gated Knowledge Base collection — Cloud API-token or Data Center PAT install, per-space scope, and the sync + review model.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -9,7 +9,7 @@ import { Steps, Step } from "fumadocs-ui/components/steps";
 A **Confluence Cloud** connector mirrors one Confluence space into a [Knowledge Base](/guides/knowledge-base) collection. Atlas pulls the space's pages on a schedule, converts each page's storage format to markdown, and queues every page as a **draft** for review — the same review gate as every other knowledge source. Connectors never publish on their own.
 
 <Callout title="Prerequisites">
-The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). This guide covers **Confluence Cloud** (REST v2, storage format); **Data Center / Server** is supported via the separate **Knowledge Base (Confluence Data Center)** integration, which authenticates with a personal access token instead of an Atlassian API token. Attachments and images are **not** mirrored in v1 — they are replaced with links back to the source page (text-first).
+The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). This page covers **Confluence Cloud** first; self-managed **Data Center / Server** is a separate integration with a different auth model — see [Confluence Data Center / Server](#confluence-data-center--server) below. Attachments and images are **not** mirrored in v1 — they are replaced with links back to the source page (text-first).
 </Callout>
 
 ---
@@ -74,7 +74,7 @@ Confluence has no markdown export, so Atlas converts the storage format itself: 
 
 ## Review and publish
 
-Every synced page lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. A page whose content changes at the vendor and had already been published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, source page URL, sync time) travels with every document so any answer traces back to its Confluence page.
+Every synced page lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. A page whose content changes at the vendor and had already been published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, source page URL, last-modified time) travels with every document so any answer traces back to its Confluence page.
 
 ---
 
@@ -86,6 +86,26 @@ A very large space can overflow the Knowledge Base ingest caps. When that happen
 - `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` — maximum size of a single document.
 
 Narrow the connector's scope (mirror a smaller space) or raise the cap in the settings registry. The reconciliation cadence itself is the `ATLAS_KNOWLEDGE_SYNC_RECONCILE_INTERVAL_HOURS` knob (weekly default); the incremental cadence is `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` (nightly default).
+
+---
+
+## Confluence Data Center / Server
+
+Self-managed Confluence is covered by a **separate integration** — **Knowledge Base (Confluence Data Center)** under **Admin → Integrations** — because its auth model differs from Cloud. Everything else on this page applies unchanged: the same per-space scope, incremental + reconciliation sync, storage-format conversion with counted macro placeholders, hierarchy paths and rename churn, review gate, caps, and uninstall behavior.
+
+What's different:
+
+- **Personal Access Token, no email.** Data Center / Server authenticates with a **PAT** used as a Bearer credential — there is no paired account email, so the install form has no email field. Create one in Confluence under **Profile → Personal Access Tokens**; it must be able to read the space you're mirroring. PATs require **Confluence 7.9 or later**.
+- **REST v1 under the hood.** Cloud speaks Confluence's REST v2; Data Center / Server speaks v1. Both return the same storage format, so converted markdown is identical across the two.
+- **Self-managed base URL.** You supply your instance's base URL (e.g. `https://confluence.your-company.com`). It must be **HTTPS**, and — as customer-supplied infrastructure — every request Atlas makes to it passes through the SSRF egress guard: private, loopback, and internal targets are rejected. A context-path deployment (`https://host/confluence`) works, and document links preserve the context path.
+
+The install form asks for:
+
+- **Confluence base URL** — your self-managed instance, e.g. `https://confluence.your-company.com`.
+- **Space key** — the space to mirror (one collection per space), e.g. `ENG`.
+- **Personal Access Token** — stored encrypted at rest; never shown again.
+
+As with Cloud, Atlas verifies the connection at install time by resolving the space with the token, and fails **loudly** on a bad token, an invisible space, or an unreachable instance.
 
 ---
 

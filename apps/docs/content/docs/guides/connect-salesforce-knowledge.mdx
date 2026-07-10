@@ -1,0 +1,77 @@
+---
+title: Connect Salesforce Knowledge
+description: Mirror your Salesforce Knowledge articles into a review-gated Knowledge Base collection — reusing the workspace's existing Salesforce connection, no new credentials.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+A **Salesforce Knowledge** connector mirrors your org's published Knowledge articles into a [Knowledge Base](/guides/knowledge-base) collection. Atlas pulls article versions on a schedule, converts their rich-text fields to markdown, and queues every document as a **draft** for review — the same review gate as every other knowledge source. Connectors never publish on their own.
+
+<Callout title="Prerequisites">
+The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). The connector **reuses the workspace's existing Salesforce connection** — the same OAuth install that powers the `querySalesforce` agent tool — so Salesforce must already be connected under **Admin → Integrations**. Images and embedded media are **not** mirrored (text-first); they are replaced with links back to the source article.
+</Callout>
+
+---
+
+## No new credentials
+
+This is the one knowledge connector with **no secret field**. Installing it registers no new connected app, asks for no token, and stores no credential — it drives the Salesforce connection your workspace already has (including its token refresh and reconnect handling).
+
+If Salesforce isn't connected yet, the install fails with an actionable message telling you to connect it first; if the existing connection has expired, it points you at the **Reconnect** button on the Salesforce card. Connect Salesforce under **Admin → Integrations** before installing this connector.
+
+---
+
+## Install
+
+Navigate to **Admin → Integrations**, choose **Knowledge Base (Salesforce Knowledge)**, and provide (all optional):
+
+- **Channel scope** — mirror only articles visible on one channel: `app` (internal), `pkb` (public knowledge base), `csp` (customer portal), or `prm` (partner portal). Leave empty to mirror every published article.
+- **Article object** — the article-version object API name. Defaults to `Knowledge__kav` (Lightning Knowledge); Classic article types use `<Type>__kav`. Orgs with several Classic article types install the connector once per type.
+
+Atlas verifies the scope at install time by describing the article object — a missing object, or a channel the object has no visibility field for, fails the install **loudly** rather than creating a collection that silently never syncs. On success the collection is created and its first sync is scheduled.
+
+---
+
+## How sync works
+
+Atlas runs two kinds of cycle, decided per collection:
+
+- **Incremental** (the common, cheap cycle) — one indexed `SystemModstamp` query picks up article versions modified since the collection's high-water mark (minus a small overlap window that absorbs clock skew). Deletions are invisible here.
+- **Reconciliation** (the correctness anchor, weekly by default, and always on the first sync) — enumerates every published (`Online`) article version, paging with `queryMore`. This is the only cycle that **archives** articles that were deleted, archived, unpublished, or moved out of the channel scope in Salesforce, and the only one that validates the ingest caps over the full set.
+
+Each collection card shows the last sync's status and time, with a **Sync now** button for an on-demand pull. If the org's daily API request allocation runs out, Salesforce's `REQUEST_LIMIT_EXCEEDED` signal is honored with bounded backoff; if the allocation stays exhausted, the sync records an error on the collection and the next scheduled cycle retries — nothing is lost, and no documents are archived off a failed cycle. If a crawl comes back knowingly incomplete (Salesforce returned malformed rows), Atlas upserts what it got but defers all archiving until a clean crawl — deletions are never inferred from a partial view.
+
+### What syncs — published articles, per language
+
+Only articles with publish status **Online** sync — drafts and archived versions never leave Salesforce. Each **language** of an article is its own document, filed under its locale, so a translated knowledge base mirrors as a per-locale tree.
+
+### What becomes the document body
+
+Atlas describes the article object and mirrors its **custom long-text and rich-text fields** (up to 20, in the object's field order), led by the standard `Summary` when present. Rich-text HTML converts structurally to markdown; images and embeds **degrade to visible placeholders that link back to the article** and are counted — never silently dropped. Relative links in rich text are rewritten to absolute URLs against your org's instance, so cross-references stay live. The article's `Title` becomes the document title.
+
+### Paths, and what a rename does
+
+A document's path is built from its **language, title, and article number** (`salesforce-knowledge/en-us/reset-your-password-000001234.md`). The article number is stable across republishing, so a new version of the same article **upserts the same path** (and demotes it back to draft for re-review). **Renaming an article's title archives the old path and re-drafts the new one** — expected churn; nothing is ever hard-deleted.
+
+---
+
+## Review and publish
+
+Every synced article lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. An article republished in Salesforce whose Atlas copy was already published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, a link to the article in Lightning, last-modified time) travels with every document so any answer traces back to its Salesforce article; the locale and article number also ride in the document's path.
+
+---
+
+## Caps and limits
+
+A very large knowledge base can overflow the Knowledge Base ingest caps. When that happens, reconciliation fails with the **actual document count** (one per published language) and names the knob to raise:
+
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` — maximum documents per collection (default 1000).
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` — maximum size of a single document. An oversized document is rejected individually (visible in the sync report) rather than failing the cycle, and its previously-synced version is never archived out from under it.
+
+Narrow the connector's scope (a single channel, or one article type per collection) or raise the cap in the settings registry. The reconciliation cadence itself is the `ATLAS_KNOWLEDGE_SYNC_RECONCILE_INTERVAL_HOURS` knob (weekly default); the incremental cadence is `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` (nightly default).
+
+---
+
+## Uninstall
+
+Uninstalling a Salesforce Knowledge collection **archives** its documents (never hard-deletes) and removes its sync bookkeeping. The workspace's Salesforce connection is untouched — it belongs to the Salesforce integration, not this connector. Re-installing re-syncs the same scope, which brings the archived articles back as drafts for re-review.

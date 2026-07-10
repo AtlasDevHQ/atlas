@@ -1,0 +1,88 @@
+---
+title: Connect GitBook
+description: Mirror a GitBook Cloud space into a review-gated Knowledge Base collection — API-token install, per-space scope, and the sync + review model.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+A **GitBook** connector mirrors one GitBook Cloud space into a [Knowledge Base](/guides/knowledge-base) collection. Atlas pulls the space's pages on a schedule, normalizes GitBook's markdown dialect to plain markdown, and queues every page as a **draft** for review — the same review gate as every other knowledge source. Connectors never publish on their own.
+
+<Callout title="Prerequisites">
+The Knowledge Base requires the internal database and managed auth (see the [Knowledge Base guide](/guides/knowledge-base)). The connector covers **GitBook Cloud** (`app.gitbook.com`) — the API host is fixed, so there is no base-URL field. File attachments are **not** mirrored (text-first); they are replaced with links back to the source page.
+</Callout>
+
+---
+
+## Create an API token
+
+Atlas authenticates to GitBook with a personal API token (Bearer auth).
+
+<Steps>
+<Step>
+Go to **app.gitbook.com → Settings → Developer → API tokens** and create a token. Give it a label like `atlas-knowledge`.
+</Step>
+<Step>
+Copy the token — it inherits *your* GitBook permissions, so it can read exactly the spaces your account can.
+</Step>
+<Step>
+Find the **space id** of the space you want to mirror. It's the segment after `/s/` in the space's URL (`app.gitbook.com/o/…/s/<space-id>/…`) — or just copy the whole URL; Atlas extracts the id from a pasted URL.
+</Step>
+</Steps>
+
+<Callout type="warn" title="One space per collection">
+Each GitBook install mirrors exactly one space. To mirror several spaces, install the connector once per space — each becomes its own independently-searchable collection with its own review queue.
+</Callout>
+
+---
+
+## Install
+
+Navigate to **Admin → Integrations**, choose **Knowledge Base (GitBook)**, and provide:
+
+- **GitBook space id** — the id of the space to mirror (pasting the full space URL works too).
+- **API token** — stored encrypted at rest; never shown again.
+
+Atlas verifies the connection at install time by resolving the space with your token. A bad token points you at the token field; a wrong or invisible space id points you at the space field — the install fails **loudly** rather than creating a collection that silently never syncs. On success the collection is created and its first sync is scheduled.
+
+---
+
+## How sync works
+
+Atlas runs two kinds of cycle, decided per collection:
+
+- **Incremental** (the common, cheap cycle) — enumerates the space's page tree metadata, keeps pages modified since the collection's high-water mark (minus a small overlap window that absorbs clock skew), and fetches markdown bodies only for those. Deletions are invisible here.
+- **Reconciliation** (the correctness anchor, weekly by default, and always on the first sync) — enumerates the full page tree with bodies. This is the only cycle that **archives** pages that were deleted or unpublished, and the only one that validates the ingest caps over the full set.
+
+Each collection card shows the last sync's status and time, with a **Sync now** button for an on-demand pull. GitBook `429`s are honored with bounded backoff automatically. If a crawl comes back knowingly incomplete (GitBook returned malformed page entries), Atlas upserts what it got but defers all archiving until a clean crawl — deletions are never inferred from a partial view.
+
+### Paths, and what a rename does
+
+A page becomes a markdown document at its **GitBook slug path** — the same root-to-leaf path you see in the space's URLs (`gitbook/guides/setup.md`), so the agent's `explore` view mirrors your space's structure. Because the path follows the page's slug path, **changing a page's slug (retitling a page usually changes it) or moving the page archives the old path and re-drafts the new one** for re-review. That churn is expected and safe — nothing is ever hard-deleted. The page's canonical URL and last-modified time ride in each document's provenance, not in its path.
+
+### Blocks, images, and honest conversion
+
+GitBook's export is markdown-native, but it carries GitBook-specific block extensions (`{% hint %}`, `{% tabs %}`, …). Atlas converts the common ones structurally — hints become labelled quotes, code blocks keep their fences and titles, tabs/steps/columns/expand sections unwrap into headed prose, content refs and embeds become plain links. Any block Atlas can't convert **degrades to a visible placeholder that links back to the source page** and is counted — never silently dropped. Markdown images pass through as-is (pointing at their GitBook-hosted URLs); file attachments become links back to the page (text-first).
+
+---
+
+## Review and publish
+
+Every synced page lands as a **draft**. Review it in **Admin → Knowledge Base**, and publish when it's ready — only then does the agent read it. A page whose content changes in GitBook and had already been published is **demoted back to draft** on the next sync, so an edit re-enters review rather than silently going live. Provenance (`atlas:` — vendor, source page URL, last-modified time) travels with every document so any answer traces back to its GitBook page.
+
+---
+
+## Caps and limits
+
+A very large space can overflow the Knowledge Base ingest caps. When that happens, reconciliation fails with the **actual page count** and names the knob to raise:
+
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` — maximum documents per collection (default 1000).
+- `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` — maximum size of a single document. An oversized document is rejected individually (visible in the sync report) rather than failing the cycle, and its previously-synced version is never archived out from under it.
+
+Narrow the connector's scope (mirror a smaller space) or raise the cap in the settings registry. The reconciliation cadence itself is the `ATLAS_KNOWLEDGE_SYNC_RECONCILE_INTERVAL_HOURS` knob (weekly default); the incremental cadence is `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` (nightly default).
+
+---
+
+## Uninstall
+
+Uninstalling a GitBook collection **archives** its documents (never hard-deletes) and removes the stored token and sync bookkeeping. Re-installing the same space re-syncs it, which brings the archived pages back as drafts for re-review.

@@ -35,9 +35,14 @@ Navigate to **Admin → Knowledge Base** (`/admin/knowledge`) and choose **New c
 - **Sync from endpoint** — Atlas pulls a bundle from a URL on a schedule. Provide the endpoint URL and an auth scheme (`none`, `bearer`, or `basic`); the secret is encrypted at rest and never shown again. Credentials embedded in the URL itself (`user:pass@`) are rejected — use the auth fields.
 - **Notion** — Atlas pulls the pages you share with a Notion integration, on the same schedule. Provide an internal-integration token; the pages shared with the integration *are* the scope. See [Connect Notion](/guides/connect-notion) for the sharing model and its one gotcha.
 
-Connector-backed sources — Confluence (Cloud and Data Center/Server), GitBook, Zendesk Guide, and Salesforce Knowledge — install from **Admin → Integrations** rather than this dialog; each install creates its collection automatically and syncs on the same schedule. See [Connect Confluence](/guides/connect-confluence) for the pattern (token creation, per-space scope, and the macro/rename expectations).
-
 The endpoint can be anything that serves a tarball or zip, including git-forge repository-archive URLs (e.g. a GitHub `archive/refs/heads/main.tar.gz` link), so "sync my docs repo" needs no dedicated connector. Prefer a **branch** archive URL: tag and commit archives change their top-level folder name on every release, which makes every document path look new on each pull. Creating a synced collection in the admin console kicks off the first sync immediately; collections installed through the API wait for the schedule or a manual sync trigger.
+
+Connector-backed sources install from **Admin → Integrations** rather than this dialog; each install creates its collection automatically and syncs on the same schedule. Each has its own guide covering the auth model, scope, and sync expectations:
+
+- **[Connect Confluence](/guides/connect-confluence)** — mirrors one Confluence space per collection. Covers both **Cloud** (site URL + email + API token) and **Data Center / Server** (base URL + personal access token).
+- **[Connect GitBook](/guides/connect-gitbook)** — mirrors one GitBook Cloud space per collection (space id + API token).
+- **[Connect Zendesk Guide](/guides/connect-zendesk)** — mirrors your help center's published articles, one collection per brand (subdomain + email + API token).
+- **[Connect Salesforce Knowledge](/guides/connect-salesforce-knowledge)** — mirrors your org's published Knowledge articles, reusing the workspace's existing Salesforce connection (no new credentials).
 
 ---
 

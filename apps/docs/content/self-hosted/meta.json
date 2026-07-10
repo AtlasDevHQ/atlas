@@ -13,6 +13,7 @@
     "sdk",
     "plugins",
     "integrations",
+    "agent-auth",
     "architecture",
     "comparisons",
     "contributing",

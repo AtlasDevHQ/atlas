@@ -39,6 +39,27 @@ Pure logic is unit-tested in
 [`__tests__/audience-taxonomy.test.ts`](../../apps/docs/src/lib/__tests__/audience-taxonomy.test.ts)
 with synthetic entries (no generated `.source/server` needed).
 
+## Which tree does a new page go in? (placement convention)
+
+Recorded on issue #4474 (2026-07-10), after the agent-auth guide was found
+stranded SaaS-side despite documenting a core surface:
+
+- **A core (AGPL) feature's guide goes in `content/shared/`** — it must be
+  reachable from both reader sections. Branch any ee-gated strengths or
+  SaaS-only mechanics with `<WhenSaaS>` / `<WhenSelfHosted>`, and route
+  cross-links to audience-specific pages through `<AudienceLink>` so neither
+  mount emits a dead link.
+- **SaaS-only operational pages stay in `content/docs/`** — anything only a
+  SaaS operator or SaaS workspace admin can act on (platform-ops runbooks,
+  billing, marketplace operations). A shared guide may link to them inside a
+  `<WhenSaaS>` block or via `<AudienceLink saas="…">`.
+- **Self-hosted-only operational pages go in `content/self-hosted/`** (Docker,
+  BYO auth, on-prem deployment mechanics).
+
+"Experimental" is not a reason to keep a core feature's guide SaaS-only — the
+agent-auth guide is experimental and shared. When in doubt, ask which builds
+can run the feature, not which tier it is marketed to.
+
 ## Build-time conditionals — `<WhenSaaS>` / `<WhenSelfHosted>`
 
 A `shared` page authored **once** can adapt per mount using the two conditional

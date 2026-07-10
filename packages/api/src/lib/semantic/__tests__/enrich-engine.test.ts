@@ -30,7 +30,12 @@ const ENTITY_RESPONSE = "```yaml\ndescription: |\n  Enriched: orders placed by a
 const GLOSSARY_RESPONSE = "```yaml\nterms:\n  refund:\n    status: defined\n    definition: An order whose payment was returned.\n```";
 const METRIC_RESPONSE = "```yaml\nmetrics:\n  - id: avg_order_value\n    label: Average order value\n    description: Mean amount per order.\n    type: derived\n    sql: |\n      SELECT AVG(amount) FROM orders\n```";
 
-const mockGenerateText = mock(async ({ prompt }: GenArgs) => {
+// Usage typed loosely so per-test overrides can return either the legacy
+// promptTokens/completionTokens shape or the AI-SDK v6 inputTokens/outputTokens
+// shape without a type clash (the enrich engine reads `inputTokens`/`outputTokens`
+// and coalesces anything absent to 0).
+type GenResult = { text: string; usage: Record<string, number> };
+const mockGenerateText = mock(async ({ prompt }: GenArgs): Promise<GenResult> => {
   let text = "no usable yaml here";
   if (prompt.includes("enriching a semantic layer YAML file")) text = ENTITY_RESPONSE;
   else if (prompt.includes("building a business glossary")) text = GLOSSARY_RESPONSE;
@@ -197,6 +202,39 @@ describe("enrichEntityYaml (in-memory primitive, #3236)", () => {
     const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never, usage);
     expect(usage.totalTokens).toBe(33); // from the mocked generateText usage
+  });
+
+  it("surfaces this call's raw AI-SDK token usage on the result (#4489, workspace metering)", async () => {
+    // The wizard route meters `result.usage` against the workspace budget, so it
+    // must carry the AI-SDK inputTokens/outputTokens shape verbatim.
+    mockGenerateText.mockImplementationOnce(async () => ({
+      text: ENTITY_RESPONSE,
+      usage: { inputTokens: 123, outputTokens: 45, totalTokens: 168 },
+    }));
+    const result = await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never);
+    expect(result.enriched).toBe(true);
+    expect(result.usage).toEqual({ inputTokens: 123, outputTokens: 45 });
+  });
+
+  it("surfaces usage on the unparseable-response path too — tokens were spent (#4489)", async () => {
+    // An unusable (but successful) response still spent tokens; the result must
+    // carry them so the caller meters the spend even when nothing was merged.
+    mockGenerateText.mockImplementationOnce(async () => ({
+      text: "Sorry, I cannot help with that.",
+      usage: { inputTokens: 70, outputTokens: 0, totalTokens: 70 },
+    }));
+    const result = await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never);
+    expect(result.enriched).toBe(false);
+    expect(result.yaml).toBe(ENTITY_YAML);
+    expect(result.usage).toEqual({ inputTokens: 70, outputTokens: 0 });
+  });
+
+  it("coalesces provider-omitted token counts to 0 rather than surfacing undefined (#4489)", async () => {
+    // The default mock returns the pre-v6 promptTokens/completionTokens shape (no
+    // inputTokens/outputTokens) — the `?? 0` coalesce must yield 0, never NaN or
+    // undefined, so metering records a concrete quantity.
+    const result = await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never);
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
   });
 
   it("asks for the datasource dialect (MySQL) so query_patterns aren't PostgreSQL-only", async () => {

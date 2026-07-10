@@ -65,6 +65,12 @@ import { SAFE_TABLE_NAME, safeSemanticRowName } from "@atlas/api/lib/semantic/sh
 // variant lets the wizard enrich a YAML string per table without touching disk.
 import { enrichEntityYaml } from "@atlas/api/lib/semantic/enrich";
 import { refreshGroupAutoDescription } from "@atlas/api/lib/source-catalog/lookup";
+// #3437 / #4489 — the wizard's Phase-2 enrich spends platform LLM tokens, so it
+// consults the same shared billing gate as every other agent surface before the
+// spend and meters the result against the workspace token budget afterwards.
+import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
+import { logUsageEvent } from "@atlas/api/lib/metering";
+import { toOutputEquivalentTokens } from "@atlas/api/lib/billing/token-weighting";
 import {
   getModel,
   getMissingModelConfig,
@@ -405,7 +411,9 @@ const enrichRoute = createRoute({
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     403: {
-      description: "Forbidden — admin role required",
+      description:
+        "Forbidden — admin role required, or blocked by billing enforcement " +
+        "(#3437/#4489 — workspace suspended/deleted, trial expired, or subscription ended)",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     404: {
@@ -413,11 +421,15 @@ const enrichRoute = createRoute({
       content: { "application/json": { schema: ErrorSchema } },
     },
     429: {
-      description: "Rate limit exceeded",
+      description:
+        "Rate limit exceeded, or blocked by billing enforcement " +
+        "(#3437/#4489 — plan token budget exceeded, or abuse throttle carrying Retry-After)",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
     503: {
-      description: "Enrichment unavailable — no LLM provider configured",
+      description:
+        "Enrichment unavailable — no LLM provider configured, or billing enforcement " +
+        "could not verify billing/workspace status (fail-closed, retryable)",
       content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
@@ -853,11 +865,66 @@ wizard.openapi(enrichRoute, async (c) => {
 
     const { connectionId, tableName, yaml: baselineYaml } = c.req.valid("json");
 
+    const orgId = user?.activeOrganizationId;
+
+    // #3437 / #4489 — billing enforcement BEFORE any LLM spend, mirroring the
+    // semantic-improve chat route (admin-semantic-improve.ts). The per-table
+    // enrich runs `generateText` on platform tokens metered against the
+    // workspace budget (below), so the run must pass the shared gate
+    // (workspace status → abuse → plan limits, #3419/#3420) first. Admin
+    // maintenance is intentionally NOT exempt: an admin of a suspended /
+    // trial-expired / over-budget workspace resolves billing before enriching.
+    // Runs ahead of model + connection resolution so a blocked workspace never
+    // reaches the provider. `checkAgentBillingGate` fails closed by RETURNING a
+    // block on a lookup error (a 503 `workspace_check_failed` or `billing_check_failed`,
+    // depending on which sub-check's lookup failed) rather than throwing, and is a
+    // no-op when there is no workspace (self-hosted / no orgId).
+    // An UNEXPECTED throw (contract violation) is caught here and surfaced as
+    // the same shaped, retry-guided 503 — never a generic 500, never a bypass.
+    const gateResult = yield* Effect.tryPromise({
+      try: () => checkAgentBillingGate(orgId),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (gateResult._tag === "Left") {
+      log.error(
+        { err: gateResult.left, requestId, orgId },
+        "Wizard enrich: billing gate threw unexpectedly — failing closed",
+      );
+      return c.json({
+        error: "billing_check_failed",
+        message: "Unable to verify billing status. Please try again.",
+        retryable: true,
+        requestId,
+      }, 503);
+    }
+    const gateCheck = gateResult.right;
+    if (!gateCheck.allowed) {
+      log.warn(
+        { requestId, orgId, errorCode: gateCheck.errorCode },
+        "Wizard enrich blocked by billing enforcement",
+      );
+      const blockBody = {
+        error: gateCheck.errorCode,
+        message: gateCheck.errorMessage,
+        retryable: gateCheck.retryable,
+        requestId,
+        ...(gateCheck.retryAfterSeconds !== undefined && { retryAfterSeconds: gateCheck.retryAfterSeconds }),
+        ...(gateCheck.usage && { usage: gateCheck.usage }),
+      };
+      if (gateCheck.retryAfterSeconds !== undefined) {
+        return c.json(blockBody, {
+          status: gateCheck.httpStatus,
+          headers: { "Retry-After": String(gateCheck.retryAfterSeconds) },
+        });
+      }
+      return c.json(blockBody, gateCheck.httpStatus);
+    }
+
     // Resolve the enrichment model up front (workspace BYOT → platform env), so
     // the UI surfaces ONE actionable 503 banner when nothing is configured
     // instead of every per-table enrich hitting the same provider-auth error.
     const modelResolution = yield* Effect.tryPromise({
-      try: () => resolveEnrichModel(user?.activeOrganizationId),
+      try: () => resolveEnrichModel(orgId),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     }).pipe(Effect.either);
     if (modelResolution._tag === "Left") {
@@ -880,7 +947,7 @@ wizard.openapi(enrichRoute, async (c) => {
     const model = modelChoice.model;
 
     const ctxResult = yield* Effect.tryPromise({
-      try: () => resolveProfilingConnection(connectionId, user?.activeOrganizationId),
+      try: () => resolveProfilingConnection(connectionId, orgId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 
@@ -964,6 +1031,36 @@ wizard.openapi(enrichRoute, async (c) => {
         message: `Table "${tableName}" was not found while profiling for enrichment.`,
         requestId,
       }, 404);
+    }
+
+    // #4489 — meter the enrichment's token spend against the workspace budget.
+    // The `generateText` call ran on platform tokens, so its usage must count
+    // toward the same per-period token budget the gate above enforces
+    // (usage_events → getCurrentPeriodUsage → checkPlanLimits). Fire-and-forget
+    // and a no-op when there is no internal DB (self-hosted, CLI); a run with an
+    // internal DB but no workspace still records a null-workspace row. Only the
+    // budget-relevant `token` event is emitted — an admin maintenance enrich is
+    // not an end-user "query", so it is intentionally left out of query_count.
+    // Weighted the same way as an agent turn (`toOutputEquivalentTokens`) so the
+    // output-equivalent budget denominator stays consistent across surfaces.
+    const usage = data.enriched.usage;
+    const totalTokens = usage.inputTokens + usage.outputTokens;
+    if (totalTokens > 0) {
+      const modelId = typeof model === "string" ? model : model.modelId;
+      logUsageEvent({
+        workspaceId: orgId ?? null,
+        userId: user?.id ?? null,
+        eventType: "token",
+        quantity: totalTokens,
+        weightedQuantity: toOutputEquivalentTokens(usage, modelId),
+        metadata: {
+          source: "wizard_enrich",
+          tableName,
+          model: modelId,
+          input: usage.inputTokens,
+          output: usage.outputTokens,
+        },
+      });
     }
 
     log.info(

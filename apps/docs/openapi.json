@@ -16412,7 +16412,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin role required",
+            "description": "Forbidden — admin role required, or blocked by billing enforcement (#3437/#4489 — workspace suspended/deleted, trial expired, or subscription ended)",
             "content": {
               "application/json": {
                 "schema": {
@@ -16448,7 +16448,7 @@
             }
           },
           "429": {
-            "description": "Rate limit exceeded",
+            "description": "Rate limit exceeded, or blocked by billing enforcement (#3437/#4489 — plan token budget exceeded, or abuse throttle carrying Retry-After)",
             "content": {
               "application/json": {
                 "schema": {
@@ -16484,7 +16484,7 @@
             }
           },
           "503": {
-            "description": "Enrichment unavailable — no LLM provider configured",
+            "description": "Enrichment unavailable — no LLM provider configured, or billing enforcement could not verify billing/workspace status (fail-closed, retryable)",
             "content": {
               "application/json": {
                 "schema": {

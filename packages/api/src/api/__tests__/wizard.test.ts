@@ -446,14 +446,40 @@ const mockEnrichEntityYaml: Mock<
     model: unknown,
     usage?: unknown,
     dbType?: string,
-  ) => Promise<{ yaml: string; enriched: boolean }>
-> = mock(async (content: string) => ({ yaml: `${content}description: Enriched by AI.\n`, enriched: true }));
+  ) => Promise<{ yaml: string; enriched: boolean; usage: { inputTokens: number; outputTokens: number } }>
+> = mock(async (content: string) => ({
+  yaml: `${content}description: Enriched by AI.\n`,
+  enriched: true,
+  usage: { inputTokens: 40, outputTokens: 30 },
+}));
 void mock.module("@atlas/api/lib/semantic/enrich", () => ({
   enrichEntityYaml: mockEnrichEntityYaml,
   enrichEntity: async () => {},
   enrichGlossary: async () => {},
   enrichMetric: async () => {},
   enrichSemanticLayer: async () => {},
+}));
+
+// #4489 — the /enrich route now consults the shared billing gate before spend
+// and meters token usage afterwards. Stub both seams so this suite (route
+// dispatch, not billing) stays green: the gate always allows, and metering is a
+// no-op spy. The dedicated wizard-enrich-billing.test.ts drives the block arms.
+const mockCheckAgentBillingGate = mock(async (_orgId?: string) => ({ allowed: true as const }));
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+  checkAgentBillingGate: mockCheckAgentBillingGate,
+  BillingBlockedError: class BillingBlockedError extends Error {
+    override readonly name = "BillingBlockedError";
+  },
+}));
+
+const mockLogUsageEvent = mock((_event: unknown) => {});
+void mock.module("@atlas/api/lib/metering", () => ({
+  logUsageEvent: mockLogUsageEvent,
+  emitLoginEvent: async () => {},
+  aggregateUsageSummary: async () => {},
+  getCurrentPeriodUsage: async () => ({}),
+  getUsageHistory: async () => [],
+  getUsageBreakdown: async () => [],
 }));
 
 // One profiler home (#3657, ADR-0017 §Amendment(#3667)). The wizard routes now
@@ -617,8 +643,15 @@ beforeEach(() => {
   mockGetMissingModelConfig.mockImplementation(() => ({ provider: "anthropic", missing: [] }));
   mockEnrichEntityYaml.mockReset();
   mockEnrichEntityYaml.mockImplementation(
-    async (content: string) => ({ yaml: `${content}description: Enriched by AI.\n`, enriched: true }),
+    async (content: string) => ({
+      yaml: `${content}description: Enriched by AI.\n`,
+      enriched: true,
+      usage: { inputTokens: 40, outputTokens: 30 },
+    }),
   );
+  mockCheckAgentBillingGate.mockClear();
+  mockCheckAgentBillingGate.mockImplementation(async () => ({ allowed: true as const }));
+  mockLogUsageEvent.mockClear();
   mockRunEnterprise.mockReset();
   mockRunEnterprise.mockImplementation(async () => null); // no workspace BYOT by default
 
@@ -921,6 +954,7 @@ describe("POST /api/v1/wizard/enrich", () => {
     mockEnrichEntityYaml.mockImplementationOnce(async (content: string) => ({
       yaml: content,
       enriched: false,
+      usage: { inputTokens: 40, outputTokens: 0 },
     }));
     const res = await postJson("/api/v1/wizard/enrich", {
       connectionId: "default",
@@ -931,6 +965,29 @@ describe("POST /api/v1/wizard/enrich", () => {
     const data = await json(res);
     expect(data.enriched).toBe(false);
     expect(data.yaml).toBe("table: users\n");
+    // #4489 — the LLM still spent tokens on an unparseable response, so the
+    // enrich must STILL be metered (the enriched flag doesn't gate the spend).
+    expect(mockLogUsageEvent).toHaveBeenCalledTimes(1);
+    const event = mockLogUsageEvent.mock.calls[0][0] as { eventType: string; quantity: number };
+    expect(event.eventType).toBe("token");
+    expect(event.quantity).toBe(40);
+  });
+
+  it("meters nothing when the enrich call reports zero token usage (#4489)", async () => {
+    // A zero-usage response (provider omitted counts, coalesced to 0) must not
+    // emit a zero-quantity noise event — the `totalTokens > 0` guard holds.
+    mockEnrichEntityYaml.mockImplementationOnce(async (content: string) => ({
+      yaml: `${content}description: Enriched by AI.\n`,
+      enriched: true,
+      usage: { inputTokens: 0, outputTokens: 0 },
+    }));
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "default",
+      tableName: "users",
+      yaml: "table: users\n",
+    });
+    expect(res.status).toBe(200);
+    expect(mockLogUsageEvent).not.toHaveBeenCalled();
   });
 
   it("returns 503 and never enriches when no LLM provider is configured", async () => {

@@ -252,6 +252,8 @@ The review loop through which AI-proposed changes to the semantic layer become r
 
 - **A glossary term binds to a group, and the glossary is amendable.** The glossary is a group-scoped document in the same semantic store as entities; a glossary Amendment (`add_glossary_term` / `update_glossary_term`) targets that document with the same lifecycle, rejection-memory identity, and eligibility rules as any other Amendment type — no special cases, and never a silent no-op (a type the apply cannot write must not be proposable).
 
+- **Validation is a seam, not a tool.** An Amendment is validated where it is created (a proposal that fails never enters the Pending queue) and revalidated where it is applied (the post-apply document must parse as an entity; embedded SQL must parse as a query; each type may touch only its declared fields). Gates are code the payload must pass through, never advice the model may follow — there is no optional "validate" step whose verdict floats free.
+
 - **An Amendment has exactly one workspace owner.** Every path that creates one stamps the workspace it belongs to; a NULL-owner row is legacy self-hosted data — tolerated on read there, never produced anew anywhere.
 
 ## Chat turn presentation

@@ -51,11 +51,16 @@ const upsertEntityForGroup = mock(
     });
   },
 );
+// When set, the version snapshot fails — exercising the shared rollback tail.
+let createVersionThrows = false;
 const createVersion = mock(
   async (
     _id: string, _org: string, _type: string, _name: string, _yaml: string,
     _summary: string | null, _authorId: string | null, _authorLabel: string | null,
-  ): Promise<string> => "version-1",
+  ): Promise<string> => {
+    if (createVersionThrows) throw new Error("versions table unavailable");
+    return "version-1";
+  },
 );
 const generateChangeSummary = mock(async (_before: string, _after: string): Promise<string> => "added term");
 const invalidateOrgWhitelist = mock((_org: string): void => {});
@@ -107,6 +112,7 @@ function storedTerms(group: string | null): Record<string, Record<string, unknow
 describe("applyAmendmentToEntity — glossary routing (#4518)", () => {
   beforeEach(() => {
     glossaryRows = new Map();
+    createVersionThrows = false;
     getEntity.mockClear();
     upsertEntityForGroup.mockClear();
     createVersion.mockClear();
@@ -198,6 +204,26 @@ describe("applyAmendmentToEntity — glossary routing (#4518)", () => {
     expect(term.definition).toBe("Customer attrition rate");
     // Non-declared attributes preserved.
     expect(term.note).toBe("keep me");
+  });
+
+  it("snapshot failure on a brand-new glossary rolls back to an empty document (empty pre-image)", async () => {
+    // First-ever term in the default group → no prior row → pre-image is "".
+    createVersionThrows = true;
+
+    await expect(
+      applyAmendmentToEntity(
+        "org-1",
+        glossaryAmendment("add_glossary_term", { term: "MRR", definition: "Monthly Recurring Revenue" }, "default"),
+        "req-roll",
+      ),
+    ).rejects.toThrow(/Version snapshot failed for glossary "glossary".*rolled back/);
+
+    // The rollback (2nd upsert) restores the empty pre-image, so the compensated
+    // "pending" row is truthful — the term did not persist.
+    expect(upsertEntityForGroup).toHaveBeenCalledTimes(2);
+    expect(upsertEntityForGroup.mock.calls[1][3]).toBe("");
+    // The disk sync never runs on a failed apply.
+    expect(syncEntityToDisk).not.toHaveBeenCalled();
   });
 
   it("update_glossary_term on an undefined term fails the apply (no write)", async () => {

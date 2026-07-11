@@ -151,6 +151,7 @@ void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   resolveGlossaryBaseline: async () => {
     throw new Error("not used by the review route");
   },
+  GLOSSARY_DOC_NAME: "glossary",
 }));
 
 void mock.module("@atlas/api/lib/auth/middleware", () => ({

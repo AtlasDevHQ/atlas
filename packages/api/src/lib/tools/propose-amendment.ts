@@ -15,7 +15,7 @@ import { createTwoFilesPatch } from "diff";
 import { hasInternalDB, insertSemanticAmendment } from "@atlas/api/lib/db/internal";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { runUserQueryPipeline } from "@atlas/api/lib/tools/sql";
-import type { AmendmentPayload } from "@useatlas/types";
+import { AMENDMENT_TYPES, type AmendmentPayload } from "@useatlas/types";
 import type { AnalysisResult } from "@atlas/api/lib/semantic/expert/types";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 import {
@@ -36,17 +36,9 @@ The amendment object should match the YAML structure for that type (e.g., { name
 
   inputSchema: z.object({
     entityName: z.string().describe("Entity (table) name to amend"),
-    amendmentType: z.enum([
-      "add_dimension",
-      "add_measure",
-      "add_join",
-      "add_query_pattern",
-      "update_description",
-      "update_dimension",
-      "add_glossary_term",
-      "update_glossary_term",
-      "add_virtual_dimension",
-    ]),
+    // Derived from the @useatlas/types SSOT tuple so a new amendment type can't
+    // be added there yet silently omitted from the tool surface (#4518 review).
+    amendmentType: z.enum(AMENDMENT_TYPES),
     amendment: z
       .record(z.string(), z.unknown())
       .describe("Type-specific amendment payload matching the YAML structure"),

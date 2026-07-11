@@ -1,11 +1,13 @@
 /**
  * Apply a semantic expert amendment to the org's semantic layer.
  *
- * Reads the current entity YAML, applies the amendment, writes the updated
- * YAML, invalidates caches, then records a version snapshot. Rollback-ability
- * is part of the apply (#4506): a snapshot failure fails the whole apply and
- * best-effort restores the pre-image, so the decide seam's compensation
- * (row → pending) stays truthful. The disk-mirror sync stays warn-only.
+ * Reads the current document (an entity, or the group glossary for glossary
+ * amendments — #4518), applies the amendment, writes the updated YAML,
+ * invalidates caches, then records a version snapshot. Rollback-ability is part
+ * of the apply (#4506): a snapshot failure fails the whole apply and best-effort
+ * restores the pre-image, so the decide seam's compensation (row → pending)
+ * stays truthful. The disk-mirror sync stays warn-only. Entity and glossary
+ * paths share the write tail via {@link persistAmendedDocument}.
  */
 
 import * as yaml from "js-yaml";
@@ -13,7 +15,7 @@ import { loadYaml } from "../yaml";
 import { ANALYSIS_CATEGORIES, type AnalysisResult, type AnalysisCategory } from "./types";
 import { AMENDMENT_TYPES, type AmendmentType } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
-import type { SemanticEntityRow, SemanticEntityType } from "@atlas/api/lib/semantic/entities";
+import type { SemanticEntityRow } from "@atlas/api/lib/semantic/entities";
 import {
   AMENDMENT_MUTABLE_FIELDS,
   parseEntityShapeOrError,
@@ -125,9 +127,13 @@ export async function resolveAmendmentBaseline(
 // entity file — they write the group's glossary document, a `semantic_entities`
 // row with `entity_type = "glossary"`, `name = "glossary"`, scoped by
 // `connection_group_id`. They ride the SAME resolve → mutate → validate → upsert
-// → snapshot lifecycle as entity amendments (`persistAmendedDocument`), so the
-// live diff, version snapshot, rejection memory, dedup, and auto-approve rules
-// all apply — the type that used to silently no-op now writes for real.
+// → snapshot write tail as entity amendments (`persistAmendedDocument`): the fix
+// makes the live diff and version snapshot describe the GLOSSARY document
+// instead of the old junk snapshot of an unchanged entity. The surrounding
+// pipeline (rejection memory, pending dedup, auto-approve eligibility) is a
+// property of the proposal envelope / decide seam and applies to a glossary
+// amendment as it does to any amendment — see amendment-identity.ts for the
+// host-agnostic glossary identity (#4518) that keeps dedup/rejection correct.
 
 /** The fixed `semantic_entities.name` of the per-group glossary document. */
 export const GLOSSARY_DOC_NAME = "glossary";
@@ -159,9 +165,11 @@ export function glossaryDiffPath(group: string | undefined): string {
 
 /**
  * Resolve the current glossary ROW + parsed baseline for a group, the glossary
- * analog of {@link resolveAmendmentBaseline}. Both the diff preview
- * (`proposeAmendment`) and the write (`applyGlossaryAmendmentToStore`) go
- * through it, so the document an admin reviews is the one approval mutates.
+ * analog of {@link resolveAmendmentBaseline}. On the DB-backed path both the
+ * diff preview (`proposeAmendment`) and the write (`applyGlossaryAmendmentToStore`)
+ * go through it, so the document an admin reviews is the one approval mutates.
+ * (The self-hosted no-DB propose branch previews the flat-root `glossary.yml`
+ * directly, since the store/apply seam never runs there.)
  *
  * A group may not have a glossary yet — an absent (or empty) glossary is NOT an
  * error (contrast the entity resolver): it seeds an empty `{}` baseline so the
@@ -321,7 +329,9 @@ async function applyGlossaryAmendmentToStore(
  */
 async function persistAmendedDocument(params: {
   orgId: string | null;
-  docKind: SemanticEntityType;
+  // Only the two document kinds that carry a post-apply shape gate reach this
+  // seam — narrower than SemanticEntityType (which also admits metric/catalog).
+  docKind: "entity" | "glossary";
   docName: string;
   targetGroupId: string | null;
   preImageYaml: string;
@@ -645,16 +655,19 @@ export function applyAmendment(
 }
 
 /**
- * Read a glossary `terms` collection into a term→value object map, honoring
- * BOTH on-disk shapes — the canonical object map (`terms: { <name>: {...} }`)
- * and the legacy array form (`terms: [{ term, ... }]`). The write always
- * produces object form (what the generator emits and every loader reads), so
- * amending a legacy array-form glossary migrates it to the canonical shape.
- * Non-object term values (never produced in practice) are coerced to `{}` so
- * the result is uniformly object-valued.
+ * Read a glossary `terms` collection into a term→value map, honoring BOTH
+ * on-disk shapes — the canonical object map (`terms: { <name>: {...} }`) and the
+ * legacy array form (`terms: [{ term, ... }]`). The write always produces object
+ * form (what the generator emits and every loader reads), so amending a legacy
+ * array-form glossary migrates it to the canonical shape.
+ *
+ * Existing term values are preserved VERBATIM (values are `unknown`, not
+ * narrowed to objects): amending one term must never rewrite an unrelated
+ * sibling, including a malformed non-object one. Only the term the amendment
+ * targets is (re)written as an object, by {@link applyGlossaryAmendment}.
  */
-function termsToMap(terms: unknown): Record<string, Record<string, unknown>> {
-  const map: Record<string, Record<string, unknown>> = {};
+function termsToMap(terms: unknown): Record<string, unknown> {
+  const map: Record<string, unknown> = {};
   if (Array.isArray(terms)) {
     for (const entry of terms) {
       if (entry && typeof entry === "object" && !Array.isArray(entry)) {
@@ -668,10 +681,7 @@ function termsToMap(terms: unknown): Record<string, Record<string, unknown>> {
     }
   } else if (terms && typeof terms === "object") {
     for (const [name, value] of Object.entries(terms as Record<string, unknown>)) {
-      map[name] =
-        value && typeof value === "object" && !Array.isArray(value)
-          ? { ...(value as Record<string, unknown>) }
-          : {};
+      map[name] = value;
     }
   }
   return map;
@@ -705,15 +715,21 @@ export function applyGlossaryAmendment(
   const existing = terms[term];
 
   if (result.amendmentType === "update_glossary_term") {
-    if (!existing) {
+    if (existing === undefined) {
       throw new Error(
         `Cannot update glossary term "${term}": not defined in the "${result.group ?? "default"}" glossary`,
       );
     }
     // Typed mutation (mirrors update_dimension): copy ONLY the fields
-    // update_glossary_term declares it may touch; `term` is the selector.
+    // update_glossary_term declares it may touch; `term` is the selector. A
+    // malformed non-object existing value is repaired into an object here (only
+    // the targeted term is rewritten; siblings stay verbatim, see termsToMap).
+    const base =
+      existing && typeof existing === "object" && !Array.isArray(existing)
+        ? (existing as Record<string, unknown>)
+        : {};
     const mutable = AMENDMENT_MUTABLE_FIELDS.update_glossary_term ?? [];
-    const next = { ...existing };
+    const next = { ...base };
     for (const field of mutable) {
       if (Object.hasOwn(amendment, field)) next[field] = amendment[field];
     }

@@ -95,6 +95,7 @@ void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   resolveGlossaryBaseline: mock(async () => ({ row: null, targetGroupId: null, parsed: {} })),
   glossaryDiffPath: (g?: string) =>
     g && g !== "default" ? `semantic/groups/${g}/glossary.yml` : "semantic/glossary.yml",
+  GLOSSARY_DOC_NAME: "glossary",
 }));
 
 void mock.module("@atlas/api/lib/logger", () => ({

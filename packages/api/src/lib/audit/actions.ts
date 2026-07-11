@@ -285,7 +285,11 @@ export const ADMIN_ACTIONS = {
    * amendment review flips a pending row to approved (YAML written to
    * disk), and `improveReject` fires when a review rejects one — the
    * review route branches on `decision`, so forensic queries can filter
-   * on a single action_type per intent. See F-35. The former
+   * on a single action_type per intent. See F-35. `improveReconsider`
+   * fires when an admin lifts a rejection (#4512): the rejected Amendment
+   * returns to the Pending queue and its identity leaves rejection memory
+   * — the only way a rejected change comes back, so it carries its own
+   * intent-based action rather than reusing a review action. The former
    * `improve_accept` action covered the deleted in-memory session
    * proposal routes and could never fire in the web flow; it was removed
    * with that subsystem (#4503).
@@ -300,6 +304,7 @@ export const ADMIN_ACTIONS = {
     improveDraft: "semantic.improve_draft",
     improveApply: "semantic.improve_apply",
     improveReject: "semantic.improve_reject",
+    improveReconsider: "semantic.improve_reconsider",
   },
   pattern: {
     approve: "pattern.approve",

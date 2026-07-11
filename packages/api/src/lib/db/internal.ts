@@ -2084,6 +2084,90 @@ export async function getPendingAmendments(orgId: string | null): Promise<Pendin
   );
 }
 
+/** Row shape returned by getRejectedAmendments. */
+export type RejectedAmendmentRow = Record<string, unknown> & {
+  id: string;
+  source_entity: string;
+  connection_group_id: string | null;
+  description: string | null;
+  confidence: number;
+  amendment_payload: Record<string, unknown> | null;
+  /** When the reject was recorded (`reviewed_at`), as text. */
+  reviewed_at: string | null;
+  /**
+   * Who rejected it (`reviewed_by`). The web review is the only reject path
+   * today (the scheduler / auto-approve machine actors only ever approve), so
+   * in practice this is the `"admin"` sentinel that path records.
+   */
+  reviewed_by: string | null;
+  created_at: string;
+};
+
+/**
+ * List rejected semantic amendments for an org, most-recently-rejected first
+ * (#4512). The Rejected view reads this to offer Reconsider — the one action
+ * that lifts a rejection. Tenant-scoped through the shared `amendmentOrgScope`
+ * helper exactly like the pending reads; returns [] when no internal DB is
+ * available.
+ */
+export async function getRejectedAmendments(orgId: string | null): Promise<RejectedAmendmentRow[]> {
+  if (!hasInternalDB()) return [];
+
+  const scope = amendmentOrgScope(orgId, "$1");
+  if (scope.withhold) return [];
+
+  return internalQuery<RejectedAmendmentRow>(
+    `SELECT id, source_entity, connection_group_id, description, confidence, amendment_payload,
+            reviewed_by, reviewed_at::text AS reviewed_at, created_at::text
+       FROM learned_patterns
+       WHERE type = 'semantic_amendment' AND status = 'rejected'
+       AND ${scope.clause}
+       ORDER BY reviewed_at DESC NULLS LAST, created_at DESC`,
+    orgId ? [orgId] : [],
+  );
+}
+
+/**
+ * Reconsider a rejected semantic amendment — the admin action that lifts a
+ * rejection (#4512). One atomic conditional update `rejected → pending`: the
+ * row re-enters the Pending queue (`CLAIMABLE_STATUS_SQL` matches `pending`)
+ * AND leaves rejection memory in the same write, because rejection memory IS
+ * the set of `status = 'rejected'` rows (`loadRejectedKeys` /
+ * `findConflictingAmendment` both key on that status). The identity therefore
+ * becomes proposable again — a fresh proposal of it converges on this now-
+ * pending row instead of being refused. Reviewer fields + any stale
+ * `last_apply_error` are cleared so the reconsidered row is indistinguishable
+ * from a freshly-queued pending Amendment.
+ *
+ * Conditional on `status = 'rejected'`, so it can only ever lift a rejection:
+ * a pending / applying / approved row matches zero rows and the caller reports
+ * "not found". SaaS scoping mirrors the pending reads (#4487) via the shared
+ * `amendmentOrgScope` helper — a NULL-owner row is unreconsiderable from a
+ * tenant workspace, and the org-less SaaS path withholds.
+ *
+ * @throws {Error} If the internal database is not configured.
+ */
+export async function reconsiderRejectedAmendment(id: string, orgId: string | null): Promise<boolean> {
+  if (!hasInternalDB()) {
+    throw new Error("Internal database is not configured. Amendment reconsider requires DATABASE_URL.");
+  }
+
+  const scope = amendmentOrgScope(orgId, "$2");
+  if (scope.withhold) return false;
+
+  const rows = await internalQuery<{ id: string }>(
+    `UPDATE learned_patterns
+       SET status = 'pending', reviewed_by = NULL, reviewed_at = NULL,
+           last_apply_error = NULL, updated_at = now()
+     WHERE id = $1 AND type = 'semantic_amendment' AND status = 'rejected'
+     AND ${scope.clause}
+     RETURNING id`,
+    orgId ? [id, orgId] : [id],
+  );
+
+  return rows.length > 0;
+}
+
 
 /**
  * Increment repetition_count by 1 and increase confidence by 0.1 (capped at 1.0).

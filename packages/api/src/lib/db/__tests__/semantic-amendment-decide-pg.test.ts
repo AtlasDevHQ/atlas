@@ -32,6 +32,8 @@ import {
   stampClaimedAmendmentApproved,
   releaseClaimedAmendment,
   rejectPendingAmendment,
+  reconsiderRejectedAmendment,
+  getRejectedAmendments,
   insertSemanticAmendment,
   getPendingAmendments,
   getPendingAmendmentCount,
@@ -263,6 +265,117 @@ describeIfPg("decide-seam claim helpers (real Postgres, #4506)", () => {
       } finally {
         delete process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD;
       }
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // -------------------------------------------------------------------------
+  // Rejected view + Reconsider (#4512) — the reader SELECT and the atomic
+  // rejected → pending flip run against real Postgres, same as the sibling
+  // writers above. The stub-pool saas-scoping suite only string-matches the
+  // SQL; these execute the `reviewed_at::text` cast, the `ORDER BY reviewed_at
+  // DESC NULLS LAST`, the `RETURNING`, and — critically — the conditional
+  // `status = 'rejected'` atomicity.
+  // -------------------------------------------------------------------------
+
+  it(
+    "getRejectedAmendments returns only rejected rows, most-recently-rejected first, with reviewer metadata",
+    async () => {
+      // A pending row must never leak into the rejected view.
+      await seed({ status: "pending" });
+      const older = await seed({ status: "rejected" });
+      const newer = await seed({ status: "rejected" });
+      await pool.query(
+        `UPDATE learned_patterns SET reviewed_by = 'admin', reviewed_at = now() - interval '2 hours' WHERE id = $1`,
+        [older],
+      );
+      await pool.query(
+        `UPDATE learned_patterns SET reviewed_by = 'admin', reviewed_at = now() WHERE id = $1`,
+        [newer],
+      );
+
+      const rows = await getRejectedAmendments(ORG);
+      // ORDER BY reviewed_at DESC — newest rejection first; the pending row absent.
+      expect(rows.map((r) => r.id)).toEqual([newer, older]);
+      expect(rows[0].reviewed_by).toBe("admin");
+      expect(typeof rows[0].reviewed_at).toBe("string");
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "reconsiderRejectedAmendment flips a rejected row to a clean pending row, and only ever lifts a rejection",
+    async () => {
+      const rejected = await seed({ status: "rejected" });
+      await pool.query(
+        `UPDATE learned_patterns SET reviewed_by = 'admin', reviewed_at = now(), last_apply_error = 'stale' WHERE id = $1`,
+        [rejected],
+      );
+
+      expect(await reconsiderRejectedAmendment(rejected, ORG)).toBe(true);
+      expect(await statusOf(rejected)).toBe("pending");
+
+      // Reviewer fields + any stale apply error are cleared → indistinguishable
+      // from a freshly-queued pending Amendment.
+      const cleaned = await pool.query<{
+        reviewed_by: string | null;
+        reviewed_at: string | null;
+        last_apply_error: string | null;
+      }>(
+        `SELECT reviewed_by, reviewed_at::text AS reviewed_at, last_apply_error FROM learned_patterns WHERE id = $1`,
+        [rejected],
+      );
+      expect(cleaned.rows[0].reviewed_by).toBeNull();
+      expect(cleaned.rows[0].reviewed_at).toBeNull();
+      expect(cleaned.rows[0].last_apply_error).toBeNull();
+
+      // It re-enters the pending queue and leaves the rejected view.
+      expect((await getPendingAmendments(ORG)).map((r) => r.id)).toContain(rejected);
+      expect((await getRejectedAmendments(ORG)).map((r) => r.id)).not.toContain(rejected);
+
+      // Conditional on `status = 'rejected'`: a pending row and an absent row
+      // both match zero rows — reconsider can only ever LIFT a rejection.
+      const pending = await seed({ status: "pending" });
+      expect(await reconsiderRejectedAmendment(pending, ORG)).toBe(false);
+      expect(await reconsiderRejectedAmendment("00000000-0000-0000-0000-000000000000", ORG)).toBe(false);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "reconsider makes a rejected identity proposable again (#4512 AC #2): a re-proposal converges instead of being refused",
+    async () => {
+      const payload = { amendmentType: "add_dimension", amendment: { name: "region" } };
+      const base = {
+        orgId: ORG,
+        sourceEntity: "orders",
+        confidence: 0.5,
+        connectionGroupId: null as string | null,
+        amendmentPayload: payload,
+      };
+
+      const first = await insertSemanticAmendment({ ...base, description: "first" });
+      expect(first.outcome).toBe("inserted");
+
+      // Reject it → this identity is now in permanent rejection memory.
+      expect(await rejectPendingAmendment(first.id, ORG, "admin")).toBe(true);
+
+      // Re-proposing the SAME identity is refused (permanent rejection memory).
+      const refused = await insertSemanticAmendment({ ...base, description: "refused" });
+      expect(refused.outcome).toBe("rejected");
+      expect(refused.id).toBe(first.id);
+
+      // Reconsider lifts the rejection…
+      expect(await reconsiderRejectedAmendment(first.id, ORG)).toBe(true);
+
+      // …and now the identity is proposable again: the re-proposal converges on
+      // the now-pending row instead of being refused. This is the load-bearing
+      // half of AC #2 — it fails the moment rejection memory stops being "the
+      // set of status='rejected' rows" (e.g. a refactor to a separate table or
+      // an `archived` status), which reconsider's whole design rests on.
+      const proposable = await insertSemanticAmendment({ ...base, description: "proposable" });
+      expect(proposable.outcome).toBe("already_pending");
+      expect(proposable.id).toBe(first.id);
     },
     PG_TIMEOUT_MS,
   );

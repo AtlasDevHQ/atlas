@@ -22654,7 +22654,7 @@
           "Admin — Learned Patterns"
         ],
         "summary": "List learned patterns",
-        "description": "Returns a paginated list of learned query patterns. Supports filtering by status, type, source entity, and confidence range.",
+        "description": "Returns a paginated list of learned query patterns. Supports filtering by status, source entity, and confidence range. Semantic amendments are governed by the improve surface and never appear here (#4569).",
         "parameters": [
           {
             "schema": {
@@ -22674,16 +22674,6 @@
             "required": false,
             "description": "Filter by source entity name",
             "name": "source_entity",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Filter by type: query_pattern, semantic_amendment"
-            },
-            "required": false,
-            "description": "Filter by type: query_pattern, semantic_amendment",
-            "name": "type",
             "in": "query"
           },
           {
@@ -23460,31 +23450,6 @@
           },
           "404": {
             "description": "Pattern not found or internal database not configured",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Semantic amendment already reviewed, applied, or claimed by a concurrent request (#4506) — amendment status transitions are owned by the decide seam",
             "content": {
               "application/json": {
                 "schema": {

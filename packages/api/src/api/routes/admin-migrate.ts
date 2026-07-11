@@ -256,10 +256,35 @@ export async function importBundle(
       continue;
     }
 
+    // Preserve amendment identity across the migration (#4569, audit M9):
+    // `type`/`amendment_payload`/`connection_group_id` (plus reviewer + review
+    // time + seen count) round-trip so a `semantic_amendment` row lands as an
+    // amendment, not an orphaned query pattern. Fields are optional on the
+    // bundle (pre-#4569 exports omit them) — default to a query pattern.
+    // `amendment_payload` is jsonb, so serialize the object; null stays null.
+    //
+    // This INSERT restoring a historical `approved` amendment is NOT a
+    // violation of #4506's "the seam is the only writer of `approved`": that
+    // invariant scopes *live* review decisions. Bulk migration replays an
+    // already-decided row (its applied YAML travels in this same bundle's
+    // `semantic_entities`), the same way a DB restore would.
     await client.query(
-      `INSERT INTO learned_patterns (org_id, pattern_sql, description, source_entity, confidence, status)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [orgId, pattern.patternSql, pattern.description, pattern.sourceEntity, pattern.confidence, pattern.status],
+      `INSERT INTO learned_patterns (org_id, pattern_sql, description, source_entity, confidence, status, type, amendment_payload, connection_group_id, reviewed_by, reviewed_at, repetition_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        orgId,
+        pattern.patternSql,
+        pattern.description,
+        pattern.sourceEntity,
+        pattern.confidence,
+        pattern.status,
+        pattern.type ?? "query_pattern",
+        pattern.amendmentPayload == null ? null : JSON.stringify(pattern.amendmentPayload),
+        pattern.connectionGroupId ?? null,
+        pattern.reviewedBy ?? null,
+        pattern.reviewedAt ?? null,
+        pattern.repetitionCount ?? 1,
+      ],
     );
     result.learnedPatterns.imported++;
   }

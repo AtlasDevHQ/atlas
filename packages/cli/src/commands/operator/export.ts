@@ -100,21 +100,30 @@ export async function handleExport(args: string[]): Promise<void> {
     );
     console.log(`  Entities:      ${semanticEntities.length}`);
 
-    // 3. Learned patterns
+    // 3. Learned patterns — project the amendment-identity columns too (#4569,
+    // audit M9) so a `semantic_amendment` row survives the migration as an
+    // amendment instead of round-tripping as an orphaned query pattern.
     const patRows = await pool.query(
-      `SELECT pattern_sql, description, source_entity, confidence, status
+      `SELECT pattern_sql, description, source_entity, confidence, status,
+              type, amendment_payload, connection_group_id, reviewed_by, reviewed_at, repetition_count
        FROM learned_patterns
        WHERE ${orgClause}
        ORDER BY created_at`,
       orgParams,
     );
-    const learnedPatterns = patRows.rows.map(
+    const learnedPatterns: import("@useatlas/types").ExportedLearnedPattern[] = patRows.rows.map(
       (r: Record<string, unknown>) => ({
         patternSql: r.pattern_sql as string,
         description: (r.description as string) ?? null,
         sourceEntity: (r.source_entity as string) ?? null,
         confidence: r.confidence as number,
         status: r.status as import("@useatlas/types").LearnedPattern["status"],
+        type: (r.type as import("@useatlas/types").LearnedPattern["type"]) ?? "query_pattern",
+        amendmentPayload: (r.amendment_payload as Record<string, unknown> | null) ?? null,
+        connectionGroupId: (r.connection_group_id as string) ?? null,
+        reviewedBy: (r.reviewed_by as string) ?? null,
+        reviewedAt: r.reviewed_at ? String(r.reviewed_at) : null,
+        repetitionCount: (r.repetition_count as number) ?? 1,
       }),
     );
     console.log(`  Patterns:      ${learnedPatterns.length}`);

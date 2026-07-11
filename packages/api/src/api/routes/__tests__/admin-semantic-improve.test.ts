@@ -1,7 +1,7 @@
 /**
  * Tests for admin semantic improve routes.
  *
- * Tests the session management and proposal approval/rejection endpoints.
+ * Tests the DB-backed amendment review queue and the health endpoint.
  * The streaming chat endpoint requires a full agent mock and is covered
  * by browser tests.
  */
@@ -171,69 +171,19 @@ describe("admin-semantic-improve", () => {
     callOrder = [];
   });
 
-  describe("GET /sessions", () => {
-    it("returns session list", async () => {
-      const res = await adminSemanticImprove.request("/sessions");
-      expect(res.status).toBe(200);
+  // The four in-memory session/proposal routes (GET /sessions,
+  // GET /sessions/:id, POST /proposals/:id/approve|reject) were deleted in
+  // #4503 — the removed-route guard below pins that they stay gone.
 
-      const body = (await res.json()) as { sessions: unknown[] };
-      expect(body.sessions).toBeInstanceOf(Array);
-    });
-  });
-
-  describe("GET /sessions/:id", () => {
-    it("returns 404 for non-existent session", async () => {
-      const res = await adminSemanticImprove.request(
-        "/sessions/00000000-0000-0000-0000-000000000000",
-      );
+  describe("removed session routes stay removed (#4503)", () => {
+    it.each([
+      ["GET", "/sessions"],
+      ["GET", "/sessions/00000000-0000-0000-0000-000000000000"],
+      ["POST", "/proposals/0/approve"],
+      ["POST", "/proposals/0/reject"],
+    ])("%s %s returns 404", async (method, path) => {
+      const res = await adminSemanticImprove.request(path, { method });
       expect(res.status).toBe(404);
-
-      const body = (await res.json()) as { error: string };
-      expect(body.error).toBe("not_found");
-    });
-  });
-
-  describe("POST /proposals/:id/approve", () => {
-    it("returns 404 when no session exists", async () => {
-      const res = await adminSemanticImprove.request("/proposals/0/approve", {
-        method: "POST",
-      });
-      expect(res.status).toBe(404);
-
-      const body = (await res.json()) as { error: string };
-      expect(body.error).toBe("not_found");
-    });
-
-    it("returns 400 for non-numeric proposal ID", async () => {
-      const res = await adminSemanticImprove.request("/proposals/abc/approve", {
-        method: "POST",
-      });
-      expect(res.status).toBe(400);
-
-      const body = (await res.json()) as { error: string };
-      expect(body.error).toBe("invalid_id");
-    });
-  });
-
-  describe("POST /proposals/:id/reject", () => {
-    it("returns 404 when no session exists", async () => {
-      const res = await adminSemanticImprove.request("/proposals/0/reject", {
-        method: "POST",
-      });
-      expect(res.status).toBe(404);
-
-      const body = (await res.json()) as { error: string };
-      expect(body.error).toBe("not_found");
-    });
-
-    it("returns 400 for non-numeric proposal ID", async () => {
-      const res = await adminSemanticImprove.request("/proposals/abc/reject", {
-        method: "POST",
-      });
-      expect(res.status).toBe(400);
-
-      const body = (await res.json()) as { error: string };
-      expect(body.error).toBe("invalid_id");
     });
   });
 

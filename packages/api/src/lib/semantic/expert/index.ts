@@ -40,7 +40,6 @@ export {
   recordDecision,
   addMessage,
   getSessionSummary,
-  buildSessionContext,
 } from "./session";
 export type {
   SessionState,

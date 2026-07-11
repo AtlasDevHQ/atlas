@@ -5,7 +5,6 @@ import {
   recordDecision,
   addMessage,
   getSessionSummary,
-  buildSessionContext,
 } from "../session";
 import { createAnalysisResult } from "../scoring";
 import type { AnalysisResult } from "../types";
@@ -142,34 +141,5 @@ describe("getSessionSummary", () => {
     expect(summary.rejected).toBe(0);
     expect(summary.skipped).toBe(0);
     expect(summary.remaining).toBe(0);
-  });
-});
-
-describe("buildSessionContext", () => {
-  test("includes progress and rejection info", () => {
-    const proposals = [
-      makeProposal("orders", "total_amount"),
-      makeProposal("users", "total_logins"),
-    ];
-    const session = createSession(proposals);
-
-    recordDecision(session, "rejected");
-    addMessage(session, "user", "I don't need that measure.");
-
-    const context = buildSessionContext(session);
-
-    expect(context).toContain("1/2 proposals reviewed");
-    expect(context).toContain("Rejected: 1");
-    expect(context).toContain("Remaining: 1");
-    expect(context).toContain("orders:add_measure:total_amount");
-    expect(context).toContain("I don't need that measure.");
-  });
-
-  test("truncates long messages", () => {
-    const session = createSession([]);
-    addMessage(session, "user", "x".repeat(300));
-
-    const context = buildSessionContext(session);
-    expect(context).toContain("...");
   });
 });

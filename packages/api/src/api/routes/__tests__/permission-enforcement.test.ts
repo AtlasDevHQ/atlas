@@ -252,8 +252,8 @@ const cases: MappingCase[] = [
 
   // admin:semantic → admin-semantic-improve.ts
   {
-    name: "GET /admin/semantic-improve/sessions",
-    url: "/api/v1/admin/semantic-improve/sessions",
+    name: "GET /admin/semantic-improve/pending",
+    url: "/api/v1/admin/semantic-improve/pending",
     permission: "admin:semantic",
   },
 

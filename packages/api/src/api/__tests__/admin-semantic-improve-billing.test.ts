@@ -66,20 +66,6 @@ void mock.module("@atlas/api/lib/audit", async () => {
   };
 });
 
-void mock.module("@atlas/api/lib/semantic/expert", () => ({
-  createSession: () => ({
-    proposals: [],
-    currentIndex: 0,
-    reviewed: [],
-    messages: [],
-    rejectedKeys: new Set<string>(),
-    startedAt: new Date(),
-  }),
-  recordDecision: () => {},
-  getSessionSummary: () => ({ total: 0, accepted: 0, rejected: 0, skipped: 0, remaining: 0 }),
-  buildSessionContext: () => "",
-}));
-
 const mockRunAgent = mock(async () => ({
   toUIMessageStream: () =>
     new ReadableStream<Uint8Array>({ start: (ctl) => ctl.close() }),

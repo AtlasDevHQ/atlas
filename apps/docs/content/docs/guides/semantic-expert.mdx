@@ -247,9 +247,9 @@ Each proposal appears as a card showing:
 - **Confidence score** (color-coded: green ≥80%, yellow ≥50%, red &lt;50%)
 - **Approve / Reject** buttons
 
-### Session Persistence
+### Proposals Persist; the Conversation Does Not
 
-Improvement sessions are preserved across page navigations. The session ID is tracked in the `x-session-id` response header from the streaming endpoint. When you return to the improve page, the agent maintains context about which proposals have been reviewed.
+The chat itself is ephemeral — navigating away ends the conversation, and there is no server-side session to resume. What persists is every **proposal**: the moment the agent proposes an amendment, it is written to the review queue in the database (auto-approve-eligible amendments are applied immediately instead of waiting). When you return to the improve page, anything not yet reviewed is waiting in the proposals panel (and behind the sidebar badge), ready to approve or reject.
 
 ### API Endpoints
 
@@ -258,10 +258,11 @@ The web interactive mode uses these admin API endpoints:
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/admin/semantic-improve/chat` | Streaming chat with the expert agent |
-| `GET` | `/api/v1/admin/semantic-improve/sessions` | List improvement sessions |
-| `GET` | `/api/v1/admin/semantic-improve/sessions/:id` | Get session with proposals |
-| `POST` | `/api/v1/admin/semantic-improve/proposals/:id/approve` | Apply a proposal |
-| `POST` | `/api/v1/admin/semantic-improve/proposals/:id/reject` | Reject a proposal |
+| `GET` | `/api/v1/admin/semantic-improve/pending` | List pending amendment proposals, newest first |
+| `GET` | `/api/v1/admin/semantic-improve/pending-count` | Count of pending proposals (powers the sidebar badge) |
+| `POST` | `/api/v1/admin/semantic-improve/amendments/:id/review` | Approve or reject a pending amendment (`{ "decision": "approved" \| "rejected" }`) |
+
+Approving an amendment applies the YAML change and records it in version history before the row is marked reviewed; rejecting down-ranks the same finding in the autonomous analyzer's scoring for 30 days (it does not prevent the agent from proposing it again). Both decisions land in the admin audit log (`semantic.improve_apply` / `semantic.improve_reject`).
 
 ### Integration with Version History
 
@@ -322,8 +323,9 @@ The overall score is a weighted average. Use this to track your semantic layer q
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/admin/semantic-improve/pending-count` | Count of pending proposals |
 | `GET` | `/api/v1/admin/semantic-improve/health` | Semantic layer health score |
+
+The pending queue endpoints (`/pending`, `/pending-count`, `/amendments/:id/review`) documented under [Web Interactive Mode](#api-endpoints) serve scheduler-produced proposals the same way — the queue is one list regardless of which surface proposed the amendment.
 
 ## Learned query patterns
 

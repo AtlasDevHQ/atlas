@@ -1,20 +1,20 @@
 /**
  * Audit regression suite for `admin-semantic-improve.ts` — F-35 (#1790).
  *
- * Pins the four write surfaces to the canonical
+ * Pins the write surfaces to the canonical
  * `ADMIN_ACTIONS.semantic.improve*` action types:
  *
  *   - POST /chat                     → `semantic.improve_draft`
- *   - POST /proposals/{id}/approve   → `semantic.improve_accept`
- *   - POST /proposals/{id}/reject    → `semantic.improve_reject`
  *   - POST /amendments/{id}/review   → `semantic.improve_apply` (approved)
  *                                      / `semantic.improve_reject` (rejected)
  *
+ * (The in-memory `/proposals/{id}/(approve|reject)` routes and their
+ * `semantic.improve_accept` action were deleted in #4503.)
+ *
  * The DB-backed `/amendments/{id}/review` route is exercised end-to-end
- * through the Hono app. The in-memory proposal surface (`/chat` +
- * `/proposals/{id}/(approve|reject)`) is driven by mounting the router
- * into a minimal Hono host so the streaming SSE round-trip in `/chat`
- * does not block the test runner — the audit wire-up is identical.
+ * through the Hono app. `/chat` is driven by mounting the router into a
+ * minimal Hono host so the streaming SSE round-trip does not block the
+ * test runner — the audit wire-up is identical.
  */
 
 import {
@@ -78,57 +78,6 @@ void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   applyAmendmentFromPayload: mock(async () => undefined),
 }));
 
-// Seed `createSession` to return one proposal so /proposals/0/(approve|reject)
-// resolve. `recordDecision` / `getSessionSummary` / `buildSessionContext`
-// match the real shape enough for the routes under test.
-interface MinimalProposal {
-  readonly entityName: string;
-  readonly category: string;
-  readonly amendmentType: string;
-  readonly amendment: Record<string, unknown>;
-  readonly rationale: string;
-  readonly confidence: number;
-  readonly impact: number;
-  readonly score: number;
-  readonly testQuery?: string;
-}
-
-const SEEDED_PROPOSAL: MinimalProposal = {
-  entityName: "events",
-  category: "coverage_gaps",
-  amendmentType: "update_description",
-  amendment: { description: "Updated" },
-  rationale: "Sample proposal",
-  confidence: 0.9,
-  impact: 0.5,
-  score: 0.7,
-};
-
-void mock.module("@atlas/api/lib/semantic/expert", () => ({
-  createSession: () => ({
-    proposals: [SEEDED_PROPOSAL],
-    currentIndex: 0,
-    reviewed: [] as { result: MinimalProposal; decision: string; decidedAt: Date }[],
-    messages: [],
-    rejectedKeys: new Set<string>(),
-    startedAt: new Date(),
-  }),
-  recordDecision: (
-    session: {
-      currentIndex: number;
-      proposals: readonly MinimalProposal[];
-      reviewed: { result: MinimalProposal; decision: string; decidedAt: Date }[];
-    },
-    decision: "accepted" | "rejected" | "skipped",
-  ) => {
-    const current = session.proposals[session.currentIndex];
-    if (current) session.reviewed.push({ result: current, decision, decidedAt: new Date() });
-    session.currentIndex += 1;
-  },
-  getSessionSummary: () => ({ total: 1, accepted: 0, rejected: 0, skipped: 0, remaining: 1 }),
-  buildSessionContext: () => "",
-}));
-
 // Stub the agent runner — /chat awaits runAgent and then emits the audit row.
 void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(async () => ({
@@ -175,8 +124,7 @@ function findAuditCall(actionType: string): AuditEntry | undefined {
  * Mount the router into a minimal Hono host that pre-populates the
  * request context (requestId + atlasMode + authResult + orgContext). This
  * avoids bringing the full app's streaming pipeline online for the
- * `/chat` and `/proposals/{id}/*` routes while still exercising the
- * router's real audit emissions.
+ * `/chat` route while still exercising the router's real audit emissions.
  */
 function makeRouterHost() {
   const host = new Hono<OrgContextEnv>();
@@ -232,7 +180,7 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("POST /api/v1/admin/semantic-improve/chat — audit emission", () => {
-  it("emits semantic.improve_draft on new chat session", async () => {
+  it("emits semantic.improve_draft anchored on the requestId (no session ids, #4503)", async () => {
     const host = makeRouterHost();
     const res = await hostRequest(host, "POST", "/chat", {
       messages: [
@@ -240,67 +188,35 @@ describe("POST /api/v1/admin/semantic-improve/chat — audit emission", () => {
       ],
     });
     expect(res.status).toBe(200);
+    // The deleted session subsystem's wire field must not resurface.
+    expect(res.headers.get("x-session-id")).toBeNull();
 
     const entry = findAuditCall("semantic.improve_draft");
     expect(entry).toBeDefined();
     expect(entry!.targetType).toBe("semantic");
-    expect(entry!.metadata).toMatchObject({ resumed: false });
-    expect(typeof entry!.metadata?.sessionId).toBe("string");
+    // requireOrgContext mints a fresh requestId per request (the host-set
+    // one is overwritten), so assert shape + consistency rather than value:
+    // the row's target IS the request correlation handle.
+    expect(typeof entry!.targetId).toBe("string");
+    expect(entry!.targetId.length).toBeGreaterThan(0);
+    expect(entry!.metadata).toMatchObject({ requestId: entry!.targetId, messageCount: 1 });
+    expect(entry!.metadata).not.toHaveProperty("sessionId");
   });
-});
 
-// ---------------------------------------------------------------------------
-// POST /proposals/{id}/approve — improve_accept
-// POST /proposals/{id}/reject  — improve_reject
-// ---------------------------------------------------------------------------
-
-describe("POST /api/v1/admin/semantic-improve/proposals/{id}/approve — audit", () => {
-  it("emits semantic.improve_accept with proposalIndex + entityName + amendmentType", async () => {
+  it("ignores the legacy sessionId body field from stale clients (deploy-overlap window)", async () => {
+    // ChatRequestSchema is non-strict, so a cached web bundle still sending
+    // the deleted `sessionId` field degrades gracefully (stripped) instead
+    // of 400ing mid-deploy. A future `.strict()` change would break stale
+    // clients — this pin makes that a conscious decision.
     const host = makeRouterHost();
-    // First create a session via /chat
-    const chatRes = await hostRequest(host, "POST", "/chat", {
+    const res = await hostRequest(host, "POST", "/chat", {
       messages: [
-        { role: "user", parts: [{ type: "text", text: "seed" }], id: "m1" },
+        { role: "user", parts: [{ type: "text", text: "analyze" }], id: "m1" },
       ],
+      sessionId: "550e8400-e29b-41d4-a716-446655440000",
     });
-    expect(chatRes.status).toBe(200);
-    mockLogAdminAction.mockClear();
-
-    const res = await hostRequest(host, "POST", "/proposals/0/approve");
     expect(res.status).toBe(200);
-
-    const entry = findAuditCall("semantic.improve_accept");
-    expect(entry).toBeDefined();
-    expect(entry!.targetType).toBe("semantic");
-    expect(entry!.metadata).toMatchObject({
-      proposalIndex: 0,
-      entityName: "events",
-      amendmentType: "update_description",
-    });
-  });
-});
-
-describe("POST /api/v1/admin/semantic-improve/proposals/{id}/reject — audit", () => {
-  it("emits semantic.improve_reject with proposalIndex + entityName", async () => {
-    const host = makeRouterHost();
-    const chatRes = await hostRequest(host, "POST", "/chat", {
-      messages: [
-        { role: "user", parts: [{ type: "text", text: "seed" }], id: "m1" },
-      ],
-    });
-    expect(chatRes.status).toBe(200);
-    mockLogAdminAction.mockClear();
-
-    const res = await hostRequest(host, "POST", "/proposals/0/reject");
-    expect(res.status).toBe(200);
-
-    const entry = findAuditCall("semantic.improve_reject");
-    expect(entry).toBeDefined();
-    expect(entry!.targetType).toBe("semantic");
-    expect(entry!.metadata).toMatchObject({
-      proposalIndex: 0,
-      entityName: "events",
-    });
+    expect(res.headers.get("x-session-id")).toBeNull();
   });
 });
 

@@ -280,13 +280,15 @@ export const ADMIN_ACTIONS = {
    * every entity in the org's semantic directory, emitted once per call
    * with `{ importedCount, sourceRef }`. The `improve*` variants cover
    * the AI-assisted expert-agent surface (`admin-semantic-improve.ts`):
-   * `improveDraft` marks a new chat-driven draft session, `improveApply`
-   * fires when a DB-backed amendment review flips a pending row to
-   * applied (YAML written to disk), `improveAccept` / `improveReject`
-   * cover the in-memory session proposal decisions. Note: the DB-backed
-   * review route branches on `decision` — rejection emits
-   * `improve_reject` so forensic queries can filter on a single
-   * action_type regardless of which surface rejected it. See F-35.
+   * `improveDraft` marks a chat turn with the expert agent (which can
+   * persist pending amendments mid-stream), `improveApply` fires when an
+   * amendment review flips a pending row to approved (YAML written to
+   * disk), and `improveReject` fires when a review rejects one — the
+   * review route branches on `decision`, so forensic queries can filter
+   * on a single action_type per intent. See F-35. The former
+   * `improve_accept` action covered the deleted in-memory session
+   * proposal routes and could never fire in the web flow; it was removed
+   * with that subsystem (#4503).
    */
   semantic: {
     createEntity: "semantic.create_entity",
@@ -297,7 +299,6 @@ export const ADMIN_ACTIONS = {
     bulkImport: "semantic.bulk_import",
     improveDraft: "semantic.improve_draft",
     improveApply: "semantic.improve_apply",
-    improveAccept: "semantic.improve_accept",
     improveReject: "semantic.improve_reject",
   },
   pattern: {

@@ -623,8 +623,9 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // #4516 — per-workspace autonomous-improvement opt-in. Off by default and
     // WORKSPACE-scoped so enabling it is a workspace-admin settings action
     // (visible + writable to SaaS workspace admins via the default of the
-    // saasVisible/saasWritable axis). Read per-tick (no `requiresRestart`):
-    // the SaaS scheduler enumerates workspaces where this resolves true. It is
+    // saasVisible/saasWritable axis). Read per-tick (no `requiresRestart`): the
+    // SaaS scheduler enumerates workspaces that have an explicit workspace-scoped
+    // DB override set to true (not env/platform-default resolution). It is
     // orthogonal to auto-approve below — autonomy governs whether the scheduler
     // runs for a workspace; auto-approve governs whether eligible proposals
     // self-apply vs. queue, and is never implied by autonomy.

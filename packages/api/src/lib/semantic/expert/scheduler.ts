@@ -21,8 +21,9 @@ export const DEFAULT_EXPERT_SCHEDULER_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** Per-workspace autonomous-improvement opt-in (#4516). Workspace-scoped,
  * off by default — enabling it is a workspace-admin settings action. Must match
- * the `key`/`envVar` of the registry entry in lib/settings.ts (a guard test in
- * scheduler-tick.test.ts pins that they don't drift). */
+ * the `key`/`envVar` of the registry entry in lib/settings.ts; a guard test in
+ * scheduler.test.ts cross-checks this constant against the real registry
+ * (`getSettingDefinition`) so a rename can't silently zero out enumeration. */
 export const AUTONOMOUS_IMPROVE_ENABLED_KEY = "ATLAS_AUTONOMOUS_IMPROVE_ENABLED";
 
 /** Counters produced by a single workspace's tick. */
@@ -317,10 +318,11 @@ async function runWorkspaceImproveTick(orgId: string | null): Promise<WorkspaceT
       }
 
       // 2. Load cached profiles (from last `atlas init` / `atlas improve` run).
-      //    This is the bundled/global disk cache of column statistics, not
-      //    tenant data — keyed by table, matched to entities by name — so it
-      //    stays unscoped: on SaaS it is normally empty and the analyzer degrades
-      //    gracefully (per-workspace profiling is #4509's surface, not this slice).
+      //    This is a single GLOBAL disk cache written only by the CLI — normally
+      //    empty on SaaS, so there is no per-tenant profile to read and the
+      //    analyzer degrades gracefully. It stays unscoped for that reason (not
+      //    because profiles aren't tenant data — sampled column values are);
+      //    per-workspace profiling is #4509's surface, not this slice.
       const { loadCachedProfiles } = await import("./profile-cache");
       const profiles = loadCachedProfiles();
 

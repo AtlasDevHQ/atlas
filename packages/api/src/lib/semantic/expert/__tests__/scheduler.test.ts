@@ -3,8 +3,9 @@ import {
   isExpertSchedulerEnabled,
   getExpertSchedulerIntervalMs,
   DEFAULT_EXPERT_SCHEDULER_INTERVAL_MS,
+  AUTONOMOUS_IMPROVE_ENABLED_KEY,
 } from "../scheduler";
-import { loadSettings, _resetSettingsCache } from "@atlas/api/lib/settings";
+import { loadSettings, _resetSettingsCache, getSettingDefinition } from "@atlas/api/lib/settings";
 import type { ResolvedConfig } from "@atlas/api/lib/config";
 import { _setConfigForTest, _resetConfig } from "@atlas/api/lib/config";
 
@@ -122,6 +123,21 @@ describe("isExpertSchedulerEnabled — SaaS boot-guard retired (#4516)", () => {
     delete process.env.ATLAS_EXPERT_SCHEDULER_ENABLED;
     _setConfigForTest(configWithDeployMode("saas"));
     expect(isExpertSchedulerEnabled()).toBe(false);
+  });
+});
+
+// #4516 — the SaaS enumeration filters `WHERE s.key = $1` bound to
+// AUTONOMOUS_IMPROVE_ENABLED_KEY. If settings.ts renames the registry key/envVar
+// without updating the constant, enumeration silently matches ZERO workspaces
+// (autonomy never runs for any tenant) with no other failure. This crosses the
+// constant against the REAL registry (scheduler.test uses the unmocked settings
+// module) so that drift ships red — the tautology `KEY === "literal"` cannot.
+describe("ATLAS_AUTONOMOUS_IMPROVE_ENABLED registry ↔ constant (#4516)", () => {
+  it("the registry has a workspace-scoped entry keyed by the exported constant", () => {
+    const def = getSettingDefinition(AUTONOMOUS_IMPROVE_ENABLED_KEY);
+    expect(def).toBeDefined();
+    expect(def?.scope).toBe("workspace");
+    expect(def?.envVar).toBe(AUTONOMOUS_IMPROVE_ENABLED_KEY);
   });
 });
 

@@ -55,6 +55,10 @@ let gateFor: (orgId: string | undefined) => GateResult = () => ({ allowed: true 
 const gateCalls: Array<string | undefined> = [];
 // Captured request-context frames — assert origin/actor stamping (#4508, AC3).
 const capturedContexts: Array<{ requestId?: string; agentOrigin?: string; actor?: { kind?: string } }> = [];
+// When set, `loadEntitiesForOrg` rejects for this orgId (models a mid-frame,
+// inside-the-request-context-frame failure that must still be contained by the
+// sweep-level catch, a different path than a pre-frame gate throw).
+let entitiesForOrgThrowsFor: string | null = null;
 // Loader org-scope capture — which orgId each context loader was called with.
 const loaderOrgIds: {
   entitiesForOrg: string[];
@@ -63,10 +67,12 @@ const loaderOrgIds: {
   rejected: Array<string | undefined>;
 } = { entitiesForOrg: [], entitiesFromDisk: 0, audit: [], rejected: [] };
 
-// Context loaders. `loadEntitiesForOrg` is only reached on the SaaS (orgId)
-// path; `loadEntitiesFromDisk` on the self-hosted degenerate path. The analyzer
-// is mocked to return our proposal regardless, so any non-empty entity list
-// clears the `entities.length === 0` early return.
+// Context loaders — partial mock (the tick calls only these five; the sixth
+// export `loadEntitiesFromDB` is never reached by the scheduler). Complete for
+// this file. `loadEntitiesForOrg` is only reached on the SaaS (orgId) path;
+// `loadEntitiesFromDisk` on the self-hosted degenerate path. The analyzer is
+// mocked to return our proposal regardless, so any non-empty entity list clears
+// the `entities.length === 0` early return.
 void mock.module("../context-loader", () => ({
   loadEntitiesFromDisk: async () => {
     loaderOrgIds.entitiesFromDisk++;
@@ -74,6 +80,7 @@ void mock.module("../context-loader", () => ({
   },
   loadEntitiesForOrg: async (orgId: string) => {
     loaderOrgIds.entitiesForOrg.push(orgId);
+    if (orgId === entitiesForOrgThrowsFor) throw new Error("entity load failed");
     return { entities: [{ name: "companies" }], totalRows: 1, parseFailures: 0 };
   },
   loadGlossaryFromDisk: async () => [],
@@ -159,6 +166,7 @@ const { runExpertSchedulerTick, AUTONOMOUS_IMPROVE_ENABLED_KEY } = await import(
 function resetMocks(): void {
   saasMode = false;
   optedInOrgs = [];
+  entitiesForOrgThrowsFor = null;
   enumerationThrows = false;
   enumerationSql = "";
   enumerationParams = [];
@@ -204,6 +212,20 @@ describe("runExpertSchedulerTick auto-approve → decide seam invariant (#4486, 
     expect(mockDecideAmendment).toHaveBeenCalledTimes(1);
     expect(result.autoApproved).toBe(0);
     expect(result.errors).toBe(1);
+  });
+
+  it("counts an error (never queued/approved) when the insert itself throws", async () => {
+    mockInsertSemanticAmendment.mockImplementation(async () => {
+      throw new Error("db write failed");
+    });
+
+    const result = await runExpertSchedulerTick();
+
+    // The per-proposal catch counts it and the seam is never reached.
+    expect(mockDecideAmendment).not.toHaveBeenCalled();
+    expect(result.errors).toBe(1);
+    expect(result.queued).toBe(0);
+    expect(result.autoApproved).toBe(0);
   });
 
   it("counts queued (never autoApproved) when a concurrent decision beat the tick", async () => {
@@ -378,6 +400,22 @@ describe("runExpertSchedulerTick — SaaS per-workspace iteration (#4516)", () =
     expect(mockDecideAmendment.mock.calls.map((c) => c[0].orgId)).toEqual(["org-b"]);
   });
 
+  it("a mid-frame loader throw is contained by the sweep too (inside the origin frame)", async () => {
+    optedInOrgs = ["org-a", "org-b"];
+    // org-a passes the gate, enters the request-context frame, then its entity
+    // load throws — a different escape path than the pre-frame gate throw above.
+    entitiesForOrgThrowsFor = "org-a";
+
+    const result = await runExpertSchedulerTick();
+
+    expect(result.workspacesConsidered).toBe(2);
+    expect(result.errors).toBe(1);
+    // Both workspaces entered the frame + loader; only org-b completed.
+    expect(loaderOrgIds.entitiesForOrg).toEqual(["org-a", "org-b"]);
+    expect(result.autoApproved).toBe(1);
+    expect(mockDecideAmendment.mock.calls.map((c) => c[0].orgId)).toEqual(["org-b"]);
+  });
+
   it("stamps agentOrigin + actor 'scheduler' and an org-scoped requestId per workspace", async () => {
     optedInOrgs = ["org-a"];
 
@@ -418,11 +456,3 @@ describe("runExpertSchedulerTick — SaaS per-workspace iteration (#4516)", () =
   });
 });
 
-describe("runExpertSchedulerTick — key/registry drift guard (#4516)", () => {
-  it("the enumeration key matches the exported constant (registry must mirror it)", () => {
-    // If settings.ts renames the registry key/envVar without updating the
-    // constant, the SaaS enumeration silently matches zero workspaces. This
-    // pins the constant's value so that drift is at least visible here.
-    expect(AUTONOMOUS_IMPROVE_ENABLED_KEY).toBe("ATLAS_AUTONOMOUS_IMPROVE_ENABLED");
-  });
-});

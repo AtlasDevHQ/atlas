@@ -41,14 +41,56 @@ let mockRejectedAmendments: MockRejectedRow[] = [];
 let claimedRows = new Map<string, MockAmendmentRow>();
 let rejectCalls: Array<{ id: string; orgId: string | null }> = [];
 let reconsiderCalls: Array<{ id: string; orgId: string | null }> = [];
-let releaseCalls: Array<{ id: string; reason: string }> = [];
+let releaseCalls: Array<{ id: string; reason: string | null }> = [];
 let stampCalls: string[] = [];
 let applyPayloadCalls: Array<Record<string, unknown>> = [];
 // When true, the mocked YAML apply rejects — models the seam's compensation
 // path ("approved is stamped only after a successful apply").
 let applyShouldThrow = false;
+// #4511 — when set, the apply raises a StaleBaselineError (hash-carried claim,
+// baseline changed since render). The seam returns the `stale` outcome.
+let applyStale: { diff: string; baselineHash: string } | null = null;
+// #4511 — when set, the apply raises an AmbiguousEntityError carrying these
+// candidate groups UNLESS a disambiguation group was threaded in (models a
+// legacy cross-group-ambiguous row that the group picker resolves).
+let applyAmbiguousGroups: Array<string | null> | null = null;
+// #4511 — the live diff `GET /pending` renders per row. An Error value makes
+// `computeAmendmentLiveDiff` throw (baseline unresolvable → null diff/hash).
+let mockLiveDiff: { diff: string; baselineHash: string; targetGroupId: string | null } | Error = {
+  diff: "--- a\n+++ b\n@@\n+live",
+  baselineHash: "live-hash",
+  targetGroupId: null,
+};
 // Shared sequence log: proves claim → apply → stamp ordering.
 let callOrder: string[] = [];
+
+// #4511 — the real StaleBaselineError / AmbiguousEntityError are Effect/plain
+// classes; the seam and the runHandler mock branch on `instanceof`, so the
+// apply mock must raise the SAME class the mocked `../diff` exports and the
+// runHandler mock checks. One definition, referenced everywhere.
+class TestStaleBaselineError extends Error {
+  readonly entityName: string;
+  readonly diff: string;
+  readonly baselineHash: string;
+  constructor(p: { entityName: string; diff: string; baselineHash: string }) {
+    super(`Entity "${p.entityName}" changed since the diff was rendered`);
+    this.name = "StaleBaselineError";
+    this.entityName = p.entityName;
+    this.diff = p.diff;
+    this.baselineHash = p.baselineHash;
+  }
+}
+class TestAmbiguousEntityError extends Error {
+  readonly entityName: string;
+  readonly entityType = "entity";
+  readonly groups: Array<string | null>;
+  constructor(entityName: string, groups: Array<string | null>) {
+    super(`Entity "${entityName}" is ambiguous across groups`);
+    this.name = "AmbiguousEntityError";
+    this.entityName = entityName;
+    this.groups = groups;
+  }
+}
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
@@ -58,6 +100,10 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   insertSemanticAmendment: async () => ({ id: "mock-amendment-id", autoApprove: false }),
   getPendingAmendmentCount: async () => 0,
   getPendingAmendments: async () => mockPendingAmendments,
+  // #4514 — the briefing loader reads recent panel decisions. Empty here; the
+  // dedicated briefing seam test (admin-semantic-improve-briefing.test.ts) drives
+  // the turn-one + rejection-reflected behavior.
+  getRecentlyDecidedAmendments: async () => [],
   getRejectedAmendments: async () => mockRejectedAmendments,
   // Atomic conditional rejected → pending flip (#4512). Models the DB: only a
   // currently-rejected row moves, and it re-enters the pending queue cleared of
@@ -101,7 +147,7 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
     stampCalls.push(id);
     return claimedRows.delete(id);
   },
-  releaseClaimedAmendment: async (id: string, claimedAt: string, reason: string) => {
+  releaseClaimedAmendment: async (id: string, claimedAt: string, reason: string | null) => {
     callOrder.push("release");
     if (claimedAt !== `claimed-${id}`) return false;
     releaseCalls.push({ id, reason });
@@ -132,6 +178,20 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   applyAmendmentFromPayload: async (args: Record<string, unknown>) => {
     callOrder.push("apply");
+    // #4511 — a stale baseline (hash mismatch) raises StaleBaselineError; the
+    // seam converts it to the `stale` outcome, never an apply.
+    if (applyStale) {
+      throw new TestStaleBaselineError({
+        entityName: String(args.sourceEntity),
+        diff: applyStale.diff,
+        baselineHash: applyStale.baselineHash,
+      });
+    }
+    // #4511 — a legacy cross-group-ambiguous row 409s UNLESS the admin picked a
+    // disambiguation group (which the picker threads through).
+    if (applyAmbiguousGroups && args.disambiguationGroup === undefined) {
+      throw new TestAmbiguousEntityError(String(args.sourceEntity), applyAmbiguousGroups);
+    }
     if (applyShouldThrow) throw new Error("yaml apply failed");
     if (!args.rawPayload) {
       throw new Error(`Amendment ${String(args.label)} has no amendment_payload — cannot apply its YAML change.`);
@@ -145,6 +205,7 @@ void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   isGlossaryAmendmentType: (t: string) =>
     t === "add_glossary_term" || t === "update_glossary_term",
   glossaryDiffPath: () => "semantic/glossary.yml",
+  analysisResultFromStoredPayload: () => ({}),
   resolveAmendmentBaseline: async () => {
     throw new Error("not used by the review route");
   },
@@ -152,6 +213,20 @@ void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
     throw new Error("not used by the review route");
   },
   GLOSSARY_DOC_NAME: "glossary",
+}));
+
+// #4511 — the live-diff module. `GET /pending` renders `computeAmendmentLiveDiff`
+// output; the seam imports `StaleBaselineError` from here (must be the SAME
+// class the apply mock raises so the seam's `instanceof` fires).
+void mock.module("@atlas/api/lib/semantic/expert/diff", () => ({
+  computeAmendmentLiveDiff: async () => {
+    if (mockLiveDiff instanceof Error) throw mockLiveDiff;
+    return mockLiveDiff;
+  },
+  StaleBaselineError: TestStaleBaselineError,
+  normalizeEntityYaml: (o: Record<string, unknown>) => JSON.stringify(o),
+  hashBaselineYaml: (s: string) => `hash:${s.length}`,
+  computeEntityDiff: (_e: string, before: string, after: string) => `${before}=>${after}`,
 }));
 
 void mock.module("@atlas/api/lib/auth/middleware", () => ({
@@ -203,6 +278,22 @@ void mock.module("@atlas/api/lib/effect/hono", () => ({
     try {
       return await fn();
     } catch (err) {
+      // #4511 — mirror the real bridge's AmbiguousEntityError → 409 mapping
+      // (entities.ts throws it; hono.ts maps it) so the group-picker contract is
+      // testable: the response carries the candidate `groups`.
+      if (err instanceof TestAmbiguousEntityError) {
+        return c.json(
+          {
+            error: "entity_ambiguous",
+            message: err.message,
+            groups: err.groups,
+            entityName: err.entityName,
+            entityType: err.entityType,
+            requestId: "test-req-id",
+          },
+          409,
+        );
+      }
       return c.json(
         {
           error: "internal_error",
@@ -256,7 +347,7 @@ void mock.module("@atlas/api/lib/tools/expert-registry", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { adminSemanticImprove } from "../admin-semantic-improve";
+import { adminSemanticImprove, isExpectedLiveDiffError } from "../admin-semantic-improve";
 import { EXPERT_PERSONA_PROMPT } from "@atlas/api/lib/semantic/expert/persona";
 
 // ---------------------------------------------------------------------------
@@ -275,6 +366,9 @@ describe("admin-semantic-improve", () => {
     stampCalls = [];
     applyPayloadCalls = [];
     applyShouldThrow = false;
+    applyStale = null;
+    applyAmbiguousGroups = null;
+    mockLiveDiff = { diff: "--- a\n+++ b\n@@\n+live", baselineHash: "live-hash", targetGroupId: null };
     callOrder = [];
     runAgentArgs = undefined;
     lastRequestContext = undefined;
@@ -365,11 +459,15 @@ describe("admin-semantic-improve", () => {
       created_at: "2026-07-10T00:00:00Z",
     });
 
-    function review(id: string, decision: "approved" | "rejected") {
+    function review(
+      id: string,
+      decision: "approved" | "rejected",
+      extra?: { baselineHash?: string; group?: string | null },
+    ) {
       return adminSemanticImprove.request(`/amendments/${id}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision }),
+        body: JSON.stringify({ decision, ...extra }),
       });
     }
 
@@ -561,6 +659,164 @@ describe("admin-semantic-improve", () => {
       // Missing target short-circuits before any YAML apply.
       expect(applyPayloadCalls).toHaveLength(0);
     });
+
+    // ── #4511 — hash-carried claim + stale-confirm + group picker ──────────
+    it("threads the hash-carried claim + disambiguation group into the seam", async () => {
+      mockPendingAmendments = [row("amd-hash")];
+
+      const res = await review("amd-hash", "approved", { baselineHash: "h1", group: "eu_prod" });
+
+      expect(res.status).toBe(200);
+      expect(applyPayloadCalls).toHaveLength(1);
+      expect(applyPayloadCalls[0]).toMatchObject({
+        expectedBaselineHash: "h1",
+        disambiguationGroup: "eu_prod",
+      });
+    });
+
+    it("stale baseline → 409 stale_baseline carrying the fresh diff; row back to pending, no scary reason", async () => {
+      mockPendingAmendments = [row("amd-stale")];
+      applyStale = { diff: "--- a\n+++ b\n@@\n+region", baselineHash: "fresh-hash" };
+
+      const res = await review("amd-stale", "approved", { baselineHash: "stale-hash" });
+
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as {
+        error: string;
+        diff: string;
+        baselineHash: string;
+        message: string;
+      };
+      expect(body.error).toBe("stale_baseline");
+      expect(body.diff).toContain("+region");
+      expect(body.baselineHash).toBe("fresh-hash");
+      expect(body.message).toContain("changed while you were reviewing");
+      // Not stamped; released CLEANLY (null reason) and back in the queue.
+      expect(stampCalls).toHaveLength(0);
+      expect(releaseCalls).toEqual([{ id: "amd-stale", reason: null }]);
+      expect(mockPendingAmendments.map((r) => r.id)).toContain("amd-stale");
+    });
+
+    it("stale-confirm: re-submitting with the FRESH hash applies (one extra click completes the flow)", async () => {
+      mockPendingAmendments = [row("amd-confirm")];
+
+      // First approve renders stale.
+      applyStale = { diff: "--- a\n+++ b\n@@\n+region", baselineHash: "fresh-hash" };
+      const stale = await review("amd-confirm", "approved", { baselineHash: "old-hash" });
+      expect(stale.status).toBe(409);
+
+      // The card confirms with the fresh hash; the baseline now matches.
+      applyStale = null;
+      const confirm = await review("amd-confirm", "approved", { baselineHash: "fresh-hash" });
+      expect(confirm.status).toBe(200);
+      const body = (await confirm.json()) as { ok: boolean; decision: string };
+      expect(body).toMatchObject({ ok: true, decision: "approved" });
+      expect(stampCalls).toEqual(["amd-confirm"]);
+    });
+
+    it("legacy cross-group-ambiguous row → 409 entity_ambiguous with candidate groups; row back to pending", async () => {
+      mockPendingAmendments = [row("amd-amb")];
+      applyAmbiguousGroups = ["us_prod", "eu_prod"];
+
+      const res = await review("amd-amb", "approved");
+
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: string; groups: Array<string | null> };
+      expect(body.error).toBe("entity_ambiguous");
+      expect(body.groups).toEqual(["us_prod", "eu_prod"]);
+      expect(stampCalls).toHaveLength(0);
+      // Compensated back to pending so the picker retry can re-claim it.
+      expect(mockPendingAmendments.map((r) => r.id)).toContain("amd-amb");
+    });
+
+    it("group picker retry: re-submitting with a picked group disambiguates and applies", async () => {
+      mockPendingAmendments = [row("amd-pick")];
+      applyAmbiguousGroups = ["us_prod", "eu_prod"];
+
+      // No group → 409.
+      const ambiguous = await review("amd-pick", "approved");
+      expect(ambiguous.status).toBe(409);
+
+      // Admin picks eu_prod → the apply is threaded the group and succeeds.
+      const picked = await review("amd-pick", "approved", { group: "eu_prod" });
+      expect(picked.status).toBe(200);
+      expect(applyPayloadCalls).toHaveLength(1);
+      expect(applyPayloadCalls[0]).toMatchObject({ disambiguationGroup: "eu_prod" });
+      expect(stampCalls).toEqual(["amd-pick"]);
+    });
+  });
+
+  describe("GET /pending — live diff (#4511)", () => {
+    const liveRow = (id: string): MockAmendmentRow => ({
+      id,
+      source_entity: "orders",
+      connection_group_id: null,
+      description: "[add_measure] orders: total revenue",
+      confidence: 0.9,
+      amendment_payload: {
+        entityName: "orders",
+        amendmentType: "add_measure",
+        amendment: { name: "total_revenue", type: "number" },
+        rationale: "r",
+        // A STORED propose-time diff — must NEVER be what the panel renders.
+        diff: "STORED-PROPOSE-TIME-DIFF",
+      },
+      created_at: "2026-07-10T00:00:00Z",
+    });
+
+    it("renders the LIVE diff + baseline hash, never the stored propose-time diff", async () => {
+      mockPendingAmendments = [liveRow("amd-live")];
+      mockLiveDiff = { diff: "LIVE-DIFF-AGAINST-CURRENT", baselineHash: "bh-1", targetGroupId: null };
+
+      const res = await adminSemanticImprove.request("/pending");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        amendments: Array<{ id: string; diff: string | null; baselineHash: string | null }>;
+      };
+      const a = body.amendments.find((x) => x.id === "amd-live");
+      expect(a?.diff).toBe("LIVE-DIFF-AGAINST-CURRENT");
+      expect(a?.diff).not.toBe("STORED-PROPOSE-TIME-DIFF");
+      expect(a?.baselineHash).toBe("bh-1");
+    });
+
+    it("falls back to null diff/hash (never 500) when the baseline can't be resolved (e.g. cross-group-ambiguous legacy row)", async () => {
+      mockPendingAmendments = [liveRow("amd-unresolvable")];
+      mockLiveDiff = new Error("Entity \"orders\" is ambiguous across groups");
+
+      const res = await adminSemanticImprove.request("/pending");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        amendments: Array<{ id: string; diff: string | null; baselineHash: string | null }>;
+      };
+      const a = body.amendments.find((x) => x.id === "amd-unresolvable");
+      expect(a?.diff).toBeNull();
+      expect(a?.baselineHash).toBeNull();
+    });
+  });
+
+  // The pure predicate behind GET /pending's log-classification (#4511): an
+  // EXPECTED unresolvable row (routine — debug) vs a real read-path fault
+  // (surfaced — warn). Tested directly so an inverted condition fails a test.
+  describe("isExpectedLiveDiffError (#4511)", () => {
+    it("treats a cross-group AmbiguousEntityError as expected (routine legacy row)", () => {
+      const err = Object.assign(new Error("orders exists in 2 environments"), {
+        name: "AmbiguousEntityError",
+      });
+      expect(isExpectedLiveDiffError(err)).toBe(true);
+    });
+
+    it("treats absent-entity / non-mapping / corrupt-payload messages as expected", () => {
+      expect(isExpectedLiveDiffError(new Error('Entity "orders" not found for org x'))).toBe(true);
+      expect(isExpectedLiveDiffError(new Error('parse YAML: expected a mapping'))).toBe(true);
+      expect(isExpectedLiveDiffError(new Error("Corrupt amendment_payload JSON for amendment y"))).toBe(true);
+      expect(isExpectedLiveDiffError(new Error("Amendment z payload is missing a valid `amendment` object"))).toBe(true);
+    });
+
+    it("treats a real read-path fault (DB outage / TypeError / non-Error) as UNEXPECTED", () => {
+      expect(isExpectedLiveDiffError(new Error("connection refused: analytics DB unreachable"))).toBe(false);
+      expect(isExpectedLiveDiffError(new TypeError("x is not a function"))).toBe(false);
+      expect(isExpectedLiveDiffError("a bare string throw")).toBe(false);
+    });
   });
 
   describe("GET /pending — applyError surfacing (#4506)", () => {
@@ -741,6 +997,10 @@ describe("admin-semantic-improve", () => {
           return [];
         },
         loadGlossaryFromDisk: async () => [],
+        // #4514 — loadAnalysisContext (the shared real-inputs builder the health
+        // route now uses) also reads audit patterns + rejection memory.
+        loadAuditPatterns: async () => [],
+        loadRejectedKeys: async () => new Set(),
       }));
       void mock.module("@atlas/api/lib/semantic/expert/health", () => ({
         computeSemanticHealth: (ctx: { entities: unknown[]; glossary: unknown[] }) => ({
@@ -800,6 +1060,10 @@ describe("admin-semantic-improve", () => {
         }),
         loadEntitiesFromDisk: async () => [],
         loadGlossaryFromDisk: async () => [],
+        // #4514 — loadAnalysisContext (the shared real-inputs builder the health
+        // route now uses) also reads audit patterns + rejection memory.
+        loadAuditPatterns: async () => [],
+        loadRejectedKeys: async () => new Set(),
       }));
       const res = await adminSemanticImprove.request("/health");
       expect(res.status).toBe(200);
@@ -833,6 +1097,10 @@ describe("admin-semantic-improve", () => {
         }),
         loadEntitiesFromDisk: async () => [],
         loadGlossaryFromDisk: async () => [],
+        // #4514 — loadAnalysisContext (the shared real-inputs builder the health
+        // route now uses) also reads audit patterns + rejection memory.
+        loadAuditPatterns: async () => [],
+        loadRejectedKeys: async () => new Set(),
       }));
       const res = await adminSemanticImprove.request("/health");
       expect(res.status).toBe(200);
@@ -847,6 +1115,10 @@ describe("admin-semantic-improve", () => {
         loadEntitiesForOrg: async () => ({ entities: [], totalRows: 2, parseFailures: 2 }),
         loadEntitiesFromDisk: async () => [],
         loadGlossaryFromDisk: async () => [],
+        // #4514 — loadAnalysisContext (the shared real-inputs builder the health
+        // route now uses) also reads audit patterns + rejection memory.
+        loadAuditPatterns: async () => [],
+        loadRejectedKeys: async () => new Set(),
       }));
       const res = await adminSemanticImprove.request("/health");
       expect(res.status).toBe(200);

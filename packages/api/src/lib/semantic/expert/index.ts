@@ -26,6 +26,28 @@ export type {
 export { ANALYSIS_CATEGORIES } from "./types";
 export { computeSemanticHealth } from "./health";
 export type { SemanticHealthScore } from "./health";
+export { assembleBriefing, SEMANTIC_HEALTH_STATUSES } from "./briefing";
+export type {
+  BriefingInputs,
+  BriefingProfileLine,
+  BriefingPendingItem,
+  BriefingDecision,
+  SemanticHealthStatus,
+} from "./briefing";
+export { resolveBriefingAnchor } from "./anchor";
+export type {
+  ImproveAnchor,
+  BriefingAnchor,
+  BriefingAnchorEntity,
+  BriefingAnchorProfile,
+} from "./anchor";
+export {
+  loadBriefingInputs,
+  loadAnalysisContext,
+  loadTrackedProfiles,
+  buildBriefingBlock,
+  deriveHealthStatus,
+} from "./briefing-inputs";
 export {
   isExpertSchedulerEnabled,
   getExpertSchedulerIntervalMs,

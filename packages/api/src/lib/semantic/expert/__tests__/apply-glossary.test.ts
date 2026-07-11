@@ -20,6 +20,7 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import * as yaml from "js-yaml";
 import type { AnalysisResult } from "../types";
+import { StaleBaselineError } from "../diff";
 
 class AmbiguousEntityError extends Error {}
 
@@ -224,6 +225,38 @@ describe("applyAmendmentToEntity — glossary routing (#4518)", () => {
     expect(upsertEntityForGroup.mock.calls[1][3]).toBe("");
     // The disk sync never runs on a failed apply.
     expect(syncEntityToDisk).not.toHaveBeenCalled();
+  });
+
+  it("raises StaleBaselineError with a fresh glossary diff for a stale hash-carried claim (#4511/#4518)", async () => {
+    // Glossary is a first-class citizen of the hash-carried stale-baseline check:
+    // an approve carrying a hash that no longer matches the current glossary
+    // surfaces inline update-and-confirm, never a silent apply against an unseen
+    // baseline.
+    glossaryRows.set(key("eu_prod"), {
+      id: "glossary-eu_prod",
+      connection_group_id: "eu_prod",
+      yaml_content: yaml.dump({ terms: { arr: { definition: "Annual Recurring Revenue" } } }),
+    });
+
+    let caught: unknown;
+    try {
+      await applyAmendmentToEntity(
+        "org-1",
+        glossaryAmendment("add_glossary_term", { term: "MRR", definition: "Monthly Recurring Revenue" }, "eu_prod"),
+        "req-stale",
+        { expectedBaselineHash: "a-hash-that-will-not-match" },
+      );
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(StaleBaselineError);
+    const err = caught as StaleBaselineError;
+    expect(err.diff).toContain("semantic/groups/eu_prod/glossary.yml");
+    expect(err.diff).toContain("MRR");
+    // The stale check fires BEFORE any write — nothing persisted.
+    expect(upsertEntityForGroup).not.toHaveBeenCalled();
+    expect(createVersion).not.toHaveBeenCalled();
   });
 
   it("update_glossary_term on an undefined term fails the apply (no write)", async () => {

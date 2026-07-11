@@ -17,6 +17,9 @@
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import * as yaml from "js-yaml";
+// Real diff primitives (unmocked): apply.ts imports the SAME singleton, so the
+// hash the guard computes and `instanceof StaleBaselineError` both line up (#4511).
+import { normalizeEntityYaml, hashBaselineYaml, StaleBaselineError } from "../diff";
 
 class AmbiguousEntityError extends Error {
   readonly groups: (string | null)[];
@@ -64,7 +67,12 @@ void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 
-const { applyAmendmentFromPayload } = await import(`../apply.ts?t=${Date.now()}`);
+const { applyAmendmentFromPayload, applyAmendment, analysisResultFromStoredPayload } = await import(
+  `../apply.ts?t=${Date.now()}`
+);
+
+/** The exact baseline the getEntity mock serves — the hash is taken over this. */
+const BASELINE_YAML = "table: orders\ndescription: Orders\n";
 
 const INNER_AMENDMENT = { name: "region", sql: "region", type: "string", description: "Customer region" };
 
@@ -174,5 +182,96 @@ describe("applyAmendmentFromPayload (#3613)", () => {
       }),
     ).rejects.toThrow(/Corrupt amendment_payload JSON/);
     expect(upsertEntityForGroup).not.toHaveBeenCalled();
+  });
+});
+
+// The REAL hash-carried claim guard (#4511) — the core review-integrity check
+// that the decide/route suites can only mock. Drives the genuine
+// `applyAmendmentToEntity` hash comparison against real getEntity/upsert mocks.
+describe("applyAmendmentFromPayload — hash-carried claim (#4511)", () => {
+  // The hash the review-render path would have carried: the current baseline,
+  // normalized exactly as the guard normalizes it.
+  const currentHash = hashBaselineYaml(
+    normalizeEntityYaml(yaml.load(BASELINE_YAML) as Record<string, unknown>),
+  );
+
+  beforeEach(() => {
+    getEntity.mockClear();
+    upsertEntityForGroup.mockClear();
+    createVersion.mockClear();
+    syncEntityToDisk.mockClear();
+  });
+
+  it("matching baseline hash → applies (the admin reviewed the current baseline)", async () => {
+    await applyAmendmentFromPayload({
+      orgId: "org-1",
+      sourceEntity: "orders",
+      connectionGroupId: null,
+      rawPayload: ENVELOPE,
+      requestId: "req-hash-ok",
+      expectedBaselineHash: currentHash,
+    });
+    expect(upsertEntityForGroup).toHaveBeenCalledTimes(1);
+    expect((writtenYaml().dimensions as Record<string, unknown>[])[0]).toEqual(INNER_AMENDMENT);
+  });
+
+  it("mismatching hash → StaleBaselineError carrying the FRESH diff; the write never lands", async () => {
+    let caught: unknown;
+    await applyAmendmentFromPayload({
+      orgId: "org-1",
+      sourceEntity: "orders",
+      connectionGroupId: null,
+      rawPayload: ENVELOPE,
+      requestId: "req-hash-stale",
+      expectedBaselineHash: "deadbeef-not-the-current-hash",
+    }).catch((e: unknown) => {
+      caught = e;
+    });
+    expect(caught).toBeInstanceOf(StaleBaselineError);
+    const err = caught as StaleBaselineError;
+    // The error carries the CURRENT baseline hash (the value to confirm against)
+    // and a diff computed against that current baseline.
+    expect(err.baselineHash).toBe(currentHash);
+    expect(err.diff).toContain("region");
+    // Approving against an unseen baseline is exactly what the guard prevents.
+    expect(upsertEntityForGroup).not.toHaveBeenCalled();
+  });
+
+  it("the hash is taken over the BEFORE baseline, not the post-apply document", async () => {
+    // If the guard hashed `updated`, this post-apply hash would MATCH and apply.
+    // It must instead be treated as stale (the current baseline hash differs).
+    const before = yaml.load(BASELINE_YAML) as Record<string, unknown>;
+    const result = analysisResultFromStoredPayload({
+      sourceEntity: "orders",
+      connectionGroupId: null,
+      rawPayload: ENVELOPE,
+    });
+    const postApplyHash = hashBaselineYaml(normalizeEntityYaml(applyAmendment(before, result)));
+    expect(postApplyHash).not.toBe(currentHash); // sanity: the two documents differ
+
+    let caught: unknown;
+    await applyAmendmentFromPayload({
+      orgId: "org-1",
+      sourceEntity: "orders",
+      connectionGroupId: null,
+      rawPayload: ENVELOPE,
+      requestId: "req-hash-after",
+      expectedBaselineHash: postApplyHash,
+    }).catch((e: unknown) => {
+      caught = e;
+    });
+    expect(caught).toBeInstanceOf(StaleBaselineError);
+    expect(upsertEntityForGroup).not.toHaveBeenCalled();
+  });
+
+  it("no expectedBaselineHash → applies unconditionally (scheduler / auto-approve path)", async () => {
+    await applyAmendmentFromPayload({
+      orgId: "org-1",
+      sourceEntity: "orders",
+      connectionGroupId: null,
+      rawPayload: ENVELOPE,
+      requestId: "req-no-hash",
+    });
+    expect(upsertEntityForGroup).toHaveBeenCalledTimes(1);
   });
 });

@@ -26,6 +26,7 @@ import { runAgent } from "@atlas/api/lib/agent";
 import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
 import { buildExpertRegistry } from "@atlas/api/lib/tools/expert-registry";
 import { EXPERT_PERSONA_PROMPT } from "@atlas/api/lib/semantic/expert/persona";
+import { SEMANTIC_HEALTH_STATUSES } from "@atlas/api/lib/semantic/expert/briefing";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -35,9 +36,43 @@ function clientIpFor(c: HonoContext): string | null {
   return c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 }
 
+/**
+ * Classify a `computeAmendmentLiveDiff` failure for GET /pending (#4511). The
+ * EXPECTED unresolvable cases — a legacy cross-group-ambiguous row, an absent
+ * entity, a non-mapping baseline, or a corrupt stored payload — are routine and
+ * log at debug (the card degrades to the amendment preview, and approval
+ * surfaces the group picker). Anything else (a DB outage in getEntity, a
+ * dynamic-import failure, a post-refactor TypeError, or a non-Error throw) is a
+ * real read-path fault the null-diff fallback would otherwise hide until approve
+ * time — those log at warn, so infra problems aren't indistinguishable from a
+ * legacy-row miss. Errs toward visibility: never a swallow.
+ */
+export function isExpectedLiveDiffError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return (
+    err.name === "AmbiguousEntityError" ||
+    /not found|expected a mapping|amendment_payload|missing a valid `amendment` object/i.test(
+      err.message,
+    )
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Zod schemas
 // ---------------------------------------------------------------------------
+
+/**
+ * The optional Anchor (#4519) an improvement conversation launched from — a
+ * connection group or a single entity — scoping the turn-one Briefing. Absent ⇒
+ * an anchorless sweep (unchanged behavior). Sent on every turn so the Briefing
+ * stays scoped; the shape mirrors `ImproveAnchor` in
+ * `lib/semantic/expert/anchor.ts` (local wire type, matching this surface's
+ * inline-zod convention).
+ */
+const AnchorSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("group"), group: z.string().min(1) }),
+  z.object({ kind: z.literal("entity"), entity: z.string().min(1), group: z.string().min(1).optional() }),
+]);
 
 const ChatRequestSchema = z.object({
   messages: z.array(
@@ -47,6 +82,7 @@ const ChatRequestSchema = z.object({
       id: z.string(),
     }),
   ).min(1),
+  anchor: AnchorSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -118,6 +154,9 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
     const { requestId, orgId } = c.get("orgContext");
     const body = c.req.valid("json");
     const messages = body.messages as UIMessage[];
+    // #4519 — the anchor (group/entity) the conversation launched from, or
+    // undefined for an anchorless sweep. Threaded into the Briefing below.
+    const anchor = body.anchor;
 
     // #3437 — billing enforcement before any LLM spend. The expert agent
     // runs on platform tokens and its usage IS metered against the
@@ -151,6 +190,21 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
 
     // Build the expert tool registry
     const expertRegistry = buildExpertRegistry();
+
+    // #4514 — assemble the Briefing: the deterministic turn-one context block
+    // (health, tracked-profile freshness, top findings, the pending queue,
+    // recent panel decisions) front-loaded into the expert agent's prompt so it
+    // doesn't spend tool calls learning state it can be told. Built from tracked
+    // profiles + internal DB only — NO customer-database query at chat start
+    // (#4514 AC3). Re-assembled each turn, so a panel decision made between turns
+    // shows up in the next turn's context without a synthetic message. Fail-soft:
+    // a load hiccup starts the chat without the block rather than 500-ing it.
+    //
+    // #4519 — the anchor scopes the briefing (a group's entity inventory, or an
+    // entity's YAML + profile). `now` defaults to the real clock; the anchor
+    // rides every turn, so re-anchoring mid-conversation re-scopes the next block.
+    const { buildBriefingBlock } = await import("@atlas/api/lib/semantic/expert/briefing-inputs");
+    const briefing = await buildBriefingBlock(orgId, undefined, anchor);
 
     // #4508 — stamp the agent origin so origin-scoped approval rules (#2072)
     // fire for the expert agent's `executeSQL`. The interactive improve chat is
@@ -187,6 +241,9 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
             // role section (not appended under `## Warnings`), so the model gets
             // one identity. See lib/semantic/expert/persona.ts.
             persona: EXPERT_PERSONA_PROMPT,
+            // #4514 — front-load the Briefing (null when it couldn't be built ⇒
+            // buildSystemParam appends nothing, chat still starts).
+            briefing: briefing ?? undefined,
           });
 
           // Audit the draft surface: an expert-agent chat turn that can propose
@@ -283,7 +340,22 @@ const PendingAmendmentSchema = z.object({
   amendmentType: z.string().nullable(),
   amendment: z.record(z.string(), z.unknown()).nullable(),
   rationale: z.string().nullable(),
+  /**
+   * The LIVE diff (#4511) — recomputed against the entity's CURRENT baseline at
+   * read time, never the propose-time stored diff (a record of intent, never
+   * the thing approved; CONTEXT.md § "Live diff"). `null` when the baseline
+   * can't be resolved for a single diff (entity absent, corrupt YAML, or a
+   * legacy cross-group-ambiguous row) — the card falls back to the amendment
+   * preview and approval surfaces the group picker.
+   */
   diff: z.string().nullable(),
+  /**
+   * Hash of the current baseline the live `diff` was computed against (#4511).
+   * The admin carries it into an approve as a hash-carried claim; the decide
+   * seam rejects a mismatch with the fresh diff for inline update-and-confirm.
+   * `null` whenever `diff` is (no single baseline to hash).
+   */
+  baselineHash: z.string().nullable(),
   testQuery: z.string().nullable(),
   testResult: TestResultSchema.nullable(),
   /**
@@ -335,18 +407,63 @@ const pendingListRoute = createRoute({
   },
 });
 
+const StaleBaselineResponseSchema = z.object({
+  error: z.literal("stale_baseline"),
+  message: z.string(),
+  /** The freshly-computed live diff against the entity's current baseline. */
+  diff: z.string(),
+  /** The current baseline hash — carry it back on the confirming approve. */
+  baselineHash: z.string(),
+  requestId: z.string().optional(),
+});
+
+// The route's OTHER 409 shape: a legacy cross-group-ambiguous row. It is emitted
+// by the shared bridge (`AmbiguousEntityError` → `mapTaggedError`), not a typed
+// `c.json` here, but the published contract must still document it so codegen
+// consumers see both 409 variants — hence the union on the 409 response below.
+const AmbiguousEntityResponseSchema = z.object({
+  error: z.literal("entity_ambiguous"),
+  message: z.string(),
+  /** Candidate groups to disambiguate to; `null` = the legacy/default (flat) scope. */
+  groups: z.array(z.string().nullable()),
+  entityName: z.string(),
+  entityType: z.string(),
+  requestId: z.string().optional(),
+});
+
 const reviewAmendmentRoute = createRoute({
   method: "post",
   path: "/amendments/{id}/review",
   tags: ["Admin — Semantic Improve"],
   summary: "Approve or reject a pending amendment",
-  description: "Updates the status of a pending semantic amendment in the database.",
+  description:
+    "Updates the status of a pending semantic amendment. An approve carries an " +
+    "optional `baselineHash` (the hash the admin rendered) — a mismatch against " +
+    "the current baseline returns 409 `stale_baseline` with the fresh diff for " +
+    "inline update-and-confirm (#4511). A legacy cross-group-ambiguous row " +
+    "returns 409 `entity_ambiguous` with candidate `groups`; retry with the " +
+    "optional `group` field to disambiguate.",
   request: {
     params: createParamSchema("id", "550e8400-e29b-41d4-a716-446655440000"),
     body: {
       content: {
         "application/json": {
-          schema: z.object({ decision: z.enum(["approved", "rejected"]) }),
+          schema: z.object({
+            decision: z.enum(["approved", "rejected"]),
+            /**
+             * #4511 — the baseline hash the admin rendered (hash-carried claim).
+             * A mismatch → 409 `stale_baseline` with the fresh diff. Omit to
+             * skip the check (e.g. confirming after a group pick).
+             */
+            baselineHash: z.string().optional(),
+            /**
+             * #4511 — an admin-picked group for a legacy cross-group-ambiguous
+             * row, honored only when the server demanded disambiguation. `null`
+             * targets the legacy/default (flat) scope; omit when not
+             * disambiguating.
+             */
+            group: z.string().nullable().optional(),
+          }),
         },
       },
       required: true,
@@ -368,6 +485,16 @@ const reviewAmendmentRoute = createRoute({
     404: {
       description: "Amendment not found or already reviewed",
       content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description:
+        "Baseline changed since render (`stale_baseline`, carries the fresh diff), " +
+        "or a legacy cross-group-ambiguous row (`entity_ambiguous`, carries candidate `groups`) (#4511)",
+      content: {
+        "application/json": {
+          schema: z.union([StaleBaselineResponseSchema, AmbiguousEntityResponseSchema]),
+        },
+      },
     },
     500: {
       description: "Internal server error",
@@ -454,6 +581,14 @@ const healthScoreRoute = createRoute({
             dimensionCount: z.number(),
             measureCount: z.number(),
             glossaryTermCount: z.number(),
+            // #4514 — the status discriminator: the widget renders a
+            // parse-failure zero ("N of M entities failed to parse") differently
+            // from a no-data zero ("no entities yet"). `parseFailures`/`totalRows`
+            // carry the counts the corruption caption needs. Enum reuses the
+            // single-source tuple so it can't drift from the type.
+            status: z.enum(SEMANTIC_HEALTH_STATUSES),
+            parseFailures: z.number(),
+            totalRows: z.number(),
           }),
         },
       },
@@ -513,30 +648,71 @@ function amendmentPayloadView(payload: Record<string, unknown> | null) {
   };
 }
 
-// GET /pending — list pending amendments
+// GET /pending — list pending amendments with LIVE diffs (#4511)
 adminSemanticImprove.openapi(pendingListRoute, async (c) =>
   runHandler(c, "list-pending-amendments", async () => {
     const { orgId } = c.get("orgContext");
 
     const { getPendingAmendments } = await import("@atlas/api/lib/db/internal");
+    const { computeAmendmentLiveDiff } = await import("@atlas/api/lib/semantic/expert/diff");
     const rows = await getPendingAmendments(orgId);
 
-    const amendments = rows.map((row) => {
-      const payload = row.amendment_payload;
-      if (!payload || typeof payload !== "object") {
-        log.debug({ id: row.id }, "Pending amendment has null or non-object payload");
-      }
+    const amendments = await Promise.all(
+      rows.map(async (row) => {
+        const payload = row.amendment_payload;
+        if (!payload || typeof payload !== "object") {
+          log.debug({ id: row.id }, "Pending amendment has null or non-object payload");
+        }
 
-      return {
-        id: row.id,
-        entityName: row.source_entity,
-        description: row.description,
-        confidence: row.confidence,
-        ...amendmentPayloadView(payload),
-        applyError: row.last_apply_error ?? null,
-        createdAt: row.created_at,
-      };
-    });
+        // #4511 — the LIVE diff: recompute against the entity's CURRENT baseline
+        // at read time. The stored payload.diff is a record of intent, never
+        // rendered for a decision — so it is dropped here and replaced. A
+        // baseline that can't be resolved to a single diff (entity absent,
+        // corrupt YAML, or a legacy cross-group-ambiguous row) yields a null
+        // diff/hash: the card falls back to the amendment preview and approval
+        // surfaces the group picker. Never a 500 for one unresolvable row.
+        let liveDiff: string | null = null;
+        let baselineHash: string | null = null;
+        try {
+          const live = await computeAmendmentLiveDiff({
+            orgId,
+            sourceEntity: row.source_entity,
+            connectionGroupId: row.connection_group_id ?? null,
+            rawPayload: payload,
+            label: row.id,
+          });
+          liveDiff = live.diff;
+          baselineHash = live.baselineHash;
+        } catch (err) {
+          // Routine unresolvable rows log at debug; real read-path faults at
+          // warn (see isExpectedLiveDiffError). Never a swallow — the null-diff
+          // fallback is explicit and the card degrades to the amendment preview.
+          const logContext = { id: row.id, err: err instanceof Error ? err.message : String(err) };
+          const logMessage =
+            "Live diff unavailable for pending amendment — falling back to the amendment preview";
+          if (isExpectedLiveDiffError(err)) {
+            log.debug(logContext, logMessage);
+          } else {
+            log.warn(logContext, logMessage);
+          }
+        }
+
+        // Drop the stored diff from the shared view: for the pending decision
+        // surface only the live diff is rendered.
+        const { diff: _storedDiff, ...view } = amendmentPayloadView(payload);
+        return {
+          id: row.id,
+          entityName: row.source_entity,
+          description: row.description,
+          confidence: row.confidence,
+          ...view,
+          diff: liveDiff,
+          baselineHash,
+          applyError: row.last_apply_error ?? null,
+          createdAt: row.created_at,
+        };
+      }),
+    );
 
     return c.json({ amendments }, 200);
   }),
@@ -614,7 +790,7 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
   runHandler(c, "review-amendment", async () => {
     const { requestId, orgId } = c.get("orgContext");
     const { id } = c.req.valid("param");
-    const { decision } = c.req.valid("json");
+    const { decision, baselineHash, group } = c.req.valid("json");
 
     // The decide seam owns the whole `pending → approved | rejected`
     // transition (#4506): claim-then-apply, `approved` stamped only after a
@@ -623,6 +799,9 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
     // inside the seam — never a silent stamp. Apply errors propagate:
     // runHandler maps an AmbiguousEntityError to 409 (with `groups`) and
     // everything else to 500 — by then the row is already back to pending.
+    // #4511: the hash-carried claim (`baselineHash`) + disambiguation `group`
+    // ride through — a hash mismatch returns a `stale` outcome (409 + fresh
+    // diff), never an apply.
     const { decideAmendment } = await import("@atlas/api/lib/semantic/expert/decide");
     const outcome = await decideAmendment({
       id,
@@ -630,10 +809,30 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
       decision,
       reviewedBy: "admin",
       requestId,
+      expectedBaselineHash: baselineHash,
+      group,
     });
 
     if (outcome.kind === "not_pending") {
       return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
+    }
+
+    // #4511 — the entity changed since the admin rendered the diff. Not an
+    // error: return the fresh diff + baseline hash so the card presents inline
+    // update-and-confirm. The confirm re-submits with this `baselineHash`,
+    // which now matches, and applies. The row is already back to pending.
+    if (outcome.kind === "stale") {
+      return c.json(
+        {
+          error: "stale_baseline" as const,
+          message:
+            "This entity changed while you were reviewing. Review the updated change and confirm.",
+          diff: outcome.diff,
+          baselineHash: outcome.baselineHash,
+          requestId,
+        },
+        409,
+      );
     }
 
     // Action type reflects the intent, not the route path — an approved
@@ -659,60 +858,32 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
 adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
   runHandler(c, "semantic-health-score", async () => {
     const { orgId } = c.get("orgContext");
-    const { loadEntitiesForOrg, loadEntitiesFromDisk, loadGlossaryFromDisk } =
-      await import("@atlas/api/lib/semantic/expert/context-loader");
-    const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
+    const { loadAnalysisContext, deriveHealthStatus } =
+      await import("@atlas/api/lib/semantic/expert/briefing-inputs");
     const { computeSemanticHealth } = await import("@atlas/api/lib/semantic/expert/health");
 
-    // `loadEntitiesForOrg` merges DB rows with the per-org disk mirror under
-    // the same `(name, connection_group_id)` dedup the Overview tile + chat
-    // empty state + semantic file tree all read through (#2503). Reading only
-    // DB rows here used to drop the disk-mirror half of the merge, leaving the
-    // Health caption "23 entities" next to a file tree showing 46.
+    // #4514 — the SAME assembly the briefing uses: `loadAnalysisContext` builds
+    // the AnalysisContext from REAL tracked inputs (baseline profiles #4509 +
+    // audit patterns), replacing the old empty-inputs call that fixed coverage
+    // and join sub-scores at 100 regardless of the actual schema. Reads only
+    // tracked/internal data — no live customer-database query.
     //
-    // The no-DB / no-orgId branch still falls back to bundled YAML — the
-    // self-hosted stdio loop and bare CLI scenario. On SaaS this path can't
-    // trigger: an authenticated admin request always carries an orgId, and
-    // SaaS always runs with an internal DB.
-    let entities: Awaited<ReturnType<typeof loadEntitiesFromDisk>>;
-    let parseFailures = 0;
-    let totalRows: number;
-    if (orgId && hasInternalDB()) {
-      const dbResult = await loadEntitiesForOrg(orgId, "published");
-      entities = dbResult.entities;
-      parseFailures = dbResult.parseFailures;
-      totalRows = dbResult.totalRows;
-    } else {
-      entities = await loadEntitiesFromDisk();
-      totalRows = entities.length;
-    }
-    const glossary = await loadGlossaryFromDisk();
+    // `loadEntitiesForOrg` (inside) merges DB rows with the per-org disk mirror
+    // under the same `(name, connection_group_id)` dedup the Overview tile + chat
+    // empty state + semantic file tree read through (#2503). The no-DB / no-orgId
+    // branch falls back to bundled YAML (self-hosted stdio / bare CLI); on SaaS
+    // that branch can't trigger — an authenticated admin request always carries
+    // an orgId and SaaS always runs with an internal DB.
+    const { ctx, totalRows, parseFailures } = await loadAnalysisContext(orgId, "published");
+    const score = computeSemanticHealth(ctx);
 
-    const score = computeSemanticHealth({
-      profiles: [],
-      entities,
-      glossary,
-      auditPatterns: [],
-      rejectedKeys: new Set(),
-    });
-
-    // Surface a status discriminator so the widget can distinguish the
-    // empty case (`no_entities`) from the corruption case (`corrupt` —
-    // every entity row failed parse) instead of conflating both with a
-    // 0% score that gives no actionable signal.
-    //
-    // `corrupt` gates on `totalRows` (DB-rows-considered) so a workspace
-    // whose every DB row fails YAML parse still trips the signal even when
-    // the disk mirror has healthy entries that would otherwise pad
-    // `entities.length` past `parseFailures`. `no_entities` gates on the
-    // merged `entities.length` because a workspace with 0 DB rows but a
-    // populated disk mirror genuinely has entities to query — flagging it
-    // empty would be the same misleading signal in reverse (#2503 review).
-    const status = parseFailures > 0 && parseFailures === totalRows && totalRows > 0
-      ? ("corrupt" as const)
-      : entities.length === 0
-        ? ("no_entities" as const)
-        : ("ok" as const);
+    // Status discriminator: distinguish the empty case (`no_entities`) from the
+    // corruption case (`corrupt` — every DB entity row failed parse) instead of
+    // conflating both with a 0% score. `corrupt` gates on `totalRows`
+    // (DB-rows-considered) so a healthy disk mirror can't mask corruption;
+    // `no_entities` gates on the merged entity count (#2503). Shared with the
+    // briefing via `deriveHealthStatus` so both read the same rule.
+    const status = deriveHealthStatus(parseFailures, totalRows, ctx.entities.length);
 
     return c.json({ ...score, status, parseFailures, totalRows }, 200);
   }),

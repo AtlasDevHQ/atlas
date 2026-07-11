@@ -4,7 +4,7 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Sparkles, Activity } from "lucide-react";
+import { Sparkles, Activity, AlertTriangle } from "lucide-react";
 import Link from "next/link";
 
 interface SemanticHealthScore {
@@ -17,6 +17,16 @@ interface SemanticHealthScore {
   dimensionCount: number;
   measureCount: number;
   glossaryTermCount: number;
+  // #4514 — the status discriminator. A zero from parse failure ("corrupt") is
+  // an actionable "fix the YAML" signal; a no-data zero ("no_entities") is
+  // "build the layer". `status` is optional so an older API response (pre-#4514)
+  // that omits it degrades to the plain score view rather than crashing.
+  // These literals mirror the api-side `SEMANTIC_HEALTH_STATUSES` tuple
+  // (lib/semantic/expert/briefing.ts) — @atlas/web can't import @atlas/api, so
+  // this copy is kept in lockstep by hand (the wire contract, not a shared type).
+  status?: "ok" | "no_entities" | "corrupt";
+  parseFailures?: number;
+  totalRows?: number;
 }
 
 function scoreColor(score: number): string {
@@ -98,10 +108,29 @@ export function SemanticHealthWidget() {
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
-        <ScoreBar label="Coverage" value={score.coverage} />
-        <ScoreBar label="Descriptions" value={score.descriptionQuality} />
-        <ScoreBar label="Measures" value={score.measureCoverage} />
-        <ScoreBar label="Joins" value={score.joinCoverage} />
+        {/* #4514 — distinguish a parse-failure zero from a no-data zero. A
+            corrupt layer needs the malformed YAML fixed; an empty layer needs
+            entities built. Conflating both as "0% coverage" gave no actionable
+            signal. */}
+        {score.status === "corrupt" ? (
+          <p className="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
+            <AlertTriangle className="size-3.5 shrink-0" />
+            {score.parseFailures ?? 0} of {score.totalRows ?? 0}{" "}
+            {(score.totalRows ?? 0) === 1 ? "entity" : "entities"} failed to parse — fix the
+            malformed YAML.
+          </p>
+        ) : score.status === "no_entities" ? (
+          <p className="text-xs text-muted-foreground">
+            No entities yet — build the semantic layer to start scoring it.
+          </p>
+        ) : (
+          <>
+            <ScoreBar label="Coverage" value={score.coverage} />
+            <ScoreBar label="Descriptions" value={score.descriptionQuality} />
+            <ScoreBar label="Measures" value={score.measureCoverage} />
+            <ScoreBar label="Joins" value={score.joinCoverage} />
+          </>
+        )}
         <div className="flex gap-3 pt-1 text-[10px] text-muted-foreground">
           <span>{score.entityCount} entities</span>
           <span>{score.dimensionCount} dimensions</span>

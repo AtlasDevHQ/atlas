@@ -1,6 +1,8 @@
 import { type UIMessage } from "@ai-sdk/react";
 import { isToolUIPart, getToolName } from "ai";
 import { getToolArgs, getToolResult } from "@/ui/lib/helpers";
+import type { FetchError } from "@/ui/lib/fetch-error";
+import type { MutateResult } from "@/ui/hooks/use-admin-mutation";
 
 // ---------------------------------------------------------------------------
 // Proposal types + tool-result extraction for the semantic-improve page.
@@ -26,6 +28,13 @@ export interface Proposal {
   amendment: Record<string, unknown>;
   rationale: string;
   diff?: string;
+  /**
+   * Hash of the current baseline the LIVE `diff` was computed against (#4511).
+   * Carried into an approve as a hash-carried claim so the server can reject a
+   * mid-review baseline change with the fresh diff. Only pending-list cards
+   * carry it (chat-streamed cards are pre-review).
+   */
+  baselineHash?: string;
   testQuery?: string;
   testResult?: TestResult;
   confidence: number;
@@ -227,4 +236,66 @@ export function buildProposalQueue(args: {
     ),
     recentlyDecided,
   };
+}
+
+// ---------------------------------------------------------------------------
+// classifyReviewResult — the review-interaction outcome (#4511)
+//
+// A review POST can resolve four ways, three of which are NOT dead-ends:
+//   - ok        — approved/rejected; the card leaves the queue on refetch.
+//   - stale     — the entity changed since the diff was rendered (409
+//                 `stale_baseline`). The card swaps in the fresh diff + a
+//                 "changed while you were reviewing" note and offers Confirm,
+//                 which re-approves with the fresh baseline hash.
+//   - ambiguous — a legacy cross-group row (409 `entity_ambiguous`). The card
+//                 renders a group picker built from the candidate groups; the
+//                 pick re-approves with an explicit group.
+//   - error     — anything else, surfaced through the normal error banner.
+//
+// Pure so the page's branching is unit-tested without a React/fetch harness
+// (prior art: the extractProposals / buildProposalQueue suite).
+// ---------------------------------------------------------------------------
+
+export type ReviewOutcome =
+  | { kind: "ok" }
+  | { kind: "stale"; diff: string; baselineHash: string }
+  | { kind: "ambiguous"; groups: ReadonlyArray<string | null> }
+  | { kind: "error"; error: FetchError };
+
+/**
+ * Build the review request body (#4511). Pure so the request contract is
+ * testable without a fetch harness — notably that the hash-carried claim and
+ * disambiguation group ride ONLY an approve (a reject never resolves a baseline,
+ * so it carries neither), and that a `null` group (the legacy/flat scope) is
+ * preserved distinct from an absent one.
+ */
+export function buildReviewBody(
+  decision: "approved" | "rejected",
+  opts?: { baselineHash?: string; group?: string | null },
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { decision };
+  if (decision === "approved" && opts) {
+    if (opts.baselineHash !== undefined) body.baselineHash = opts.baselineHash;
+    // `"group" in opts` (not truthiness) so an explicit `null` pick (legacy/flat
+    // scope) is sent, while an omitted group stays absent.
+    if ("group" in opts) body.group = opts.group;
+  }
+  return body;
+}
+
+/** Classify a review mutation result into the interaction outcome (#4511). */
+export function classifyReviewResult(result: MutateResult<unknown>): ReviewOutcome {
+  if (result.ok) return { kind: "ok" };
+  const err = result.error;
+  // A stale baseline is a continuation of review, not an error — but only when
+  // the server actually handed back the fresh diff to confirm against.
+  if (err.code === "stale_baseline" && err.stale) {
+    return { kind: "stale", diff: err.stale.diff, baselineHash: err.stale.baselineHash };
+  }
+  // A cross-group-ambiguous legacy row is approvable via the group picker —
+  // only when candidate groups are present (the picker never appears otherwise).
+  if (err.code === "entity_ambiguous" && err.groups && err.groups.length > 0) {
+    return { kind: "ambiguous", groups: err.groups };
+  }
+  return { kind: "error", error: err };
 }

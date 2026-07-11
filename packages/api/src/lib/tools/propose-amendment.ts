@@ -9,9 +9,8 @@ import { tool } from "ai";
 import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
-import * as yaml from "js-yaml";
 import { loadYaml } from "../semantic/yaml";
-import { createTwoFilesPatch } from "diff";
+import { computeDocDiff, computeEntityDiff, normalizeEntityYaml } from "@atlas/api/lib/semantic/expert/diff";
 import { hasInternalDB, insertSemanticAmendment } from "@atlas/api/lib/db/internal";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { runUserQueryPipeline } from "@atlas/api/lib/tools/sql";
@@ -223,24 +222,17 @@ The amendment object should match the YAML structure for that type (e.g., { name
         };
       }
 
-      // Normalize both sides through yaml.dump() with identical options so
-      // the diff only shows actual content changes, not formatting drift
-      // (e.g. inline arrays → multiline, whitespace differences).
-      const dumpOpts: yaml.DumpOptions = {
-        lineWidth: 120,
-        noRefs: true,
-        quoteStyle: "double",
-      };
-      const beforeNormalized = yaml.dump(entity, dumpOpts);
-      const afterYaml = yaml.dump(updated, dumpOpts);
-
-      // Generate diff — LCS-based algorithm produces proper multi-hunk unified
-      // diffs. Glossary amendments attribute the diff to the group's
-      // glossary.yml, not an entity file (#4518).
-      const filePath = isGlossary
-        ? glossaryDiffPath(connectionGroupId)
-        : `semantic/entities/${entityName}.yml`;
-      const diff = createTwoFilesPatch(filePath, filePath, beforeNormalized, afterYaml, "", "", { context: 3 });
+      // Normalize both sides + diff through the SHARED helpers (#4511) so the
+      // propose-time "record of intent" diff and the review panel's live diff
+      // use one identical normalization — a divergence would make a
+      // just-proposed amendment render as "changed" the instant it is read.
+      // Glossary amendments attribute the diff to the group's glossary.yml, not
+      // an entity file (#4518).
+      const beforeNormalized = normalizeEntityYaml(entity);
+      const afterNormalized = normalizeEntityYaml(updated);
+      const diff = isGlossary
+        ? computeDocDiff(glossaryDiffPath(connectionGroupId), beforeNormalized, afterNormalized)
+        : computeEntityDiff(entityName, beforeNormalized, afterNormalized);
 
       // Run test query if provided — route through the full production
       // pipeline (validation → approval → RLS → auto-LIMIT → audit + masking),

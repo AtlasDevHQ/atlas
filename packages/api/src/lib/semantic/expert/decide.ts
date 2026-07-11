@@ -42,6 +42,14 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+// Static value import — needed because the seam branches on `instanceof
+// StaleBaselineError`, which requires the real class binding at module load.
+// The decide-level unit suite (decide.test.ts) leaves `./diff` unmocked and
+// imports the genuine class, so `instanceof` fires against it. A suite that DOES
+// mock `./diff` (the route suite) must re-export the SAME class it raises from
+// its apply mock, or the check silently misses — the DB + apply seams stay
+// dynamic for the usual partial-mock reasons, but `./diff` is deliberately static.
+import { StaleBaselineError } from "./diff";
 
 const log = createLogger("semantic-expert-decide");
 
@@ -57,7 +65,17 @@ export type DecideAmendmentOutcome =
    * currently claimed by a concurrent decision. The caller reports this
    * truthfully (404/409/"queued") — it must never retry into a second apply.
    */
-  | { kind: "not_pending"; id: string };
+  | { kind: "not_pending"; id: string }
+  /**
+   * #4511 — the entity changed since the admin rendered the diff: the
+   * hash-carried claim's baseline hash no longer matches the current baseline.
+   * NOT a failure — the claim was returned to pending cleanly (no
+   * `last_apply_error`) and this carries the FRESHLY-computed live diff + its
+   * baseline hash so the caller presents inline update-and-confirm (a
+   * continuation of review, never a dead-end). The confirm re-decides with this
+   * `baselineHash`, which now matches, and applies.
+   */
+  | { kind: "stale"; id: string; diff: string; baselineHash: string };
 
 /**
  * Decide a pending semantic amendment. See the module doc for the ordering
@@ -77,8 +95,20 @@ export async function decideAmendment(params: {
   /** Recorded in `reviewed_by` — an admin identifier or a machine actor. */
   reviewedBy: string;
   requestId: string;
+  /**
+   * #4511 — the baseline hash the admin rendered (hash-carried claim). When set,
+   * an approve verifies the current baseline still matches before applying; a
+   * mismatch returns a `stale` outcome carrying the fresh diff. Omitted by the
+   * scheduler / auto-approve paths (no human rendered a diff).
+   */
+  expectedBaselineHash?: string;
+  /**
+   * #4511 — an admin-picked group for a legacy cross-group-ambiguous row,
+   * honored only when default resolution is ambiguous. `undefined` = none.
+   */
+  group?: string | null;
 }): Promise<DecideAmendmentOutcome> {
-  const { id, orgId, decision, reviewedBy, requestId } = params;
+  const { id, orgId, decision, reviewedBy, requestId, expectedBaselineHash, group } = params;
 
   // Dynamic imports keep the DB + apply seams out of static graphs (matching
   // the scheduler and tool call sites) so partial `mock.module` stubs in
@@ -103,7 +133,9 @@ export async function decideAmendment(params: {
     const { applyAmendmentFromPayload } = await import("./apply");
     // Apply from the STORED row — the thing the admin reviewed — never from a
     // caller-supplied copy that could diverge from it. Throws on a
-    // null/corrupt payload before touching any YAML.
+    // null/corrupt payload before touching any YAML. #4511: threads the
+    // hash-carried claim + the disambiguation group; a hash mismatch raises a
+    // StaleBaselineError (handled below), not an apply failure.
     await applyAmendmentFromPayload({
       orgId,
       sourceEntity: claimed.source_entity,
@@ -111,8 +143,39 @@ export async function decideAmendment(params: {
       rawPayload: claimed.amendment_payload,
       requestId,
       label: id,
+      disambiguationGroup: group,
+      expectedBaselineHash,
     });
   } catch (applyErr) {
+    // #4511 — a stale baseline is NOT an apply failure: the entity changed
+    // since the admin rendered the diff. Return the claim to pending CLEANLY
+    // (null reason → no scary `last_apply_error`; the next `/pending` read
+    // recomputes the live diff anyway) and hand back the fresh diff so the card
+    // presents inline update-and-confirm. Distinguished before the generic
+    // compensation so it never records a failure reason.
+    if (applyErr instanceof StaleBaselineError) {
+      try {
+        const released = await releaseClaimedAmendment(id, claimed.claimed_at, null);
+        if (!released) {
+          log.warn(
+            { id, orgId, requestId },
+            "Stale-baseline claim was no longer held during release — a concurrent decision took the row over",
+          );
+        }
+      } catch (releaseErr) {
+        log.error(
+          {
+            err: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
+            id,
+            orgId,
+            requestId,
+          },
+          "Failed to release amendment claim after a stale-baseline mismatch — row stays 'applying' until the stale-claim window resurfaces it",
+        );
+      }
+      return { kind: "stale", id, diff: applyErr.diff, baselineHash: applyErr.baselineHash };
+    }
+
     const reason = applyErr instanceof Error ? applyErr.message : String(applyErr);
     // Compensate: the row must never linger `applying` (invisible) or reach
     // `approved` (a lie) — back to `pending` with the reason visible in the

@@ -124,7 +124,7 @@ function userMessages(text: string): UIMessage[] {
   ];
 }
 
-async function runTurn(persona?: string): Promise<string> {
+async function runTurn(persona?: string, briefing?: string): Promise<string> {
   lastSystemPrompt = undefined;
   const result = await runAgent({
     messages: userMessages("Improve the orders entity."),
@@ -134,6 +134,7 @@ async function runTurn(persona?: string): Promise<string> {
       modelId: "mock-expert-persona-model",
     },
     ...(persona ? { persona } : {}),
+    ...(briefing ? { briefing } : {}),
   });
   await result.text; // drain the stream so doStream ran
   expect(lastSystemPrompt).toBeDefined();
@@ -177,5 +178,17 @@ describe("runAgent — expert persona threading (#4508)", () => {
     const prompt = await runTurn();
     expect(prompt).toContain("You are Atlas, an expert data analyst");
     expect(prompt).not.toContain("You are the Atlas Semantic Expert Agent.");
+  });
+
+  it("front-loads the Briefing block into the system prompt when supplied (#4514)", async () => {
+    const briefing = "## Semantic layer briefing\n\n### Health: 82/100\n### Pending review queue (1)";
+    const prompt = await runTurn(EXPERT_PERSONA_PROMPT, briefing);
+    // The briefing rides the `briefing` seam into the actual model system prompt,
+    // so the expert agent learns the health/queue without a tool call (#4514 AC5).
+    expect(prompt).toContain("## Semantic layer briefing");
+    expect(prompt).toContain("### Health: 82/100");
+    // A turn with no briefing carries no briefing header — no change elsewhere.
+    const plain = await runTurn(EXPERT_PERSONA_PROMPT);
+    expect(plain).not.toContain("## Semantic layer briefing");
   });
 });

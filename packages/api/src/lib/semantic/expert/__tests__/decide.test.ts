@@ -26,17 +26,22 @@ interface Row {
 }
 
 // Stateful DB model: `pending` holds unclaimed rows, `claimed` holds rows in
-// the `applying` state. Conditional flips are synchronous, so interleaved
-// async callers serialize exactly like the SQL's row-level conditional UPDATE.
+// the `applying` state keyed by id, each with the claim token (`claimed_at`)
+// the claim minted. Conditional flips are synchronous, so interleaved async
+// callers serialize exactly like the SQL's row-level conditional UPDATE, and
+// stamp/release verify the token exactly like the SQL's `reviewed_at = $N`.
 let pending = new Map<string, Row>();
-let claimed = new Map<string, Row>();
+let claimed = new Map<string, { row: Row; token: string }>();
 let releaseReasons: Array<{ id: string; reason: string }> = [];
 let stamped: string[] = [];
 let rejected: string[] = [];
 let callOrder: string[] = [];
+let claimSeq = 0;
 // Failure-injection switches.
 let releaseThrows = false;
-let stampReturns = true;
+// When set, the row's claim token is silently rewritten after the claim —
+// modeling a stale-claim takeover between this decision's claim and stamp.
+let takeoverAfterClaim = false;
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
   claimPendingAmendment: async (id: string, _orgId: string | null, _by: string) => {
@@ -44,23 +49,29 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
     const row = pending.get(id);
     if (!row) return null;
     pending.delete(id);
-    claimed.set(id, row);
-    return { ...row };
+    const token = `claim-${++claimSeq}`;
+    claimed.set(id, { row, token });
+    const returnedToken = token;
+    if (takeoverAfterClaim) {
+      claimed.set(id, { row, token: `claim-${++claimSeq}` });
+    }
+    return { ...row, claimed_at: returnedToken };
   },
-  stampClaimedAmendmentApproved: async (id: string) => {
+  stampClaimedAmendmentApproved: async (id: string, claimedAt: string) => {
     callOrder.push(`stamp:${id}`);
-    if (!stampReturns) return false;
-    if (!claimed.delete(id)) return false;
+    const held = claimed.get(id);
+    if (!held || held.token !== claimedAt) return false;
+    claimed.delete(id);
     stamped.push(id);
     return true;
   },
-  releaseClaimedAmendment: async (id: string, reason: string) => {
+  releaseClaimedAmendment: async (id: string, claimedAt: string, reason: string) => {
     callOrder.push(`release:${id}`);
     if (releaseThrows) throw new Error("release exploded");
-    const row = claimed.get(id);
-    if (!row) return false;
+    const held = claimed.get(id);
+    if (!held || held.token !== claimedAt) return false;
     claimed.delete(id);
-    pending.set(id, row);
+    pending.set(id, held.row);
     releaseReasons.push({ id, reason });
     return true;
   },
@@ -126,10 +137,11 @@ beforeEach(() => {
   stamped = [];
   rejected = [];
   callOrder = [];
+  claimSeq = 0;
   applyCalls = [];
   applyThrows = null;
   releaseThrows = false;
-  stampReturns = true;
+  takeoverAfterClaim = false;
 });
 
 describe("decideAmendment — approve (#4506)", () => {
@@ -192,15 +204,21 @@ describe("decideAmendment — approve (#4506)", () => {
     expect(stamped).toHaveLength(0);
   });
 
-  it("reports not_pending when the claim was taken over before the stamp (apply already landed, idempotent)", async () => {
+  it("reports not_pending when a takeover replaced the claim token mid-apply (apply already landed, idempotent)", async () => {
+    // Models an apply that outlived the stale window: another decision
+    // re-claimed the row (new token) while this one was mid-apply. The stamp
+    // is conditional on THIS claim's token, so it must observe "claim lost" —
+    // never stamp `approved` over the takeover's live claim.
     seedRow("amd-4");
-    stampReturns = false;
+    takeoverAfterClaim = true;
 
     const outcome = await decide("amd-4", "approved");
 
     expect(outcome).toEqual({ kind: "not_pending", id: "amd-4" });
     expect(applyCalls).toHaveLength(1);
     expect(stamped).toHaveLength(0);
+    // The takeover's claim is still held — this decision didn't release it.
+    expect(claimed.has("amd-4")).toBe(true);
   });
 });
 

@@ -10,8 +10,8 @@
 -- silently re-listing it. Cleared on the next claim and on a successful stamp.
 --
 -- Additive-only: a single nullable column, no constraint changes — safe in a
--- single release under the two-phase-drop discipline (only DROP COLUMN /
--- DROP TABLE need the N / N+1 split). The Drizzle mirror in `db/schema.ts`
+-- single release under the two-phase-drop discipline (only DROP/RENAME COLUMN
+-- and DROP TABLE need the N / N+1 split). The Drizzle mirror in `db/schema.ts`
 -- (`learnedPatterns.lastApplyError`) lands in the SAME PR so
 -- `check-schema-drift` stays green. Not Better-Auth-dependent, so it does NOT
 -- join `MANAGED_AUTH_MIGRATIONS`.

@@ -103,10 +103,11 @@ const claimPendingAmendment = mock(async (id: string) => {
     source_entity: lastInserted.args.sourceEntity,
     connection_group_id: lastInserted.args.connectionGroupId,
     amendment_payload: lastInserted.args.amendmentPayload as unknown as Record<string, unknown>,
+    claimed_at: "2026-07-10T00:00:00+00",
   };
 });
-const stampClaimedAmendmentApproved = mock(async (_id: string) => true);
-const releaseClaimedAmendment = mock(async (_id: string, _reason: string) => true);
+const stampClaimedAmendmentApproved = mock(async (_id: string, _claimedAt: string) => true);
+const releaseClaimedAmendment = mock(async (_id: string, _claimedAt: string, _reason: string) => true);
 const rejectPendingAmendment = mock(async () => false);
 
 void mock.module("@atlas/api/lib/db/internal", () => ({

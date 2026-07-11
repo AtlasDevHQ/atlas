@@ -79,8 +79,9 @@ The amendment object should match the YAML structure for that type (e.g., { name
       // ABSENT from the flat disk root (ADR-0012). Read them through the SAME
       // org/group-aware resolver the apply path uses, so the diff the admin
       // reviews describes exactly what approval writes (#4488). The resolved
-      // `targetGroupId` is the row's OWN group — threaded into the auto-approve
-      // apply below so the write lands in the scope the diff was computed from.
+      // `targetGroupId` is the row's OWN group — persisted on the insert below
+      // (the decide seam applies from the stored row), so every approve lands
+      // in the scope the diff was computed from.
       let entity: Record<string, unknown>;
       let applyGroupId: string | null = null;
 
@@ -215,11 +216,11 @@ The amendment object should match the YAML structure for that type (e.g., { name
           confidence,
           amendmentPayload: payload as unknown as Record<string, unknown>,
           // Persist the group the baseline was resolved from (the row's OWN
-          // `connection_group_id`) so a HUMAN-reviewed approve — which applies
-          // with the stored row's group via `applyAmendmentFromPayload`, the
-          // seam every admin approve path shares — targets the same row this
+          // `connection_group_id`). The stored row is the ONLY channel the
+          // decide seam applies from — auto-approve and human review alike —
+          // so this field is what makes every approve target the same row this
           // diff was computed against, instead of falling back to unscoped
-          // resolution (409 on ambiguous names) (#4498).
+          // resolution (409 on ambiguous names) (#4498, #4506).
           connectionGroupId: applyGroupId,
         });
 

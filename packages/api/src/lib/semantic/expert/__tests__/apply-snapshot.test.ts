@@ -20,6 +20,8 @@ const ordersRow = { id: "orders-row", connection_group_id: null, yaml_content: o
 let refetchReturnsNull = false;
 let createVersionThrows = false;
 let syncThrows = false;
+// When true, the SECOND upsert (the snapshot-failure rollback) fails too.
+let rollbackUpsertThrows = false;
 
 let getEntityCalls = 0;
 const getEntity = mock(async () => {
@@ -29,7 +31,11 @@ const getEntity = mock(async () => {
   if (getEntityCalls > 1 && refetchReturnsNull) return null;
   return { ...ordersRow };
 });
-const upsertEntityForGroup = mock(async (): Promise<void> => {});
+const upsertEntityForGroup = mock(async (): Promise<void> => {
+  if (rollbackUpsertThrows && upsertEntityForGroup.mock.calls.length > 1) {
+    throw new Error("rollback write refused");
+  }
+});
 const createVersion = mock(async (): Promise<string> => {
   if (createVersionThrows) throw new Error("versions table unavailable");
   return "version-1";
@@ -74,6 +80,7 @@ beforeEach(() => {
   refetchReturnsNull = false;
   createVersionThrows = false;
   syncThrows = false;
+  rollbackUpsertThrows = false;
   getEntityCalls = 0;
   getEntity.mockClear();
   upsertEntityForGroup.mockClear();
@@ -92,12 +99,20 @@ describe("applyAmendmentToEntity — snapshot failure fails the apply (#4506)", 
     expect(syncEntityToDisk).toHaveBeenCalledTimes(1);
   });
 
-  it("createVersion failure rejects the apply (rollback-ability is part of the apply)", async () => {
+  it("createVersion failure rejects the apply and rolls the upsert back to the pre-image", async () => {
     createVersionThrows = true;
 
     await expect(applyAmendmentToEntity("org-1", result, "req-1")).rejects.toThrow(
-      /Version snapshot failed .*versions table unavailable/,
+      /Version snapshot failed .*versions table unavailable.*rolled back/,
     );
+    // The rollback restores the exact pre-image YAML into the same group
+    // scope, so the compensated "pending" row is truthful about the layer.
+    expect(upsertEntityForGroup).toHaveBeenCalledTimes(2);
+    const rollbackCall = upsertEntityForGroup.mock.calls[1] as unknown as [string, string, string, string, string | null];
+    expect(rollbackCall[3]).toBe(ordersYaml);
+    // Caches invalidated for BOTH writes — the mutation landed, then the
+    // restore landed.
+    expect(invalidateOrgWhitelist).toHaveBeenCalledTimes(2);
     // The disk sync never runs on a failed apply.
     expect(syncEntityToDisk).not.toHaveBeenCalled();
   });
@@ -110,12 +125,16 @@ describe("applyAmendmentToEntity — snapshot failure fails the apply (#4506)", 
     );
   });
 
-  it("caches are invalidated even when the snapshot fails — the upsert has landed", async () => {
+  it("failed rollback is loud: the error says the change is still LIVE, never a neutral reason", async () => {
+    // Snapshot fails AND the restore write fails — the row will read pending
+    // while the change is applied, so the visible reason must warn the admin
+    // off rejecting it.
     createVersionThrows = true;
+    rollbackUpsertThrows = true;
 
-    await expect(applyAmendmentToEntity("org-1", result, "req-1")).rejects.toThrow();
-    expect(upsertEntityForGroup).toHaveBeenCalledTimes(1);
-    expect(invalidateOrgWhitelist).toHaveBeenCalledTimes(1);
+    await expect(applyAmendmentToEntity("org-1", result, "req-1")).rejects.toThrow(
+      /still applied .*do not reject/,
+    );
   });
 
   it("disk-mirror sync failure stays warn-only — the apply still succeeds", async () => {

@@ -53,7 +53,7 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendments: async () => mockPendingAmendments,
   // Atomic conditional claim: pending → applying. Synchronous state flip, so
   // two interleaved requests can never both win — mirroring the SQL's
-  // conditional UPDATE.
+  // conditional UPDATE. Returns the claim token stamp/release require.
   claimPendingAmendment: async (id: string, _orgId: string | null, _claimedBy: string) => {
     callOrder.push("claim");
     const idx = mockPendingAmendments.findIndex((r) => r.id === id);
@@ -65,15 +65,18 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
       source_entity: row.source_entity,
       connection_group_id: row.connection_group_id,
       amendment_payload: row.amendment_payload,
+      claimed_at: `claimed-${row.id}`,
     };
   },
-  stampClaimedAmendmentApproved: async (id: string) => {
+  stampClaimedAmendmentApproved: async (id: string, claimedAt: string) => {
     callOrder.push("stamp");
+    if (claimedAt !== `claimed-${id}`) return false;
     stampCalls.push(id);
     return claimedRows.delete(id);
   },
-  releaseClaimedAmendment: async (id: string, reason: string) => {
+  releaseClaimedAmendment: async (id: string, claimedAt: string, reason: string) => {
     callOrder.push("release");
+    if (claimedAt !== `claimed-${id}`) return false;
     releaseCalls.push({ id, reason });
     const row = claimedRows.get(id);
     if (!row) return false;
@@ -406,6 +409,48 @@ describe("admin-semantic-improve", () => {
       expect(body.error).toBe("not_found");
       // Missing target short-circuits before any YAML apply.
       expect(applyPayloadCalls).toHaveLength(0);
+    });
+  });
+
+  describe("GET /pending — applyError surfacing (#4506)", () => {
+    it("maps the row's last_apply_error to applyError so a bounced approval is never silent", async () => {
+      mockPendingAmendments = [
+        {
+          ...((): MockAmendmentRow => ({
+            id: "amd-err",
+            source_entity: "orders",
+            connection_group_id: null,
+            description: "[add_measure] orders: total revenue",
+            confidence: 0.9,
+            amendment_payload: {
+              entityName: "orders",
+              amendmentType: "add_measure",
+              amendment: { name: "total_revenue", type: "number" },
+              rationale: "r",
+            },
+            created_at: "2026-07-10T00:00:00Z",
+          }))(),
+          last_apply_error: "Version snapshot failed for entity \"orders\": versions table unavailable",
+        } as MockAmendmentRow & { last_apply_error: string },
+        {
+          id: "amd-clean",
+          source_entity: "orders",
+          connection_group_id: null,
+          description: null,
+          confidence: 0.5,
+          amendment_payload: { amendmentType: "add_dimension", amendment: { name: "region" } },
+          created_at: "2026-07-10T00:00:00Z",
+        },
+      ];
+
+      const res = await adminSemanticImprove.request("/pending");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { amendments: Array<{ id: string; applyError: string | null }> };
+      const byId = new Map(body.amendments.map((a) => [a.id, a]));
+      expect(byId.get("amd-err")?.applyError).toContain("Version snapshot failed");
+      // Rows that never bounced report null, not undefined — the wire schema
+      // pins the field as nullable.
+      expect(byId.get("amd-clean")?.applyError).toBeNull();
     });
   });
 

@@ -487,7 +487,13 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     whereParts.push(org.clause);
     let nextIdx = org.nextIdx;
 
-    if (status) { params.push(status); whereParts.push(`status = $${nextIdx}`); nextIdx++; }
+    if (status === "pending") {
+      // `applying` is the decide seam's transient claim state, presented as
+      // `pending` on the wire (see toLearnedPattern, #4506) — the filter must
+      // match the presentation, or a crash-stranded claim becomes invisible
+      // under the one filter admins use to find pending work.
+      whereParts.push(`status IN ('pending', 'applying')`);
+    } else if (status) { params.push(status); whereParts.push(`status = $${nextIdx}`); nextIdx++; }
     if (patternType) { params.push(patternType); whereParts.push(`type = $${nextIdx}`); nextIdx++; }
     if (sourceEntity) { params.push(sourceEntity); whereParts.push(`source_entity = $${nextIdx}`); nextIdx++; }
     if (minConfidence !== null) { params.push(parseFloat(minConfidence)); whereParts.push(`confidence >= $${nextIdx}`); nextIdx++; }

@@ -31,7 +31,14 @@
  * Crash safety: a process death between claim and stamp/release leaves the
  * row `applying`; the pending-queue reads resurface it after
  * `AMENDMENT_CLAIM_STALE_MINUTES` and the claim can be retaken (the apply is
- * idempotent via upsert-by-identity).
+ * idempotent via upsert-by-identity). The claim carries a token
+ * (`claimed_at`), so a decision that outlives the stale window can never
+ * stamp or release over a takeover's live claim — it observes `not_pending`
+ * instead. The one qualified guarantee: the reject arm deliberately treats a
+ * STALE claim as claimable (a crashed process must not strand rows), so an
+ * apply that is still alive past the window can land YAML after a takeover
+ * rejected the row — bounded to >stale-window applies, logged loudly, and
+ * convergent on the next approve.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -60,7 +67,8 @@ export type DecideAmendmentOutcome =
  *   null/corrupt stored payload and a failed version snapshot). The row has
  *   already been compensated back to `pending` with a visible reason when the
  *   error reaches the caller; route callers let it propagate to the shared
- *   error mapping, auto-approve callers catch and report "queued".
+ *   error mapping, the proposeAmendment tool catches and reports "queued",
+ *   and the scheduler catches and counts an error.
  */
 export async function decideAmendment(params: {
   id: string;
@@ -110,7 +118,7 @@ export async function decideAmendment(params: {
     // `approved` (a lie) — back to `pending` with the reason visible in the
     // review queue.
     try {
-      const released = await releaseClaimedAmendment(id, reason);
+      const released = await releaseClaimedAmendment(id, claimed.claimed_at, reason);
       if (!released) {
         log.error(
           { id, orgId, requestId, reason },
@@ -132,7 +140,7 @@ export async function decideAmendment(params: {
     throw applyErr;
   }
 
-  const stamped = await stampClaimedAmendmentApproved(id);
+  const stamped = await stampClaimedAmendmentApproved(id, claimed.claimed_at);
   if (!stamped) {
     // Pathological: the apply outlived the stale-claim window and another
     // decision took the row over mid-flight. The YAML change DID land (and is

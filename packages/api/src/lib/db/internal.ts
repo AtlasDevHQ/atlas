@@ -1669,6 +1669,15 @@ export async function insertSemanticAmendment(amendment: {
 // `applying` is a transient claim state, not a wire status: the review-queue
 // reads treat a claim older than AMENDMENT_CLAIM_STALE_MINUTES as abandoned
 // (process died mid-apply) so the row resurfaces and the claim can be retaken.
+//
+// Ownership is enforced by the claim token (`claimed_at` = the reviewed_at
+// the claim stamped): stamp/release match only THIS claim, so a decision that
+// outlives the stale window observes "claim lost" instead of overwriting a
+// takeover. The one deliberately qualified guarantee: reject/claim treat a
+// STALE claim as claimable (a crashed process must not strand rows), so an
+// apply still alive past the window can land YAML after a takeover decided
+// the row — bounded to >stale-window applies, surfaced via decide.ts logs,
+// idempotent and convergent on the next approve.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1688,6 +1697,13 @@ export type ClaimedAmendmentRow = Record<string, unknown> & {
   source_entity: string;
   connection_group_id: string | null;
   amendment_payload: Record<string, unknown> | null;
+  /**
+   * Claim token: the `reviewed_at` this claim stamped, as text. Stamp/release
+   * condition on it so an apply that outlived the stale window can never
+   * overwrite a takeover's live claim — ownership is enforced by the row, not
+   * by timing (#4506).
+   */
+  claimed_at: string;
 };
 
 /**
@@ -1696,6 +1712,7 @@ export type ClaimedAmendmentRow = Record<string, unknown> & {
  * losers get `null` and must report the row as already under review. Also
  * retakes claims stale past {@link AMENDMENT_CLAIM_STALE_MINUTES} (crashed
  * process). Clears `last_apply_error` so a retried approve starts clean.
+ * Returns the claim token (`claimed_at`) that stamp/release require.
  *
  * SaaS scoping mirrors the pending reads (#4487): NULL-org rows are
  * unclaimable from any workspace, and the org-less path is refused outright.
@@ -1721,13 +1738,13 @@ export async function claimPendingAmendment(
              updated_at = now(), last_apply_error = NULL
          WHERE id = $2 AND type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
          AND ${saas ? "org_id = $3" : "(org_id = $3 OR org_id IS NULL)"}
-         RETURNING id, source_entity, connection_group_id, amendment_payload`
+         RETURNING id, source_entity, connection_group_id, amendment_payload, reviewed_at::text AS claimed_at`
       : `UPDATE learned_patterns
          SET status = 'applying', reviewed_by = $1, reviewed_at = now(),
              updated_at = now(), last_apply_error = NULL
          WHERE id = $2 AND type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
          AND org_id IS NULL
-         RETURNING id, source_entity, connection_group_id, amendment_payload`,
+         RETURNING id, source_entity, connection_group_id, amendment_payload, reviewed_at::text AS claimed_at`,
     orgId ? [claimedBy, id, orgId] : [claimedBy, id],
   );
 
@@ -1736,11 +1753,15 @@ export async function claimPendingAmendment(
 
 /**
  * Stamp a claimed amendment `approved` — called by the decide seam ONLY after
- * a successful apply + version snapshot (#4506). Conditional on the claim
- * (`status = 'applying'`), so a stale-claim takeover can't be overwritten.
- * Returns false when the claim is no longer held.
+ * a successful apply + version snapshot (#4506). Conditional on THIS claim
+ * (`status = 'applying' AND reviewed_at = claimedAt`), so an apply that
+ * outlived the stale window can never stamp over a takeover's live claim.
+ * Returns false when the claim is no longer held by this claimant.
  */
-export async function stampClaimedAmendmentApproved(id: string): Promise<boolean> {
+export async function stampClaimedAmendmentApproved(
+  id: string,
+  claimedAt: string,
+): Promise<boolean> {
   if (!hasInternalDB()) return false;
 
   const rows = await internalQuery<{ id: string }>(
@@ -1748,8 +1769,9 @@ export async function stampClaimedAmendmentApproved(id: string): Promise<boolean
        SET status = 'approved', last_apply_error = NULL,
            reviewed_at = now(), updated_at = now()
      WHERE id = $1 AND type = 'semantic_amendment' AND status = 'applying'
+     AND reviewed_at = $2::timestamptz
      RETURNING id`,
-    [id],
+    [id, claimedAt],
   );
 
   return rows.length > 0;
@@ -1758,19 +1780,26 @@ export async function stampClaimedAmendmentApproved(id: string): Promise<boolean
 /**
  * Compensation: return a claimed amendment to `pending` after its apply failed
  * (#4506), recording the failure in `last_apply_error` so the review queue
- * shows WHY the row bounced. Clears the reviewer fields the claim stamped.
- * Returns false when the claim is no longer held (stale-claim takeover).
+ * shows WHY the row bounced. Conditional on THIS claim (see
+ * {@link stampClaimedAmendmentApproved}) and clears the reviewer fields the
+ * claim stamped. Returns false when the claim is no longer held by this
+ * claimant (stale-claim takeover).
  */
-export async function releaseClaimedAmendment(id: string, reason: string): Promise<boolean> {
+export async function releaseClaimedAmendment(
+  id: string,
+  claimedAt: string,
+  reason: string,
+): Promise<boolean> {
   if (!hasInternalDB()) return false;
 
   const rows = await internalQuery<{ id: string }>(
     `UPDATE learned_patterns
        SET status = 'pending', reviewed_by = NULL, reviewed_at = NULL,
-           last_apply_error = $2, updated_at = now()
+           last_apply_error = $3, updated_at = now()
      WHERE id = $1 AND type = 'semantic_amendment' AND status = 'applying'
+     AND reviewed_at = $2::timestamptz
      RETURNING id`,
-    [id, reason.slice(0, 2000)],
+    [id, claimedAt, reason.slice(0, 2000)],
   );
 
   return rows.length > 0;
@@ -1778,10 +1807,12 @@ export async function releaseClaimedAmendment(id: string, reason: string): Promi
 
 /**
  * Atomically reject a pending semantic amendment (#4506). Conditional on
- * `pending` (or a stale claim), so a reject can never stamp an applied change
- * as rejected: once an approve has claimed or stamped the row, the reject
- * matches zero rows and the caller reports "already reviewed". Rejection never
- * touches the semantic layer, so no claim state is needed.
+ * `pending` (or a STALE claim), so a reject cannot stamp an applied change as
+ * rejected: once an approve has claimed (within the stale window) or stamped
+ * the row, the reject matches zero rows and the caller reports "already
+ * reviewed". (Qualified for >stale-window applies — see the block comment
+ * above.) Rejection never touches the semantic layer, so no claim state is
+ * needed.
  *
  * SaaS scoping mirrors the pending reads (#4487).
  *

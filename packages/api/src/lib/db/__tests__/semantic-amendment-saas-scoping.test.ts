@@ -31,6 +31,7 @@ import {
   stampClaimedAmendmentApproved,
   releaseClaimedAmendment,
   rejectPendingAmendment,
+  insertSemanticAmendment,
   _resetPool,
   _resetCircuitBreaker,
 } from "../internal";
@@ -48,7 +49,7 @@ function makeStubPool() {
   return {
     query: async (sql: string, params?: unknown[]) => {
       captured.push({ sql, params: params ?? [] });
-      // reviewSemanticAmendment reads rows[0]; return an empty result set.
+      // The claim/stamp/release/reject helpers read rows[0]; return an empty result set.
       return { rows: [] };
     },
     async end() {},
@@ -155,6 +156,13 @@ describe("decide-seam conditional transitions (#4506) — the DB-level race prot
     expect(sql).toContain("type = 'semantic_amendment'");
     // A retried approve starts clean: the claim clears the previous failure.
     expect(sql).toContain("last_apply_error = NULL");
+    // The claim returns its token — stamp/release condition on it.
+    expect(sql).toContain("reviewed_at::text AS claimed_at");
+    // Pin the stale-window comparison DIRECTION verbatim: a flipped `>` would
+    // make every FRESH claim re-claimable (re-opening the double-apply race)
+    // while stranding genuinely stale ones — and a looser substring assertion
+    // would stay green.
+    expect(sql).toContain("updated_at < now() - interval '10 minutes'");
   });
 
   it("reject is conditional on pending — never flips an approved or freshly-claimed row", async () => {
@@ -167,33 +175,73 @@ describe("decide-seam conditional transitions (#4506) — the DB-level race prot
     expect(sql).not.toContain("status = 'approved'");
   });
 
-  it("stamp-approved is conditional on the held claim ('applying'), never on pending", async () => {
+  it("stamp-approved is conditional on THIS claim ('applying' + the claim token), never on pending", async () => {
     setDeployMode("self-hosted");
-    await stampClaimedAmendmentApproved("amd-1");
+    await stampClaimedAmendmentApproved("amd-1", "2026-07-10T00:00:00+00");
 
     const { sql, params } = captured[0]!;
     expect(sql).toContain("SET status = 'approved'");
     expect(sql).toContain("status = 'applying'");
+    // Claim-ownership guard: an apply that outlived the stale window can't
+    // stamp over a takeover's live claim.
+    expect(sql).toContain("reviewed_at = $2::timestamptz");
     expect(sql).not.toContain("status = 'pending'");
-    expect(params).toEqual(["amd-1"]);
+    expect(params).toEqual(["amd-1", "2026-07-10T00:00:00+00"]);
   });
 
-  it("release compensates a held claim back to pending with the visible reason", async () => {
+  it("release compensates a held claim back to pending with the visible reason (token-guarded)", async () => {
     setDeployMode("self-hosted");
-    await releaseClaimedAmendment("amd-1", "snapshot failed");
+    await releaseClaimedAmendment("amd-1", "2026-07-10T00:00:00+00", "snapshot failed");
 
     const { sql, params } = captured[0]!;
     expect(sql).toContain("SET status = 'pending'");
-    expect(sql).toContain("last_apply_error = $2");
+    expect(sql).toContain("last_apply_error = $3");
     expect(sql).toContain("status = 'applying'");
-    expect(params).toEqual(["amd-1", "snapshot failed"]);
+    expect(sql).toContain("reviewed_at = $2::timestamptz");
+    expect(params).toEqual(["amd-1", "2026-07-10T00:00:00+00", "snapshot failed"]);
   });
 
   it("pending reads resurface stale 'applying' claims so a crash can't strand a row", async () => {
     setDeployMode("self-hosted");
     await getPendingAmendments("org-a");
+    await getPendingAmendmentCount("org-a");
 
     expect(captured[0]!.sql).toContain("status = 'pending' OR (status = 'applying'");
+    expect(captured[0]!.sql).toContain("updated_at < now() - interval '10 minutes'");
+    expect(captured[1]!.sql).toContain("status = 'pending' OR (status = 'applying'");
+  });
+
+  it("insertSemanticAmendment lands 'pending' even when auto-approve eligibility is met (#4506)", async () => {
+    // The seam is the only writer of `approved`: the INSERT hardcodes
+    // 'pending' and eligibility is only REPORTED. A regression re-adding a
+    // status parameter to the VALUES would ship the old insert-time ghost
+    // approval back — this pins the SQL itself.
+    setDeployMode("self-hosted");
+    process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD = "0.5";
+    try {
+      // The stub pool returns no rows, so the helper throws AFTER issuing the
+      // INSERT — the captured SQL is what this test pins. (The returned
+      // `autoApprove: true` for this exact input is asserted against real
+      // Postgres in semantic-amendment-decide-pg.test.ts.)
+      await expect(
+        insertSemanticAmendment({
+          orgId: "org-a",
+          description: "test",
+          sourceEntity: "orders",
+          confidence: 0.95,
+          connectionGroupId: null,
+          amendmentPayload: { amendmentType: "add_dimension", amendment: { name: "region" } },
+        }),
+      ).rejects.toThrow("INSERT returned no rows");
+
+      const insert = captured.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+      expect(insert).toBeDefined();
+      expect(insert!.sql).toContain("'pending'");
+      expect(insert!.sql).not.toContain("'approved'");
+      expect(insert!.params).not.toContain("approved");
+    } finally {
+      delete process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD;
+    }
   });
 });
 

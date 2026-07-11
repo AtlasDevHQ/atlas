@@ -68,8 +68,9 @@ export function getExpertSchedulerIntervalMs(): number {
  * 1. Loads semantic layer entities, glossary, audit patterns, and rejected keys
  * 2. Loads cached profiles from last `atlas init` or `atlas improve` run
  * 3. Runs analysis engine with cached profiles
- * 4. Inserts each proposal (status resolved by auto-approve threshold)
- * 5. For proposals marked approved, applies the amendment to YAML
+ * 4. Inserts each proposal `pending`; the insert reports auto-approve eligibility
+ * 5. Routes eligible proposals through the decide seam (#4506) — claim →
+ *    apply + version snapshot → stamp `approved`
  */
 export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
   const result: ExpertTickResult = {

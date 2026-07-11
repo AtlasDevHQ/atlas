@@ -1,8 +1,11 @@
 /**
  * Apply a semantic expert amendment to the org's semantic layer.
  *
- * Reads the current entity YAML, applies the amendment, writes the
- * updated YAML, records a version snapshot, and invalidates caches.
+ * Reads the current entity YAML, applies the amendment, writes the updated
+ * YAML, invalidates caches, then records a version snapshot. Rollback-ability
+ * is part of the apply (#4506): a snapshot failure fails the whole apply and
+ * best-effort restores the pre-image, so the decide seam's compensation
+ * (row → pending) stays truthful. The disk-mirror sync stays warn-only.
  */
 
 import * as yaml from "js-yaml";
@@ -162,10 +165,8 @@ export async function applyAmendmentToEntity(
   // Create version snapshot. Rollback-ability is part of the apply (#4506):
   // a snapshot failure FAILS the whole apply, so the decide seam compensates
   // the row back to pending instead of stamping `approved` on a change that
-  // can't be rolled back. (The YAML upsert above has already landed — a retry
-  // re-applies idempotently via upsert-by-identity and re-attempts the
-  // snapshot.) Tagged errors (AmbiguousEntityError) re-throw untouched so the
-  // route layer maps them to 409 with `groups`.
+  // can't be rolled back. Tagged errors (AmbiguousEntityError) re-throw
+  // untouched so the route layer maps them to 409 with `groups`.
   try {
     const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName, targetGroupId);
     if (!refreshed) {
@@ -184,8 +185,33 @@ export async function applyAmendmentToEntity(
       { err: msg, requestId, orgId, entity: result.entityName },
       "Version snapshot failed — failing the amendment apply (rollback-ability is part of the apply)",
     );
+    // The upsert has already landed, so a compensated "pending" row would lie
+    // about the layer's state. Best-effort restore of the pre-image keeps the
+    // compensation truthful; if the restore itself fails, say so loudly in the
+    // error (which becomes the row's visible `last_apply_error`) so an admin
+    // never reads "pending" + a neutral reason and rejects a LIVE change.
+    let restored = false;
+    try {
+      await upsertEntityForGroup(
+        effectiveOrgId, "entity", result.entityName, entity.yaml_content, targetGroupId,
+      );
+      invalidateOrgWhitelist(effectiveOrgId);
+      restored = true;
+    } catch (restoreErr) {
+      log.error(
+        {
+          err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr),
+          requestId,
+          orgId,
+          entity: result.entityName,
+        },
+        "Failed to roll back entity YAML after snapshot failure — the change is LIVE while the amendment returns to pending",
+      );
+    }
     throw new Error(
-      `Version snapshot failed for entity "${result.entityName}": ${msg}`,
+      restored
+        ? `Version snapshot failed for entity "${result.entityName}": ${msg}. The YAML change was rolled back — retry the approval.`
+        : `Version snapshot failed for entity "${result.entityName}": ${msg}. WARNING: the YAML change is still applied (rollback also failed) — retry the approval to converge; do not reject.`,
       { cause: versionErr },
     );
   }

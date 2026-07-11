@@ -45,6 +45,7 @@ const mockClaimPendingAmendment: Mock<
     amendment: { field: "table", description: "Updated" },
     rationale: "text",
   },
+  claimed_at: "2026-07-10T00:00:00+00",
 }));
 const mockStampClaimedAmendmentApproved: Mock<(id: string) => Promise<boolean>> =
   mock(async () => true);

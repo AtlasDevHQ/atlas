@@ -324,6 +324,45 @@ describe("learned-patterns semantic_amendment decisions route through the decide
       expect(decideAmendment).not.toHaveBeenCalled();
     });
 
+    it("presents an 'applying' (claimed) row as pending on the wire — the claim state never leaks", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("COUNT")) return Promise.resolve([{ count: "1" }]);
+        if (sql.includes("SELECT *")) {
+          return Promise.resolve([
+            semanticRow({ status: "applying", created_at: "2026-07-10T00:00:00Z", updated_at: "2026-07-10T00:00:00Z" }),
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await req("GET", "/");
+      expect(res.status).toBe(200);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.patterns[0].status).toBe("pending");
+    });
+
+    it("the ?status=pending filter includes 'applying' rows so a stranded claim stays findable (#4506)", async () => {
+      const selects: string[] = [];
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        selects.push(sql);
+        if (sql.includes("COUNT")) return Promise.resolve([{ count: "0" }]);
+        return Promise.resolve([]);
+      });
+
+      const res = await req("GET", "/?status=pending");
+      expect(res.status).toBe(200);
+      // The filter must match the wire presentation (applying reads as
+      // pending) — a raw `status = 'pending'` arm would hide a crash-stranded
+      // claim from the one filter admins use to find pending work.
+      expect(selects.some((s) => s.includes("status IN ('pending', 'applying')"))).toBe(true);
+      // Other status filters stay parameterized and exact.
+      selects.length = 0;
+      const res2 = await req("GET", "/?status=approved");
+      expect(res2.status).toBe(200);
+      expect(selects.some((s) => s.includes("status = $"))).toBe(true);
+    });
+
     it("reopens a rejected amendment (reconsider) before the seam approves it", async () => {
       const reopenSqls: Array<{ sql: string; params: unknown[] }> = [];
       mocks.mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {

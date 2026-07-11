@@ -268,6 +268,30 @@ describe("SemanticImprovePage — launchers survive a conversation (#4519 AC2)",
     expect(afterClear ? "anchor" in afterClear.body : true).toBe(false);
   });
 
+  test("clicking an entity launcher anchors to that entity, carrying its group (#4519 AC3 + transport)", async () => {
+    let utils!: ReturnType<typeof render>;
+    await act(async () => {
+      utils = render(createElement(SemanticImprovePage), { wrapper });
+    });
+    // The entity item projects `connectionId` → group; clicking it must anchor to
+    // that entity WITH its group on the wire (the launchEntity group branch).
+    const item = await waitFor(() => {
+      const el = utils.queryByText("orders");
+      if (!el) throw new Error("entity item not rendered");
+      return el;
+    });
+    await act(async () => {
+      fireEvent.click(item);
+    });
+    await waitFor(() => {
+      if (!utils.queryByText("Entity: orders")) throw new Error("entity chip not shown");
+    });
+    const built = capturedTransport?.prepareSendMessagesRequest?.({
+      messages: [{ id: "m", role: "user", parts: [] }],
+    });
+    expect(built?.body.anchor).toEqual({ kind: "entity", entity: "orders", group: "g1" });
+  });
+
   test("launchers + sweep stay rendered after messages exist (no vanishing button)", async () => {
     // A conversation is already underway — the old single 'Run Analysis' button
     // would be gone here; the launchers must NOT be.
@@ -310,7 +334,9 @@ describe("SemanticImprovePage — launchers survive a conversation (#4519 AC2)",
       expect(utils.queryByText("Group")).toBeNull();
       expect(utils.getByText("Sweep")).toBeDefined();
       expect(utils.getByText("Entity")).toBeDefined();
-      expect(warnSpy).toHaveBeenCalled();
+      // Message-specific so an unrelated render-time warning can't satisfy it —
+      // deleting the per-row-drop warn in page.tsx must fail this.
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("per-row field drift"));
     } finally {
       console.warn = originalWarn;
     }

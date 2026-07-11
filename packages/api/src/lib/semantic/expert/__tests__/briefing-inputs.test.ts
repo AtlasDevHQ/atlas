@@ -314,6 +314,12 @@ describe("loadBriefingInputs", () => {
       entity: "ghost",
     });
     expect(inputs.anchor).toBeUndefined();
+    // The observability half of this degrade (the log.warn in briefing-inputs.ts,
+    // confirmed by review) can't be asserted at this seam: the test's static
+    // `import` of briefing-inputs is ESM-hoisted above `mock.module("logger")`, so
+    // its module-level `createLogger()` binds the real logger before the mock
+    // registers (unlike the dynamic-import'd db/context mocks). Not worth
+    // restructuring the file for a warn assertion.
   });
 });
 

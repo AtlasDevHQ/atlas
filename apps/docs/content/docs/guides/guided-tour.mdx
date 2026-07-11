@@ -1,11 +1,11 @@
 ---
 title: Guided Tour
-description: In-app walkthrough that introduces new users to chat, notebook, admin, and semantic layer features.
+description: In-app walkthrough that introduces new users to chat, admin, and semantic layer features.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The guided tour is an interactive overlay that walks new users through Atlas's key features. It highlights four areas of the interface — chat, notebook, admin console, and semantic layer — with tooltips explaining each one.
+The guided tour is an interactive overlay that walks new users through Atlas's key features. It highlights three areas of the interface — chat, admin console, and semantic layer — with tooltips explaining each one.
 
 ---
 
@@ -27,11 +27,10 @@ If the server is unreachable, the tour falls back to local storage only.
 | Step | Title | Description |
 |------|-------|-------------|
 | 1 | Chat with your data | Ask questions in natural language. Atlas translates them to SQL and returns results |
-| 2 | Notebook | Build multi-step analyses with cells you can re-run, reorder, and export |
-| 3 | Admin console | Manage connections, users, roles, and monitor usage (**admin-only** — skipped for non-admin users) |
-| 4 | Semantic layer | Entity definitions, metrics, and glossary terms that help Atlas understand your data |
+| 2 | Admin console | Manage connections, users, roles, and monitor usage (**admin-only** — skipped for non-admin users) |
+| 3 | Semantic layer | Entity definitions, metrics, and glossary terms that help Atlas understand your data |
 
-Non-admin users see 3 steps (the admin console step is filtered out automatically).
+Non-admin users see 2 steps (the admin console step is filtered out automatically).
 
 ---
 
@@ -99,4 +98,3 @@ These endpoints return `404` when managed auth is not configured or when no inte
 ## See Also
 
 - [Admin Console](/guides/admin-console) — The admin step highlighted during the tour
-- [Notebook View](/guides/notebook) — Cell-based analysis interface

@@ -1,7 +1,9 @@
 /** Conversation persistence types — wire format for conversations and messages. */
 
 export type MessageRole = "user" | "assistant" | "system" | "tool";
-export type Surface = "web" | "api" | "mcp" | "slack" | "notebook";
+// The "notebook" surface was retired (ADR-0035, #4587) — existing notebook
+// conversations were converted to "web" chats by migration 0169.
+export type Surface = "web" | "api" | "mcp" | "slack";
 
 /**
  * Three-state cross-environment routing picker for a conversation (#2518):
@@ -140,34 +142,6 @@ export interface Conversation {
   starred: boolean;
   createdAt: string;
   updatedAt: string;
-  notebookState?: NotebookStateWire | null;
-}
-
-/** Server-persisted notebook state stored as JSONB on the conversation. */
-export interface NotebookStateWire {
-  version: number;
-  /** Custom display order of cell IDs (empty = natural message order). */
-  cellOrder?: string[];
-  /** Per-cell persisted properties (only collapsed; editing/status are transient). */
-  cellProps?: Record<string, { collapsed?: boolean }>;
-  /** Fork branches originating from this conversation (stored on root only). */
-  branches?: ForkBranchWire[];
-  /** If this conversation is a fork, the root conversation ID. */
-  forkRootId?: string;
-  /** If this conversation is a fork, the cell ID at the fork point. */
-  forkPointCellId?: string;
-  /** Text cell content keyed by cell ID (text cells are not message-backed). */
-  textCells?: Record<string, { content: string }>;
-  /** Tracks which notebook cells have been added to dashboards. */
-  dashboardCards?: Record<string, { dashboardId: string; cardId: string }>;
-}
-
-/** A fork branch — metadata for a forked conversation. */
-export interface ForkBranchWire {
-  conversationId: string;
-  forkPointCellId: string;
-  label: string;
-  createdAt: string;
 }
 
 export interface Message {

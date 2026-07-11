@@ -411,8 +411,8 @@ export default function LoginPage() {
           Sign in to Atlas
         </h1>
         <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-          Pick up where you left off — your conversations, dashboards, and
-          notebooks are waiting.
+          Pick up where you left off — your conversations and dashboards are
+          waiting.
         </p>
       </div>
 

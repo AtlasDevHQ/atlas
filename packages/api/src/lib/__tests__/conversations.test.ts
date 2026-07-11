@@ -14,16 +14,11 @@ import {
   listConversations,
   deleteConversation,
   starConversation,
-  updateNotebookState,
   shareConversation,
   unshareConversation,
   getShareStatus,
   getSharedConversation,
   cleanupExpiredShares,
-  deleteBranch,
-  renameBranch,
-  forkConversation,
-  convertToNotebook,
   updateConversationRestExcluded,
   updateConversationRestFocus,
   updateConversationGroupReach,
@@ -1270,141 +1265,6 @@ describe("conversations module", () => {
   });
 
   // -------------------------------------------------------------------------
-  // deleteBranch
-  // -------------------------------------------------------------------------
-
-  describe("deleteBranch()", () => {
-    it("returns no_db when DATABASE_URL is not set", async () => {
-      const result = await deleteBranch({ rootId: "r1", branchId: "b1" });
-      expect(result).toEqual({ ok: false, reason: "no_db" });
-    });
-
-    it("returns not_found when root conversation does not exist", async () => {
-      enableInternalDB();
-      setResults({ rows: [] });
-
-      const result = await deleteBranch({ rootId: "r1", branchId: "b1", userId: "u1" });
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-    });
-
-    it("returns not_found when branch is not in root's branches array", async () => {
-      enableInternalDB();
-      setResults(
-        // Root conversation found, but no matching branch
-        { rows: [{ id: "r1", notebook_state: { version: 3, branches: [{ conversationId: "other", forkPointCellId: "c1", label: "Other", createdAt: "2026-01-01" }] } }] },
-      );
-
-      const result = await deleteBranch({ rootId: "r1", branchId: "b1" });
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-    });
-
-    it("deletes branch conversation and updates root state", async () => {
-      enableInternalDB();
-      setResults(
-        // Root conversation with branch
-        { rows: [{ id: "r1", notebook_state: { version: 3, branches: [{ conversationId: "b1", forkPointCellId: "c1", label: "Branch 1", createdAt: "2026-01-01" }] } }] },
-        // DELETE branch conversation
-        { rows: [{ id: "b1" }] },
-        // UPDATE root notebook_state
-        { rows: [] },
-      );
-
-      const result = await deleteBranch({ rootId: "r1", branchId: "b1" });
-      expect(result).toEqual({ ok: true });
-      // Should have called DELETE on the branch conversation
-      expect(queryCalls[1].sql).toContain("DELETE FROM conversations");
-      expect(queryCalls[1].params).toEqual(["b1"]);
-      // Should have updated root's notebook_state with branches removed
-      expect(queryCalls[2].sql).toContain("UPDATE conversations SET notebook_state");
-      const updatedState = JSON.parse(queryCalls[2].params![0] as string);
-      expect(updatedState.branches).toBeUndefined();
-    });
-
-    it("removes only the target branch when multiple branches exist", async () => {
-      enableInternalDB();
-      const branches = [
-        { conversationId: "b1", forkPointCellId: "c1", label: "Branch 1", createdAt: "2026-01-01" },
-        { conversationId: "b2", forkPointCellId: "c2", label: "Branch 2", createdAt: "2026-01-02" },
-      ];
-      setResults(
-        { rows: [{ id: "r1", notebook_state: { version: 3, branches } }] },
-        { rows: [{ id: "b1" }] },
-        { rows: [] },
-      );
-
-      const result = await deleteBranch({ rootId: "r1", branchId: "b1" });
-      expect(result).toEqual({ ok: true });
-      const updatedState = JSON.parse(queryCalls[2].params![0] as string);
-      expect(updatedState.branches).toHaveLength(1);
-      expect(updatedState.branches[0].conversationId).toBe("b2");
-    });
-
-    it("returns error on DB failure", async () => {
-      enableInternalDB();
-      queryThrow = new Error("connection reset");
-
-      const result = await deleteBranch({ rootId: "r1", branchId: "b1" });
-      expect(result).toEqual({ ok: false, reason: "error" });
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // renameBranch
-  // -------------------------------------------------------------------------
-
-  describe("renameBranch()", () => {
-    it("returns no_db when DATABASE_URL is not set", async () => {
-      const result = await renameBranch({ rootId: "r1", branchId: "b1", label: "New name" });
-      expect(result).toEqual({ ok: false, reason: "no_db" });
-    });
-
-    it("returns not_found when root conversation does not exist", async () => {
-      enableInternalDB();
-      setResults({ rows: [] });
-
-      const result = await renameBranch({ rootId: "r1", branchId: "b1", label: "New name", userId: "u1" });
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-    });
-
-    it("returns not_found when branch is not in root's branches array", async () => {
-      enableInternalDB();
-      setResults(
-        { rows: [{ id: "r1", notebook_state: { version: 3, branches: [] } }] },
-      );
-
-      const result = await renameBranch({ rootId: "r1", branchId: "b1", label: "New" });
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-    });
-
-    it("updates the branch label in root's notebook_state", async () => {
-      enableInternalDB();
-      const branches = [
-        { conversationId: "b1", forkPointCellId: "c1", label: "Old name", createdAt: "2026-01-01" },
-        { conversationId: "b2", forkPointCellId: "c2", label: "Branch 2", createdAt: "2026-01-02" },
-      ];
-      setResults(
-        { rows: [{ id: "r1", notebook_state: { version: 3, branches } }] },
-        { rows: [] },
-      );
-
-      const result = await renameBranch({ rootId: "r1", branchId: "b1", label: "New name" });
-      expect(result).toEqual({ ok: true });
-      expect(queryCalls[1].sql).toContain("UPDATE conversations SET notebook_state");
-      const updatedState = JSON.parse(queryCalls[1].params![0] as string);
-      expect(updatedState.branches[0].label).toBe("New name");
-      expect(updatedState.branches[1].label).toBe("Branch 2");
-    });
-
-    it("returns error on DB failure", async () => {
-      enableInternalDB();
-      queryThrow = new Error("timeout");
-
-      const result = await renameBranch({ rootId: "r1", branchId: "b1", label: "New" });
-      expect(result).toEqual({ ok: false, reason: "error" });
-    });
-  });
-
-  // -------------------------------------------------------------------------
   // Cross-org scoping (F-11 security invariant, 1.2.3 phase 2)
   // -------------------------------------------------------------------------
   //
@@ -1457,17 +1317,6 @@ describe("conversations module", () => {
       expect(result).toEqual({ ok: false, reason: "not_found" });
       expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
       expect(queryCalls[0].params).toEqual([true, "c1", "u1", "org-B"]);
-    });
-
-    it("updateNotebookState scopes by orgId when provided", async () => {
-      enableInternalDB();
-      setResults({ rows: [] });
-
-      const result = await updateNotebookState("c1", { version: 3 }, "u1", "org-B");
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-      expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
-      expect(queryCalls[0].params?.[2]).toBe("u1");
-      expect(queryCalls[0].params?.[3]).toBe("org-B");
     });
 
     // #3066 — the REST exclude-set write helper. Binds the JS array directly to
@@ -1654,157 +1503,6 @@ describe("conversations module", () => {
       expect(queryCalls[0].params).toEqual(["c1", "u1", "org-B"]);
     });
 
-    it("deleteBranch scopes the root lookup by orgId", async () => {
-      enableInternalDB();
-      setResults({ rows: [] });
-
-      const result = await deleteBranch({
-        rootId: "r1",
-        branchId: "b1",
-        userId: "u1",
-        orgId: "org-B",
-      });
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-      expect(queryCalls[0].sql).toContain("SELECT id, notebook_state");
-      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
-      expect(queryCalls[0].params).toEqual(["r1", "u1", "org-B"]);
-    });
-
-    it("renameBranch scopes the root lookup by orgId", async () => {
-      enableInternalDB();
-      setResults({ rows: [] });
-
-      const result = await renameBranch({
-        rootId: "r1",
-        branchId: "b1",
-        label: "New",
-        userId: "u1",
-        orgId: "org-B",
-      });
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
-      expect(queryCalls[0].params).toEqual(["r1", "u1", "org-B"]);
-    });
-
-    it("forkConversation scopes the source lookup by orgId", async () => {
-      enableInternalDB();
-      // Source row lookup returns empty because org filter rejects cross-org row.
-      setResults({ rows: [] });
-
-      const result = await forkConversation({
-        sourceId: "src-c1",
-        forkPointMessageId: "m1",
-        userId: "u1",
-        orgId: "org-B",
-      });
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id");
-      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
-      expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
-    });
-
-    it("convertToNotebook scopes the source lookup by orgId", async () => {
-      enableInternalDB();
-      setResults({ rows: [] });
-
-      const result = await convertToNotebook({
-        sourceId: "src-c1",
-        userId: "u1",
-        orgId: "org-B",
-      });
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id");
-      expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
-      expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
-    });
-
-    // #4302 — happy-path INSERT contract for fork/convert. These pin the FULL
-    // params array against the column list (a placeholder/params arity drift —
-    // e.g. adding a column to the SQL without adding its value — throws
-    // "bind message supplies N parameters" on real Postgres but is invisible
-    // to this mock harness without the explicit arity + array assertions).
-    const FORK_SOURCE_ROW = {
-      id: "src-c1",
-      title: "Q3 revenue",
-      surface: "web",
-      connection_id: "us-int",
-      connection_group_id: "g_prod",
-      routing_mode: "auto",
-      rest_excluded_datasource_ids: ["ds-1"],
-      rest_focus_datasource_id: null,
-      group_reach: "g_prod",
-      answer_style: "executive",
-      org_id: "org-B",
-    };
-
-    it("forkConversation inherits every scope column — including the pinned answer style (#4302)", async () => {
-      enableInternalDB();
-      setResults(
-        { rows: [FORK_SOURCE_ROW] }, // source lookup
-        { rows: [{ created_at: "2024-01-01T00:00:00Z" }] }, // fork-point message
-        { rows: [] }, // no assistant follow-up
-        { rows: [{ id: "fork-1" }] }, // conversations INSERT
-        { rows: [{ id: "m-copy-1" }] }, // message bulk copy
-      );
-
-      const result = await forkConversation({
-        sourceId: "src-c1",
-        forkPointMessageId: "m1",
-        userId: "u1",
-        orgId: "org-B",
-      });
-      expect(result).toEqual({ ok: true, data: { id: "fork-1", messageCount: 1 } });
-      const insert = queryCalls[3];
-      expect(insert.sql).toContain("INSERT INTO conversations");
-      // Placeholder count must equal bound-param count (the drift class above).
-      expect(insert.sql.match(/\$\d+/g)?.length).toBe(insert.params?.length);
-      expect(insert.params).toEqual([
-        "u1",
-        "Q3 revenue (fork)",
-        "web",
-        "us-int",
-        "g_prod",
-        "auto",
-        ["ds-1"],
-        null,
-        "g_prod",
-        "executive",
-        "org-B",
-      ]);
-    });
-
-    it("convertToNotebook inherits every scope column — including the pinned answer style (#4302)", async () => {
-      enableInternalDB();
-      setResults(
-        { rows: [FORK_SOURCE_ROW] }, // source lookup
-        { rows: [{ id: "nb-1" }] }, // conversations INSERT
-        { rows: [{ id: "m-copy-1" }] }, // message bulk copy
-      );
-
-      const result = await convertToNotebook({
-        sourceId: "src-c1",
-        userId: "u1",
-        orgId: "org-B",
-      });
-      expect(result).toEqual({ ok: true, data: { id: "nb-1", messageCount: 1 } });
-      const insert = queryCalls[1];
-      expect(insert.sql).toContain("INSERT INTO conversations");
-      expect(insert.sql.match(/\$\d+/g)?.length).toBe(insert.params?.length);
-      expect(insert.params).toEqual([
-        "u1",
-        "Q3 revenue (notebook)",
-        "notebook",
-        "us-int",
-        "g_prod",
-        "auto",
-        ["ds-1"],
-        null,
-        "g_prod",
-        "executive",
-        "org-B",
-      ]);
-    });
-
     it("org_id IS NULL branch allows access to legacy rows (self-hosted back-compat)", async () => {
       enableInternalDB();
       // Row has NULL org_id (pre-1.2.0 legacy) but matches on user_id.
@@ -1817,7 +1515,6 @@ describe("conversations module", () => {
             surface: "web",
             connection_id: null,
             starred: false,
-            notebook_state: null,
             created_at: "2024-01-01T00:00:00Z",
             updated_at: "2024-01-01T00:00:00Z",
           }],

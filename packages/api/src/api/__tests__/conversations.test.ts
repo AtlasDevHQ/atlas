@@ -109,11 +109,6 @@ const mockShareConversation = mock((): Promise<ShareResult> => Promise.resolve({
 const mockUnshareConversation = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockGetShareStatus = mock((): Promise<CrudDataResult<import("@atlas/api/lib/conversations").ShareStatusData>> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockGetSharedConversation = mock((): Promise<import("@atlas/api/lib/conversations").SharedConversationResult> => Promise.resolve({ ok: false, reason: "not_found" }));
-const mockConvertToNotebook = mock((): Promise<CrudDataResult<{ id: string; messageCount: number }>> => Promise.resolve({ ok: false, reason: "not_found" }));
-const mockUpdateNotebookState = mock((): Promise<CrudResult> => Promise.resolve({ ok: true }));
-const mockForkConversation = mock((): Promise<CrudDataResult<{ id: string; messageCount: number }>> => Promise.resolve({ ok: false, reason: "not_found" }));
-const mockDeleteBranch = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
-const mockRenameBranch = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 
 void mock.module("@atlas/api/lib/conversations", () => ({
   listConversations: mockListConversations,
@@ -133,11 +128,6 @@ void mock.module("@atlas/api/lib/conversations", () => ({
   // consumed yet" so existing tests (which don't exercise the cap) pass.
   reserveConversationBudget: mock(() => Promise.resolve({ status: "ok" as const, totalStepsBefore: 0 })),
   settleConversationSteps: mock(() => {}),
-  updateNotebookState: mockUpdateNotebookState,
-  forkConversation: mockForkConversation,
-  convertToNotebook: mockConvertToNotebook,
-  deleteBranch: mockDeleteBranch,
-  renameBranch: mockRenameBranch,
   // #2345 — group-aware routing helper. Default to "no group" so
   // pre-routing tests continue to land conversations with
   // connection_group_id = null. Tests exercising the routing path
@@ -255,16 +245,6 @@ describe("conversations routes", () => {
     mockGetShareStatus.mockResolvedValue({ ok: false, reason: "not_found" });
     mockGetSharedConversation.mockReset();
     mockGetSharedConversation.mockResolvedValue({ ok: false, reason: "not_found" });
-    mockConvertToNotebook.mockReset();
-    mockConvertToNotebook.mockResolvedValue({ ok: false, reason: "not_found" });
-    mockUpdateNotebookState.mockReset();
-    mockUpdateNotebookState.mockResolvedValue({ ok: true });
-    mockForkConversation.mockReset();
-    mockForkConversation.mockResolvedValue({ ok: false, reason: "not_found" });
-    mockDeleteBranch.mockReset();
-    mockDeleteBranch.mockResolvedValue({ ok: false, reason: "not_found" });
-    mockRenameBranch.mockReset();
-    mockRenameBranch.mockResolvedValue({ ok: false, reason: "not_found" });
   });
 
   afterEach(() => {
@@ -1609,194 +1589,4 @@ describe("conversations routes", () => {
     });
   });
 
-  // -----------------------------------------------------------------------
-  // POST /:id/convert-to-notebook
-  // -----------------------------------------------------------------------
-
-  describe("POST /:id/convert-to-notebook", () => {
-    it("returns 200 with new notebook id on success", async () => {
-      mockConvertToNotebook.mockResolvedValueOnce({
-        ok: true,
-        data: { id: "nb-1234-5678-9012-abcdef000000", messageCount: 5 },
-      });
-
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/convert-to-notebook`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-
-      expect(response.status).toBe(200);
-      const body = await response.json() as Record<string, unknown>;
-      expect(body.id).toBe("nb-1234-5678-9012-abcdef000000");
-      expect(body.messageCount).toBe(5);
-    });
-
-    it("returns 404 when source conversation not found", async () => {
-      mockConvertToNotebook.mockResolvedValueOnce({ ok: false, reason: "not_found" });
-
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/convert-to-notebook`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-
-      expect(response.status).toBe(404);
-    });
-
-    it("returns 400 for invalid UUID", async () => {
-      const response = await app.fetch(
-        new Request("http://localhost/api/v1/conversations/not-a-uuid/convert-to-notebook", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-
-      expect(response.status).toBe(400);
-    });
-
-    it("passes userId from auth context", async () => {
-      mockConvertToNotebook.mockResolvedValueOnce({
-        ok: true,
-        data: { id: "nb-0000-0000-0000-000000000000", messageCount: 3 },
-      });
-
-      await app.fetch(
-        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/convert-to-notebook`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-
-      expect(mockConvertToNotebook).toHaveBeenCalledWith(
-        expect.objectContaining({ sourceId: VALID_ID, userId: "u1" }),
-      );
-    });
-
-    it("returns 500 on database error", async () => {
-      mockConvertToNotebook.mockResolvedValueOnce({ ok: false, reason: "error" });
-
-      const response = await app.fetch(
-        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/convert-to-notebook`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-
-      expect(response.status).toBe(500);
-      const body = await response.json() as Record<string, unknown>;
-      expect(body.error).toBe("internal_error");
-    });
-
-    it("forwards orgId from auth context", async () => {
-      mockConvertToNotebook.mockResolvedValueOnce({
-        ok: true,
-        data: { id: "nb-0000-0000-0000-000000000000", messageCount: 2 },
-      });
-
-      await app.fetch(
-        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/convert-to-notebook`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-
-      expect(mockConvertToNotebook).toHaveBeenCalledWith(
-        expect.objectContaining({ sourceId: VALID_ID, userId: "u1", orgId: "org-u1" }),
-      );
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Route-layer orgId scoping (F-11) — regression guard for the 5 routes
-  // below which previously had no route test. A refactor that drops
-  // `user?.activeOrganizationId` at any call site silently regresses the
-  // security invariant; these tests catch it.
-  // -----------------------------------------------------------------------
-
-  describe("route-layer orgId scoping (F-11)", () => {
-    it("PATCH /:id/notebook-state forwards orgId", async () => {
-      mockUpdateNotebookState.mockResolvedValueOnce({ ok: true });
-
-      await app.fetch(
-        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/notebook-state`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ version: 3 }),
-        }),
-      );
-      const call = mockUpdateNotebookState.mock.calls[0] as unknown as [string, unknown, string | undefined, string | undefined];
-      expect(call[0]).toBe(VALID_ID);
-      expect(call[2]).toBe("u1");
-      expect(call[3]).toBe("org-u1");
-    });
-
-    it("POST /:id/fork forwards orgId via opts", async () => {
-      // Fork returns a new conversation id for the source update paths to proceed.
-      mockForkConversation.mockResolvedValueOnce({
-        ok: true,
-        data: { id: "b1b2c3d4-e5f6-7890-abcd-ef1234567890", messageCount: 1 },
-      });
-      // The fork handler also re-reads the source conversation for branch metadata.
-      mockGetConversation.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          id: VALID_ID,
-          userId: "u1",
-          title: null,
-          surface: "web",
-          connectionId: null,
-          connectionGroupId: null,
-          starred: false,
-          notebookState: null,
-          createdAt: "2024-01-01T00:00:00Z",
-          updatedAt: "2024-01-01T00:00:00Z",
-          messages: [],
-        },
-      });
-
-      await app.fetch(
-        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/fork`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ forkPointMessageId: "m1" }),
-        }),
-      );
-      expect(mockForkConversation).toHaveBeenCalledWith(
-        expect.objectContaining({ sourceId: VALID_ID, userId: "u1", orgId: "org-u1" }),
-      );
-    });
-
-    it("DELETE /:id/branches/:branchId forwards orgId via opts", async () => {
-      mockDeleteBranch.mockResolvedValueOnce({ ok: true });
-      const BRANCH_ID = "b1b2c3d4-e5f6-7890-abcd-ef1234567890";
-
-      await app.fetch(
-        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/branches/${BRANCH_ID}`, {
-          method: "DELETE",
-        }),
-      );
-      expect(mockDeleteBranch).toHaveBeenCalledWith(
-        expect.objectContaining({ rootId: VALID_ID, branchId: BRANCH_ID, userId: "u1", orgId: "org-u1" }),
-      );
-    });
-
-    it("PATCH /:id/branches/:branchId forwards orgId via opts", async () => {
-      mockRenameBranch.mockResolvedValueOnce({ ok: true });
-      const BRANCH_ID = "b1b2c3d4-e5f6-7890-abcd-ef1234567890";
-
-      await app.fetch(
-        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/branches/${BRANCH_ID}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ label: "renamed" }),
-        }),
-      );
-      expect(mockRenameBranch).toHaveBeenCalledWith(
-        expect.objectContaining({ rootId: VALID_ID, branchId: BRANCH_ID, label: "renamed", userId: "u1", orgId: "org-u1" }),
-      );
-    });
-  });
 });

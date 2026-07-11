@@ -24,8 +24,6 @@ export type {
   RunStatusResponse,
   RunStatusValue,
   AgentRunLifecycleStatus,
-  NotebookStateWire,
-  ForkBranchWire,
   ShareMode,
   ShareExpiryKey,
   DeliveryChannel,

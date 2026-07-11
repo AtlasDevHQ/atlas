@@ -195,7 +195,7 @@ describe("AuthGuard stale-session recovery", () => {
     // Navigate to a sibling protected route while still trapped: changes the
     // pathname dep so the effect re-runs. The useRef one-shot must keep it from
     // firing a second signOut + redirect.
-    pathname = "/notebook";
+    pathname = "/dashboards";
     rerender(
       <AuthGuard>
         <div>workspace content</div>
@@ -263,7 +263,7 @@ describe("AuthGuard stale-session recovery", () => {
     // change re-fires the effect). Recovery must re-attempt and now succeed —
     // proving a transient failure didn't permanently disable recovery.
     signOutImpl = okSignOut;
-    pathname = "/notebook";
+    pathname = "/dashboards";
     rerender(
       <AuthGuard>
         <div>workspace content</div>

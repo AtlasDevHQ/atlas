@@ -20,9 +20,8 @@ export interface UseStarterPromptsQueryOptions {
 /**
  * TanStack Query wrapper around the shared `fetchStarterPrompts` helper.
  *
- * Both the chat empty state and the notebook new-cell empty state call this
- * so they share a single query cache entry. 5xx soft-fail / 4xx throw
- * semantics live in the SDK helper — this hook is pure transport plumbing.
+ * The chat empty state calls this. 5xx soft-fail / 4xx throw semantics live
+ * in the SDK helper — this hook is pure transport plumbing.
  */
 export function useStarterPromptsQuery({
   apiUrl,

@@ -58,7 +58,7 @@ export const ONBOARDING_SEQUENCE: readonly SequenceStep[] = [
     trigger: "feature_explored",
     fallbackHours: 168, // 7 days
     subject: "Explore what {{appName}} can do",
-    description: "Highlight notebooks, admin console, and advanced features",
+    description: "Highlight dashboards, admin console, and advanced features",
   },
 ] as const;
 

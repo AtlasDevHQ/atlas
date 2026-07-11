@@ -475,6 +475,10 @@ describe("migrateAuthTables", () => {
             // connector spine. Atlas-internal table, no FK to a Better Auth
             // table, so it runs in every auth mode — must be listed.
             { name: "0168_knowledge_sync_state_high_water.sql" },
+            // 0169 (#4587, ADR-0035) — data-only UPDATE converting notebook
+            // conversations to web chat (phase 1 of the notebook-surface
+            // retirement). Atlas-internal table, runs in every auth mode.
+            { name: "0169_convert_notebook_conversations.sql" },
           ],
         };
       }

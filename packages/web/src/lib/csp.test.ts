@@ -76,7 +76,7 @@ describe("frameAncestorsFor", () => {
     expect(frameAncestorsFor("/admin")).toBe("'self'");
     expect(frameAncestorsFor("/")).toBe("'self'");
     expect(frameAncestorsFor("/shared/abc123")).toBe("'self'");
-    expect(frameAncestorsFor("/report/abc123/embed")).toBe("'self'");
+    expect(frameAncestorsFor("/admin/abc123/embed")).toBe("'self'");
   });
 });
 
@@ -100,6 +100,6 @@ describe("isEmbedRoute", () => {
     expect(isEmbedRoute("/embed")).toBe(false);
     expect(isEmbedRoute("/admin")).toBe(false);
     expect(isEmbedRoute("/shared")).toBe(false);
-    expect(isEmbedRoute("/report/abc123/embed")).toBe(false);
+    expect(isEmbedRoute("/admin/abc123/embed")).toBe(false);
   });
 });

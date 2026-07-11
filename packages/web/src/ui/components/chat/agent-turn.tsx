@@ -8,7 +8,7 @@ import { activityAwaitsUser, partitionTurn, type TurnPart } from "./turn-partiti
 import { TurnReceipt } from "./turn-receipt";
 import { WorkingActivity } from "./working-activity";
 import type { PythonProgressData } from "./python-result-card";
-import type { PreviousExecution } from "../notebook/types";
+import type { PreviousExecution } from "./result-card-types";
 
 /**
  * Answer-first rendering of an agent turn across its whole lifecycle
@@ -34,8 +34,8 @@ import type { PreviousExecution } from "../notebook/types";
  * — mid-stream it is deliberately not rendered in its promoted position.) The
  * suggestion chips and Save/Share row stay with the caller
  * (they belong to the transcript row, not the turn's parts). Consumed by
- * both the chat transcript and the notebook cell output (#4301) — the shared
- * seam that keeps the two surfaces from drifting in formatting.
+ * both the chat transcript and the dashboard bound editor's drawer (#4301) —
+ * the shared seam that keeps the two surfaces from drifting in formatting.
  */
 export function AgentTurn({
   parts,
@@ -46,11 +46,12 @@ export function AgentTurn({
   parts: readonly TurnPart[] | undefined;
   pythonProgress?: Map<string, PythonProgressData[]>;
   /**
-   * Notebook rerun-comparison metadata (#4301). Deliberately bound to the
-   * promoted artifact's SQL card only — the snapshot describes the cell's
-   * result, not the intermediate queries inside the receipt. Notebook-only:
-   * the artifact isn't rendered while `streaming`, so combining the two
-   * props is a harmless no-op, not a supported state.
+   * Caller-supplied prior-execution snapshot for a rerun comparison (mirrors
+   * the published `@useatlas/react` prop of the same name). Deliberately bound
+   * to the promoted artifact's SQL card only — the snapshot describes the
+   * answer-bearing result, not the intermediate queries inside the receipt.
+   * The artifact isn't rendered while `streaming`, so combining the two props
+   * is a harmless no-op, not a supported state.
    */
   previousExecution?: PreviousExecution;
   /** True while this turn's stream is still open (#4300 live rendering). */
@@ -103,9 +104,9 @@ export function AgentTurn({
       />
       {hasRenderedAnswer && (
         // Named group so the hover reveal can't be hijacked by a bare `group`
-        // ancestor — notebook-cell.tsx's root has one (same guard as
-        // conversations/conversation-item.tsx). space-y-2 matches the spacing
-        // both consumers' containers put between answer parts. The wrapper is
+        // ancestor (same guard as conversations/conversation-item.tsx).
+        // space-y-2 matches the spacing both consumers' containers put between
+        // answer parts. The wrapper is
         // unconditional across the stream settling so the answer blocks keep
         // their DOM position (no remount) when the copy row appears.
         <div className="group/turn-answer space-y-2">

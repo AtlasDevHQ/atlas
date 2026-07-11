@@ -1,9 +1,9 @@
 /**
  * Adaptive starter prompt types.
  *
- * Wire format for `GET /api/v1/starter-prompts` and its SDK / widget /
- * notebook consumers. Lives in `@useatlas/types` so the SDK, React
- * embeddable, and web frontend share a single shape.
+ * Wire format for `GET /api/v1/starter-prompts` and its SDK / widget
+ * consumers. Lives in `@useatlas/types` so the SDK, React embeddable, and
+ * web frontend share a single shape.
  */
 
 /** Source of a starter prompt. Used for UI badging and telemetry. */

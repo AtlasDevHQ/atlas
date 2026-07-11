@@ -423,7 +423,7 @@ interface Conversation {
   id: string;
   userId: string | null;
   title: string | null;
-  surface: "web" | "api" | "mcp" | "slack" | "notebook";
+  surface: "web" | "api" | "mcp" | "slack";
   connectionId: string | null;
   connectionGroupId: string | null;
   routingMode?: ConversationRoutingMode | null; // "auto" | "pin" | "all"
@@ -434,24 +434,6 @@ interface Conversation {
   starred: boolean;
   createdAt: string;
   updatedAt: string;
-  notebookState?: NotebookStateWire | null;
-}
-
-interface NotebookStateWire {
-  version: number;
-  cellOrder?: string[];
-  cellProps?: Record<string, { collapsed?: boolean }>;
-  branches?: ForkBranchWire[];
-  forkRootId?: string;
-  forkPointCellId?: string;
-  textCells?: Record<string, { content: string }>;
-}
-
-interface ForkBranchWire {
-  conversationId: string;
-  forkPointCellId: string;
-  label: string;
-  createdAt: string;
 }
 
 interface ConversationWithMessages extends Conversation {

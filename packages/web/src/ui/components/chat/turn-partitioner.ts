@@ -1,10 +1,10 @@
 /**
  * Turn partitioner (#4298) — the single seam that decides how an agent turn is
  * presented, streaming or finished, per CONTEXT.md § Chat turn presentation. A
- * pure function (no React, no DOM) so the chat transcript, the notebook
- * renderer (#4301), and the live working phase (#4300) — which partitions
- * mid-flight to detect the answer's start and settle into the receipt — all
- * partition identically.
+ * pure function (no React, no DOM) so the chat transcript, the dashboard
+ * bound editor's drawer (#4301), and the live working phase (#4300) — which
+ * partitions mid-flight to detect the answer's start and settle into the
+ * receipt — all partition identically.
  *
  * Boundary rules (v1 — all of them live here, nowhere else):
  * - Everything up to and including the last tool part is **activity** (tool

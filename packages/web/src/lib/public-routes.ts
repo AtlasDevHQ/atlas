@@ -3,7 +3,7 @@
  * - `packages/web/src/proxy.ts` (Next.js 16 server-side proxy)
  * - `packages/web/src/ui/components/auth-guard.tsx` (client-side guard)
  *
- * Adding a new public deep-link (invitation accept, public report, etc.)
+ * Adding a new public deep-link (invitation accept, shared conversation, etc.)
  * is a one-line change here — both layers pick it up automatically.
  *
  * Matched via `startsWith`. Each consumer prepends/appends its own
@@ -14,7 +14,6 @@
 export const PUBLIC_ROUTE_PREFIXES = [
   "/demo",
   "/shared",
-  "/report",
   "/accept-invitation",
   // The MCP/CLI trial-claim interstitial (`start_trial`'s `claimUrl`, ADR-0018 /
   // #4125). A brand-new trial user arrives here with NO session, so it MUST be

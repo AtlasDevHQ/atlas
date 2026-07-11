@@ -42,7 +42,7 @@ export default function Home() {
 // gained Conversation REST scope; now it renders `<AtlasChat embedded>` and adds
 // only the hosted-only chrome: the incident banner, the guided tour, the admin
 // landing redirect, and the zero-table "connect data" gate. The persistent
-// `WorkspaceShell` (shared across /, /notebook, /dashboards) owns the
+// `WorkspaceShell` (shared across /, /dashboards) owns the
 // conversation rail, schema explorer, prompt library, and command palette;
 // `embedded` mode suppresses `<AtlasChat>`'s own copies of those.
 function ChatPage() {

@@ -264,7 +264,7 @@ export function AddToDashboardDialog({
       if (cardId) {
         onAdded?.(dashboardId, cardId);
       } else {
-        console.warn("Dashboard card created but server response did not include card ID — notebook tracking skipped.");
+        console.warn("Dashboard card created but server response did not include card ID — bridge tracking skipped.");
       }
 
       setSuccess(true);

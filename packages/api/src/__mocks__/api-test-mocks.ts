@@ -752,19 +752,6 @@ export function createApiTestMocks(
     getSharedConversation: mock(() =>
       Promise.resolve({ ok: false, reason: "not_found" }),
     ),
-    updateNotebookState: mock(() => Promise.resolve({ ok: true })),
-    forkConversation: mock(() =>
-      Promise.resolve({ ok: false, reason: "not_found" }),
-    ),
-    convertToNotebook: mock(() =>
-      Promise.resolve({ ok: false, reason: "not_found" }),
-    ),
-    deleteBranch: mock(() =>
-      Promise.resolve({ ok: false, reason: "not_found" }),
-    ),
-    renameBranch: mock(() =>
-      Promise.resolve({ ok: false, reason: "not_found" }),
-    ),
     // #2345 — group-aware routing. Default to "no group" so chat-route
     // tests that don't exercise the multi-env flow continue to create
     // conversations with `connection_group_id = NULL`. Tests that

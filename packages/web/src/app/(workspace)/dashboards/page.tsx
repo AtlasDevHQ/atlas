@@ -20,7 +20,7 @@ import type { Dashboard } from "@/ui/lib/types";
  * (`api.useatlas.dev`). Under ADR-0024 §5 the session cookie is host-only to
  * the API origin, so the browser never sends it to `app.useatlas.dev` — the SSR
  * fetch saw no session, 401'd, and bounced *logged-in* users to /login (#4089).
- * Fetching from the browser (like /notebook and /admin) lets the host-only
+ * Fetching from the browser (like /admin) lets the host-only
  * cookie attach automatically via `useAdminFetch`'s credentialed fetch — the
  * same browser-side credential path every other workspace route already uses.
  */

@@ -103,9 +103,6 @@ mock.module("@atlas/api/lib/conversations", () => ({
   shareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   unshareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  updateNotebookState: mock(() => Promise.resolve({ ok: true })),
-  forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  convertToNotebook: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
 }));
 
 // Internal DB — return false so action handler uses in-memory store

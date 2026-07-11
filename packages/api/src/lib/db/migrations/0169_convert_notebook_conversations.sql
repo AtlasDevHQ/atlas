@@ -1,0 +1,27 @@
+-- 0169 — Retire the notebook surface: convert notebook conversations to chat
+-- (ADR-0035, issue #4587).
+--
+-- The notebook surface is retired (ADR-0035). Existing notebook conversations
+-- (two internal workspaces only) are converted to ordinary web chats,
+-- preserving their full message history — a deploy never silently destroys
+-- user-visible history, even in the pre-customer clean-break window. Fork
+-- children become ordinary standalone chats (their " (fork)" titles are
+-- cosmetic); the branch pointers stored in `notebook_state.branches` die with
+-- the column.
+--
+-- This is a data-only UPDATE — no rows are deleted, no DDL runs here. It is
+-- phase 1 of the two-phase drop of `notebook_state` and the `"notebook"`
+-- Surface value (see db/migrations/README.md § Two-phase drop discipline):
+--
+--   Phase 1 (this release, #4587): stop every read/write of `notebook_state`
+--     and convert `surface = 'notebook'` rows to `'web'`. The `notebook_state`
+--     column still EXISTS (mirrored in schema.ts) so a draining N-1 pod that
+--     still reads it during deploy overlap keeps working.
+--   Phase 2 (next release, #4588): `ALTER TABLE conversations DROP COLUMN
+--     notebook_state` once no shipped code reads it.
+--
+-- `conversations.surface` has no CHECK constraint (plain `TEXT DEFAULT 'web'`,
+-- baseline 0000), so no constraint edit is needed to stop accepting the
+-- `'notebook'` value — the wire-type union drops it and nothing writes it.
+
+UPDATE conversations SET surface = 'web' WHERE surface = 'notebook';

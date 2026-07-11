@@ -2,7 +2,7 @@
  * #4322 — the createDashboard handoff carries the originating conversation id
  * into bound mode. `CreateDashboardCard`'s "Continue editing" link appends
  * `&conversationId=<id>` when a conversation is in context, and degrades to a
- * plain `?openChat=true` outside a provider (notebook / no live conversation).
+ * plain `?openChat=true` outside a provider (no live conversation).
  */
 
 import { describe, expect, test, afterEach, mock } from "bun:test";

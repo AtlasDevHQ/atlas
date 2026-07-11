@@ -23,7 +23,6 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **MCP server** | Yes (stdio + SSE) | Yes |
 | **Chat integrations** | Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp | None built-in |
 | **Admin console** | Built-in (connections, users, plugins, semantic editor, analytics, billing) | Cube Cloud dashboard |
-| **Notebook** | Built-in (cells, fork/branch, export) | No |
 | **Enterprise features** | SSO/SCIM, custom roles, IP allowlists, approval workflows, PII masking | Enterprise tier |
 | **Data residency** | 3-region deployment (US, EU, APAC) with misrouting detection | Cube Cloud regions |
 
@@ -49,7 +48,7 @@ Both tools use YAML-based semantic definitions, but the scope differs.
 
 Cube D3 (launched June 2025) adds agentic analytics to the Cube platform with two specialized agents: the **AI Data Analyst** for self-serve natural language querying with visualizations and interactive data apps, and the **AI Data Engineer** for automating semantic model development from cloud data sources. Queries go through the semantic layer runtime rather than hitting the data warehouse directly — a trusted proxy architecture. Cube was recognized in the 2026 Gartner Market Guide for Agentic Analytics.
 
-Atlas is agent-native from day one. The entire product is an agent loop: multi-step reasoning, tool use (SQL execution, Python analysis, semantic layer exploration), 7-layer SQL validation, and structured output. The agent doesn't just generate a query — it reads context, writes SQL, validates it, runs it, and explains the results. The backend uses Effect.ts with @effect/ai for typed, composable agent orchestration. Atlas also provides a notebook interface for multi-step exploratory analysis, a plugin marketplace with 24 plugins, and 8 integrations via Chat SDK (6 chat platforms plus GitHub and Linear).
+Atlas is agent-native from day one. The entire product is an agent loop: multi-step reasoning, tool use (SQL execution, Python analysis, semantic layer exploration), 7-layer SQL validation, and structured output. The agent doesn't just generate a query — it reads context, writes SQL, validates it, runs it, and explains the results. The backend uses Effect.ts with @effect/ai for typed, composable agent orchestration. Atlas also provides a plugin marketplace with 24 plugins and 8 integrations via Chat SDK (6 chat platforms plus GitHub and Linear).
 
 ## When to Choose Cube
 

@@ -174,7 +174,7 @@ function exploreFeaturesContent(ctx: BrandingContext, baseUrl: string): string {
       You've got the basics down. Here's what else ${escapeHtml(ctx.appName)} can do:
     </p>
     <ul style="margin:0 0 24px;padding-left:20px;font-size:14px;color:#404040;line-height:1.8;">
-      <li><strong>Notebooks</strong> — Save and organize multi-step analyses</li>
+      <li><strong>Dashboards</strong> — Build and share curated, agent-created views of your data</li>
       <li><strong>Scheduled Reports</strong> — Get automatic email/Slack updates on metrics</li>
       <li><strong>Semantic Layer</strong> — Customize how your data is interpreted</li>
       <li><strong>Admin Console</strong> — Manage users, connections, and settings</li>

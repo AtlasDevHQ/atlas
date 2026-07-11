@@ -13,7 +13,7 @@
  * excludes anyway — never resolves an id there.
  *
  * Read via {@link useChatConversationId}, which returns `null` outside a
- * provider (the notebook cell output renders the same tool cards without a
+ * provider (e.g. a shared/embed view renders the same tool cards without a
  * live conversation) — the handoff link then degrades to `?openChat=true`.
  */
 

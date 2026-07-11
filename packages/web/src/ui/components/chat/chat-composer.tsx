@@ -54,8 +54,8 @@ export function ChatComposer({
   }
 
   // Auto-grow with content; the CSS max-height caps it, after which the
-  // textarea scrolls. Height is JS-driven (same approach as NotebookCellInput)
-  // because CSS `field-sizing: content` hasn't shipped in Safari as of 2026 —
+  // textarea scrolls. Height is JS-driven because CSS `field-sizing: content`
+  // hasn't shipped in Safari as of 2026 —
   // the iOS no-zoom requirement makes Safari a first-class target here (the
   // explicit `field-sizing-fixed` below opts out of the base primitive's
   // `field-sizing-content` so only one mechanism drives the height). Keyed on

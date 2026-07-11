@@ -3,8 +3,8 @@
  *
  * `DEFAULT_LANDINGS` is the single source of truth for the legal value set —
  * the DB CHECK constraint, the Zod enum on the API, and the narrowing guards
- * on the web all reference this tuple so a future addition (`notebook`,
- * `reports`, ...) lands in one place instead of three.
+ * on the web all reference this tuple so a future addition (`dashboards`,
+ * ...) lands in one place instead of three.
  */
 
 export const DEFAULT_LANDINGS = ["chat", "admin"] as const;

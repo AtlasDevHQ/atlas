@@ -436,11 +436,6 @@ void mock.module("@atlas/api/lib/conversations", () => ({
   getShareStatus: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   cleanupExpiredShares: mock(() => Promise.resolve(0)),
   getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  updateNotebookState: mock(() => Promise.resolve({ ok: true })),
-  forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  convertToNotebook: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  deleteBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  renameBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   // F-77 step-cap helpers — chat.ts imports both via the shared module.
   reserveConversationBudget: mock(() => Promise.resolve({ status: "ok" as const, totalStepsBefore: 0 })),
   settleConversationSteps: mock(() => {}),

@@ -52,8 +52,8 @@ void mock.module("../apply", () => ({
   applyAmendmentToEntity: mockApplyAmendmentToEntity,
 }));
 
-const mockInsertSemanticAmendment: Mock<() => Promise<{ id: string; status: string }>> = mock(() =>
-  Promise.resolve({ id: "sch-1", status: "approved" }),
+const mockInsertSemanticAmendment: Mock<() => Promise<{ outcome: string; id?: string; status?: string }>> = mock(() =>
+  Promise.resolve({ outcome: "inserted", id: "sch-1", status: "approved" }),
 );
 const mockRevertAmendmentToPending: Mock<(id: string) => Promise<boolean>> = mock(() =>
   Promise.resolve(true),
@@ -83,7 +83,7 @@ describe("runExpertSchedulerTick auto-approve → apply invariant (#4486)", () =
     mockApplyAmendmentToEntity.mockClear();
     mockApplyAmendmentToEntity.mockResolvedValue(undefined);
     mockInsertSemanticAmendment.mockClear();
-    mockInsertSemanticAmendment.mockResolvedValue({ id: "sch-1", status: "approved" });
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "sch-1", status: "approved" });
     mockRevertAmendmentToPending.mockClear();
     mockRevertAmendmentToPending.mockResolvedValue(true);
   });
@@ -111,13 +111,36 @@ describe("runExpertSchedulerTick auto-approve → apply invariant (#4486)", () =
   });
 
   it("does not apply or revert when the proposal lands pending", async () => {
-    mockInsertSemanticAmendment.mockResolvedValue({ id: "sch-2", status: "pending" });
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "sch-2", status: "pending" });
 
     const result = await runExpertSchedulerTick();
 
     expect(mockApplyAmendmentToEntity).not.toHaveBeenCalled();
     expect(mockRevertAmendmentToPending).not.toHaveBeenCalled();
     expect(result.queued).toBe(1);
+    expect(result.errors).toBe(0);
+  });
+
+  it("counts a rejected identity as suppressed — no apply, no queue (#4507)", async () => {
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "rejected", id: "rej-1" });
+
+    const result = await runExpertSchedulerTick();
+
+    expect(mockApplyAmendmentToEntity).not.toHaveBeenCalled();
+    expect(mockRevertAmendmentToPending).not.toHaveBeenCalled();
+    expect(result.rejected).toBe(1);
+    expect(result.queued).toBe(0);
+    expect(result.errors).toBe(0);
+  });
+
+  it("counts an already-pending identity as deduped — no apply, no queue (#4507)", async () => {
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "already_pending", id: "pend-1" });
+
+    const result = await runExpertSchedulerTick();
+
+    expect(mockApplyAmendmentToEntity).not.toHaveBeenCalled();
+    expect(result.deduped).toBe(1);
+    expect(result.queued).toBe(0);
     expect(result.errors).toBe(0);
   });
 });

@@ -9,6 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
 import { createLogger } from "@atlas/api/lib/logger";
+import { amendmentIdentityFromRow } from "@atlas/api/lib/semantic/amendment-identity";
 import type { ParsedEntity, GlossaryTerm, AuditPattern } from "./types";
 
 const log = createLogger("semantic-expert-context");
@@ -485,8 +486,16 @@ export async function loadAuditPatterns(): Promise<AuditPattern[]> {
 }
 
 /**
- * Load rejected proposal keys from the internal DB.
- * Returns empty set when no internal DB is available.
+ * Load rejected amendment identity keys from the internal DB — the canonical,
+ * group-scoped loader consumed by the analyzer staleness path on every surface
+ * (the scheduler and the CLI `improve` command; #4507). Returns an empty set
+ * when no internal DB is available.
+ *
+ * Rejection memory is permanent: no time window. A rejected identity is
+ * suppressed until an admin explicitly reconsiders it (Reconsider ships
+ * separately). Keys are built via the shared `amendmentIdentityFromRow`, so
+ * the staleness key here, the insert-time guard, and the analyzer's
+ * `stalenessFactor` all agree on what "the same change" is.
  */
 export async function loadRejectedKeys(): Promise<Set<string>> {
   const keys = new Set<string>();
@@ -501,26 +510,17 @@ export async function loadRejectedKeys(): Promise<Set<string>> {
       amendment_payload: string | Record<string, unknown> | null;
     }>(
       `SELECT source_entity, connection_group_id, amendment_payload FROM learned_patterns
-       WHERE type = 'semantic_amendment' AND status = 'rejected'
-       AND reviewed_at >= now() - interval '30 days'`,
+       WHERE type = 'semantic_amendment' AND status = 'rejected'`,
       [],
     );
 
     for (const row of rows) {
-      try {
-        const payload = typeof row.amendment_payload === "string"
-          ? JSON.parse(row.amendment_payload)
-          : row.amendment_payload;
-        if (payload && payload.amendmentType) {
-          // Group-scoped key (#3284): NULL `connection_group_id` → "default",
-          // matching `entity.group` in `categories.ts` so one group's rejection
-          // doesn't mark another group's same-named amendment stale.
-          const group = row.connection_group_id ?? "default";
-          keys.add(`${group}:${row.source_entity}:${payload.amendmentType}:${payload.amendment?.name ?? ""}`);
-        }
-      } catch {
-        // intentionally ignored: malformed payload
-      }
+      const key = amendmentIdentityFromRow({
+        sourceEntity: row.source_entity,
+        connectionGroupId: row.connection_group_id,
+        amendmentPayload: row.amendment_payload,
+      });
+      if (key) keys.add(key);
     }
   } catch (err) {
     log.warn(

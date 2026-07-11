@@ -34,6 +34,13 @@ export type {
   BriefingDecision,
   SemanticHealthStatus,
 } from "./briefing";
+export { resolveBriefingAnchor } from "./anchor";
+export type {
+  ImproveAnchor,
+  BriefingAnchor,
+  BriefingAnchorEntity,
+  BriefingAnchorProfile,
+} from "./anchor";
 export {
   loadBriefingInputs,
   loadAnalysisContext,

@@ -1,11 +1,19 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
 import { extractProposals, buildProposalQueue, buildReviewBody, classifyReviewResult, toolPartStatus, type Proposal, type QueueRow, type TestResult } from "./proposals";
 import { RejectedCard, type RejectedAmendment } from "./rejected";
 import { DiffViewer, formatAmendment } from "./amendment-display";
+import {
+  buildImproveChatBody,
+  describeAnchor,
+  entityKickoffMessage,
+  groupKickoffMessage,
+  SWEEP_KICKOFF_MESSAGE,
+  type ImproveAnchor,
+} from "./anchor";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -27,6 +35,13 @@ import {
   ResizableHandle,
 } from "@/components/ui/resizable";
 import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+} from "@/components/ui/dropdown-menu";
+import {
   Sparkles,
   Send,
   Check,
@@ -34,6 +49,9 @@ import {
   Play,
   ArrowLeft,
   Loader2,
+  ChevronDown,
+  Database,
+  Table2,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -271,6 +289,122 @@ function ProposalCard({
 }
 
 // ---------------------------------------------------------------------------
+// Anchor launchers (#4519)
+// ---------------------------------------------------------------------------
+
+/** The active anchor plus its friendly display label (the wire anchor carries ids). */
+interface ActiveAnchor {
+  value: ImproveAnchor;
+  label: string;
+}
+
+interface LauncherGroup {
+  id: string;
+  name: string;
+}
+
+interface LauncherEntity {
+  /** Routing/storage key — matches the entity's `name` on the server. */
+  name: string;
+  /** Friendly display label (may differ from `name` when a YAML display name exists). */
+  label: string;
+  /** Connection group id, or null for an unscoped/default-group entity. */
+  group: string | null;
+}
+
+/**
+ * The entry launchers that replace the vanishing "Run Analysis" button (#4519):
+ * anchor to a connection group, anchor to an entity, or start an anchorless
+ * sweep. Always rendered — regardless of conversation state — so an admin can
+ * re-anchor or sweep at any point. Group/entity menus appear only once their
+ * lists load; the sweep is always available.
+ */
+export function AnchorLaunchers({
+  groups,
+  entities,
+  onGroup,
+  onEntity,
+  onSweep,
+  disabled,
+}: {
+  groups: LauncherGroup[];
+  entities: LauncherEntity[];
+  onGroup: (g: LauncherGroup) => void;
+  onEntity: (e: LauncherEntity) => void;
+  onSweep: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      {groups.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="gap-1.5" disabled={disabled}>
+              <Database className="size-4" />
+              Group
+              <ChevronDown className="size-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto">
+            <DropdownMenuLabel>Improve a connection group</DropdownMenuLabel>
+            {groups.map((g) => (
+              <DropdownMenuItem key={g.id} onSelect={() => onGroup(g)}>
+                {g.name}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      {entities.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="gap-1.5" disabled={disabled}>
+              <Table2 className="size-4" />
+              Entity
+              <ChevronDown className="size-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto">
+            <DropdownMenuLabel>Improve an entity</DropdownMenuLabel>
+            {entities.map((e) => (
+              <DropdownMenuItem key={`${e.group ?? ""}:${e.name}`} onSelect={() => onEntity(e)}>
+                <span className="font-mono text-xs">{e.label}</span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      <Button onClick={onSweep} disabled={disabled} size="sm" className="gap-1.5">
+        <Play className="size-4" />
+        Sweep
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The active-anchor chip shown in the conversation UI (#4519 AC3) — a launcher,
+ * not a cage: Clear drops the scope without touching the transcript. Extracted so
+ * the "anchor is visible" behavior is unit-testable without driving the launcher
+ * dropdowns.
+ */
+export function ActiveAnchorChip({ anchor, onClear }: { anchor: ActiveAnchor; onClear: () => void }) {
+  return (
+    <div className="flex shrink-0 items-center gap-2 border-b bg-muted/40 px-4 py-2 text-xs">
+      <Badge variant="secondary" className="gap-1">
+        <Sparkles className="size-3" />
+        {describeAnchor(anchor.value, anchor.label)}
+      </Badge>
+      <span className="text-muted-foreground">Scoping this conversation</span>
+      <Button variant="ghost" size="sm" className="ml-auto h-6 gap-1 px-2 text-xs" onClick={onClear}>
+        <X className="size-3" />
+        Clear
+      </Button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -301,6 +435,13 @@ export default function SemanticImprovePage() {
     new Map(),
   );
 
+  // #4519 — the anchor this conversation is scoped to (group/entity), or null
+  // for an anchorless sweep. `anchorRef` mirrors the wire value so the transport
+  // can read the latest at fetch time WITHOUT rebuilding (re-anchoring
+  // mid-conversation then reaches the next turn); the state drives the chip.
+  const [anchor, setAnchor] = useState<ActiveAnchor | null>(null);
+  const anchorRef = useRef<ImproveAnchor | null>(null);
+
   // Transport for the semantic expert agent endpoint. The conversation lives
   // entirely in this component's useChat state — there is no server-side
   // session resource to round-trip (#4503).
@@ -309,6 +450,18 @@ export default function SemanticImprovePage() {
       new DefaultChatTransport({
         api: `${apiUrl}/api/v1/admin/semantic-improve/chat`,
         credentials: isCrossOrigin ? "include" : undefined,
+        // #4519 — ride the active anchor on every turn so the briefing stays
+        // scoped. Read from a ref at fetch time (not a memo dep) so re-anchoring
+        // mid-conversation reaches the next turn without rebuilding the
+        // transport. `messages` is set explicitly because supplying
+        // `prepareSendMessagesRequest` replaces the SDK's default body (the
+        // auto-merged `{ id, messages, trigger, messageId }`) with exactly what
+        // we return here — the improve route reads only `messages` + `anchor`, so
+        // dropping the SDK's extra fields is a no-op server-side. The anchor key
+        // is omitted entirely when null, so an anchorless turn carries no anchor.
+        prepareSendMessagesRequest: ({ messages }) => ({
+          body: buildImproveChatBody(messages, anchorRef.current),
+        }),
       }),
     [apiUrl, isCrossOrigin],
   );
@@ -327,6 +480,67 @@ export default function SemanticImprovePage() {
   const { data: rejectedData, loading: rejectedLoading, error: rejectedError, refetch: refetchRejected } =
     useAdminFetch<{ amendments: RejectedAmendment[] }>("/api/v1/admin/semantic-improve/rejected");
   const rejectedAmendments = rejectedData?.amendments ?? [];
+
+  // #4519 — the launcher lists. Connection groups (for the group anchor) and
+  // entities (for the entity anchor) populate the entry launchers. Both are
+  // best-effort with per-row resilience: a malformed row is skipped (a
+  // `transform` flatMap, not a Zod `schema` that would reject the whole list on
+  // one bad row and blank the launcher). A top-level shape drift (the array
+  // key renamed/absent) can't be salvaged per-row, so it's console.warn'd —
+  // otherwise the launcher would vanish with no breadcrumb. The sweep always
+  // remains regardless. The anchor's wire value carries ids; the menu shows
+  // friendly labels.
+  const { data: groupsData } = useAdminFetch<LauncherGroup[]>("/api/v1/me/connection-groups", {
+    transform: (json) => {
+      const raw = (json as { groups?: unknown }).groups;
+      if (!Array.isArray(raw)) {
+        console.warn("Semantic-improve: /me/connection-groups returned no `groups` array — group launcher hidden (response shape drift?)");
+        return [];
+      }
+      const projected = raw.flatMap((g) => {
+        const rec = g as Record<string, unknown>;
+        return typeof rec.id === "string" && typeof rec.name === "string"
+          ? [{ id: rec.id, name: rec.name }]
+          : [];
+      });
+      // A non-empty array that projects to nothing is a per-row field drift
+      // (e.g. `id` renamed) — same "launcher vanished" symptom as key drift, so
+      // warn here too. An honestly-empty list stays silent (no groups yet).
+      if (raw.length > 0 && projected.length === 0) {
+        console.warn("Semantic-improve: /me/connection-groups rows all failed projection — group launcher hidden (per-row field drift?)");
+      }
+      return projected;
+    },
+  });
+  const launcherGroups = groupsData ?? [];
+
+  const { data: entitiesData } = useAdminFetch<LauncherEntity[]>("/api/v1/admin/semantic/entities", {
+    transform: (json) => {
+      const raw = (json as { entities?: unknown }).entities;
+      if (!Array.isArray(raw)) {
+        console.warn("Semantic-improve: /admin/semantic/entities returned no `entities` array — entity launcher hidden (response shape drift?)");
+        return [];
+      }
+      const projected = raw.flatMap((e) => {
+        const rec = e as Record<string, unknown>;
+        const name = typeof rec.name === "string" && rec.name ? rec.name : null;
+        if (!name) return [];
+        // `connectionId` is the server's group-id slot for entities (named that
+        // way because the response shape predates the group rename, #2412).
+        const group = typeof rec.connectionId === "string" && rec.connectionId ? rec.connectionId : null;
+        const label = typeof rec.displayName === "string" && rec.displayName ? rec.displayName : name;
+        return [{ name, label, group }];
+      });
+      // Non-empty rows projecting to nothing ⇒ per-row field drift (e.g. `name`
+      // renamed) — warn so the vanished launcher leaves a breadcrumb; an honestly
+      // empty schema stays silent.
+      if (raw.length > 0 && projected.length === 0) {
+        console.warn("Semantic-improve: /admin/semantic/entities rows all failed projection — entity launcher hidden (per-row field drift?)");
+      }
+      return projected;
+    },
+  });
+  const launcherEntities = entitiesData ?? [];
 
   // Single mutation hook for approve/reject/reconsider
   const { mutate, isMutating, error: mutationError, clearErrorFor } = useAdminMutation({
@@ -402,18 +616,37 @@ export default function SemanticImprovePage() {
     });
   }
 
-  function handleRunAnalysis() {
-    sendMessage({
-      role: "user",
-      parts: [
-        {
-          type: "text" as const,
-          text: "Analyze my semantic layer and identify the highest-impact improvements. Start with the most-queried tables and check for missing measures, stale descriptions, and undocumented joins.",
-        },
-      ],
-    }).catch((err: unknown) => {
-      console.error("Failed to start analysis:", err instanceof Error ? err.message : String(err));
+  // #4519 — set the active anchor. Write the ref synchronously (before the
+  // sendMessage that follows) so the transport's fetch-time read sees it; the
+  // state drives the chip. Clearing (null) leaves the conversation intact — the
+  // anchor is a launcher, not a cage.
+  function applyAnchor(next: ActiveAnchor | null) {
+    anchorRef.current = next?.value ?? null;
+    setAnchor(next);
+  }
+
+  function launch(next: ActiveAnchor | null, text: string) {
+    if (isLoading) return;
+    applyAnchor(next);
+    sendMessage({ role: "user", parts: [{ type: "text" as const, text }] }).catch((err: unknown) => {
+      console.error("Failed to start conversation:", err instanceof Error ? err.message : String(err));
     });
+  }
+
+  function launchGroup(g: LauncherGroup) {
+    launch({ value: { kind: "group", group: g.id }, label: g.name }, groupKickoffMessage(g.name));
+  }
+
+  function launchEntity(e: LauncherEntity) {
+    const value: ImproveAnchor = e.group
+      ? { kind: "entity", entity: e.name, group: e.group }
+      : { kind: "entity", entity: e.name };
+    launch({ value, label: e.label }, entityKickoffMessage(e.label));
+  }
+
+  function launchSweep() {
+    // A sweep is the anchorless start — clear any active anchor.
+    launch(null, SWEEP_KICKOFF_MESSAGE);
   }
 
   function clearMidReview(dbId: string) {
@@ -544,12 +777,17 @@ export default function SemanticImprovePage() {
             AI-powered analysis and improvement of your semantic layer
           </p>
         </div>
-        {messages.length === 0 && (
-          <Button onClick={handleRunAnalysis} className="gap-1.5">
-            <Play className="size-4" />
-            Run Analysis
-          </Button>
-        )}
+        {/* #4519 — entry launchers replace the vanishing single button. They
+            stay available regardless of conversation state so an admin can
+            anchor to a group/entity or run an anchorless sweep at any point. */}
+        <AnchorLaunchers
+          groups={launcherGroups}
+          entities={launcherEntities}
+          onGroup={launchGroup}
+          onEntity={launchEntity}
+          onSweep={launchSweep}
+          disabled={isLoading}
+        />
       </div>
 
       {/* Split view */}
@@ -558,17 +796,22 @@ export default function SemanticImprovePage() {
           {/* Chat panel */}
           <ResizablePanel defaultSize={55} minSize={35}>
             <div className="flex h-full min-h-0 flex-col">
+              {/* #4519 — the active anchor, visible in the conversation UI.
+                  Free typing still works anchored; Clear drops the scope
+                  without touching the transcript. */}
+              {anchor && <ActiveAnchorChip anchor={anchor} onClear={() => applyAnchor(null)} />}
               <ScrollArea className="min-h-0 flex-1 p-4">
                 <div className="space-y-4 pb-4">
                   {messages.length === 0 && (
                     <div className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground">
                       <Sparkles className="size-10 opacity-40 mb-3" />
                       <p className="text-sm font-medium">
-                        Start an improvement session
+                        Start an improvement conversation
                       </p>
                       <p className="mt-1 text-xs max-w-sm">
-                        Click &ldquo;Run Analysis&rdquo; for autonomous mode, or type a message
-                        to guide the expert agent toward specific improvements.
+                        Anchor to a group or entity from the launchers above, run a
+                        &ldquo;Sweep&rdquo; to find improvements anywhere, or just type a
+                        message to guide the expert agent.
                       </p>
                     </div>
                   )}

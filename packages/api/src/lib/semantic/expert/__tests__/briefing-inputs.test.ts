@@ -266,6 +266,61 @@ describe("loadBriefingInputs", () => {
       { entityName: "orders", amendmentType: null, confidence: 0, rationale: "d" },
     ]);
   });
+
+  it("resolves an entity anchor from the loaded entities + profiles (#4519)", async () => {
+    mockEntities = [makeEntity({ name: "orders", table: "orders" })];
+    mockStates = [
+      { installId: "us_prod", connectionGroupId: null, dbType: "postgres", baseline: { profiledAt: "2026-07-08T00:00:00Z", tableCount: 1 }, baselineError: null, llm: null },
+    ];
+    mockBaselineProfiles = [makeProfile("orders", ["id", "status"])];
+
+    const inputs = await loadBriefingInputs("org-1", new Date("2026-07-11T00:00:00Z"), {
+      kind: "entity",
+      entity: "orders",
+    });
+    expect(inputs.anchor?.kind).toBe("entity");
+    if (inputs.anchor?.kind !== "entity") throw new Error("expected an entity anchor");
+    expect(inputs.anchor.yaml).toContain("table: orders");
+    expect(inputs.anchor.profile).toEqual({ table: "orders", rowCount: 1000, columnCount: 2 });
+  });
+
+  it("resolves a group anchor's inventory from the loaded entities (#4519)", async () => {
+    mockEntities = [
+      makeEntity({ name: "orders", table: "orders", connection: "prod" }),
+      makeEntity({ name: "events", table: "events", connection: "analytics" }),
+    ];
+    const inputs = await loadBriefingInputs("org-1", new Date("2026-07-11T00:00:00Z"), {
+      kind: "group",
+      group: "prod",
+    });
+    expect(inputs.anchor?.kind).toBe("group");
+    if (inputs.anchor?.kind !== "group") throw new Error("expected a group anchor");
+    expect(inputs.anchor.entities.map((e) => e.name)).toEqual(["orders"]);
+  });
+
+  it("leaves the anchor undefined for an anchorless sweep (#4519)", async () => {
+    mockEntities = [makeEntity()];
+    const inputs = await loadBriefingInputs("org-1", new Date("2026-07-11T00:00:00Z"));
+    expect(inputs.anchor).toBeUndefined();
+  });
+
+  it("degrades to unanchored (never fabricates) when an entity anchor is out of scope (#4519)", async () => {
+    // The launcher can offer an entity the published briefing can't see (a
+    // draft-only entity, a group-id mismatch). The loader must resolve to no
+    // anchor — not invent one — matching the log.warn'd degrade contract.
+    mockEntities = [makeEntity({ name: "orders" })];
+    const inputs = await loadBriefingInputs("org-1", new Date("2026-07-11T00:00:00Z"), {
+      kind: "entity",
+      entity: "ghost",
+    });
+    expect(inputs.anchor).toBeUndefined();
+    // The observability half of this degrade (the log.warn in briefing-inputs.ts,
+    // confirmed by review) can't be asserted at this seam: the test's static
+    // `import` of briefing-inputs is ESM-hoisted above `mock.module("logger")`, so
+    // its module-level `createLogger()` binds the real logger before the mock
+    // registers (unlike the dynamic-import'd db/context mocks). Not worth
+    // restructuring the file for a warn assertion.
+  });
 });
 
 describe("buildBriefingBlock", () => {

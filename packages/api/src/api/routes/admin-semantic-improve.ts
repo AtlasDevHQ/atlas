@@ -61,6 +61,19 @@ export function isExpectedLiveDiffError(err: unknown): boolean {
 // Zod schemas
 // ---------------------------------------------------------------------------
 
+/**
+ * The optional Anchor (#4519) an improvement conversation launched from — a
+ * connection group or a single entity — scoping the turn-one Briefing. Absent ⇒
+ * an anchorless sweep (unchanged behavior). Sent on every turn so the Briefing
+ * stays scoped; the shape mirrors `ImproveAnchor` in
+ * `lib/semantic/expert/anchor.ts` (local wire type, matching this surface's
+ * inline-zod convention).
+ */
+const AnchorSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("group"), group: z.string().min(1) }),
+  z.object({ kind: z.literal("entity"), entity: z.string().min(1), group: z.string().min(1).optional() }),
+]);
+
 const ChatRequestSchema = z.object({
   messages: z.array(
     z.object({
@@ -69,6 +82,7 @@ const ChatRequestSchema = z.object({
       id: z.string(),
     }),
   ).min(1),
+  anchor: AnchorSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -140,6 +154,9 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
     const { requestId, orgId } = c.get("orgContext");
     const body = c.req.valid("json");
     const messages = body.messages as UIMessage[];
+    // #4519 — the anchor (group/entity) the conversation launched from, or
+    // undefined for an anchorless sweep. Threaded into the Briefing below.
+    const anchor = body.anchor;
 
     // #3437 — billing enforcement before any LLM spend. The expert agent
     // runs on platform tokens and its usage IS metered against the
@@ -182,8 +199,12 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
     // (#4514 AC3). Re-assembled each turn, so a panel decision made between turns
     // shows up in the next turn's context without a synthetic message. Fail-soft:
     // a load hiccup starts the chat without the block rather than 500-ing it.
+    //
+    // #4519 — the anchor scopes the briefing (a group's entity inventory, or an
+    // entity's YAML + profile). `now` defaults to the real clock; the anchor
+    // rides every turn, so re-anchoring mid-conversation re-scopes the next block.
     const { buildBriefingBlock } = await import("@atlas/api/lib/semantic/expert/briefing-inputs");
-    const briefing = await buildBriefingBlock(orgId);
+    const briefing = await buildBriefingBlock(orgId, undefined, anchor);
 
     // #4508 — stamp the agent origin so origin-scoped approval rules (#2072)
     // fire for the expert agent's `executeSQL`. The interactive improve chat is

@@ -232,21 +232,47 @@ describe("semantic-improve briefing at the route → agent seam (#4514 AC2)", ()
     expect(briefing).toContain("table: orders");
   });
 
+  it("a column anchor front-loads that column's dimension + refine-only rule at the seam (#4521)", async () => {
+    // The mocked entity models `orders` with an `id` dimension (sql `id`), so the
+    // column anchor resolves as covered and front-loads the dimension YAML.
+    const res = await postChat({ kind: "column", entity: "orders", column: "id" });
+    expect(res.status).toBe(200);
+
+    const briefing = runAgentArgs?.briefing as string;
+    expect(briefing).toContain("### Anchor: column `id` on entity `orders`");
+    expect(briefing).toContain("Refine its modeling only");
+    expect(briefing).toContain("Current dimension YAML:");
+    // The general briefing state still rides alongside the anchor.
+    expect(briefing).toContain("### Health:");
+  });
+
   it("an anchorless request carries no anchor section (#4519 AC4 — unchanged)", async () => {
     const res = await postChat();
     expect(res.status).toBe(200);
     expect(runAgentArgs?.briefing as string).not.toContain("### Anchor:");
   });
 
-  it("rejects a malformed anchor before the agent runs (#4519)", async () => {
+  it("GET /coverage is wired and returns the overview shape (#4521)", async () => {
+    // The mocked internalQuery returns no connection rows, so the overview is
+    // empty — this pins the route is mounted + returns the wire shape (the
+    // per-connection matrix logic is covered by the coverage-inputs loader tests).
+    const res = await adminSemanticImprove.request("/coverage", { method: "GET" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { connections: unknown[]; profiling: boolean };
+    expect(Array.isArray(body.connections)).toBe(true);
+    expect(body.profiling).toBe(false);
+  });
+
+  it("rejects a malformed anchor before the agent runs (#4519, #4521)", async () => {
     // The route's AnchorSchema (discriminatedUnion + min(1)) is the validation
-    // gate: a group anchor missing its `group`, an empty-string group, and an
-    // unknown kind must all be rejected (422 from the zod-openapi validator)
-    // before any LLM spend — never coerced through.
+    // gate: a group anchor missing its `group`, an empty-string group, a column
+    // anchor missing its `column`, and an unknown kind must all be rejected (422
+    // from the zod-openapi validator) before any LLM spend — never coerced through.
     for (const bad of [
       { kind: "group" },
       { kind: "group", group: "" },
       { kind: "entity" },
+      { kind: "column", entity: "orders" },
       { kind: "nonsense", group: "x" },
     ]) {
       const res = await postChat(bad);

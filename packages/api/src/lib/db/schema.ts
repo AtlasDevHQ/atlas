@@ -182,7 +182,11 @@ export const conversations = pgTable(
     shareToken: varchar("share_token", { length: 64 }),
     shareExpiresAt: timestamp("share_expires_at", { withTimezone: true }),
     shareMode: varchar("share_mode", { length: 10 }).notNull().default("public"),
-    // Notebook
+    // Notebook — RETIRED (ADR-0035, #4587). The notebook surface is gone and no
+    // shipped code reads or writes this column as of #4587. Kept here for phase 1
+    // of the two-phase drop: the column still exists in the DB so a draining N-1
+    // pod can't 500 on it during deploy overlap. Dropped (column + this mirror)
+    // in the phase-2 follow-up (#4588). Do not add new readers/writers.
     notebookState: jsonb("notebook_state"),
     // Org scoping
     orgId: text("org_id"),

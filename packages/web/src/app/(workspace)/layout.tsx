@@ -5,7 +5,7 @@ import { TrialStatusBanner } from "@/ui/components/trial-status-banner";
 
 // Server layout. Reads the persisted `sidebar_state` cookie once when entering
 // the workspace route group so the rail's collapsed/expanded state survives
-// navigation between /, /notebook, and /dashboards without a remount flash.
+// navigation between / and /dashboards without a remount flash.
 // Suspense wraps the shell because it calls `useSearchParams()` for active-
 // conversation highlighting.
 export default async function WorkspaceLayout({

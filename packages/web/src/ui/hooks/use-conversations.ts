@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Conversation, ConversationWithMessages, ShareStatus, ShareMode, ShareExpiryKey, NotebookStateWire, ForkBranchWire } from "../lib/types";
+import type { Conversation, ConversationWithMessages, ShareStatus, ShareMode, ShareExpiryKey } from "../lib/types";
 import type { UIMessage } from "@ai-sdk/react";
 import { transformMessages } from "@useatlas/types/conversation";
 import { createAtlasFetch } from "../lib/fetch-client";
@@ -25,11 +25,6 @@ export interface UseConversationsReturn {
   fetchList: () => Promise<void>;
   loadConversation: (id: string) => Promise<UIMessage[]>;
   getConversationData: (id: string) => Promise<ConversationWithMessages>;
-  saveNotebookState: (id: string, state: NotebookStateWire) => Promise<void>;
-  forkConversation: (sourceId: string, forkPointMessageId: string, label?: string) => Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }>;
-  convertToNotebook: (sourceId: string) => Promise<{ id: string; messageCount: number }>;
-  deleteBranch: (rootId: string, branchId: string) => Promise<void>;
-  renameBranch: (rootId: string, branchId: string, label: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
   starConversation: (id: string, starred: boolean) => Promise<void>;
   shareConversation: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string }>;
@@ -174,62 +169,6 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     return api.get<ConversationWithMessages>(`/api/v1/conversations/${id}`);
   }, [api]);
 
-  const saveNotebookState = useCallback(async (id: string, state: NotebookStateWire): Promise<void> => {
-    try {
-      await api.patch(`/api/v1/conversations/${id}/notebook-state`, state);
-    } catch (err: unknown) {
-      // Non-fatal — localStorage is still the backup
-      console.warn(
-        "saveNotebookState error:",
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  }, [api]);
-
-  const forkConversation = useCallback(async (
-    sourceId: string,
-    forkPointMessageId: string,
-    label?: string,
-  ): Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }> => {
-    const data = await api.post<Record<string, unknown>>(`/api/v1/conversations/${sourceId}/fork`, { forkPointMessageId, label });
-    if (!data.id || typeof data.id !== "string") {
-      throw new Error("Fork response missing conversation ID");
-    }
-    return {
-      id: data.id,
-      branches: (data.branches ?? []) as ForkBranchWire[],
-      warning: typeof data.warning === "string" ? data.warning : undefined,
-    };
-  }, [api]);
-
-  const deleteBranch = useCallback(async (
-    rootId: string,
-    branchId: string,
-  ): Promise<void> => {
-    await api.del(`/api/v1/conversations/${rootId}/branches/${branchId}`);
-  }, [api]);
-
-  const renameBranch = useCallback(async (
-    rootId: string,
-    branchId: string,
-    label: string,
-  ): Promise<void> => {
-    await api.patch(`/api/v1/conversations/${rootId}/branches/${branchId}`, { label });
-  }, [api]);
-
-  const convertToNotebook = useCallback(async (
-    sourceId: string,
-  ): Promise<{ id: string; messageCount: number }> => {
-    const data = await api.post<Record<string, unknown>>(`/api/v1/conversations/${sourceId}/convert-to-notebook`, {});
-    if (!data.id || typeof data.id !== "string") {
-      throw new Error("Convert response missing conversation ID");
-    }
-    return {
-      id: data.id,
-      messageCount: typeof data.messageCount === "number" ? data.messageCount : 0,
-    };
-  }, [api]);
-
   const refresh = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: ["conversations", "list"] });
   }, [queryClient]);
@@ -245,11 +184,6 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     fetchList,
     loadConversation,
     getConversationData,
-    saveNotebookState,
-    forkConversation,
-    convertToNotebook,
-    deleteBranch,
-    renameBranch,
     deleteConversation,
     starConversation,
     shareConversation,

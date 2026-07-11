@@ -20,18 +20,6 @@ describe("buildPromptDeliveryUrl (#3081)", () => {
     expect(buildPromptDeliveryUrl("/", null, "hello")).toBe("/?prompt=hello");
   });
 
-  it("preserves ?id= on the notebook surface", () => {
-    expect(buildPromptDeliveryUrl("/notebook", "conv-2", "rows by region")).toBe(
-      "/notebook?id=conv-2&prompt=rows%20by%20region",
-    );
-  });
-
-  it("treats nested notebook routes as the notebook surface", () => {
-    expect(buildPromptDeliveryUrl("/notebook/abc", "conv-3", "q")).toBe(
-      "/notebook?id=conv-3&prompt=q",
-    );
-  });
-
   it("drops a dashboards ?id= (it's a dashboard id, not a conversation) when routing to chat", () => {
     // On /dashboards the `?id=` is a dashboard id; carrying it into the chat
     // deep link would open the wrong (or no) conversation, so it's dropped.

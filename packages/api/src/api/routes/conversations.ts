@@ -25,11 +25,6 @@ import {
   getConversation,
   deleteConversation,
   starConversation,
-  updateNotebookState,
-  forkConversation,
-  convertToNotebook,
-  deleteBranch,
-  renameBranch,
   shareConversation,
   unshareConversation,
   getShareStatus,
@@ -57,28 +52,11 @@ const log = createLogger("conversations");
 // Zod schemas — exported for OpenAPI spec generation
 // ---------------------------------------------------------------------------
 
-const ForkBranchWireSchema = z.object({
-  conversationId: z.string(),
-  forkPointCellId: z.string(),
-  label: z.string(),
-  createdAt: z.string(),
-});
-
-const NotebookStateWireSchema = z.object({
-  version: z.number().int().min(1).max(10),
-  cellOrder: z.array(z.string()).optional(),
-  cellProps: z.record(z.string(), z.object({ collapsed: z.boolean().optional() })).optional(),
-  textCells: z.record(z.string(), z.object({ content: z.string() })).optional(),
-  branches: z.array(ForkBranchWireSchema).optional(),
-  forkRootId: z.string().optional(),
-  forkPointCellId: z.string().optional(),
-});
-
 const ConversationSchema = z.object({
   id: z.string().uuid(),
   userId: z.string().nullable(),
   title: z.string().nullable(),
-  surface: z.enum(["web", "api", "mcp", "slack", "notebook"]),
+  surface: z.enum(["web", "api", "mcp", "slack"]),
   connectionId: z.string().nullable(),
   /**
    * Connection group (content scope) the conversation resolves against —
@@ -140,18 +118,10 @@ const ConversationSchema = z.object({
   starred: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-  notebookState: NotebookStateWireSchema.nullable().optional(),
 });
 
 export const StarConversationBodySchema = z.object({
   starred: z.boolean(),
-});
-
-export const NotebookStateBodySchema = NotebookStateWireSchema;
-
-export const ForkConversationBodySchema = z.object({
-  forkPointMessageId: z.string(),
-  label: z.string().optional(),
 });
 
 const MessageSchema = z.object({
@@ -328,254 +298,6 @@ const starConversationRoute = createRoute({
     },
     404: {
       description: "Conversation not found or not available",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-const notebookStateRoute = createRoute({
-  method: "patch",
-  path: "/{id}/notebook-state",
-  tags: ["Conversations"],
-  summary: "Update notebook state",
-  description:
-    "Updates the notebook state of a conversation, including cell order, cell properties, and branch metadata.",
-  request: {
-    params: IdParamSchema,
-    body: {
-      content: { "application/json": { schema: NotebookStateBodySchema } },
-      required: true,
-    },
-  },
-  responses: {
-    200: {
-      description: "Notebook state updated",
-      content: {
-        "application/json": {
-          schema: z.object({ id: z.string(), notebookState: z.record(z.string(), z.unknown()) }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid conversation ID or notebook state body",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — insufficient permissions",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Conversation not found or not available",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-const forkConversationRoute = createRoute({
-  method: "post",
-  path: "/{id}/fork",
-  tags: ["Conversations"],
-  summary: "Fork a conversation at a specific message",
-  description:
-    "Creates a new conversation by forking an existing one at the specified message. " +
-    "Messages up to and including the fork point are copied to the new conversation. " +
-    "Branch metadata is saved to both the source and forked conversation's notebook state.",
-  request: {
-    params: IdParamSchema,
-    body: {
-      content: { "application/json": { schema: ForkConversationBodySchema } },
-      required: true,
-    },
-  },
-  responses: {
-    200: {
-      description: "Fork created successfully",
-      content: {
-        "application/json": {
-          schema: z.record(z.string(), z.unknown()),
-        },
-      },
-    },
-    400: {
-      description: "Invalid conversation ID or request body",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — insufficient permissions",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Conversation not found or not available",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-const convertToNotebookRoute = createRoute({
-  method: "post",
-  path: "/{id}/convert-to-notebook",
-  tags: ["Conversations"],
-  summary: "Convert a chat conversation to a notebook",
-  description:
-    "Creates a new conversation with surface 'notebook' by copying all messages from the source. " +
-    "The original conversation is left unchanged.",
-  request: {
-    params: IdParamSchema,
-  },
-  responses: {
-    200: {
-      description: "Notebook created successfully",
-      content: {
-        "application/json": {
-          schema: z.object({
-            id: z.string().uuid(),
-            messageCount: z.number(),
-          }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid conversation ID",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Conversation not found or not owned by user",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-// ---------------------------------------------------------------------------
-// Branch management route definitions
-// ---------------------------------------------------------------------------
-
-const BranchParamsSchema = z.object({
-  id: z.string().openapi({ param: { name: "id", in: "path" }, example: "550e8400-e29b-41d4-a716-446655440000" }),
-  branchId: z.string().openapi({ param: { name: "branchId", in: "path" }, example: "660e8400-e29b-41d4-a716-446655440000" }),
-});
-
-const deleteBranchRoute = createRoute({
-  method: "delete",
-  path: "/{id}/branches/{branchId}",
-  tags: ["Conversations"],
-  summary: "Delete a branch",
-  description:
-    "Deletes a branch conversation and removes it from the root conversation's notebookState.branches array.",
-  request: {
-    params: BranchParamsSchema,
-  },
-  responses: {
-    204: {
-      description: "Branch deleted successfully",
-    },
-    400: {
-      description: "Invalid conversation or branch ID format",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — insufficient permissions",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Conversation or branch not found",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-const RenameBranchBodySchema = z.object({
-  label: z.string().trim().min(1).max(200),
-});
-
-const renameBranchRoute = createRoute({
-  method: "patch",
-  path: "/{id}/branches/{branchId}",
-  tags: ["Conversations"],
-  summary: "Rename a branch",
-  description:
-    "Updates the label of a branch in the root conversation's notebookState.branches array.",
-  request: {
-    params: BranchParamsSchema,
-    body: {
-      content: { "application/json": { schema: RenameBranchBodySchema } },
-      required: true,
-    },
-  },
-  responses: {
-    200: {
-      description: "Branch renamed successfully",
-      content: {
-        "application/json": {
-          schema: z.object({ id: z.string(), label: z.string() }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid request",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — insufficient permissions",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Conversation or branch not found",
       content: { "application/json": { schema: ErrorSchema } },
     },
     429: {
@@ -913,228 +635,6 @@ conversations.openapi(starConversationRoute, async (c) => {
     }
     return c.json({ id, starred: parsed.starred }, 200);
   }), { label: "star conversation" });
-});
-
-// ---------------------------------------------------------------------------
-// PATCH /:id/notebook-state — update notebook state
-// ---------------------------------------------------------------------------
-
-conversations.openapi(notebookStateRoute, async (c) => {
-  return runEffect(c, Effect.gen(function* () {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-    }
-
-    const { requestId } = yield* RequestContext;
-    const { user } = yield* AuthContext;
-
-    const { id } = c.req.valid("param");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
-    }
-
-    const parsed = c.req.valid("json");
-
-    const nbResult = yield* Effect.promise(() => updateNotebookState(id, parsed, user?.id, user?.activeOrganizationId));
-    if (!nbResult.ok) {
-      const fail = crudFailResponse(nbResult.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
-    return c.json({ id, notebookState: parsed }, 200);
-  }), { label: "update notebook state" });
-});
-
-// ---------------------------------------------------------------------------
-// POST /:id/fork — fork a conversation at a specific message
-// ---------------------------------------------------------------------------
-
-conversations.openapi(forkConversationRoute, async (c) => {
-  return runEffect(c, Effect.gen(function* () {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-    }
-
-    const { requestId } = yield* RequestContext;
-    const { user } = yield* AuthContext;
-
-    const { id } = c.req.valid("param");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
-    }
-
-    const parsed = c.req.valid("json");
-
-    const forkResult = yield* Effect.promise(() => forkConversation({
-      sourceId: id,
-      forkPointMessageId: parsed.forkPointMessageId,
-      userId: user?.id,
-      orgId: user?.activeOrganizationId,
-    }));
-    if (!forkResult.ok) {
-      const fail = crudFailResponse(forkResult.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
-
-    // Update notebook_state on source and new conversation
-    const label = parsed.label ?? `Fork from cell`;
-    const branch = {
-      conversationId: forkResult.data.id,
-      forkPointCellId: parsed.forkPointMessageId,
-      label,
-      createdAt: new Date().toISOString(),
-    };
-
-    // Read current notebook_state from source to preserve existing data
-    const sourceConv = yield* Effect.promise(() => getConversation(id, user?.id, user?.activeOrganizationId));
-    if (!sourceConv.ok) {
-      log.error({ requestId, conversationId: id, reason: sourceConv.reason }, "Failed to read source conversation for branch metadata");
-      return c.json({
-        id: forkResult.data.id,
-        messageCount: forkResult.data.messageCount,
-        branches: [branch],
-        warning: "Fork created but branch metadata could not be saved to source conversation.",
-      }, 200);
-    }
-
-    const existing = sourceConv.data.notebookState ?? { version: 3 };
-    const existingBranches = existing.branches ?? [];
-
-    const updatedSourceState = {
-      ...existing,
-      version: existing.version || 3,
-      branches: [...existingBranches, branch],
-    };
-
-    const sourceRoot = existing.forkRootId;
-    const forkChildState = {
-      version: 3,
-      forkRootId: sourceRoot ?? id,
-      forkPointCellId: parsed.forkPointMessageId,
-    };
-
-    // Write both notebook_state updates in parallel
-    const [sourceResult, forkMetaResult] = yield* Effect.promise(() => Promise.all([
-      updateNotebookState(id, updatedSourceState, user?.id, user?.activeOrganizationId),
-      updateNotebookState(forkResult.data.id, forkChildState, user?.id, user?.activeOrganizationId),
-    ]));
-
-    let metadataWarning: string | undefined;
-    if (!sourceResult.ok) {
-      log.error({ requestId, conversationId: id, reason: sourceResult.reason }, "Failed to update source notebook_state after fork");
-      metadataWarning = "Fork created but branch metadata could not be fully saved.";
-    }
-    if (!forkMetaResult.ok) {
-      log.error({ requestId, conversationId: forkResult.data.id, reason: forkMetaResult.reason }, "Failed to set fork metadata on new conversation");
-      metadataWarning = "Fork created but branch metadata could not be fully saved.";
-    }
-
-    return c.json({
-      id: forkResult.data.id,
-      messageCount: forkResult.data.messageCount,
-      branches: [...existingBranches, branch],
-      ...(metadataWarning ? { warning: metadataWarning } : {}),
-    }, 200);
-  }), { label: "fork conversation" });
-});
-
-// ---------------------------------------------------------------------------
-// POST /:id/convert-to-notebook — convert chat to notebook
-// ---------------------------------------------------------------------------
-
-conversations.openapi(convertToNotebookRoute, async (c) => {
-  return runEffect(c, Effect.gen(function* () {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-    }
-
-    const { requestId } = yield* RequestContext;
-    const { user } = yield* AuthContext;
-
-    const { id } = c.req.valid("param");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
-    }
-
-    const result = yield* Effect.promise(() => convertToNotebook({
-      sourceId: id,
-      userId: user?.id,
-      orgId: user?.activeOrganizationId,
-    }));
-
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
-
-    return c.json({ id: result.data.id, messageCount: result.data.messageCount }, 200);
-  }), { label: "convert to notebook" });
-});
-
-// ---------------------------------------------------------------------------
-// DELETE /:id/branches/:branchId — delete a branch
-// ---------------------------------------------------------------------------
-
-conversations.openapi(deleteBranchRoute, async (c) => {
-  return runEffect(c, Effect.gen(function* () {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-    }
-
-    const { requestId } = yield* RequestContext;
-    const { user } = yield* AuthContext;
-
-    const { id, branchId } = c.req.valid("param");
-    if (!UUID_RE.test(id) || !UUID_RE.test(branchId)) {
-      return c.json({ error: "invalid_request", message: "Invalid conversation or branch ID format." }, 400);
-    }
-
-    const result = yield* Effect.promise(() => deleteBranch({
-      rootId: id,
-      branchId,
-      userId: user?.id,
-      orgId: user?.activeOrganizationId,
-    }));
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
-    return c.body(null, 204);
-  }), { label: "delete branch" });
-});
-
-// ---------------------------------------------------------------------------
-// PATCH /:id/branches/:branchId — rename a branch
-// ---------------------------------------------------------------------------
-
-conversations.openapi(renameBranchRoute, async (c) => {
-  return runEffect(c, Effect.gen(function* () {
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-    }
-
-    const { requestId } = yield* RequestContext;
-    const { user } = yield* AuthContext;
-
-    const { id, branchId } = c.req.valid("param");
-    if (!UUID_RE.test(id) || !UUID_RE.test(branchId)) {
-      return c.json({ error: "invalid_request", message: "Invalid conversation or branch ID format." }, 400);
-    }
-
-    const parsed = c.req.valid("json");
-
-    const result = yield* Effect.promise(() => renameBranch({
-      rootId: id,
-      branchId,
-      label: parsed.label,
-      userId: user?.id,
-      orgId: user?.activeOrganizationId,
-    }));
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
-    return c.json({ id: branchId, label: parsed.label }, 200);
-  }), { label: "rename branch" });
 });
 
 // ---------------------------------------------------------------------------
@@ -1539,16 +1039,12 @@ publicConversations.openapi(getSharedConversationRoute, async (c) => {
   }
 
   // Strip internal IDs — only expose conversation content
-  const { title, surface, createdAt, messages, shareMode, notebookState } = result.data;
+  const { title, surface, createdAt, messages, shareMode } = result.data;
   return c.json({
     title,
     surface,
     createdAt,
     shareMode,
-    // Expose only display-relevant notebook state — strip fork metadata (internal conversation IDs)
-    notebookState: notebookState
-      ? { version: notebookState.version, cellOrder: notebookState.cellOrder, cellProps: notebookState.cellProps, textCells: notebookState.textCells }
-      : null,
     messages: messages.map((m) => ({
       role: m.role,
       content: m.content,

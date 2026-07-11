@@ -48,7 +48,6 @@ interface ChatSidebarProps {
   onSelect: (id: string) => void;
   onDelete: (id: string) => Promise<void>;
   onStar: (id: string, starred: boolean) => Promise<void>;
-  onConvertToNotebook?: (id: string) => Promise<{ id: string }>;
   onNewChat: () => void;
   onOpenPromptLibrary: () => void;
   onOpenSchemaExplorer: () => void;
@@ -64,7 +63,6 @@ export function ChatSidebar({
   onSelect,
   onDelete,
   onStar,
-  onConvertToNotebook,
   onNewChat,
   onOpenPromptLibrary,
   onOpenSchemaExplorer,
@@ -89,7 +87,6 @@ export function ChatSidebar({
 
   const sectionItems = [
     { href: "/", label: "Chat", icon: MessageSquare, exact: true },
-    { href: "/notebook", label: "Notebook", icon: BookOpen, exact: false },
     { href: "/dashboards", label: "Dashboards", icon: LayoutDashboard, exact: false },
   ] as const;
 
@@ -245,7 +242,6 @@ export function ChatSidebar({
                     onSelect={closeMobileAfter(onSelect)}
                     onDelete={onDelete}
                     onStar={onStar}
-                    onConvertToNotebook={onConvertToNotebook}
                     showSections={filter === "all"}
                     emptyMessage={
                       filter === "saved"

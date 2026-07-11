@@ -937,7 +937,7 @@ interface Conversation {
   id: string;
   userId: string | null;
   title: string | null;                        // Auto-generated from first message, or null
-  surface: "web" | "api" | "mcp" | "slack" | "notebook";
+  surface: "web" | "api" | "mcp" | "slack";
   connectionId: string | null;                 // Datasource (replica) SQL runs against
   connectionGroupId: string | null;            // Connection group whose content resolves
   routingMode?: ConversationRoutingMode | null; // "auto" | "pin" | "all"
@@ -948,24 +948,6 @@ interface Conversation {
   starred: boolean;                            // Pinned by user
   createdAt: string;                           // ISO 8601 timestamp
   updatedAt: string;                           // ISO 8601 timestamp
-  notebookState?: NotebookStateWire | null;    // Server-persisted notebook layout
-}
-
-interface NotebookStateWire {
-  version: number;
-  cellOrder?: string[];
-  cellProps?: Record<string, { collapsed?: boolean }>;
-  branches?: ForkBranchWire[];
-  forkRootId?: string;
-  forkPointCellId?: string;
-  textCells?: Record<string, { content: string }>;
-}
-
-interface ForkBranchWire {
-  conversationId: string;
-  forkPointCellId: string;
-  label: string;
-  createdAt: string;
 }
 
 // ConversationWithMessages — returned by the GET /api/v1/conversations/:id endpoint

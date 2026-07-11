@@ -212,7 +212,9 @@ describe("runMigrations", () => {
     //   index for the searchKnowledge lexical tier, #4222) = 168.
     //   Plus 0168 (knowledge_sync_state high-water-mark / cursor /
     //   last-reconciled-at columns for the connector spine, ADR-0030, #4376) = 169.
-    expect(count).toBe(169);
+    //   Plus 0169 (convert notebook conversations to web chat — phase 1 of the
+    //   notebook-surface retirement, ADR-0035, #4587) = 170.
+    expect(count).toBe(170);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -410,6 +412,7 @@ describe("runMigrations", () => {
         "0166_conversations_answer_style.sql",
         "0167_knowledge_documents_fts.sql",
         "0168_knowledge_sync_state_high_water.sql",
+        "0169_convert_notebook_conversations.sql",
       ],
     });
 

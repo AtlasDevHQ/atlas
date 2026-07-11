@@ -37,7 +37,7 @@ Favorites are per-user, scoped to the current workspace, and persist across devi
 - **Cap**: configurable via `ATLAS_STARTER_PROMPT_MAX_FAVORITES` (default: 20 per user). Attempting to pin past the cap returns `favorite_cap_exceeded` — unpin one first.
 - **Duplicates**: attempting to pin a prompt whose text is already in your favorites returns `duplicate_favorite`. Pin text is normalized with whitespace trimming before comparison.
 - **Unpin**: hover a pinned prompt in the empty state — the pin icon becomes an unpin affordance.
-- **Cross-surface cache**: pinning in chat immediately updates the notebook empty state and the widget (if embedded on the same origin) without a re-fetch. The TanStack Query cache shares across surfaces.
+- **Cross-surface cache**: pinning in chat immediately updates the widget (and any other same-origin surface) without a re-fetch. The TanStack Query cache shares across surfaces.
 
 API surface: `POST` / `DELETE` `/api/v1/starter-prompts/favorites` (see [API Reference](/api-reference/starter-prompts/getStarterPrompts)).
 

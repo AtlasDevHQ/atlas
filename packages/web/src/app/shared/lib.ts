@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Shared utilities for public conversation routes (/shared/[token], /report/[token])
+// Shared utilities for the public conversation route (/shared/[token] + embed)
 // ---------------------------------------------------------------------------
 
 export interface SharedMessage {
@@ -8,20 +8,11 @@ export interface SharedMessage {
   createdAt: string;
 }
 
-/** Subset of NotebookStateWire relevant for public read-only views. Fork metadata is excluded. */
-export interface SharedNotebookState {
-  version: number;
-  cellOrder?: string[];
-  cellProps?: Record<string, { collapsed?: boolean }>;
-  textCells?: Record<string, { content: string }>;
-}
-
 export interface SharedConversation {
   title: string | null;
   surface: string;
   createdAt: string;
   messages: SharedMessage[];
-  notebookState: SharedNotebookState | null;
 }
 
 type FetchResult =

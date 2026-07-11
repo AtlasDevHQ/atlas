@@ -27,7 +27,6 @@ function convo(over: Partial<SharedConversation> = {}): SharedConversation {
         createdAt: "2026-04-26T00:00:01Z",
       },
     ],
-    notebookState: null,
     ...over,
   };
 }

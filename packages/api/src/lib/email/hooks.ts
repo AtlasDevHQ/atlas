@@ -131,7 +131,7 @@ export function onTeamMemberInvited(user: UserContext): void {
 }
 
 /**
- * Called when a user explores a feature (notebook, admin console, etc.).
+ * Called when a user explores a feature (dashboards, admin console, etc.).
  *
  * Marks the `explore_features` step satisfied (no email) — see
  * {@link onMilestoneReached}. Fire-and-forget.

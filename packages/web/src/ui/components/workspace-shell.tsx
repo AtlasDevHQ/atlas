@@ -18,14 +18,11 @@ import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
 import { useUiStore } from "@/lib/stores/ui-store";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { authClient } from "@/lib/auth/client";
-import {
-  buildPromptDeliveryUrl,
-  isNotebookRoute,
-} from "@/ui/components/prompt-delivery";
+import { buildPromptDeliveryUrl } from "@/ui/components/prompt-delivery";
 
-// One persistent shell above /, /notebook, and /dashboards. Mounted by the
-// (workspace) route group's server layout so the rail's collapsed/expanded
-// state survives navigation between sibling pages without a remount flash.
+// One persistent shell above / and /dashboards. Mounted by the (workspace)
+// route group's server layout so the rail's collapsed/expanded state survives
+// navigation between sibling pages without a remount flash.
 export function WorkspaceShell({
   sidebarDefaultOpen,
   children,
@@ -36,7 +33,7 @@ export function WorkspaceShell({
   const router = useRouter();
   const pathname = usePathname();
   // Pages drive selection through `?id=` — read it here so the rail can
-  // highlight the active conversation across /, /notebook, and /dashboards.
+  // highlight the active conversation across / and /dashboards.
   const searchParams = useSearchParams();
   const selectedConversationId = searchParams?.get("id") || null;
   const session = authClient.useSession();
@@ -70,35 +67,24 @@ export function WorkspaceShell({
     getCredentials,
   });
 
-  // Pathname-aware navigation: keep users on their current surface (chat /
-  // notebook) when picking a conversation; otherwise default to chat. Each
-  // surface's existing `id` URL-load effect picks up the change and loads.
+  // Chat's `id` URL-load effect picks up the change and loads the conversation.
   function handleSelect(id: string) {
-    if (isNotebookRoute(pathname)) {
-      router.push(`/notebook?id=${id}`);
-    } else {
-      router.push(`/?id=${id}`);
-    }
+    router.push(`/?id=${id}`);
   }
 
   function handleNewChat() {
-    if (isNotebookRoute(pathname)) {
-      router.push("/notebook");
-    } else {
-      router.push("/");
-    }
+    router.push("/");
   }
 
   // Modals route their result through a `prompt` URL param. The chat surface
-  // prefills the input; the notebook surface sends as a message. Dashboards
-  // has no chat input, so we navigate to / before prefilling. The active
-  // conversation `?id=` is preserved on chat/notebook (see
-  // `buildPromptDeliveryUrl`) so a prefill doesn't clear the open thread.
+  // prefills the input; dashboards has no chat input, so we navigate to /
+  // before prefilling. The active conversation `?id=` is preserved on chat
+  // (see `buildPromptDeliveryUrl`) so a prefill doesn't clear the open thread.
   function deliverPrompt(text: string) {
     const url = buildPromptDeliveryUrl(pathname, selectedConversationId, text);
-    // `replace` on the active surface so the prefill doesn't add a history
+    // `replace` on the chat surface so the prefill doesn't add a history
     // entry; `push` when arriving from dashboards (a real navigation).
-    if (pathname === "/" || isNotebookRoute(pathname)) {
+    if (pathname === "/") {
       router.replace(url, { scroll: false });
     } else {
       router.push(url);
@@ -119,7 +105,6 @@ export function WorkspaceShell({
           onSelect={handleSelect}
           onDelete={(id) => convos.deleteConversation(id)}
           onStar={(id, starred) => convos.starConversation(id, starred)}
-          onConvertToNotebook={(id) => convos.convertToNotebook(id)}
           onNewChat={handleNewChat}
           onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
           onOpenSchemaExplorer={() => setSchemaExplorerOpen(true)}

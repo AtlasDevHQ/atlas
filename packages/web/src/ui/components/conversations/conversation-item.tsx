@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, NotebookPen, Star, Trash2 } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { Loader2, Star, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { Conversation } from "../../lib/types";
@@ -42,20 +41,16 @@ export function ConversationItem({
   onSelect,
   onDelete,
   onStar,
-  onConvertToNotebook,
 }: {
   conversation: Conversation;
   isActive: boolean;
   onSelect: () => void;
   onDelete: () => Promise<void>;
   onStar: (starred: boolean) => Promise<void>;
-  onConvertToNotebook?: () => Promise<{ id: string }>;
 }) {
-  const router = useRouter();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [starPending, setStarPending] = useState(false);
-  const [converting, setConverting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (confirmDelete) {
@@ -81,9 +76,6 @@ export function ConversationItem({
       </div>
     );
   }
-
-  const convertToNotebook =
-    onConvertToNotebook && conversation.surface !== "notebook" ? onConvertToNotebook : null;
 
   // Named group (`group/convo-item`) keeps hover scoped to this row. shadcn's
   // <Sidebar> root has a bare `.group` class, so a plain `group-hover:` would
@@ -149,38 +141,6 @@ export function ConversationItem({
               <Star className="h-3.5 w-3.5" fill={conversation.starred ? "currentColor" : "none"} />
             )}
           </Button>
-          {convertToNotebook && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={async () => {
-                if (converting) return;
-                setConverting(true);
-                try {
-                  const { id } = await convertToNotebook();
-                  router.push(`/notebook?id=${id}`);
-                } catch (err: unknown) {
-                  console.warn("Failed to convert to notebook:", err instanceof Error ? err.message : String(err));
-                  setError(`Couldn't convert — ${explainError(err)}.`);
-                  setTimeout(() => setError(null), 4000);
-                } finally {
-                  setConverting(false);
-                }
-              }}
-              disabled={converting}
-              className={cn(
-                "size-8 text-zinc-400 opacity-100 transition-opacity hover:text-zinc-600 md:opacity-0 md:group-hover/convo-item:opacity-100 dark:hover:text-zinc-300",
-                converting && "opacity-50",
-              )}
-              aria-label="Convert to notebook"
-            >
-              {converting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <NotebookPen className="size-3.5" />
-              )}
-            </Button>
-          )}
           <Button
             variant="ghost"
             size="icon"

@@ -78,8 +78,8 @@ function scopeClause(
 // Types
 // ---------------------------------------------------------------------------
 
-import type { MessageRole, Surface, Conversation, Message, ConversationWithMessages, NotebookStateWire } from "@atlas/api/lib/conversation-types";
-export type { MessageRole, Surface, Conversation, Message, ConversationWithMessages, NotebookStateWire };
+import type { MessageRole, Surface, Conversation, Message, ConversationWithMessages } from "@atlas/api/lib/conversation-types";
+export type { MessageRole, Surface, Conversation, Message, ConversationWithMessages };
 
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
@@ -171,9 +171,6 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
     starred: r.starred === true,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
-    notebookState: r.notebook_state
-      ? (r.notebook_state as Conversation["notebookState"])
-      : null,
   };
 }
 
@@ -861,7 +858,7 @@ export async function getConversation(
   try {
     const scope = scopeClause(2, userId, orgId);
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, starred, notebook_state, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, starred, created_at, updated_at
        FROM conversations WHERE id = $1${scope.sql}`,
       [id, ...scope.params],
     );
@@ -969,311 +966,6 @@ export async function starConversation(
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error({ err: errorMessage(err) }, "starConversation failed");
-    return { ok: false, reason: "error" };
-  }
-}
-
-/** Update notebook state on a conversation. Scoped via userId + orgId (see `scopeClause`). */
-export async function updateNotebookState(
-  id: string,
-  notebookState: NotebookStateWire,
-  userId?: string | null,
-  orgId?: string | null,
-): Promise<CrudResult> {
-  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
-  try {
-    const scope = scopeClause(3, userId, orgId);
-    const rows = await internalQuery<{ id: string }>(
-      `UPDATE conversations SET notebook_state = $1, updated_at = now()
-       WHERE id = $2${scope.sql} RETURNING id`,
-      [JSON.stringify(notebookState), id, ...scope.params],
-    );
-    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
-  } catch (err) {
-    log.error({ err: errorMessage(err) }, "updateNotebookState failed");
-    return { ok: false, reason: "error" };
-  }
-}
-
-/** Fork a conversation at a specific message, copying messages up to that point. */
-export async function forkConversation(opts: {
-  sourceId: string;
-  forkPointMessageId: string;
-  userId?: string | null;
-  orgId?: string | null;
-}): Promise<CrudDataResult<{ id: string; messageCount: number }>> {
-  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
-  let newId: string | null = null;
-  try {
-    // Verify source exists and caller has access in both the user + org dimensions.
-    // orgId from opts is the caller's *active* org — may or may not match the
-    // source row's org_id; scopeClause rejects mismatches (NULL-safe for legacy rows).
-    const sourceScope = scopeClause(2, opts.userId, opts.orgId);
-    const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
-      [opts.sourceId, ...sourceScope.params],
-    );
-    if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
-
-    const source = sourceRows[0];
-    const sourceTitle = (source.title as string) ?? "Notebook";
-
-    // Get the fork point message timestamp
-    const forkMsg = await internalQuery<Record<string, unknown>>(
-      `SELECT created_at FROM messages WHERE id = $1 AND conversation_id = $2`,
-      [opts.forkPointMessageId, opts.sourceId],
-    );
-    if (forkMsg.length === 0) return { ok: false, reason: "not_found" };
-
-    const forkTimestamp = toISOTimestamp(forkMsg[0].created_at);
-
-    // Check if the next message after the fork point is an assistant response
-    const nextMsg = await internalQuery<Record<string, unknown>>(
-      `SELECT role, created_at FROM messages
-       WHERE conversation_id = $1 AND created_at > $2
-       ORDER BY created_at ASC LIMIT 1`,
-      [opts.sourceId, forkTimestamp],
-    );
-
-    // Include the assistant response if it follows the fork point
-    const includeNext = nextMsg.length > 0 && (nextMsg[0].role as string) === "assistant";
-    const cutoffTimestamp = includeNext
-      ? toISOTimestamp(nextMsg[0].created_at)
-      : forkTimestamp;
-
-    // Create new conversation. Carries forward both routing columns —
-    // a fork inherits the source's execution target AND content scope so
-    // the user keeps the same env context after branching.
-    const orgId = opts.orgId ?? (source.org_id as string) ?? null;
-    const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
-      [
-        opts.userId ?? null,
-        `${sourceTitle} (fork)`,
-        (source.surface as string) ?? "web",
-        (source.connection_id as string) ?? null,
-        (source.connection_group_id as string) ?? null,
-        (source.routing_mode as string) ?? null,
-        // #3066 — a fork/notebook inherits the source's REST exclude-set
-        // so the new conversation keeps the same scope after branching.
-        (source.rest_excluded_datasource_ids as string[]) ?? [],
-        // #3067 — inherit the source's REST-only focus too.
-        (source.rest_focus_datasource_id as string) ?? null,
-        // #3895 — inherit the source's Group reach (All / Focus → group) so the
-        // fork/notebook keeps the same cross-group scope after branching.
-        (source.group_reach as string) ?? null,
-        // #4302 — inherit the source's pinned answer style so the fork keeps
-        // the same voice after branching (NULL = still tracking the default).
-        (source.answer_style as string) ?? null,
-        orgId,
-      ],
-    );
-
-    if (newConv.length === 0) return { ok: false, reason: "error" };
-    newId = newConv[0].id;
-
-    // Bulk-copy messages into the new conversation in a single INSERT ... SELECT
-    const copyResult = await internalQuery<{ id: string }>(
-      `INSERT INTO messages (conversation_id, role, content, created_at)
-       SELECT $1, role, content, created_at FROM messages
-       WHERE conversation_id = $2 AND created_at <= $3
-       ORDER BY created_at ASC
-       RETURNING id`,
-      [newId, opts.sourceId, cutoffTimestamp],
-    );
-
-    if (copyResult.length === 0) {
-      log.warn({ sourceId: opts.sourceId, forkPointMessageId: opts.forkPointMessageId, newId }, "Fork copied zero messages — fork point may reference a missing or mismatched message");
-    }
-
-    return { ok: true, data: { id: newId, messageCount: copyResult.length } };
-  } catch (err) {
-    log.error({ err: errorMessage(err), sourceId: opts.sourceId }, "forkConversation failed");
-    // Clean up partially-created conversation to avoid orphans
-    if (newId) {
-      try {
-        await internalQuery(`DELETE FROM conversations WHERE id = $1`, [newId]);
-      } catch (cleanupErr) {
-        log.error({ err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) }, "Failed to clean up partial fork");
-      }
-    }
-    return { ok: false, reason: "error" };
-  }
-}
-
-/** Delete a branch conversation and remove it from the root's notebookState.branches array. */
-export async function deleteBranch(opts: {
-  rootId: string;
-  branchId: string;
-  userId?: string | null;
-  orgId?: string | null;
-}): Promise<CrudResult> {
-  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
-  try {
-    // Read root conversation's notebook_state — scoped to caller's auth context.
-    const rootScope = scopeClause(2, opts.userId, opts.orgId);
-    const rootRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, notebook_state FROM conversations WHERE id = $1${rootScope.sql}`,
-      [opts.rootId, ...rootScope.params],
-    );
-    if (rootRows.length === 0) return { ok: false, reason: "not_found" };
-
-    const state = (rootRows[0].notebook_state ?? {}) as NotebookStateWire;
-    const branches = state.branches ?? [];
-    const branchIndex = branches.findIndex((b) => b.conversationId === opts.branchId);
-    if (branchIndex === -1) return { ok: false, reason: "not_found" };
-
-    // Remove from branches array
-    const updatedBranches = branches.filter((b) => b.conversationId !== opts.branchId);
-    const updatedState: NotebookStateWire = {
-      ...state,
-      branches: updatedBranches.length > 0 ? updatedBranches : undefined,
-    };
-
-    // Delete the branch conversation (CASCADE deletes messages) — scoped to the same auth context.
-    const branchScope = scopeClause(2, opts.userId, opts.orgId);
-    const delRows = await internalQuery<{ id: string }>(
-      `DELETE FROM conversations WHERE id = $1${branchScope.sql} RETURNING id`,
-      [opts.branchId, ...branchScope.params],
-    );
-    if (delRows.length === 0) {
-      log.warn({ rootId: opts.rootId, branchId: opts.branchId }, "Branch conversation not found during delete — removing from root state anyway");
-    }
-
-    // Update root's notebook_state
-    await internalQuery(
-      `UPDATE conversations SET notebook_state = $1, updated_at = NOW()
-       WHERE id = $2`,
-      [JSON.stringify(updatedState), opts.rootId],
-    );
-
-    return { ok: true };
-  } catch (err) {
-    log.error({ err: errorMessage(err), rootId: opts.rootId, branchId: opts.branchId }, "deleteBranch failed");
-    return { ok: false, reason: "error" };
-  }
-}
-
-/** Rename a branch by updating its label in the root's notebookState.branches array. */
-export async function renameBranch(opts: {
-  rootId: string;
-  branchId: string;
-  label: string;
-  userId?: string | null;
-  orgId?: string | null;
-}): Promise<CrudResult> {
-  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
-  try {
-    // Read root conversation's notebook_state — scoped to caller's auth context.
-    const scope = scopeClause(2, opts.userId, opts.orgId);
-    const rootRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, notebook_state FROM conversations WHERE id = $1${scope.sql}`,
-      [opts.rootId, ...scope.params],
-    );
-    if (rootRows.length === 0) return { ok: false, reason: "not_found" };
-
-    const state = (rootRows[0].notebook_state ?? {}) as NotebookStateWire;
-    const branches = state.branches ?? [];
-    const branchIndex = branches.findIndex((b) => b.conversationId === opts.branchId);
-    if (branchIndex === -1) return { ok: false, reason: "not_found" };
-
-    // Update the label
-    const updatedBranches = branches.map((b) =>
-      b.conversationId === opts.branchId ? { ...b, label: opts.label } : b,
-    );
-    const updatedState: NotebookStateWire = { ...state, branches: updatedBranches };
-
-    await internalQuery(
-      `UPDATE conversations SET notebook_state = $1, updated_at = NOW()
-       WHERE id = $2`,
-      [JSON.stringify(updatedState), opts.rootId],
-    );
-
-    return { ok: true };
-  } catch (err) {
-    log.error({ err: errorMessage(err), rootId: opts.rootId, branchId: opts.branchId }, "renameBranch failed");
-    return { ok: false, reason: "error" };
-  }
-}
-
-/** Convert a chat conversation into a notebook by copying all messages to a new conversation with surface "notebook". */
-export async function convertToNotebook(opts: {
-  sourceId: string;
-  userId?: string | null;
-  orgId?: string | null;
-}): Promise<CrudDataResult<{ id: string; messageCount: number }>> {
-  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
-  let newId: string | null = null;
-  try {
-    // Verify source exists and caller has access in both the user + org dimensions.
-    const sourceScope = scopeClause(2, opts.userId, opts.orgId);
-    const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
-      [opts.sourceId, ...sourceScope.params],
-    );
-    if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
-
-    const source = sourceRows[0];
-    const sourceTitle = (source.title as string) ?? "Conversation";
-    const orgId = opts.orgId ?? (source.org_id as string) ?? null;
-
-    // Create new conversation with surface "notebook". Carries forward
-    // both routing columns + the picker mode so the notebook preserves
-    // the source's env context end-to-end.
-    const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
-      [
-        opts.userId ?? null,
-        `${sourceTitle} (notebook)`,
-        "notebook",
-        (source.connection_id as string) ?? null,
-        (source.connection_group_id as string) ?? null,
-        (source.routing_mode as string) ?? null,
-        // #3066 — a fork/notebook inherits the source's REST exclude-set
-        // so the new conversation keeps the same scope after branching.
-        (source.rest_excluded_datasource_ids as string[]) ?? [],
-        // #3067 — inherit the source's REST-only focus too.
-        (source.rest_focus_datasource_id as string) ?? null,
-        // #3895 — inherit the source's Group reach (All / Focus → group) so the
-        // fork/notebook keeps the same cross-group scope after branching.
-        (source.group_reach as string) ?? null,
-        // #4302 — inherit the source's pinned answer style so the notebook
-        // keeps the same voice after branching (NULL = tracking the default).
-        (source.answer_style as string) ?? null,
-        orgId,
-      ],
-    );
-
-    if (newConv.length === 0) return { ok: false, reason: "error" };
-    newId = newConv[0].id;
-
-    // Bulk-copy all messages into the new conversation
-    const copyResult = await internalQuery<{ id: string }>(
-      `INSERT INTO messages (conversation_id, role, content, created_at)
-       SELECT $1, role, content, created_at FROM messages
-       WHERE conversation_id = $2
-       ORDER BY created_at ASC
-       RETURNING id`,
-      [newId, opts.sourceId],
-    );
-
-    if (copyResult.length === 0) {
-      log.warn({ sourceId: opts.sourceId, newId }, "convertToNotebook copied zero messages — source conversation may be empty");
-    }
-
-    return { ok: true, data: { id: newId, messageCount: copyResult.length } };
-  } catch (err) {
-    log.error({ err: errorMessage(err), sourceId: opts.sourceId }, "convertToNotebook failed");
-    // Clean up partially-created conversation to avoid orphans
-    if (newId) {
-      try {
-        await internalQuery(`DELETE FROM conversations WHERE id = $1`, [newId]);
-      } catch (cleanupErr) {
-        log.error({ err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) }, "Failed to clean up partial notebook conversion");
-      }
-    }
     return { ok: false, reason: "error" };
   }
 }
@@ -1483,7 +1175,7 @@ export async function getSharedConversation(
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, org_id, title, surface, connection_id, connection_group_id, routing_mode, starred, share_expires_at, share_mode, notebook_state, created_at, updated_at
+      `SELECT id, user_id, org_id, title, surface, connection_id, connection_group_id, routing_mode, starred, share_expires_at, share_mode, created_at, updated_at
        FROM conversations
        WHERE share_token = $1`,
       [token],

@@ -16,14 +16,6 @@ export const TOUR_STEPS: TourStep[] = [
     side: "bottom",
   },
   {
-    id: "notebook",
-    title: "Notebook",
-    description:
-      "Build multi-step analyses with cells you can re-run, reorder, and export. Great for deeper exploration.",
-    targetSelector: "[data-tour='notebook']",
-    side: "bottom",
-  },
-  {
     id: "admin",
     title: "Admin console",
     description:

@@ -549,9 +549,7 @@ export function AtlasChat({
 
   // Adaptive empty-chat starter surface — backend composes the ranked
   // prompt list from favorites / popular / library tiers. TanStack Query
-  // handles 4xx/5xx fallback (5xx soft-fails to []) and is shared with
-  // the notebook empty state via a stable queryKey so pins made here
-  // reflect immediately when the user navigates between surfaces.
+  // handles 4xx/5xx fallback (5xx soft-fails to []).
   const queryClient = useQueryClient();
   const starterPromptsQueryKey = ["atlas", "starter-prompts", apiUrl] as const;
   const starterPromptsQuery = useStarterPromptsQuery({
@@ -1069,7 +1067,6 @@ export function AtlasChat({
             onSelect={handleSelectConversation}
             onDelete={(id) => convos.deleteConversation(id)}
             onStar={(id, starred) => convos.starConversation(id, starred)}
-            onConvertToNotebook={(id) => convos.convertToNotebook(id)}
             onNewChat={handleNewChat}
           />
         )}

@@ -23,7 +23,6 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **MCP server** | Yes (stdio + SSE) | Yes (ThoughtSpot MCP Server) |
 | **Plugin system** | Plugin SDK + 24 plugins + marketplace | SpotApps marketplace + Spotter Connectors (Zendesk, Google Workspace, Slack) |
 | **Chat integrations** | 8 integrations (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp) | Slack connector |
-| **Notebook** | Built-in (cells, fork/branch, export) | No (separate SpotterCode for IDE) |
 | **Enterprise features** | SSO/SCIM, custom roles, IP allowlists, approval workflows, PII masking, data residency, SLA monitoring | Full enterprise governance suite |
 | **Data residency** | 3-region deployment with misrouting detection | Region selection in SaaS |
 | **Industry agents** | No | Spotter for Industries (healthcare, retail, financial services) |
@@ -48,7 +47,7 @@ ThoughtSpot has expanded Spotter from a single conversational agent into a suite
 
 Additionally, **Spotter for Industries** (March 2026) provides domain-specific agents for healthcare, retail, and financial services with industry terminology, workflows, and regulatory compliance (HIPAA, GDPR).
 
-Atlas is a single general-purpose agent focused on text-to-SQL with tool use. It doesn't attempt to automate dashboarding or IDE code generation — it does one thing (natural language data querying) and makes it embeddable. However, Atlas does automate semantic modeling via `atlas init` (auto-profiling) and `atlas learn` (dynamic learning from query history), and provides a web-based semantic editor with autocomplete and version history. The notebook interface supports multi-step exploratory analysis with fork/branch and export.
+Atlas is a single general-purpose agent focused on text-to-SQL with tool use. It doesn't attempt to automate dashboarding or IDE code generation — it does one thing (natural language data querying) and makes it embeddable. However, Atlas does automate semantic modeling via `atlas init` (auto-profiling) and `atlas learn` (dynamic learning from query history), and provides a web-based semantic editor with autocomplete and version history.
 
 ## Semantic Layer
 

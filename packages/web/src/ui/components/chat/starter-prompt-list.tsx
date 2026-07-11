@@ -28,10 +28,8 @@ export interface StarterPromptListProps {
 /**
  * Shared rendering for the adaptive starter-prompt grid.
  *
- * Used by the chat empty state (`AtlasChat`) and the notebook new-cell
- * empty state (`NotebookEmptyState`) so provenance badges and cold-start
- * behavior stay in lockstep across surfaces. Pure presentation — the
- * caller owns fetching, pin/unpin mutation, and any surrounding copy.
+ * Used by the chat empty state (`AtlasChat`). Pure presentation — the caller
+ * owns fetching, pin/unpin mutation, and any surrounding copy.
  */
 export function StarterPromptList({
   prompts,

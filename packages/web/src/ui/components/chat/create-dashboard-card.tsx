@@ -59,8 +59,9 @@ function asCreateDashboardResult(value: unknown): CreateDashboardResult | null {
 
 export function CreateDashboardCard({ part }: { part: unknown }) {
   // #4322 — the originating conversation (if any) rides the handoff link so
-  // the bound drawer resumes it. `null` in the notebook / when unavailable →
-  // the link degrades to a plain open (fresh bound session).
+  // the bound drawer resumes it. `null` when unavailable (e.g. rendered
+  // outside a live conversation) → the link degrades to a plain open (fresh
+  // bound session).
   const conversationId = useChatConversationId();
 
   if (!isToolComplete(part)) {

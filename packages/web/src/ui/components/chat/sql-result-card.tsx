@@ -6,8 +6,8 @@ import { FileDown, FileSpreadsheet, LayoutDashboard } from "lucide-react";
 import { useDarkMode } from "../../hooks/use-dark-mode";
 import { detectCharts } from "../chart/chart-detection";
 import dynamic from "next/dynamic";
-import { useDashboardBridge } from "../notebook/dashboard-bridge-context";
-import type { PreviousExecution } from "../notebook/types";
+import { useDashboardBridge } from "./dashboard-bridge-context";
+import type { PreviousExecution } from "./result-card-types";
 
 const ResultChart = dynamic(
   () => import("../chart/result-chart").then((m) => ({ default: m.ResultChart })),
@@ -84,12 +84,13 @@ function SQLResultCardInner({
   const [excelError, setExcelError] = useState(false);
   const [dashboardDialogOpen, setDashboardDialogOpen] = useState(false);
 
-  // In notebook context, track which cell this result belongs to
+  // When a surface supplies the dashboard bridge, track which result this is
+  // (the chat transcript renders without a bridge, so cellId stays null).
   const cellId = bridge?.cellId ?? null;
   const isOnDashboard = cellId ? !!bridge?.dashboardCards[cellId] : false;
 
   function handleDashboardAdded(dashboardId: string, cardId: string) {
-    if (!bridge) return; // Not in notebook context
+    if (!bridge) return; // No bridge on this surface — nothing to track
     if (!cellId) {
       console.warn("Dashboard card added but cellId is null in bridge context — tracking skipped.");
       return;

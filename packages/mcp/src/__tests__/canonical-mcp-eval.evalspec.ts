@@ -402,7 +402,7 @@ async function runOneQuestion(
         }
         // Wire-shape pin: a regression that flips `truncated` to a string
         // or drops `columns`/`rows` ships invisible to the agent until a
-        // downstream tool (a notebook, a chat-platform formatter)
+        // downstream tool (a dashboard card, a chat-platform formatter)
         // crashes on the unexpected type. Catch it at the eval boundary.
         if (!Array.isArray(data.columns)) {
           return fail("protocol", `runMetric envelope columns must be an array`, {

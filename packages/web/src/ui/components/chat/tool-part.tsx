@@ -12,7 +12,7 @@ import { CreateDashboardCard } from "./create-dashboard-card";
 import { DashboardEditCard, DASHBOARD_EDIT_TOOL_NAMES } from "./dashboard-edit-card";
 import { StageChangeCard } from "./stage-change-card";
 import { RestWriteConfirmCard } from "./rest-write-confirm-card";
-import type { PreviousExecution } from "../notebook/types";
+import type { PreviousExecution } from "./result-card-types";
 
 /** Extract the tool invocation ID from an AI SDK tool part. */
 function getToolInvocationId(part: unknown): string | undefined {

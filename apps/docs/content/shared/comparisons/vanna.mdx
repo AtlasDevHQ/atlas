@@ -22,7 +22,6 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **Admin console** | Built-in (connections, users, plugins, semantic editor, analytics, billing) | No |
 | **MCP server** | Yes (stdio + SSE) | No |
 | **Chat integrations** | Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp (via Chat SDK) | No |
-| **Notebook** | Built-in (cells, fork/branch, export to Markdown/HTML) | No (Jupyter integration) |
 | **SQL validation** | 7-layer pipeline (empty check, regex guard, AST parse, table whitelist, RLS, auto-LIMIT, timeout) | Basic (parameterized queries, RLS in v2.0) |
 | **Learning approach** | `atlas learn` CLI (auditable YAML proposals) + dynamic learned_patterns DB with admin review | RAG training (DDL + docs + SQL pairs in vector DB) |
 | **Enterprise features** | SSO, SCIM, custom roles, IP allowlists, approval workflows, PII masking, audit retention, data residency | None |
@@ -41,7 +40,7 @@ Atlas also learns from usage, but through a different mechanism: `atlas learn` r
 
 ## Deployment Model
 
-**Atlas** deploys as a standalone API server with a built-in frontend, or as a hosted SaaS at [app.useatlas.dev](https://app.useatlas.dev). It's designed for production: managed auth (SSO/SCIM), rate limiting, audit logging, admin console with semantic editor, plugin marketplace, notebook interface, embeddable widget, and 8 integrations via Chat SDK (6 chat platforms plus GitHub and Linear). Deploy on Docker, Railway, or Vercel, or skip infrastructure entirely with Atlas Cloud (3 regions: US, EU, APAC).
+**Atlas** deploys as a standalone API server with a built-in frontend, or as a hosted SaaS at [app.useatlas.dev](https://app.useatlas.dev). It's designed for production: managed auth (SSO/SCIM), rate limiting, audit logging, admin console with semantic editor, plugin marketplace, embeddable widget, and 8 integrations via Chat SDK (6 chat platforms plus GitHub and Linear). Deploy on Docker, Railway, or Vercel, or skip infrastructure entirely with Atlas Cloud (3 regions: US, EU, APAC).
 
 **Vanna** is a Python package you import and call. The simplest deployment is a Jupyter notebook or Python script. Vanna also provides a `<vanna-chat>` web component for embedding, a Flask-based UI, and Streamlit integration. The cloud-hosted version (app.vanna.ai) adds observability, access control, and audit logs.
 

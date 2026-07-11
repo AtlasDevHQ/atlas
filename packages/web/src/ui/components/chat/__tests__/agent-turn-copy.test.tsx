@@ -3,7 +3,7 @@
  * with answer text exposes a CopyButton that copies the answer's markdown
  * SOURCE with the <suggestions> block stripped. No answer text → no button;
  * still-streaming turns → no button (the answer is incomplete). Shared by the
- * chat transcript and the notebook cell output via AgentTurn.
+ * chat transcript and the dashboard bound editor's drawer via AgentTurn.
  */
 
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";

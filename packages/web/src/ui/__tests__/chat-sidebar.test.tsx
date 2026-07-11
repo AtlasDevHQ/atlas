@@ -169,20 +169,14 @@ describe("ChatSidebar active-state per route", () => {
     expect(getActiveSection(container)).toContain("Chat");
   });
 
-  test("/notebook marks Notebook active", () => {
-    currentPathname = "/notebook";
-    const { container } = render(<ChatSidebar {...baseProps} isAdmin={false} />);
-    expect(getActiveSection(container)).toContain("Notebook");
-  });
-
   test("/dashboards/abc-123 keeps Dashboards active (startsWith)", () => {
     currentPathname = "/dashboards/abc-123";
     const { container } = render(<ChatSidebar {...baseProps} isAdmin={false} />);
     expect(getActiveSection(container)).toContain("Dashboards");
   });
 
-  test("/notebook does NOT match Chat (exact prevents false match)", () => {
-    currentPathname = "/notebook";
+  test("/dashboards does NOT match Chat (exact prevents false match)", () => {
+    currentPathname = "/dashboards";
     const { container } = render(<ChatSidebar {...baseProps} isAdmin={false} />);
     const activeText = getActiveSection(container);
     expect(activeText).not.toMatch(/^Chat$/);

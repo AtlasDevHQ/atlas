@@ -12,7 +12,10 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import type { AnalysisResult } from "../types";
 
-const ordersYaml = ["name: orders", "description: Orders", "dimensions:", "  - name: id", "    type: number"].join("\n");
+const ordersYaml = ["name: orders", "table: orders", "description: Orders", "dimensions:", "  - name: id", "    type: number"].join("\n");
+// A structurally-broken baseline missing `table:` — the post-apply EntityShape
+// gate (#4513) must reject any amendment applied on top of it.
+const ordersYamlNoTable = ["name: orders", "description: Orders", "dimensions:", "  - name: id", "    type: number"].join("\n");
 
 const ordersRow = { id: "orders-row", connection_group_id: null, yaml_content: ordersYaml };
 
@@ -22,6 +25,9 @@ let createVersionThrows = false;
 let syncThrows = false;
 // When true, the SECOND upsert (the snapshot-failure rollback) fails too.
 let rollbackUpsertThrows = false;
+// When true, the resolved baseline is missing `table:` — the post-apply gate
+// must fail the apply before any write.
+let baselineMissingTable = false;
 
 let getEntityCalls = 0;
 const getEntity = mock(async () => {
@@ -29,7 +35,7 @@ const getEntity = mock(async () => {
   // First call resolves the baseline; the post-upsert refetch (2nd) can be
   // forced to miss.
   if (getEntityCalls > 1 && refetchReturnsNull) return null;
-  return { ...ordersRow };
+  return { ...ordersRow, yaml_content: baselineMissingTable ? ordersYamlNoTable : ordersYaml };
 });
 const upsertEntityForGroup = mock(async (): Promise<void> => {
   if (rollbackUpsertThrows && upsertEntityForGroup.mock.calls.length > 1) {
@@ -81,6 +87,7 @@ beforeEach(() => {
   createVersionThrows = false;
   syncThrows = false;
   rollbackUpsertThrows = false;
+  baselineMissingTable = false;
   getEntityCalls = 0;
   getEntity.mockClear();
   upsertEntityForGroup.mockClear();
@@ -142,5 +149,20 @@ describe("applyAmendmentToEntity — snapshot failure fails the apply (#4506)", 
 
     await expect(applyAmendmentToEntity("org-1", result, "req-1")).resolves.toBeUndefined();
     expect(createVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it("post-apply EntityShape failure fails the apply BEFORE any write (#4513, composes with decide compensation)", async () => {
+    // The mutated document does not parse as a semantic entity (no `table:`).
+    baselineMissingTable = true;
+
+    await expect(applyAmendmentToEntity("org-1", result, "req-1")).rejects.toThrow(
+      /Post-apply validation failed .*does not parse as a semantic entity/,
+    );
+    // Nothing was written — the gate fires before the upsert, so the decide
+    // seam's compensation returns the claimed row to pending with this reason
+    // and no snapshot/rollback dance is needed.
+    expect(upsertEntityForGroup).not.toHaveBeenCalled();
+    expect(createVersion).not.toHaveBeenCalled();
+    expect(syncEntityToDisk).not.toHaveBeenCalled();
   });
 });

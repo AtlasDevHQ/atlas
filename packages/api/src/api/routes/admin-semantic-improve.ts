@@ -60,7 +60,7 @@ const chatStreamRoute = createRoute({
   summary: "Chat with the semantic expert agent (streaming)",
   description:
     "Sends a conversation to the semantic expert agent and streams the response. " +
-    "Uses the 5 expert tools (profileTable, checkDataDistribution, searchAuditLog, proposeAmendment, validateProposal) " +
+    "Uses the 4 expert tools (profileTable, checkDataDistribution, searchAuditLog, proposeAmendment) " +
     "plus standard explore and executeSQL.",
   request: {
     body: {

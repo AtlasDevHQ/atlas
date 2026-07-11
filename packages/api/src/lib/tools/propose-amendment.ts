@@ -18,6 +18,11 @@ import { runUserQueryPipeline } from "@atlas/api/lib/tools/sql";
 import type { AmendmentPayload } from "@useatlas/types";
 import type { AnalysisResult } from "@atlas/api/lib/semantic/expert/types";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
+import {
+  validateAmendmentPayload,
+  validateEmbeddedSql,
+  parseEntityShapeOrError,
+} from "@atlas/api/lib/semantic/expert/amendment-validation";
 
 const log = createLogger("tool:propose-amendment");
 
@@ -72,6 +77,16 @@ The amendment object should match the YAML structure for that type (e.g., { name
       const orgId = getRequestContext()?.user?.activeOrganizationId ?? null;
       const connectionGroupId = getRequestContext()?.connectionGroupId;
 
+      // Validation seam, gate 1 (#4513): the payload must parse against its
+      // type's schema BEFORE anything is inserted. A proposal that fails
+      // validation never becomes a pending Amendment — the tool result tells the
+      // model exactly why so it can fix and re-propose. The update_dimension
+      // schema is strict (no `sql` smuggling; ADR-0032 containment).
+      const payloadError = validateAmendmentPayload(amendmentType, amendment);
+      if (payloadError) {
+        return { error: payloadError };
+      }
+
       // Load the current entity baseline.
       //
       // When an internal DB is present (SaaS + self-hosted-with-DB), entities
@@ -118,6 +133,39 @@ The amendment object should match the YAML structure for that type (e.g., { name
         entity = raw as Record<string, unknown>;
       }
 
+      // Resolve the connection the amendment's evidence runs against — its own
+      // group's primary member, NOT the default datasource (#4513). "Evidence
+      // runs where the change lives": both the embedded-SQL validation below and
+      // the test query further down execute against this connection, so a
+      // group-scoped entity on a non-default datasource is validated + tested
+      // against the RIGHT database. A NULL group (the default flat scope) stays
+      // on "default".
+      let testConnectionId = "default";
+      if (applyGroupId) {
+        const { resolveGroupPrimaryConnectionId } = await import(
+          "@atlas/api/lib/group-reach/lookup"
+        );
+        testConnectionId = await resolveGroupPrimaryConnectionId(
+          orgId ?? undefined,
+          applyGroupId,
+          getRequestContext()?.atlasMode,
+        );
+      }
+
+      // Validation seam, gate 2 (#4513): any embedded SQL (dimension / measure /
+      // virtual-dimension expressions, full query patterns) must pass the shared
+      // SQL validation against the amendment's own connection. Unparseable or
+      // forbidden SQL → no insert; the model is told which field failed and why.
+      const sqlError = await validateEmbeddedSql(
+        amendmentType,
+        amendment,
+        testConnectionId,
+        orgId ?? undefined,
+      );
+      if (sqlError) {
+        return { error: sqlError };
+      }
+
       // Apply the amendment through the SAME authoritative mutation the apply
       // path uses (upsertByIdentity, throw-on-missing-target) — no divergent
       // local copy that could preview a clean append where apply replaces, or
@@ -136,6 +184,15 @@ The amendment object should match the YAML structure for that type (e.g., { name
         score: 0,
       } satisfies AnalysisResult);
 
+      // Validation seam, gate 3 (#4513): the post-apply document must still
+      // parse as a semantic entity before it can be queued. The apply seam runs
+      // the same gate again at approval time; validating here keeps a
+      // structurally-broken change out of the pending queue entirely.
+      const shapeError = parseEntityShapeOrError(updated);
+      if (shapeError) {
+        return { error: `This amendment would corrupt entity "${entityName}": ${shapeError}.` };
+      }
+
       // Normalize both sides through yaml.dump() with identical options so
       // the diff only shows actual content changes, not formatting drift
       // (e.g. inline arrays → multiline, whitespace differences).
@@ -153,7 +210,7 @@ The amendment object should match the YAML structure for that type (e.g., { name
 
       // Run test query if provided — route through the full production
       // pipeline (validation → approval → RLS → auto-LIMIT → audit + masking),
-      // exactly like validateProposal (#3338). NEVER a raw `db.query`: the old
+      // the same discipline the #3338 fix established. NEVER a raw `db.query`: the old
       // path validated against the default datasource but executed against the
       // org connection, skipping RLS, the auto-LIMIT row cap, and PII masking,
       // then persisted the raw, unmasked rows into
@@ -164,7 +221,9 @@ The amendment object should match the YAML structure for that type (e.g., { name
       if (testQuery) {
         const outcome = await runUserQueryPipeline({
           sql: testQuery,
-          connectionId: "default",
+          // Evidence runs where the change lives (#4513): the amendment's own
+          // group connection, resolved above — never hard-pinned to "default".
+          connectionId: testConnectionId,
           explanation: `Semantic amendment proposal test query (${entityName})`,
         });
 

@@ -27,7 +27,7 @@ A workspace member reaches raw SQL over REST through the **same** `lib/tools/sql
 
 ### 1. Billing gate-0 (solvency) is required at the route — parity with MCP `executeSQL` is an explicit AC
 
-The MCP `executeSQL` tool declares `checksBilling` so a suspended / trial-expired / plan-exhausted workspace cannot reach a datasource (ADR-0016 gate 0). The obvious REST reuse target, `runUserQueryPipeline` (`sql.ts`), does **not** itself run gate-0 — its current callers (dashboards, validate-proposal) are already-authenticated surfaces where billing was enforced upstream. So #4047 **must** run `billingGateOrNull` (the same composer chat / `/api/v1/query` / MCP share) at the route, before the pipeline. "Gate parity with MCP `executeSQL`" is an acceptance criterion, not an assumption. Because Shape B runs no LLM, the gate is **solvency-only** (no token metering).
+The MCP `executeSQL` tool declares `checksBilling` so a suspended / trial-expired / plan-exhausted workspace cannot reach a datasource (ADR-0016 gate 0). The obvious REST reuse target, `runUserQueryPipeline` (`sql.ts`), does **not** itself run gate-0 — its current callers (dashboards, amendment-proposal test queries) are already-authenticated surfaces where billing was enforced upstream. So #4047 **must** run `billingGateOrNull` (the same composer chat / `/api/v1/query` / MCP share) at the route, before the pipeline. "Gate parity with MCP `executeSQL`" is an acceptance criterion, not an assumption. Because Shape B runs no LLM, the gate is **solvency-only** (no token metering).
 
 ### 2. The role floor is `member`; raw SQL grants no reach a member doesn't already have
 

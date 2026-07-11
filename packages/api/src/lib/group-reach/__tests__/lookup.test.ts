@@ -42,7 +42,7 @@ void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
 }));
 
-const { loadVisibleGroups } = await import("../lookup");
+const { loadVisibleGroups, resolveGroupPrimaryConnectionId } = await import("../lookup");
 
 describe("loadVisibleGroups", () => {
   beforeEach(() => {
@@ -112,5 +112,46 @@ describe("loadVisibleGroups", () => {
     // Without membership we cannot fold pg-us into postgres; both surface as
     // their own group rather than the whole workspace going dark.
     expect(groups.map((g) => g.id)).toEqual(["pg-us", "postgres"]);
+  });
+});
+
+describe("resolveGroupPrimaryConnectionId (#4513)", () => {
+  beforeEach(() => {
+    whitelistThrows = false;
+    membersThrow = false;
+    whitelistMap = new Map();
+    memberRows = [];
+  });
+
+  it("returns the default connection for a NULL/undefined group", async () => {
+    expect(await resolveGroupPrimaryConnectionId("org-1", null)).toBe("default");
+    expect(await resolveGroupPrimaryConnectionId("org-1", undefined)).toBe("default");
+  });
+
+  it("resolves a multi-member group to its primary member", async () => {
+    whitelistMap = new Map([
+      ["postgres", new Set(["orders"])],
+      ["pg-us", new Set(["orders"])],
+      ["pg-eu", new Set(["orders"])],
+    ]);
+    memberRows = [
+      { group_id: "postgres", id: "pg-us" },
+      { group_id: "postgres", id: "pg-eu" },
+    ];
+    // primary is the first sorted member (pg-eu).
+    expect(await resolveGroupPrimaryConnectionId("org-1", "postgres")).toBe("pg-eu");
+  });
+
+  it("resolves a group-of-one standalone datasource to its own connection id", async () => {
+    whitelistMap = new Map([["clickhouse", new Set(["events"])]]);
+    expect(await resolveGroupPrimaryConnectionId("org-1", "clickhouse")).toBe("clickhouse");
+  });
+
+  it("falls back to the group id when the group is not currently visible", async () => {
+    // Group hidden by content mode / no visible-groups DB — degrade to the id
+    // itself (a standalone datasource keys its group under its connection id),
+    // never silently retarget the default datasource.
+    whitelistMap = new Map([["other", new Set(["x"])]]);
+    expect(await resolveGroupPrimaryConnectionId("org-1", "eu_prod")).toBe("eu_prod");
   });
 });

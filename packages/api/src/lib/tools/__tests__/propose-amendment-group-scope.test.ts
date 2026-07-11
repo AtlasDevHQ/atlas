@@ -26,6 +26,7 @@ import type { AmendmentPayload } from "@useatlas/types";
 // proving the baseline source is unambiguous.
 const ordersYaml = [
   "name: orders",
+  "table: orders",
   "description: Orders (eu_prod DB-backed)",
   "dimensions:",
   "  - name: id",
@@ -140,6 +141,20 @@ void mock.module("@atlas/api/lib/semantic/files", () => ({
 
 void mock.module("@atlas/api/lib/tools/sql", () => ({
   runUserQueryPipeline: mock(() => Promise.resolve({ kind: "ok", columns: [], rows: [], rowCount: 0, executionMs: 0, truncated: false })),
+  // The propose seam validates embedded SQL (#4513); the amendment carries
+  // `sql: "region"`, so validateSQL is exercised. Stubbed valid — this file
+  // pins baseline scoping, not SQL validation.
+  validateSQL: mock(() => Promise.resolve({ valid: true })),
+}));
+
+// The propose seam resolves the amendment's group to its primary connection for
+// the embedded-SQL validation + test query (#4513). Stubbed so this file's
+// baseline-scoping assertions don't depend on the group-reach DB surface.
+void mock.module("@atlas/api/lib/group-reach/lookup", () => ({
+  resolveGroupPrimaryConnectionId: mock(async (_org: string | undefined, groupId: string | null | undefined) =>
+    groupId ?? "default",
+  ),
+  loadVisibleGroups: mock(async () => []),
 }));
 
 const { proposeAmendment } = await import("@atlas/api/lib/tools/propose-amendment");

@@ -27,6 +27,7 @@
 
 import type { AnalysisResult, AuditPattern } from "./types";
 import type { SemanticHealthScore } from "./health";
+import type { BriefingAnchor } from "./anchor";
 
 /**
  * The health discriminator — a parse-failure zero ("corrupt") is not the same
@@ -95,6 +96,14 @@ export interface BriefingInputs {
   readonly recentDecisions: readonly BriefingDecision[];
   /** How many previously-rejected identities are suppressed (rejection memory). */
   readonly rejectionMemoryCount: number;
+  /**
+   * The resolved anchor this conversation started from (#4519), or undefined for
+   * an anchorless sweep. A group anchor front-loads the group's entity inventory;
+   * an entity anchor front-loads that entity's YAML + profile. Resolved upstream
+   * (`resolveBriefingAnchor`) from the same entities/profiles this briefing loads,
+   * so the pure assembler just renders it.
+   */
+  readonly anchor?: BriefingAnchor;
 }
 
 /** How many list items each section shows — bounded so the block stays compact. */
@@ -102,6 +111,7 @@ const MAX_FINDINGS = 5;
 const MAX_PENDING = 8;
 const MAX_DECISIONS = 8;
 const MAX_QUERIED_TABLES = 5;
+const MAX_ANCHOR_ENTITIES = 25;
 
 /** 0–1 → whole-percent string. Clamps out-of-range and non-finite to 0–100. */
 function pct(value: number): string {
@@ -217,6 +227,62 @@ function renderRecentDecisions(decisions: readonly BriefingDecision[]): string[]
   return lines;
 }
 
+/** Pluralize a count with its unit ("1 dimension", "3 dimensions"). */
+function count(n: number, unit: string): string {
+  return `${n} ${n === 1 ? unit : `${unit}s`}`;
+}
+
+/**
+ * Render the anchor section (#4519) — what this conversation started from. Placed
+ * ahead of the general state so the agent orients to the admin's chosen scope
+ * first. Empty for an anchorless sweep, so the block is byte-identical to before
+ * anchors when none is set.
+ */
+function renderAnchor(anchor: BriefingAnchor | undefined): string[] {
+  if (!anchor) return [];
+
+  if (anchor.kind === "group") {
+    const lines = [
+      `### Anchor: connection group \`${anchor.group}\``,
+      `This conversation is anchored to the \`${anchor.group}\` connection group — focus improvements here unless the admin steers you elsewhere. It is a starting scope, not a cage.`,
+    ];
+    if (anchor.entities.length === 0) {
+      lines.push(
+        "- No entities are mapped in this group yet. Uncovered tables are grown through the enrich flow, never an amendment.",
+      );
+      return lines;
+    }
+    lines.push(`Entities in this group (${anchor.entities.length}):`);
+    anchor.entities.slice(0, MAX_ANCHOR_ENTITIES).forEach((e) => {
+      const described = e.description ? "described" : "no description";
+      lines.push(
+        `- \`${e.name}\` (${e.table}) — ${count(e.dimensionCount, "dimension")} · ${count(e.measureCount, "measure")} · ${count(e.joinCount, "join")} · ${described}`,
+      );
+    });
+    const extra = anchor.entities.length - MAX_ANCHOR_ENTITIES;
+    if (extra > 0) lines.push(`- …and ${extra} more.`);
+    return lines;
+  }
+
+  // Entity anchor — front-load the entity's current YAML + tracked profile.
+  const scope = anchor.group ? ` (group \`${anchor.group}\`)` : "";
+  const lines = [
+    `### Anchor: entity \`${anchor.entity}\`${scope}`,
+    `This conversation is anchored to the \`${anchor.entity}\` entity — focus improvements on it unless the admin steers you elsewhere. It is a starting scope, not a cage.`,
+    "",
+    "Current YAML:",
+    "```yaml",
+    anchor.yaml,
+    "```",
+  ];
+  lines.push(
+    anchor.profile
+      ? `Profile: \`${anchor.profile.table}\` — ${anchor.profile.rowCount.toLocaleString("en-US")} rows, ${count(anchor.profile.columnCount, "column")}.`
+      : `Profile: no tracked baseline profile for \`${anchor.entity}\`'s table yet.`,
+  );
+  return lines;
+}
+
 /**
  * Assemble the deterministic briefing block from pre-loaded inputs. Pure: the
  * output is a function of `inputs` alone (no DB, LLM, or clock).
@@ -228,6 +294,7 @@ export function assembleBriefing(inputs: BriefingInputs): string {
       "",
       "The current state of this workspace's semantic layer is below — health, top findings, tracked profiles, the pending review queue, and recent panel decisions. Orient from it before calling tools: you do NOT need a tool call to learn the health score, the analyzer's findings, or what is already queued.",
     ],
+    renderAnchor(inputs.anchor),
     renderHealth(inputs),
     renderProfiles(inputs.profiles),
     renderFindings(inputs.findings),

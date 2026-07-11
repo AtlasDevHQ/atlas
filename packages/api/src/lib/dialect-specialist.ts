@@ -38,9 +38,9 @@
 /**
  * Display names for known engines — the source of truth for how a `dbType` is
  * spelled in a specialist heading, in the agent's multi-source listing
- * (`agent.ts`'s `dialectName` delegates here), and in the wizard enrich pass's
- * "valid <dialect> SQL" instruction. Unknown / plugin `dbType`s fall through to
- * a capitalize fallback in {@link dialectDisplayName}.
+ * (`buildMultiSourceSection` calls {@link dialectDisplayName} directly), and in
+ * the wizard enrich pass's "valid <dialect> SQL" instruction. Unknown / plugin
+ * `dbType`s fall through to a capitalize fallback in {@link dialectDisplayName}.
  */
 const DIALECT_DISPLAY_NAMES: Record<string, string> = {
   postgres: "PostgreSQL",
@@ -57,8 +57,7 @@ const DIALECT_DISPLAY_NAMES: Record<string, string> = {
 /**
  * Human display name for a `dbType`. Known engines use their canonical spelling
  * ({@link DIALECT_DISPLAY_NAMES}); anything else (a plugin's custom `dbType`)
- * is capitalized as a best-effort fallback, matching `agent.ts`'s legacy
- * `dialectName`.
+ * is capitalized as a best-effort fallback.
  */
 export function dialectDisplayName(dbType: string): string {
   return (

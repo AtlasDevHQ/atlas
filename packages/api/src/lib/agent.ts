@@ -1703,25 +1703,17 @@ export async function runAgent({
   // the menu lists only the focused group, matching what `executeSQL` will allow
   // (so the agent isn't told about groups every query to which would be
   // rejected). Sourced from the same RequestContext value that bounds executeSQL.
-  const reachState = reachStateFromColumn(reqCtx?.groupReach);
-  const sourceCatalog = await loadSourceCatalog(
-    orgId,
-    atlasMode,
-    restCatalogSources,
-    {},
-    reachState,
-  );
-
   // #4515 — the dialect-specialist section: engine expertise for the groups in
   // scope, composed once per turn keyed by dbType and attributed per group. Uses
   // the SAME reach state as the Source catalog so the modules and the menu
   // describe the same reachable set (a reach failure fails closed to no section,
-  // logged — see resolveConversationDialectSpecialists).
-  const dialectSpecialists = await resolveConversationDialectSpecialists(
-    orgId,
-    atlasMode,
-    reachState,
-  );
+  // logged — see resolveConversationDialectSpecialists). Both consume the reach
+  // state independently, so they resolve in parallel (no async waterfall).
+  const reachState = reachStateFromColumn(reqCtx?.groupReach);
+  const [sourceCatalog, dialectSpecialists] = await Promise.all([
+    loadSourceCatalog(orgId, atlasMode, restCatalogSources, {}, reachState),
+    resolveConversationDialectSpecialists(orgId, atlasMode, reachState),
+  ]);
 
   // System prompt is built once and pinned: it carries the semantic index +
   // glossary AND the durable memory block (#3755), and is passed to the model

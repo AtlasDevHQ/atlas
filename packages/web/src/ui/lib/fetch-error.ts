@@ -36,6 +36,15 @@ export interface FetchError {
    * error.
    */
   workspaces?: ReadonlyArray<{ id: string; name: string | null }>;
+  /**
+   * The freshly-computed live diff + its baseline hash returned with a 409
+   * `stale_baseline` response (#4511) — a semantic Amendment whose entity
+   * changed since the admin rendered the diff. The improve panel swaps the
+   * card's diff in place and offers a Confirm that re-approves with this
+   * `baselineHash`, turning a mid-review change into one more human look
+   * instead of an error dead-end.
+   */
+  stale?: { diff: string; baselineHash: string };
 }
 
 /**
@@ -61,6 +70,7 @@ export function buildFetchError(input: {
   enrollmentUrl?: string;
   groups?: ReadonlyArray<string | null>;
   workspaces?: ReadonlyArray<{ id: string; name: string | null }>;
+  stale?: { diff: string; baselineHash: string };
 }): FetchError {
   const message = input.message?.trim();
   if (!message) {
@@ -82,6 +92,7 @@ export function buildFetchError(input: {
       ...(input.enrollmentUrl && { enrollmentUrl: input.enrollmentUrl }),
       ...(input.groups && { groups: input.groups }),
       ...(input.workspaces && { workspaces: input.workspaces }),
+      ...(input.stale && { stale: input.stale }),
     };
   }
   return {
@@ -92,6 +103,7 @@ export function buildFetchError(input: {
     ...(input.enrollmentUrl && { enrollmentUrl: input.enrollmentUrl }),
     ...(input.groups && { groups: input.groups }),
     ...(input.workspaces && { workspaces: input.workspaces }),
+    ...(input.stale && { stale: input.stale }),
   };
 }
 
@@ -107,6 +119,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
   let enrollmentUrl: string | undefined;
   let groups: ReadonlyArray<string | null> | undefined;
   let workspaces: ReadonlyArray<{ id: string; name: string | null }> | undefined;
+  let stale: { diff: string; baselineHash: string } | undefined;
   try {
     const body: unknown = await res.json();
     if (typeof body === "object" && body !== null) {
@@ -144,6 +157,17 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
               typeof (w as { name?: unknown }).name === "string"),
         );
       }
+      // 409 `stale_baseline` payload (#4511). The fresh diff + baseline hash the
+      // improve panel swaps in for inline update-and-confirm. Both fields must
+      // be present strings — a partial payload is ignored so the card falls
+      // back to the generic error surface rather than a broken confirm.
+      if (
+        obj.error === "stale_baseline" &&
+        typeof obj.diff === "string" &&
+        typeof obj.baselineHash === "string"
+      ) {
+        stale = { diff: obj.diff, baselineHash: obj.baselineHash };
+      }
     }
   } catch (err) {
     // Non-JSON body is expected (SyntaxError, swallowed silently). Unexpected
@@ -169,6 +193,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
     enrollmentUrl,
     groups,
     workspaces,
+    stale,
   });
 }
 

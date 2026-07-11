@@ -1919,7 +1919,11 @@ export async function stampClaimedAmendmentApproved(
 export async function releaseClaimedAmendment(
   id: string,
   claimedAt: string,
-  reason: string,
+  // A failure reason to surface in the review queue, or `null` to clear
+  // `last_apply_error` — the #4511 stale-baseline path releases with `null`
+  // because a changed baseline is a continuation of review, not an apply
+  // failure, so the queue must not show a scary "last approval failed" reason.
+  reason: string | null,
 ): Promise<boolean> {
   if (!hasInternalDB()) return false;
 
@@ -1930,7 +1934,7 @@ export async function releaseClaimedAmendment(
      WHERE id = $1 AND type = 'semantic_amendment' AND status = 'applying'
      AND reviewed_at = $2::timestamptz
      RETURNING id`,
-    [id, claimedAt, reason.slice(0, 2000)],
+    [id, claimedAt, reason === null ? null : reason.slice(0, 2000)],
   );
 
   return rows.length > 0;

@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
-import { extractProposals, buildProposalQueue, type Proposal, type QueueRow, type TestResult } from "./proposals";
+import { extractProposals, buildProposalQueue, buildReviewBody, classifyReviewResult, type Proposal, type QueueRow, type TestResult } from "./proposals";
 import { RejectedCard, type RejectedAmendment } from "./rejected";
 import { DiffViewer, formatAmendment } from "./amendment-display";
 import {
@@ -62,7 +62,10 @@ interface PendingAmendment {
   amendmentType: string | null;
   amendment: Record<string, unknown> | null;
   rationale: string | null;
+  /** The LIVE diff, recomputed against the current baseline server-side (#4511). */
   diff: string | null;
+  /** Hash of the baseline the live diff was computed against (#4511). */
+  baselineHash: string | null;
   testQuery: string | null;
   testResult: TestResult | null;
   applyError: string | null;
@@ -79,12 +82,22 @@ function ProposalCard({
   onReject,
   approving,
   rejecting,
+  staleUpdate,
+  onConfirmStale,
+  pickerGroups,
+  onPickGroup,
 }: {
   proposal: QueueRow;
   onApprove: () => void;
   onReject: () => void;
   approving: boolean;
   rejecting: boolean;
+  /** #4511 — a fresh live diff to confirm after a mid-review baseline change. */
+  staleUpdate?: { diff: string; baselineHash: string };
+  onConfirmStale?: () => void;
+  /** #4511 — candidate groups for a legacy cross-group-ambiguous row. */
+  pickerGroups?: ReadonlyArray<string | null>;
+  onPickGroup?: (group: string | null) => void;
 }) {
   let confidenceColor = "text-red-600 dark:text-red-400";
   if (proposal.confidence >= 0.8) {
@@ -94,6 +107,10 @@ function ProposalCard({
   }
 
   const decided = proposal.decision !== null;
+  // #4511 — after a mid-review baseline change the panel renders the FRESH diff
+  // (the stored/live one it opened with is superseded), so approving-what-you-see
+  // holds through the confirm.
+  const diffToShow = staleUpdate?.diff ?? proposal.diff;
 
   return (
     <Card className="shadow-none border">
@@ -137,9 +154,18 @@ function ProposalCard({
       <CardContent className="py-2 space-y-3">
         <p className="text-sm text-muted-foreground">{proposal.rationale}</p>
 
+        {/* #4511 — a mid-review baseline change: show WHY the diff changed
+            before the fresh diff, so Confirm is an informed continuation. */}
+        {staleUpdate && (
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            <span className="font-medium">This entity changed while you were reviewing.</span>{" "}
+            Review the updated change below and confirm.
+          </p>
+        )}
+
         {/* Diff view when available, otherwise amendment preview */}
-        {proposal.diff ? (
-          <DiffViewer diff={proposal.diff} />
+        {diffToShow ? (
+          <DiffViewer diff={diffToShow} />
         ) : (
           <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs font-mono whitespace-pre-wrap">
             {formatAmendment(proposal.amendmentType, proposal.amendment)}
@@ -169,11 +195,50 @@ function ProposalCard({
           </p>
         )}
 
-        {!decided && (
+        {/* #4511 — a legacy cross-group-ambiguous row: pick the environment to
+            apply to. The picker appears ONLY when the server demanded it. */}
+        {!decided && pickerGroups && pickerGroups.length > 0 && (
+          <div className="space-y-2 pt-1">
+            <p className="text-xs text-muted-foreground">
+              This entity exists in multiple environments. Pick the one to apply to:
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              {pickerGroups.map((g) => (
+                <Button
+                  key={g ?? "__legacy__"}
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onPickGroup?.(g)}
+                  disabled={approving || rejecting}
+                  className="gap-1.5 text-xs"
+                >
+                  {approving ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <Check className="size-3" />
+                  )}
+                  {g === null ? "Legacy / global" : g.replace(/^g_/, "")}
+                </Button>
+              ))}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onReject}
+                disabled={approving || rejecting}
+                className="gap-1.5 text-xs"
+              >
+                {rejecting ? <Loader2 className="size-3 animate-spin" /> : <X className="size-3" />}
+                Reject
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {!decided && !(pickerGroups && pickerGroups.length > 0) && (
           <div className="flex items-center gap-2 pt-1">
             <Button
               size="sm"
-              onClick={onApprove}
+              onClick={staleUpdate ? onConfirmStale : onApprove}
               disabled={approving || rejecting}
               className="gap-1.5 text-xs"
             >
@@ -182,7 +247,7 @@ function ProposalCard({
               ) : (
                 <Check className="size-3" />
               )}
-              Approve
+              {staleUpdate ? "Confirm" : "Approve"}
             </Button>
             <Button
               variant="outline"
@@ -338,6 +403,16 @@ export default function SemanticImprovePage() {
   // Which review list the proposals panel shows: the Pending queue or the
   // Rejected view (#4512). Rejected is where an admin lifts a rejection.
   const [view, setView] = useState<"pending" | "rejected">("pending");
+  // #4511 — mid-review outcomes keyed by the proposal's dbId. `stale` swaps a
+  // fresh live diff into the card with a Confirm (the entity changed since
+  // render); `picker` renders a group picker for a legacy cross-group-ambiguous
+  // row. Both are continuations of review, never error dead-ends.
+  const [staleByDbId, setStaleByDbId] = useState<
+    Map<string, { diff: string; baselineHash: string }>
+  >(new Map());
+  const [pickerByDbId, setPickerByDbId] = useState<Map<string, ReadonlyArray<string | null>>>(
+    new Map(),
+  );
 
   // #4519 — the anchor this conversation is scoped to (group/entity), or null
   // for an anchorless sweep. `anchorRef` mirrors the wire value so the transport
@@ -447,7 +522,7 @@ export default function SemanticImprovePage() {
   const launcherEntities = entitiesData ?? [];
 
   // Single mutation hook for approve/reject/reconsider
-  const { mutate, isMutating, error: mutationError } = useAdminMutation({
+  const { mutate, isMutating, error: mutationError, clearErrorFor } = useAdminMutation({
     method: "POST",
   });
 
@@ -460,6 +535,7 @@ export default function SemanticImprovePage() {
     amendment: a.amendment ?? {},
     rationale: a.rationale ?? a.description ?? "",
     diff: a.diff ?? undefined,
+    baselineHash: a.baselineHash ?? undefined,
     testQuery: a.testQuery ?? undefined,
     testResult: a.testResult ?? undefined,
     applyError: a.applyError ?? undefined,
@@ -536,26 +612,96 @@ export default function SemanticImprovePage() {
     launch(null, SWEEP_KICKOFF_MESSAGE);
   }
 
-  async function handleReview(proposal: Proposal, decision: "approved" | "rejected") {
+  function clearMidReview(dbId: string) {
+    setStaleByDbId((prev) => {
+      if (!prev.has(dbId)) return prev;
+      const next = new Map(prev);
+      next.delete(dbId);
+      return next;
+    });
+    setPickerByDbId((prev) => {
+      if (!prev.has(dbId)) return prev;
+      const next = new Map(prev);
+      next.delete(dbId);
+      return next;
+    });
+  }
+
+  async function submitReview(
+    proposal: Proposal,
+    decision: "approved" | "rejected",
+    opts?: { baselineHash?: string; group?: string | null },
+  ) {
     // Every rendered proposal — chat-streamed or loaded from the pending list —
     // carries the `learned_patterns` row id, so all reviews go through the one
     // DB-backed review path.
     const dbId = proposal.dbId;
     if (!dbId) return;
     const label = decision === "approved" ? "approve" : "reject";
+    const itemId = `${label}-${dbId}`;
+
     const result = await mutate({
       path: `/api/v1/admin/semantic-improve/amendments/${dbId}/review`,
-      itemId: `${label}-${dbId}`,
-      body: { decision },
+      itemId,
+      // The hash-carried claim + disambiguation group only ride an approve
+      // (#4511) — the pure builder encodes that rule so it stays testable.
+      body: buildReviewBody(decision, opts),
     });
-    if (result.ok) {
-      // Mark the card decided (chat cards persist across renders) and refresh
-      // the pending list so a reviewed row drops out of it.
+
+    const outcome = classifyReviewResult(result);
+    if (outcome.kind === "ok") {
+      // Decided — clear any mid-review affordance, mark the card decided (chat
+      // cards persist across renders), and refresh the pending list.
+      clearMidReview(dbId);
+      clearErrorFor(itemId);
       setProposalDecisions((prev) =>
         new Map(prev).set(dbId, decision === "approved" ? "accepted" : "rejected"),
       );
       void refetchPending();
+    } else if (outcome.kind === "stale") {
+      // The entity changed since render — swap in the fresh diff + Confirm.
+      // Not an error: suppress the generic banner for this row.
+      setStaleByDbId((prev) =>
+        new Map(prev).set(dbId, { diff: outcome.diff, baselineHash: outcome.baselineHash }),
+      );
+      setPickerByDbId((prev) => {
+        if (!prev.has(dbId)) return prev;
+        const next = new Map(prev);
+        next.delete(dbId);
+        return next;
+      });
+      clearErrorFor(itemId);
+    } else if (outcome.kind === "ambiguous") {
+      // Legacy cross-group row — render the group picker. Not an error.
+      setPickerByDbId((prev) => new Map(prev).set(dbId, outcome.groups));
+      setStaleByDbId((prev) => {
+        if (!prev.has(dbId)) return prev;
+        const next = new Map(prev);
+        next.delete(dbId);
+        return next;
+      });
+      clearErrorFor(itemId);
     }
+    // outcome.kind === "error": leave the mutation error banner to surface it.
+  }
+
+  function handleReview(proposal: Proposal, decision: "approved" | "rejected") {
+    void submitReview(proposal, decision, { baselineHash: proposal.baselineHash });
+  }
+
+  function handleConfirmStale(proposal: Proposal) {
+    const dbId = proposal.dbId;
+    if (!dbId) return;
+    const stale = staleByDbId.get(dbId);
+    if (!stale) return;
+    // Confirm the reviewed-fresh change: re-approve carrying the FRESH baseline
+    // hash, which now matches — one extra click completes the flow.
+    void submitReview(proposal, "approved", { baselineHash: stale.baselineHash });
+  }
+
+  function handlePickGroup(proposal: Proposal, group: string | null) {
+    // Disambiguate a legacy cross-group row: re-approve at the picked group.
+    void submitReview(proposal, "approved", { group });
   }
 
   async function handleReconsider(id: string) {
@@ -770,6 +916,8 @@ export default function SemanticImprovePage() {
                   {proposals.map((proposal) => {
                     const itemKey = proposal.dbId ?? `chat-${proposal.index}`;
                     const idSuffix = proposal.dbId ?? String(proposal.index);
+                    const staleUpdate = proposal.dbId ? staleByDbId.get(proposal.dbId) : undefined;
+                    const pickerGroups = proposal.dbId ? pickerByDbId.get(proposal.dbId) : undefined;
                     return (
                       <ProposalCard
                         key={itemKey}
@@ -778,6 +926,10 @@ export default function SemanticImprovePage() {
                         onReject={() => handleReview(proposal, "rejected")}
                         approving={isMutating(`approve-${idSuffix}`)}
                         rejecting={isMutating(`reject-${idSuffix}`)}
+                        staleUpdate={staleUpdate}
+                        onConfirmStale={() => handleConfirmStale(proposal)}
+                        pickerGroups={pickerGroups}
+                        onPickGroup={(group) => handlePickGroup(proposal, group)}
                       />
                     );
                   })}

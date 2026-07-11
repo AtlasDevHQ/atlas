@@ -18,6 +18,12 @@ import {
   AMENDMENT_MUTABLE_FIELDS,
   parseEntityShapeOrError,
 } from "./amendment-validation";
+import {
+  StaleBaselineError,
+  computeEntityDiff,
+  hashBaselineYaml,
+  normalizeEntityYaml,
+} from "./diff";
 
 const log = createLogger("semantic-expert-apply");
 
@@ -69,6 +75,14 @@ export async function resolveAmendmentBaseline(
   orgId: string | null,
   entityName: string,
   group: string | undefined,
+  // #4511 — the disambiguation group an admin picked from a prior cross-group
+  // 409. Consulted ONLY in the unscoped-fallback ambiguity branch below, so a
+  // well-scoped amendment can never be redirected to a different group by a
+  // caller-supplied value ("honored only when the server demanded disambiguation").
+  // `undefined` = none provided; `null` = the legacy/default (flat) scope; a
+  // string = that group. A candidate can legitimately be `null`, which is why
+  // the "provided" test is `!== undefined`, not truthiness.
+  disambiguationGroup?: string | null,
 ): Promise<{
   row: SemanticEntityRow;
   targetGroupId: string | null;
@@ -77,7 +91,7 @@ export async function resolveAmendmentBaseline(
   // Self-hosted (null orgId) uses empty string as sentinel for global scope
   const effectiveOrgId = orgId ?? "";
 
-  const { getEntity } = await import("@atlas/api/lib/semantic/entities");
+  const { getEntity, AmbiguousEntityError } = await import("@atlas/api/lib/semantic/entities");
 
   const lookupScope = groupToLookupScope(group);
   let row = await getEntity(effectiveOrgId, "entity", entityName, lookupScope);
@@ -92,7 +106,19 @@ export async function resolveAmendmentBaseline(
       { entityName, requestedScope: lookupScope },
       "scoped amendment baseline lookup missed — falling back to unscoped resolve",
     );
-    row = await getEntity(effectiveOrgId, "entity", entityName);
+    try {
+      row = await getEntity(effectiveOrgId, "entity", entityName);
+    } catch (fallbackErr) {
+      // #4511 — cross-group ambiguity on a legacy row (the name lives in 2+
+      // groups and no scope resolved it). If the admin picked a disambiguation
+      // group, resolve at THAT explicit scope instead of re-raising the 409;
+      // otherwise re-raise so the route surfaces the group picker.
+      if (fallbackErr instanceof AmbiguousEntityError && disambiguationGroup !== undefined) {
+        row = await getEntity(effectiveOrgId, "entity", entityName, disambiguationGroup);
+      } else {
+        throw fallbackErr;
+      }
+    }
   }
   if (!row) {
     throw new Error(
@@ -132,6 +158,12 @@ export async function applyAmendmentToEntity(
   orgId: string | null,
   result: AnalysisResult,
   requestId: string,
+  // #4511 — review-integrity options: `disambiguationGroup` resolves a legacy
+  // cross-group-ambiguous row at an admin-picked scope; `expectedBaselineHash`
+  // is the hash-carried claim — a mismatch against the current baseline raises
+  // a StaleBaselineError (fresh diff, inline update-and-confirm) instead of
+  // silently applying against a baseline the admin never saw.
+  opts?: { disambiguationGroup?: string | null; expectedBaselineHash?: string },
 ): Promise<void> {
   // Self-hosted (null orgId) uses empty string as sentinel for global scope
   const effectiveOrgId = orgId ?? "";
@@ -142,6 +174,7 @@ export async function applyAmendmentToEntity(
     orgId,
     result.entityName,
     result.group,
+    opts?.disambiguationGroup,
   );
 
   const {
@@ -154,6 +187,28 @@ export async function applyAmendmentToEntity(
 
   // Apply amendment (same logic as CLI's apply-amendment)
   const updated = applyAmendment(parsed, result);
+
+  // #4511 — hash-carried claim: the admin reviewed a live diff computed against
+  // a baseline whose hash they carried into this approve. Recompute the hash
+  // against the baseline we just resolved; a mismatch means the entity changed
+  // since render. That is not a failure — raise a StaleBaselineError carrying
+  // the FRESHLY-computed live diff so the decide seam returns the claim to
+  // pending cleanly and the card presents inline update-and-confirm. Run this
+  // BEFORE the post-apply shape gate: a changed baseline should surface the
+  // fresh-diff confirm, never a shape error against a baseline the admin never
+  // saw. The hash is taken over the normalized baseline, exactly as the
+  // review-render path computed it, so the two can only disagree on real change.
+  if (opts?.expectedBaselineHash !== undefined) {
+    const beforeNormalized = normalizeEntityYaml(parsed);
+    const baselineHash = hashBaselineYaml(beforeNormalized);
+    if (baselineHash !== opts.expectedBaselineHash) {
+      throw new StaleBaselineError({
+        entityName: result.entityName,
+        diff: computeEntityDiff(result.entityName, beforeNormalized, normalizeEntityYaml(updated)),
+        baselineHash,
+      });
+    }
+  }
 
   // Post-apply gate (#4513): the mutated document must still parse as an entity
   // BEFORE it is written. A failure fails the whole apply (nothing is upserted),
@@ -277,8 +332,56 @@ export async function applyAmendmentFromPayload(params: {
   requestId: string;
   /** Identifier surfaced in error messages (pattern / amendment id). */
   label?: string;
+  /**
+   * #4511 — an admin-picked group for a legacy cross-group-ambiguous row. Passed
+   * through to {@link resolveAmendmentBaseline}, where it is honored ONLY when
+   * default resolution is ambiguous (see that function). `undefined` = none.
+   */
+  disambiguationGroup?: string | null;
+  /**
+   * #4511 — the baseline hash the admin rendered. A mismatch against the current
+   * baseline raises a StaleBaselineError (inline update-and-confirm) instead of
+   * applying against an unseen baseline. `undefined` = no hash-carried claim.
+   */
+  expectedBaselineHash?: string;
 }): Promise<void> {
   const { orgId, sourceEntity, connectionGroupId, rawPayload, requestId } = params;
+
+  const result = analysisResultFromStoredPayload({
+    sourceEntity,
+    connectionGroupId,
+    rawPayload,
+    label: params.label,
+  });
+
+  await applyAmendmentToEntity(orgId, result, requestId, {
+    disambiguationGroup: params.disambiguationGroup,
+    expectedBaselineHash: params.expectedBaselineHash,
+  });
+}
+
+/**
+ * Reconstruct an {@link AnalysisResult} from a stored `amendment_payload`
+ * envelope. Shared by the apply seam ({@link applyAmendmentFromPayload}) and the
+ * live-diff render ({@link computeAmendmentLiveDiff}) so the document those two
+ * paths mutate/diff is derived from the payload identically — there is one
+ * envelope→result mapping, not two that could drift.
+ *
+ * The stored payload is the full envelope
+ * (`{ entityName, amendmentType, amendment, rationale, category, … }`); the YAML
+ * mutation in {@link applyAmendment} reads the INNER `amendment` object, so the
+ * reconstructed result carries `payload.amendment`, never the envelope itself.
+ *
+ * @throws when the payload is missing/malformed (a null/corrupt payload or a
+ *   missing inner `amendment` object) — never a silent skip (#4506).
+ */
+export function analysisResultFromStoredPayload(params: {
+  sourceEntity: string;
+  connectionGroupId: string | null;
+  rawPayload: unknown;
+  label?: string;
+}): AnalysisResult {
+  const { sourceEntity, connectionGroupId, rawPayload } = params;
   const label = params.label ?? sourceEntity;
 
   let payload: Record<string, unknown> | null = null;
@@ -314,31 +417,27 @@ export async function applyAmendmentFromPayload(params: {
   const rawCategory = String((payload.category ?? "coverage_gaps") as string);
   const rawAmendmentType = String((payload.amendmentType ?? "update_description") as string);
 
-  await applyAmendmentToEntity(
-    orgId,
-    {
-      entityName: sourceEntity,
-      // Recover the Connection group the amendment was analyzed against so the
-      // apply targets that group's row, not the default scope or a 409 (#3284).
-      // A NULL group means the default (flat) group — map it to the explicit
-      // `"default"` label so the lookup is scoped to NULL rather than running
-      // the unscoped ambiguity check.
-      group: connectionGroupId ?? "default",
-      category: (ANALYSIS_CATEGORIES as readonly string[]).includes(rawCategory)
-        ? (rawCategory as AnalysisCategory)
-        : "coverage_gaps",
-      amendmentType: (AMENDMENT_TYPES as readonly string[]).includes(rawAmendmentType)
-        ? (rawAmendmentType as AmendmentType)
-        : "update_description",
-      amendment: innerAmendment as Record<string, unknown>,
-      rationale: typeof payload.rationale === "string" ? payload.rationale : "",
-      confidence: 0,
-      impact: 0,
-      score: 0,
-      staleness: 0,
-    },
-    requestId,
-  );
+  return {
+    entityName: sourceEntity,
+    // Recover the Connection group the amendment was analyzed against so the
+    // apply targets that group's row, not the default scope or a 409 (#3284).
+    // A NULL group means the default (flat) group — map it to the explicit
+    // `"default"` label so the lookup is scoped to NULL rather than running
+    // the unscoped ambiguity check.
+    group: connectionGroupId ?? "default",
+    category: (ANALYSIS_CATEGORIES as readonly string[]).includes(rawCategory)
+      ? (rawCategory as AnalysisCategory)
+      : "coverage_gaps",
+    amendmentType: (AMENDMENT_TYPES as readonly string[]).includes(rawAmendmentType)
+      ? (rawAmendmentType as AmendmentType)
+      : "update_description",
+    amendment: innerAmendment as Record<string, unknown>,
+    rationale: typeof payload.rationale === "string" ? payload.rationale : "",
+    confidence: 0,
+    impact: 0,
+    score: 0,
+    staleness: 0,
+  };
 }
 
 /** Maps simple "add_*" amendment types to their target array key. */

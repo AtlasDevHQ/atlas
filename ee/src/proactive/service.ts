@@ -42,6 +42,7 @@ import {
   summarizePublicRefused,
 } from "./public-dataset";
 import { announceActivation } from "./announcement-coordinator";
+import { notifyAmendmentsPending } from "./amendment-notification";
 import { getChatAnnouncer } from "./announcer-registry";
 import { listWorkspaceChannels } from "./channel-directory";
 
@@ -73,6 +74,14 @@ export const makeProactiveServiceLive = (): ProactiveServiceShape =>
       ),
     listWorkspaceChannels: (workspaceId) =>
       Effect.promise(() => listWorkspaceChannels(workspaceId)),
+    notifyAmendmentsPending: ({ workspaceId, count }) =>
+      Effect.promise(() =>
+        notifyAmendmentsPending({
+          workspaceId,
+          count,
+          announcer: getChatAnnouncer(),
+        }),
+      ),
   }) satisfies ProactiveServiceShape;
 
 export const ProactiveServiceLive: Layer.Layer<ProactiveService> = Layer.sync(

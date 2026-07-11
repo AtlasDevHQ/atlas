@@ -252,6 +252,9 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
  * 4. Inserts each proposal `pending`; the insert reports auto-approve eligibility
  * 5. Routes eligible proposals through the decide seam (#4506) — claim →
  *    apply + version snapshot → stamp `approved`
+ * 6. Emits ONE batched proactive notice (#4520) when the tick left net-new
+ *    pending Amendments (`queued > 0`) for a real workspace — best-effort,
+ *    over the proactive seam, degrading cleanly to no notice when disabled
  */
 async function runWorkspaceImproveTick(orgId: string | null): Promise<WorkspaceTickOutcome> {
   // Billing gate first — a blocked workspace's tick no-ops before any context
@@ -436,6 +439,60 @@ async function runWorkspaceImproveTick(orgId: string | null): Promise<WorkspaceT
             "Failed to insert semantic amendment",
           );
           counters.errors++;
+        }
+      }
+
+      // 6. One batched proactive notice per tick (#4520). Only the scheduler
+      //    notifies — interactive proposals (admin console / CLI) don't, because
+      //    the admin is already there. `counters.queued` is the net-new pending
+      //    rows the admin must review (auto-approved rows are already applied;
+      //    deduped/rejected produced no new work; plus a rare concurrent-decision
+      //    fallback), so it is exactly the notice's count. The self-hosted
+      //    degenerate workspace (orgId null) has no
+      //    workspace identity to key the proactive channel on, so it is skipped;
+      //    autonomy notifications are a SaaS-first, per-workspace convenience.
+      //
+      //    The whole block is wrapped: the notice is a best-effort convenience
+      //    on top of work already durably committed (the queued Amendments),
+      //    so NOTHING in the notification path — not the dynamic import, not a
+      //    contract violation in the bridge — may taint this tick's reporting.
+      //    Containing it here keeps the already-counted queued/autoApproved rows
+      //    from being dropped by the sweep-level catch (#4520 AC3). The bridge
+      //    itself already degrades a non-EE deploy to a `{ posted: false }`
+      //    skip; this is defence in depth against an unexpected throw.
+      if (orgId && counters.queued > 0) {
+        try {
+          const { notifyAmendmentsPending } = await import(
+            "@atlas/api/lib/proactive/notify-amendments"
+          );
+          const notice = await notifyAmendmentsPending({
+            workspaceId: orgId,
+            count: counters.queued,
+          });
+          if (notice.posted) {
+            log.info(
+              { orgId, count: counters.queued, messageId: notice.messageId ?? null },
+              "Notified workspace admins of pending semantic-layer amendments",
+            );
+          } else {
+            log.debug(
+              { orgId, count: counters.queued, reason: notice.reason },
+              "Amendments-pending notice not posted",
+            );
+          }
+        } catch (notifyErr) {
+          // Should-never-fire: the bridge is designed never to throw, and the
+          // dynamic import is a local module. WARN (not DEBUG) so a genuine
+          // contract regression / module-load break surfaces to operators —
+          // this path is invisible on the healthy tick, so it costs no noise.
+          log.warn(
+            {
+              orgId,
+              count: counters.queued,
+              err: notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
+            },
+            "Amendments-pending notice step threw — tick reporting unaffected",
+          );
         }
       }
 

@@ -202,6 +202,22 @@ describe("POST /api/v1/admin/semantic-improve/chat — audit emission", () => {
     expect(entry!.metadata).toMatchObject({ requestId: entry!.targetId, messageCount: 1 });
     expect(entry!.metadata).not.toHaveProperty("sessionId");
   });
+
+  it("ignores the legacy sessionId body field from stale clients (deploy-overlap window)", async () => {
+    // ChatRequestSchema is non-strict, so a cached web bundle still sending
+    // the deleted `sessionId` field degrades gracefully (stripped) instead
+    // of 400ing mid-deploy. A future `.strict()` change would break stale
+    // clients — this pin makes that a conscious decision.
+    const host = makeRouterHost();
+    const res = await hostRequest(host, "POST", "/chat", {
+      messages: [
+        { role: "user", parts: [{ type: "text", text: "analyze" }], id: "m1" },
+      ],
+      sessionId: "550e8400-e29b-41d4-a716-446655440000",
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-session-id")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

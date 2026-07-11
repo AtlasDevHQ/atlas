@@ -73,7 +73,7 @@ describe("getAutoApproveTypes", () => {
     const allowedTypes = getAutoApproveTypes();
     const higherRisk = [
       "add_join", "add_measure", "update_dimension",
-      "add_query_pattern", "add_glossary_term", "add_virtual_dimension",
+      "add_query_pattern", "add_glossary_term", "update_glossary_term", "add_virtual_dimension",
     ];
     for (const t of higherRisk) {
       expect(allowedTypes.has(t)).toBe(false);

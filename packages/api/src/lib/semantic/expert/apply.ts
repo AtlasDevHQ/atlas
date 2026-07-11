@@ -13,10 +13,11 @@ import { loadYaml } from "../yaml";
 import { ANALYSIS_CATEGORIES, type AnalysisResult, type AnalysisCategory } from "./types";
 import { AMENDMENT_TYPES, type AmendmentType } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
-import type { SemanticEntityRow } from "@atlas/api/lib/semantic/entities";
+import type { SemanticEntityRow, SemanticEntityType } from "@atlas/api/lib/semantic/entities";
 import {
   AMENDMENT_MUTABLE_FIELDS,
   parseEntityShapeOrError,
+  parseGlossaryShapeOrError,
 } from "./amendment-validation";
 
 const log = createLogger("semantic-expert-apply");
@@ -117,6 +118,89 @@ export async function resolveAmendmentBaseline(
   return { row, targetGroupId, parsed };
 }
 
+// ── Glossary amendments (#4518) ──────────────────────────────────────────────
+//
+// A glossary term binds to a Connection group, and the glossary is amendable
+// (CONTEXT.md § Semantic improvement). Glossary amendments do NOT touch an
+// entity file — they write the group's glossary document, a `semantic_entities`
+// row with `entity_type = "glossary"`, `name = "glossary"`, scoped by
+// `connection_group_id`. They ride the SAME resolve → mutate → validate → upsert
+// → snapshot lifecycle as entity amendments (`persistAmendedDocument`), so the
+// live diff, version snapshot, rejection memory, dedup, and auto-approve rules
+// all apply — the type that used to silently no-op now writes for real.
+
+/** The fixed `semantic_entities.name` of the per-group glossary document. */
+export const GLOSSARY_DOC_NAME = "glossary";
+
+/** Whether an amendment type writes the group glossary rather than an entity. */
+export function isGlossaryAmendmentType(amendmentType: AmendmentType): boolean {
+  return amendmentType === "add_glossary_term" || amendmentType === "update_glossary_term";
+}
+
+/**
+ * Resolve an {@link AnalysisResult.group} label to the `connection_group_id` a
+ * glossary write/lookup targets. Unlike an entity, the glossary is ONE document
+ * per group (`name = "glossary"`), so there is no unscoped ambiguity to resolve:
+ * `"default"`/`undefined` → the flat root (`null`); any other label → that group.
+ */
+function glossaryTargetGroup(group: string | undefined): string | null {
+  return group === undefined || group === "default" ? null : group;
+}
+
+/**
+ * The on-disk path a glossary diff/preview is attributed to (ADR-0012 layout):
+ * the flat-root `semantic/glossary.yml` for the default group, or the canonical
+ * `semantic/groups/<group>/glossary.yml` for a named group.
+ */
+export function glossaryDiffPath(group: string | undefined): string {
+  const g = glossaryTargetGroup(group);
+  return g ? `semantic/groups/${g}/glossary.yml` : "semantic/glossary.yml";
+}
+
+/**
+ * Resolve the current glossary ROW + parsed baseline for a group, the glossary
+ * analog of {@link resolveAmendmentBaseline}. Both the diff preview
+ * (`proposeAmendment`) and the write (`applyGlossaryAmendmentToStore`) go
+ * through it, so the document an admin reviews is the one approval mutates.
+ *
+ * A group may not have a glossary yet — an absent (or empty) glossary is NOT an
+ * error (contrast the entity resolver): it seeds an empty `{}` baseline so the
+ * FIRST term creates the document. The returned `targetGroupId` is where every
+ * write-back lands (`null` for the default flat scope).
+ *
+ * @throws only when a PRESENT glossary row's YAML is a non-empty non-mapping.
+ */
+export async function resolveGlossaryBaseline(
+  orgId: string | null,
+  group: string | undefined,
+): Promise<{
+  row: SemanticEntityRow | null;
+  targetGroupId: string | null;
+  parsed: Record<string, unknown>;
+}> {
+  const effectiveOrgId = orgId ?? "";
+  const { getEntity } = await import("@atlas/api/lib/semantic/entities");
+  const targetGroupId = glossaryTargetGroup(group);
+
+  const row = await getEntity(effectiveOrgId, "glossary", GLOSSARY_DOC_NAME, targetGroupId);
+  if (!row) {
+    return { row: null, targetGroupId, parsed: {} };
+  }
+
+  // `loadYaml` returns undefined for an empty/whitespace document — a valid
+  // "empty glossary", not a parse error.
+  const parsed = loadYaml(row.yaml_content) as unknown;
+  if (parsed === undefined || parsed === null) {
+    return { row, targetGroupId, parsed: {} };
+  }
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `Failed to parse glossary for group "${group ?? "default"}": expected a mapping`,
+    );
+  }
+  return { row, targetGroupId, parsed: parsed as Record<string, unknown> };
+}
+
 /**
  * Apply an amendment from an AnalysisResult to the org's semantic entity.
  *
@@ -133,8 +217,12 @@ export async function applyAmendmentToEntity(
   result: AnalysisResult,
   requestId: string,
 ): Promise<void> {
-  // Self-hosted (null orgId) uses empty string as sentinel for global scope
-  const effectiveOrgId = orgId ?? "";
+  // Glossary amendments target the group's glossary document, not an entity —
+  // route them to the glossary path (#4518). Same resolve → mutate → validate →
+  // upsert → snapshot lifecycle, different target document.
+  if (isGlossaryAmendmentType(result.amendmentType)) {
+    return applyGlossaryAmendmentToStore(orgId, result, requestId);
+  }
 
   // Read the baseline through the shared resolver so the diff preview and this
   // write agree on the exact row + scope (#4488). Returns the row's OWN group.
@@ -143,14 +231,6 @@ export async function applyAmendmentToEntity(
     result.entityName,
     result.group,
   );
-
-  const {
-    getEntity,
-    upsertEntityForGroup,
-    createVersion,
-    generateChangeSummary,
-    AmbiguousEntityError,
-  } = await import("@atlas/api/lib/semantic/entities");
 
   // Apply amendment (same logic as CLI's apply-amendment)
   const updated = applyAmendment(parsed, result);
@@ -167,11 +247,109 @@ export async function applyAmendmentToEntity(
     );
   }
 
-  // Serialize back to YAML
+  // Upsert → invalidate → version snapshot (rollback-able) → disk sync, through
+  // the shared persist seam both the entity and glossary paths ride (#4518).
+  await persistAmendedDocument({
+    orgId,
+    docKind: "entity",
+    docName: result.entityName,
+    targetGroupId,
+    preImageYaml: entity.yaml_content,
+    updated,
+    rationale: result.rationale,
+    amendmentType: result.amendmentType,
+    requestId,
+  });
+}
+
+/**
+ * Apply a glossary amendment to the org's group glossary document (#4518).
+ *
+ * The glossary sibling of the entity branch above: resolve the group's glossary
+ * baseline (seeding an empty document when the group has none yet), apply the
+ * term mutation, gate the result against {@link GlossaryShape}, then upsert +
+ * snapshot + disk-sync through the shared {@link persistAmendedDocument} seam —
+ * so the live diff, version snapshot, and rollback-ability are identical to an
+ * entity amendment. `result.group` (not `result.entityName`, the host entity
+ * the term was found under) selects the target glossary.
+ */
+async function applyGlossaryAmendmentToStore(
+  orgId: string | null,
+  result: AnalysisResult,
+  requestId: string,
+): Promise<void> {
+  const { row, targetGroupId, parsed } = await resolveGlossaryBaseline(orgId, result.group);
+
+  const updated = applyGlossaryAmendment(parsed, result);
+
+  // Post-apply gate (#4513/#4518): the mutated document must still parse as a
+  // glossary before it is written, so an amendment can never corrupt the
+  // glossary into a shape the loaders would silently drop.
+  const shapeError = parseGlossaryShapeOrError(updated);
+  if (shapeError) {
+    throw new Error(
+      `Post-apply validation failed for the "${result.group ?? "default"}" glossary: ${shapeError}. The amendment was not applied.`,
+    );
+  }
+
+  await persistAmendedDocument({
+    orgId,
+    docKind: "glossary",
+    docName: GLOSSARY_DOC_NAME,
+    targetGroupId,
+    // A brand-new glossary has no pre-image — "" restores an empty document on a
+    // snapshot-failure rollback (harmless; the next approve converges).
+    preImageYaml: row?.yaml_content ?? "",
+    updated,
+    rationale: result.rationale,
+    amendmentType: result.amendmentType,
+    requestId,
+  });
+}
+
+/**
+ * The shared write tail every amendment apply rides (#4518): serialize → upsert
+ * → invalidate caches → version snapshot (rollback-able) → disk sync. Extracted
+ * so the entity and glossary paths share ONE copy of the load-bearing
+ * rollback-ability contract (#4506) — a snapshot failure fails the whole apply
+ * and best-effort restores the pre-image, keeping the decide seam's
+ * compensation (row → pending) truthful. The disk-mirror sync stays warn-only.
+ *
+ * `docKind`/`docName` select the target row (`"entity"`/entityName or
+ * `"glossary"`/`"glossary"`); the caller has already resolved `targetGroupId`
+ * and validated `updated` against its document shape.
+ */
+async function persistAmendedDocument(params: {
+  orgId: string | null;
+  docKind: SemanticEntityType;
+  docName: string;
+  targetGroupId: string | null;
+  preImageYaml: string;
+  updated: Record<string, unknown>;
+  rationale: string;
+  amendmentType: AmendmentType;
+  requestId: string;
+}): Promise<void> {
+  const {
+    orgId, docKind, docName, targetGroupId, preImageYaml, updated, rationale, amendmentType, requestId,
+  } = params;
+  // Self-hosted (null orgId) uses empty string as sentinel for global scope
+  const effectiveOrgId = orgId ?? "";
+
+  const {
+    getEntity,
+    upsertEntityForGroup,
+    createVersion,
+    generateChangeSummary,
+    AmbiguousEntityError,
+  } = await import("@atlas/api/lib/semantic/entities");
+
+  // Serialize back to YAML (identical options on every path so a diff shows
+  // only content changes, not formatting drift).
   const newYaml = yaml.dump(updated, { lineWidth: 120, noRefs: true });
 
-  // Upsert entity into its own group scope.
-  await upsertEntityForGroup(effectiveOrgId, "entity", result.entityName, newYaml, targetGroupId);
+  // Upsert the document into its own group scope.
+  await upsertEntityForGroup(effectiveOrgId, docKind, docName, newYaml, targetGroupId);
 
   // Invalidate caches immediately — the mutation has landed, so a stale
   // whitelist must not outlive it even if the version snapshot below fails.
@@ -184,21 +362,21 @@ export async function applyAmendmentToEntity(
   // can't be rolled back. Tagged errors (AmbiguousEntityError) re-throw
   // untouched so the route layer maps them to 409 with `groups`.
   try {
-    const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName, targetGroupId);
+    const refreshed = await getEntity(effectiveOrgId, docKind, docName, targetGroupId);
     if (!refreshed) {
-      throw new Error("entity row not found after upsert");
+      throw new Error(`${docKind} row not found after upsert`);
     }
-    const changeSummary = await generateChangeSummary(entity.yaml_content, newYaml);
-    const versionSummary = `Expert agent: ${result.rationale}${changeSummary ? ` (${changeSummary})` : ""}`;
+    const changeSummary = await generateChangeSummary(preImageYaml, newYaml);
+    const versionSummary = `Expert agent: ${rationale}${changeSummary ? ` (${changeSummary})` : ""}`;
     await createVersion(
-      refreshed.id, effectiveOrgId, "entity", result.entityName, newYaml, versionSummary,
+      refreshed.id, effectiveOrgId, docKind, docName, newYaml, versionSummary,
       "expert-agent", "Semantic Expert Agent",
     );
   } catch (versionErr) {
     if (versionErr instanceof AmbiguousEntityError) throw versionErr;
     const msg = versionErr instanceof Error ? versionErr.message : String(versionErr);
     log.warn(
-      { err: msg, requestId, orgId, entity: result.entityName },
+      { err: msg, requestId, orgId, doc: docName, docKind },
       "Version snapshot failed — failing the amendment apply (rollback-ability is part of the apply)",
     );
     // The upsert has already landed, so a compensated "pending" row would lie
@@ -208,9 +386,7 @@ export async function applyAmendmentToEntity(
     // never reads "pending" + a neutral reason and rejects a LIVE change.
     let restored = false;
     try {
-      await upsertEntityForGroup(
-        effectiveOrgId, "entity", result.entityName, entity.yaml_content, targetGroupId,
-      );
+      await upsertEntityForGroup(effectiveOrgId, docKind, docName, preImageYaml, targetGroupId);
       invalidateOrgWhitelist(effectiveOrgId);
       restored = true;
     } catch (restoreErr) {
@@ -219,33 +395,34 @@ export async function applyAmendmentToEntity(
           err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr),
           requestId,
           orgId,
-          entity: result.entityName,
+          doc: docName,
+          docKind,
         },
-        "Failed to roll back entity YAML after snapshot failure — the change is LIVE while the amendment returns to pending",
+        "Failed to roll back YAML after snapshot failure — the change is LIVE while the amendment returns to pending",
       );
     }
     throw new Error(
       restored
-        ? `Version snapshot failed for entity "${result.entityName}": ${msg}. The YAML change was rolled back — retry the approval.`
-        : `Version snapshot failed for entity "${result.entityName}": ${msg}. WARNING: the YAML change is still applied (rollback also failed) — retry the approval to converge; do not reject.`,
+        ? `Version snapshot failed for ${docKind} "${docName}": ${msg}. The YAML change was rolled back — retry the approval.`
+        : `Version snapshot failed for ${docKind} "${docName}": ${msg}. WARNING: the YAML change is still applied (rollback also failed) — retry the approval to converge; do not reject.`,
       { cause: versionErr },
     );
   }
 
-  // Sync to disk (non-fatal) — same group so the on-disk mirror lands in
-  // `groups/<group>/entities/` rather than the flat default dir.
+  // Sync to disk (non-fatal) — same group so the on-disk mirror lands in the
+  // group namespace (`groups/<group>/…`) rather than the flat default dir.
   try {
     const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
-    await syncEntityToDisk(effectiveOrgId, result.entityName, "entity", newYaml, targetGroupId);
+    await syncEntityToDisk(effectiveOrgId, docName, docKind, newYaml, targetGroupId);
   } catch (syncErr) {
     log.warn(
-      { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, entity: result.entityName },
+      { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, doc: docName, docKind },
       "Amendment applied but disk sync failed",
     );
   }
 
   log.info(
-    { requestId, orgId, entity: result.entityName, amendmentType: result.amendmentType, group: targetGroupId },
+    { requestId, orgId, doc: docName, docKind, amendmentType, group: targetGroupId },
     "Semantic amendment applied via expert agent",
   );
 }
@@ -453,11 +630,117 @@ export function applyAmendment(
       break;
     }
     case "add_glossary_term":
-      // Glossary amendments don't modify entity files
-      break;
+    case "update_glossary_term":
+      // Glossary amendments target the group glossary document, not an entity —
+      // they must go through applyGlossaryAmendment (#4518). Reaching here means
+      // a caller dispatched a glossary type down the entity mutation path.
+      throw new Error(
+        `Glossary amendment "${result.amendmentType}" must be applied via applyGlossaryAmendment, not applyAmendment`,
+      );
     default:
       throw new Error(`Unsupported amendment type: ${result.amendmentType}`);
   }
 
   return updated;
+}
+
+/**
+ * Read a glossary `terms` collection into a term→value object map, honoring
+ * BOTH on-disk shapes — the canonical object map (`terms: { <name>: {...} }`)
+ * and the legacy array form (`terms: [{ term, ... }]`). The write always
+ * produces object form (what the generator emits and every loader reads), so
+ * amending a legacy array-form glossary migrates it to the canonical shape.
+ * Non-object term values (never produced in practice) are coerced to `{}` so
+ * the result is uniformly object-valued.
+ */
+function termsToMap(terms: unknown): Record<string, Record<string, unknown>> {
+  const map: Record<string, Record<string, unknown>> = {};
+  if (Array.isArray(terms)) {
+    for (const entry of terms) {
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        const rec = entry as Record<string, unknown>;
+        const name = rec.term;
+        if (typeof name === "string" && name.length > 0) {
+          const { term: _term, ...rest } = rec;
+          map[name] = rest;
+        }
+      }
+    }
+  } else if (terms && typeof terms === "object") {
+    for (const [name, value] of Object.entries(terms as Record<string, unknown>)) {
+      map[name] =
+        value && typeof value === "object" && !Array.isArray(value)
+          ? { ...(value as Record<string, unknown>) }
+          : {};
+    }
+  }
+  return map;
+}
+
+/**
+ * Apply a glossary amendment to a parsed glossary document (#4518). Returns a
+ * new object; the input is never mutated.
+ *
+ * - `add_glossary_term` upserts the term value (create-or-replace by term name),
+ *   idempotent like the entity `add_*` handlers — a re-approval converges rather
+ *   than duplicating.
+ * - `update_glossary_term` requires the term to already exist (throws otherwise,
+ *   mirroring `update_dimension`) and copies ONLY its declared mutable fields
+ *   (`definition`, `ambiguous`), preserving any other term attributes.
+ */
+export function applyGlossaryAmendment(
+  glossary: Record<string, unknown>,
+  result: AnalysisResult,
+): Record<string, unknown> {
+  const updated = structuredClone(glossary);
+  const amendment = result.amendment;
+  const term = amendment.term;
+  if (typeof term !== "string" || term.trim() === "") {
+    throw new Error(
+      `Glossary amendment for entity "${result.entityName}" is missing a "term".`,
+    );
+  }
+
+  const terms = termsToMap(updated.terms);
+  const existing = terms[term];
+
+  if (result.amendmentType === "update_glossary_term") {
+    if (!existing) {
+      throw new Error(
+        `Cannot update glossary term "${term}": not defined in the "${result.group ?? "default"}" glossary`,
+      );
+    }
+    // Typed mutation (mirrors update_dimension): copy ONLY the fields
+    // update_glossary_term declares it may touch; `term` is the selector.
+    const mutable = AMENDMENT_MUTABLE_FIELDS.update_glossary_term ?? [];
+    const next = { ...existing };
+    for (const field of mutable) {
+      if (Object.hasOwn(amendment, field)) next[field] = amendment[field];
+    }
+    terms[term] = next;
+  } else {
+    // add_glossary_term — upsert the term VALUE (everything but the `term` key,
+    // which is the map key). Last-write-wins on re-approval, like add_dimension.
+    const { term: _term, ...value } = amendment;
+    terms[term] = value;
+  }
+
+  updated.terms = terms;
+  return updated;
+}
+
+/**
+ * Dispatch an amendment's pure YAML mutation to the right document mutator: the
+ * group glossary for glossary types, else the entity mutation. The single entry
+ * point the propose seam's diff preview goes through, so preview and apply agree
+ * on the mutation for every amendment type (#4518). `doc` MUST be the matching
+ * baseline (the glossary document for glossary types, the entity otherwise).
+ */
+export function applyAmendmentMutation(
+  doc: Record<string, unknown>,
+  result: AnalysisResult,
+): Record<string, unknown> {
+  return isGlossaryAmendmentType(result.amendmentType)
+    ? applyGlossaryAmendment(doc, result)
+    : applyAmendment(doc, result);
 }

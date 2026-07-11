@@ -64,6 +64,7 @@ export function amendmentTargetName(
       if (typeof a.dimension === "string") return a.dimension;
       return undefined;
     case "add_glossary_term":
+    case "update_glossary_term":
       return typeof a.term === "string" ? a.term : undefined;
     default:
       return typeof a.name === "string" ? a.name : undefined;

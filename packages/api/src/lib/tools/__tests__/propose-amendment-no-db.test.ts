@@ -45,6 +45,14 @@ void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   applyAmendment: stubApplyAmendment,
   resolveAmendmentBaseline: mock(() => Promise.reject(new Error("should not be called without a DB"))),
   applyAmendmentFromPayload: mock(() => Promise.resolve()),
+  // #4518: propose dispatches via applyAmendmentMutation; this is an entity
+  // amendment, so the dispatcher resolves to the entity stub.
+  applyAmendmentMutation: stubApplyAmendment,
+  isGlossaryAmendmentType: (t: string) =>
+    t === "add_glossary_term" || t === "update_glossary_term",
+  resolveGlossaryBaseline: mock(() => Promise.reject(new Error("should not be called without a DB"))),
+  glossaryDiffPath: (g?: string) =>
+    g && g !== "default" ? `semantic/groups/${g}/glossary.yml` : "semantic/glossary.yml",
 }));
 
 void mock.module("@atlas/api/lib/logger", () => ({

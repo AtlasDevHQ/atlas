@@ -7,7 +7,7 @@
 import { describe, it, expect } from "bun:test";
 import type { AnalysisResult } from "../types";
 import { createAnalysisResult } from "../scoring";
-import { applyAmendment } from "../apply";
+import { applyAmendment, applyGlossaryAmendment, applyAmendmentMutation } from "../apply";
 
 function makeResult(
   entity: string,
@@ -169,13 +169,13 @@ describe("applyAmendment", () => {
     expect(vdim?.virtual).toBe(true);
   });
 
-  it("does not modify entity for add_glossary_term", () => {
-    const result = makeResult("orders", "add_glossary_term", {
-      term: "MRR", definition: "Monthly Recurring Revenue",
-    });
-    const updated = applyAmendment(baseEntity, result);
-    expect(updated.dimensions).toHaveLength(2);
-    expect(updated.measures).toHaveLength(1);
+  it("throws when a glossary type is dispatched down the entity mutation path (#4518)", () => {
+    // Glossary amendments must go through applyGlossaryAmendment — the entity
+    // mutation no longer silently no-ops them.
+    for (const type of ["add_glossary_term", "update_glossary_term"] as const) {
+      const result = makeResult("orders", type, { term: "MRR", definition: "Monthly Recurring Revenue" });
+      expect(() => applyAmendment(baseEntity, result)).toThrow("must be applied via applyGlossaryAmendment");
+    }
   });
 
   it("throws for unsupported amendment type", () => {
@@ -254,5 +254,131 @@ describe("applyAmendment", () => {
     });
     const twice = applyAmendment(applyAmendment(baseEntity, result), result);
     expect(twice.query_patterns as unknown[]).toHaveLength(2);
+  });
+});
+
+// ── Glossary mutation (#4518) — the pure applyGlossaryAmendment function ──────
+
+function glossaryResult(
+  type: "add_glossary_term" | "update_glossary_term",
+  amendment: Record<string, unknown>,
+  group = "default",
+): AnalysisResult {
+  return createAnalysisResult({
+    category: "glossary_gaps",
+    entityName: "orders",
+    group,
+    amendmentType: type,
+    amendment,
+    rationale: "define the term",
+    impact: 0.5,
+    confidence: 0.6,
+    staleness: 0,
+  });
+}
+
+describe("applyGlossaryAmendment (#4518)", () => {
+  it("adds a term to an empty glossary, keyed by term name (term key excluded from value)", () => {
+    const updated = applyGlossaryAmendment({}, glossaryResult("add_glossary_term", {
+      term: "MRR", definition: "Monthly Recurring Revenue", ambiguous: false,
+    }));
+    const terms = updated.terms as Record<string, Record<string, unknown>>;
+    expect(terms.MRR).toEqual({ definition: "Monthly Recurring Revenue", ambiguous: false });
+    // The term is the map key, never duplicated into the value.
+    expect(terms.MRR).not.toHaveProperty("term");
+  });
+
+  it("adds a term alongside existing terms without disturbing them", () => {
+    const base = { terms: { ARR: { definition: "Annual Recurring Revenue" } } };
+    const updated = applyGlossaryAmendment(base, glossaryResult("add_glossary_term", {
+      term: "MRR", definition: "Monthly Recurring Revenue",
+    }));
+    const terms = updated.terms as Record<string, Record<string, unknown>>;
+    expect(terms.ARR).toEqual({ definition: "Annual Recurring Revenue" });
+    expect(terms.MRR).toEqual({ definition: "Monthly Recurring Revenue" });
+  });
+
+  it("add is idempotent — re-adding the same term replaces (last-write-wins), never duplicates", () => {
+    const v1 = applyGlossaryAmendment({}, glossaryResult("add_glossary_term", {
+      term: "MRR", definition: "old",
+    }));
+    const v2 = applyGlossaryAmendment(v1, glossaryResult("add_glossary_term", {
+      term: "MRR", definition: "new",
+    }));
+    const terms = v2.terms as Record<string, Record<string, unknown>>;
+    expect(Object.keys(terms)).toEqual(["MRR"]);
+    expect(terms.MRR.definition).toBe("new");
+  });
+
+  it("update copies ONLY the declared mutable fields, preserving other term attributes", () => {
+    const base = {
+      terms: {
+        status: {
+          status: "ambiguous",
+          note: "appears in multiple tables",
+          possible_mappings: ["orders.status", "payments.status"],
+          definition: "old definition",
+        },
+      },
+    };
+    const updated = applyGlossaryAmendment(base, glossaryResult("update_glossary_term", {
+      term: "status", definition: "Fulfillment status", ambiguous: true,
+    }));
+    const term = (updated.terms as Record<string, Record<string, unknown>>).status;
+    // Declared fields applied.
+    expect(term.definition).toBe("Fulfillment status");
+    expect(term.ambiguous).toBe(true);
+    // Non-declared attributes preserved untouched.
+    expect(term.note).toBe("appears in multiple tables");
+    expect(term.possible_mappings).toEqual(["orders.status", "payments.status"]);
+    expect(term.status).toBe("ambiguous");
+  });
+
+  it("update throws when the term is not defined in the group glossary", () => {
+    expect(() =>
+      applyGlossaryAmendment({ terms: {} }, glossaryResult("update_glossary_term", {
+        term: "ghost", definition: "nope",
+      })),
+    ).toThrow(/Cannot update glossary term "ghost"/);
+  });
+
+  it("normalizes a legacy array-form glossary to object form on write", () => {
+    const base = { terms: [{ term: "ARR", definition: "Annual Recurring Revenue" }] };
+    const updated = applyGlossaryAmendment(base, glossaryResult("add_glossary_term", {
+      term: "MRR", definition: "Monthly Recurring Revenue",
+    }));
+    const terms = updated.terms as Record<string, Record<string, unknown>>;
+    expect(Array.isArray(updated.terms)).toBe(false);
+    expect(terms.ARR).toEqual({ definition: "Annual Recurring Revenue" });
+    expect(terms.MRR).toEqual({ definition: "Monthly Recurring Revenue" });
+  });
+
+  it("does not mutate the input glossary", () => {
+    const base = { terms: { ARR: { definition: "Annual Recurring Revenue" } } };
+    const snapshot = structuredClone(base);
+    applyGlossaryAmendment(base, glossaryResult("add_glossary_term", { term: "MRR", definition: "x" }));
+    expect(base).toEqual(snapshot);
+  });
+
+  it("throws when the amendment carries no term", () => {
+    expect(() =>
+      applyGlossaryAmendment({}, glossaryResult("add_glossary_term", { definition: "no term" })),
+    ).toThrow(/missing a "term"/);
+  });
+});
+
+describe("applyAmendmentMutation dispatcher (#4518)", () => {
+  it("routes glossary types to the glossary mutation", () => {
+    const updated = applyAmendmentMutation({}, glossaryResult("add_glossary_term", {
+      term: "MRR", definition: "Monthly Recurring Revenue",
+    }));
+    expect((updated.terms as Record<string, unknown>).MRR).toBeTruthy();
+  });
+
+  it("routes entity types to the entity mutation", () => {
+    const updated = applyAmendmentMutation(baseEntity, makeResult("orders", "add_dimension", {
+      name: "region", sql: "region", type: "string",
+    }));
+    expect((updated.dimensions as unknown[]).length).toBe(3);
   });
 });

@@ -67,6 +67,9 @@ describe("amendmentTargetName", () => {
 
   it("reads .term for glossary terms", () => {
     expect(amendmentTargetName("add_glossary_term", { term: "arr", definition: "" })).toBe("arr");
+    // #4518: update_glossary_term keys on .term too, so rejection memory + pending
+    // dedup identify a term amendment regardless of add-vs-update verb.
+    expect(amendmentTargetName("update_glossary_term", { term: "churn", definition: "x" })).toBe("churn");
   });
 
   it("is coarse (undefined) for add_query_pattern — the stored name carries a per-run index", () => {

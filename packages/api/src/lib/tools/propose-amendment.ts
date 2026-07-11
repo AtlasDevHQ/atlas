@@ -22,6 +22,7 @@ import {
   validateAmendmentPayload,
   validateEmbeddedSql,
   parseEntityShapeOrError,
+  parseGlossaryShapeOrError,
 } from "@atlas/api/lib/semantic/expert/amendment-validation";
 
 const log = createLogger("tool:propose-amendment");
@@ -29,9 +30,9 @@ const log = createLogger("tool:propose-amendment");
 export const proposeAmendment = tool({
   description: `Propose a semantic layer YAML change. Generates a unified diff and writes to the review queue.
 
-Amendment types: add_dimension, add_measure, add_join, add_query_pattern, update_description, update_dimension, add_glossary_term, add_virtual_dimension.
+Amendment types: add_dimension, add_measure, add_join, add_query_pattern, update_description, update_dimension, add_glossary_term, update_glossary_term, add_virtual_dimension.
 
-The amendment object should match the YAML structure for that type (e.g., { name, sql, type, description } for a dimension).`,
+The amendment object should match the YAML structure for that type (e.g., { name, sql, type, description } for a dimension; { term, definition, ambiguous } for a glossary term). Glossary amendments (add_glossary_term / update_glossary_term) write the group's glossary document; entityName is the table the term relates to.`,
 
   inputSchema: z.object({
     entityName: z.string().describe("Entity (table) name to amend"),
@@ -43,6 +44,7 @@ The amendment object should match the YAML structure for that type (e.g., { name
       "update_description",
       "update_dimension",
       "add_glossary_term",
+      "update_glossary_term",
       "add_virtual_dimension",
     ]),
     amendment: z
@@ -87,11 +89,18 @@ The amendment object should match the YAML structure for that type (e.g., { name
         return { error: payloadError };
       }
 
-      // Load the current entity baseline.
+      // Glossary amendments write the group's glossary document, not an entity
+      // (#4518) — they resolve, diff, and validate against the glossary, not the
+      // entity named by `entityName` (which is the host table the term relates to).
+      const { isGlossaryAmendmentType, resolveGlossaryBaseline, glossaryDiffPath } =
+        await import("@atlas/api/lib/semantic/expert/apply");
+      const isGlossary = isGlossaryAmendmentType(amendmentType);
+
+      // Load the current baseline (entity, or the group glossary document).
       //
       // When an internal DB is present (SaaS + self-hosted-with-DB), entities
-      // live in `semantic_entities` — org entities and group entities are
-      // ABSENT from the flat disk root (ADR-0012). Read them through the SAME
+      // and glossaries live in `semantic_entities` — org/group rows are ABSENT
+      // from the flat disk root (ADR-0012). Read them through the SAME
       // org/group-aware resolver the apply path uses, so the diff the admin
       // reviews describes exactly what approval writes (#4488). The resolved
       // `targetGroupId` is the row's OWN group — persisted on the insert below
@@ -101,16 +110,38 @@ The amendment object should match the YAML structure for that type (e.g., { name
       let applyGroupId: string | null = null;
 
       if (hasInternalDB()) {
-        const { resolveAmendmentBaseline } = await import(
-          "@atlas/api/lib/semantic/expert/apply"
-        );
-        const baseline = await resolveAmendmentBaseline(
-          orgId,
-          entityName,
-          connectionGroupId,
-        );
-        entity = baseline.parsed;
-        applyGroupId = baseline.targetGroupId;
+        if (isGlossary) {
+          // An absent glossary seeds an empty baseline, so the first term's diff
+          // shows the document being created.
+          const baseline = await resolveGlossaryBaseline(orgId, connectionGroupId);
+          entity = baseline.parsed;
+          applyGroupId = baseline.targetGroupId;
+        } else {
+          const { resolveAmendmentBaseline } = await import(
+            "@atlas/api/lib/semantic/expert/apply"
+          );
+          const baseline = await resolveAmendmentBaseline(
+            orgId,
+            entityName,
+            connectionGroupId,
+          );
+          entity = baseline.parsed;
+          applyGroupId = baseline.targetGroupId;
+        }
+      } else if (isGlossary) {
+        // No internal DB (self-hosted preview only): the group-scoped store/apply
+        // path never runs, so preview the flat-root glossary.yml (empty when
+        // absent, so a first term still renders a diff).
+        const glossaryPath = path.join(getSemanticRoot(), "glossary.yml");
+        const raw = fs.existsSync(glossaryPath)
+          ? loadYaml(fs.readFileSync(glossaryPath, "utf-8"))
+          : {};
+        if (raw && (typeof raw !== "object" || Array.isArray(raw))) {
+          return {
+            error: `Glossary file glossary.yml could not be parsed as a YAML mapping. The file may be malformed.`,
+          };
+        }
+        entity = (raw as Record<string, unknown> | undefined) ?? {};
       } else {
         // No internal DB (self-hosted preview only): entities live on disk in
         // the flat root and the apply path never runs (the DB-backed insert +
@@ -167,11 +198,12 @@ The amendment object should match the YAML structure for that type (e.g., { name
       }
 
       // Apply the amendment through the SAME authoritative mutation the apply
-      // path uses (upsertByIdentity, throw-on-missing-target) — no divergent
-      // local copy that could preview a clean append where apply replaces, or
-      // "no change" where apply errors (#4488).
-      const { applyAmendment } = await import("@atlas/api/lib/semantic/expert/apply");
-      const updated = applyAmendment(entity, {
+      // path uses (upsertByIdentity, throw-on-missing-target for entities; the
+      // group glossary term upsert for glossary types) — no divergent local copy
+      // that could preview a clean append where apply replaces, or "no change"
+      // where apply errors (#4488, #4518).
+      const { applyAmendmentMutation } = await import("@atlas/api/lib/semantic/expert/apply");
+      const updated = applyAmendmentMutation(entity, {
         category: "coverage_gaps",
         entityName,
         group: connectionGroupId ?? "default",
@@ -185,12 +217,18 @@ The amendment object should match the YAML structure for that type (e.g., { name
       } satisfies AnalysisResult);
 
       // Validation seam, gate 3 (#4513): the post-apply document must still
-      // parse as a semantic entity before it can be queued. The apply seam runs
+      // parse as its document shape before it can be queued. The apply seam runs
       // the same gate again at approval time; validating here keeps a
       // structurally-broken change out of the pending queue entirely.
-      const shapeError = parseEntityShapeOrError(updated);
+      const shapeError = isGlossary
+        ? parseGlossaryShapeOrError(updated)
+        : parseEntityShapeOrError(updated);
       if (shapeError) {
-        return { error: `This amendment would corrupt entity "${entityName}": ${shapeError}.` };
+        return {
+          error: isGlossary
+            ? `This amendment would corrupt the glossary: ${shapeError}.`
+            : `This amendment would corrupt entity "${entityName}": ${shapeError}.`,
+        };
       }
 
       // Normalize both sides through yaml.dump() with identical options so
@@ -204,8 +242,12 @@ The amendment object should match the YAML structure for that type (e.g., { name
       const beforeNormalized = yaml.dump(entity, dumpOpts);
       const afterYaml = yaml.dump(updated, dumpOpts);
 
-      // Generate diff — LCS-based algorithm produces proper multi-hunk unified diffs
-      const filePath = `semantic/entities/${entityName}.yml`;
+      // Generate diff — LCS-based algorithm produces proper multi-hunk unified
+      // diffs. Glossary amendments attribute the diff to the group's
+      // glossary.yml, not an entity file (#4518).
+      const filePath = isGlossary
+        ? glossaryDiffPath(connectionGroupId)
+        : `semantic/entities/${entityName}.yml`;
       const diff = createTwoFilesPatch(filePath, filePath, beforeNormalized, afterYaml, "", "", { context: 3 });
 
       // Run test query if provided — route through the full production

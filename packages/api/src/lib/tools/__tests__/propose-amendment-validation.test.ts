@@ -58,6 +58,14 @@ void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   applyAmendmentFromPayload: mock(() => Promise.resolve()),
   resolveAmendmentBaseline: mockResolveBaseline,
   applyAmendment: stubApply,
+  // #4518: propose dispatches via applyAmendmentMutation; these validation
+  // cases are entity amendments, so the dispatcher resolves to the entity stub.
+  applyAmendmentMutation: stubApply,
+  isGlossaryAmendmentType: (t: string) =>
+    t === "add_glossary_term" || t === "update_glossary_term",
+  resolveGlossaryBaseline: mock(() => Promise.resolve({ row: null, targetGroupId: null, parsed: {} })),
+  glossaryDiffPath: (g?: string) =>
+    g && g !== "default" ? `semantic/groups/${g}/glossary.yml` : "semantic/glossary.yml",
 }));
 
 void mock.module("@atlas/api/lib/logger", () => ({

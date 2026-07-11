@@ -62,16 +62,22 @@ export function isExpectedLiveDiffError(err: unknown): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * The optional Anchor (#4519) an improvement conversation launched from — a
- * connection group or a single entity — scoping the turn-one Briefing. Absent ⇒
- * an anchorless sweep (unchanged behavior). Sent on every turn so the Briefing
- * stays scoped; the shape mirrors `ImproveAnchor` in
+ * The optional Anchor (#4519, #4521) an improvement conversation launched from —
+ * a connection group, a single entity, or a single column — scoping the turn-one
+ * Briefing. Absent ⇒ an anchorless sweep (unchanged behavior). Sent on every turn
+ * so the Briefing stays scoped; the shape mirrors `ImproveAnchor` in
  * `lib/semantic/expert/anchor.ts` (local wire type, matching this surface's
  * inline-zod convention).
  */
 const AnchorSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("group"), group: z.string().min(1) }),
   z.object({ kind: z.literal("entity"), entity: z.string().min(1), group: z.string().min(1).optional() }),
+  z.object({
+    kind: z.literal("column"),
+    entity: z.string().min(1),
+    column: z.string().min(1),
+    group: z.string().min(1).optional(),
+  }),
 ]);
 
 const ChatRequestSchema = z.object({
@@ -604,6 +610,88 @@ const healthScoreRoute = createRoute({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Coverage view (#4521)
+// ---------------------------------------------------------------------------
+
+const ColumnCoverageSchema = z.object({
+  column: z.string(),
+  type: z.string(),
+  isPrimaryKey: z.boolean(),
+  covered: z.boolean(),
+  dimension: z.string().nullable(),
+  described: z.boolean(),
+  sampled: z.boolean(),
+});
+
+const TableCoverageSchema = z.object({
+  table: z.string(),
+  rowCount: z.number(),
+  entity: z.string().nullable(),
+  group: z.string().nullable(),
+  state: z.enum(["covered", "partial", "uncovered"]),
+  columns: z.array(ColumnCoverageSchema),
+  coveredColumnCount: z.number(),
+  coverableColumnCount: z.number(),
+});
+
+const CoverageMatrixSchema = z.object({
+  tables: z.array(TableCoverageSchema),
+  summary: z.object({
+    coveredTables: z.number(),
+    partialTables: z.number(),
+    uncoveredTables: z.number(),
+    totalTables: z.number(),
+  }),
+});
+
+const ConnectionCoverageSchema = z.object({
+  installId: z.string(),
+  group: z.string(),
+  dbType: z.string().nullable(),
+  status: z.enum(["ready", "profiling", "error"]),
+  error: z.string().nullable(),
+  freshness: z.string().nullable(),
+  coverage: CoverageMatrixSchema.nullable(),
+});
+
+const CoverageOverviewResponseSchema = z.object({
+  connections: z.array(ConnectionCoverageSchema),
+  /** True while any connection is still profiling — drives the client poll. */
+  profiling: z.boolean(),
+});
+
+const coverageRoute = createRoute({
+  method: "get",
+  path: "/coverage",
+  tags: ["Admin — Semantic Improve"],
+  summary: "Table/column coverage of the physical schema vs the semantic layer",
+  description:
+    "Browses each connection's physical schema (from its baseline profile, #4509) " +
+    "matched against the semantic store, reporting per table/column whether coverage " +
+    "exists and how good it is. A connection without a baseline triggers the lazy " +
+    "backfill and reports `status: \"profiling\"` (poll until it lands). Uncovered " +
+    "tables/columns route to the enrich flow — never an amendment (ADR-0032).",
+  responses: {
+    200: {
+      description: "Per-connection coverage overview",
+      content: {
+        "application/json": {
+          schema: CoverageOverviewResponseSchema,
+        },
+      },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // GET /pending-count
 adminSemanticImprove.openapi(pendingCountRoute, async (c) =>
   runHandler(c, "pending-amendment-count", async () => {
@@ -886,5 +974,26 @@ adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
     const status = deriveHealthStatus(parseFailures, totalRows, ctx.entities.length);
 
     return c.json({ ...score, status, parseFailures, totalRows }, 200);
+  }),
+);
+
+// GET /coverage — the column-anchored coverage view (#4521)
+adminSemanticImprove.openapi(coverageRoute, async (c) =>
+  runHandler(c, "semantic-coverage", async () => {
+    const { orgId } = c.get("orgContext");
+
+    // The overview assembles per-connection coverage from tracked baseline
+    // profiles (#4509) × the semantic store. A connection without a baseline
+    // triggers the lazy backfill in the background and reports `profiling`; the
+    // client polls until it lands. No live customer-database query blocks this
+    // response — the backfill is fire-and-forget inside the loader.
+    const { loadCoverageOverview } = await import("@atlas/api/lib/semantic/expert/coverage-inputs");
+    const overview = await loadCoverageOverview(orgId);
+
+    // The overview's domain types are deeply `readonly` (immutable by construction);
+    // the OpenAPI response type is the mutable structural mirror. Widen readonly →
+    // mutable at this single serialization seam — a benign JSON-boundary cast, not
+    // a shape change (the two are structurally identical bar the modifier).
+    return c.json(overview as z.infer<typeof CoverageOverviewResponseSchema>, 200);
   }),
 );

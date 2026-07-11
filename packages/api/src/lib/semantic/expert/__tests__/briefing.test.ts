@@ -294,6 +294,60 @@ describe("assembleBriefing — anchors (#4519)", () => {
     expect(block).toContain("no tracked baseline profile for `orders`'s table yet");
   });
 
+  it("front-loads a covered column anchor's dimension YAML, profile, and refine-only rule (#4521)", () => {
+    const anchor: BriefingAnchor = {
+      kind: "column",
+      entity: "orders",
+      group: "prod",
+      column: "status",
+      covered: true,
+      dimensionYaml: "name: status\nsql: status\ntype: string\ndescription: Order lifecycle status",
+      columnProfile: { type: "varchar", nullable: false, uniqueCount: 3, nullCount: 0, sampleValues: ["open", "closed"] },
+    };
+    const block = assembleBriefing(makeInputs({ anchor }));
+
+    expect(block).toContain("### Anchor: column `status` on entity `orders` (group `prod`)");
+    expect(block).toContain("Refine its modeling only");
+    expect(block).toContain("Current dimension YAML:");
+    expect(block).toContain("description: Order lifecycle status");
+    expect(block).toContain("Profile: type `varchar`, not null, 3 distinct, 0 nulls. Samples: open, closed.");
+    // Anchor is placed ahead of the health section so the agent orients to it.
+    expect(block.indexOf("### Anchor:")).toBeLessThan(block.indexOf("### Health:"));
+  });
+
+  it("renders an uncovered column anchor honestly, routing growth to enrich (ADR-0032)", () => {
+    const anchor: BriefingAnchor = {
+      kind: "column",
+      entity: "orders",
+      group: null,
+      column: "amount",
+      covered: false,
+      dimensionYaml: null,
+      columnProfile: { type: "numeric", nullable: true, uniqueCount: null, nullCount: null, sampleValues: [] },
+    };
+    const block = assembleBriefing(makeInputs({ anchor }));
+    expect(block).toContain("### Anchor: column `amount` on entity `orders`");
+    expect(block).not.toContain("(group `");
+    expect(block).toContain("not yet modeled as a dimension");
+    expect(block).toContain("does not expand the queryable table set");
+    // No sample line when there are none; profile facts still render.
+    expect(block).toContain("Profile: type `numeric`, nullable.");
+  });
+
+  it("notes a missing column profile rather than omitting the line", () => {
+    const anchor: BriefingAnchor = {
+      kind: "column",
+      entity: "orders",
+      group: null,
+      column: "status",
+      covered: true,
+      dimensionYaml: "name: status\nsql: status\ntype: string",
+      columnProfile: null,
+    };
+    const block = assembleBriefing(makeInputs({ anchor }));
+    expect(block).toContain("no tracked baseline profile for `status` yet");
+  });
+
   it("renders no anchor section for an anchorless sweep, byte-identical to pre-anchor (AC4)", () => {
     const sweep = assembleBriefing(makeInputs());
     expect(sweep).not.toContain("### Anchor:");

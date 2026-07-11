@@ -130,3 +130,80 @@ describe("resolveBriefingAnchor — entity", () => {
     expect(anchor).toBeNull();
   });
 });
+
+describe("resolveBriefingAnchor — column (#4521)", () => {
+  it("front-loads a covered column's dimension YAML and its column profile", () => {
+    const described = entity({
+      dimensions: [
+        {
+          name: "status",
+          sql: "status",
+          type: "string",
+          description: "Order lifecycle status",
+          sample_values: ["open", "closed"],
+        },
+      ],
+    });
+    const p = profile({
+      columns: [
+        col("id"),
+        { ...col("status"), type: "varchar", nullable: false, unique_count: 3, null_count: 0, sample_values: ["open", "closed"] },
+      ],
+    });
+    const anchor = resolveBriefingAnchor({ kind: "column", entity: "orders", column: "status" }, [described], [p]);
+    if (anchor?.kind !== "column") throw new Error("expected a column anchor");
+    expect(anchor.entity).toBe("orders");
+    expect(anchor.column).toBe("status");
+    expect(anchor.covered).toBe(true);
+    expect(anchor.dimensionYaml).toContain("name: status");
+    expect(anchor.dimensionYaml).toContain("description: Order lifecycle status");
+    expect(anchor.columnProfile).toEqual({
+      type: "varchar",
+      nullable: false,
+      uniqueCount: 3,
+      nullCount: 0,
+      sampleValues: ["open", "closed"],
+    });
+  });
+
+  it("resolves an uncovered column honestly — covered=false, no dimension YAML", () => {
+    // The entity models the table but not the `amount` column.
+    const anchor = resolveBriefingAnchor(
+      { kind: "column", entity: "orders", column: "amount" },
+      [entity()],
+      [profile({ columns: [col("amount")] })],
+    );
+    if (anchor?.kind !== "column") throw new Error("expected a column anchor");
+    expect(anchor.covered).toBe(false);
+    expect(anchor.dimensionYaml).toBeNull();
+    // The profile is still front-loaded even when uncovered.
+    expect(anchor.columnProfile?.type).toBe("text");
+  });
+
+  it("matches the dimension by sql case-insensitively and carries the group", () => {
+    const cased = entity({
+      connection: "eu",
+      dimensions: [{ name: "Status", sql: "STATUS", type: "string", description: "x" }],
+    });
+    const anchor = resolveBriefingAnchor(
+      { kind: "column", entity: "orders", column: "status", group: "eu" },
+      [cased],
+      [profile({ columns: [col("status")] })],
+    );
+    if (anchor?.kind !== "column") throw new Error("expected a column anchor");
+    expect(anchor.covered).toBe(true);
+    expect(anchor.group).toBe("eu");
+  });
+
+  it("returns null when the column anchor's entity is not in scope", () => {
+    const anchor = resolveBriefingAnchor({ kind: "column", entity: "ghost", column: "x" }, [entity()], []);
+    expect(anchor).toBeNull();
+  });
+
+  it("resolves with a null columnProfile when no tracked profile matches", () => {
+    const anchor = resolveBriefingAnchor({ kind: "column", entity: "orders", column: "status" }, [entity()], []);
+    if (anchor?.kind !== "column") throw new Error("expected a column anchor");
+    expect(anchor.covered).toBe(true);
+    expect(anchor.columnProfile).toBeNull();
+  });
+});

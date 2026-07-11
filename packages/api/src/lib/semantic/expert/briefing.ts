@@ -264,22 +264,52 @@ function renderAnchor(anchor: BriefingAnchor | undefined): string[] {
     return lines;
   }
 
-  // Entity anchor — front-load the entity's current YAML + tracked profile.
+  if (anchor.kind === "entity") {
+    // Entity anchor — front-load the entity's current YAML + tracked profile.
+    const scope = anchor.group ? ` (group \`${anchor.group}\`)` : "";
+    const lines = [
+      `### Anchor: entity \`${anchor.entity}\`${scope}`,
+      `This conversation is anchored to the \`${anchor.entity}\` entity — focus improvements on it unless the admin steers you elsewhere. It is a starting scope, not a cage.`,
+      "",
+      "Current YAML:",
+      "```yaml",
+      anchor.yaml,
+      "```",
+    ];
+    lines.push(
+      anchor.profile
+        ? `Profile: \`${anchor.profile.table}\` — ${anchor.profile.rowCount.toLocaleString("en-US")} rows, ${count(anchor.profile.columnCount, "column")}.`
+        : `Profile: no tracked baseline profile for \`${anchor.entity}\`'s table yet.`,
+    );
+    return lines;
+  }
+
+  // Column anchor (#4521) — front-load the column's coverage state, its modeling
+  // dimension's current YAML, and its tracked profile. The refine-not-grow rule
+  // (ADR-0032) is stated explicitly so the agent never proposes an entity/table.
   const scope = anchor.group ? ` (group \`${anchor.group}\`)` : "";
   const lines = [
-    `### Anchor: entity \`${anchor.entity}\`${scope}`,
-    `This conversation is anchored to the \`${anchor.entity}\` entity — focus improvements on it unless the admin steers you elsewhere. It is a starting scope, not a cage.`,
-    "",
-    "Current YAML:",
-    "```yaml",
-    anchor.yaml,
-    "```",
+    `### Anchor: column \`${anchor.column}\` on entity \`${anchor.entity}\`${scope}`,
+    `This conversation is anchored to the \`${anchor.column}\` column of \`${anchor.entity}\` — focus improvements on how it is modeled unless the admin steers you elsewhere. It is a starting scope, not a cage. Refine its modeling only; growing coverage (a new table or entity) is the enrich flow, never an amendment.`,
   ];
-  lines.push(
-    anchor.profile
-      ? `Profile: \`${anchor.profile.table}\` — ${anchor.profile.rowCount.toLocaleString("en-US")} rows, ${count(anchor.profile.columnCount, "column")}.`
-      : `Profile: no tracked baseline profile for \`${anchor.entity}\`'s table yet.`,
-  );
+  if (anchor.covered && anchor.dimensionYaml) {
+    lines.push("", "Current dimension YAML:", "```yaml", anchor.dimensionYaml, "```");
+  } else {
+    lines.push(
+      "",
+      `This column is not yet modeled as a dimension. Adding the dimension refines the entity that already exists — it does not expand the queryable table set.`,
+    );
+  }
+  const p = anchor.columnProfile;
+  if (p) {
+    const facts = [`type \`${p.type}\``, p.nullable ? "nullable" : "not null"];
+    if (p.uniqueCount != null) facts.push(`${p.uniqueCount.toLocaleString("en-US")} distinct`);
+    if (p.nullCount != null) facts.push(`${p.nullCount.toLocaleString("en-US")} nulls`);
+    const samples = p.sampleValues.length > 0 ? ` Samples: ${p.sampleValues.slice(0, 5).join(", ")}.` : "";
+    lines.push(`Profile: ${facts.join(", ")}.${samples}`);
+  } else {
+    lines.push(`Profile: no tracked baseline profile for \`${anchor.column}\` yet.`);
+  }
   return lines;
 }
 

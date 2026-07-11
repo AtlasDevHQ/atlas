@@ -8,12 +8,14 @@ import { RejectedCard, type RejectedAmendment } from "./rejected";
 import { DiffViewer, formatAmendment } from "./amendment-display";
 import {
   buildImproveChatBody,
+  columnKickoffMessage,
   describeAnchor,
   entityKickoffMessage,
   groupKickoffMessage,
   SWEEP_KICKOFF_MESSAGE,
   type ImproveAnchor,
 } from "./anchor";
+import { CoverageView, type ColumnAnchorRequest } from "./coverage";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -400,9 +402,10 @@ export default function SemanticImprovePage() {
   const [proposalDecisions, setProposalDecisions] = useState<
     Map<string, "accepted" | "rejected">
   >(new Map());
-  // Which review list the proposals panel shows: the Pending queue or the
-  // Rejected view (#4512). Rejected is where an admin lifts a rejection.
-  const [view, setView] = useState<"pending" | "rejected">("pending");
+  // Which panel the right side shows: the Pending queue, the Rejected view
+  // (#4512), or the Coverage view (#4521 — the column-anchored entry from the
+  // physical schema).
+  const [view, setView] = useState<"pending" | "rejected" | "coverage">("pending");
   // #4511 — mid-review outcomes keyed by the proposal's dbId. `stale` swaps a
   // fresh live diff into the card with a Confirm (the entity changed since
   // render); `picker` renders a group picker for a legacy cross-group-ambiguous
@@ -610,6 +613,18 @@ export default function SemanticImprovePage() {
   function launchSweep() {
     // A sweep is the anchorless start — clear any active anchor.
     launch(null, SWEEP_KICKOFF_MESSAGE);
+  }
+
+  // #4521 — the coverage view's covered-column entry. Anchors the conversation to
+  // the column (carrying its entity's group when present), then swaps to the
+  // Pending view so the launched conversation + any proposals it creates are in
+  // sight. Uncovered columns/tables never reach here — they route to enrich.
+  function launchColumn(req: ColumnAnchorRequest, label: string) {
+    const value: ImproveAnchor = req.group
+      ? { kind: "column", entity: req.entity, column: req.column, group: req.group }
+      : { kind: "column", entity: req.entity, column: req.column };
+    setView("pending");
+    launch({ value, label }, columnKickoffMessage(req.entity, req.column));
   }
 
   function clearMidReview(dbId: string) {
@@ -893,6 +908,9 @@ export default function SemanticImprovePage() {
                       </span>
                     )}
                   </TabsTrigger>
+                  {/* #4521 — browse the physical schema's coverage; click a
+                      covered column to anchor a conversation to it. */}
+                  <TabsTrigger value="coverage">Coverage</TabsTrigger>
                 </TabsList>
               </div>
               <TabsContent value="pending" className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -984,6 +1002,13 @@ export default function SemanticImprovePage() {
                     ))}
                   </div>
                 </ScrollArea>
+              </TabsContent>
+
+              {/* #4521 — the coverage view: physical schema × semantic store,
+                  clicking a covered column launches a column-anchored
+                  conversation; uncovered tables route to enrich. */}
+              <TabsContent value="coverage" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <CoverageView onColumnAnchor={launchColumn} disabled={isLoading} />
               </TabsContent>
             </Tabs>
           </ResizablePanel>

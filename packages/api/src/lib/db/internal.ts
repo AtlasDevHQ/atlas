@@ -1623,6 +1623,17 @@ async function findConflictingAmendment(
       connectionGroupId: row.connection_group_id,
       amendmentPayload: row.amendment_payload,
     });
+    if (key === null) {
+      // A stored rejected/pending row whose payload can't be reconstructed to
+      // an identity stops being enforced — surface it so an operator can spot
+      // a rejection that has silently gone dark (should never happen: the
+      // writer always stamps `amendmentType`).
+      log.warn(
+        { existingId: row.id, status: row.status, sourceEntity },
+        "learned_patterns amendment row has an unreconstructable identity — not enforced by the rejection/dedup guard",
+      );
+      continue;
+    }
     if (key !== identityKey) continue;
     if (row.status === "rejected") return { outcome: "rejected", id: row.id };
     if (row.status === "pending" && pendingId === null) pendingId = row.id;

@@ -262,7 +262,11 @@ export function buildInternalDbMockDefaults(deps: {
     }),
     getAutoApproveThreshold: mock(() => 2),
     getAutoApproveTypes: mock(() => new Set(["update_description", "add_dimension"])),
-    insertSemanticAmendment: mock(async () => ({ id: "mock-amendment-id", status: "pending" as const })),
+    insertSemanticAmendment: mock(async () => ({
+      outcome: "inserted" as const,
+      id: "mock-amendment-id",
+      status: "pending" as const,
+    })),
     getPendingAmendmentCount: mock(async () => 0),
     getPendingAmendments: mock(async () => []),
     reviewSemanticAmendment: mock(async () => null),

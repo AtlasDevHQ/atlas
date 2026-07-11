@@ -12,7 +12,8 @@
  *      existing row instead of queuing a duplicate; the key is the row's
  *      storage key (`pattern_sql`).
  *   3. Staleness dampening in the analyzer (`expert/categories.ts`) — a
- *      recently-rejected identity scores lower.
+ *      rejected identity scores lower (rejection memory is permanent — no
+ *      time window, so this is "ever-rejected", not "recently-rejected").
  *
  * Lives in its own leaf module (no imports) so the DB layer
  * (`db/internal.ts`), the analyzer (`expert/categories.ts`,

@@ -162,8 +162,11 @@ Delegates to the enhanced profiler (#1179). Subject to the same table whitelist 
 {
   entityName: string,
   amendmentType: "add_dimension" | "add_measure" | "add_join" | "add_query_pattern"
-    | "update_description" | "update_dimension" | "add_glossary_term" | "add_virtual_dimension",
-  amendment: object,          // Type-specific payload (dimension object, measure object, etc.)
+    | "update_description" | "update_dimension" | "add_glossary_term" | "update_glossary_term"
+    | "add_virtual_dimension",
+  amendment: object,          // Type-specific payload (dimension object, measure object, etc.).
+                              // Glossary amendments ({ term, definition, ambiguous }) write the
+                              // group's glossary document; entityName is the host table.
   rationale: string,          // Why this change improves the semantic layer
   testQuery?: string,         // Optional SQL to validate the amendment
   confidence: number,         // 0.0–1.0, agent's confidence this is correct

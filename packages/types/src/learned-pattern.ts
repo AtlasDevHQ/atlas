@@ -24,6 +24,7 @@ export const AMENDMENT_TYPES = [
   "update_description",
   "update_dimension",
   "add_glossary_term",
+  "update_glossary_term",
   "add_virtual_dimension",
 ] as const;
 /** Kind of semantic layer change proposed by the expert agent. */

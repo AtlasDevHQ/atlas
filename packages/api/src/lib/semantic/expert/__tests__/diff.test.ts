@@ -25,6 +25,12 @@ let resolveCalls: Array<{ orgId: string | null; entity: string; group: string | 
 // `draftExists` note without touching a DB.
 let mockDraftRow: { status: string } | null = null;
 let draftProbeCalls: Array<{ group: string | null | undefined }> = [];
+// #4518 — the amendment type the payload→result mapping returns, and the glossary
+// resolve/mutate stand-ins for the glossary branch of computeAmendmentLiveDiff.
+let mockAmendmentType = "add_measure";
+let mockGlossaryParsed: Record<string, unknown> = {};
+let mockGlossaryUpdated: Record<string, unknown> = {};
+let resolveGlossaryCalls: Array<{ orgId: string | null; group: string | undefined }> = [];
 
 void mock.module("@atlas/api/lib/semantic/entities", () => ({
   getDraftEntityForGroup: async (
@@ -44,7 +50,7 @@ void mock.module("../apply", () => ({
     category: "coverage_gaps",
     entityName: params.sourceEntity,
     group: params.connectionGroupId ?? "default",
-    amendmentType: "add_measure",
+    amendmentType: mockAmendmentType as AnalysisResult["amendmentType"],
     amendment: { name: "total_revenue" },
     rationale: "",
     confidence: 0,
@@ -58,8 +64,17 @@ void mock.module("../apply", () => ({
     return { row: {}, targetGroupId: mockTargetGroupId, parsed: mockParsed };
   },
   applyAmendment: () => mockUpdated,
-  // mock-all-exports: computeAmendmentLiveDiff only destructures the three above,
-  // but a complete mock keeps this suite robust if the seam grows a new call.
+  // #4518 — the glossary branch of computeAmendmentLiveDiff destructures these.
+  isGlossaryAmendmentType: (t: string) => t === "add_glossary_term" || t === "update_glossary_term",
+  resolveGlossaryBaseline: async (orgId: string | null, group: string | undefined) => {
+    resolveGlossaryCalls.push({ orgId, group });
+    if (resolveThrows) throw resolveThrows;
+    return { row: {}, targetGroupId: mockTargetGroupId, parsed: mockGlossaryParsed };
+  },
+  applyGlossaryAmendment: () => mockGlossaryUpdated,
+  glossaryDiffPath: (group: string | undefined) =>
+    group && group !== "default" ? `semantic/groups/${group}/glossary.yml` : "semantic/glossary.yml",
+  // mock-all-exports: keeps this suite robust if the seam grows a new call.
   applyAmendmentToEntity: async () => {},
   applyAmendmentFromPayload: async () => {},
 }));
@@ -80,6 +95,10 @@ beforeEach(() => {
   resolveCalls = [];
   mockDraftRow = null;
   draftProbeCalls = [];
+  mockAmendmentType = "add_measure";
+  mockGlossaryParsed = {};
+  mockGlossaryUpdated = {};
+  resolveGlossaryCalls = [];
 });
 
 describe("normalizeEntityYaml", () => {
@@ -196,6 +215,33 @@ describe("computeAmendmentLiveDiff", () => {
         rawPayload: { amendment: { name: "x" } },
       }),
     ).rejects.toThrow("ambiguous");
+  });
+
+  it("diffs a glossary amendment against the group GLOSSARY baseline, attributed to glossary.yml (#4518)", async () => {
+    // A glossary amendment must resolve + diff the group's glossary document,
+    // never the host entity — so GET /pending renders a real live diff instead
+    // of falling back to null (the stored diff is dropped from that surface).
+    mockAmendmentType = "add_glossary_term";
+    mockGlossaryParsed = { terms: { arr: { definition: "Annual Recurring Revenue" } } };
+    mockGlossaryUpdated = {
+      terms: { arr: { definition: "Annual Recurring Revenue" }, MRR: { definition: "Monthly Recurring Revenue" } },
+    };
+
+    const live = await computeAmendmentLiveDiff({
+      orgId: "org-1",
+      sourceEntity: "orders",
+      connectionGroupId: "eu_prod",
+      rawPayload: { amendment: { term: "MRR", definition: "Monthly Recurring Revenue" } },
+    });
+
+    // Resolved the GLOSSARY baseline (not the entity), and the diff is attributed
+    // to the group glossary.yml and shows the added term.
+    expect(resolveGlossaryCalls[0]).toMatchObject({ orgId: "org-1", group: "eu_prod" });
+    expect(resolveCalls).toHaveLength(0); // never touched the entity resolver
+    expect(live.diff).toContain("semantic/groups/eu_prod/glossary.yml");
+    expect(live.diff).toContain("MRR");
+    // The hash is of the normalized GLOSSARY baseline.
+    expect(live.baselineHash).toBe(hashBaselineYaml(normalizeEntityYaml(mockGlossaryParsed)));
   });
 });
 

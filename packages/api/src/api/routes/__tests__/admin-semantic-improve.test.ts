@@ -203,10 +203,19 @@ void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   },
   applyAmendmentToEntity: async () => {},
   applyAmendment: () => ({}),
+  applyAmendmentMutation: () => ({}),
+  applyGlossaryAmendment: () => ({}),
+  isGlossaryAmendmentType: (t: string) =>
+    t === "add_glossary_term" || t === "update_glossary_term",
+  glossaryDiffPath: () => "semantic/glossary.yml",
   analysisResultFromStoredPayload: () => ({}),
   resolveAmendmentBaseline: async () => {
     throw new Error("not used by the review route");
   },
+  resolveGlossaryBaseline: async () => {
+    throw new Error("not used by the review route");
+  },
+  GLOSSARY_DOC_NAME: "glossary",
 }));
 
 // #4511 — the live-diff module. `GET /pending` renders `computeAmendmentLiveDiff`
@@ -492,6 +501,49 @@ describe("admin-semantic-improve", () => {
       // `approved` is stamped only after the apply succeeds.
       expect(callOrder).toEqual(["claim", "apply", "stamp"]);
       expect(stampCalls).toEqual(["amd-1"]);
+    });
+
+    it("approves a group-scoped glossary amendment: threads the glossary payload + group into the apply (#4518)", async () => {
+      // A glossary Amendment approved through the SAME review route: the seam
+      // applies from the STORED row, so the glossary payload and its Connection
+      // group flow into applyAmendmentFromPayload — which writes the group's
+      // glossary document (the write itself is unit-tested in
+      // expert/apply-glossary.test.ts). This pins the route → decide → apply
+      // path for the glossary type that used to silently no-op.
+      mockPendingAmendments = [{
+        id: "amd-gloss",
+        source_entity: "orders",
+        connection_group_id: "eu_prod",
+        description: "[add_glossary_term] orders: define MRR",
+        confidence: 0.9,
+        amendment_payload: {
+          entityName: "orders",
+          amendmentType: "add_glossary_term",
+          amendment: { term: "MRR", definition: "Monthly Recurring Revenue" },
+          rationale: "MRR appears in columns but is not defined in the glossary.",
+        },
+        created_at: "2026-07-10T00:00:00Z",
+      }];
+
+      const res = await review("amd-gloss", "approved");
+
+      expect(res.status).toBe(200);
+      // Applied from the STORED row, scoped to the row's own group.
+      expect(applyPayloadCalls).toHaveLength(1);
+      expect(applyPayloadCalls[0]).toMatchObject({
+        sourceEntity: "orders",
+        connectionGroupId: "eu_prod",
+        label: "amd-gloss",
+      });
+      // The payload the apply receives IS the glossary amendment.
+      const raw = applyPayloadCalls[0].rawPayload as {
+        amendmentType: string;
+        amendment: { term: string };
+      };
+      expect(raw.amendmentType).toBe("add_glossary_term");
+      expect(raw.amendment.term).toBe("MRR");
+      expect(callOrder).toEqual(["claim", "apply", "stamp"]);
+      expect(stampCalls).toEqual(["amd-gloss"]);
     });
 
     it("approve → YAML apply fails: 500, no stamp, row compensated back to pending with the reason", async () => {

@@ -105,14 +105,30 @@ describeIfPg("semantic amendment dual-apply → publish can't clobber (#4517)", 
   beforeAll(async () => {
     prevDatabaseUrl = process.env.DATABASE_URL;
     process.env.DATABASE_URL = TEST_DB_URL;
-    pool = new Pool({ connectionString: TEST_DB_URL });
-    pool.on("connect", (client) => {
-      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`amendment-dual-apply-pg: SET search_path failed: ${message}`);
-      });
+
+    // Scratch schema, created on a one-shot bootstrap client BEFORE the
+    // long-lived pool so the search_path-pinned connections have a real target.
+    const bootstrap = new Pool({ connectionString: TEST_DB_URL });
+    try {
+      await bootstrap.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    } finally {
+      await bootstrap.end();
+    }
+
+    // Pin search_path server-side via libpq `options` — applied at connection
+    // STARTUP, before any query — so every migration/DDL lands in the scratch
+    // schema and `public` stays a read fallback for catalogs/extensions. A
+    // post-connect `SET search_path` handler is NOT awaited by pg, so under this
+    // suite's concurrent runner an early `runMigrations` query (the advisory
+    // lock, `CREATE TABLE __atlas_migrations`, and the first migrations run on a
+    // dedicated connection) can race the SET and create bookkeeping/tables in
+    // shared `public` — corrupting a CONCURRENTLY-running -pg test in the same
+    // shard (e.g. staging/seed.test.ts, whose own search_path falls back to
+    // `public`). The `options` pin closes that race. (#4517)
+    pool = new Pool({
+      connectionString: TEST_DB_URL,
+      options: `-c search_path="${schemaName}",public`,
     });
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
     await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
     _resetPool(pool as unknown as InternalPool);
   }, PG_TEST_TIMEOUT_MS * 2);

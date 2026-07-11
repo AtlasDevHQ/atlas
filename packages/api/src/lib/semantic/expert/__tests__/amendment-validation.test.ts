@@ -19,6 +19,7 @@ const {
   collectEmbeddedSql,
   validateEmbeddedSql,
   parseEntityShapeOrError,
+  parseGlossaryShapeOrError,
   AMENDMENT_MUTABLE_FIELDS,
 } = await import("../amendment-validation");
 
@@ -55,6 +56,32 @@ describe("validateAmendmentPayload", () => {
     expect(
       validateAmendmentPayload("update_dimension", { name: "status", type: "string", sample_values: ["a", "b"] }),
     ).toBeNull();
+  });
+
+  it("accepts a well-formed add_glossary_term (#4518)", () => {
+    expect(
+      validateAmendmentPayload("add_glossary_term", { term: "MRR", definition: "Monthly Recurring Revenue" }),
+    ).toBeNull();
+  });
+
+  it("accepts update_glossary_term touching only definition/ambiguous (#4518)", () => {
+    expect(
+      validateAmendmentPayload("update_glossary_term", { term: "churn", definition: "attrition", ambiguous: true }),
+    ).toBeNull();
+  });
+
+  it("rejects update_glossary_term with an undeclared field — glossary containment (#4518)", () => {
+    const err = validateAmendmentPayload("update_glossary_term", {
+      term: "churn", definition: "x", possible_mappings: ["a.b"],
+    });
+    expect(err).not.toBeNull();
+    expect(err).toMatch(/possible_mappings/);
+  });
+
+  it("rejects update_glossary_term with no term (the selector is required)", () => {
+    const err = validateAmendmentPayload("update_glossary_term", { definition: "x" });
+    expect(err).not.toBeNull();
+    expect(err).toMatch(/term/);
   });
 });
 
@@ -136,5 +163,34 @@ describe("parseEntityShapeOrError", () => {
     const err = parseEntityShapeOrError({ name: "orders", dimensions: [] });
     expect(err).not.toBeNull();
     expect(err).toMatch(/table/i);
+  });
+});
+
+describe("AMENDMENT_MUTABLE_FIELDS.update_glossary_term (#4518)", () => {
+  it("declares definition/ambiguous and protects term (the selector)", () => {
+    const fields = AMENDMENT_MUTABLE_FIELDS.update_glossary_term ?? [];
+    expect(fields).toContain("definition");
+    expect(fields).toContain("ambiguous");
+    expect(fields).not.toContain("term");
+  });
+});
+
+describe("parseGlossaryShapeOrError (#4518)", () => {
+  it("accepts the object-form glossary (canonical)", () => {
+    expect(parseGlossaryShapeOrError({ terms: { MRR: { definition: "x" } } })).toBeNull();
+  });
+
+  it("accepts the legacy array-form glossary", () => {
+    expect(parseGlossaryShapeOrError({ terms: [{ term: "MRR", definition: "x" }] })).toBeNull();
+  });
+
+  it("accepts an empty (new) glossary — terms is optional", () => {
+    expect(parseGlossaryShapeOrError({})).toBeNull();
+  });
+
+  it("rejects a corrupted glossary whose terms is a scalar", () => {
+    const err = parseGlossaryShapeOrError({ terms: "not a map" });
+    expect(err).not.toBeNull();
+    expect(err).toMatch(/glossary/i);
   });
 });

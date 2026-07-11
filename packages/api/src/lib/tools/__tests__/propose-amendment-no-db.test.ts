@@ -41,10 +41,34 @@ const stubApplyAmendment = (entity: Record<string, unknown>): Record<string, unk
   return clone;
 };
 
+// Dispatcher stub mirroring the real applyAmendmentMutation: glossary types add
+// the term to the glossary document; entity types push a dimension.
+const stubApplyAmendmentMutation = (
+  doc: Record<string, unknown>,
+  result: { amendmentType: string; amendment: Record<string, unknown> },
+): Record<string, unknown> => {
+  if (result.amendmentType === "add_glossary_term" || result.amendmentType === "update_glossary_term") {
+    const clone = structuredClone(doc);
+    const terms = (clone.terms ?? {}) as Record<string, unknown>;
+    const { term, ...value } = result.amendment;
+    terms[String(term)] = value;
+    clone.terms = terms;
+    return clone;
+  }
+  return stubApplyAmendment(doc);
+};
+
 void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   applyAmendment: stubApplyAmendment,
   resolveAmendmentBaseline: mock(() => Promise.reject(new Error("should not be called without a DB"))),
   applyAmendmentFromPayload: mock(() => Promise.resolve()),
+  applyAmendmentMutation: stubApplyAmendmentMutation,
+  isGlossaryAmendmentType: (t: string) =>
+    t === "add_glossary_term" || t === "update_glossary_term",
+  resolveGlossaryBaseline: mock(() => Promise.reject(new Error("should not be called without a DB"))),
+  glossaryDiffPath: (g?: string) =>
+    g && g !== "default" ? `semantic/groups/${g}/glossary.yml` : "semantic/glossary.yml",
+  GLOSSARY_DOC_NAME: "glossary",
 }));
 
 void mock.module("@atlas/api/lib/logger", () => ({
@@ -110,5 +134,46 @@ describe("proposeAmendment no-internal-DB disk fallback (#4488)", () => {
     const result = await run();
 
     expect(result.error).toContain("could not be parsed as a YAML mapping");
+  });
+
+  // ── Glossary amendments, no-DB preview branch (#4518) ──────────────────────
+
+  async function runGlossary(): Promise<ProposeResult> {
+    return (await proposeAmendment.execute!(
+      {
+        entityName: "companies",
+        amendmentType: "add_glossary_term",
+        amendment: { term: "MRR", definition: "Monthly Recurring Revenue" },
+        rationale: "Define MRR",
+        confidence: 0.9,
+      },
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- AI SDK execute options are irrelevant here
+      {} as any,
+    )) as ProposeResult;
+  }
+
+  it("previews a first glossary term against an empty document, attributed to glossary.yml", async () => {
+    // No flat-root glossary.yml → the branch seeds an empty {} and the diff
+    // renders the created term.
+    fileExists = false;
+
+    const result = await runGlossary();
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe("queued");
+    expect(result.diff).toContain("semantic/glossary.yml");
+    expect(result.diff).not.toContain("semantic/entities/");
+    expect(result.diff).toContain("MRR");
+    expect(result.diff).toContain("Monthly Recurring Revenue");
+  });
+
+  it("returns a parse error when the flat-root glossary.yml is not a YAML mapping", async () => {
+    fileExists = true;
+    fileContents = "- not\n- a\n- mapping\n";
+
+    const result = await runGlossary();
+
+    expect(result.error).toContain("Glossary file glossary.yml could not be parsed as a YAML mapping");
+    expect(result.status).toBeUndefined();
   });
 });

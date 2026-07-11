@@ -1,11 +1,8 @@
 import { describe, test, expect, beforeEach, mock } from "bun:test";
 import type { ConnectionMetadata } from "../db/connection";
-import type { DialectHint } from "../plugins/wiring";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // --- Mutable state for tests ---
-let mockDialectHints: readonly DialectHint[] = [];
-
 const mockEntries: ConnectionMetadata[] = [];
 
 function resetMockEntries() {
@@ -45,7 +42,8 @@ void mock.module("@atlas/api/lib/semantic", () => ({
 
 void mock.module("@atlas/api/lib/plugins/tools", () => ({
   getContextFragments: () => [],
-  getDialectHints: () => mockDialectHints,
+  getDialectHints: () => [],
+  pluginDialectModules: () => [],
   setContextFragments: () => {},
   setDialectHints: () => {},
   setPluginTools: () => {},
@@ -77,7 +75,6 @@ function assembledPrompt(): string {
 describe("sargability guidance (shared suffix — covers PostgreSQL)", () => {
   beforeEach(() => {
     resetMockEntries();
-    mockDialectHints = [];
   });
 
   test("assembled prompt contains an explicit Sargability section", () => {
@@ -108,40 +105,12 @@ describe("sargability guidance (shared suffix — covers PostgreSQL)", () => {
   });
 
   test("sargability guidance ships on a PostgreSQL workspace (no inline dialect guide)", () => {
-    // default mock entry is postgres; there is no MySQL guide for it
+    // default mock entry is postgres; buildSystemParam no longer auto-appends a
+    // dialect guide (#4515 — the composed dialect-specialist section is threaded
+    // in by runAgent). The MySQL module's sargability-aware content is asserted
+    // in dialect-specialist.test.ts.
     const content = assembledPrompt();
     expect(content).not.toContain("SQL Dialect: MySQL");
     expect(content).toContain("Sargability");
-  });
-});
-
-describe("MySQL dialect guide — date functions no longer 'preferred' for filtering", () => {
-  beforeEach(() => {
-    mockEntries.length = 0;
-    mockEntries.push({ id: "default", dbType: "mysql" });
-    mockDialectHints = [];
-  });
-
-  test("MySQL guide is present", () => {
-    expect(assembledPrompt()).toContain("SQL Dialect: MySQL");
-  });
-
-  test("does not label YEAR()/DATE_FORMAT() as '(preferred)'", () => {
-    const content = assembledPrompt();
-    const mysqlSection = content.slice(content.indexOf("SQL Dialect: MySQL"));
-    expect(mysqlSection).not.toContain("(preferred)");
-  });
-
-  test("teaches the half-open range rewrite for filtering indexed date columns", () => {
-    const content = assembledPrompt();
-    const mysqlSection = content.slice(content.indexOf("SQL Dialect: MySQL"));
-    expect(mysqlSection).toContain("col >= '2024-01-01' AND col < '2025-01-01'");
-  });
-
-  test("retains YEAR()/DATE_FORMAT() for projection/grouping", () => {
-    const content = assembledPrompt();
-    const mysqlSection = content.slice(content.indexOf("SQL Dialect: MySQL"));
-    expect(mysqlSection).toContain("DATE_FORMAT");
-    expect(mysqlSection).toMatch(/projecting or grouping/i);
   });
 });

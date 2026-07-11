@@ -85,6 +85,14 @@ function hasRoutes(p: PluginLike): p is PluginLike & InteractionShape {
 
 export interface DialectHint {
   readonly pluginId: string;
+  /**
+   * The engine this dialect guidance describes — the datasource plugin's
+   * `connection.dbType`. Carried so the dialect-specialist registry
+   * (`lib/dialect-specialist.ts`, #4515) can resolve a plugin's module BY
+   * dbType and compose it for the groups in scope, keyed the same way as the
+   * core modules.
+   */
+  readonly dbType: string;
   readonly dialect: string;
 }
 
@@ -195,9 +203,14 @@ export async function wireDatasourcePlugins(
       }
     }
 
-    // Collect dialect hints
+    // Collect dialect hints, keyed by the plugin's engine so the
+    // dialect-specialist registry (#4515) can resolve them by dbType.
     if (typeof plugin.dialect === "string" && plugin.dialect.trim()) {
-      dialectHints.push({ pluginId: plugin.id, dialect: plugin.dialect });
+      dialectHints.push({
+        pluginId: plugin.id,
+        dbType: plugin.connection.dbType,
+        dialect: plugin.dialect,
+      });
     }
   }
 

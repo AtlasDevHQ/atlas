@@ -32,11 +32,17 @@ import { resolveWorkspaceRestDatasources, resolveWorkspaceRestDatasourcesOrThrow
 import type { RestDatasource } from "./openapi/datasource";
 import { buildAgentRepresentation } from "./openapi/representation";
 import { loadSourceCatalog, type RestCatalogSource } from "./source-catalog/lookup";
-import { reachStateFromColumn } from "./group-reach";
+import { reachStateFromColumn, type ReachState } from "./group-reach";
+import { resolveReachableGroups } from "./group-reach/resolve";
 import { REST_OPERATION_DESCRIPTION, createExecuteRestOperationTool } from "./tools/rest-operation";
 import { getStreamWriter } from "./tools/python-stream";
-import { getContextFragments, getDialectHints } from "./plugins/tools";
-import { connections, detectDBType, type ConnectionMetadata, type DBType } from "./db/connection";
+import { getContextFragments, pluginDialectModules } from "./plugins/tools";
+import {
+  composeDialectSpecialists,
+  dialectDisplayName,
+  type DialectSpecialistGroup,
+} from "./dialect-specialist";
+import { connections, type ConnectionMetadata } from "./db/connection";
 import { getCrossSourceJoins, type CrossSourceJoin, loadOrgWhitelist, getOrgSemanticIndex } from "./semantic";
 import { getSemanticIndex } from "./semantic/search";
 import { getConfig } from "./config";
@@ -250,31 +256,6 @@ How does this break down by region?
 Which accounts contribute the most?
 </suggestions>`;
 
-const MYSQL_DIALECT_GUIDE = `
-
-## SQL Dialect: MySQL
-This database uses MySQL. Key differences from PostgreSQL:
-- For **projecting or grouping** by a date part, use \`YEAR(col)\` / \`MONTH(col)\` (or \`EXTRACT(YEAR FROM col)\`) and \`DATE_FORMAT(col, '%Y-%m')\` (instead of \`TO_CHAR(col, 'YYYY-MM')\`) — e.g. \`SELECT DATE_FORMAT(created_at, '%Y-%m') AS month ... GROUP BY 1\`
-- For **filtering** an indexed date column, do NOT wrap it: \`WHERE YEAR(col) = 2024\` or \`WHERE DATE_FORMAT(col, '%Y-%m') = '2024-03'\` forces a full table scan. Use a half-open range on the bare column instead — \`WHERE col >= '2024-01-01' AND col < '2025-01-01'\` (year) or \`WHERE col >= '2024-03-01' AND col < '2024-04-01'\` (month). See the Sargability rules above
-- Use \`IFNULL(col, default)\` or \`COALESCE(col, default)\` — both work
-- Use backtick quoting for identifiers: \`\\\`column\\\`\` instead of \`"column"\`
-- Use \`CONCAT(a, b)\` for string concatenation — \`||\` is logical OR in MySQL
-- No \`ILIKE\` — use \`WHERE col COLLATE utf8mb4_bin LIKE 'pattern'\` for case-sensitive matching
-- \`GROUP_CONCAT(col SEPARATOR ', ')\` instead of \`STRING_AGG(col, ', ')\`
-- No \`::type\` casting — use \`CAST(x AS SIGNED)\`, \`CAST(x AS DECIMAL)\`
-- \`LIMIT offset, count\` or \`LIMIT count OFFSET offset\` — both forms work
-- \`COALESCE\`, \`CASE\`, \`NULLIF\`, \`COUNT\`, \`SUM\`, \`AVG\`, \`MIN\`, \`MAX\` work identically`;
-
-// Display names for core DB types. Plugin-registered types fall through
-// to the capitalize fallback intentionally.
-const DIALECT_DISPLAY_NAMES: Record<string, string> = {
-  postgres: "PostgreSQL",
-  mysql: "MySQL",
-};
-
-function dialectName(dbType: DBType): string {
-  return DIALECT_DISPLAY_NAMES[dbType] ?? dbType.charAt(0).toUpperCase() + dbType.slice(1);
-}
 
 /**
  * Filter the connection registry to the set the agent should see in its tool
@@ -441,7 +422,7 @@ function buildMultiSourceSection(
   sources: ConnectionMetadata[],
 ): string {
   const lines = sources.map((s) => {
-    const dialect = dialectName(s.dbType);
+    const dialect = dialectDisplayName(s.dbType);
     const desc = s.description ? ` — ${s.description}` : "";
     const healthNote = s.health?.status === "unhealthy"
       ? " (**UNAVAILABLE** — skip queries to this source)"
@@ -487,12 +468,6 @@ ${lines.join("\n")}
   return section;
 }
 
-function appendDialectHints(prompt: string): string {
-  const hints = getDialectHints();
-  if (hints.length === 0) return prompt;
-  return prompt + "\n\n## Additional SQL Dialect Notes\n\n" + hints.map((h) => h.dialect).join("\n\n");
-}
-
 const PYTHON_GUIDANCE = `
 ## SQL vs Python
 
@@ -515,6 +490,67 @@ export interface BoundDashboardAgentContext {
   cardSummary: string;
 }
 
+/**
+ * Resolve the composed dialect-specialist section (#4515) for the conversation's
+ * reachable Connection groups. Each reachable group is paired with the engine of
+ * its primary (or any member) connection — read from the agent-visible
+ * connection registry — and the pairs compose through
+ * {@link composeDialectSpecialists}: one module per dbType, attributed per group
+ * under a cross-group sweep. Plugin-shipped modules ({@link pluginDialectModules})
+ * win over the core modules for their engine.
+ *
+ * Two reach regimes, matching the Source catalog it sits beside (ADR-0022):
+ * - **Workspace present (`orgId` set)** — compose exactly the reachable groups.
+ *   An empty reachable set composes NOTHING (fails closed like the catalog); it
+ *   does NOT fan out to every visible connection, so a fail-closed reach result
+ *   (e.g. a whitelist scan that degraded to none) can't re-open into dialect
+ *   coaching for engines the conversation can't actually reach.
+ * - **No workspace (`orgId` undefined)** — the self-hosted single/flat-connection
+ *   case with no enumerable group surface: each agent-visible connection stands
+ *   as its own group-of-one, so the connected engine's module still shows.
+ *
+ * Never throws: a reach-resolution failure fails closed to no dialect section
+ * (logged, not swallowed — CLAUDE.md) rather than costing the turn its answer or
+ * fanning back out to an unreachable-engine list.
+ */
+export async function resolveConversationDialectSpecialists(
+  orgId: string | undefined,
+  mode: "published" | "developer" | undefined,
+  reach: ReachState,
+): Promise<string> {
+  const visible = filterAgentVisibleSources(connections.describe());
+  const dbTypeById = new Map(visible.map((c) => [c.id, c.dbType]));
+  const pluginModules = pluginDialectModules();
+
+  let groups: DialectSpecialistGroup[];
+  if (orgId) {
+    try {
+      const { reachableGroups } = await resolveReachableGroups(orgId, mode, reach);
+      const resolved: DialectSpecialistGroup[] = [];
+      for (const grp of reachableGroups) {
+        const dbType =
+          dbTypeById.get(grp.primary) ??
+          grp.members.map((m) => dbTypeById.get(m)).find((t) => t !== undefined);
+        if (dbType) resolved.push({ group: grp.id, dbType });
+      }
+      // Compose exactly the reachable set — empty ⇒ no dialect section, matching
+      // the Source catalog. NO fan-out to every visible connection here.
+      groups = resolved;
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), orgId },
+        "Dialect specialists: reach resolution failed — composing no dialect section (fail closed)",
+      );
+      groups = [];
+    }
+  } else {
+    // No workspace: each visible connection is its own group-of-one.
+    groups = visible.map((c) => ({ group: c.id, dbType: c.dbType }));
+  }
+
+  return composeDialectSpecialists(groups, pluginModules);
+}
+
 function buildSystemPrompt(
   registry: ToolRegistry,
   orgSemanticIndex?: string,
@@ -523,6 +559,7 @@ function buildSystemPrompt(
   boundDashboardContext?: BoundDashboardAgentContext,
   orgKnowledgeToc?: string,
   persona?: string,
+  dialectSpecialists?: string,
 ): string {
   const suffix = boundDashboardContext ? BOUND_AGENT_PROMPT_GUIDANCE : SYSTEM_PROMPT_SUFFIX;
   // #4508 — "expert is a mode": a persona REPLACES the standard analyst role
@@ -571,32 +608,22 @@ function buildSystemPrompt(
   }
   const meta = filterAgentVisibleSources(connections.describe());
 
-  // Single-connection: identical to pre-v0.7 behavior
+  // #4515 — engine-specific expertise rides the dialect-specialist section,
+  // pre-composed by `runAgent` for the groups in scope and threaded in here (the
+  // sibling of the answer-style / persona seams). It supersedes the pre-#4515
+  // inline dialect guides + plugin dialect-hint notes: one registry-driven
+  // section keyed by dbType, attributed per group under a cross-group sweep.
+  // Empty ⇒ nothing appended (unknown engine / no reachable source).
+  const appendDialect = (p: string): string =>
+    dialectSpecialists ? p + "\n\n" + dialectSpecialists : p;
+
+  // Single-connection: no multi-source section, just the dialect specialist.
   if (meta.length <= 1) {
-    let dbType: DBType;
-    try {
-      dbType = meta.length === 1
-        ? meta[0].dbType
-        : detectDBType();
-    } catch (err) {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Could not detect DB type — omitting dialect guide");
-      return appendDialectHints(base);
-    }
-    // Core adapters get their dialect guide inline; everything else is
-    // handled by plugin dialect hints via appendDialectHints().
-    if (dbType === "mysql") {
-      return appendDialectHints(base + MYSQL_DIALECT_GUIDE);
-    }
-    return appendDialectHints(base);
+    return appendDialect(base);
   }
 
-  // Multi-connection: list sources + include core dialect guides
+  // Multi-connection: list sources, then the composed dialect specialists.
   let prompt = base + "\n\n" + buildMultiSourceSection(meta);
-
-  const dbTypes = new Set(meta.map((m) => m.dbType));
-  if (dbTypes.has("mysql")) prompt += MYSQL_DIALECT_GUIDE;
-  // Non-core dialects (clickhouse, snowflake, duckdb, salesforce, etc.)
-  // are provided by plugins via appendDialectHints().
 
   // Cross-environment routing guidance: only appears when the active group
   // has >1 member (PRD #2515 / slice 2 #2517). Single-member groups omit
@@ -604,7 +631,7 @@ function buildSystemPrompt(
   const scopeGuidance = buildScopeGuidanceSection(routingContext);
   if (scopeGuidance) prompt += "\n\n" + scopeGuidance;
 
-  return appendDialectHints(prompt);
+  return appendDialect(prompt);
 }
 
 /**
@@ -714,6 +741,16 @@ export interface BuildSystemParamOptions {
    * workspaces are unchanged).
    */
   readonly sourceCatalog?: string;
+  /**
+   * #4515 — the composed dialect-specialist section (`lib/dialect-specialist.ts`):
+   * engine-specific SQL expertise for the groups in scope, one module per
+   * dbType, attributed per group under a cross-group sweep. Pre-composed by
+   * `runAgent` (which resolves reachable groups → dbType) so the pure builder
+   * stays synchronous. Appended in the dialect position, superseding the
+   * pre-#4515 inline dialect guides + plugin dialect-hint notes. Empty string /
+   * omitted ⇒ nothing appended (unknown engine / no reachable source).
+   */
+  readonly dialectSpecialists?: string;
 }
 
 /**
@@ -750,8 +787,9 @@ export function buildSystemParam(
     modelId,
     memoryBlock,
     sourceCatalog,
+    dialectSpecialists,
   } = options;
-  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext, orgKnowledgeToc, persona);
+  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext, orgKnowledgeToc, persona, dialectSpecialists);
 
   if (sourceCatalog) {
     content += "\n\n" + sourceCatalog;
@@ -1665,13 +1703,17 @@ export async function runAgent({
   // the menu lists only the focused group, matching what `executeSQL` will allow
   // (so the agent isn't told about groups every query to which would be
   // rejected). Sourced from the same RequestContext value that bounds executeSQL.
-  const sourceCatalog = await loadSourceCatalog(
-    orgId,
-    atlasMode,
-    restCatalogSources,
-    {},
-    reachStateFromColumn(reqCtx?.groupReach),
-  );
+  // #4515 — the dialect-specialist section: engine expertise for the groups in
+  // scope, composed once per turn keyed by dbType and attributed per group. Uses
+  // the SAME reach state as the Source catalog so the modules and the menu
+  // describe the same reachable set (a reach failure fails closed to no section,
+  // logged — see resolveConversationDialectSpecialists). Both consume the reach
+  // state independently, so they resolve in parallel (no async waterfall).
+  const reachState = reachStateFromColumn(reqCtx?.groupReach);
+  const [sourceCatalog, dialectSpecialists] = await Promise.all([
+    loadSourceCatalog(orgId, atlasMode, restCatalogSources, {}, reachState),
+    resolveConversationDialectSpecialists(orgId, atlasMode, reachState),
+  ]);
 
   // System prompt is built once and pinned: it carries the semantic index +
   // glossary AND the durable memory block (#3755), and is passed to the model
@@ -1698,6 +1740,7 @@ export async function runAgent({
     modelId: resolvedModelId,
     memoryBlock,
     sourceCatalog,
+    dialectSpecialists,
   });
 
   // #3759 — context compaction. Resolved once per turn (knobs hot-reload at the

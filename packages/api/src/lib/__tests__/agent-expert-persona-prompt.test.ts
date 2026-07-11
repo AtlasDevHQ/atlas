@@ -52,6 +52,7 @@ void mock.module("@atlas/api/lib/semantic", () => ({
 void mock.module("@atlas/api/lib/plugins/tools", () => ({
   getContextFragments: () => [],
   getDialectHints: () => [],
+  pluginDialectModules: () => [],
   setContextFragments: () => {},
   setDialectHints: () => {},
   setPluginTools: () => {},

@@ -27,6 +27,7 @@ export function getContextFragments(): string[] {
 }
 
 import type { DialectHint } from "./wiring";
+import type { PluginDialectModule } from "@atlas/api/lib/dialect-specialist";
 
 let dialectHints: readonly DialectHint[] = [];
 
@@ -36,4 +37,14 @@ export function setDialectHints(hints: readonly DialectHint[]): void {
 
 export function getDialectHints(): readonly DialectHint[] {
   return dialectHints;
+}
+
+/**
+ * Project the wired plugin dialect hints into the dbType-keyed
+ * {@link PluginDialectModule} shape the dialect-specialist registry (#4515)
+ * resolves against. One module per plugin hint — the registry's precedence
+ * (plugin > core) and blank-body filtering apply at resolution time.
+ */
+export function pluginDialectModules(): readonly PluginDialectModule[] {
+  return dialectHints.map((h) => ({ dbType: h.dbType, module: h.dialect }));
 }

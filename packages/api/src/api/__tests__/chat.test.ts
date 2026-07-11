@@ -198,6 +198,7 @@ void mock.module("@atlas/api/lib/plugins/tools", () => ({
   getContextFragments: () => [],
   setContextFragments: () => {},
   getDialectHints: () => [],
+  pluginDialectModules: () => [],
   setDialectHints: () => {},
 }));
 

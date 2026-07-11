@@ -462,7 +462,11 @@ describe("buildSystemParam — multi-source", () => {
     expect(content).toContain("connectionId");
   });
 
-  test("mixed Postgres+MySQL: includes MySQL dialect guide", () => {
+  test("mixed Postgres+MySQL: multi-source section lists both engines", () => {
+    // #4515 — the MySQL dialect guide is no longer auto-appended by
+    // buildSystemParam; it is a composed section threaded by runAgent (asserted
+    // in dialect-specialist.test.ts). The multi-source listing still names each
+    // engine.
     mockEntries.push(
       { id: "default", dbType: "postgres" },
       { id: "legacy", dbType: "mysql", description: "Legacy MySQL" },
@@ -471,11 +475,10 @@ describe("buildSystemParam — multi-source", () => {
     const result = buildSystemParam("openai");
     const content = typeof result === "string" ? result : result.content;
     expect(content).toContain("Available Data Sources");
-    expect(content).toContain("SQL Dialect: MySQL");
     expect(content).toContain("**legacy** (MySQL) — Legacy MySQL");
   });
 
-  test("all-Postgres multi-connection: no MySQL guide, still has multi-source section", () => {
+  test("all-Postgres multi-connection: multi-source section, no auto-appended dialect", () => {
     mockEntries.push(
       { id: "default", dbType: "postgres" },
       { id: "secondary", dbType: "postgres" },
@@ -499,13 +502,15 @@ describe("buildSystemParam — multi-source", () => {
     expect(content).not.toContain("**bare** (PostgreSQL) —");
   });
 
-  test("single MySQL connection: includes MySQL dialect guide (backward compat)", () => {
+  test("single MySQL connection: single-source path (no multi-source section)", () => {
     mockEntries.push({ id: "default", dbType: "mysql" });
 
     const result = buildSystemParam("openai");
     const content = typeof result === "string" ? result : result.content;
     expect(content).not.toContain("Available Data Sources");
-    expect(content).toContain("SQL Dialect: MySQL");
+    // #4515 — dialect guide is a composed section threaded by runAgent, not
+    // auto-appended here; buildSystemParam appends only what it is passed.
+    expect(content).not.toContain("SQL Dialect: MySQL");
   });
 
   test("multi-source with cross-source joins: includes Cross-Source Relationships section", () => {

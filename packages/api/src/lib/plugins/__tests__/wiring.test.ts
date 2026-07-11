@@ -286,7 +286,9 @@ describe("wireDatasourcePlugins", () => {
     );
 
     expect(result.dialectHints).toHaveLength(1);
-    expect(result.dialectHints[0]).toEqual({ pluginId: "bq", dialect: "Use SAFE_DIVIDE for BigQuery." });
+    // #4515 — the hint carries the plugin's engine so the dialect-specialist
+    // registry can resolve it by dbType (makeDatasourcePlugin defaults to postgres).
+    expect(result.dialectHints[0]).toEqual({ pluginId: "bq", dbType: "postgres", dialect: "Use SAFE_DIVIDE for BigQuery." });
   });
 
   test("returns empty dialectHints when no plugins provide dialect", async () => {

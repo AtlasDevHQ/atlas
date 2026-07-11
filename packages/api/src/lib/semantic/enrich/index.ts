@@ -14,6 +14,11 @@
 
 import { generateText } from "ai";
 import { getModel } from "@atlas/api/lib/providers";
+import {
+  dialectDisplayName,
+  resolveDialectSpecialist,
+} from "@atlas/api/lib/dialect-specialist";
+import { pluginDialectModules } from "@atlas/api/lib/plugins/tools";
 import type { RawTokenCounts } from "@atlas/api/lib/billing/token-weighting";
 import type { TableProfile } from "@useatlas/types";
 import * as fs from "fs";
@@ -223,7 +228,22 @@ export async function enrichEntityYaml(
   // PostgreSQL-only functions for a MySQL connection produces SQL the agent
   // can't run (issue #3236 review). Defaults to PostgreSQL for the file-based
   // CLI path, which is Postgres-oriented.
-  const dialect = dbType === "mysql" ? "MySQL" : "PostgreSQL";
+  //
+  // #4515 — the display name AND the engine-specific specialist module both come
+  // from the one dialect-specialist registry (`lib/dialect-specialist.ts`), the
+  // same modules the agent conversation composes — so the enrich pass is
+  // engine-aware, not merely MySQL-vs-Postgres. A plugin-only engine (e.g.
+  // BigQuery) resolves its plugin module (plugin > core); an unknown engine
+  // composes cleanly with no module, just the display name.
+  // `pluginDialectModules()` is empty in the file-based CLI (no plugins wired),
+  // so that path resolves core modules only.
+  const dialect = dbType ? dialectDisplayName(dbType) : "PostgreSQL";
+  const specialist = dbType
+    ? resolveDialectSpecialist(dbType, pluginDialectModules())?.module
+    : undefined;
+  const specialistSection = specialist
+    ? `\n\nEngine-specific SQL guidance for this ${dialect} datasource — follow it when writing query_patterns:\n${specialist}\n`
+    : "";
 
   const result = await generateText({
     model,
@@ -237,7 +257,7 @@ Here is the current YAML definition:
 \`\`\`yaml
 ${existingContent}
 \`\`\`
-
+${specialistSection}
 Generate ONLY the following improved/new fields as valid YAML. Do not repeat the entire file.
 Output your response inside a single \`\`\`yaml code block.
 

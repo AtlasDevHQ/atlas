@@ -1,11 +1,8 @@
 import { describe, test, expect, beforeEach, mock } from "bun:test";
 import type { ConnectionMetadata } from "../db/connection";
-import type { DialectHint } from "../plugins/wiring";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // --- Mutable state for tests ---
-let mockDialectHints: readonly DialectHint[] = [];
-
 const mockEntries: ConnectionMetadata[] = [];
 
 function resetMockEntries() {
@@ -45,7 +42,8 @@ void mock.module("@atlas/api/lib/semantic", () => ({
 
 void mock.module("@atlas/api/lib/plugins/tools", () => ({
   getContextFragments: () => [],
-  getDialectHints: () => mockDialectHints,
+  getDialectHints: () => [],
+  pluginDialectModules: () => [],
   setContextFragments: () => {},
   setDialectHints: () => {},
   setPluginTools: () => {},
@@ -62,85 +60,64 @@ void mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   _resetPatternCache: () => {},
 }));
 
-// #3633 — agent.ts assembles the org-knowledge block via this module.
 void mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
   resolveOrgKnowledgeSection: async () => "",
 }));
 
 const { buildSystemParam } = await import("@atlas/api/lib/agent");
 
-describe("appendDialectHints", () => {
+function assemble(dialectSpecialists?: string): string {
+  const result = buildSystemParam("openai", { dialectSpecialists });
+  return typeof result === "string" ? result : result.content;
+}
+
+// #4515 — the dialect-specialist section is composed by runAgent and threaded
+// into buildSystemParam as the `dialectSpecialists` string (the sibling of the
+// answer-style / persona seams). buildSystemParam no longer resolves dialect
+// from the connection registry or plugin hints itself — it appends exactly what
+// it is handed. The composition + registry logic is exercised in
+// dialect-specialist.test.ts.
+describe("buildSystemParam — dialectSpecialists seam", () => {
   beforeEach(() => {
     resetMockEntries();
-    mockDialectHints = [];
   });
 
-  test("no hints: prompt has no 'Additional SQL Dialect Notes' section", () => {
-    mockDialectHints = [];
-    const result = buildSystemParam("openai");
-    const content = typeof result === "string" ? result : result.content;
-    expect(content).not.toContain("Additional SQL Dialect Notes");
+  test("omitted: no dialect section is appended", () => {
+    const content = assemble(undefined);
+    expect(content).not.toContain("## SQL Dialect:");
   });
 
-  test("single hint: prompt includes dialect text", () => {
-    mockDialectHints = [{ pluginId: "bq", dialect: "Use SAFE_DIVIDE for BigQuery division." }];
-    const result = buildSystemParam("openai");
-    const content = typeof result === "string" ? result : result.content;
-    expect(content).toContain("## Additional SQL Dialect Notes");
-    expect(content).toContain("Use SAFE_DIVIDE for BigQuery division.");
+  test("empty string: no dialect section is appended", () => {
+    const content = assemble("");
+    expect(content).not.toContain("## SQL Dialect:");
   });
 
-  test("multiple hints: joined with double newline", () => {
-    mockDialectHints = [
-      { pluginId: "bq", dialect: "BigQuery: use SAFE_DIVIDE." },
-      { pluginId: "redshift", dialect: "Redshift: use GETDATE()." },
-    ];
-    const result = buildSystemParam("openai");
-    const content = typeof result === "string" ? result : result.content;
-    expect(content).toContain("## Additional SQL Dialect Notes");
-    expect(content).toContain("BigQuery: use SAFE_DIVIDE.");
-    expect(content).toContain("Redshift: use GETDATE().");
-    // The two hints should be separated by double newline
-    const section = content.split("## Additional SQL Dialect Notes")[1];
-    expect(section).toContain("BigQuery: use SAFE_DIVIDE.\n\nRedshift: use GETDATE().");
+  test("provided: the composed section is appended verbatim", () => {
+    const section = "## SQL Dialect: ClickHouse\nUse toStartOfMonth().";
+    const content = assemble(section);
+    expect(content).toContain(section);
   });
 
-  test("hints are appended after dialect guide for MySQL", () => {
+  test("provided under a MySQL workspace: the passed section drives the dialect text", () => {
     mockEntries.length = 0;
     mockEntries.push({ id: "default", dbType: "mysql" });
-    mockDialectHints = [{ pluginId: "custom", dialect: "Custom MySQL note." }];
-
-    const result = buildSystemParam("openai");
-    const content = typeof result === "string" ? result : result.content;
-    expect(content).toContain("SQL Dialect: MySQL");
-    expect(content).toContain("## Additional SQL Dialect Notes");
-    expect(content).toContain("Custom MySQL note.");
-    // Dialect notes should come after the MySQL guide
-    const mysqlIdx = content.indexOf("SQL Dialect: MySQL");
-    const hintsIdx = content.indexOf("Additional SQL Dialect Notes");
-    expect(hintsIdx).toBeGreaterThan(mysqlIdx);
+    const section = "## SQL Dialect: MySQL\nUse DATE_FORMAT(...).";
+    const content = assemble(section);
+    expect(content).toContain("## SQL Dialect: MySQL");
+    expect(content).toContain("Use DATE_FORMAT(...).");
   });
 
-  test("extracts .dialect from DialectHint, not pluginId", () => {
-    mockDialectHints = [{ pluginId: "should-not-appear", dialect: "Only this text." }];
-    const result = buildSystemParam("openai");
-    const content = typeof result === "string" ? result : result.content;
-    expect(content).toContain("Only this text.");
-    expect(content).not.toContain("should-not-appear");
-  });
-
-  test.each([
-    ["clickhouse", "SQL Dialect: ClickHouse"],
-    ["snowflake", "SQL Dialect: Snowflake"],
-    ["duckdb", "SQL Dialect: DuckDB"],
-    ["salesforce", "Query Language: Salesforce SOQL"],
-  ])("non-core dbType %s without plugin hints omits hardcoded guide", (dbType, oldHeader) => {
+  test("multi-connection: section appended after the Available Data Sources listing", () => {
     mockEntries.length = 0;
-    mockEntries.push({ id: "default", dbType: dbType as "clickhouse" | "snowflake" | "duckdb" | "salesforce" });
-    mockDialectHints = [];
-
-    const result = buildSystemParam("openai");
-    const content = typeof result === "string" ? result : result.content;
-    expect(content).not.toContain(oldHeader);
+    mockEntries.push(
+      { id: "default", dbType: "postgres" },
+      { id: "legacy", dbType: "mysql", description: "Legacy MySQL" },
+    );
+    const section = "## SQL Dialect: MySQL — group `legacy`\nUse DATE_FORMAT(...).";
+    const content = assemble(section);
+    expect(content).toContain("## Available Data Sources");
+    const sourcesIdx = content.indexOf("## Available Data Sources");
+    const dialectIdx = content.indexOf("## SQL Dialect: MySQL");
+    expect(dialectIdx).toBeGreaterThan(sourcesIdx);
   });
 });

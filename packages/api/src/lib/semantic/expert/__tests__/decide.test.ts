@@ -32,13 +32,18 @@ interface Row {
 // stamp/release verify the token exactly like the SQL's `reviewed_at = $N`.
 let pending = new Map<string, Row>();
 let claimed = new Map<string, { row: Row; token: string }>();
-let releaseReasons: Array<{ id: string; reason: string }> = [];
+let releaseReasons: Array<{ id: string; reason: string | null }> = [];
 let stamped: string[] = [];
 let rejected: string[] = [];
 let callOrder: string[] = [];
 let claimSeq = 0;
 // Failure-injection switches.
 let releaseThrows = false;
+// When set, the apply seam raises a StaleBaselineError carrying this diff/hash
+// — modeling a hash-carried claim whose baseline changed since render (#4511).
+let applyStale: { diff: string; baselineHash: string } | null = null;
+// Captures the review-integrity options threaded into the apply (#4511).
+let lastApplyArgs: Record<string, unknown> | null = null;
 // When set, the row's claim token is silently rewritten after the claim —
 // modeling a stale-claim takeover between this decision's claim and stamp.
 let takeoverAfterClaim = false;
@@ -65,7 +70,7 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
     stamped.push(id);
     return true;
   },
-  releaseClaimedAmendment: async (id: string, claimedAt: string, reason: string) => {
+  releaseClaimedAmendment: async (id: string, claimedAt: string, reason: string | null) => {
     callOrder.push(`release:${id}`);
     if (releaseThrows) throw new Error("release exploded");
     const held = claimed.get(id);
@@ -88,9 +93,22 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 // mutation; otherwise records the applied identity.
 let applyCalls: Array<Record<string, unknown>> = [];
 let applyThrows: Error | null = null;
+// The seam statically imports `StaleBaselineError` from `../diff` (real,
+// unmocked). The apply mock raises the REAL class so the seam's `instanceof`
+// check fires and routes it to the `stale` outcome (#4511).
+import { StaleBaselineError } from "../diff";
+
 void mock.module("../apply", () => ({
   applyAmendmentFromPayload: async (args: Record<string, unknown>) => {
     callOrder.push(`apply:${String(args.label)}`);
+    lastApplyArgs = args;
+    if (applyStale) {
+      throw new StaleBaselineError({
+        entityName: String(args.sourceEntity),
+        diff: applyStale.diff,
+        baselineHash: applyStale.baselineHash,
+      });
+    }
     if (applyThrows) throw applyThrows;
     if (!args.rawPayload) {
       throw new Error(
@@ -101,6 +119,7 @@ void mock.module("../apply", () => ({
   },
   applyAmendmentToEntity: async () => {},
   applyAmendment: () => ({}),
+  analysisResultFromStoredPayload: () => ({}),
   resolveAmendmentBaseline: async () => {
     throw new Error("not used by the seam");
   },
@@ -126,8 +145,19 @@ function seedRow(id: string, overrides: Partial<Row> = {}): void {
   });
 }
 
-function decide(id: string, decision: "approved" | "rejected") {
-  return decideAmendment({ id, orgId: "org-1", decision, reviewedBy: "admin-1", requestId: "req-1" });
+function decide(
+  id: string,
+  decision: "approved" | "rejected",
+  extra?: { expectedBaselineHash?: string; group?: string | null },
+) {
+  return decideAmendment({
+    id,
+    orgId: "org-1",
+    decision,
+    reviewedBy: "admin-1",
+    requestId: "req-1",
+    ...extra,
+  });
 }
 
 beforeEach(() => {
@@ -142,6 +172,8 @@ beforeEach(() => {
   applyThrows = null;
   releaseThrows = false;
   takeoverAfterClaim = false;
+  applyStale = null;
+  lastApplyArgs = null;
 });
 
 describe("decideAmendment — approve (#4506)", () => {
@@ -219,6 +251,73 @@ describe("decideAmendment — approve (#4506)", () => {
     expect(stamped).toHaveLength(0);
     // The takeover's claim is still held — this decision didn't release it.
     expect(claimed.has("amd-4")).toBe(true);
+  });
+});
+
+describe("decideAmendment — hash-carried claim + stale baseline (#4511)", () => {
+  it("threads the hash + disambiguation group into the apply", async () => {
+    seedRow("amd-hash");
+
+    await decide("amd-hash", "approved", { expectedBaselineHash: "hash-xyz", group: "eu_prod" });
+
+    expect(lastApplyArgs).toMatchObject({
+      label: "amd-hash",
+      expectedBaselineHash: "hash-xyz",
+      disambiguationGroup: "eu_prod",
+    });
+  });
+
+  it("stale baseline: returns `stale` with the fresh diff, releases the claim CLEANLY (no reason), never stamps", async () => {
+    seedRow("amd-stale");
+    applyStale = { diff: "--- a\n+++ b\n+region", baselineHash: "fresh-hash" };
+
+    const outcome = await decide("amd-stale", "approved", { expectedBaselineHash: "old-hash" });
+
+    expect(outcome).toEqual({
+      kind: "stale",
+      id: "amd-stale",
+      diff: "--- a\n+++ b\n+region",
+      baselineHash: "fresh-hash",
+    });
+    // Claimed, apply raised stale, claim released — but NOT stamped.
+    expect(callOrder).toEqual(["claim:amd-stale", "apply:amd-stale", "release:amd-stale"]);
+    expect(stamped).toHaveLength(0);
+    // Released with a NULL reason — a changed baseline is not an apply failure,
+    // so the queue must not show a scary `last_apply_error`.
+    expect(releaseReasons).toEqual([{ id: "amd-stale", reason: null }]);
+    // Back in the pending queue, ready for the confirming re-decide.
+    expect(pending.has("amd-stale")).toBe(true);
+  });
+
+  it("still returns `stale` (with the fresh diff) even when the claim release throws", async () => {
+    // The admin must get the fresh diff to confirm against even if the
+    // best-effort release logging path fails — the release is compensation, not
+    // the outcome.
+    seedRow("amd-stale-rel");
+    applyStale = { diff: "--- a\n+++ b\n+region", baselineHash: "fresh-hash" };
+    releaseThrows = true;
+
+    const outcome = await decide("amd-stale-rel", "approved", { expectedBaselineHash: "old-hash" });
+
+    expect(outcome).toEqual({
+      kind: "stale",
+      id: "amd-stale-rel",
+      diff: "--- a\n+++ b\n+region",
+      baselineHash: "fresh-hash",
+    });
+    expect(stamped).toHaveLength(0);
+  });
+
+  it("confirming re-decide with the fresh hash applies (matching hash → no stale)", async () => {
+    seedRow("amd-confirm");
+    // The confirm carries the fresh hash; the apply no longer raises stale.
+    applyStale = null;
+
+    const outcome = await decide("amd-confirm", "approved", { expectedBaselineHash: "fresh-hash" });
+
+    expect(outcome).toEqual({ kind: "approved", id: "amd-confirm" });
+    expect(callOrder).toEqual(["claim:amd-confirm", "apply:amd-confirm", "stamp:amd-confirm"]);
+    expect(lastApplyArgs).toMatchObject({ expectedBaselineHash: "fresh-hash" });
   });
 });
 

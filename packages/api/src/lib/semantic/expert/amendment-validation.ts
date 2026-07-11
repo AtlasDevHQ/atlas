@@ -37,7 +37,7 @@
 
 import { z } from "zod";
 import { AMENDMENT_TYPES, type AmendmentType } from "@useatlas/types";
-import { EntityShape } from "@atlas/api/lib/semantic/shapes";
+import { EntityShape, GlossaryShape } from "@atlas/api/lib/semantic/shapes";
 
 /** Loose sample-value element — the profiler emits strings, numbers, booleans. */
 const SampleValue = z.array(z.unknown());
@@ -112,6 +112,18 @@ export const AMENDMENT_PAYLOAD_SCHEMAS: Record<AmendmentType, z.ZodTypeAny> = {
       ambiguous: z.boolean().optional(),
     })
     .passthrough(),
+  // The glossary containment schema (mirrors `update_dimension`): `term` is the
+  // selector (used to FIND the existing term, never to rename it); `definition`
+  // and `ambiguous` are the declared mutable fields (see AMENDMENT_MUTABLE_FIELDS).
+  // `.strict()` rejects any undeclared field — an update can't smuggle a
+  // `possible_mappings`/`note` rewrite that is bigger than "amend a definition".
+  update_glossary_term: z
+    .object({
+      term: z.string().min(1),
+      definition: z.string().optional(),
+      ambiguous: z.boolean().optional(),
+    })
+    .strict(),
   add_virtual_dimension: z
     .object({
       name: z.string().min(1),
@@ -133,6 +145,10 @@ export const AMENDMENT_PAYLOAD_SCHEMAS: Record<AmendmentType, z.ZodTypeAny> = {
  */
 export const AMENDMENT_MUTABLE_FIELDS: Partial<Record<AmendmentType, readonly string[]>> = {
   update_dimension: ["type", "sample_values", "description"],
+  // `term` is the selector; only the definition + ambiguity flag are refinements
+  // an "update term" amendment may make. Other term attributes (note,
+  // possible_mappings, …) are preserved untouched by the apply mutation.
+  update_glossary_term: ["definition", "ambiguous"],
 };
 
 export interface EmbeddedSql {
@@ -174,9 +190,11 @@ export function collectEmbeddedSql(
     case "update_description":
     case "update_dimension":
     case "add_glossary_term":
+    case "update_glossary_term":
       // add_join embeds a relational ON-condition (out of scope, see doc above);
-      // the other three carry no executable SQL. Exhaustive by design — a new
-      // SQL-bearing amendment type is a compile error here, never a silent skip.
+      // the rest carry no executable SQL (glossary terms are prose). Exhaustive
+      // by design — a new SQL-bearing amendment type is a compile error here,
+      // never a silent skip.
       return [];
     default: {
       const _exhaustive: never = amendmentType;
@@ -255,4 +273,21 @@ export function parseEntityShapeOrError(doc: unknown): string | null {
     .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
     .join("; ");
   return `the document does not parse as a semantic entity (${detail})`;
+}
+
+/**
+ * Parse a post-apply (or post-mutation) glossary document against the shared
+ * {@link GlossaryShape}. Returns a reason on failure, or `null` when it parses.
+ * The glossary analog of {@link parseEntityShapeOrError} (#4518): a glossary
+ * Amendment that corrupted the document into a shape the loaders would drop
+ * (e.g. a scalar `terms`) is caught BEFORE it lands, rather than silently
+ * disappearing the glossary later.
+ */
+export function parseGlossaryShapeOrError(doc: unknown): string | null {
+  const result = GlossaryShape.safeParse(doc);
+  if (result.success) return null;
+  const detail = result.error.issues
+    .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+    .join("; ");
+  return `the document does not parse as a glossary (${detail})`;
 }

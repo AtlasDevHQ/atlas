@@ -75,3 +75,25 @@ export const EntityShape = z
   .passthrough();
 
 export type EntityShapeT = z.infer<typeof EntityShape>;
+
+/**
+ * Core glossary-document shape — the post-apply gate a glossary Amendment must
+ * pass, mirroring {@link EntityShape}'s role for entities (#4518). A glossary
+ * document is `{ terms: … }` where `terms` is either the canonical object map
+ * (`terms: { <name>: {...} }`) or the legacy array form (`terms: [{ term, … }]`);
+ * both are honored by every loader (`search.ts`, `lookups.ts`, `context-loader.ts`).
+ * `terms` is optional so a brand-new (empty `{}`) glossary — the baseline when a
+ * group has no glossary yet — still parses, and `.passthrough()` tolerates any
+ * incidental top-level keys. The gate exists so an amendment can never corrupt
+ * the glossary into a shape (e.g. a scalar `terms`) the loaders would silently
+ * drop.
+ */
+export const GlossaryShape = z
+  .object({
+    terms: z
+      .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
+      .optional(),
+  })
+  .passthrough();
+
+export type GlossaryShapeT = z.infer<typeof GlossaryShape>;

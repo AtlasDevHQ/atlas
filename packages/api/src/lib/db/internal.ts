@@ -1545,7 +1545,8 @@ const DEFAULT_AUTO_APPROVE_TYPES = "update_description,add_dimension";
 /** Valid amendment type names from @useatlas/types, used for env var validation. */
 const VALID_AMENDMENT_TYPES: ReadonlySet<string> = new Set([
   "add_dimension", "add_measure", "add_join", "add_query_pattern",
-  "update_description", "update_dimension", "add_glossary_term", "add_virtual_dimension",
+  "update_description", "update_dimension", "add_glossary_term", "update_glossary_term",
+  "add_virtual_dimension",
 ]);
 
 /**

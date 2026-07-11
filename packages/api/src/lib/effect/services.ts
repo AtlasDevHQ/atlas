@@ -816,7 +816,7 @@ export function makeWiredPluginRegistryLive(
       }).pipe(
         Effect.catchAll((err) => {
           pluginLog.error({ err }, "Datasource wiring failed entirely");
-          return Effect.succeed({ wired: [] as string[], failed: [] as Array<{ pluginId: string; error: string }>, dialectHints: [] as Array<{ pluginId: string; dialect: string }>, entityFailures: [] as Array<{ pluginId: string; error: string }> });
+          return Effect.succeed({ wired: [] as string[], failed: [] as Array<{ pluginId: string; error: string }>, dialectHints: [] as Array<{ pluginId: string; dbType: string; dialect: string }>, entityFailures: [] as Array<{ pluginId: string; error: string }> });
         }),
       );
       if (dsResult.failed.length > 0) {

@@ -58,6 +58,7 @@ void mock.module("@atlas/api/lib/semantic", () => ({
 void mock.module("@atlas/api/lib/plugins/tools", () => ({
   getContextFragments: () => [],
   getDialectHints: () => [],
+  pluginDialectModules: () => [],
   setContextFragments: () => {},
   setDialectHints: () => {},
   setPluginTools: () => {},
@@ -108,12 +109,13 @@ describe("#2505 agent system prompt — default connection visibility by deployM
     expect(content).not.toContain("- **default**");
   });
 
-  test("SaaS [default + warehouse]: filter drops to one entry, single-source dialect path runs on the survivor", () => {
+  test("SaaS [default + warehouse]: filter drops to one entry, single-source path runs on the survivor", () => {
     // Regression guard: filtering happens BEFORE the `meta.length <= 1`
     // branch, so dropping `default` from a 2-entry registry routes the
-    // prompt through the single-source path. The dialect must come from
-    // the survivor (warehouse), not from `default`. Using mysql for the
-    // survivor here so the dialect guide is observable in the prompt.
+    // prompt through the single-source path — no "Available Data Sources"
+    // multi-source section. (Post-#4515 the dialect guide is a separate
+    // composed section threaded by runAgent, covered in
+    // dialect-specialist.test.ts, not auto-appended by buildSystemParam.)
     mockConfigOverride = { deployMode: "saas" };
     mockEntries.length = 0;
     mockEntries.push({ id: "default", dbType: "postgres", description: "Shared demo" });
@@ -122,7 +124,6 @@ describe("#2505 agent system prompt — default connection visibility by deployM
     const content = typeof result === "string" ? result : result.content;
     expect(content).not.toContain("- **default**");
     expect(content).not.toContain("## Available Data Sources");
-    expect(content).toContain("SQL Dialect: MySQL");
   });
 
   test("self-hosted (explicit): 'default' remains visible to the agent", () => {

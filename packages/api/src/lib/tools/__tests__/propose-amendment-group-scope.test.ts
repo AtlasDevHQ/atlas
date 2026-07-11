@@ -64,6 +64,14 @@ const createVersion = mock(async (): Promise<string> => "version-1");
 const generateChangeSummary = mock(async (): Promise<string> => "added region");
 const invalidateOrgWhitelist = mock((_org: string): void => {});
 const syncEntityToDisk = mock(async (): Promise<void> => {});
+// #4517 — no draft sibling by default, so the content-mode dual-apply is a
+// no-op and these group-scope routing assertions see only the published write.
+const getDraftEntityForGroup = mock(
+  async (_org: string, _type: string, _name: string, _group?: string | null): Promise<null> => null,
+);
+const upsertDraftEntityForGroup = mock(
+  async (_org: string, _type: string, _name: string, _yaml: string, _group?: string | null): Promise<void> => {},
+);
 
 class AmbiguousEntityError extends Error {}
 
@@ -72,6 +80,8 @@ void mock.module("@atlas/api/lib/semantic/entities", () => ({
   upsertEntityForGroup,
   createVersion,
   generateChangeSummary,
+  getDraftEntityForGroup,
+  upsertDraftEntityForGroup,
   AmbiguousEntityError,
 }));
 void mock.module("@atlas/api/lib/semantic", () => ({ invalidateOrgWhitelist }));

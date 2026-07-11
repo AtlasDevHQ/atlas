@@ -53,12 +53,23 @@ const invalidateOrgWhitelist = mock((_org: string): void => {});
 const syncEntityToDisk = mock(
   async (_org: string, _name: string, _type: string, _yaml: string, _group?: string | null): Promise<void> => {},
 );
+// #4517 — the content-mode dual-apply reads the draft sibling and (when present)
+// writes it. Default: no draft → dual-apply is a no-op, so these suites assert
+// only the published write.
+const getDraftEntityForGroup = mock(
+  async (_org: string, _type: string, _name: string, _group?: string | null): Promise<Row | null> => null,
+);
+const upsertDraftEntityForGroup = mock(
+  async (_org: string, _type: string, _name: string, _yaml: string, _group?: string | null): Promise<void> => {},
+);
 
 void mock.module("@atlas/api/lib/semantic/entities", () => ({
   getEntity,
   upsertEntityForGroup,
   createVersion,
   generateChangeSummary,
+  getDraftEntityForGroup,
+  upsertDraftEntityForGroup,
   AmbiguousEntityError,
 }));
 void mock.module("@atlas/api/lib/semantic", () => ({ invalidateOrgWhitelist }));

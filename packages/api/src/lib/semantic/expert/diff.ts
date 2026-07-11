@@ -29,6 +29,9 @@
 import { createHash } from "node:crypto";
 import * as yaml from "js-yaml";
 import { createTwoFilesPatch } from "diff";
+import { createLogger } from "@atlas/api/lib/logger";
+
+const log = createLogger("semantic-expert-diff");
 
 /**
  * Canonical dump options shared by every path that normalizes an entity for a
@@ -126,6 +129,14 @@ export interface AmendmentLiveDiff {
   readonly diff: string;
   /** Hash of the current normalized baseline — the token a claim carries. */
   readonly baselineHash: string;
+  /**
+   * #4517 — whether a `draft` sibling of this entity exists. The live diff is
+   * computed against the PUBLISHED baseline (approval is the publish gate), so a
+   * pending draft is a caveat the reviewer must know: approving lands on the
+   * published row and the content-mode dual-apply mirrors the change onto the
+   * draft so a later publish can't clobber it. The card renders this as a note.
+   */
+  readonly draftExists: boolean;
 }
 
 /**
@@ -169,7 +180,8 @@ export async function computeAmendmentLiveDiff(params: {
   // Glossary amendments diff the group's glossary DOCUMENT, not the host entity
   // the term was found under (#4518). Same live-diff contract — recompute
   // against the current baseline, hash the normalized baseline — but resolved,
-  // mutated, and attributed against the glossary.
+  // mutated, and attributed against the glossary. A glossary amendment has no
+  // entity `draft` sibling, so `draftExists` is always false (#4517).
   if (isGlossaryAmendmentType(result.amendmentType)) {
     const { parsed } = await resolveGlossaryBaseline(params.orgId, result.group);
     const updated = applyGlossaryAmendment(parsed, result);
@@ -178,14 +190,41 @@ export async function computeAmendmentLiveDiff(params: {
     return {
       diff: computeDocDiff(glossaryDiffPath(result.group), beforeNormalized, afterNormalized),
       baselineHash: hashBaselineYaml(beforeNormalized),
+      draftExists: false,
     };
   }
 
-  const { parsed } = await resolveAmendmentBaseline(
+  // #4517 — resolve the PUBLISHED baseline, exactly as the apply seam does, so
+  // the hash the reviewer carries and the hash the approve verifies are taken
+  // over the same body (a divergence would make every approve of an entity with
+  // a draft falsely stale). `targetGroupId` is the resolved row's own group —
+  // the scope the draft-existence check must use.
+  const { parsed, targetGroupId } = await resolveAmendmentBaseline(
     params.orgId,
     params.sourceEntity,
     result.group,
+    undefined,
+    "published",
   );
+
+  // Does a `draft` sibling exist? The reviewer needs to know the approve will
+  // land on the published row while a draft shadows it (the dual-apply keeps the
+  // two convergent). A read-only note — best-effort: a probe failure must not
+  // fail the diff the admin actually reviews (the baseline already resolved), so
+  // it degrades to `false` with a debug log rather than propagating.
+  let draftExists = false;
+  try {
+    const { getDraftEntityForGroup } = await import("@atlas/api/lib/semantic/entities");
+    const draftRow = await getDraftEntityForGroup(
+      params.orgId ?? "", "entity", params.sourceEntity, targetGroupId,
+    );
+    draftExists = draftRow?.status === "draft";
+  } catch (probeErr) {
+    log.debug(
+      { entity: params.sourceEntity, err: probeErr instanceof Error ? probeErr.message : String(probeErr) },
+      "draft-existence probe failed — omitting the draft note (the live diff is unaffected)",
+    );
+  }
 
   const updated = applyAmendment(parsed, result);
   const beforeNormalized = normalizeEntityYaml(parsed);
@@ -194,5 +233,6 @@ export async function computeAmendmentLiveDiff(params: {
   return {
     diff: computeEntityDiff(params.sourceEntity, beforeNormalized, afterNormalized),
     baselineHash: hashBaselineYaml(beforeNormalized),
+    draftExists,
   };
 }

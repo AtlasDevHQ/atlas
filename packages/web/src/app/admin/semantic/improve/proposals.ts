@@ -20,6 +20,23 @@ export interface TestResult {
   error?: string;
 }
 
+/**
+ * Map an AI SDK v5 tool-part `state` to the improve chat's activity status
+ * (#4517). The old inline code gated its spinner on `"call"` — a LEGACY state
+ * these parts never carry — so a running tool showed no activity and errors were
+ * invisible. The current v5 states are `input-streaming` / `input-available`
+ * (the tool is still working) → `"working"`; `output-available` → `"done"`;
+ * `output-error` → `"failed"`. Any other/absent value defaults to `"working"`
+ * (a part that exists but hasn't settled is in flight). Pure + exported so the
+ * mapping — the actual bug fix — is unit-testable without a React harness.
+ */
+export type ToolPartStatus = "working" | "done" | "failed";
+export function toolPartStatus(state: string | undefined): ToolPartStatus {
+  if (state === "output-available") return "done";
+  if (state === "output-error") return "failed";
+  return "working";
+}
+
 export interface Proposal {
   index: number;
   entityName: string;
@@ -35,6 +52,14 @@ export interface Proposal {
    * carry it (chat-streamed cards are pre-review).
    */
   baselineHash?: string;
+  /**
+   * #4517 — a `draft` sibling of this entity exists. The live diff is computed
+   * against the PUBLISHED baseline (approval is the publish gate); the card
+   * notes that approving lands on the published row and the content-mode
+   * dual-apply mirrors the change onto the draft so a later publish can't
+   * clobber it. Only pending-list cards carry it.
+   */
+  draftExists?: boolean;
   testQuery?: string;
   testResult?: TestResult;
   confidence: number;

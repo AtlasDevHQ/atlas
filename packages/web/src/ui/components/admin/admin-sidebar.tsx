@@ -49,17 +49,33 @@ import { matchesNavItem, navGroups, type NavGroup } from "./admin-nav";
 // Component
 // ---------------------------------------------------------------------------
 
-function usePendingAmendmentCount(): number {
+// The pending-amendment badge poll (#4517). Gated on `enabled` so it only runs
+// for admins — the `/pending-count` route requires the `admin:semantic`
+// permission (`requirePermission("admin:semantic")`), so a non-admin polling it
+// every 60s produced silent 403 spam. A 403 for an admin who nonetheless lacks
+// the granular permission (a custom admin role) stops the interval, so the badge
+// fetch can never become a recurring 403 either way.
+function usePendingAmendmentCount(enabled: boolean): number {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const [count, setCount] = useState(0);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
     const fetchCount = () => {
       fetch(`${apiUrl}/api/v1/admin/semantic-improve/pending-count`, {
         credentials: isCrossOrigin ? "include" : "same-origin",
       })
-        .then((r) => (r.ok ? r.json() : null))
+        .then((r) => {
+          // 403 = this admin lacks admin:semantic — stop polling so it never
+          // becomes silent 403 spam.
+          if (r.status === 403) {
+            if (interval) clearInterval(interval);
+            return null;
+          }
+          return r.ok ? r.json() : null;
+        })
         .then((data) => {
           if (!cancelled && data && typeof data.count === "number") {
             setCount(data.count);
@@ -70,9 +86,9 @@ function usePendingAmendmentCount(): number {
         });
     };
     fetchCount();
-    const interval = setInterval(fetchCount, 60_000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [apiUrl, isCrossOrigin]);
+    interval = setInterval(fetchCount, 60_000);
+    return () => { cancelled = true; if (interval) clearInterval(interval); };
+  }, [apiUrl, isCrossOrigin, enabled]);
 
   return count;
 }
@@ -83,7 +99,8 @@ export function AdminSidebar() {
   const { branding } = useBranding();
   const { deployMode, resolved: modeResolved } = useDeployMode();
   const { mode, setMode, isAdmin } = useMode();
-  const pendingCount = usePendingAmendmentCount();
+  // Only admins poll the pending-amendment badge (#4517) — see the hook.
+  const pendingCount = usePendingAmendmentCount(isAdmin);
   const isSaas = deployMode === "saas";
 
   function isGroupActive(group: NavGroup) {

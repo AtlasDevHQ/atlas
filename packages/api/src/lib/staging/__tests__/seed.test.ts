@@ -263,12 +263,22 @@ describeIfPg("ensureStagingSeed — real Postgres", () => {
     }
 
     // libpq `options` pins search_path at connection startup (server-side,
-    // before any query) — both the scratch schema and public so extensions
-    // / system catalogs still resolve. Better Auth's migrator + every seed
-    // query run on this pool, so all DDL/DML lands in the scratch schema.
+    // before any query) to ONLY the scratch schema — deliberately WITHOUT a
+    // `public` fallback. This makes the harness IMMUNE to a concurrently-running
+    // -pg test that leaks its own tables into shared `public` (the systemic
+    // fire-and-forget `SET search_path` race, e.g. connection-profile-pg /
+    // amendment-dual-apply-pg): with no `public` in the path, Better Auth's
+    // migrator and every seed query resolve `__atlas_migrations` and all
+    // relations ONLY in this scratch schema, so a leaked `public.__atlas_migrations`
+    // (or any leaked table) can never satisfy an `IF NOT EXISTS` / be read in
+    // place of a row this seed must create. `pg_catalog` is always implicitly
+    // searched (built-ins like `gen_random_uuid()` resolve), and `pgcrypto`
+    // (its `digest()`) installs into the FIRST search_path schema — this scratch
+    // schema — so migration 0151's email-hash index still resolves. Extensions do
+    // NOT need `public`; the fallback only ever created the pollution exposure.
     pool = new Pool({
       connectionString: TEST_DB_URL,
-      options: `-c search_path="${schemaName}",public`,
+      options: `-c search_path="${schemaName}"`,
     });
 
     // Reset caches and inject the scratch pool BEFORE building the auth

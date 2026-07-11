@@ -76,6 +76,14 @@ const invalidateOrgWhitelist = mock((_org: string): void => {});
 const syncEntityToDisk = mock(
   async (_org: string, _name: string, _type: string, _yaml: string, _group?: string | null): Promise<void> => {},
 );
+// #4517 — no draft sibling by default, so the dual-apply is a no-op and these
+// routing assertions see only the published write.
+const getDraftEntityForGroup = mock(
+  async (_org: string, _type: string, _name: string, _group?: string | null): Promise<Row | null> => null,
+);
+const upsertDraftEntityForGroup = mock(
+  async (_org: string, _type: string, _name: string, _yaml: string, _group?: string | null): Promise<void> => {},
+);
 
 // Factories MUST be synchronous (bun loader deadlocks on an async mock.module
 // factory that awaits internally) — each returns a plain object referencing the
@@ -85,6 +93,8 @@ void mock.module("@atlas/api/lib/semantic/entities", () => ({
   upsertEntityForGroup,
   createVersion,
   generateChangeSummary,
+  getDraftEntityForGroup,
+  upsertDraftEntityForGroup,
   AmbiguousEntityError,
 }));
 void mock.module("@atlas/api/lib/semantic", () => ({ invalidateOrgWhitelist }));

@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
-import { extractProposals, buildProposalQueue, buildReviewBody, classifyReviewResult, type Proposal, type QueueRow, type TestResult } from "./proposals";
+import { extractProposals, buildProposalQueue, buildReviewBody, classifyReviewResult, toolPartStatus, type Proposal, type QueueRow, type TestResult } from "./proposals";
 import { RejectedCard, type RejectedAmendment } from "./rejected";
 import { DiffViewer, formatAmendment } from "./amendment-display";
 import {
@@ -20,6 +20,11 @@ import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
+// Parity with the main chat surface (#4517): shared markdown for agent prose and
+// the shared billing/permission ErrorBanner (CTA + Retry-After countdown).
+import { Markdown } from "@/ui/components/chat/markdown";
+import { ErrorBanner } from "@/ui/components/chat/error-banner";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -68,6 +73,8 @@ interface PendingAmendment {
   diff: string | null;
   /** Hash of the baseline the live diff was computed against (#4511). */
   baselineHash: string | null;
+  /** #4517 — a `draft` sibling of this entity exists (published-baseline caveat). */
+  draftExists: boolean;
   testQuery: string | null;
   testResult: TestResult | null;
   applyError: string | null;
@@ -172,6 +179,17 @@ function ProposalCard({
           <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs font-mono whitespace-pre-wrap">
             {formatAmendment(proposal.amendmentType, proposal.amendment)}
           </pre>
+        )}
+
+        {/* #4517 — the entity has a draft. The live diff is against the PUBLISHED
+            version (approval is the publish gate); note that approving mirrors the
+            change onto the draft so a later publish can't clobber it. */}
+        {proposal.draftExists && (
+          <p className="text-xs text-muted-foreground">
+            <span className="font-medium">A draft of this entity exists.</span>{" "}
+            This diff is against the published version — approving publishes the
+            change and mirrors it onto the draft, so a later publish keeps it.
+          </p>
         )}
 
         {proposal.testQuery && (
@@ -394,6 +412,9 @@ export function ActiveAnchorChip({ anchor, onClear }: { anchor: ActiveAnchor; on
 
 export default function SemanticImprovePage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  // Stack the chat + proposals panels below the mobile breakpoint (#4517) so the
+  // side-by-side split doesn't crush both panes on a narrow viewport.
+  const isMobile = useIsMobile();
   const [inputValue, setInputValue] = useState("");
   // Keyed by the proposal's DB row id (`dbId`) so a decision made on a
   // chat-streamed card survives re-renders and pending-list refetches — the
@@ -539,6 +560,7 @@ export default function SemanticImprovePage() {
     rationale: a.rationale ?? a.description ?? "",
     diff: a.diff ?? undefined,
     baselineHash: a.baselineHash ?? undefined,
+    draftExists: a.draftExists,
     testQuery: a.testQuery ?? undefined,
     testResult: a.testResult ?? undefined,
     applyError: a.applyError ?? undefined,
@@ -580,6 +602,21 @@ export default function SemanticImprovePage() {
         setInputValue(saved);
       },
     );
+  }
+
+  // #4517 — retry the failed turn by replaying the last user message (mirrors the
+  // main chat surface). Feeds ErrorBanner's manual "Try again" and its auto-retry
+  // when a rate-limit Retry-After countdown elapses.
+  function handleRetryChat() {
+    const lastUser = messages.toReversed().find((m) => m.role === "user");
+    const text = lastUser?.parts
+      ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map((p) => p.text)
+      .join(" ");
+    if (!text?.trim()) return;
+    sendMessage({ role: "user", parts: [{ type: "text" as const, text }] }).catch((err: unknown) => {
+      console.error("Failed to retry message:", err instanceof Error ? err.message : String(err));
+    });
   }
 
   // #4519 — set the active anchor. Write the ref synchronously (before the
@@ -734,7 +771,10 @@ export default function SemanticImprovePage() {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-4rem)] flex-col overflow-hidden">
+    // Fill the admin content area exactly (#4517) — the old `calc(100dvh-4rem)`
+    // hardcoded a top-bar height that no longer matches and double-counted inside
+    // the admin layout's own scroll area, drifting the page height.
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
       <div className="flex shrink-0 items-center gap-3 border-b px-6 py-4">
         <Link href="/admin/semantic">
@@ -767,7 +807,7 @@ export default function SemanticImprovePage() {
 
       {/* Split view */}
       <div className="min-h-0 flex-1 overflow-hidden">
-        <ResizablePanelGroup orientation="horizontal">
+        <ResizablePanelGroup orientation={isMobile ? "vertical" : "horizontal"}>
           {/* Chat panel */}
           <ResizablePanel defaultSize={55} minSize={35}>
             <div className="flex h-full min-h-0 flex-col">
@@ -805,22 +845,49 @@ export default function SemanticImprovePage() {
                       >
                         {msg.parts.map((part, i) => {
                           if (part.type === "text") {
-                            return <p key={i} className="whitespace-pre-wrap">{part.text}</p>;
+                            // Agent prose renders markdown like the main chat
+                            // surface (#4517); the user's own text stays plain.
+                            return msg.role === "assistant" ? (
+                              <Markdown key={i} content={part.text} />
+                            ) : (
+                              <p key={i} className="whitespace-pre-wrap">{part.text}</p>
+                            );
+                          }
+                          // Reasoning parts render as muted, quoted sub-prose (#4517).
+                          if (part.type === "reasoning") {
+                            const reasoning = part.text;
+                            if (!reasoning.trim()) return null;
+                            return (
+                              <div
+                                key={i}
+                                className="my-1 border-l-2 border-muted-foreground/30 pl-2 text-xs italic text-muted-foreground"
+                              >
+                                <Markdown content={reasoning} />
+                              </div>
+                            );
                           }
                           if (isToolUIPart(part)) {
                             let toolName = "tool";
                             try { toolName = getToolName(part as Parameters<typeof getToolName>[0]); } catch { /* intentionally ignored: unknown tool */ }
-                            const state = (part as Record<string, unknown>).state;
+                            // Map the CURRENT AI SDK v5 tool-part states (#4517)
+                            // via the shared, unit-tested `toolPartStatus`. The old
+                            // code gated the spinner on "call", a legacy state
+                            // these parts never carry, so a running tool showed no
+                            // activity and errors were invisible.
+                            const status = toolPartStatus(part.state);
                             return (
-                              <div key={i} className="my-1 text-xs text-muted-foreground">
+                              <div key={i} className="my-1 flex items-center gap-1.5 text-xs text-muted-foreground">
                                 <Badge variant="outline" className="text-[10px]">
                                   {toolName}
                                 </Badge>
-                                {state === "output-available" && (
-                                  <span className="ml-1 text-green-600 dark:text-green-400">done</span>
+                                {status === "done" && (
+                                  <Check className="size-3 text-green-600 dark:text-green-400" />
                                 )}
-                                {state === "call" && (
-                                  <Loader2 className="ml-1 inline size-3 animate-spin" />
+                                {status === "failed" && (
+                                  <span className="text-red-600 dark:text-red-400">failed</span>
+                                )}
+                                {status === "working" && (
+                                  <Loader2 className="inline size-3 animate-spin" />
                                 )}
                               </div>
                             );
@@ -840,13 +907,13 @@ export default function SemanticImprovePage() {
                 </div>
               </ScrollArea>
 
-              {/* Error display */}
+              {/* Error display — the shared chat ErrorBanner (#4517): billing /
+                  permission (429/403) errors render with an upgrade/Retry-After
+                  countdown and a Try-again CTA, not a flat "Analysis failed" box.
+                  The admin console is always managed (cookie) auth. */}
               {chatError && (
-                <div className="border-t bg-destructive/10 px-4 py-3 text-sm text-destructive">
-                  <p className="font-medium">Analysis failed</p>
-                  <p className="text-xs mt-1">
-                    {chatError.message || "An error occurred while communicating with the expert agent."}
-                  </p>
+                <div className="border-t px-4 pt-3">
+                  <ErrorBanner error={chatError} authMode="managed" onRetry={handleRetryChat} />
                 </div>
               )}
 

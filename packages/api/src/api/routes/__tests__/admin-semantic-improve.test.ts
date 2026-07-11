@@ -56,10 +56,13 @@ let applyStale: { diff: string; baselineHash: string } | null = null;
 let applyAmbiguousGroups: Array<string | null> | null = null;
 // #4511 — the live diff `GET /pending` renders per row. An Error value makes
 // `computeAmendmentLiveDiff` throw (baseline unresolvable → null diff/hash).
-let mockLiveDiff: { diff: string; baselineHash: string; targetGroupId: string | null } | Error = {
+let mockLiveDiff:
+  | { diff: string; baselineHash: string; targetGroupId: string | null; draftExists: boolean }
+  | Error = {
   diff: "--- a\n+++ b\n@@\n+live",
   baselineHash: "live-hash",
   targetGroupId: null,
+  draftExists: false,
 };
 // Shared sequence log: proves claim → apply → stamp ordering.
 let callOrder: string[] = [];
@@ -368,7 +371,7 @@ describe("admin-semantic-improve", () => {
     applyShouldThrow = false;
     applyStale = null;
     applyAmbiguousGroups = null;
-    mockLiveDiff = { diff: "--- a\n+++ b\n@@\n+live", baselineHash: "live-hash", targetGroupId: null };
+    mockLiveDiff = { diff: "--- a\n+++ b\n@@\n+live", baselineHash: "live-hash", targetGroupId: null, draftExists: false };
     callOrder = [];
     runAgentArgs = undefined;
     lastRequestContext = undefined;
@@ -764,33 +767,36 @@ describe("admin-semantic-improve", () => {
       created_at: "2026-07-10T00:00:00Z",
     });
 
-    it("renders the LIVE diff + baseline hash, never the stored propose-time diff", async () => {
+    it("renders the LIVE diff + baseline hash + draftExists, never the stored propose-time diff", async () => {
       mockPendingAmendments = [liveRow("amd-live")];
-      mockLiveDiff = { diff: "LIVE-DIFF-AGAINST-CURRENT", baselineHash: "bh-1", targetGroupId: null };
+      mockLiveDiff = { diff: "LIVE-DIFF-AGAINST-CURRENT", baselineHash: "bh-1", targetGroupId: null, draftExists: true };
 
       const res = await adminSemanticImprove.request("/pending");
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
-        amendments: Array<{ id: string; diff: string | null; baselineHash: string | null }>;
+        amendments: Array<{ id: string; diff: string | null; baselineHash: string | null; draftExists: boolean }>;
       };
       const a = body.amendments.find((x) => x.id === "amd-live");
       expect(a?.diff).toBe("LIVE-DIFF-AGAINST-CURRENT");
       expect(a?.diff).not.toBe("STORED-PROPOSE-TIME-DIFF");
       expect(a?.baselineHash).toBe("bh-1");
+      // #4517 — the draft-exists note flows through to the card.
+      expect(a?.draftExists).toBe(true);
     });
 
-    it("falls back to null diff/hash (never 500) when the baseline can't be resolved (e.g. cross-group-ambiguous legacy row)", async () => {
+    it("falls back to null diff/hash + draftExists=false (never 500) when the baseline can't be resolved (e.g. cross-group-ambiguous legacy row)", async () => {
       mockPendingAmendments = [liveRow("amd-unresolvable")];
       mockLiveDiff = new Error("Entity \"orders\" is ambiguous across groups");
 
       const res = await adminSemanticImprove.request("/pending");
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
-        amendments: Array<{ id: string; diff: string | null; baselineHash: string | null }>;
+        amendments: Array<{ id: string; diff: string | null; baselineHash: string | null; draftExists: boolean }>;
       };
       const a = body.amendments.find((x) => x.id === "amd-unresolvable");
       expect(a?.diff).toBeNull();
       expect(a?.baselineHash).toBeNull();
+      expect(a?.draftExists).toBe(false);
     });
   });
 

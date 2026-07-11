@@ -362,6 +362,14 @@ const PendingAmendmentSchema = z.object({
    * `null` whenever `diff` is (no single baseline to hash).
    */
   baselineHash: z.string().nullable(),
+  /**
+   * #4517 — whether a `draft` sibling of this entity exists. The live diff is
+   * computed against the PUBLISHED baseline (approval is the publish gate); when
+   * a draft exists the card notes that approving lands on the published row and
+   * the content-mode dual-apply mirrors the change onto the draft so a later
+   * publish can't clobber it. `false` whenever the live diff was unresolvable.
+   */
+  draftExists: z.boolean(),
   testQuery: z.string().nullable(),
   testResult: TestResultSchema.nullable(),
   /**
@@ -761,6 +769,9 @@ adminSemanticImprove.openapi(pendingListRoute, async (c) =>
         // surfaces the group picker. Never a 500 for one unresolvable row.
         let liveDiff: string | null = null;
         let baselineHash: string | null = null;
+        // #4517 — whether a draft of this entity exists (rendered as a note on
+        // the card). Defaults false; an unresolvable live diff leaves it false.
+        let draftExists = false;
         try {
           const live = await computeAmendmentLiveDiff({
             orgId,
@@ -771,6 +782,7 @@ adminSemanticImprove.openapi(pendingListRoute, async (c) =>
           });
           liveDiff = live.diff;
           baselineHash = live.baselineHash;
+          draftExists = live.draftExists;
         } catch (err) {
           // Routine unresolvable rows log at debug; real read-path faults at
           // warn (see isExpectedLiveDiffError). Never a swallow — the null-diff
@@ -796,6 +808,7 @@ adminSemanticImprove.openapi(pendingListRoute, async (c) =>
           ...view,
           diff: liveDiff,
           baselineHash,
+          draftExists,
           applyError: row.last_apply_error ?? null,
           createdAt: row.created_at,
         };

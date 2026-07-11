@@ -62000,6 +62000,9 @@
                               "null"
                             ]
                           },
+                          "draftExists": {
+                            "type": "boolean"
+                          },
                           "testQuery": {
                             "type": [
                               "string",
@@ -62055,6 +62058,7 @@
                           "rationale",
                           "diff",
                           "baselineHash",
+                          "draftExists",
                           "testQuery",
                           "testResult",
                           "applyError",

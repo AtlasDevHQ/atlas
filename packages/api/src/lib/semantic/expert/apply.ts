@@ -87,6 +87,14 @@ export async function resolveAmendmentBaseline(
   // string = that group. A candidate can legitimately be `null`, which is why
   // the "provided" test is `!== undefined`, not truthiness.
   disambiguationGroup?: string | null,
+  // #4517 — the status overlay the baseline reads. The apply seam (approval is
+  // the publish gate) and the live-diff render BOTH pass "published" so the diff
+  // an admin reviews and the row an approval mutates are the PUBLISHED body —
+  // never a draft overlay that would leak unpublished draft content into the
+  // published row, or throw a spurious "target not found" when a draft removed
+  // the amendment's target (that case is the dual-apply's visible skip, not an
+  // apply failure). Defaults to "developer" for any other caller.
+  mode: "developer" | "published" = "developer",
 ): Promise<{
   row: SemanticEntityRow;
   targetGroupId: string | null;
@@ -98,31 +106,49 @@ export async function resolveAmendmentBaseline(
   const { getEntity, AmbiguousEntityError } = await import("@atlas/api/lib/semantic/entities");
 
   const lookupScope = groupToLookupScope(group);
-  let row = await getEntity(effectiveOrgId, "entity", entityName, lookupScope);
-  if (!row && lookupScope !== undefined) {
-    // The persisted group didn't resolve to a row — e.g. an interactive
-    // `proposeAmendment` row (NULL group) whose flat-root entity was imported
-    // under a datasource group, or a stale group label. Fall back to the
-    // back-compat UNSCOPED lookup. Log the fallback so a wrong-scope diagnosis
-    // isn't silent — the write-back below still targets the resolved row's OWN
-    // group, so this only widens the read, never the write.
-    log.debug(
-      { entityName, requestedScope: lookupScope },
-      "scoped amendment baseline lookup missed — falling back to unscoped resolve",
-    );
-    try {
-      row = await getEntity(effectiveOrgId, "entity", entityName);
-    } catch (fallbackErr) {
-      // #4511 — cross-group ambiguity on a legacy row (the name lives in 2+
-      // groups and no scope resolved it). If the admin picked a disambiguation
-      // group, resolve at THAT explicit scope instead of re-raising the 409;
-      // otherwise re-raise so the route surfaces the group picker.
-      if (fallbackErr instanceof AmbiguousEntityError && disambiguationGroup !== undefined) {
-        row = await getEntity(effectiveOrgId, "entity", entityName, disambiguationGroup);
-      } else {
-        throw fallbackErr;
+
+  // Resolve the entity ROW at a given status overlay: scoped read → unscoped
+  // fallback on a scoped miss → admin-picked disambiguation on cross-group
+  // ambiguity. Factored out so the published read and the draft-only fallback
+  // below share the exact same scoping.
+  async function resolveRow(readMode: "developer" | "published"): Promise<SemanticEntityRow | null> {
+    let row = await getEntity(effectiveOrgId, "entity", entityName, lookupScope, readMode);
+    if (!row && lookupScope !== undefined) {
+      // The persisted group didn't resolve to a row — e.g. an interactive
+      // `proposeAmendment` row (NULL group) whose flat-root entity was imported
+      // under a datasource group, or a stale group label. Fall back to the
+      // back-compat UNSCOPED lookup. Log the fallback so a wrong-scope diagnosis
+      // isn't silent — the write-back below still targets the resolved row's OWN
+      // group, so this only widens the read, never the write.
+      log.debug(
+        { entityName, requestedScope: lookupScope, readMode },
+        "scoped amendment baseline lookup missed — falling back to unscoped resolve",
+      );
+      try {
+        row = await getEntity(effectiveOrgId, "entity", entityName, undefined, readMode);
+      } catch (fallbackErr) {
+        // #4511 — cross-group ambiguity on a legacy row (the name lives in 2+
+        // groups and no scope resolved it). If the admin picked a disambiguation
+        // group, resolve at THAT explicit scope instead of re-raising the 409;
+        // otherwise re-raise so the route surfaces the group picker.
+        if (fallbackErr instanceof AmbiguousEntityError && disambiguationGroup !== undefined) {
+          row = await getEntity(effectiveOrgId, "entity", entityName, disambiguationGroup, readMode);
+        } else {
+          throw fallbackErr;
+        }
       }
     }
+    return row;
+  }
+
+  let row = await resolveRow(mode);
+  // #4517 — a published-anchored read must not hard-fail an entity that exists
+  // ONLY as a draft (created in developer mode, never published). Fall back to
+  // the developer overlay so a never-published draft still resolves; the write
+  // then creates the published row and the dual-apply keeps the draft
+  // convergent. The common case (a published row exists) never reaches here.
+  if (!row && mode === "published") {
+    row = await resolveRow("developer");
   }
   if (!row) {
     throw new Error(
@@ -237,15 +263,44 @@ export async function resolveGlossaryBaseline(
 }
 
 /**
+ * The result of applying an amendment — surfaces the content-mode dual-apply
+ * carve-out's outcome (#4517) so callers and tests can see whether a draft
+ * sibling converged. Approval is the publish gate: the write always lands on
+ * the PUBLISHED row; `draftDualApply` reports what happened to any `draft` row.
+ */
+export interface AmendmentApplyResult {
+  /**
+   * #4517 — outcome of the content-mode dual-apply to a `draft` sibling:
+   * - `no-draft`: the entity has no draft row (the common case) — nothing to do.
+   * - `applied`: the approved change was also written to the draft, so a later
+   *   publish (`draft → published`) carries it forward and can't clobber it.
+   * - `skipped`: the draft couldn't take the change (it removed the amendment's
+   *   target, tombstoned the entity, its stored YAML was unreadable, or the write
+   *   itself failed). A VISIBLE skip — logged and (where a draft row was read)
+   *   recorded on the draft's version history — never silence, and never a reason
+   *   to un-approve the (already published) change.
+   */
+  readonly draftDualApply:
+    | { kind: "no-draft" }
+    | { kind: "applied" }
+    | { kind: "skipped"; reason: string };
+}
+
+/**
  * Apply an amendment from an AnalysisResult to the org's semantic entity.
  *
- * 1. Read current YAML from DB — scoped to the finding's Connection group
- *    (`result.group`) so a group entity resolves without a 409 (#3284), via the
- *    shared {@link resolveAmendmentBaseline} the diff preview also uses (#4488)
+ * 1. Read the current PUBLISHED YAML from DB — scoped to the finding's
+ *    Connection group (`result.group`) so a group entity resolves without a 409
+ *    (#3284), via the shared {@link resolveAmendmentBaseline} the diff preview
+ *    also uses (#4488). Approval is the publish gate, so the baseline is the
+ *    PUBLISHED body (#4517), never a draft overlay.
  * 2. Apply amendment, serialize back
  * 3. Upsert entity + create version snapshot — written back to the row's OWN
  *    `connection_group_id`, so the amendment can never land in the wrong scope
  * 4. Invalidate caches and sync to disk (same group)
+ * 5. Content-mode dual-apply carve-out (#4517): when a `draft` sibling exists,
+ *    apply the SAME amendment to it so a later publish can't clobber the
+ *    approved change; a draft that can't take it records a visible skip.
  */
 export async function applyAmendmentToEntity(
   orgId: string | null,
@@ -257,25 +312,34 @@ export async function applyAmendmentToEntity(
   // a StaleBaselineError (fresh diff, inline update-and-confirm) instead of
   // silently applying against a baseline the admin never saw.
   opts?: { disambiguationGroup?: string | null; expectedBaselineHash?: string },
-): Promise<void> {
+): Promise<AmendmentApplyResult> {
   // Glossary amendments target the group's glossary document, not an entity —
   // route them to the glossary path (#4518). Same resolve → mutate → validate →
   // upsert → snapshot lifecycle + hash-carried stale-baseline check (#4511),
   // different target document. `disambiguationGroup` is entity-only (the
-  // glossary resolves at a concrete group), so only the hash is threaded.
+  // glossary resolves at a concrete group), so only the hash is threaded. A
+  // glossary amendment has no entity `draft` sibling, so the content-mode
+  // dual-apply carve-out (#4517) is a no-op for it.
   if (isGlossaryAmendmentType(result.amendmentType)) {
-    return applyGlossaryAmendmentToStore(orgId, result, requestId, {
+    await applyGlossaryAmendmentToStore(orgId, result, requestId, {
       expectedBaselineHash: opts?.expectedBaselineHash,
     });
+    return { draftDualApply: { kind: "no-draft" } };
   }
 
+  // Self-hosted (null orgId) uses empty string as sentinel for global scope
+  const effectiveOrgId = orgId ?? "";
+
   // Read the baseline through the shared resolver so the diff preview and this
-  // write agree on the exact row + scope (#4488). Returns the row's OWN group.
+  // write agree on the exact row + scope (#4488). Approval is the publish gate,
+  // so read the PUBLISHED overlay (#4517): the row an approval mutates is the
+  // published body, not a draft that shadows it. Returns the row's OWN group.
   const { row: entity, targetGroupId, parsed } = await resolveAmendmentBaseline(
     orgId,
     result.entityName,
     result.group,
     opts?.disambiguationGroup,
+    "published",
   );
 
   // Apply amendment (same logic as CLI's apply-amendment)
@@ -328,6 +392,27 @@ export async function applyAmendmentToEntity(
     amendmentType: result.amendmentType,
     requestId,
   });
+
+  // === Content-mode dual-apply carve-out (#4517) ===
+  // The write above landed on the PUBLISHED row — approval is the publish gate.
+  // When a `draft` sibling of this entity exists, a later publish
+  // (`promoteDraftEntities`: delete published, flip draft → published) would
+  // CLOBBER the approved change with the older draft body. Converge the draft by
+  // applying the SAME amendment to it (upsert-by-identity), so publish carries
+  // the approved change forward. A draft that removed the amendment's target — or
+  // tombstoned the entity — can't take the change: a VISIBLE skip recorded on the
+  // draft's version history, never a silent drop and never a reason to un-approve
+  // the (already published) change. Runs AFTER the persist seam so a snapshot
+  // failure (which throws) skips the draft too — control never reaches here.
+  // Rationale: docs/development/content-mode.md § "Amendment approval dual-applies
+  // to a draft of the same entity".
+  const draftDualApply = await dualApplyToDraftSibling({
+    effectiveOrgId,
+    result,
+    targetGroupId,
+    requestId,
+  });
+  return { draftDualApply };
 }
 
 /**
@@ -450,7 +535,10 @@ async function persistAmendedDocument(params: {
   // can't be rolled back. Tagged errors (AmbiguousEntityError) re-throw
   // untouched so the route layer maps them to 409 with `groups`.
   try {
-    const refreshed = await getEntity(effectiveOrgId, docKind, docName, targetGroupId);
+    // Refetch the PUBLISHED row we just wrote (#4517) — approval is the publish
+    // gate, so the version snapshot must attach to the published document, not a
+    // draft the developer overlay would otherwise prefer when one exists.
+    const refreshed = await getEntity(effectiveOrgId, docKind, docName, targetGroupId, "published");
     if (!refreshed) {
       throw new Error(`${docKind} row not found after upsert`);
     }
@@ -516,6 +604,158 @@ async function persistAmendedDocument(params: {
 }
 
 /**
+ * Content-mode dual-apply carve-out (#4517): mirror an approved amendment onto a
+ * `draft` sibling of the entity so a later publish can't clobber the approved
+ * change. Called after the published write has landed.
+ *
+ * - No draft row → `no-draft` (nothing to converge).
+ * - A `draft_delete` tombstone (the draft removed the whole entity) → `skipped`:
+ *   there is nothing to apply to, and publishing that tombstone would remove the
+ *   entity and the approved change with it — surfaced as a visible skip.
+ * - A live `draft` row → apply the SAME amendment to its OWN baseline and write
+ *   it back. If the draft removed the amendment's target (`applyAmendment`
+ *   throws) or the write fails, `skipped` with a reason — the published apply has
+ *   already succeeded, so a draft-side problem must NOT fail it.
+ *
+ * Every skip is logged (never silence) and recorded on the draft's version
+ * history (visible to an admin editing the draft).
+ */
+async function dualApplyToDraftSibling(params: {
+  effectiveOrgId: string;
+  result: AnalysisResult;
+  targetGroupId: string | null;
+  requestId: string;
+}): Promise<AmendmentApplyResult["draftDualApply"]> {
+  const { effectiveOrgId, result, targetGroupId, requestId } = params;
+
+  // Outer guard (#4517): the published write has already landed durably by the
+  // time we get here, so NO draft-side fault may throw out of this function —
+  // that would reach the decide seam's generic compensation and bounce an
+  // already-published amendment back to `pending`, the exact outcome the design
+  // forbids. The two known-miss paths (target removed / tombstone) return a
+  // recorded `skipped` below; this catch is the safety net for the UNEXPECTED
+  // throws — a transient draft read error, or a malformed draft YAML that throws
+  // in the parser (`loadYaml` throws on a non-empty malformed document). Any such
+  // fault is surfaced loudly and skipped, never a reason to un-approve.
+  try {
+    const { getDraftEntityForGroup, upsertDraftEntityForGroup } = await import(
+      "@atlas/api/lib/semantic/entities"
+    );
+
+    const draftRow = await getDraftEntityForGroup(
+      effectiveOrgId, "entity", result.entityName, targetGroupId,
+    );
+    if (!draftRow) return { kind: "no-draft" };
+
+    if (draftRow.status === "draft_delete") {
+      const reason =
+        `a draft deletion of "${result.entityName}" is pending; publishing it would remove the ` +
+        `entity and the approved change with it`;
+      await recordDraftSkip({ draftRow, result, reason, requestId });
+      return { kind: "skipped", reason };
+    }
+
+    const draftParsed = loadYaml(draftRow.yaml_content) as Record<string, unknown>;
+    if (!draftParsed || typeof draftParsed !== "object" || Array.isArray(draftParsed)) {
+      const reason =
+        `the draft of "${result.entityName}" is not a valid YAML mapping — the approved change was ` +
+        `not mirrored to it`;
+      await recordDraftSkip({ draftRow, result, reason, requestId });
+      return { kind: "skipped", reason };
+    }
+
+    let draftUpdated: Record<string, unknown>;
+    try {
+      draftUpdated = applyAmendment(draftParsed, result);
+    } catch (applyErr) {
+      // Draft-side miss: the amendment can't apply to the draft — typically its
+      // target (a dimension / measure the update selects) was removed in the
+      // draft. The published apply already succeeded — DON'T fail it. Record a
+      // visible skip so an admin editing the draft sees why it diverged.
+      const detail = applyErr instanceof Error ? applyErr.message : String(applyErr);
+      const reason = `the approved change could not apply to the draft of "${result.entityName}": ${detail}`;
+      await recordDraftSkip({ draftRow, result, reason, requestId });
+      return { kind: "skipped", reason };
+    }
+
+    const draftYaml = yaml.dump(draftUpdated, { lineWidth: 120, noRefs: true });
+    try {
+      await upsertDraftEntityForGroup(
+        effectiveOrgId, "entity", result.entityName, draftYaml, targetGroupId,
+      );
+    } catch (writeErr) {
+      // A transient draft-write failure must not un-approve the PUBLISHED change.
+      // Surface it loudly (never silence) and report a skip; the draft stays
+      // un-converged until re-approved or reconciled at publish.
+      const detail = writeErr instanceof Error ? writeErr.message : String(writeErr);
+      log.error(
+        { requestId, entity: result.entityName, group: targetGroupId, err: detail },
+        "Dual-apply to draft sibling failed to write — the approved change is PUBLISHED but the draft did not converge; publishing the draft may clobber it",
+      );
+      return { kind: "skipped", reason: `failed to write the draft of "${result.entityName}": ${detail}` };
+    }
+
+    log.info(
+      { requestId, entity: result.entityName, group: targetGroupId },
+      "Amendment dual-applied to the draft sibling — a later publish can't clobber the approved change",
+    );
+    return { kind: "applied" };
+  } catch (unexpectedErr) {
+    const detail = unexpectedErr instanceof Error ? unexpectedErr.message : String(unexpectedErr);
+    log.error(
+      { requestId, entity: result.entityName, group: targetGroupId, err: detail },
+      "Dual-apply to draft sibling failed unexpectedly — the approved change is PUBLISHED but the draft did not converge; the amendment stays approved (never un-approved by a draft-side fault)",
+    );
+    return {
+      kind: "skipped",
+      reason: `could not mirror the approved change to the draft of "${result.entityName}": ${detail}`,
+    };
+  }
+}
+
+/**
+ * Surface a dual-apply skip VISIBLY on the draft (#4517): a version snapshot on
+ * the draft row carrying the skip reason, so an admin editing the draft sees why
+ * it diverges from the freshly-published change. Best-effort — a version-write
+ * failure is logged, never thrown: a recording failure must not un-approve the
+ * (already published) change. Always logs at warn so the skip is never silent.
+ */
+async function recordDraftSkip(params: {
+  draftRow: SemanticEntityRow;
+  result: AnalysisResult;
+  reason: string;
+  requestId: string;
+}): Promise<void> {
+  const { draftRow, result, reason, requestId } = params;
+  log.warn(
+    { requestId, entity: result.entityName, group: draftRow.connection_group_id ?? null, reason },
+    "Content-mode dual-apply skipped for the draft sibling",
+  );
+  try {
+    const { createVersion } = await import("@atlas/api/lib/semantic/entities");
+    await createVersion(
+      draftRow.id,
+      draftRow.org_id,
+      "entity",
+      result.entityName,
+      draftRow.yaml_content,
+      `Skipped applying the approved amendment to this draft: ${reason}. Publish or discard this draft to reconcile.`,
+      "expert-agent",
+      "Semantic Expert Agent",
+    );
+  } catch (versionErr) {
+    log.warn(
+      {
+        requestId,
+        entity: result.entityName,
+        err: versionErr instanceof Error ? versionErr.message : String(versionErr),
+      },
+      "Failed to record the dual-apply skip on the draft's version history (skip still logged)",
+    );
+  }
+}
+
+/**
  * Reconstruct an {@link AnalysisResult} from a stored `amendment_payload`
  * envelope and apply it to the org's semantic entity. Shared by every admin
  * approve path — the learned-patterns single-PATCH + bulk handlers and the
@@ -554,7 +794,7 @@ export async function applyAmendmentFromPayload(params: {
    * applying against an unseen baseline. `undefined` = no hash-carried claim.
    */
   expectedBaselineHash?: string;
-}): Promise<void> {
+}): Promise<AmendmentApplyResult> {
   const { orgId, sourceEntity, connectionGroupId, rawPayload, requestId } = params;
 
   const result = analysisResultFromStoredPayload({
@@ -564,7 +804,7 @@ export async function applyAmendmentFromPayload(params: {
     label: params.label,
   });
 
-  await applyAmendmentToEntity(orgId, result, requestId, {
+  return await applyAmendmentToEntity(orgId, result, requestId, {
     disambiguationGroup: params.disambiguationGroup,
     expectedBaselineHash: params.expectedBaselineHash,
   });

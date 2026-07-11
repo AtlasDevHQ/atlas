@@ -88,6 +88,42 @@ function Wrapper({ children }: { children: ReactNode }) {
   );
 }
 
+// An ADMIN session — `role: "admin"` is in ADMIN_ROLES, so `useMode().isAdmin`
+// is true and the pending-amendment badge poll is enabled (#4517).
+const adminAuthClient: AtlasAuthClient = {
+  ...stubAuthClient,
+  useSession: () => ({ data: { user: { email: "admin@test.com", role: "admin" } }, isPending: false }),
+};
+
+function AdminWrapper({ children }: { children: ReactNode }) {
+  return (
+    <AtlasProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: adminAuthClient }}>
+      <SidebarProvider>{children}</SidebarProvider>
+    </AtlasProvider>
+  );
+}
+
+const PENDING_COUNT_URL = "/api/v1/admin/semantic-improve/pending-count";
+
+/** Render with `fetch` spied; return which URLs were requested. */
+function renderWithFetchSpy(wrapper: ({ children }: { children: ReactNode }) => React.JSX.Element) {
+  const fetchSpy = mock(async (_url: string | URL, _init?: RequestInit) => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ count: 0 }),
+  }));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchSpy as unknown as typeof fetch;
+  try {
+    const { unmount } = render(<AdminSidebar />, { wrapper });
+    const polledPendingCount = fetchSpy.mock.calls.some((c) => String(c[0]).includes(PENDING_COUNT_URL));
+    unmount();
+    return { polledPendingCount };
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 describe("AdminSidebar", () => {
   test("renders group titles and overview", () => {
     const { container } = render(<AdminSidebar />, { wrapper: Wrapper });
@@ -120,5 +156,17 @@ describe("AdminSidebar", () => {
     // Overview link and back-to-chat are always rendered
     expect(hrefs).toContain("/admin");
     expect(hrefs).toContain("/");
+  });
+
+  // #4517 — the pending-amendment badge poll is gated on the admin role, since
+  // `/pending-count` requires the `admin:semantic` permission. A non-admin
+  // polling it every 60s produced silent 403 spam.
+  test("does NOT poll the pending-count badge for a non-admin", () => {
+    // The default stub session carries no role → isAdmin false → no poll.
+    expect(renderWithFetchSpy(Wrapper).polledPendingCount).toBe(false);
+  });
+
+  test("polls the pending-count badge for an admin", () => {
+    expect(renderWithFetchSpy(AdminWrapper).polledPendingCount).toBe(true);
   });
 });

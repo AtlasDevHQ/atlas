@@ -216,7 +216,9 @@ describe("runMigrations", () => {
     //   notebook-surface retirement, ADR-0035, #4587) = 170.
     //   Plus 0170 (learned_patterns.last_apply_error — the visible reason when
     //   the decide seam compensates a failed approve back to pending, #4506) = 171.
-    expect(count).toBe(171);
+    //   Plus 0171 (connection_profile_state — per-connection baseline + LLM
+    //   profile-tier tracking for the semantic-improve briefing, #4509) = 172.
+    expect(count).toBe(172);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -416,6 +418,7 @@ describe("runMigrations", () => {
         "0168_knowledge_sync_state_high_water.sql",
         "0169_convert_notebook_conversations.sql",
         "0170_learned_patterns_last_apply_error.sql",
+        "0171_connection_profile_state.sql",
       ],
     });
 

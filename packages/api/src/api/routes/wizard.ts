@@ -64,6 +64,7 @@ import { SAFE_TABLE_NAME, safeSemanticRowName } from "@atlas/api/lib/semantic/sh
 // Phase-2 enrichment is the same shared engine (issue #3236, § D); the in-memory
 // variant lets the wizard enrich a YAML string per table without touching disk.
 import { enrichEntityYaml } from "@atlas/api/lib/semantic/enrich";
+import { recordLlmProfileRun } from "@atlas/api/lib/semantic/connection-profile";
 import { refreshGroupAutoDescription } from "@atlas/api/lib/source-catalog/lookup";
 // #3437 / #4489 — the wizard's Phase-2 enrich spends platform LLM tokens, so it
 // consults the same shared billing gate as every other agent surface before the
@@ -1066,6 +1067,27 @@ wizard.openapi(enrichRoute, async (c) => {
     log.info(
       { requestId, connectionId, tableName, enriched: data.enriched.enriched },
       "Wizard enrich complete",
+    );
+
+    // Track the LLM-profile (enrichment) run per connection (#4509): WHEN it last
+    // ran and OVER WHAT scope. Enrichment is never automatic and stays billing-
+    // gated (the agent gate above) — this only RECORDS the run that just
+    // completed, feeding the briefing's "enriched N days ago" marker. Fire-and-
+    // forget + a no-op with no internal DB (self-hosted CLI enrichment writes YAML
+    // to disk, not this store); recording must never fail the enrich response.
+    //
+    // `connectionId` here is the SAME `workspace_plugins.install_id` the baseline
+    // on-create hook keys on (both resolve through `resolveLiveConnection(orgId,
+    // installId)`), so the two tiers converge on ONE (org, install_id) row.
+    void recordLlmProfileRun({
+      orgId: orgId ?? null,
+      installId: connectionId,
+      scope: { tables: [tableName] },
+    }).catch((err) =>
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), requestId, connectionId, tableName },
+        "Failed to record LLM-profile run",
+      ),
     );
 
     return c.json(

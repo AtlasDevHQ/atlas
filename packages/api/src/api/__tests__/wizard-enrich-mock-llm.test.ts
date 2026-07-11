@@ -387,6 +387,21 @@ describe("wizard two-phase generate via the mock-LLM test layer (#3621 AC#6, cli
     expect(event.eventType).toBe("token");
     expect(event.quantity).toBe(80);
     expect(event.workspaceId).toBe("org-1");
+
+    // #4509 — the enrich route records the LLM-profile run per connection:
+    // WHEN (now()) + OVER WHAT scope, keyed on the connection install id. This
+    // is what feeds the briefing's "enriched N days ago" marker.
+    const llmRecord = mockInternalQuery.mock.calls.find(
+      ([sql]) =>
+        typeof sql === "string" &&
+        sql.includes("INSERT INTO connection_profile_state") &&
+        sql.includes("llm_profiled_at = now()"),
+    );
+    expect(llmRecord).toBeDefined();
+    const llmParams = llmRecord?.[1] as unknown[];
+    expect(llmParams[0]).toBe("org-1"); // org scope
+    expect(llmParams[1]).toBe("analytics"); // install_id = the connection
+    expect(JSON.parse(llmParams[3] as string)).toEqual({ tables: ["orders"] });
   });
 
   it("the AtlasAiModel test layer is the model source (sanity: layer resolves our mock)", async () => {

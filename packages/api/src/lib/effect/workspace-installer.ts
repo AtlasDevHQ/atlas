@@ -136,6 +136,19 @@ function lazyGetInstallHandler(): (row: CatalogRowForDispatch) => PlatformInstal
   return mod.getInstallHandler;
 }
 
+// Lazy-`require` the baseline-profile hook, mirroring `lazyDatasourceBridge` /
+// `lazyInternalQuery` above: it keeps this installer's static import graph free
+// of the `connection-baseline → connection-profile → db/internal` chain and
+// keeps partial `mock.module` route tests loading cleanly. (`connection-baseline`
+// itself already keeps the heavy `mcp-lifecycle` graph lazy, so this is graph
+// hygiene + test-loader consistency — NOT a boot-cycle break.) Resolved once per
+// datasource install.
+type ConnectionBaselineModule = typeof import("@atlas/api/lib/datasources/connection-baseline");
+function lazyConnectionBaseline(): ConnectionBaselineModule {
+  // oxlint-disable-next-line @typescript-eslint/no-require-imports
+  return require("@atlas/api/lib/datasources/connection-baseline") as ConnectionBaselineModule;
+}
+
 const log = createLogger("workspace-installer");
 
 // ---------------------------------------------------------------------------
@@ -1549,6 +1562,43 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
         { workspaceId, catalogSlug, installId: input.installId, dbType: dryRun.dbType, status },
         "WorkspaceInstaller.installDatasource completed",
       );
+
+      // Baseline-profile a newly-created profilable connection (#4509) — no
+      // operator action. The hook is capability-gated (REST/OpenAPI + OAuth-
+      // managed types are skipped) and fire-and-forget: it re-resolves the live
+      // connection and runs the deterministic baseline in the background, records
+      // its own outcome durably, and never blocks or fails this install. The
+      // plugin form-install spine (`DatasourceFormInstallHandler` via
+      // `/install-form`, which INSERTs `workspace_plugins` directly rather than
+      // through this facade) is covered by the lazy backfill on first
+      // briefing/coverage need.
+      yield* Effect.sync(() => {
+        // Guard the SYNCHRONOUS lazy-`require` too: a module-load failure inside
+        // `Effect.sync` would surface as a defect that fails an install already
+        // persisted + registered above. `profileConnectionOnCreate` itself never
+        // throws/rejects (it returns a decision), so the `.catch` is
+        // belt-and-suspenders.
+        try {
+          void lazyConnectionBaseline()
+            .profileConnectionOnCreate({
+              orgId: workspaceId,
+              installId: input.installId,
+              connectionGroupId: input.groupId ?? null,
+              dbType: dryRun.dbType,
+            })
+            .catch((err) =>
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), installId: input.installId },
+                "Baseline profile on-create hook rejected unexpectedly",
+              ),
+            );
+        } catch (err) {
+          log.warn(
+            { err: err instanceof Error ? err.message : String(err), installId: input.installId },
+            "Baseline profile on-create hook failed to schedule — deferring to lazy backfill",
+          );
+        }
+      });
 
       return shapeDatasourceRow({
         rowId,

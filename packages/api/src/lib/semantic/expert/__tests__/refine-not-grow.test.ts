@@ -32,6 +32,7 @@ const REFINE_ONLY_TYPES = new Set<string>([
   "update_description",
   "update_dimension",
   "add_glossary_term",
+  "update_glossary_term",
   "add_virtual_dimension",
 ]);
 

@@ -20,6 +20,20 @@ let mockUpdated: Record<string, unknown> = {};
 let mockTargetGroupId: string | null = null;
 let resolveThrows: Error | null = null;
 let resolveCalls: Array<{ orgId: string | null; entity: string; group: string | undefined }> = [];
+// #4517 — the draft-existence probe `computeAmendmentLiveDiff` runs against the
+// entities module. Stateful so a test can toggle "a draft exists" and assert the
+// `draftExists` note without touching a DB.
+let mockDraftRow: { status: string } | null = null;
+let draftProbeCalls: Array<{ group: string | null | undefined }> = [];
+
+void mock.module("@atlas/api/lib/semantic/entities", () => ({
+  getDraftEntityForGroup: async (
+    _org: string, _type: string, _name: string, group?: string | null,
+  ) => {
+    draftProbeCalls.push({ group });
+    return mockDraftRow;
+  },
+}));
 
 void mock.module("../apply", () => ({
   analysisResultFromStoredPayload: (params: {
@@ -64,6 +78,8 @@ beforeEach(() => {
   mockTargetGroupId = null;
   resolveThrows = null;
   resolveCalls = [];
+  mockDraftRow = null;
+  draftProbeCalls = [];
 });
 
 describe("normalizeEntityYaml", () => {
@@ -133,6 +149,41 @@ describe("computeAmendmentLiveDiff", () => {
     expect(live.baselineHash).toBe(hashBaselineYaml(normalizeEntityYaml(mockParsed)));
     // Resolution used the payload-derived group (NULL group → "default").
     expect(resolveCalls[0]).toMatchObject({ orgId: "org-1", entity: "orders", group: "eu_prod" });
+    // No draft sibling by default → no note.
+    expect(live.draftExists).toBe(false);
+  });
+
+  it("flags draftExists when a `draft` sibling exists, probing the resolved group (#4517)", async () => {
+    mockParsed = { name: "orders", measures: [] };
+    mockUpdated = { name: "orders", measures: [{ name: "total_revenue" }] };
+    mockTargetGroupId = "eu_prod";
+    mockDraftRow = { status: "draft" };
+
+    const live = await computeAmendmentLiveDiff({
+      orgId: "org-1",
+      sourceEntity: "orders",
+      connectionGroupId: "eu_prod",
+      rawPayload: { amendment: { name: "total_revenue" } },
+    });
+
+    expect(live.draftExists).toBe(true);
+    // The draft probe is scoped to the baseline's OWN resolved group.
+    expect(draftProbeCalls.at(-1)?.group).toBe("eu_prod");
+  });
+
+  it("a `draft_delete` tombstone is NOT a draft for the note (draftExists stays false)", async () => {
+    mockParsed = { name: "orders", measures: [] };
+    mockUpdated = { name: "orders", measures: [{ name: "total_revenue" }] };
+    mockDraftRow = { status: "draft_delete" };
+
+    const live = await computeAmendmentLiveDiff({
+      orgId: "org-1",
+      sourceEntity: "orders",
+      connectionGroupId: null,
+      rawPayload: { amendment: { name: "total_revenue" } },
+    });
+
+    expect(live.draftExists).toBe(false);
   });
 
   it("propagates a resolution failure (e.g. cross-group ambiguity) to the caller", async () => {

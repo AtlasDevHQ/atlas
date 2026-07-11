@@ -54,11 +54,18 @@ const syncEntityToDisk = mock(async (): Promise<void> => {
 
 class AmbiguousEntityError extends Error {}
 
+// #4517 — no draft sibling by default: the dual-apply is a no-op, so the
+// snapshot-failure contract below is unchanged (it fires before the dual-apply).
+const getDraftEntityForGroup = mock(async (): Promise<null> => null);
+const upsertDraftEntityForGroup = mock(async (): Promise<void> => {});
+
 void mock.module("@atlas/api/lib/semantic/entities", () => ({
   getEntity,
   upsertEntityForGroup,
   createVersion,
   generateChangeSummary,
+  getDraftEntityForGroup,
+  upsertDraftEntityForGroup,
   AmbiguousEntityError,
 }));
 void mock.module("@atlas/api/lib/semantic", () => ({ invalidateOrgWhitelist }));
@@ -147,7 +154,10 @@ describe("applyAmendmentToEntity — snapshot failure fails the apply (#4506)", 
   it("disk-mirror sync failure stays warn-only — the apply still succeeds", async () => {
     syncThrows = true;
 
-    await expect(applyAmendmentToEntity("org-1", result, "req-1")).resolves.toBeUndefined();
+    // The apply resolves (no throw) and reports no draft sibling to converge.
+    await expect(applyAmendmentToEntity("org-1", result, "req-1")).resolves.toMatchObject({
+      draftDualApply: { kind: "no-draft" },
+    });
     expect(createVersion).toHaveBeenCalledTimes(1);
   });
 

@@ -368,6 +368,39 @@ export async function upsertDraftEntityForGroup(
 }
 
 /**
+ * Read the draft-SIDE row (`status='draft'` or `status='draft_delete'`) for an
+ * entity identity, scoped to an explicit `connection_group_id` — the read-side
+ * mirror of {@link upsertDraftEntityForGroup} used by the content-mode
+ * dual-apply carve-out (#4517).
+ *
+ * Distinct from {@link getEntity}'s developer overlay, which collapses a
+ * `draft_delete` tombstone to `null` ("hidden"): the dual-apply needs to SEE a
+ * tombstone (a draft that removed the whole entity) to record a visible skip, so
+ * this returns the tombstone row rather than hiding it. When (pathologically)
+ * both a live `draft` and a `draft_delete` exist for the same key, the live
+ * `draft` wins. Returns `null` when no draft-side row exists.
+ */
+export async function getDraftEntityForGroup(
+  orgId: string,
+  entityType: SemanticEntityType,
+  name: string,
+  connectionGroupId?: string | null,
+): Promise<SemanticEntityRow | null> {
+  if (!hasInternalDB()) return null;
+  const rows = await internalQuery<SemanticEntityRow>(
+    `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
+     FROM semantic_entities
+     WHERE org_id = $1 AND entity_type = $2 AND name = $3
+       AND connection_group_id IS NOT DISTINCT FROM $4
+       AND status IN ('draft', 'draft_delete')
+     ORDER BY CASE status WHEN 'draft' THEN 0 ELSE 1 END
+     LIMIT 1`,
+    [orgId, entityType, name, connectionGroupId ?? null],
+  );
+  return rows[0] ?? null;
+}
+
+/**
  * Insert a draft_delete tombstone for an entity.
  *
  * Used for developer-mode deletes where a published row exists — the

@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from "bun:test";
 import type { UIMessage } from "@ai-sdk/react";
-import { extractProposals, buildProposalQueue, buildReviewBody, classifyReviewResult, type Proposal } from "../proposals";
+import { extractProposals, buildProposalQueue, buildReviewBody, classifyReviewResult, toolPartStatus, type Proposal } from "../proposals";
 import type { FetchError } from "@/ui/lib/fetch-error";
 import type { MutateResult } from "@/ui/hooks/use-admin-mutation";
 
@@ -423,5 +423,34 @@ describe("buildReviewBody (#4511)", () => {
 
   it("a bare approve with no opts is just the decision", () => {
     expect(buildReviewBody("approved")).toEqual({ decision: "approved" });
+  });
+});
+
+// #4517 — the AI SDK v5 tool-part state → activity status mapping. The pre-fix
+// code gated its spinner on the LEGACY "call" state (which v5 parts never
+// carry), so a running tool showed no activity and errors were invisible.
+describe("toolPartStatus (#4517)", () => {
+  it("output-available → done", () => {
+    expect(toolPartStatus("output-available")).toBe("done");
+  });
+
+  it("output-error → failed", () => {
+    expect(toolPartStatus("output-error")).toBe("failed");
+  });
+
+  it("the streaming states are 'working' (the spinner shows during execution)", () => {
+    expect(toolPartStatus("input-streaming")).toBe("working");
+    expect(toolPartStatus("input-available")).toBe("working");
+  });
+
+  it("the legacy 'call' state (the pre-fix gate) is treated as working, not silently idle", () => {
+    // Regression guard: the old code only spun on "call"; now "call" is an
+    // unrecognized value that still reads as in-flight rather than done.
+    expect(toolPartStatus("call")).toBe("working");
+  });
+
+  it("an absent/unknown state defaults to working (a part that hasn't settled)", () => {
+    expect(toolPartStatus(undefined)).toBe("working");
+    expect(toolPartStatus("something-else")).toBe("working");
   });
 });

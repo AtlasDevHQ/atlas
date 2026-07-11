@@ -43,6 +43,39 @@ describe("resolveAmendmentBaseline (#4488)", () => {
     getEntity.mockReset();
   });
 
+  // ── #4517 — published-anchored resolution (apply is the publish gate) ──────
+  describe("published mode (#4517)", () => {
+    it("resolves the published row at the requested scope (mode threaded to getEntity)", async () => {
+      getEntity.mockImplementation(
+        async (_o: string, _t: string, _n: string, _group?: string | null, mode?: string) =>
+          mode === "published"
+            ? { id: "orders-pub", connection_group_id: "eu_prod", yaml_content: "name: orders\n" }
+            : null,
+      );
+
+      const result = await resolveAmendmentBaseline("org-1", "orders", "eu_prod", undefined, "published");
+
+      expect(result.targetGroupId).toBe("eu_prod");
+      expect(result.parsed).toMatchObject({ name: "orders" });
+    });
+
+    it("a draft-only entity (no published row) falls back to the developer overlay", async () => {
+      // The published read misses everywhere (no published row); the developer
+      // overlay resolves the never-published draft, so approve doesn't hard-fail.
+      getEntity.mockImplementation(
+        async (_o: string, _t: string, _n: string, _group?: string | null, mode?: string) =>
+          mode === "published"
+            ? null
+            : { id: "orders-draft", connection_group_id: "eu_prod", yaml_content: "name: orders\n" },
+      );
+
+      const result = await resolveAmendmentBaseline("org-1", "orders", "eu_prod", undefined, "published");
+
+      expect(result.targetGroupId).toBe("eu_prod");
+      expect(result.parsed).toMatchObject({ name: "orders" });
+    });
+  });
+
   it("scoped hit: reads the group-scoped row and returns its own group + parsed YAML", async () => {
     getEntity.mockResolvedValue({
       id: "orders-eu",

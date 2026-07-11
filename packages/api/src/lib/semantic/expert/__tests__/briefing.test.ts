@@ -294,11 +294,15 @@ describe("assembleBriefing — anchors (#4519)", () => {
     expect(block).toContain("no tracked baseline profile for `orders`'s table yet");
   });
 
-  it("renders no anchor section for an anchorless sweep (AC4 — unchanged)", () => {
-    const anchored = assembleBriefing(makeInputs({ anchor: { kind: "group", group: "prod", entities: [] } }));
+  it("renders no anchor section for an anchorless sweep, byte-identical to pre-anchor (AC4)", () => {
     const sweep = assembleBriefing(makeInputs());
     expect(sweep).not.toContain("### Anchor:");
-    // The anchorless block is exactly the pre-anchor block.
+    // Byte-identity: an explicit `anchor: undefined` renders the same block as
+    // omitting the field — the empty renderAnchor section is filtered out, so a
+    // sweep block is exactly what it was before anchors existed.
+    expect(assembleBriefing(makeInputs({ anchor: undefined }))).toBe(sweep);
+    // And an anchor (even an empty group) DOES add a section, so anchored ≠ sweep.
+    const anchored = assembleBriefing(makeInputs({ anchor: { kind: "group", group: "prod", entities: [] } }));
     expect(anchored).not.toBe(sweep);
   });
 });

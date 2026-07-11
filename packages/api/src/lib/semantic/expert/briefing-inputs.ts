@@ -195,10 +195,20 @@ export async function loadBriefingInputs(
 
   // Resolve the anchor from the entities + profiles already in hand — no extra
   // read. An entity anchor whose target isn't in scope resolves to null; the
-  // briefing then starts unanchored rather than fabricating the entity.
-  const resolvedAnchor = anchor
-    ? (resolveBriefingAnchor(anchor, ctx.entities, ctx.profiles) ?? undefined)
-    : undefined;
+  // briefing then starts unanchored rather than fabricating the entity. That
+  // degrade is deliberate but must NOT be silent (the launcher can offer an
+  // entity the published briefing can't see — e.g. a draft-only entity in
+  // developer mode, or a group-id namespace mismatch): log it so "anchoring
+  // silently didn't scope" is greppable rather than undebuggable. A group anchor
+  // never returns null (an empty group renders its own explicit line), so only
+  // the entity-miss path reaches this warn.
+  const resolvedAnchor = anchor ? resolveBriefingAnchor(anchor, ctx.entities, ctx.profiles) : null;
+  if (anchor && !resolvedAnchor) {
+    log.warn(
+      { orgId, anchorKind: anchor.kind, anchorName: anchor.kind === "entity" ? anchor.entity : anchor.group },
+      "Improve anchor did not resolve against the published semantic layer — briefing starts unanchored",
+    );
+  }
 
   return {
     health,
@@ -211,7 +221,7 @@ export async function loadBriefingInputs(
     pending,
     recentDecisions,
     rejectionMemoryCount: ctx.rejectedKeys.size,
-    anchor: resolvedAnchor,
+    anchor: resolvedAnchor ?? undefined,
   };
 }
 

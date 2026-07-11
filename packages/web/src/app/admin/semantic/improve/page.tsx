@@ -236,7 +236,7 @@ interface LauncherEntity {
  * re-anchor or sweep at any point. Group/entity menus appear only once their
  * lists load; the sweep is always available.
  */
-function AnchorLaunchers({
+export function AnchorLaunchers({
   groups,
   entities,
   onGroup,
@@ -299,6 +299,28 @@ function AnchorLaunchers({
   );
 }
 
+/**
+ * The active-anchor chip shown in the conversation UI (#4519 AC3) — a launcher,
+ * not a cage: Clear drops the scope without touching the transcript. Extracted so
+ * the "anchor is visible" behavior is unit-testable without driving the launcher
+ * dropdowns.
+ */
+export function ActiveAnchorChip({ anchor, onClear }: { anchor: ActiveAnchor; onClear: () => void }) {
+  return (
+    <div className="flex shrink-0 items-center gap-2 border-b bg-muted/40 px-4 py-2 text-xs">
+      <Badge variant="secondary" className="gap-1">
+        <Sparkles className="size-3" />
+        {describeAnchor(anchor.value, anchor.label)}
+      </Badge>
+      <span className="text-muted-foreground">Scoping this conversation</span>
+      <Button variant="ghost" size="sm" className="ml-auto h-6 gap-1 px-2 text-xs" onClick={onClear}>
+        <X className="size-3" />
+        Clear
+      </Button>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -335,9 +357,12 @@ export default function SemanticImprovePage() {
         // #4519 — ride the active anchor on every turn so the briefing stays
         // scoped. Read from a ref at fetch time (not a memo dep) so re-anchoring
         // mid-conversation reaches the next turn without rebuilding the
-        // transport. `messages` is set explicitly since supplying
-        // `prepareSendMessagesRequest` disables the SDK's auto-merge; the anchor
-        // field is omitted entirely when null (anchorless === pre-anchor body).
+        // transport. `messages` is set explicitly because supplying
+        // `prepareSendMessagesRequest` replaces the SDK's default body (the
+        // auto-merged `{ id, messages, trigger, messageId }`) with exactly what
+        // we return here — the improve route reads only `messages` + `anchor`, so
+        // dropping the SDK's extra fields is a no-op server-side. The anchor key
+        // is omitted entirely when null, so an anchorless turn carries no anchor.
         prepareSendMessagesRequest: ({ messages }) => ({
           body: { messages, ...anchorRequestField(anchorRef.current) },
         }),
@@ -362,13 +387,20 @@ export default function SemanticImprovePage() {
 
   // #4519 — the launcher lists. Connection groups (for the group anchor) and
   // entities (for the entity anchor) populate the entry launchers. Both are
-  // best-effort: a failed load just hides that launcher (the sweep always
-  // remains). The anchor's wire value carries ids; the menu shows friendly
-  // labels.
+  // best-effort with per-row resilience: a malformed row is skipped (a
+  // `transform` flatMap, not a Zod `schema` that would reject the whole list on
+  // one bad row and blank the launcher). A top-level shape drift (the array
+  // key renamed/absent) can't be salvaged per-row, so it's console.warn'd —
+  // otherwise the launcher would vanish with no breadcrumb. The sweep always
+  // remains regardless. The anchor's wire value carries ids; the menu shows
+  // friendly labels.
   const { data: groupsData } = useAdminFetch<LauncherGroup[]>("/api/v1/me/connection-groups", {
     transform: (json) => {
       const raw = (json as { groups?: unknown }).groups;
-      if (!Array.isArray(raw)) return [];
+      if (!Array.isArray(raw)) {
+        console.warn("Semantic-improve: /me/connection-groups returned no `groups` array — group launcher hidden (response shape drift?)");
+        return [];
+      }
       return raw.flatMap((g) => {
         const rec = g as Record<string, unknown>;
         return typeof rec.id === "string" && typeof rec.name === "string"
@@ -382,7 +414,10 @@ export default function SemanticImprovePage() {
   const { data: entitiesData } = useAdminFetch<LauncherEntity[]>("/api/v1/admin/semantic/entities", {
     transform: (json) => {
       const raw = (json as { entities?: unknown }).entities;
-      if (!Array.isArray(raw)) return [];
+      if (!Array.isArray(raw)) {
+        console.warn("Semantic-improve: /admin/semantic/entities returned no `entities` array — entity launcher hidden (response shape drift?)");
+        return [];
+      }
       return raw.flatMap((e) => {
         const rec = e as Record<string, unknown>;
         const name = typeof rec.name === "string" && rec.name ? rec.name : null;
@@ -561,27 +596,10 @@ export default function SemanticImprovePage() {
           {/* Chat panel */}
           <ResizablePanel defaultSize={55} minSize={35}>
             <div className="flex h-full min-h-0 flex-col">
-              {/* #4519 — the active anchor, visible in the conversation UI. A
-                  launcher, not a cage: Clear drops the scope without touching
-                  the transcript, and free typing still works anchored. */}
-              {anchor && (
-                <div className="flex shrink-0 items-center gap-2 border-b bg-muted/40 px-4 py-2 text-xs">
-                  <Badge variant="secondary" className="gap-1">
-                    <Sparkles className="size-3" />
-                    {describeAnchor(anchor.value, anchor.label)}
-                  </Badge>
-                  <span className="text-muted-foreground">Scoping this conversation</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="ml-auto h-6 gap-1 px-2 text-xs"
-                    onClick={() => applyAnchor(null)}
-                  >
-                    <X className="size-3" />
-                    Clear
-                  </Button>
-                </div>
-              )}
+              {/* #4519 — the active anchor, visible in the conversation UI.
+                  Free typing still works anchored; Clear drops the scope
+                  without touching the transcript. */}
+              {anchor && <ActiveAnchorChip anchor={anchor} onClear={() => applyAnchor(null)} />}
               <ScrollArea className="min-h-0 flex-1 p-4">
                 <div className="space-y-4 pb-4">
                   {messages.length === 0 && (

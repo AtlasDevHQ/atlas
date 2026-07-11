@@ -237,4 +237,21 @@ describe("semantic-improve briefing at the route → agent seam (#4514 AC2)", ()
     expect(res.status).toBe(200);
     expect(runAgentArgs?.briefing as string).not.toContain("### Anchor:");
   });
+
+  it("rejects a malformed anchor before the agent runs (#4519)", async () => {
+    // The route's AnchorSchema (discriminatedUnion + min(1)) is the validation
+    // gate: a group anchor missing its `group`, an empty-string group, and an
+    // unknown kind must all be rejected (422 from the zod-openapi validator)
+    // before any LLM spend — never coerced through.
+    for (const bad of [
+      { kind: "group" },
+      { kind: "group", group: "" },
+      { kind: "entity" },
+      { kind: "nonsense", group: "x" },
+    ]) {
+      const res = await postChat(bad);
+      expect(res.status).toBe(422);
+    }
+    expect(runAgentArgs).toBeUndefined();
+  });
 });

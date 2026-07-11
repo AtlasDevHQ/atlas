@@ -9,8 +9,9 @@
  * simply the anchorless start.
  *
  * This module is the PURE, unit-testable core: the wire shape, the launcher
- * kick-off copy, the chip label, and the request-field rule (omit-when-null so an
- * anchorless request is byte-identical to the pre-anchor one). The page owns the
+ * kick-off copy, the chip label, and the request-field rule (omit the anchor key
+ * entirely when null, so the server sees no anchor and behaves exactly as it did
+ * before anchors existed). The page owns the
  * launcher UI + transport wiring; these functions carry the behavior worth
  * pinning. `ImproveAnchor` mirrors the server's local wire type
  * (`packages/api/src/lib/semantic/expert/anchor.ts`) — the improve surface keeps
@@ -19,8 +20,8 @@
 
 /** The anchor an improve conversation carries. Absent ⇒ an anchorless sweep. */
 export type ImproveAnchor =
-  | { kind: "group"; group: string }
-  | { kind: "entity"; entity: string; group?: string };
+  | { readonly kind: "group"; readonly group: string }
+  | { readonly kind: "entity"; readonly entity: string; readonly group?: string };
 
 /**
  * The canned sweep kick-off ("find improvements") — the anchorless start. Kept
@@ -50,8 +51,10 @@ export function describeAnchor(anchor: ImproveAnchor, label: string): string {
 
 /**
  * The `/chat` request field for the active anchor. Omitted entirely when there is
- * no anchor, so an anchorless sweep (or plain free typing) sends exactly the body
- * it did before anchors existed (#4519 AC4).
+ * no anchor, so an anchorless sweep (or plain free typing) carries no `anchor`
+ * key and the server behaves exactly as it did before anchors existed (#4519
+ * AC4). (The surrounding request body is otherwise the transport's concern — this
+ * is only the anchor key.)
  */
 export function anchorRequestField(anchor: ImproveAnchor | null): { anchor?: ImproveAnchor } {
   return anchor ? { anchor } : {};

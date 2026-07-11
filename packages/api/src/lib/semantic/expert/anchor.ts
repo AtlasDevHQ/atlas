@@ -19,9 +19,12 @@
  *     entities + profiles the briefing loader ALREADY has in hand, so anchoring
  *     spends no extra I/O.
  *
- * NOT to be confused with the per-connection "anchor line" prose in `briefing.ts`
- * (the tracked-profile freshness rows) — that is a different, older use of the
- * word; this module is the CONTEXT.md domain "Anchor".
+ * NOT to be confused with two older, unrelated uses of the word "anchor" in
+ * `briefing.ts`: the per-connection "anchor line" prose on `BriefingProfileLine`
+ * (tracked-profile freshness rows), and its module header's "the anchor (health +
+ * counts)" (the health orientation summary). This module is the CONTEXT.md domain
+ * "Anchor" — the launcher scope — which `renderAnchor` emits as the `### Anchor:`
+ * block.
  */
 
 import * as yaml from "js-yaml";

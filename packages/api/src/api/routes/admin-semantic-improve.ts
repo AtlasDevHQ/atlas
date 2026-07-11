@@ -295,6 +295,24 @@ const PendingAmendmentSchema = z.object({
   createdAt: z.string(),
 });
 
+const RejectedAmendmentSchema = z.object({
+  id: z.string(),
+  entityName: z.string(),
+  description: z.string().nullable(),
+  confidence: z.number(),
+  amendmentType: z.string().nullable(),
+  amendment: z.record(z.string(), z.unknown()).nullable(),
+  rationale: z.string().nullable(),
+  diff: z.string().nullable(),
+  testQuery: z.string().nullable(),
+  testResult: TestResultSchema.nullable(),
+  /** When the reject was recorded — surfaced so the view can order/explain it. */
+  rejectedAt: z.string().nullable(),
+  /** Who rejected it — the "admin" sentinel today (web review is the only reject path). */
+  rejectedBy: z.string().nullable(),
+  createdAt: z.string(),
+});
+
 const pendingListRoute = createRoute({
   method: "get",
   path: "/pending",
@@ -358,6 +376,63 @@ const reviewAmendmentRoute = createRoute({
   },
 });
 
+const rejectedListRoute = createRoute({
+  method: "get",
+  path: "/rejected",
+  tags: ["Admin — Semantic Improve"],
+  summary: "List rejected semantic amendment proposals",
+  description:
+    "Returns the org's rejected amendments, most-recently-rejected first. The " +
+    "Rejected view lists these so an admin can Reconsider one — the only action " +
+    "that lifts a rejection and returns the change to the Pending queue (#4512).",
+  responses: {
+    200: {
+      description: "Rejected amendments",
+      content: { "application/json": { schema: z.object({ amendments: z.array(RejectedAmendmentSchema) }) } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const reconsiderAmendmentRoute = createRoute({
+  method: "post",
+  path: "/amendments/{id}/reconsider",
+  tags: ["Admin — Semantic Improve"],
+  summary: "Reconsider a rejected amendment",
+  description:
+    "Lifts a rejection (#4512): returns the rejected amendment to the Pending " +
+    "queue and removes its identity from rejection memory, so it becomes " +
+    "proposable again. The only way a rejected change comes back.",
+  request: {
+    params: createParamSchema("id", "550e8400-e29b-41d4-a716-446655440000"),
+  },
+  responses: {
+    200: {
+      description: "Amendment returned to pending",
+      content: { "application/json": { schema: z.object({ ok: z.boolean(), id: z.string() }) } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Amendment not found or not currently rejected",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 const healthScoreRoute = createRoute({
   method: "get",
   path: "/health",
@@ -406,6 +481,38 @@ adminSemanticImprove.openapi(pendingCountRoute, async (c) =>
   }),
 );
 
+/**
+ * Extract the payload-derived display fields shared by the Pending and Rejected
+ * views from a stored amendment's `amendment_payload`. Kept in one place so the
+ * two views can never drift on how an Amendment's type/rationale/diff/test are
+ * surfaced — the only per-view difference is the status-specific columns
+ * (`applyError` for pending, `rejectedAt`/`rejectedBy` for rejected) each
+ * handler adds.
+ */
+function amendmentPayloadView(payload: Record<string, unknown> | null) {
+  /** Safely extract a string field from the untyped payload. */
+  function str(key: string): string | null {
+    const v = payload?.[key];
+    return typeof v === "string" ? v : null;
+  }
+
+  // payload is the full AmendmentPayload (entity, type, rationale, diff, etc.).
+  // Extract just the type-specific amendment data (e.g. dimension/measure object).
+  const innerAmendment = payload?.amendment;
+  const parsedTestResult = TestResultSchema.safeParse(payload?.testResult);
+
+  return {
+    amendmentType: str("amendmentType"),
+    amendment: (innerAmendment && typeof innerAmendment === "object" && !Array.isArray(innerAmendment))
+      ? (innerAmendment as Record<string, unknown>)
+      : null,
+    rationale: str("rationale"),
+    diff: str("diff"),
+    testQuery: str("testQuery"),
+    testResult: parsedTestResult.success ? parsedTestResult.data : null,
+  };
+}
+
 // GET /pending — list pending amendments
 adminSemanticImprove.openapi(pendingListRoute, async (c) =>
   runHandler(c, "list-pending-amendments", async () => {
@@ -420,36 +527,85 @@ adminSemanticImprove.openapi(pendingListRoute, async (c) =>
         log.debug({ id: row.id }, "Pending amendment has null or non-object payload");
       }
 
-      /** Safely extract a string field from the untyped payload. */
-      function str(key: string): string | null {
-        const v = payload?.[key];
-        return typeof v === "string" ? v : null;
-      }
-
-      // payload is the full AmendmentPayload (entity, type, rationale, diff, etc.).
-      // Extract just the type-specific amendment data (e.g. dimension/measure object).
-      const innerAmendment = payload?.amendment;
-      const parsedTestResult = TestResultSchema.safeParse(payload?.testResult);
-
       return {
         id: row.id,
         entityName: row.source_entity,
         description: row.description,
         confidence: row.confidence,
-        amendmentType: str("amendmentType"),
-        amendment: (innerAmendment && typeof innerAmendment === "object" && !Array.isArray(innerAmendment))
-          ? innerAmendment as Record<string, unknown>
-          : null,
-        rationale: str("rationale"),
-        diff: str("diff"),
-        testQuery: str("testQuery"),
-        testResult: parsedTestResult.success ? parsedTestResult.data : null,
+        ...amendmentPayloadView(payload),
         applyError: row.last_apply_error ?? null,
         createdAt: row.created_at,
       };
     });
 
     return c.json({ amendments }, 200);
+  }),
+);
+
+// GET /rejected — list rejected amendments (the Rejected view, #4512)
+adminSemanticImprove.openapi(rejectedListRoute, async (c) =>
+  runHandler(c, "list-rejected-amendments", async () => {
+    const { orgId } = c.get("orgContext");
+
+    const { getRejectedAmendments } = await import("@atlas/api/lib/db/internal");
+    const rows = await getRejectedAmendments(orgId);
+
+    const amendments = rows.map((row) => {
+      const payload = row.amendment_payload;
+      if (!payload || typeof payload !== "object") {
+        log.debug({ id: row.id }, "Rejected amendment has null or non-object payload");
+      }
+
+      return {
+        id: row.id,
+        entityName: row.source_entity,
+        description: row.description,
+        confidence: row.confidence,
+        ...amendmentPayloadView(payload),
+        rejectedAt: row.reviewed_at ?? null,
+        rejectedBy: row.reviewed_by ?? null,
+        createdAt: row.created_at,
+      };
+    });
+
+    return c.json({ amendments }, 200);
+  }),
+);
+
+// POST /amendments/:id/reconsider — lift a rejection (#4512)
+adminSemanticImprove.openapi(reconsiderAmendmentRoute, async (c) =>
+  runHandler(c, "reconsider-amendment", async () => {
+    const { requestId, orgId } = c.get("orgContext");
+    const { id } = c.req.valid("param");
+
+    // One atomic `rejected → pending` flip. Returning the row to pending IS the
+    // removal from rejection memory (memory = the set of `status = 'rejected'`
+    // rows), so the identity becomes proposable again in the same write. A row
+    // that isn't currently rejected matches nothing — reported truthfully as
+    // 404, never a silent no-op that pretends to have lifted a rejection.
+    const { reconsiderRejectedAmendment } = await import("@atlas/api/lib/db/internal");
+    const reconsidered = await reconsiderRejectedAmendment(id, orgId);
+
+    if (!reconsidered) {
+      return c.json(
+        { error: "not_found", message: "Rejected amendment not found or not currently rejected.", requestId },
+        404,
+      );
+    }
+
+    // Reconsider is its own intent, not a review — it lifts a permanent
+    // rejection. Give it a dedicated audit action so forensic queries can see
+    // exactly when a rejected change was brought back.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.semantic.improveReconsider,
+      targetType: "semantic",
+      targetId: id,
+      ipAddress: clientIpFor(c),
+      metadata: { id },
+    });
+
+    log.info({ requestId, orgId, id }, "Amendment reconsidered — returned to pending, rejection memory cleared");
+    return c.json({ ok: true, id }, 200);
   }),
 );
 

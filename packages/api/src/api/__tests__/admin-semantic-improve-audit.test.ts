@@ -4,9 +4,10 @@
  * Pins the write surfaces to the canonical
  * `ADMIN_ACTIONS.semantic.improve*` action types:
  *
- *   - POST /chat                     → `semantic.improve_draft`
- *   - POST /amendments/{id}/review   → `semantic.improve_apply` (approved)
- *                                      / `semantic.improve_reject` (rejected)
+ *   - POST /chat                        → `semantic.improve_draft`
+ *   - POST /amendments/{id}/review      → `semantic.improve_apply` (approved)
+ *                                         / `semantic.improve_reject` (rejected)
+ *   - POST /amendments/{id}/reconsider  → `semantic.improve_reconsider` (#4512)
  *
  * (The in-memory `/proposals/{id}/(approve|reject)` routes and their
  * `semantic.improve_accept` action were deleted in #4503.)
@@ -54,6 +55,9 @@ const mockReleaseClaimedAmendment: Mock<(id: string, reason: string) => Promise<
 const mockRejectPendingAmendment: Mock<
   (id: string, orgId: string | null, rejectedBy: string) => Promise<boolean>
 > = mock(async () => true);
+const mockReconsiderRejectedAmendment: Mock<
+  (id: string, orgId: string | null) => Promise<boolean>
+> = mock(async () => true);
 
 const mocks = createApiTestMocks({
   authUser: {
@@ -69,6 +73,7 @@ const mocks = createApiTestMocks({
     stampClaimedAmendmentApproved: mockStampClaimedAmendmentApproved,
     releaseClaimedAmendment: mockReleaseClaimedAmendment,
     rejectPendingAmendment: mockRejectPendingAmendment,
+    reconsiderRejectedAmendment: mockReconsiderRejectedAmendment,
   },
 });
 
@@ -196,6 +201,8 @@ beforeEach(() => {
   mockReleaseClaimedAmendment.mockClear();
   mockRejectPendingAmendment.mockClear();
   mockRejectPendingAmendment.mockImplementation(async () => true);
+  mockReconsiderRejectedAmendment.mockClear();
+  mockReconsiderRejectedAmendment.mockImplementation(async () => true);
 });
 
 // ---------------------------------------------------------------------------
@@ -292,6 +299,44 @@ describe("POST /api/v1/admin/semantic-improve/amendments/:id/review — audit em
         "POST",
         "/api/v1/admin/semantic-improve/amendments/amd-missing/review",
         { decision: "rejected" },
+      ),
+    );
+    expect(res.status).toBe(404);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /amendments/{id}/reconsider — improve_reconsider (#4512)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/admin/semantic-improve/amendments/:id/reconsider — audit emission", () => {
+  it("emits semantic.improve_reconsider with the amendment id when a rejection is lifted", async () => {
+    const res = await app.fetch(
+      adminRequest(
+        "POST",
+        "/api/v1/admin/semantic-improve/amendments/amd-9/reconsider",
+      ),
+    );
+    expect(res.status).toBe(200);
+
+    const entry = findAuditCall("semantic.improve_reconsider");
+    expect(entry).toBeDefined();
+    expect(entry!.targetType).toBe("semantic");
+    expect(entry!.targetId).toBe("amd-9");
+    expect(entry!.metadata).toMatchObject({ id: "amd-9" });
+    // Reconsider is its own intent — never conflated with a reject/apply review.
+    expect(findAuditCall("semantic.improve_reject")).toBeUndefined();
+    expect(findAuditCall("semantic.improve_apply")).toBeUndefined();
+  });
+
+  it("does not emit when the row is not currently rejected (404)", async () => {
+    mockReconsiderRejectedAmendment.mockImplementation(async () => false);
+
+    const res = await app.fetch(
+      adminRequest(
+        "POST",
+        "/api/v1/admin/semantic-improve/amendments/amd-missing/reconsider",
       ),
     );
     expect(res.status).toBe(404);

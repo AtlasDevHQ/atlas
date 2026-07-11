@@ -20,7 +20,9 @@ const log = createLogger("semantic-expert-scheduler");
 export const DEFAULT_EXPERT_SCHEDULER_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** Per-workspace autonomous-improvement opt-in (#4516). Workspace-scoped,
- * off by default — enabling it is a workspace-admin settings action. */
+ * off by default — enabling it is a workspace-admin settings action. Must match
+ * the `key`/`envVar` of the registry entry in lib/settings.ts (a guard test in
+ * scheduler-tick.test.ts pins that they don't drift). */
 export const AUTONOMOUS_IMPROVE_ENABLED_KEY = "ATLAS_AUTONOMOUS_IMPROVE_ENABLED";
 
 /** Counters produced by a single workspace's tick. */
@@ -40,9 +42,25 @@ interface WorkspaceTickCounters {
 export interface ExpertTickResult extends WorkspaceTickCounters {
   /** Workspaces the tick iterated (1 on the self-hosted degenerate path). */
   workspacesConsidered: number;
-  /** Workspaces whose billing gate blocked — their tick no-op'd, zero spend. */
+  /** Workspaces a billing POLICY block skipped — over-budget / suspended /
+   * trial-expired. Their tick no-op'd, zero spend: this is the working system. */
   workspacesGateBlocked: number;
+  /** Workspaces the billing gate could not evaluate (fail-closed 503 — e.g. an
+   * internal-DB brownout). Kept SEPARATE from `workspacesGateBlocked` so a
+   * gate-lookup outage doesn't masquerade as "everyone is over budget" in the
+   * tick summary. Skipped like a block, but the cause is infra, not policy. */
+  workspacesGateErrored: number;
 }
+
+/** Outcome of one workspace's tick. `counters` is present iff the tick actually
+ * ran (gate passed) — a skipped workspace structurally carries no counters, so
+ * the aggregator can't fold a blocked/errored workspace's absent work into the
+ * totals. `gate-blocked` (policy) and `gate-errored` (fail-closed infra) are
+ * kept distinct so the summary never conflates the two (#4516). */
+type WorkspaceTickOutcome =
+  | { status: "ran"; counters: WorkspaceTickCounters }
+  | { status: "gate-blocked" }
+  | { status: "gate-errored" };
 
 function emptyCounters(): WorkspaceTickCounters {
   return { proposalsGenerated: 0, autoApproved: 0, queued: 0, rejected: 0, deduped: 0, errors: 0 };
@@ -69,9 +87,11 @@ function addCounters(into: WorkspaceTickCounters, from: WorkspaceTickCounters): 
  *
  * Deploy-mode agnostic: the pre-#4516 SaaS force-disable boot-guard (#4487) is
  * RETIRED. It existed because the scheduler inserted NULL-org ("global scope")
- * rows that leak across tenants on SaaS; now every insert is org-stamped and
- * gated per-workspace (see {@link runExpertSchedulerTick}), so the fiber is
- * safe to run on SaaS and the deployment master switch is the only gate here.
+ * rows that leak across tenants on SaaS; now on SaaS every insert is org-stamped
+ * and the tick is gated per-workspace (see {@link runExpertSchedulerTick}) —
+ * self-hosted still inserts its single-tenant NULL-org row, which is sound
+ * because there is only one tenant — so the fiber is safe to run on SaaS and the
+ * deployment master switch is the only gate here.
  */
 export function isExpertSchedulerEnabled(): boolean {
   const v = getSetting("ATLAS_EXPERT_SCHEDULER_ENABLED");
@@ -123,6 +143,12 @@ async function resolveImproveWorkspaces(): Promise<Array<{ orgId: string | null 
  * `organization` so a stale override for a deleted workspace is dropped; the
  * per-workspace billing gate is the authoritative filter for suspended /
  * over-budget workspaces, so this query intentionally does not re-check status.
+ *
+ * "opted in" means "has an explicit workspace-scoped DB override set to true" —
+ * this deliberately does NOT route through getSetting()'s env/default tier: an
+ * env var or platform default cannot opt a *specific* tenant into autonomy. So a
+ * platform-level `ATLAS_AUTONOMOUS_IMPROVE_ENABLED=true` enrolls nobody by
+ * design; enrollment is always a per-workspace admin action.
  */
 async function listAutonomousImproveOrgIds(): Promise<string[]> {
   const { hasInternalDB, internalQuery } = await import("@atlas/api/lib/db/internal");
@@ -151,6 +177,7 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
     ...emptyCounters(),
     workspacesConsidered: 0,
     workspacesGateBlocked: 0,
+    workspacesGateErrored: 0,
   };
 
   let workspaces: Array<{ orgId: string | null }>;
@@ -172,8 +199,12 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
     totals.workspacesConsidered++;
     try {
       const outcome = await runWorkspaceImproveTick(orgId);
-      if (outcome.gateBlocked) {
+      if (outcome.status === "gate-blocked") {
         totals.workspacesGateBlocked++;
+        continue;
+      }
+      if (outcome.status === "gate-errored") {
+        totals.workspacesGateErrored++;
         continue;
       }
       addCounters(totals, outcome.counters);
@@ -190,6 +221,7 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
     {
       workspacesConsidered: totals.workspacesConsidered,
       workspacesGateBlocked: totals.workspacesGateBlocked,
+      workspacesGateErrored: totals.workspacesGateErrored,
       total: totals.proposalsGenerated,
       autoApproved: totals.autoApproved,
       queued: totals.queued,
@@ -220,19 +252,29 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
  * 5. Routes eligible proposals through the decide seam (#4506) — claim →
  *    apply + version snapshot → stamp `approved`
  */
-async function runWorkspaceImproveTick(
-  orgId: string | null,
-): Promise<{ gateBlocked: true } | { gateBlocked: false; counters: WorkspaceTickCounters }> {
+async function runWorkspaceImproveTick(orgId: string | null): Promise<WorkspaceTickOutcome> {
   // Billing gate first — a blocked workspace's tick no-ops before any context
   // load or LLM/apply work (#4516 AC3). On self-hosted (orgId null) the gate
   // is a passthrough (checkAgentBillingGate treats no-org as always-allowed).
   const gate = await checkAgentBillingGate(orgId ?? undefined);
   if (!gate.allowed) {
+    // Distinguish a fail-closed infra failure (503 — the workspace-status /
+    // plan-limit lookup could not complete, e.g. an internal-DB brownout) from
+    // a real policy block. Both skip the workspace (fail-closed is the safe
+    // direction), but conflating them would make a gate-lookup outage read as
+    // "every workspace is over budget" in the tick summary (#4516).
+    if (gate.httpStatus === 503) {
+      log.warn(
+        { orgId, errorCode: gate.errorCode, httpStatus: gate.httpStatus },
+        "Autonomous improvement skipped — billing gate unavailable (fail-closed); workspace not run",
+      );
+      return { status: "gate-errored" };
+    }
     log.info(
       { orgId, errorCode: gate.errorCode },
-      "Autonomous improvement skipped for workspace — billing gate blocked",
+      "Autonomous improvement skipped for workspace — billing gate blocked (over-budget / suspended)",
     );
-    return { gateBlocked: true };
+    return { status: "gate-blocked" };
   }
 
   const counters = emptyCounters();
@@ -248,8 +290,12 @@ async function runWorkspaceImproveTick(
       //    the workspace's own DB rows + per-org disk mirror; on self-hosted read
       //    the bundled disk layer. Audit patterns + rejected keys are org-scoped
       //    so one tenant's query history / rejections never bleed into another's
-      //    proposals (#4516). Glossary stays the bundled disk union — shared
-      //    default files, not tenant data, so no cross-tenant concern.
+      //    proposals (#4516). Glossary is loaded from the shared/default disk
+      //    layer for both paths — the scheduler does NOT yet read the per-org DB
+      //    glossary (`semantic_entities` type=glossary). Reading shared disk files
+      //    carries no tenant data, so there's no cross-tenant leak; the tradeoff
+      //    is that a workspace's own DB glossary terms aren't consulted here yet
+      //    (group-scoped glossary is #4518's surface, not this slice).
       const {
         loadEntitiesForOrg,
         loadEntitiesFromDisk,
@@ -267,10 +313,14 @@ async function runWorkspaceImproveTick(
 
       if (entities.length === 0) {
         log.debug({ orgId }, "No semantic entities found — skipping workspace tick");
-        return { gateBlocked: false, counters };
+        return { status: "ran", counters };
       }
 
-      // 2. Load cached profiles (from last `atlas init` / `atlas improve` run)
+      // 2. Load cached profiles (from last `atlas init` / `atlas improve` run).
+      //    This is the bundled/global disk cache of column statistics, not
+      //    tenant data — keyed by table, matched to entities by name — so it
+      //    stays unscoped: on SaaS it is normally empty and the analyzer degrades
+      //    gracefully (per-workspace profiling is #4509's surface, not this slice).
       const { loadCachedProfiles } = await import("./profile-cache");
       const profiles = loadCachedProfiles();
 
@@ -288,7 +338,7 @@ async function runWorkspaceImproveTick(
 
       if (proposals.length === 0) {
         log.info({ orgId }, "Autonomous-improvement tick: no proposals generated");
-        return { gateBlocked: false, counters };
+        return { status: "ran", counters };
       }
 
       // 4. Insert proposals — every row lands `pending`; insertSemanticAmendment
@@ -387,7 +437,7 @@ async function runWorkspaceImproveTick(
         }
       }
 
-      return { gateBlocked: false, counters };
+      return { status: "ran", counters };
     },
   );
 }

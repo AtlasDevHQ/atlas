@@ -580,17 +580,21 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
 
   // Semantic Expert
   //
-  // Scope split (#3392, #4516): the scheduler PAIR below is PLATFORM-scoped.
-  // `ATLAS_EXPERT_SCHEDULER_ENABLED` is the platform MASTER SWITCH — does the
-  // single process-global autonomous-improvement fiber run on this deployment
-  // at all (forked once at boot by `makeSchedulerLive` in lib/effect/layers.ts,
-  // hence `requiresRestart`)? The per-workspace opt-in decision moved OUT of
-  // this key in #4516: on SaaS the tick iterates workspaces that set the
-  // WORKSPACE-scoped `ATLAS_AUTONOMOUS_IMPROVE_ENABLED` below; on self-hosted the
-  // whole deployment is one implicit workspace gated by this master switch (the
-  // degenerate case, equivalent to the pre-#4516 behavior). The auto-approve
-  // pair is WORKSPACE-scoped: read per proposal in `insertSemanticAmendment`
-  // (lib/db/internal.ts), which has the amendment's orgId in scope.
+  // Scope split (#3392, #4516): the two `ATLAS_EXPERT_SCHEDULER_*` keys are
+  // PLATFORM-scoped; the `ATLAS_AUTONOMOUS_IMPROVE_ENABLED` key after them is
+  // WORKSPACE-scoped, as is the auto-approve pair.
+  //  - `ATLAS_EXPERT_SCHEDULER_ENABLED` is the platform MASTER SWITCH — does the
+  //    single process-global autonomous-improvement fiber run on this deployment
+  //    at all (forked once at boot by `makeSchedulerLive` in lib/effect/layers.ts,
+  //    hence `requiresRestart`)? `_INTERVAL_HOURS` is its cadence.
+  //  - The per-workspace opt-in moved OUT of the master switch in #4516: on SaaS
+  //    the tick iterates workspaces that set the WORKSPACE-scoped
+  //    `ATLAS_AUTONOMOUS_IMPROVE_ENABLED`; on self-hosted the whole deployment is
+  //    one implicit workspace gated by the master switch (the degenerate case,
+  //    equivalent to the pre-#4516 behavior).
+  //  - The auto-approve pair is WORKSPACE-scoped: read per proposal in
+  //    `insertSemanticAmendment` (lib/db/internal.ts), which has the amendment's
+  //    orgId in scope.
   {
     key: "ATLAS_EXPERT_SCHEDULER_ENABLED",
     section: "Intelligence",
@@ -599,6 +603,18 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "boolean",
     default: "false",
     envVar: "ATLAS_EXPERT_SCHEDULER_ENABLED",
+    requiresRestart: true,
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
+    section: "Intelligence",
+    label: "Expert Schedule Interval",
+    description: "Hours between scheduled expert analysis runs",
+    type: "number",
+    default: "24",
+    envVar: "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
     requiresRestart: true,
     scope: "platform",
     saasVisible: false,
@@ -621,18 +637,6 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: "false",
     envVar: "ATLAS_AUTONOMOUS_IMPROVE_ENABLED",
     scope: "workspace",
-  },
-  {
-    key: "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
-    section: "Intelligence",
-    label: "Expert Schedule Interval",
-    description: "Hours between scheduled expert analysis runs",
-    type: "number",
-    default: "24",
-    envVar: "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
-    requiresRestart: true,
-    scope: "platform",
-    saasVisible: false,
   },
   {
     key: "ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD",

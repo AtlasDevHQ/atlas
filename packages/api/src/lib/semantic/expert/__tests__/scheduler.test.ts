@@ -40,7 +40,9 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   setWorkspaceRegion: mock(async () => {}),
 }));
 
-// Mock logger
+// Mock logger. scheduler.ts imports `withRequestContext` at module top (used by
+// the tick), so the mock must provide it even though this file only exercises
+// the config getters — otherwise a future tick test here hits `undefined`.
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
@@ -48,6 +50,7 @@ void mock.module("@atlas/api/lib/logger", () => ({
     error: () => {},
     debug: () => {},
   }),
+  withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
 describe("isExpertSchedulerEnabled", () => {
@@ -75,9 +78,10 @@ describe("isExpertSchedulerEnabled", () => {
   });
 });
 
-// #4516 — the #4487 SaaS boot-guard is RETIRED. The scheduler no longer inserts
-// NULL-org ("global scope") rows: every insert is org-stamped and the tick is
-// gated per-workspace (billing gate + `ATLAS_AUTONOMOUS_IMPROVE_ENABLED`). So
+// #4516 — the #4487 SaaS boot-guard is RETIRED. On SaaS every insert is now
+// org-stamped and the tick is gated per-workspace (billing gate +
+// `ATLAS_AUTONOMOUS_IMPROVE_ENABLED`); self-hosted still inserts its single
+// NULL-org row, which is sound because there is only one tenant. So
 // `isExpertSchedulerEnabled` is now the DEPLOYMENT master switch only — the
 // fiber runs on SaaS too, deploy mode is not consulted here. This block pins the
 // retirement: if a future change re-adds a `saas → false` branch, it ships red.

@@ -109,10 +109,17 @@ void mock.module("@atlas/api/lib/db/connection", () =>
   }),
 );
 
+// Captures every internalQuery SQL so a block-arm test can assert the LLM-profile
+// run (#4509) is NEVER recorded when the gate blocks before spend.
+const enrichInternalQuerySqls: string[] = [];
+
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   getInternalDB: () => ({ query: async () => ({ rows: [] }) }),
-  internalQuery: async () => [],
+  internalQuery: async (sql: string) => {
+    enrichInternalQuerySqls.push(sql);
+    return [];
+  },
   internalExecute: () => {},
   isInternalCircuitOpen: () => false,
   encryptSecret: (url: string) => `encrypted:${url}`,
@@ -325,6 +332,7 @@ beforeEach(() => {
   mockLogUsageEvent.mockClear();
   mockProfile.mockClear();
   mockModel.doGenerateCalls.length = 0;
+  enrichInternalQuerySqls.length = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -355,6 +363,9 @@ describe("POST /api/v1/wizard/enrich — billing gate (#4489)", () => {
     expect(mockModel.doGenerateCalls.length).toBe(0);
     expect(mockProfile).not.toHaveBeenCalled();
     expect(mockLogUsageEvent).not.toHaveBeenCalled();
+    // #4509 — a blocked enrich spends nothing, so it records NO LLM-profile run
+    // (a "enriched N days ago" stamp for a run that never happened would be a lie).
+    expect(enrichInternalQuerySqls.some((sql) => sql.includes("connection_profile_state"))).toBe(false);
   });
 
   it("blocks a token-hard-cap workspace with 429 + usage before the model runs", async () => {

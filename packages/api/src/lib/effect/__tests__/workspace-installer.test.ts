@@ -242,6 +242,31 @@ void mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   unregisterDatasourceInstall: mockBridgeUnregister,
 }));
 
+// Baseline-profile on-create hook (#4509) — installDatasource fires it
+// fire-and-forget after registering the pool. Mocking it lets the installer
+// tests assert the wiring (target passed through) WITHOUT loading the real
+// mcp-lifecycle graph or doing background live-connection work in an otherwise
+// fully-mocked suite. (The capability gate / REST-exclusion is unit-tested in
+// datasources/__tests__/connection-baseline.test.ts.)
+const baselineOnCreateCalls: Array<{
+  orgId: string;
+  installId: string;
+  connectionGroupId: string | null;
+  dbType: string;
+}> = [];
+const mockProfileConnectionOnCreate = mock(
+  async (target: { orgId: string; installId: string; connectionGroupId: string | null; dbType: string }) => {
+    baselineOnCreateCalls.push(target);
+    return { action: "scheduled" as const };
+  },
+);
+void mock.module("@atlas/api/lib/datasources/connection-baseline", () => ({
+  profileConnectionOnCreate: mockProfileConnectionOnCreate,
+  planConnectionBaseline: mock(async () => ({ profilable: true, capabilityKind: "native" as const })),
+  runBaselineProfile: mock(async () => {}),
+  ensureConnectionBaseline: mock(async () => null),
+}));
+
 // ---------------------------------------------------------------------------
 // Lazy import of the facade after mocks are in place
 // ---------------------------------------------------------------------------
@@ -267,6 +292,7 @@ function resetState() {
   twentyDeleteCalls.length = 0;
   bridgeRegisterCalls.length = 0;
   bridgeUnregisterCalls.length = 0;
+  baselineOnCreateCalls.length = 0;
   onUninstallHookCalls.length = 0;
   teardownSequence.length = 0;
   dispatchHandlers.clear();
@@ -1513,6 +1539,13 @@ describe("WorkspaceInstaller.installDatasource", () => {
       c.sql.includes("INSERT INTO workspace_plugins"),
     );
     expect(insertCall).toBeDefined();
+    // #4509 — after persisting + registering, the baseline-profile on-create
+    // hook fired with the resolved target (org, install id, group, dbType). The
+    // capability gate (REST/OpenAPI skip) is the hook's own concern, unit-tested
+    // in datasources/__tests__/connection-baseline.test.ts.
+    expect(baselineOnCreateCalls).toEqual([
+      { orgId: WSID, installId: "prod", connectionGroupId: "prod-cluster", dbType: "postgres" },
+    ]);
   });
 
   it("writes status='draft' when atlasMode is 'draft'", async () => {

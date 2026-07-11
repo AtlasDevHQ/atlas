@@ -484,6 +484,7 @@ describe("migrateAuthTables", () => {
             // pending. Atlas-internal column, no FK to a Better Auth table, so
             // it runs in every auth mode.
             { name: "0170_learned_patterns_last_apply_error.sql" },
+            { name: "0171_connection_profile_state.sql" },
           ],
         };
       }

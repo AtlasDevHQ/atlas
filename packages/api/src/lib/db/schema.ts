@@ -582,6 +582,51 @@ export const semanticProfileStatus = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Connection profile-tier state (baseline + LLM profile, #4509)
+// ---------------------------------------------------------------------------
+
+export const connectionProfileState = pgTable(
+  "connection_profile_state",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // NULL = self-hosted no-active-org owner (a valid live row via the LLM-tier
+    // enrich path); SaaS always supplies a workspace.
+    orgId: text("org_id"),
+    // The datasource connection's `workspace_plugins.install_id`.
+    installId: text("install_id").notNull(),
+    // Connection-group scope (NULL = flat default group).
+    connectionGroupId: text("connection_group_id"),
+    // Resolved dbType at profile time; NULL until first baseline.
+    dbType: text("db_type"),
+    // Baseline tier — the `TableProfile[]` payload; NULL until first baseline.
+    baselineProfiles: jsonb("baseline_profiles"),
+    baselineTableCount: integer("baseline_table_count"),
+    baselineProfiledAt: timestamp("baseline_profiled_at", { withTimezone: true }),
+    baselineError: text("baseline_error"),
+    // LLM tier — enrichment run tracking (never automatic, billing-gated).
+    llmProfiledAt: timestamp("llm_profiled_at", { withTimezone: true }),
+    llmProfileScope: jsonb("llm_profile_scope"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // IMPORTANT: placeholder stub. The REAL natural-key index is UNIQUE on
+    // (COALESCE(org_id, '__self_hosted__'), install_id) and is managed by raw
+    // SQL in migration 0171. Drizzle can't represent the COALESCE expression
+    // index, so this non-unique approximation carries the SAME NAME
+    // (`uq_connection_profile_state_org_install`) so the next `drizzle-kit
+    // generate` sees a name match and does NOT emit a spurious DROP/CREATE INDEX
+    // — mirrors the `semantic_profile_status` 0138 pattern. Never use Drizzle's
+    // query builder for ON CONFLICT on this table: the real target is the
+    // expression index and only exists in raw SQL — `connection-profile.ts` keys
+    // on it, NOT this stub.
+    index("uq_connection_profile_state_org_install").on(t.orgId, t.installId),
+    // Real group-scoped read index from 0171 — briefing + coverage list a group.
+    index("idx_connection_profile_state_org_group").on(t.orgId, t.connectionGroupId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Semantic entity versions (version history for rollback + diff)
 // ---------------------------------------------------------------------------
 

@@ -89,6 +89,16 @@ ALLOWLIST=(
   "STRIPE_STARTER_OVERAGE_PRICE_ID"
   "STRIPE_PRO_OVERAGE_PRICE_ID"
   "STRIPE_BUSINESS_OVERAGE_PRICE_ID"
+  # ATLAS_AUTONOMOUS_IMPROVE_ENABLED (#4516) IS read at runtime — but by a bulk
+  # ENUMERATION, not a per-org getSetting the grep below can detect. The SaaS
+  # autonomous-improvement scheduler (listAutonomousImproveOrgIds in
+  # lib/semantic/expert/scheduler.ts) selects every workspace that opted in with
+  # `SELECT DISTINCT org_id FROM settings WHERE key = AUTONOMOUS_IMPROVE_ENABLED_KEY
+  # AND value IN ('true','1')`. getSetting(key, orgId) resolves ONE org's value and
+  # cannot enumerate the opted-in set, so the enumeration is the only possible
+  # reader. It is NOT runtime-inert (drift class 1) — allowlisted because the
+  # reader is a table-scan enumeration, not a literal-keyed getSetting call.
+  "ATLAS_AUTONOMOUS_IMPROVE_ENABLED"
 )
 
 if [ ! -f "$SETTINGS_FILE" ]; then

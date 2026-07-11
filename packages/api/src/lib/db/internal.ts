@@ -1690,8 +1690,10 @@ export async function insertSemanticAmendment(amendment: {
   // (mirror of the reader guard in `amendmentOrgScope` / #4487). Refuse it at
   // this single insert choke point — the one path every caller (chat tool,
   // scheduler, CLI) shares — so no code path can mint a NULL-owner row anew on
-  // SaaS, and a future SaaS-capable scheduler (#4516; today force-disabled on
-  // SaaS) would be org-safe by construction. On self-hosted the single workspace
+  // SaaS. The SaaS-capable autonomous scheduler (#4516) is org-safe by
+  // construction because of this guard: it stamps a real orgId per workspace,
+  // and this invariant fails loud if a stamping regression ever passes NULL.
+  // On self-hosted the single workspace
   // IS the whole deployment, so a NULL owner is that one
   // workspace's legacy global scope — tolerated (the CLI and scheduler
   // single-org paths still write it). Fail LOUD, never a silent global insert.

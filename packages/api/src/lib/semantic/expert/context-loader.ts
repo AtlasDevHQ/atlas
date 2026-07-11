@@ -436,8 +436,15 @@ function normalizeGlossaryTerm(raw: unknown, fallbackTerm?: string): GlossaryTer
 /**
  * Load audit patterns from the internal DB.
  * Returns empty array when no internal DB is available.
+ *
+ * `orgId` scopes the scan to one workspace's audit rows (#4516). The SaaS
+ * per-workspace scheduler MUST pass it: `audit_log` is a shared table across
+ * every tenant, so an unscoped scan would surface one workspace's query
+ * patterns into another workspace's proposals — a cross-tenant leak. Omit it
+ * on self-hosted / CLI (single implicit workspace, NULL-org rows), where the
+ * unscoped global scan is the intended behavior.
  */
-export async function loadAuditPatterns(): Promise<AuditPattern[]> {
+export async function loadAuditPatterns(orgId?: string): Promise<AuditPattern[]> {
   try {
     const { hasInternalDB, internalQuery } = await import("@atlas/api/lib/db/internal");
     if (!hasInternalDB()) return [];
@@ -450,12 +457,12 @@ export async function loadAuditPatterns(): Promise<AuditPattern[]> {
     }>(
       `SELECT sql, COUNT(*) AS count, MAX(timestamp) AS last_seen, tables_accessed
        FROM audit_log
-       WHERE success = true AND deleted_at IS NULL
+       WHERE success = true AND deleted_at IS NULL${orgId ? " AND org_id = $1" : ""}
        GROUP BY sql, tables_accessed
        HAVING COUNT(*) >= 2
        ORDER BY COUNT(*) DESC
        LIMIT 200`,
-      [],
+      orgId ? [orgId] : [],
     );
 
     return rows.map((row) => {
@@ -496,8 +503,16 @@ export async function loadAuditPatterns(): Promise<AuditPattern[]> {
  * separately). Keys are built via the shared `amendmentIdentityFromRow`, so
  * the staleness key here, the insert-time guard, and the analyzer's
  * `stalenessFactor` all agree on what "the same change" is.
+ *
+ * `orgId` scopes the pre-filter to one workspace's rejections (#4516). The
+ * SaaS per-workspace scheduler MUST pass it: without it the union of every
+ * tenant's rejected identities would over-suppress — workspace B would never
+ * be re-proposed a change workspace A rejected. (The durable insert-time guard
+ * `findConflictingAmendment` is already org-scoped, so this pre-filter is the
+ * only place a global scan could leak across tenants.) Omit it on
+ * self-hosted / CLI (single implicit workspace, NULL-org rows).
  */
-export async function loadRejectedKeys(): Promise<Set<string>> {
+export async function loadRejectedKeys(orgId?: string): Promise<Set<string>> {
   const keys = new Set<string>();
 
   try {
@@ -510,8 +525,8 @@ export async function loadRejectedKeys(): Promise<Set<string>> {
       amendment_payload: string | Record<string, unknown> | null;
     }>(
       `SELECT source_entity, connection_group_id, amendment_payload FROM learned_patterns
-       WHERE type = 'semantic_amendment' AND status = 'rejected'`,
-      [],
+       WHERE type = 'semantic_amendment' AND status = 'rejected'${orgId ? " AND org_id = $1" : ""}`,
+      orgId ? [orgId] : [],
     );
 
     for (const row of rows) {

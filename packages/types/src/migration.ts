@@ -83,6 +83,28 @@ export interface ExportedLearnedPattern {
   sourceEntity: string | null;
   confidence: number;
   status: LearnedPattern["status"];
+  /**
+   * Row type — `query_pattern` (default) or `semantic_amendment`. Carried so an
+   * amendment survives workspace migration as an amendment instead of
+   * round-tripping as an orphaned query pattern (#4569, audit M9). Optional for
+   * backward-compat with pre-#4569 bundles (absent ⇒ `query_pattern`).
+   */
+  type?: LearnedPattern["type"];
+  /**
+   * The stored amendment envelope (entity, amendment type, diff/payload) for a
+   * `semantic_amendment` row; `null`/absent for query patterns. Opaque
+   * passthrough — carried verbatim from source jsonb to target so the
+   * amendment's identity ("an Amendment has exactly one workspace owner") stays
+   * intact across a migration (#4569), without coupling the bundle to a
+   * specific `AmendmentPayload` schema version.
+   */
+  amendmentPayload?: Record<string, unknown> | null;
+  /** Connection group the amendment targets (ADR-0012); `null`/absent = default group. */
+  connectionGroupId?: string | null;
+  /** Reviewer attribution carried through the migration; `null`/absent if unreviewed. */
+  reviewedBy?: string | null;
+  /** Observed repetition count — pattern/amendment strength; absent ⇒ 1. */
+  repetitionCount?: number;
 }
 
 /** Exported setting key/value pair. */

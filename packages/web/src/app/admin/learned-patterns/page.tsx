@@ -77,11 +77,6 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: "approved", label: "Approved" },
   { value: "rejected", label: "Rejected" },
 ];
-const TYPE_FILTERS: { value: string; label: string }[] = [
-  { value: "", label: "Any type" },
-  { value: "query_pattern", label: "Query Patterns" },
-  { value: "semantic_amendment", label: "Amendments" },
-];
 
 export default function LearnedPatternsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
@@ -315,14 +310,13 @@ export default function LearnedPatternsPage() {
         offset: String(offset),
       });
       if (params.status) qs.set("status", params.status);
-      if (params.type) qs.set("type", params.type);
       if (params.source_entity) qs.set("source_entity", params.source_entity);
       return `/api/v1/admin/learned-patterns?${qs}`;
     },
   });
 
   const selectedCount = table.getSelectedRowModel().rows.length;
-  const hasFilters = !!params.status || !!params.type || !!params.source_entity;
+  const hasFilters = !!params.status || !!params.source_entity;
 
   return (
     <TooltipProvider>
@@ -370,21 +364,6 @@ export default function LearnedPatternsPage() {
                   {opt.label}
                 </Button>
               ))}
-              <div className="mx-1 h-4 w-px bg-border" />
-              {TYPE_FILTERS.map((opt) => (
-                <Button
-                  key={opt.value || "all-type"}
-                  size="sm"
-                  variant={params.type === opt.value ? "secondary" : "ghost"}
-                  onClick={() => {
-                    table.setPageIndex(0);
-                    // fire-and-forget: nuqs URL update
-                    void setParams({ type: opt.value, page: 1 });
-                  }}
-                >
-                  {opt.label}
-                </Button>
-              ))}
               {sourceEntities.length > 0 && (
                 <Select
                   value={params.source_entity || "all"}
@@ -414,7 +393,7 @@ export default function LearnedPatternsPage() {
                   onClick={() => {
                     table.setPageIndex(0);
                     // fire-and-forget: nuqs URL update
-                    void setParams({ status: "", type: "", source_entity: "", page: 1 });
+                    void setParams({ status: "", source_entity: "", page: 1 });
                   }}
                 >
                   <X className="mr-1.5 size-3.5" />
@@ -466,7 +445,7 @@ export default function LearnedPatternsPage() {
                 description: "Patterns will appear here when the agent or atlas learn CLI proposes new query patterns.",
               }}
               hasFilters={hasFilters}
-              onClearFilters={() => setParams({ status: "", type: "", source_entity: "", page: 1 })}
+              onClearFilters={() => setParams({ status: "", source_entity: "", page: 1 })}
               onRowClick={(row, e) => {
                 if ((e.target as HTMLElement).closest('[role="checkbox"], button')) return;
                 setDetailPattern(row.original);
@@ -500,45 +479,12 @@ export default function LearnedPatternsPage() {
                 </SheetHeader>
 
                 <div className="space-y-6 px-4">
-                  {detailPattern.type === "semantic_amendment" && detailPattern.amendmentPayload ? (
-                    <div className="space-y-2">
-                      <h3 className="text-sm font-medium">Proposed Change</h3>
-                      {detailPattern.amendmentPayload.rationale && (
-                        <p className="text-xs text-muted-foreground">{String(detailPattern.amendmentPayload.rationale)}</p>
-                      )}
-                      {detailPattern.amendmentPayload.diff ? (
-                        <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-96">
-                          {String(detailPattern.amendmentPayload.diff).split("\n").map((line, i) => {
-                            let className = "text-muted-foreground";
-                            if (line.startsWith("+") && !line.startsWith("+++")) {
-                              className = "text-green-700 bg-green-50 dark:text-green-400 dark:bg-green-950/30";
-                            } else if (line.startsWith("-") && !line.startsWith("---")) {
-                              className = "text-red-700 bg-red-50 dark:text-red-400 dark:bg-red-950/30";
-                            } else if (line.startsWith("@@")) {
-                              className = "text-cyan-700 dark:text-cyan-400";
-                            }
-                            return (
-                              <span key={i} className={className}>
-                                {line}
-                                {"\n"}
-                              </span>
-                            );
-                          })}
-                        </pre>
-                      ) : (
-                        <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-64">
-                          {detailPattern.patternSql}
-                        </pre>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <h3 className="text-sm font-medium">Pattern SQL</h3>
-                      <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-64">
-                        {detailPattern.patternSql}
-                      </pre>
-                    </div>
-                  )}
+                  <div className="space-y-2">
+                    <h3 className="text-sm font-medium">Pattern SQL</h3>
+                    <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-64">
+                      {detailPattern.patternSql}
+                    </pre>
+                  </div>
 
                   <div className="grid grid-cols-2 gap-4 text-sm">
                     <div className="space-y-1">

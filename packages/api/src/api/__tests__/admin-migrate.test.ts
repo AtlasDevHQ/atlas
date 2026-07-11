@@ -6,7 +6,12 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import type { ExportBundle, ExportedSemanticEntity, ImportResult } from "@useatlas/types";
+import type {
+  ExportBundle,
+  ExportedLearnedPattern,
+  ExportedSemanticEntity,
+  ImportResult,
+} from "@useatlas/types";
 import type { InternalPoolClient } from "@atlas/api/lib/db/internal";
 import { importBundle, validateBundle } from "../routes/admin-migrate";
 
@@ -461,5 +466,87 @@ describe("validateBundle — connectionGroupId type guard", () => {
     expect(rejected(undefined)).toBeUndefined();
     expect(rejected(null)).toBeUndefined();
     expect(rejected("g_prod_us")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Learned-pattern amendment identity round-trips through import (#4569, M9)
+// ---------------------------------------------------------------------------
+
+function bundleWithPatterns(patterns: ExportedLearnedPattern[]): ExportBundle {
+  return {
+    manifest: {
+      version: 1,
+      exportedAt: "2026-07-11T00:00:00Z",
+      source: { label: "test" },
+      counts: { conversations: 0, messages: 0, semanticEntities: 0, learnedPatterns: patterns.length, settings: 0 },
+    },
+    conversations: [],
+    semanticEntities: [],
+    learnedPatterns: patterns,
+    settings: [],
+  };
+}
+
+const AMENDMENT_PAYLOAD = {
+  entityName: "orders",
+  amendmentType: "add_dimension",
+  amendment: { name: "region", sql: "region", type: "string" },
+  rationale: "geo breakdowns",
+};
+
+describe("importBundle — learned-pattern amendment identity (#4569)", () => {
+  it("round-trips type, amendment_payload (serialized) and connection_group_id for an amendment row", async () => {
+    const { client, calls } = captureClient();
+    await importBundle(client, bundleWithPatterns([
+      {
+        patternSql: "amendment:orders:add_dimension:region",
+        description: "Add region dimension",
+        sourceEntity: "orders",
+        confidence: 0.9,
+        status: "approved",
+        type: "semantic_amendment",
+        amendmentPayload: AMENDMENT_PAYLOAD,
+        connectionGroupId: "g_prod_us",
+        reviewedBy: "admin-1",
+        repetitionCount: 3,
+      },
+    ]), "org-test");
+
+    const insert = calls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insert).toBeDefined();
+    // Columns: org_id, pattern_sql, description, source_entity, confidence,
+    // status, type, amendment_payload, connection_group_id, reviewed_by,
+    // repetition_count.
+    const p = insert!.params;
+    expect(p[6]).toBe("semantic_amendment");
+    // jsonb param must be a serialized string, not the raw object.
+    expect(typeof p[7]).toBe("string");
+    expect(JSON.parse(p[7] as string)).toEqual(AMENDMENT_PAYLOAD);
+    expect(p[8]).toBe("g_prod_us");
+    expect(p[9]).toBe("admin-1");
+    expect(p[10]).toBe(3);
+  });
+
+  it("defaults a pre-#4569 bundle (no amendment fields) to a query pattern", async () => {
+    const { client, calls } = captureClient();
+    await importBundle(client, bundleWithPatterns([
+      {
+        patternSql: "SELECT COUNT(*) FROM orders",
+        description: "Order count",
+        sourceEntity: "orders",
+        confidence: 0.8,
+        status: "pending",
+      },
+    ]), "org-test");
+
+    const insert = calls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insert).toBeDefined();
+    const p = insert!.params;
+    expect(p[6]).toBe("query_pattern");
+    expect(p[7]).toBeNull(); // amendment_payload
+    expect(p[8]).toBeNull(); // connection_group_id
+    expect(p[9]).toBeNull(); // reviewed_by
+    expect(p[10]).toBe(1); // repetition_count default
   });
 });

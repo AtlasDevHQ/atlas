@@ -15,7 +15,6 @@ import {
   Hash,
   Bot,
   Calendar,
-  Layers,
   Sparkles,
   Timer,
 } from "lucide-react";
@@ -47,19 +46,6 @@ export const autoApprovedBadge = {
   variant: "outline" as const,
   className: "border-violet-300 text-violet-700 dark:border-violet-700 dark:text-violet-400",
   label: "Auto-approved",
-};
-
-export const typeBadge: Record<string, { variant: "outline"; className: string; label: string }> = {
-  query_pattern: {
-    variant: "outline",
-    className: "border-primary/50 text-primary dark:border-primary/50 dark:text-primary",
-    label: "Query Pattern",
-  },
-  semantic_amendment: {
-    variant: "outline",
-    className: "border-orange-300 text-orange-700 dark:border-orange-700 dark:text-orange-400",
-    label: "Amendment",
-  },
 };
 
 const sourceBadge: Record<string, { variant: "outline"; className: string; label: string }> = {
@@ -128,21 +114,6 @@ export function getLearnedPatternColumns(): ColumnDef<LearnedPattern>[] {
       meta: { label: "Status", icon: CircleDot },
       enableSorting: false,
       size: 130,
-    },
-    {
-      id: "type",
-      accessorKey: "type",
-      header: ({ column }) => (
-        <DataTableColumnHeader column={column} label="Type" />
-      ),
-      cell: ({ row }) => {
-        const type = row.getValue<string>("type") ?? "query_pattern";
-        const badge = typeBadge[type] ?? typeBadge.query_pattern;
-        return <Badge variant={badge.variant} className={badge.className}>{badge.label}</Badge>;
-      },
-      meta: { label: "Type", icon: Layers },
-      enableSorting: false,
-      size: 120,
     },
     {
       id: "patternSql",

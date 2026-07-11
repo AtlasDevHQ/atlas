@@ -45,10 +45,10 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
       : null,
     confidence: row.confidence as number,
     repetitionCount: row.repetition_count as number,
-    // `applying` is the decide seam's transient claim state (#4506), not a
-    // wire status — present it as `pending` (the row is still undecided; a
-    // stale claim resurfaces as claimable).
-    status: (row.status === "applying" ? "pending" : row.status) as LearnedPattern["status"],
+    // This route only ever reads `type = 'query_pattern'` rows (#4569), which
+    // never carry the amendment-only `applying` claim state — so `status` maps
+    // straight to the wire status.
+    status: row.status as LearnedPattern["status"],
     proposedBy: (row.proposed_by as LearnedPattern["proposedBy"]) ?? null,
     reviewedBy: (row.reviewed_by as string) ?? null,
     createdAt: String(row.created_at),
@@ -89,77 +89,13 @@ function orgFilter(
 
 const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
 
-/**
- * Route a `semantic_amendment` row's status decision through the decide seam
- * (#4506) — the ONLY code path that stamps `approved` on an amendment.
- *
- * The seam owns `pending → approved | rejected` with claim-then-apply
- * ordering: `approved` is stamped only after a successful YAML apply +
- * version snapshot, and a failed apply compensates the row back to `pending`
- * with a visible reason (the error still propagates so the handler surfaces
- * it). A rejected row being re-approved is atomically reopened
- * (`rejected → pending`, the reconsider arm) before the seam decides it.
- *
- * Returns `"decided"` on success; `"conflict"` with a truthful message when
- * the row was already reviewed / is being applied by a concurrent request.
- * Throws when the apply itself fails.
- */
-async function decideAmendmentRow(params: {
-  id: string;
-  rowStatus: string;
-  decision: "approved" | "rejected";
-  orgId: string | null | undefined;
-  userId: string | null;
-  requestId: string;
-}): Promise<{ kind: "decided" } | { kind: "conflict"; message: string }> {
-  const { id, rowStatus, decision, orgId, userId, requestId } = params;
-
-  if (rowStatus === "approved") {
-    return {
-      kind: "conflict",
-      message:
-        "This amendment is already approved and applied to the semantic layer. Use the entity's version history to roll it back instead of re-reviewing it.",
-    };
-  }
-  if (rowStatus === "rejected") {
-    if (decision === "rejected") {
-      return { kind: "conflict", message: "This amendment is already rejected." };
-    }
-    // Reconsider: atomically reopen the rejected row, then let the seam decide
-    // it. A concurrent decision between the reopen and the claim just makes
-    // the claim lose — truthful conflict, never a double apply.
-    const reopenParams: unknown[] = [id];
-    const reopenOrg = orgFilter(orgId, reopenParams, reopenParams.length + 1);
-    const reopened = await internalQuery<{ id: string }>(
-      `UPDATE learned_patterns SET status = 'pending', updated_at = now()
-       WHERE id = $1 AND type = 'semantic_amendment' AND status = 'rejected' AND ${reopenOrg.clause}
-       RETURNING id`,
-      reopenParams,
-    );
-    if (reopened.length === 0) {
-      return {
-        kind: "conflict",
-        message: "Amendment was reviewed by another request. Refresh and retry.",
-      };
-    }
-  }
-
-  const { decideAmendment } = await import("@atlas/api/lib/semantic/expert/decide");
-  const outcome = await decideAmendment({
-    id,
-    orgId: orgId ?? null,
-    decision,
-    reviewedBy: userId ?? "admin",
-    requestId,
-  });
-  if (outcome.kind === "not_pending") {
-    return {
-      kind: "conflict",
-      message: "Amendment was already reviewed or is being applied by another request.",
-    };
-  }
-  return { kind: "decided" };
-}
+// This route governs `type = 'query_pattern'` rows ONLY (#4569). Every handler
+// scopes its reads and writes to this predicate, so `semantic_amendment` rows
+// are invisible and untouchable here — their sole decide door is the improve
+// surface's seam (#4506). Making the scope structural (a WHERE clause on every
+// query) is what makes #4506's "the seam is the only writer of `approved`"
+// invariant true for amendment rows.
+const QUERY_PATTERN_SCOPE = "type = 'query_pattern'";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -209,12 +145,11 @@ const listPatternsRoute = createRoute({
   tags: ["Admin — Learned Patterns"],
   summary: "List learned patterns",
   description:
-    "Returns a paginated list of learned query patterns. Supports filtering by status, type, source entity, and confidence range.",
+    "Returns a paginated list of learned query patterns. Supports filtering by status, source entity, and confidence range. Semantic amendments are governed by the improve surface and never appear here (#4569).",
   request: {
     query: z.object({
       status: z.string().optional().openapi({ description: "Filter by status: pending, approved, rejected" }),
       source_entity: z.string().optional().openapi({ description: "Filter by source entity name" }),
-      type: z.string().optional().openapi({ description: "Filter by type: query_pattern, semantic_amendment" }),
       min_confidence: z.string().optional().openapi({ description: "Minimum confidence (0–1)" }),
       max_confidence: z.string().optional().openapi({ description: "Maximum confidence (0–1)" }),
       limit: z.string().optional().openapi({ description: "Maximum results (default 50, max 200)" }),
@@ -328,11 +263,6 @@ const updatePatternRoute = createRoute({
     },
     404: {
       description: "Pattern not found or internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    409: {
-      description:
-        "Semantic amendment already reviewed, applied, or claimed by a concurrent request (#4506) — amendment status transitions are owned by the decide seam",
       content: { "application/json": { schema: ErrorSchema } },
     },
     429: {
@@ -471,7 +401,6 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     const url = new URL(c.req.raw.url);
     const status = url.searchParams.get("status");
     const sourceEntity = url.searchParams.get("source_entity");
-    const patternType = url.searchParams.get("type");
     const minConfidence = url.searchParams.get("min_confidence");
     const maxConfidence = url.searchParams.get("max_confidence");
     const { limit, offset } = parsePagination(c);
@@ -485,16 +414,10 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     const params: unknown[] = [];
     const org = orgFilter(orgId, params, params.length + 1);
     whereParts.push(org.clause);
+    whereParts.push(QUERY_PATTERN_SCOPE);
     let nextIdx = org.nextIdx;
 
-    if (status === "pending") {
-      // `applying` is the decide seam's transient claim state, presented as
-      // `pending` on the wire (see toLearnedPattern, #4506) — the filter must
-      // match the presentation, or a crash-stranded claim becomes invisible
-      // under the one filter admins use to find pending work.
-      whereParts.push(`status IN ('pending', 'applying')`);
-    } else if (status) { params.push(status); whereParts.push(`status = $${nextIdx}`); nextIdx++; }
-    if (patternType) { params.push(patternType); whereParts.push(`type = $${nextIdx}`); nextIdx++; }
+    if (status) { params.push(status); whereParts.push(`status = $${nextIdx}`); nextIdx++; }
     if (sourceEntity) { params.push(sourceEntity); whereParts.push(`source_entity = $${nextIdx}`); nextIdx++; }
     if (minConfidence !== null) { params.push(parseFloat(minConfidence)); whereParts.push(`confidence >= $${nextIdx}`); nextIdx++; }
     if (maxConfidence !== null) { params.push(parseFloat(maxConfidence)); whereParts.push(`confidence <= $${nextIdx}`); nextIdx++; }
@@ -526,7 +449,7 @@ adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
     const { id } = c.req.valid("param");
     const params: unknown[] = [id];
     const org = orgFilter(orgId, params, params.length + 1);
-    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${org.clause}`, params);
+    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${org.clause}`, params);
     if (rows.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
     return c.json(toLearnedPattern(rows[0]), 200);
   }), { label: "get learned pattern" });
@@ -538,68 +461,19 @@ adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
 
 adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
     const { orgId, user } = yield* AuthContext;
 
     const { id } = c.req.valid("param");
     const { description, status } = c.req.valid("json");
     if (description === undefined && status === undefined) return c.json({ error: "bad_request", message: "No recognized fields to update. Supported: description, status." }, 400);
 
+    // Scoped to query_pattern rows (#4569): an amendment id falls through to
+    // 404 here — its status is never writable through this route, so #4506's
+    // "the seam is the only writer of `approved`" holds by construction.
     const checkParams: unknown[] = [id];
     const org = orgFilter(orgId, checkParams, checkParams.length + 1);
-    const existing = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
+    const existing = yield* queryEffect<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${org.clause}`, checkParams);
     if (existing.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
-
-    // Semantic-amendment status decisions are seam-owned (#4506): the decide
-    // seam claims the pending row, applies the YAML + version snapshot, and
-    // only then stamps `approved` — this handler must never write an
-    // amendment's approved/rejected status itself. A failed apply (incl. an
-    // AmbiguousEntityError → 409) aborts the request with the row already
-    // compensated back to pending. `seamDecided` suppresses the generic
-    // status SET below so the seam's stamp is never overwritten.
-    let seamDecided = false;
-    if (
-      (status === "approved" || status === "rejected") &&
-      existing[0].type === "semantic_amendment"
-    ) {
-      const decided = yield* Effect.tryPromise({
-        try: () =>
-          decideAmendmentRow({
-            id,
-            rowStatus: String(existing[0].status),
-            decision: status,
-            orgId,
-            userId: user?.id ?? null,
-            requestId,
-          }),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      });
-      if (decided.kind === "conflict") {
-        return c.json({ error: "conflict", message: decided.message, requestId }, 409);
-      }
-      seamDecided = true;
-    } else if (
-      status === "pending" &&
-      existing[0].type === "semantic_amendment" &&
-      (existing[0].status === "approved" || existing[0].status === "applying")
-    ) {
-      // Un-approving an applied amendment would leave the row claiming
-      // "pending" while its YAML change is live — the same class of lie the
-      // decide seam exists to prevent (roll back via version history instead).
-      // Likewise a row mid-claim (`applying`) belongs to the in-flight
-      // decision, not this handler.
-      return c.json(
-        {
-          error: "conflict",
-          message:
-            existing[0].status === "applying"
-              ? "This amendment is currently being applied by another request."
-              : "This amendment is already approved and applied to the semantic layer. Use the entity's version history to roll it back instead of re-reviewing it.",
-          requestId,
-        },
-        409,
-      );
-    }
 
     const setClauses: string[] = ["updated_at = now()"];
     const updateParams: unknown[] = [];
@@ -609,16 +483,13 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     // `auto_promoted` so a row the nightly job promoted (then perhaps decayed to
     // pending) no longer renders the machine "Auto-approved" badge once a person
     // reviews it, and so decay never demotes it out from under the admin (#3636).
-    // Seam-decided amendment statuses are excluded: the seam already stamped
-    // status + reviewer, and amendments are never auto-promoted (#3636 scopes
-    // promote-decay to query_pattern rows).
-    if (status !== undefined && !seamDecided) { updateParams.push(status); setClauses.push(`status = $${paramIdx}`); paramIdx++; updateParams.push(user?.id ?? null); setClauses.push(`reviewed_by = $${paramIdx}`); paramIdx++; setClauses.push(`reviewed_at = now()`); setClauses.push(`auto_promoted = false`); }
+    if (status !== undefined) { updateParams.push(status); setClauses.push(`status = $${paramIdx}`); paramIdx++; updateParams.push(user?.id ?? null); setClauses.push(`reviewed_by = $${paramIdx}`); paramIdx++; setClauses.push(`reviewed_at = now()`); setClauses.push(`auto_promoted = false`); }
 
     updateParams.push(id);
     const idIdx = paramIdx;
     paramIdx++;
     const updateOrg = orgFilter(orgId, updateParams, paramIdx);
-    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${updateOrg.clause} RETURNING *`, updateParams);
+    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${QUERY_PATTERN_SCOPE} AND ${updateOrg.clause} RETURNING *`, updateParams);
     if (updated.length === 0) return c.json({ error: "not_found", message: "Pattern was deleted before update completed." }, 404);
 
     // Any status flip changes which patterns the agent sees: the approved set
@@ -662,14 +533,15 @@ adminLearnedPatterns.openapi(deletePatternRoute, async (c) => {
     const { orgId } = yield* AuthContext;
 
     const { id } = c.req.valid("param");
+    // Scoped to query_pattern rows (#4569): an amendment id is a 404 here.
     const checkParams: unknown[] = [id];
     const org = orgFilter(orgId, checkParams, checkParams.length + 1);
-    const existing = yield* queryEffect<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
+    const existing = yield* queryEffect<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${org.clause}`, checkParams);
     if (existing.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
 
     const deleteParams: unknown[] = [id];
     const deleteOrg = orgFilter(orgId, deleteParams, deleteParams.length + 1);
-    yield* queryEffect(`DELETE FROM learned_patterns WHERE id = $1 AND ${deleteOrg.clause}`, deleteParams);
+    yield* queryEffect(`DELETE FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${deleteOrg.clause}`, deleteParams);
     invalidatePatternCache(orgId ?? null);
 
     logAdminAction({
@@ -704,34 +576,19 @@ adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
     for (const id of ids) {
       const itemResult = yield* Effect.tryPromise({
         try: async () => {
+          // Scoped to query_pattern rows (#4569): an amendment id resolves to
+          // `not_found` here — the bulk path can never stamp an amendment's
+          // status, so #4506's "the seam is the only writer of `approved`"
+          // holds for amendment rows.
           const checkParams: unknown[] = [id];
           const org = orgFilter(orgId, checkParams, checkParams.length + 1);
-          const existing = await internalQuery<Record<string, unknown>>(`SELECT id, type, status, source_entity, amendment_payload, connection_group_id FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
+          const existing = await internalQuery<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${org.clause}`, checkParams);
           if (existing.length === 0) return "not_found" as const;
-
-          // Semantic-amendment decisions are seam-owned (#4506): the decide
-          // seam claims the pending row, applies YAML + version snapshot, and
-          // stamps `approved` only on success — this handler never writes an
-          // amendment's status itself. A conflict (already reviewed / claimed
-          // by a concurrent request) is recorded per-id in `errors`; a failed
-          // apply throws with the row already compensated back to pending.
-          if (existing[0].type === "semantic_amendment") {
-            const decided = await decideAmendmentRow({
-              id,
-              rowStatus: String(existing[0].status),
-              decision: status,
-              orgId,
-              userId: user?.id ?? null,
-              requestId,
-            });
-            if (decided.kind === "conflict") throw new Error(decided.message);
-            return "updated" as const;
-          }
 
           const updateParams: unknown[] = [status, user?.id ?? null, id];
           const updateOrg = orgFilter(orgId, updateParams, updateParams.length + 1);
           // Clear auto_promoted on a human review (see single-update path, #3636).
-          await internalQuery(`UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now(), auto_promoted = false WHERE id = $3 AND ${updateOrg.clause}`, updateParams);
+          await internalQuery(`UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now(), auto_promoted = false WHERE id = $3 AND ${QUERY_PATTERN_SCOPE} AND ${updateOrg.clause}`, updateParams);
           return "updated" as const;
         },
         catch: (err) => err instanceof Error ? err : new Error(String(err)),

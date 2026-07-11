@@ -252,12 +252,14 @@ describe("admin learned-patterns routes", () => {
       const firstCall = calls[0];
       const sql = firstCall[0] as string;
       const params = firstCall[1] as unknown[];
-      // The pending filter is an inline IN clause (not a bound param) so it
-      // also matches `applying` rows — the decide seam's transient claim
-      // state, presented as pending on the wire (#4506).
-      expect(sql).toContain("status IN ('pending', 'applying')");
+      // Every status (pending included) is a bound param now: the route is
+      // query_pattern-only (#4569), so the amendment-only `applying` claim
+      // state can never appear here and the pending special-case is gone.
+      expect(sql).toContain("status = $");
+      expect(sql).toContain("type = 'query_pattern'");
       expect(sql).toContain("source_entity");
       expect(sql).toContain("confidence");
+      expect(params).toContain("pending");
       expect(params).toContain("orders");
       expect(params).toContain(0.5);
     });

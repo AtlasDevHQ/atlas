@@ -59,3 +59,18 @@ export function describeAnchor(anchor: ImproveAnchor, label: string): string {
 export function anchorRequestField(anchor: ImproveAnchor | null): { anchor?: ImproveAnchor } {
   return anchor ? { anchor } : {};
 }
+
+/**
+ * Build the improve `/chat` request body the transport sends. Extracted as a pure
+ * function (mirroring the main chat's `buildChatRequestBody`) so the load-bearing
+ * rule — the active anchor rides EVERY turn's body, and only when set — is
+ * unit-testable without rendering the page or driving the transport. `messages`
+ * is set explicitly because the page supplies `prepareSendMessagesRequest`, which
+ * replaces the SDK's default body wholesale.
+ */
+export function buildImproveChatBody(
+  messages: unknown,
+  anchor: ImproveAnchor | null,
+): Record<string, unknown> {
+  return { messages, ...anchorRequestField(anchor) };
+}

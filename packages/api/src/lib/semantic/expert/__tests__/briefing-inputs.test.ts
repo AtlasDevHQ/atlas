@@ -303,6 +303,18 @@ describe("loadBriefingInputs", () => {
     const inputs = await loadBriefingInputs("org-1", new Date("2026-07-11T00:00:00Z"));
     expect(inputs.anchor).toBeUndefined();
   });
+
+  it("degrades to unanchored (never fabricates) when an entity anchor is out of scope (#4519)", async () => {
+    // The launcher can offer an entity the published briefing can't see (a
+    // draft-only entity, a group-id mismatch). The loader must resolve to no
+    // anchor — not invent one — matching the log.warn'd degrade contract.
+    mockEntities = [makeEntity({ name: "orders" })];
+    const inputs = await loadBriefingInputs("org-1", new Date("2026-07-11T00:00:00Z"), {
+      kind: "entity",
+      entity: "ghost",
+    });
+    expect(inputs.anchor).toBeUndefined();
+  });
 });
 
 describe("buildBriefingBlock", () => {

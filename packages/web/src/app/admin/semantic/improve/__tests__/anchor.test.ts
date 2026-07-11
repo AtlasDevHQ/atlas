@@ -2,14 +2,16 @@
  * Unit tests for the pure improve-anchor helpers (#4519).
  *
  * These pin the load-bearing rules the launcher UI relies on: the request-field
- * omit-when-null contract (so an anchorless sweep is byte-identical to the
- * pre-anchor request), the kick-off copy, and the chip label. Mirrors the
- * proposals-extraction pure-module suite.
+ * omit-when-null contract (so an anchorless sweep carries no `anchor` key and the
+ * server behaves exactly as it did before anchors existed — this proves absence
+ * of the key, NOT whole-request byte-identity), the kick-off copy, and the chip
+ * label. Mirrors the proposals-extraction pure-module suite.
  */
 
 import { describe, it, expect } from "bun:test";
 import {
   anchorRequestField,
+  buildImproveChatBody,
   describeAnchor,
   groupKickoffMessage,
   entityKickoffMessage,
@@ -31,6 +33,23 @@ describe("anchorRequestField", () => {
   it("carries an entity anchor (with optional group) through unchanged", () => {
     const anchor: ImproveAnchor = { kind: "entity", entity: "orders", group: "grp_prod" };
     expect(anchorRequestField(anchor)).toEqual({ anchor });
+  });
+});
+
+describe("buildImproveChatBody", () => {
+  const messages = [{ id: "m1", role: "user", parts: [] }];
+
+  it("rides the active anchor on the body when set (every turn stays scoped)", () => {
+    const anchor: ImproveAnchor = { kind: "group", group: "grp_prod" };
+    const body = buildImproveChatBody(messages, anchor);
+    expect(body.messages).toBe(messages);
+    expect(body.anchor).toEqual(anchor);
+  });
+
+  it("sends messages with no anchor key for an anchorless turn (AC4)", () => {
+    const body = buildImproveChatBody(messages, null);
+    expect(body.messages).toBe(messages);
+    expect("anchor" in body).toBe(false);
   });
 });
 

@@ -117,10 +117,20 @@ void mock.module("@ai-sdk/react", () => ({
   useChat: () => ({ messages: mockMessages, sendMessage: sendMessageSpy, status: "ready", error: null }),
 }));
 
+// Capture the transport config so a test can assert the endpoint URL and drive
+// the real `prepareSendMessagesRequest` body builder (useChat is mocked, so the
+// transport is otherwise never exercised).
+type CapturedTransport = {
+  api?: string;
+  credentials?: string;
+  prepareSendMessagesRequest?: (opts: { messages: unknown }) => { body: Record<string, unknown> };
+};
+let capturedTransport: CapturedTransport | null = null;
+
 void mock.module("ai", () => ({
   DefaultChatTransport: class {
-    constructor() {
-      // no-op — useChat is mocked, so the transport is never exercised here.
+    constructor(config: CapturedTransport) {
+      capturedTransport = config;
     }
   },
   isToolUIPart: () => false,
@@ -130,6 +140,26 @@ void mock.module("ai", () => ({
 void mock.module("@/ui/context", () => ({
   useAtlasConfig: () => ({ apiUrl: "http://localhost", isCrossOrigin: false }),
 }));
+
+// Mock the DropdownMenu primitives as plain divs (items clickable via onSelect),
+// the established house pattern (answer-style-picker.test.tsx) — Radix's portal +
+// pointer-capture don't drive reliably under happy-dom. The conditional render in
+// AnchorLaunchers (`groups.length > 0 && …`) is unaffected, so the hidden-when-empty
+// assertions still hold; items are simply always in the DOM so a click reaches
+// onSelect.
+void mock.module("@/components/ui/dropdown-menu", () => {
+  const div = ({ children, asChild: _a, ...rest }: { children?: ReactNode; asChild?: boolean } & Record<string, unknown>) =>
+    createElement("div", rest, children as ReactNode);
+  const item = ({ children, onSelect, asChild: _a, ...rest }: { children?: ReactNode; asChild?: boolean; onSelect?: () => void } & Record<string, unknown>) =>
+    createElement("div", { ...rest, onClick: () => onSelect?.() }, children as ReactNode);
+  return {
+    DropdownMenu: div,
+    DropdownMenuTrigger: div,
+    DropdownMenuContent: div,
+    DropdownMenuItem: item,
+    DropdownMenuLabel: div,
+  };
+});
 
 void mock.module("next/navigation", () => ({
   usePathname: () => "/admin/semantic/improve",
@@ -145,6 +175,10 @@ void mock.module("@/ui/hooks/use-admin-mutation", () => ({
   }),
 }));
 
+// Mutable per-test fixtures so a test can feed a drifted response shape.
+let mockGroupsResponse: unknown = { groups: [{ id: "g1", name: "US Production" }] };
+let mockEntitiesResponse: unknown = { entities: [{ name: "orders", connectionId: "g1" }] };
+
 // Route the fetch by path and apply the REAL transform so the launcher projection
 // (groups → {id,name}, entities → {name,label,group}) is exercised too.
 void mock.module("@/ui/hooks/use-admin-fetch", () => ({
@@ -152,8 +186,8 @@ void mock.module("@/ui/hooks/use-admin-fetch", () => ({
     let raw: unknown = null;
     if (path.includes("/semantic-improve/pending")) raw = { amendments: [] };
     else if (path.includes("/semantic-improve/rejected")) raw = { amendments: [] };
-    else if (path.includes("/me/connection-groups")) raw = { groups: [{ id: "g1", name: "US Production" }] };
-    else if (path.includes("/admin/semantic/entities")) raw = { entities: [{ name: "orders", connectionId: "g1" }] };
+    else if (path.includes("/me/connection-groups")) raw = mockGroupsResponse;
+    else if (path.includes("/admin/semantic/entities")) raw = mockEntitiesResponse;
     const data = opts?.transform ? opts.transform(raw) : raw;
     return { data, loading: false, error: null, refetch: () => {} };
   },
@@ -170,6 +204,68 @@ describe("SemanticImprovePage — launchers survive a conversation (#4519 AC2)",
   afterEach(() => {
     cleanup();
     mockMessages = [];
+    capturedTransport = null;
+    mockGroupsResponse = { groups: [{ id: "g1", name: "US Production" }] };
+    mockEntitiesResponse = { entities: [{ name: "orders", connectionId: "g1" }] };
+  });
+
+  test("wires the transport to the improve endpoint and builds the anchorless body (#4519)", async () => {
+    await act(async () => {
+      render(createElement(SemanticImprovePage), { wrapper });
+    });
+    await waitFor(() => {
+      if (!capturedTransport) throw new Error("transport not constructed");
+    });
+    // The transport targets the semantic-improve chat endpoint.
+    expect(capturedTransport?.api).toBe("http://localhost/api/v1/admin/semantic-improve/chat");
+    // No launcher clicked ⇒ anchorRef null ⇒ the built body carries messages and
+    // NO anchor key (a re-added anchor on an anchorless turn would fail this).
+    const built = capturedTransport?.prepareSendMessagesRequest?.({
+      messages: [{ id: "m", role: "user", parts: [] }],
+    });
+    expect(built?.body.messages).toBeDefined();
+    expect(built ? "anchor" in built.body : true).toBe(false);
+  });
+
+  test("clicking a group launcher shows the chip and rides the anchor on the wire (#4519 AC3 + transport)", async () => {
+    let utils!: ReturnType<typeof render>;
+    await act(async () => {
+      utils = render(createElement(SemanticImprovePage), { wrapper });
+    });
+    // The group item is in the DOM (dropdown mocked open). Click it.
+    const item = await waitFor(() => {
+      const el = utils.queryByText("US Production");
+      if (!el) throw new Error("group item not rendered");
+      return el;
+    });
+    await act(async () => {
+      fireEvent.click(item);
+    });
+
+    // AC3: the active-anchor chip becomes visible.
+    await waitFor(() => {
+      if (!utils.queryByText("Group: US Production")) throw new Error("anchor chip not shown");
+    });
+    // The launcher kicked off the conversation.
+    expect(sendMessageSpy).toHaveBeenCalled();
+    // Ref-write + spread: the transport now builds a body carrying the group
+    // anchor (drop the synchronous ref write in applyAnchor and this sends null).
+    const built = capturedTransport?.prepareSendMessagesRequest?.({
+      messages: [{ id: "m", role: "user", parts: [] }],
+    });
+    expect(built?.body.anchor).toEqual({ kind: "group", group: "g1" });
+
+    // Clearing the anchor drops the chip and the wire scope.
+    await act(async () => {
+      fireEvent.click(utils.getByText("Clear"));
+    });
+    await waitFor(() => {
+      if (utils.queryByText("Group: US Production")) throw new Error("chip not cleared");
+    });
+    const afterClear = capturedTransport?.prepareSendMessagesRequest?.({
+      messages: [{ id: "m", role: "user", parts: [] }],
+    });
+    expect(afterClear ? "anchor" in afterClear.body : true).toBe(false);
   });
 
   test("launchers + sweep stay rendered after messages exist (no vanishing button)", async () => {
@@ -193,5 +289,30 @@ describe("SemanticImprovePage — launchers survive a conversation (#4519 AC2)",
     expect(utils.queryByText(/Scoping this conversation/)).toBeNull();
     // The retired button copy is gone.
     expect(utils.queryByText("Run Analysis")).toBeNull();
+  });
+
+  test("a field-drifted groups response hides the Group launcher and leaves a breadcrumb", async () => {
+    // `id` renamed → every row projects away → launcher vanishes. That must not
+    // be silent (per-row field-drift observability).
+    mockGroupsResponse = { groups: [{ groupId: "g1", name: "US Production" }] };
+    const warnSpy = mock(() => {});
+    const originalWarn = console.warn;
+    console.warn = warnSpy as unknown as typeof console.warn;
+    try {
+      let utils!: ReturnType<typeof render>;
+      await act(async () => {
+        utils = render(createElement(SemanticImprovePage), { wrapper });
+      });
+      await waitFor(() => {
+        if (!utils.queryByText("Sweep")) throw new Error("page not rendered");
+      });
+      // Group launcher hidden; Sweep + Entity unaffected.
+      expect(utils.queryByText("Group")).toBeNull();
+      expect(utils.getByText("Sweep")).toBeDefined();
+      expect(utils.getByText("Entity")).toBeDefined();
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 });

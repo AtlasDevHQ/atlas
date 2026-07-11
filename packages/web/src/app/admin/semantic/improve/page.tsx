@@ -7,7 +7,7 @@ import { extractProposals, buildProposalQueue, type Proposal, type QueueRow, typ
 import { RejectedCard, type RejectedAmendment } from "./rejected";
 import { DiffViewer, formatAmendment } from "./amendment-display";
 import {
-  anchorRequestField,
+  buildImproveChatBody,
   describeAnchor,
   entityKickoffMessage,
   groupKickoffMessage,
@@ -364,7 +364,7 @@ export default function SemanticImprovePage() {
         // dropping the SDK's extra fields is a no-op server-side. The anchor key
         // is omitted entirely when null, so an anchorless turn carries no anchor.
         prepareSendMessagesRequest: ({ messages }) => ({
-          body: { messages, ...anchorRequestField(anchorRef.current) },
+          body: buildImproveChatBody(messages, anchorRef.current),
         }),
       }),
     [apiUrl, isCrossOrigin],
@@ -401,12 +401,19 @@ export default function SemanticImprovePage() {
         console.warn("Semantic-improve: /me/connection-groups returned no `groups` array — group launcher hidden (response shape drift?)");
         return [];
       }
-      return raw.flatMap((g) => {
+      const projected = raw.flatMap((g) => {
         const rec = g as Record<string, unknown>;
         return typeof rec.id === "string" && typeof rec.name === "string"
           ? [{ id: rec.id, name: rec.name }]
           : [];
       });
+      // A non-empty array that projects to nothing is a per-row field drift
+      // (e.g. `id` renamed) — same "launcher vanished" symptom as key drift, so
+      // warn here too. An honestly-empty list stays silent (no groups yet).
+      if (raw.length > 0 && projected.length === 0) {
+        console.warn("Semantic-improve: /me/connection-groups rows all failed projection — group launcher hidden (per-row field drift?)");
+      }
+      return projected;
     },
   });
   const launcherGroups = groupsData ?? [];
@@ -418,7 +425,7 @@ export default function SemanticImprovePage() {
         console.warn("Semantic-improve: /admin/semantic/entities returned no `entities` array — entity launcher hidden (response shape drift?)");
         return [];
       }
-      return raw.flatMap((e) => {
+      const projected = raw.flatMap((e) => {
         const rec = e as Record<string, unknown>;
         const name = typeof rec.name === "string" && rec.name ? rec.name : null;
         if (!name) return [];
@@ -428,6 +435,13 @@ export default function SemanticImprovePage() {
         const label = typeof rec.displayName === "string" && rec.displayName ? rec.displayName : name;
         return [{ name, label, group }];
       });
+      // Non-empty rows projecting to nothing ⇒ per-row field drift (e.g. `name`
+      // renamed) — warn so the vanished launcher leaves a breadcrumb; an honestly
+      // empty schema stays silent.
+      if (raw.length > 0 && projected.length === 0) {
+        console.warn("Semantic-improve: /admin/semantic/entities rows all failed projection — entity launcher hidden (per-row field drift?)");
+      }
+      return projected;
     },
   });
   const launcherEntities = entitiesData ?? [];

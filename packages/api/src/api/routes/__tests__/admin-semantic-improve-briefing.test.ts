@@ -45,6 +45,7 @@ void mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
     parseFailures: 0,
   }),
   loadEntitiesFromDisk: async () => [],
+  loadEntitiesFromDB: async () => ({ entities: [], totalRows: 0, parseFailures: 0 }),
   loadGlossaryFromDisk: async () => [],
   loadAuditPatterns: async () => [],
   loadRejectedKeys: async () => new Set(),

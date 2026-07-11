@@ -37,6 +37,7 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 void mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
   loadEntitiesForOrg: async () => ({ entities: mockEntities, totalRows: mockEntities.length, parseFailures: 0 }),
   loadEntitiesFromDisk: async () => mockEntities,
+  loadEntitiesFromDB: async () => ({ entities: mockEntities, totalRows: mockEntities.length, parseFailures: 0 }),
   loadGlossaryFromDisk: async () => [],
   loadAuditPatterns: async () => mockAuditPatterns,
   loadRejectedKeys: async () => mockRejectedKeys,
@@ -199,6 +200,19 @@ describe("loadAnalysisContext — real inputs (#4514 AC4)", () => {
     expect(ctx.profiles[0].columns).toHaveLength(3);
     expect(ctx.auditPatterns).toHaveLength(1);
     expect(totalRows).toBe(1);
+    expect(parseFailures).toBe(0);
+  });
+
+  it("falls back to disk entities on the self-hosted / no-internal-DB path", async () => {
+    // The `!orgId || !hasInternalDB()` arm: entities come from loadEntitiesFromDisk
+    // and totalRows tracks the merged count (parseFailures always 0 off-DB). This
+    // is the self-hosted health endpoint + bare-CLI briefing path.
+    mockHasInternalDB = false;
+    mockEntities = [makeEntity({ name: "a" }), makeEntity({ name: "b" })];
+
+    const { ctx, totalRows, parseFailures } = await loadAnalysisContext(null, "published");
+    expect(ctx.entities).toHaveLength(2);
+    expect(totalRows).toBe(2);
     expect(parseFailures).toBe(0);
   });
 });

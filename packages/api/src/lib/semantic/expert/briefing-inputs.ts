@@ -79,23 +79,24 @@ export async function loadTrackedProfiles(
     await import("@atlas/api/lib/semantic/connection-profile");
 
   const states = await listConnectionProfileStates(orgId);
-  const profiles: TableProfile[] = [];
-  const lines: BriefingProfileLine[] = [];
 
-  for (const state of states) {
+  // Anchor lines are pure (freshness pre-computed against injected `now`).
+  const lines: BriefingProfileLine[] = states.map((state) => {
     const freshness = describeProfileFreshness(state.baseline?.profiledAt ?? null, now);
-    lines.push({
+    return {
       connection: state.installId,
       dbType: state.dbType,
       freshness: freshness?.label ?? null,
       tableCount: state.baseline?.tableCount ?? null,
-    });
-    // Pull the stored baseline payload for the analyzer/health. A connection with
-    // only a failed baseline (payload null) contributes an anchor line but no
-    // profiles — the health score degrades gracefully rather than throwing.
-    const payload = await getBaselineProfiles(orgId, state.installId);
-    if (payload) profiles.push(...payload);
-  }
+    };
+  });
+
+  // Fetch each connection's stored baseline payload in parallel — the reads are
+  // independent (no async waterfall). A connection with only a FAILED baseline
+  // (payload null) contributes an anchor line but no profiles, so the health
+  // score degrades gracefully rather than throwing. `flatMap` preserves order.
+  const payloads = await Promise.all(states.map((state) => getBaselineProfiles(orgId, state.installId)));
+  const profiles: TableProfile[] = payloads.flatMap((p) => p ?? []);
 
   return { profiles, lines };
 }

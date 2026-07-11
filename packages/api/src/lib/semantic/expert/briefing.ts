@@ -5,7 +5,7 @@
  * A PURE assembly module: it takes the workspace's already-known state — the
  * anchor (health + counts), tracked-profile freshness, the analyzer's findings,
  * recent query activity, rejection memory, the pending review queue, and the
- * decisions made in the panel since the last turn — and renders the deterministic
+ * most-recent panel decisions (approved/rejected) — and renders the deterministic
  * context block that is front-loaded at turn one of every Improvement conversation.
  *
  * It does **no I/O**: no database, no LLM, no clock. Profile freshness arrives
@@ -71,11 +71,12 @@ export interface BriefingDecision {
 export interface BriefingInputs {
   readonly health: SemanticHealthScore;
   /**
-   * The discriminator, and `parseFailures`/`totalRows`, are always produced
-   * together by `deriveHealthStatus` (briefing-inputs.ts) from the same counts,
-   * so they agree by construction: `healthStatus === "corrupt"` implies
-   * `parseFailures === totalRows > 0`. `deriveHealthStatus` is the canonical
-   * producer — don't set these three independently.
+   * The discriminator is DERIVED by `deriveHealthStatus` (briefing-inputs.ts)
+   * from these same `parseFailures`/`totalRows` counts (which come out of
+   * `loadAnalysisContext`), so the three agree by construction:
+   * `healthStatus === "corrupt"` implies `parseFailures === totalRows > 0`.
+   * `deriveHealthStatus` is the canonical producer of the discriminator — don't
+   * set `healthStatus` independently of the counts it's derived from.
    */
   readonly healthStatus: SemanticHealthStatus;
   /** DB rows that failed YAML parse (drives the corruption caption). */
@@ -207,6 +208,9 @@ function renderPending(pending: readonly BriefingPendingItem[]): string[] {
 function renderRecentDecisions(decisions: readonly BriefingDecision[]): string[] {
   if (decisions.length === 0) return [];
   const lines = ["### Recent panel decisions"];
+  // No "…and N more" line here (unlike findings/pending): the feed is already
+  // bounded upstream by the query (`getRecentlyDecidedAmendments` LIMIT 10), so
+  // this display cap effectively never truncates.
   decisions.slice(0, MAX_DECISIONS).forEach((d) => {
     lines.push(`- ${d.decision}: ${d.entityName} · ${d.amendmentType ?? "amendment"}`);
   });

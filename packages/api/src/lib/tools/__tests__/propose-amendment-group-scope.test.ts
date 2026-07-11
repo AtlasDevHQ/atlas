@@ -78,19 +78,38 @@ void mock.module("@atlas/api/lib/semantic/sync", () => ({ syncEntityToDisk }));
 
 // Arg shape mirrors the REAL (now required, #4498) `connectionGroupId` field —
 // `string | null`, not optional — so a caller regressing to omit it is visible
-// here as `undefined` in the persisted-args assertions.
+// here as `undefined` in the persisted-args assertions. The row is inserted
+// `pending`; `autoApproveEligible` drives whether the tool routes it to the
+// decide seam (#4506).
 const insertSemanticAmendment = mock(
   (_args: {
     sourceEntity: string;
     amendmentPayload: AmendmentPayload;
     connectionGroupId: string | null;
-  }) => Promise.resolve({ id: "prop-1", status: "approved" }),
+  }) => Promise.resolve({ outcome: "inserted", id: "prop-1", autoApproveEligible: true }),
 );
 const revertAmendmentToPending = mock(() => Promise.resolve(true));
+
+// The decide seam's claim primitive (#4506). It runs for real end-to-end here
+// (the tool's auto-approve goes tool → decideAmendment → applyAmendmentFromPayload),
+// so the claim must return the row the insert just persisted — same envelope +
+// group — for the real apply to write it back to the correct scope.
+const reviewSemanticAmendment = mock(
+  async (id: string, _org: string | null, _decision: "approved" | "rejected", _by: string) => {
+    const lastInsert = insertSemanticAmendment.mock.calls.at(-1)?.[0];
+    return {
+      id,
+      source_entity: lastInsert?.sourceEntity ?? "orders",
+      connection_group_id: lastInsert?.connectionGroupId ?? null,
+      amendment_payload: (lastInsert?.amendmentPayload ?? null) as Record<string, unknown> | null,
+    };
+  },
+);
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   insertSemanticAmendment,
+  reviewSemanticAmendment,
   revertAmendmentToPending,
 }));
 
@@ -143,7 +162,8 @@ describe("proposeAmendment baseline resolution is org/group-aware (#4488)", () =
     createVersion.mockClear();
     syncEntityToDisk.mockClear();
     insertSemanticAmendment.mockClear();
-    insertSemanticAmendment.mockResolvedValue({ id: "prop-1", status: "approved" });
+    insertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-1", autoApproveEligible: true });
+    reviewSemanticAmendment.mockClear();
     revertAmendmentToPending.mockClear();
   });
 
@@ -215,7 +235,7 @@ describe("proposeAmendment baseline resolution is org/group-aware (#4488)", () =
   it("human-review approve of the persisted row resolves the same group-scoped row, no unscoped fallback (#4498)", async () => {
     // Queue the proposal instead of auto-approving, so the ONLY apply in this
     // test is the simulated human review below.
-    insertSemanticAmendment.mockResolvedValue({ id: "prop-1", status: "pending" });
+    insertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-1", autoApproveEligible: false });
     const result = await run();
     expect(result.error).toBeUndefined();
     expect(result.status).toBe("queued");
@@ -264,7 +284,7 @@ describe("proposeAmendment baseline resolution is org/group-aware (#4488)", () =
     // the unscoped fallback — and the persisted group must be the ROW's own
     // scope (NULL), not the request's label.
     activeGroup = null;
-    insertSemanticAmendment.mockResolvedValue({ id: "prop-2", status: "pending" });
+    insertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-2", autoApproveEligible: false });
     const result = await run();
     expect(result.error).toBeUndefined();
     const persisted = insertSemanticAmendment.mock.calls[0][0];

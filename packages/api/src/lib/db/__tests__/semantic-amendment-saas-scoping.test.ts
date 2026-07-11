@@ -25,6 +25,7 @@ import {
   getPendingAmendmentCount,
   getPendingAmendments,
   reviewSemanticAmendment,
+  revertAmendmentToPending,
   _resetPool,
   _resetCircuitBreaker,
 } from "../internal";
@@ -178,5 +179,38 @@ describe("semantic amendment queries — SaaS scoping (#4487)", () => {
 
     expect(reviewed).toBeNull();
     expect(captured).toHaveLength(0);
+  });
+});
+
+describe("decide-seam DB primitives — claim + compensating revert SQL shape (#4506)", () => {
+  it("reviewSemanticAmendment is a conditional claim: only pending rows, RETURNING the group", async () => {
+    setDeployMode("self-hosted");
+    await reviewSemanticAmendment("amd-1", "org-a", "approved", "admin");
+
+    expect(captured).toHaveLength(1);
+    const { sql } = captured[0]!;
+    // The claim only ever transitions a still-`pending` row — this is what makes
+    // exactly one concurrent approve/reject win and "approved" un-double-stampable.
+    expect(sql).toContain("status = 'pending'");
+    // RETURNING carries connection_group_id so the decide seam applies to the
+    // correct group scope without a second read.
+    expect(sql).toContain("RETURNING id, source_entity, connection_group_id, amendment_payload");
+  });
+
+  it("revertAmendmentToPending clears the claim stamp and only matches a claimed (approved) row", async () => {
+    setDeployMode("self-hosted");
+    await revertAmendmentToPending("amd-1");
+
+    expect(captured).toHaveLength(1);
+    const { sql, params } = captured[0]!;
+    // Compensation returns the row to pending AND clears the phantom reviewer so
+    // the requeued row reads as genuinely unreviewed.
+    expect(sql).toContain("status = 'pending'");
+    expect(sql).toContain("reviewed_by = NULL");
+    expect(sql).toContain("reviewed_at = NULL");
+    // It only unwinds a row THIS seam claimed (status='approved') — never a
+    // legitimately-rejected or still-pending row.
+    expect(sql).toContain("status = 'approved'");
+    expect(params).toEqual(["amd-1"]);
   });
 });

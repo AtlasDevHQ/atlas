@@ -121,17 +121,21 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
       return result;
     }
 
-    // 4. Insert proposals — insertSemanticAmendment resolves status (approved/pending) based on threshold
-    const { insertSemanticAmendment, revertAmendmentToPending } =
-      await import("@atlas/api/lib/db/internal");
+    // 4. Insert proposals as pending, then hand every auto-approve-eligible row
+    //    to the single decide seam (#4506) — the scheduler no longer applies or
+    //    reverts directly. The seam claims-then-applies with compensation, so an
+    //    autonomous approval that fails to apply is returned to pending exactly
+    //    like an admin's, and `approved` never means anything but "applied".
+    const { insertSemanticAmendment } = await import("@atlas/api/lib/db/internal");
+    const { decideAmendment } = await import("./decide");
 
     // 5. Process each proposal
     for (const proposal of proposals) {
       try {
-        // Persist the finding's Connection group so the admin approve path can
-        // rebuild the correct scope (#3284). NULL = the default (flat) group:
-        // the layout-aware loader labels the default group `"default"`, which
-        // maps to a NULL `connection_group_id` like everywhere else.
+        // Persist the finding's Connection group so the approve path can rebuild
+        // the correct scope (#3284). NULL = the default (flat) group: the
+        // layout-aware loader labels the default group `"default"`, which maps
+        // to a NULL `connection_group_id` like everywhere else.
         const connectionGroupId =
           proposal.group && proposal.group !== "default" ? proposal.group : null;
         const insertResult = await insertSemanticAmendment({
@@ -160,53 +164,52 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
           continue;
         }
 
-        const { id, status } = insertResult;
+        // Row is `pending`. If it cleared the auto-approve gate, decide it now
+        // through the seam; otherwise it waits for an admin.
+        if (!insertResult.autoApproveEligible) {
+          result.queued++;
+          continue;
+        }
 
-        if (status === "approved") {
-          // Auto-apply
-          try {
-            const { applyAmendmentToEntity } = await import("./apply");
-            await applyAmendmentToEntity(null, proposal, `scheduled-${Date.now()}`);
-            result.autoApproved++;
-            log.info(
-              { entity: proposal.entityName, type: proposal.amendmentType, confidence: proposal.confidence },
-              "Auto-approved and applied semantic amendment",
-            );
-          } catch (applyErr) {
-            // Revert the row so it never lingers as `approved`-but-unapplied —
-            // the invariant "status='approved' ⇒ applied" must hold on this
-            // path too (#4486). Reverting re-queues it for admin review.
-            const reverted = await revertAmendmentToPending(id).catch(
-              (revertErr: unknown) => {
-                log.warn(
-                  {
-                    err: revertErr instanceof Error ? revertErr : new Error(String(revertErr)),
-                    entity: proposal.entityName,
-                    id,
-                  },
-                  "Failed to revert auto-approved amendment to pending after apply failure — row may remain approved-but-unapplied",
-                );
-                return false;
-              },
-            );
-            log.warn(
-              {
-                err: applyErr instanceof Error ? applyErr : new Error(String(applyErr)),
-                entity: proposal.entityName,
-                id,
-                reverted,
-              },
-              "Failed to apply auto-approved amendment — reverted to pending for admin review",
-            );
-            result.errors++;
-          }
+        const decided = await decideAmendment({
+          id: insertResult.id,
+          orgId: null,
+          decision: "approved",
+          reviewedBy: "auto-approve",
+          requestId: `scheduled-${Date.now()}`,
+        });
+
+        if (decided.outcome === "approved") {
+          result.autoApproved++;
+          log.info(
+            { entity: proposal.entityName, type: proposal.amendmentType, confidence: proposal.confidence },
+            "Auto-approved and applied semantic amendment",
+          );
+        } else if (decided.outcome === "apply_failed") {
+          // The seam already reverted the row to pending for admin review.
+          log.warn(
+            {
+              err: decided.reason,
+              entity: proposal.entityName,
+              id: insertResult.id,
+              revertedToPending: decided.revertedToPending,
+            },
+            "Auto-approve apply failed — seam reverted to pending for admin review",
+          );
+          result.errors++;
         } else {
+          // already_reviewed: a racing decision moved the freshly-inserted row.
+          // It's out of pending but not applied-by-us — count it as queued so
+          // the tick summary stays truthful.
           result.queued++;
         }
       } catch (err) {
+        // Covers both the insert and the decide-seam call (a rethrown
+        // AmbiguousEntityError whose revert succeeded lands here) — name both
+        // stages so an operator isn't pointed only at "insert".
         log.warn(
           { err: err instanceof Error ? err : new Error(String(err)), entity: proposal.entityName },
-          "Failed to insert semantic amendment",
+          "Failed to process semantic amendment (insert or decide)",
         );
         result.errors++;
       }

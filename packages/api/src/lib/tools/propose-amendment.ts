@@ -249,66 +249,58 @@ The amendment object should match the YAML structure for that type (e.g., { name
 
         proposalId = result.id;
 
-        if (result.status === "approved") {
-          // Auto-approve resolved this to `approved` at insert time. `approved`
-          // is terminal for the pending queue, so — exactly like the scheduler
-          // path (semantic/expert/scheduler.ts) — we MUST apply it now, or the
-          // row claims applied while the semantic layer is unchanged and the
-          // diff shown to the user is fiction (#4486). On apply failure, revert
-          // the row to `pending` so the invariant "status='approved' ⇒ applied"
-          // holds and an admin still sees the proposal in the review queue.
+        if (result.autoApproveEligible) {
+          // The row was inserted `pending`; auto-approve now routes through the
+          // single decide seam (#4506) — exactly the path an admin's approve
+          // takes. The seam claims-then-applies with compensation, so an
+          // auto-approve that fails to apply is returned to pending for admin
+          // review, never left approved-but-unapplied (the invariant
+          // "approved means applied" holds by construction). The seam reads the
+          // row's stored `connection_group_id` (set to `applyGroupId` at insert,
+          // #4488), so approval writes the scope the diff was computed against.
+          //
+          // Dynamic import (matching the scheduler + admin approve path): keeps
+          // the seam out of this tool's static graph, so the many partial
+          // `mock.module("…/db/internal")` test stubs that don't exercise the
+          // auto-approve branch don't have to add the export just to link.
+          const { decideAmendment } = await import(
+            "@atlas/api/lib/semantic/expert/decide"
+          );
           try {
-            // Dynamic imports (matching the scheduler + admin approve path):
-            // keeps the apply/revert seam out of this tool's static graph, so
-            // the many partial `mock.module("…/db/internal")` test stubs that
-            // don't exercise the auto-approve branch don't have to add the
-            // export just to link.
-            const { applyAmendmentFromPayload } = await import(
-              "@atlas/api/lib/semantic/expert/apply"
-            );
-            await applyAmendmentFromPayload({
+            const decided = await decideAmendment({
+              id: proposalId,
               orgId,
-              sourceEntity: entityName,
-              // Thread the SAME group the baseline was resolved from (the
-              // resolved row's own `connection_group_id`) so approval writes
-              // the scope the diff was computed against — never the flat/NULL
-              // default for an org/group-scoped entity (#4488).
-              connectionGroupId: applyGroupId,
-              // `rawPayload` is typed `unknown`, so the AmendmentPayload passes
-              // through directly (matches the admin approve call sites).
-              rawPayload: payload,
+              decision: "approved",
+              reviewedBy: "auto-approve",
               requestId: getRequestContext()?.requestId ?? `propose-${Date.now()}`,
-              label: proposalId,
             });
-            status = "auto_approved";
-          } catch (applyErr) {
-            // Surface the failure: revert the row so it never lingers as
-            // `approved`-but-unapplied, and log — never swallow.
-            const { revertAmendmentToPending } = await import(
-              "@atlas/api/lib/db/internal"
-            );
-            const reverted = await revertAmendmentToPending(proposalId).catch(
-              (revertErr: unknown) => {
-                log.error(
-                  {
-                    err: revertErr instanceof Error ? revertErr.message : String(revertErr),
-                    proposalId,
-                    entityName,
-                  },
-                  "Failed to revert auto-approved amendment to pending after apply failure — row may remain approved-but-unapplied",
-                );
-                return false;
-              },
-            );
+            status = decided.outcome === "approved" ? "auto_approved" : "queued";
+            if (decided.outcome === "apply_failed") {
+              // The seam already reverted the row to pending — surface, never swallow.
+              log.warn(
+                {
+                  err: decided.reason,
+                  entityName,
+                  amendmentType,
+                  proposalId,
+                  revertedToPending: decided.revertedToPending,
+                },
+                "Auto-approve apply failed — seam reverted to pending for admin review",
+              );
+            }
+          } catch (decideErr) {
+            // decideAmendment only THROWS for a cross-group AmbiguousEntityError
+            // whose revert succeeded — the row is back in the pending queue. The
+            // proposal exists and awaits review, so report it `queued` (parity
+            // with `apply_failed`), never a whole-tool error that hides the row.
             log.warn(
               {
-                err: applyErr instanceof Error ? applyErr.message : String(applyErr),
+                err: decideErr instanceof Error ? decideErr.message : String(decideErr),
                 entityName,
                 amendmentType,
                 proposalId,
-                reverted,
               },
-              "Auto-approved amendment failed to apply — reverted to pending for admin review",
+              "Auto-approve hit cross-group ambiguity — left pending for admin review",
             );
             status = "queued";
           }

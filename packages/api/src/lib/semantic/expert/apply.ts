@@ -142,7 +142,6 @@ export async function applyAmendmentToEntity(
     upsertEntityForGroup,
     createVersion,
     generateChangeSummary,
-    AmbiguousEntityError,
   } = await import("@atlas/api/lib/semantic/entities");
 
   // Apply amendment (same logic as CLI's apply-amendment)
@@ -154,27 +153,27 @@ export async function applyAmendmentToEntity(
   // Upsert entity into its own group scope.
   await upsertEntityForGroup(effectiveOrgId, "entity", result.entityName, newYaml, targetGroupId);
 
-  // Create version snapshot. Tagged errors (AmbiguousEntityError) must
-  // re-throw so the route layer maps them to 409 with `groups`; a generic
-  // warn-log would bury the structural ambiguity that the expert agent
-  // needs the operator to resolve.
-  try {
-    const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName, targetGroupId);
-    if (refreshed) {
-      const changeSummary = await generateChangeSummary(entity.yaml_content, newYaml);
-      const versionSummary = `Expert agent: ${result.rationale}${changeSummary ? ` (${changeSummary})` : ""}`;
-      await createVersion(
-        refreshed.id, effectiveOrgId, "entity", result.entityName, newYaml, versionSummary,
-        "expert-agent", "Semantic Expert Agent",
-      );
-    }
-  } catch (versionErr) {
-    if (versionErr instanceof AmbiguousEntityError) throw versionErr;
-    log.warn(
-      { err: versionErr instanceof Error ? versionErr.message : String(versionErr), requestId, orgId, entity: result.entityName },
-      "Amendment applied but version snapshot failed",
+  // Create the version snapshot. Rollback-ability is PART of the apply
+  // (CONTEXT.md § Semantic improvement — "a snapshot that cannot be taken fails
+  // the apply"): a snapshot failure throws so the caller compensates and returns
+  // the amendment to pending, rather than leaving an applied-but-unrollbackable
+  // change stamped `approved` (#4506). Only the disk-mirror sync below stays
+  // warn-only. (Cross-group `AmbiguousEntityError`s originate earlier, in the
+  // unscoped fallback of `resolveAmendmentBaseline` — not this re-read, which is
+  // always group-scoped, `targetGroupId` never `undefined` — and propagate
+  // unchanged so the route maps them to 409 with `groups`.)
+  const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName, targetGroupId);
+  if (!refreshed) {
+    throw new Error(
+      `Amendment applied to "${result.entityName}" but the entity could not be re-read to snapshot a rollback point — failing the apply so it returns to pending.`,
     );
   }
+  const changeSummary = await generateChangeSummary(entity.yaml_content, newYaml);
+  const versionSummary = `Expert agent: ${result.rationale}${changeSummary ? ` (${changeSummary})` : ""}`;
+  await createVersion(
+    refreshed.id, effectiveOrgId, "entity", result.entityName, newYaml, versionSummary,
+    "expert-agent", "Semantic Expert Agent",
+  );
 
   // Invalidate caches
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");

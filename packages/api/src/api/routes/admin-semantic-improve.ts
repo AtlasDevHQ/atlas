@@ -447,42 +447,43 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
     const { id } = c.req.valid("param");
     const { decision } = c.req.valid("json");
 
-    const { reviewSemanticAmendment } = await import("@atlas/api/lib/db/internal");
+    // The single decide seam (#4506) owns the pending → approved | rejected
+    // transition for every caller. Approve is claim-then-apply: it stamps
+    // `approved` only after a successful apply + version snapshot, and reverts
+    // to pending on failure — so "approved means applied" holds here by
+    // construction, not by this route's discipline. A cross-group
+    // AmbiguousEntityError propagates out and runHandler maps it to 409 with the
+    // group list (the group-picker contract).
+    const { decideAmendment } = await import("@atlas/api/lib/semantic/expert/decide");
+    const result = await decideAmendment({ id, orgId, decision, reviewedBy: "admin", requestId });
 
-    // For approvals, apply YAML first — only update DB status on success
-    if (decision === "approved") {
-      // Peek at the row to get payload before changing status
-      const { getPendingAmendments } = await import("@atlas/api/lib/db/internal");
-      const pending = await getPendingAmendments(orgId);
-      const target = pending.find((r) => r.id === id);
-      if (!target) {
-        return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
-      }
-
-      const payload = target.amendment_payload;
-      if (payload) {
-        const { applyAmendmentFromPayload } = await import("@atlas/api/lib/semantic/expert/apply");
-        // This throws on failure — runHandler maps it to 500 (or 409 for an
-        // AmbiguousEntityError). The shared helper owns the envelope→
-        // AnalysisResult mapping, including extracting the INNER `amendment`
-        // object (the YAML mutation reads `payload.amendment`, not the whole
-        // envelope) and recovering the Connection group (#3284).
-        await applyAmendmentFromPayload({
-          orgId,
-          sourceEntity: target.source_entity,
-          connectionGroupId: target.connection_group_id ?? null,
-          rawPayload: payload,
-          requestId,
-          label: target.id,
-        });
-      }
+    if (result.outcome === "already_reviewed") {
+      // The row was not pending — never existed, or a racing approve/reject
+      // already moved it. Truthful for both, and (crucially) the loser of a
+      // concurrent approve mutated no YAML.
+      return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
     }
 
-    // YAML applied (or rejection) — now update DB status
-    const reviewed = await reviewSemanticAmendment(id, orgId, decision, "admin");
-
-    if (!reviewed) {
-      return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
+    if (result.outcome === "apply_failed") {
+      // The claim was stamped `approved`, the apply failed, and the row was
+      // returned to the pending queue (revertedToPending) so an admin can retry
+      // and see the same failure. Surfacing the apply reason (rather than a bare
+      // generic 500) is deliberate: this route is admin-gated (admin:semantic),
+      // the reason is apply-domain (entity-not-found, missing amendment object,
+      // snapshot failure) with no secrets, and the PRD requires the amendment
+      // return to pending "with a visible reason". `requestId` still correlates
+      // the full context in logs.
+      const requeued = result.revertedToPending
+        ? " It has been returned to the pending queue for review."
+        : " The amendment could not be returned to pending automatically — check its status.";
+      return c.json(
+        {
+          error: "apply_failed",
+          message: `Amendment approved but could not be applied: ${result.reason}.${requeued}`,
+          requestId,
+        },
+        500,
+      );
     }
 
     // Action type reflects the intent, not the route path — an approved
@@ -490,17 +491,17 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
     // fires `improve_reject`.
     logAdminAction({
       actionType:
-        decision === "approved"
+        result.outcome === "approved"
           ? ADMIN_ACTIONS.semantic.improveApply
           : ADMIN_ACTIONS.semantic.improveReject,
       targetType: "semantic",
       targetId: id,
       ipAddress: clientIpFor(c),
-      metadata: { id, decision },
+      metadata: { id, decision: result.outcome },
     });
 
-    log.info({ requestId, orgId, id, decision }, "Amendment reviewed");
-    return c.json({ ok: true, id, decision }, 200);
+    log.info({ requestId, orgId, id, decision: result.outcome }, "Amendment reviewed");
+    return c.json({ ok: true, id, decision: result.outcome }, 200);
   }),
 );
 

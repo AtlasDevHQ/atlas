@@ -29,7 +29,7 @@ void mock.module("fs", () => ({
 // never called (stubbed only to satisfy mock-all-exports for the module graph).
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => false,
-  insertSemanticAmendment: mock(() => Promise.resolve({ id: "unused", status: "queued" })),
+  insertSemanticAmendment: mock(() => Promise.resolve({ outcome: "inserted", id: "unused", autoApproveEligible: false })),
   revertAmendmentToPending: mock(() => Promise.resolve(true)),
 }));
 

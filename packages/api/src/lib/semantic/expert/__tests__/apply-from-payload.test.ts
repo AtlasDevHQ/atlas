@@ -175,4 +175,55 @@ describe("applyAmendmentFromPayload (#3613)", () => {
     ).rejects.toThrow(/Corrupt amendment_payload JSON/);
     expect(upsertEntityForGroup).not.toHaveBeenCalled();
   });
+
+  // ── Rollback-ability is part of the apply (#4506) ──────────────────
+  // A version-snapshot failure must FAIL the apply (throw), so the decide seam
+  // compensates and returns the amendment to pending — never leave an
+  // applied-but-unrollbackable change. These pin the apply.ts coupling directly
+  // (the seam/route tests mock the apply, so only these would catch a
+  // regression that reintroduced the old warn-and-swallow snapshot handling).
+
+  it("fails the apply when the version snapshot cannot be created", async () => {
+    createVersion.mockRejectedValueOnce(new Error("snapshot write failed"));
+
+    await expect(
+      applyAmendmentFromPayload({
+        orgId: "org-1",
+        sourceEntity: "orders",
+        connectionGroupId: null,
+        rawPayload: ENVELOPE,
+        requestId: "req-snap",
+        label: "pat-snap",
+      }),
+    ).rejects.toThrow(/snapshot write failed/);
+
+    // The YAML was upserted (this is a POST-apply snapshot failure), so the
+    // throw is what returns the amendment to pending — not a silent warn.
+    expect(upsertEntityForGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails the apply when the entity cannot be re-read to snapshot a rollback point", async () => {
+    // Baseline read resolves the row; the post-upsert re-read returns null.
+    getEntity.mockResolvedValueOnce({
+      id: "orders-row",
+      connection_group_id: null,
+      yaml_content: "table: orders\ndescription: Orders\n",
+    });
+    getEntity.mockResolvedValueOnce(null);
+
+    await expect(
+      applyAmendmentFromPayload({
+        orgId: "org-1",
+        sourceEntity: "orders",
+        connectionGroupId: null,
+        rawPayload: ENVELOPE,
+        requestId: "req-reread",
+        label: "pat-reread",
+      }),
+    ).rejects.toThrow(/could not be re-read to snapshot a rollback point/);
+
+    expect(upsertEntityForGroup).toHaveBeenCalledTimes(1);
+    // No rollback point was ever taken.
+    expect(createVersion).not.toHaveBeenCalled();
+  });
 });

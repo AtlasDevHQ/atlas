@@ -1572,9 +1572,19 @@ export function getAutoApproveTypes(orgId?: string): Set<string> {
 }
 
 /**
- * Outcome of an amendment insert (#4507). A discriminated union so callers
- * handle all three terminal states explicitly:
- *   - `inserted`       — a new row was queued (or auto-approved at insert).
+ * Outcome of an amendment insert (#4507, #4506). A discriminated union so
+ * callers handle all three terminal states explicitly:
+ *   - `inserted`       — a new row was queued as `pending`. `autoApproveEligible`
+ *                        reports whether the row cleared the confidence
+ *                        threshold AND its type is in the auto-approve set — a
+ *                        decision the caller acts on by routing the row through
+ *                        the single decide seam (`decideAmendment`), never a
+ *                        status the insert stamps. Insert is pending-only so the
+ *                        decide seam is the sole writer of `approved` for the
+ *                        improve-loop callers and "approved means applied" holds
+ *                        by construction (#4506). (The legacy `admin-learned-
+ *                        patterns` route still apply-first-then-flips these rows
+ *                        directly; #4594 folds it in.)
  *   - `already_pending`— an identical change is already pending review; the
  *                        insert converged on that row instead of duplicating.
  *   - `rejected`       — the identity was previously rejected by an admin;
@@ -1582,7 +1592,7 @@ export function getAutoApproveTypes(orgId?: string): Set<string> {
  *                        refused. `id` is the existing rejected row.
  */
 export type InsertSemanticAmendmentResult =
-  | { outcome: "inserted"; id: string; status: "approved" | "pending" }
+  | { outcome: "inserted"; id: string; autoApproveEligible: boolean }
   | { outcome: "already_pending"; id: string }
   | { outcome: "rejected"; id: string };
 
@@ -1642,9 +1652,16 @@ async function findConflictingAmendment(
 }
 
 /**
- * Insert a semantic amendment proposal. Status is "approved" only when confidence
- * meets the threshold AND the amendment type is in the eligible set; otherwise "pending".
- * Unlike insertLearnedPattern (fire-and-forget), this awaits the result.
+ * Insert a semantic amendment proposal. The row is ALWAYS inserted `pending`
+ * (#4506): auto-approval is a decision the caller routes through the single
+ * decide seam (`decideAmendment`), never a status the insert stamps — so for
+ * the improve-loop callers the seam is the sole writer of `approved` and
+ * "approved means applied" holds by construction (the legacy `admin-learned-
+ * patterns` route still writes `approved` directly; #4594). The returned
+ * `autoApproveEligible` reports whether the row cleared the confidence threshold
+ * AND its type is in the auto-approve set; `true` tells the caller to hand the
+ * row to `decideAmendment` immediately. Unlike insertLearnedPattern
+ * (fire-and-forget), this awaits the result.
  *
  * Insert-enforced rejection memory + pending dedup (#4507): before queuing, the
  * amendment's canonical group-scoped identity is checked against the org's
@@ -1727,7 +1744,10 @@ export async function insertSemanticAmendment(amendment: {
 
   const meetsThreshold = amendment.confidence >= threshold;
   const typeEligible = amendmentType !== undefined && allowedTypes.has(amendmentType);
-  const status = meetsThreshold && typeEligible ? "approved" : "pending";
+  // Auto-approve eligibility is REPORTED, never stamped: the row lands `pending`
+  // and an eligible caller hands it to `decideAmendment`, the single writer of
+  // `approved` (#4506).
+  const autoApproveEligible = meetsThreshold && typeEligible;
 
   if (meetsThreshold && !typeEligible) {
     log.debug(
@@ -1741,7 +1761,7 @@ export async function insertSemanticAmendment(amendment: {
        (org_id, pattern_sql, description, source_entity, confidence,
         repetition_count, status, proposed_by, type, amendment_payload,
         connection_group_id)
-     VALUES ($1, $2, $3, $4, $5, 1, $6, 'expert-agent', 'semantic_amendment', $7, $8)
+     VALUES ($1, $2, $3, $4, $5, 1, 'pending', 'expert-agent', 'semantic_amendment', $6, $7)
      RETURNING id`,
     [
       amendment.orgId ?? null,
@@ -1749,7 +1769,6 @@ export async function insertSemanticAmendment(amendment: {
       amendment.description,
       amendment.sourceEntity,
       amendment.confidence,
-      status,
       JSON.stringify(amendment.amendmentPayload),
       amendment.connectionGroupId,
     ],
@@ -1761,27 +1780,29 @@ export async function insertSemanticAmendment(amendment: {
     );
   }
 
-  return { outcome: "inserted", id: rows[0].id, status };
+  return { outcome: "inserted", id: rows[0].id, autoApproveEligible };
 }
 
 /**
- * Revert an auto-approved semantic amendment back to `pending` after its apply
- * failed (#4486). `insertSemanticAmendment` stamps eligible rows `approved` at
- * insert time and both auto-approve paths (the scheduler and the interactive
- * `proposeAmendment` tool) apply immediately afterward. If that apply throws,
- * the row must NOT be left `approved` — `approved` is terminal for the pending
- * queue, so it would leave the invariant "status='approved' ⇒ applied" violated
- * and the proposal invisible to admins. Reverting to `pending` re-enters it into
- * the review queue so an admin can retry (and see the same failure). Returns
- * true when a row was reverted; false when no matching `approved` row exists
- * (already reviewed / not found) or no internal DB is configured.
+ * Compensating revert: return a CLAIMED (status='approved') semantic amendment
+ * to `pending` after its apply failed (#4486, #4506). The single decide seam
+ * (`decideAmendment`) claims a row `approved`, then applies; if the apply throws
+ * (bad payload, snapshot failure, …) the row must NOT be left `approved` —
+ * `approved` is terminal for the pending queue and means "applied", so an
+ * unapplied `approved` row both violates the invariant and hides the proposal
+ * from admins. Reverting re-enters it into the review queue so an admin can
+ * retry (and see the same failure). The claim's `reviewed_by` / `reviewed_at`
+ * stamp is cleared too, so the compensated row reads as genuinely unreviewed
+ * rather than a pending row with a phantom reviewer. Returns true when a row was
+ * reverted; false when no matching `approved` row exists (already reviewed / not
+ * found) or no internal DB is configured.
  */
 export async function revertAmendmentToPending(id: string): Promise<boolean> {
   if (!hasInternalDB()) return false;
 
   const rows = await internalQuery<{ id: string }>(
     `UPDATE learned_patterns
-       SET status = 'pending', updated_at = now()
+       SET status = 'pending', reviewed_by = NULL, reviewed_at = NULL, updated_at = now()
      WHERE id = $1 AND type = 'semantic_amendment' AND status = 'approved'
      RETURNING id`,
     [id],
@@ -1865,12 +1886,31 @@ export async function getPendingAmendments(orgId: string | null): Promise<Pendin
 export type ReviewedAmendmentRow = Record<string, unknown> & {
   id: string;
   source_entity: string;
+  /**
+   * Connection group the amendment targets (ADR-0012, #3284). NULL = the
+   * default (flat `entities/`) group. The decide seam threads this into
+   * `applyAmendmentFromPayload` so a claimed amendment applies to the correct
+   * group's row (#4506).
+   */
+  connection_group_id: string | null;
   amendment_payload: Record<string, unknown> | null;
 };
 
 /**
- * Update a pending semantic amendment's status to approved or rejected.
- * Returns the updated row (with payload) on success, or null if not found / already reviewed.
+ * Atomically transition a pending semantic amendment to `approved` or
+ * `rejected`, returning the row (with payload + group) on success or null when
+ * the row is not pending (not found, or already reviewed / claimed by a racing
+ * caller). The conditional `WHERE … status = 'pending'` makes this the claim
+ * primitive the single decide seam (`decideAmendment`, lib/semantic/expert/
+ * decide.ts) builds on: exactly one concurrent caller wins the transition, so
+ * "approved" cannot be double-stamped and an approve cannot overwrite a reject
+ * (or vice versa) (#4506).
+ *
+ * Callers MUST route through `decideAmendment`, not call this directly — an
+ * `approved` transition here is a CLAIM the seam finalizes only after a
+ * successful apply + version snapshot (reverting to pending on failure), so
+ * "approved means applied" holds by construction.
+ *
  * @throws {Error} If the internal database is not configured or the query fails.
  */
 export async function reviewSemanticAmendment(
@@ -1895,12 +1935,12 @@ export async function reviewSemanticAmendment(
          SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now()
          WHERE id = $3 AND type = 'semantic_amendment' AND status = 'pending'
          AND ${saas ? "org_id = $4" : "(org_id = $4 OR org_id IS NULL)"}
-         RETURNING id, source_entity, amendment_payload`
+         RETURNING id, source_entity, connection_group_id, amendment_payload`
       : `UPDATE learned_patterns
          SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now()
          WHERE id = $3 AND type = 'semantic_amendment' AND status = 'pending'
          AND org_id IS NULL
-         RETURNING id, source_entity, amendment_payload`,
+         RETURNING id, source_entity, connection_group_id, amendment_payload`,
     orgId ? [decision, reviewedBy, id, orgId] : [decision, reviewedBy, id],
   );
 

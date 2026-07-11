@@ -88,12 +88,30 @@ describe("insertSemanticAmendment — clean path (#4507)", () => {
   it("queues a new row keyed on the canonical identity when no conflict exists", async () => {
     const result = await insertSemanticAmendment(baseAmendment);
 
-    expect(result).toEqual({ outcome: "inserted", id: "new-row-id", status: "pending" });
+    // The row is always inserted `pending` now (#4506); auto-approve is a
+    // decision the caller routes through the decide seam, not a stamp. This
+    // amendment's confidence (0.9) is below the default threshold, so it is not
+    // even eligible.
+    expect(result).toEqual({ outcome: "inserted", id: "new-row-id", autoApproveEligible: false });
 
     // The identity is the storage key — no timestamp uniquifier.
     const ins = insertSql();
     expect(ins).toBeDefined();
     expect(ins!.params[1]).toBe("default:orders:add_dimension:region");
+  });
+
+  it("always inserts the row as pending — the decide seam is the only writer of approved (#4506)", async () => {
+    await insertSemanticAmendment(baseAmendment);
+
+    const ins = insertSql();
+    expect(ins).toBeDefined();
+    // `status` is the literal 'pending' in VALUES, never a parameter — insert
+    // can never stamp 'approved', so `decideAmendment` stays the SOLE writer of
+    // approved and "approved means applied" holds by construction. The seven
+    // params are (org, identity, description, entity, confidence, payload,
+    // group) — no `status` param slot.
+    expect(ins!.sql).toContain("'pending', 'expert-agent'");
+    expect(ins!.params).toHaveLength(7);
   });
 
   it("scopes the conflict lookup to the amendment's own org (IS NOT DISTINCT FROM)", async () => {

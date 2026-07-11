@@ -32,9 +32,23 @@ import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
 const mockGetPendingAmendments: Mock<(orgId: string) => Promise<unknown[]>> =
   mock(async () => []);
+// The decide seam (#4506) claims via reviewSemanticAmendment, which now returns
+// the claimed row (with payload + group) or null when the row is not pending.
+type ClaimedRow = {
+  id: string;
+  source_entity: string;
+  connection_group_id: string | null;
+  amendment_payload: Record<string, unknown> | null;
+} | null;
+const claimedRow = (id: string): ClaimedRow => ({
+  id,
+  source_entity: "events",
+  connection_group_id: null,
+  amendment_payload: { amendmentType: "update_description", amendment: { field: "table", description: "text" } },
+});
 const mockReviewSemanticAmendment: Mock<
-  (id: string, orgId: string, decision: string, reviewer: string) => Promise<boolean>
-> = mock(async () => true);
+  (id: string, orgId: string, decision: string, reviewer: string) => Promise<ClaimedRow>
+> = mock(async (id: string) => claimedRow(id));
 
 const mocks = createApiTestMocks({
   authUser: {
@@ -172,7 +186,7 @@ beforeEach(() => {
   mockGetPendingAmendments.mockReset();
   mockGetPendingAmendments.mockImplementation(async () => []);
   mockReviewSemanticAmendment.mockReset();
-  mockReviewSemanticAmendment.mockImplementation(async () => true);
+  mockReviewSemanticAmendment.mockImplementation(async (id: string) => claimedRow(id));
 });
 
 // ---------------------------------------------------------------------------
@@ -277,7 +291,7 @@ describe("POST /api/v1/admin/semantic-improve/amendments/:id/review — audit em
   });
 
   it("does not emit when the amendment is missing (404)", async () => {
-    mockReviewSemanticAmendment.mockImplementation(async () => false);
+    mockReviewSemanticAmendment.mockImplementation(async () => null);
 
     const res = await app.fetch(
       adminRequest(

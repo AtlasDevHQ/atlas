@@ -1,13 +1,16 @@
 /**
- * runExpertSchedulerTick auto-approve invariant (#4486).
+ * runExpertSchedulerTick auto-approve invariant (#4486, #4506).
  *
- * The scheduler stamps eligible proposals `approved` at insert and applies them
- * immediately. This pins the two behaviors the invariant "status='approved' ⇒
- * applied" depends on, so a future edit that drops the apply or the revert ships
- * red instead of green:
- *   - approved + apply succeeds  → autoApproved, row NOT reverted
- *   - approved + apply fails      → row reverted to pending with the insert's id,
- *                                    counted as an error (never left approved)
+ * The scheduler inserts every proposal `pending`, then hands each
+ * auto-approve-eligible row to the single decide seam (`decideAmendment`). It no
+ * longer applies or reverts directly — the seam owns claim-then-apply with
+ * compensation. This pins the tick's mapping of insert + decide outcomes to the
+ * result counters so a future edit that drops the seam call (or mis-maps an
+ * outcome) ships red:
+ *   - eligible + decide approved   → autoApproved
+ *   - eligible + decide apply_failed → errors (the seam already reverted)
+ *   - not eligible                 → queued, decide never called
+ *   - rejected / already_pending    → suppressed at insert, decide never called
  *
  * A separate file from scheduler.test.ts (which only tests the config getters)
  * so the tick's module mocks don't leak into those tests.
@@ -47,21 +50,25 @@ void mock.module("../analyzer", () => ({
   analyzeSemanticLayer: () => proposals,
 }));
 
-const mockApplyAmendmentToEntity: Mock<() => Promise<void>> = mock(() => Promise.resolve());
-void mock.module("../apply", () => ({
-  applyAmendmentToEntity: mockApplyAmendmentToEntity,
+// The single decide seam (#4506): the tick calls it for every eligible row.
+type DecideResult =
+  | { outcome: "approved"; id: string }
+  | { outcome: "rejected"; id: string }
+  | { outcome: "already_reviewed" }
+  | { outcome: "apply_failed"; id: string; reason: string; revertedToPending: boolean };
+const mockDecideAmendment: Mock<(args: Record<string, unknown>) => Promise<DecideResult>> = mock(() =>
+  Promise.resolve({ outcome: "approved", id: "sch-1" }),
+);
+void mock.module("../decide", () => ({
+  decideAmendment: mockDecideAmendment,
 }));
 
-const mockInsertSemanticAmendment: Mock<() => Promise<{ outcome: string; id?: string; status?: string }>> = mock(() =>
-  Promise.resolve({ outcome: "inserted", id: "sch-1", status: "approved" }),
-);
-const mockRevertAmendmentToPending: Mock<(id: string) => Promise<boolean>> = mock(() =>
-  Promise.resolve(true),
-);
+const mockInsertSemanticAmendment: Mock<
+  () => Promise<{ outcome: string; id?: string; autoApproveEligible?: boolean }>
+> = mock(() => Promise.resolve({ outcome: "inserted", id: "sch-1", autoApproveEligible: true }));
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   insertSemanticAmendment: mockInsertSemanticAmendment,
-  revertAmendmentToPending: mockRevertAmendmentToPending,
 }));
 
 void mock.module("@atlas/api/lib/logger", () => ({
@@ -70,75 +77,91 @@ void mock.module("@atlas/api/lib/logger", () => ({
 
 void mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
-  // scheduler.ts now reads this to force-disable on SaaS (#4487); the tick
-  // tests exercise the self-hosted path, so keep it false (not SaaS).
+  // scheduler.ts reads this to force-disable on SaaS (#4487); the tick tests
+  // exercise the self-hosted path, so keep it false (not SaaS).
   isSaasModeForGuard: () => false,
 }));
 
 const { runExpertSchedulerTick } = await import("../scheduler");
 
-describe("runExpertSchedulerTick auto-approve → apply invariant (#4486)", () => {
+describe("runExpertSchedulerTick auto-approve → decide seam (#4486, #4506)", () => {
   beforeEach(() => {
     proposals = [proposal];
-    mockApplyAmendmentToEntity.mockClear();
-    mockApplyAmendmentToEntity.mockResolvedValue(undefined);
+    mockDecideAmendment.mockClear();
+    mockDecideAmendment.mockResolvedValue({ outcome: "approved", id: "sch-1" });
     mockInsertSemanticAmendment.mockClear();
-    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "sch-1", status: "approved" });
-    mockRevertAmendmentToPending.mockClear();
-    mockRevertAmendmentToPending.mockResolvedValue(true);
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "sch-1", autoApproveEligible: true });
   });
 
-  it("applies an auto-approved proposal and does not revert it", async () => {
+  it("routes an eligible proposal through the decide seam and counts it auto-approved", async () => {
     const result = await runExpertSchedulerTick();
 
-    expect(mockApplyAmendmentToEntity).toHaveBeenCalledTimes(1);
-    expect(mockRevertAmendmentToPending).not.toHaveBeenCalled();
+    expect(mockDecideAmendment).toHaveBeenCalledTimes(1);
+    // The seam is asked to APPROVE the freshly-inserted row under the auto
+    // origin — self-hosted global scope.
+    expect(mockDecideAmendment.mock.calls[0][0]).toMatchObject({
+      id: "sch-1",
+      orgId: null,
+      decision: "approved",
+      reviewedBy: "auto-approve",
+    });
     expect(result.autoApproved).toBe(1);
     expect(result.errors).toBe(0);
   });
 
-  it("reverts the row to pending (with the insert id) when apply fails", async () => {
-    mockApplyAmendmentToEntity.mockRejectedValue(new Error("entity not found"));
+  it("counts an errored (apply_failed) decide as an error — the seam owns the revert", async () => {
+    mockDecideAmendment.mockResolvedValue({
+      outcome: "apply_failed",
+      id: "sch-1",
+      reason: "entity not found",
+      revertedToPending: true,
+    });
 
     const result = await runExpertSchedulerTick();
 
-    // The row must not linger `approved`-but-unapplied: revert is called with
-    // the exact id the insert returned.
-    expect(mockRevertAmendmentToPending).toHaveBeenCalledTimes(1);
-    expect(mockRevertAmendmentToPending.mock.calls[0][0]).toBe("sch-1");
+    expect(mockDecideAmendment).toHaveBeenCalledTimes(1);
     expect(result.autoApproved).toBe(0);
     expect(result.errors).toBe(1);
   });
 
-  it("does not apply or revert when the proposal lands pending", async () => {
-    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "sch-2", status: "pending" });
+  it("counts an already_reviewed decide as queued (a racing decision moved the fresh row)", async () => {
+    mockDecideAmendment.mockResolvedValue({ outcome: "already_reviewed" });
 
     const result = await runExpertSchedulerTick();
 
-    expect(mockApplyAmendmentToEntity).not.toHaveBeenCalled();
-    expect(mockRevertAmendmentToPending).not.toHaveBeenCalled();
+    expect(mockDecideAmendment).toHaveBeenCalledTimes(1);
+    expect(result.autoApproved).toBe(0);
+    expect(result.errors).toBe(0);
+    expect(result.queued).toBe(1);
+  });
+
+  it("does not call the seam when the proposal is not auto-approve-eligible", async () => {
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "sch-2", autoApproveEligible: false });
+
+    const result = await runExpertSchedulerTick();
+
+    expect(mockDecideAmendment).not.toHaveBeenCalled();
     expect(result.queued).toBe(1);
     expect(result.errors).toBe(0);
   });
 
-  it("counts a rejected identity as suppressed — no apply, no queue (#4507)", async () => {
+  it("counts a rejected identity as suppressed — no decide, no queue (#4507)", async () => {
     mockInsertSemanticAmendment.mockResolvedValue({ outcome: "rejected", id: "rej-1" });
 
     const result = await runExpertSchedulerTick();
 
-    expect(mockApplyAmendmentToEntity).not.toHaveBeenCalled();
-    expect(mockRevertAmendmentToPending).not.toHaveBeenCalled();
+    expect(mockDecideAmendment).not.toHaveBeenCalled();
     expect(result.rejected).toBe(1);
     expect(result.queued).toBe(0);
     expect(result.errors).toBe(0);
   });
 
-  it("counts an already-pending identity as deduped — no apply, no queue (#4507)", async () => {
+  it("counts an already-pending identity as deduped — no decide, no queue (#4507)", async () => {
     mockInsertSemanticAmendment.mockResolvedValue({ outcome: "already_pending", id: "pend-1" });
 
     const result = await runExpertSchedulerTick();
 
-    expect(mockApplyAmendmentToEntity).not.toHaveBeenCalled();
+    expect(mockDecideAmendment).not.toHaveBeenCalled();
     expect(result.deduped).toBe(1);
     expect(result.queued).toBe(0);
     expect(result.errors).toBe(0);

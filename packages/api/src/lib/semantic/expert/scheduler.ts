@@ -72,8 +72,9 @@ export function getExpertSchedulerIntervalMs(): number {
  * 1. Loads semantic layer entities, glossary, audit patterns, and rejected keys
  * 2. Loads cached profiles from last `atlas init` or `atlas improve` run
  * 3. Runs analysis engine with cached profiles
- * 4. Inserts each proposal (status resolved by auto-approve threshold)
- * 5. For proposals marked approved, applies the amendment to YAML
+ * 4. Inserts each proposal `pending`; the insert reports auto-approve eligibility
+ * 5. Routes eligible proposals through the decide seam (#4506) — claim →
+ *    apply + version snapshot → stamp `approved`
  */
 export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
   const result: ExpertTickResult = {
@@ -121,9 +122,10 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
       return result;
     }
 
-    // 4. Insert proposals — insertSemanticAmendment resolves status (approved/pending) based on threshold
-    const { insertSemanticAmendment, revertAmendmentToPending } =
-      await import("@atlas/api/lib/db/internal");
+    // 4. Insert proposals — every row lands `pending`; insertSemanticAmendment
+    //    reports auto-approve ELIGIBILITY and the decide seam (#4506) is the
+    //    only path to `approved`.
+    const { insertSemanticAmendment } = await import("@atlas/api/lib/db/internal");
 
     // 5. Process each proposal
     for (const proposal of proposals) {
@@ -160,43 +162,46 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
           continue;
         }
 
-        const { id, status } = insertResult;
+        const { id, autoApprove } = insertResult;
 
-        if (status === "approved") {
-          // Auto-apply
+        if (autoApprove) {
+          // Route the auto-approve through the decide seam: claim-then-apply,
+          // `approved` stamped only after a successful apply + version
+          // snapshot. On apply failure the seam has already compensated the
+          // row back to `pending` with a visible reason — the invariant
+          // "status='approved' ⇒ applied" holds by construction (#4486, #4506).
           try {
-            const { applyAmendmentToEntity } = await import("./apply");
-            await applyAmendmentToEntity(null, proposal, `scheduled-${Date.now()}`);
-            result.autoApproved++;
-            log.info(
-              { entity: proposal.entityName, type: proposal.amendmentType, confidence: proposal.confidence },
-              "Auto-approved and applied semantic amendment",
-            );
+            const { decideAmendment } = await import("./decide");
+            const outcome = await decideAmendment({
+              id,
+              orgId: null,
+              decision: "approved",
+              reviewedBy: "expert-scheduler",
+              requestId: `scheduled-${Date.now()}`,
+            });
+            if (outcome.kind === "approved") {
+              result.autoApproved++;
+              log.info(
+                { entity: proposal.entityName, type: proposal.amendmentType, confidence: proposal.confidence },
+                "Auto-approved and applied semantic amendment",
+              );
+            } else {
+              // A concurrent decision beat the scheduler to its own insert
+              // (admin reviewing the queue mid-tick) — nothing to do here.
+              result.queued++;
+              log.info(
+                { entity: proposal.entityName, id, outcome: outcome.kind },
+                "Auto-approve skipped — amendment was already decided concurrently",
+              );
+            }
           } catch (applyErr) {
-            // Revert the row so it never lingers as `approved`-but-unapplied —
-            // the invariant "status='approved' ⇒ applied" must hold on this
-            // path too (#4486). Reverting re-queues it for admin review.
-            const reverted = await revertAmendmentToPending(id).catch(
-              (revertErr: unknown) => {
-                log.warn(
-                  {
-                    err: revertErr instanceof Error ? revertErr : new Error(String(revertErr)),
-                    entity: proposal.entityName,
-                    id,
-                  },
-                  "Failed to revert auto-approved amendment to pending after apply failure — row may remain approved-but-unapplied",
-                );
-                return false;
-              },
-            );
             log.warn(
               {
                 err: applyErr instanceof Error ? applyErr : new Error(String(applyErr)),
                 entity: proposal.entityName,
                 id,
-                reverted,
               },
-              "Failed to apply auto-approved amendment — reverted to pending for admin review",
+              "Failed to apply auto-approved amendment — the decide seam returned it to pending for admin review",
             );
             result.errors++;
           }

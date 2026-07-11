@@ -25,12 +25,11 @@ void mock.module("fs", () => ({
   readFileSync: () => fileContents,
 }));
 
-// No internal DB → the insert/apply seam is skipped entirely; the resolver is
-// never called (stubbed only to satisfy mock-all-exports for the module graph).
+// No internal DB → the insert + decide seam is skipped entirely; the resolver
+// is never called (stubbed only to satisfy mock-all-exports for the module graph).
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => false,
-  insertSemanticAmendment: mock(() => Promise.resolve({ id: "unused", status: "queued" })),
-  revertAmendmentToPending: mock(() => Promise.resolve(true)),
+  insertSemanticAmendment: mock(() => Promise.resolve({ id: "unused", autoApprove: false })),
 }));
 
 const stubApplyAmendment = (entity: Record<string, unknown>): Record<string, unknown> => {

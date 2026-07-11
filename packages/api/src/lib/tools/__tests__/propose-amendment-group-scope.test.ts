@@ -79,19 +79,44 @@ void mock.module("@atlas/api/lib/semantic/sync", () => ({ syncEntityToDisk }));
 // Arg shape mirrors the REAL (now required, #4498) `connectionGroupId` field —
 // `string | null`, not optional — so a caller regressing to omit it is visible
 // here as `undefined` in the persisted-args assertions.
-const insertSemanticAmendment = mock(
-  (_args: {
-    sourceEntity: string;
-    amendmentPayload: AmendmentPayload;
-    connectionGroupId: string | null;
-  }) => Promise.resolve({ id: "prop-1", status: "approved" }),
-);
-const revertAmendmentToPending = mock(() => Promise.resolve(true));
+//
+// The auto-approve path now runs the REAL decide seam (#4506), whose DB
+// surface is the claim helpers below. The stateful claim mock hands the seam
+// back the LAST INSERTED row — so the end-to-end assertion "the apply writes
+// exactly what propose persisted" runs through the seam's stored-payload
+// apply, not a caller-side copy.
+interface InsertArgs {
+  sourceEntity: string;
+  amendmentPayload: AmendmentPayload;
+  connectionGroupId: string | null;
+}
+let insertAutoApprove = true;
+let lastInserted: { id: string; args: InsertArgs } | null = null;
+const insertSemanticAmendment = mock((args: InsertArgs) => {
+  lastInserted = { id: "prop-1", args };
+  return Promise.resolve({ id: "prop-1", autoApprove: insertAutoApprove });
+});
+const claimPendingAmendment = mock(async (id: string) => {
+  if (!lastInserted || lastInserted.id !== id) return null;
+  return {
+    id,
+    source_entity: lastInserted.args.sourceEntity,
+    connection_group_id: lastInserted.args.connectionGroupId,
+    amendment_payload: lastInserted.args.amendmentPayload as unknown as Record<string, unknown>,
+    claimed_at: "2026-07-10T00:00:00+00",
+  };
+});
+const stampClaimedAmendmentApproved = mock(async (_id: string, _claimedAt: string) => true);
+const releaseClaimedAmendment = mock(async (_id: string, _claimedAt: string, _reason: string) => true);
+const rejectPendingAmendment = mock(async () => false);
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   insertSemanticAmendment,
-  revertAmendmentToPending,
+  claimPendingAmendment,
+  stampClaimedAmendmentApproved,
+  releaseClaimedAmendment,
+  rejectPendingAmendment,
 }));
 
 // Request context: the org + Connection group the turn resolves entities
@@ -138,13 +163,16 @@ async function run(): Promise<ProposeResult> {
 describe("proposeAmendment baseline resolution is org/group-aware (#4488)", () => {
   beforeEach(() => {
     activeGroup = "eu_prod";
+    insertAutoApprove = true;
+    lastInserted = null;
     getEntity.mockClear();
     upsertEntityForGroup.mockClear();
     createVersion.mockClear();
     syncEntityToDisk.mockClear();
     insertSemanticAmendment.mockClear();
-    insertSemanticAmendment.mockResolvedValue({ id: "prop-1", status: "approved" });
-    revertAmendmentToPending.mockClear();
+    claimPendingAmendment.mockClear();
+    stampClaimedAmendmentApproved.mockClear();
+    releaseClaimedAmendment.mockClear();
   });
 
   it("reads the baseline from the DB row scoped to the request's group, not the flat root", async () => {
@@ -194,12 +222,14 @@ describe("proposeAmendment baseline resolution is org/group-aware (#4488)", () =
   it("threads the resolved group through to the apply payload envelope", async () => {
     await run();
     // The persisted amendment carries the entity name; the apply targeted the
-    // resolved group (asserted via upsert above). The proposal is auto-applied,
-    // never left approved-but-unapplied.
+    // resolved group (asserted via upsert above). The proposal is auto-applied
+    // via the seam (claim → apply → stamp), never left approved-but-unapplied
+    // and never compensated on this happy path.
     const persisted = insertSemanticAmendment.mock.calls[0][0];
     expect(persisted.sourceEntity).toBe("orders");
     expect(persisted.amendmentPayload.amendment).toMatchObject({ name: "region" });
-    expect(revertAmendmentToPending).not.toHaveBeenCalled();
+    expect(stampClaimedAmendmentApproved).toHaveBeenCalledTimes(1);
+    expect(releaseClaimedAmendment).not.toHaveBeenCalled();
   });
 
   it("persists the resolved applyGroupId as the row's connection_group_id (#4498)", async () => {
@@ -215,7 +245,7 @@ describe("proposeAmendment baseline resolution is org/group-aware (#4488)", () =
   it("human-review approve of the persisted row resolves the same group-scoped row, no unscoped fallback (#4498)", async () => {
     // Queue the proposal instead of auto-approving, so the ONLY apply in this
     // test is the simulated human review below.
-    insertSemanticAmendment.mockResolvedValue({ id: "prop-1", status: "pending" });
+    insertAutoApprove = false;
     const result = await run();
     expect(result.error).toBeUndefined();
     expect(result.status).toBe("queued");
@@ -264,7 +294,7 @@ describe("proposeAmendment baseline resolution is org/group-aware (#4488)", () =
     // the unscoped fallback — and the persisted group must be the ROW's own
     // scope (NULL), not the request's label.
     activeGroup = null;
-    insertSemanticAmendment.mockResolvedValue({ id: "prop-2", status: "pending" });
+    insertAutoApprove = false;
     const result = await run();
     expect(result.error).toBeUndefined();
     const persisted = insertSemanticAmendment.mock.calls[0][0];

@@ -1574,7 +1574,12 @@ export function getAutoApproveTypes(orgId?: string): Set<string> {
 /**
  * Outcome of an amendment insert (#4507). A discriminated union so callers
  * handle all three terminal states explicitly:
- *   - `inserted`       — a new row was queued (or auto-approved at insert).
+ *   - `inserted`       — a new row was queued `pending`. `autoApprove` reports
+ *                        auto-approve ELIGIBILITY (#4506): the decide seam
+ *                        (`lib/semantic/expert/decide.ts`) is the ONLY writer
+ *                        of `approved`, so the caller routes eligible rows
+ *                        through `decideAmendment` instead of trusting an
+ *                        insert-time stamp.
  *   - `already_pending`— an identical change is already pending review; the
  *                        insert converged on that row instead of duplicating.
  *   - `rejected`       — the identity was previously rejected by an admin;
@@ -1582,7 +1587,7 @@ export function getAutoApproveTypes(orgId?: string): Set<string> {
  *                        refused. `id` is the existing rejected row.
  */
 export type InsertSemanticAmendmentResult =
-  | { outcome: "inserted"; id: string; status: "approved" | "pending" }
+  | { outcome: "inserted"; id: string; autoApprove: boolean }
   | { outcome: "already_pending"; id: string }
   | { outcome: "rejected"; id: string };
 
@@ -1642,8 +1647,9 @@ async function findConflictingAmendment(
 }
 
 /**
- * Insert a semantic amendment proposal. Status is "approved" only when confidence
- * meets the threshold AND the amendment type is in the eligible set; otherwise "pending".
+ * Insert a semantic amendment proposal. Every row is inserted `pending` — the
+ * decide seam is the only writer of `approved` (#4506); eligibility is
+ * reported via `autoApprove` on the `inserted` outcome.
  * Unlike insertLearnedPattern (fire-and-forget), this awaits the result.
  *
  * Insert-enforced rejection memory + pending dedup (#4507): before queuing, the
@@ -1745,7 +1751,7 @@ export async function insertSemanticAmendment(amendment: {
 
   const meetsThreshold = amendment.confidence >= threshold;
   const typeEligible = amendmentType !== undefined && allowedTypes.has(amendmentType);
-  const status = meetsThreshold && typeEligible ? "approved" : "pending";
+  const autoApprove = meetsThreshold && typeEligible;
 
   if (meetsThreshold && !typeEligible) {
     log.debug(
@@ -1759,7 +1765,7 @@ export async function insertSemanticAmendment(amendment: {
        (org_id, pattern_sql, description, source_entity, confidence,
         repetition_count, status, proposed_by, type, amendment_payload,
         connection_group_id)
-     VALUES ($1, $2, $3, $4, $5, 1, $6, 'expert-agent', 'semantic_amendment', $7, $8)
+     VALUES ($1, $2, $3, $4, $5, 1, 'pending', 'expert-agent', 'semantic_amendment', $6, $7)
      RETURNING id`,
     [
       amendment.orgId ?? null,
@@ -1767,7 +1773,6 @@ export async function insertSemanticAmendment(amendment: {
       amendment.description,
       amendment.sourceEntity,
       amendment.confidence,
-      status,
       JSON.stringify(amendment.amendmentPayload),
       amendment.connectionGroupId,
     ],
@@ -1779,30 +1784,190 @@ export async function insertSemanticAmendment(amendment: {
     );
   }
 
-  return { outcome: "inserted", id: rows[0].id, status };
+  return { outcome: "inserted", id: rows[0].id, autoApprove };
+}
+
+// ---------------------------------------------------------------------------
+// Decide-seam claim helpers (#4506)
+//
+// The decide seam (`lib/semantic/expert/decide.ts`) owns the semantic
+// Amendment `pending → approved | rejected` transition with claim-then-apply
+// ordering. These four helpers are its ONLY DB surface — no other code path
+// may write `status = 'approved'` on a `semantic_amendment` row:
+//
+//   claimPendingAmendment      pending → applying   (atomic conditional claim)
+//   stampClaimedAmendmentApproved  applying → approved  (only after apply OK)
+//   releaseClaimedAmendment    applying → pending   (compensation, w/ reason)
+//   rejectPendingAmendment     pending → rejected   (atomic, no apply)
+//
+// `applying` is a transient claim state, not a wire status: the review-queue
+// reads treat a claim older than AMENDMENT_CLAIM_STALE_MINUTES as abandoned
+// (process died mid-apply) so the row resurfaces and the claim can be retaken.
+//
+// Ownership is enforced by the claim token (`claimed_at` = the reviewed_at
+// the claim stamped): stamp/release match only THIS claim, so a decision that
+// outlives the stale window observes "claim lost" instead of overwriting a
+// takeover. The one deliberately qualified guarantee: reject/claim treat a
+// STALE claim as claimable (a crashed process must not strand rows), so an
+// apply still alive past the window can land YAML after a takeover decided
+// the row — bounded to >stale-window applies, surfaced via decide.ts logs,
+// idempotent and convergent on the next approve.
+// ---------------------------------------------------------------------------
+
+/**
+ * Minutes after which an `applying` claim is considered abandoned. Applies run
+ * in seconds; a claim this old means the process died between claim and
+ * stamp/release. Stale claims resurface in the pending queue and are
+ * re-claimable, so a crash can never strand a row invisibly.
+ */
+export const AMENDMENT_CLAIM_STALE_MINUTES = 10;
+
+/** Shared WHERE arm: a row is claimable when pending or holding a stale claim. */
+const CLAIMABLE_STATUS_SQL = `(status = 'pending' OR (status = 'applying' AND updated_at < now() - interval '${AMENDMENT_CLAIM_STALE_MINUTES} minutes'))`;
+
+/** Row returned by claimPendingAmendment on a successful claim. */
+export type ClaimedAmendmentRow = Record<string, unknown> & {
+  id: string;
+  source_entity: string;
+  connection_group_id: string | null;
+  amendment_payload: Record<string, unknown> | null;
+  /**
+   * Claim token: the `reviewed_at` this claim stamped, as text. Stamp/release
+   * condition on it so an apply that outlived the stale window can never
+   * overwrite a takeover's live claim — ownership is enforced by the row, not
+   * by timing (#4506).
+   */
+  claimed_at: string;
+};
+
+/**
+ * Atomically claim a pending semantic amendment for an approve-apply (#4506).
+ * Conditional update `pending → applying`: exactly one concurrent caller wins;
+ * losers get `null` and must report the row as already under review. Also
+ * retakes claims stale past {@link AMENDMENT_CLAIM_STALE_MINUTES} (crashed
+ * process). Clears `last_apply_error` so a retried approve starts clean.
+ * Returns the claim token (`claimed_at`) that stamp/release require.
+ *
+ * SaaS scoping mirrors the pending reads (#4487): NULL-org rows are
+ * unclaimable from any workspace, and the org-less path is refused outright.
+ *
+ * @throws {Error} If the internal database is not configured.
+ */
+export async function claimPendingAmendment(
+  id: string,
+  orgId: string | null,
+  claimedBy: string,
+): Promise<ClaimedAmendmentRow | null> {
+  if (!hasInternalDB()) {
+    throw new Error("Internal database is not configured. Amendment review requires DATABASE_URL.");
+  }
+
+  // Tenant scoping lives in the shared helper (#4487, #4510) — the org-less
+  // SaaS path withholds (null → "not pending" at the seam).
+  const scope = amendmentOrgScope(orgId, "$3");
+  if (scope.withhold) return null;
+
+  const rows = await internalQuery<ClaimedAmendmentRow>(
+    `UPDATE learned_patterns
+       SET status = 'applying', reviewed_by = $1, reviewed_at = now(),
+           updated_at = now(), last_apply_error = NULL
+     WHERE id = $2 AND type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
+     AND ${scope.clause}
+     RETURNING id, source_entity, connection_group_id, amendment_payload, reviewed_at::text AS claimed_at`,
+    orgId ? [claimedBy, id, orgId] : [claimedBy, id],
+  );
+
+  return rows[0] ?? null;
 }
 
 /**
- * Revert an auto-approved semantic amendment back to `pending` after its apply
- * failed (#4486). `insertSemanticAmendment` stamps eligible rows `approved` at
- * insert time and both auto-approve paths (the scheduler and the interactive
- * `proposeAmendment` tool) apply immediately afterward. If that apply throws,
- * the row must NOT be left `approved` — `approved` is terminal for the pending
- * queue, so it would leave the invariant "status='approved' ⇒ applied" violated
- * and the proposal invisible to admins. Reverting to `pending` re-enters it into
- * the review queue so an admin can retry (and see the same failure). Returns
- * true when a row was reverted; false when no matching `approved` row exists
- * (already reviewed / not found) or no internal DB is configured.
+ * Stamp a claimed amendment `approved` — called by the decide seam ONLY after
+ * a successful apply + version snapshot (#4506). Conditional on THIS claim
+ * (`status = 'applying' AND reviewed_at = claimedAt`), so an apply that
+ * outlived the stale window can never stamp over a takeover's live claim.
+ * Returns false when the claim is no longer held by this claimant.
  */
-export async function revertAmendmentToPending(id: string): Promise<boolean> {
+export async function stampClaimedAmendmentApproved(
+  id: string,
+  claimedAt: string,
+): Promise<boolean> {
   if (!hasInternalDB()) return false;
 
   const rows = await internalQuery<{ id: string }>(
     `UPDATE learned_patterns
-       SET status = 'pending', updated_at = now()
-     WHERE id = $1 AND type = 'semantic_amendment' AND status = 'approved'
+       SET status = 'approved', last_apply_error = NULL,
+           reviewed_at = now(), updated_at = now()
+     WHERE id = $1 AND type = 'semantic_amendment' AND status = 'applying'
+     AND reviewed_at = $2::timestamptz
      RETURNING id`,
-    [id],
+    [id, claimedAt],
+  );
+
+  return rows.length > 0;
+}
+
+/**
+ * Compensation: return a claimed amendment to `pending` after its apply failed
+ * (#4506), recording the failure in `last_apply_error` so the review queue
+ * shows WHY the row bounced. Conditional on THIS claim (see
+ * {@link stampClaimedAmendmentApproved}) and clears the reviewer fields the
+ * claim stamped. Returns false when the claim is no longer held by this
+ * claimant (stale-claim takeover).
+ */
+export async function releaseClaimedAmendment(
+  id: string,
+  claimedAt: string,
+  reason: string,
+): Promise<boolean> {
+  if (!hasInternalDB()) return false;
+
+  const rows = await internalQuery<{ id: string }>(
+    `UPDATE learned_patterns
+       SET status = 'pending', reviewed_by = NULL, reviewed_at = NULL,
+           last_apply_error = $3, updated_at = now()
+     WHERE id = $1 AND type = 'semantic_amendment' AND status = 'applying'
+     AND reviewed_at = $2::timestamptz
+     RETURNING id`,
+    [id, claimedAt, reason.slice(0, 2000)],
+  );
+
+  return rows.length > 0;
+}
+
+/**
+ * Atomically reject a pending semantic amendment (#4506). Conditional on
+ * `pending` (or a STALE claim), so a reject cannot stamp an applied change as
+ * rejected: once an approve has claimed (within the stale window) or stamped
+ * the row, the reject matches zero rows and the caller reports "already
+ * reviewed". (Qualified for >stale-window applies — see the block comment
+ * above.) Rejection never touches the semantic layer, so no claim state is
+ * needed.
+ *
+ * SaaS scoping mirrors the pending reads (#4487).
+ *
+ * @throws {Error} If the internal database is not configured.
+ */
+export async function rejectPendingAmendment(
+  id: string,
+  orgId: string | null,
+  rejectedBy: string,
+): Promise<boolean> {
+  if (!hasInternalDB()) {
+    throw new Error("Internal database is not configured. Amendment review requires DATABASE_URL.");
+  }
+
+  // Tenant scoping lives in the shared helper (#4487, #4510) — the org-less
+  // SaaS path withholds (false → "not pending" at the seam).
+  const scope = amendmentOrgScope(orgId, "$3");
+  if (scope.withhold) return false;
+
+  const rows = await internalQuery<{ id: string }>(
+    `UPDATE learned_patterns
+       SET status = 'rejected', reviewed_by = $1, reviewed_at = now(), updated_at = now()
+     WHERE id = $2 AND type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
+     AND ${scope.clause}
+     RETURNING id`,
+    orgId ? [rejectedBy, id, orgId] : [rejectedBy, id],
   );
 
   return rows.length > 0;
@@ -1817,9 +1982,10 @@ export type AmendmentOrgScope = { withhold: true } | { withhold: false; clause: 
 /**
  * Shared org-scope filter for the semantic-amendment readers — the ONE home for
  * the SaaS-vs-self-hosted `org_id` conditional (#4487, #4510). Every amendment
- * reader (count, list, review) MUST derive its predicate from here rather than
- * inlining the ternary; `semantic-amendment-saas-scoping.test.ts` pins the
- * reader set and fails if a new reader bypasses this helper.
+ * reader (count, list, and the decide seam's claim/reject, #4506) MUST derive
+ * its predicate from here rather than inlining the ternary;
+ * `semantic-amendment-saas-scoping.test.ts` pins the reader set and fails if a
+ * new reader bypasses this helper.
  *
  *   - SaaS + workspace        → `org_id = <ph>` — a NULL-owner ("global scope")
  *                               row never surfaces in a tenant workspace (the
@@ -1864,7 +2030,7 @@ export async function getPendingAmendmentCount(orgId: string | null): Promise<nu
 
   const rows = await internalQuery<{ count: string }>(
     `SELECT COUNT(*)::text AS count FROM learned_patterns
-       WHERE type = 'semantic_amendment' AND status = 'pending'
+       WHERE type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
        AND ${scope.clause}`,
     orgId ? [orgId] : [],
   );
@@ -1885,12 +2051,20 @@ export type PendingAmendmentRow = Record<string, unknown> & {
   description: string | null;
   confidence: number;
   amendment_payload: Record<string, unknown> | null;
+  /**
+   * Reason the last approve-apply failed (#4506) — set when the decide seam
+   * compensated the row back to pending, cleared on the next claim. Surfaced
+   * in the review queue so a bounced approval is never a silent re-listing.
+   */
+  last_apply_error: string | null;
   created_at: string;
 };
 
 /**
  * List pending semantic amendment proposals for an org, newest first.
- * Returns [] when no internal DB is available.
+ * Includes rows holding a stale `applying` claim (crashed mid-apply, #4506)
+ * so no amendment can be stranded invisibly. Returns [] when no internal DB
+ * is available.
  */
 export async function getPendingAmendments(orgId: string | null): Promise<PendingAmendmentRow[]> {
   if (!hasInternalDB()) return [];
@@ -1899,55 +2073,15 @@ export async function getPendingAmendments(orgId: string | null): Promise<Pendin
   if (scope.withhold) return [];
 
   return internalQuery<PendingAmendmentRow>(
-    `SELECT id, source_entity, connection_group_id, description, confidence, amendment_payload, created_at::text
+    `SELECT id, source_entity, connection_group_id, description, confidence, amendment_payload, last_apply_error, created_at::text
        FROM learned_patterns
-       WHERE type = 'semantic_amendment' AND status = 'pending'
+       WHERE type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
        AND ${scope.clause}
        ORDER BY created_at DESC`,
     orgId ? [orgId] : [],
   );
 }
 
-/** Row returned by reviewSemanticAmendment on success. */
-export type ReviewedAmendmentRow = Record<string, unknown> & {
-  id: string;
-  source_entity: string;
-  amendment_payload: Record<string, unknown> | null;
-};
-
-/**
- * Update a pending semantic amendment's status to approved or rejected.
- * Returns the updated row (with payload) on success, or null if not found / already reviewed.
- * @throws {Error} If the internal database is not configured or the query fails.
- */
-export async function reviewSemanticAmendment(
-  id: string,
-  orgId: string | null,
-  decision: "approved" | "rejected",
-  reviewedBy: string,
-): Promise<ReviewedAmendmentRow | null> {
-  if (!hasInternalDB()) {
-    throw new Error("Internal database is not configured. Amendment review requires DATABASE_URL.");
-  }
-
-  // SaaS: a NULL-org row is unreviewable from any workspace (#4487) — the
-  // org-less path withholds (returns null → 404 at the route) and the
-  // `OR org_id IS NULL` arm is dropped so no tenant admin can approve/reject a
-  // global row. All of that lives in `amendmentOrgScope`.
-  const scope = amendmentOrgScope(orgId, "$4");
-  if (scope.withhold) return null;
-
-  const rows = await internalQuery<ReviewedAmendmentRow>(
-    `UPDATE learned_patterns
-       SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now()
-       WHERE id = $3 AND type = 'semantic_amendment' AND status = 'pending'
-       AND ${scope.clause}
-       RETURNING id, source_entity, amendment_payload`,
-    orgId ? [decision, reviewedBy, id, orgId] : [decision, reviewedBy, id],
-  );
-
-  return rows[0] ?? null;
-}
 
 /**
  * Increment repetition_count by 1 and increase confidence by 0.1 (capped at 1.0).

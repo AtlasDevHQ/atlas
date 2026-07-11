@@ -648,6 +648,10 @@ export const learnedPatterns = pgTable(
     // so decay only demotes machine-promoted rows, never human approvals, and
     // so the admin UI can mark them visually distinct.
     autoPromoted: boolean("auto_promoted").notNull().default(false),
+    // Decide seam (#4506): reason the last approve-apply failed, set when the
+    // seam compensates the row back to pending (claim-then-apply). NULL once a
+    // claim or a successful apply clears it. Surfaced in the pending queue.
+    lastApplyError: text("last_apply_error"),
   },
   (t) => [
     index("idx_learned_patterns_org_status").on(t.orgId, t.status),

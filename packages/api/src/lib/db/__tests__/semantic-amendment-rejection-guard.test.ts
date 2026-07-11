@@ -88,7 +88,9 @@ describe("insertSemanticAmendment — clean path (#4507)", () => {
   it("queues a new row keyed on the canonical identity when no conflict exists", async () => {
     const result = await insertSemanticAmendment(baseAmendment);
 
-    expect(result).toEqual({ outcome: "inserted", id: "new-row-id", status: "pending" });
+    // The `inserted` arm reports auto-approve ELIGIBILITY (#4506) — every row
+    // lands `pending`; the decide seam is the only writer of `approved`.
+    expect(result).toEqual({ outcome: "inserted", id: "new-row-id", autoApprove: false });
 
     // The identity is the storage key — no timestamp uniquifier.
     const ins = insertSql();

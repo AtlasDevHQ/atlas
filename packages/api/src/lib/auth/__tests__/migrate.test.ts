@@ -479,6 +479,11 @@ describe("migrateAuthTables", () => {
             // conversations to web chat (phase 1 of the notebook-surface
             // retirement). Atlas-internal table, runs in every auth mode.
             { name: "0169_convert_notebook_conversations.sql" },
+            // 0170 (#4506) — learned_patterns.last_apply_error, the visible
+            // reason when the decide seam compensates a failed approve back to
+            // pending. Atlas-internal column, no FK to a Better Auth table, so
+            // it runs in every auth mode.
+            { name: "0170_learned_patterns_last_apply_error.sql" },
           ],
         };
       }

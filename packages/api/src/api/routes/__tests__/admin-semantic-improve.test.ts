@@ -16,6 +16,11 @@ let mockHasInternalDB = true;
 
 // Mutable fixtures for the DB-backed amendment review path
 // (POST /amendments/:id/review) — the route the improve UI actually calls.
+// The route delegates to the REAL decide seam
+// (lib/semantic/expert/decide.ts, #4506); these stateful claim-helper mocks
+// model the DB's atomic conditional updates, so the race tests below exercise
+// the seam's actual ordering (claim → apply → stamp) rather than a re-mocked
+// approximation of it.
 interface MockAmendmentRow {
   id: string;
   source_entity: string;
@@ -26,12 +31,16 @@ interface MockAmendmentRow {
   created_at: string;
 }
 let mockPendingAmendments: MockAmendmentRow[] = [];
-let reviewedCalls: Array<{ id: string; orgId: string | null; decision: string }> = [];
+/** Rows currently holding an `applying` claim, by id. */
+let claimedRows = new Map<string, MockAmendmentRow>();
+let rejectCalls: Array<{ id: string; orgId: string | null }> = [];
+let releaseCalls: Array<{ id: string; reason: string }> = [];
+let stampCalls: string[] = [];
 let applyPayloadCalls: Array<Record<string, unknown>> = [];
-// When true, the mocked YAML apply rejects — models the approve branch's
-// "apply YAML first, only flip the DB status on success" invariant.
+// When true, the mocked YAML apply rejects — models the seam's compensation
+// path ("approved is stamped only after a successful apply").
 let applyShouldThrow = false;
-// Shared sequence log: proves the route applies YAML *before* flipping the row.
+// Shared sequence log: proves claim → apply → stamp ordering.
 let callOrder: string[] = [];
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
@@ -39,36 +48,74 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: async () => [],
   internalExecute: async () => {},
   setWorkspaceRegion: async () => {},
-  insertSemanticAmendment: async () => "mock-amendment-id",
+  insertSemanticAmendment: async () => ({ id: "mock-amendment-id", autoApprove: false }),
   getPendingAmendmentCount: async () => 0,
   getPendingAmendments: async () => mockPendingAmendments,
-  reviewSemanticAmendment: async (
-    id: string,
-    orgId: string | null,
-    decision: "approved" | "rejected",
-  ) => {
-    callOrder.push("review");
-    reviewedCalls.push({ id, orgId, decision });
-    const row = mockPendingAmendments.find((r) => r.id === id);
-    return row
-      ? { id: row.id, source_entity: row.source_entity, amendment_payload: row.amendment_payload }
-      : null;
+  // Atomic conditional claim: pending → applying. Synchronous state flip, so
+  // two interleaved requests can never both win — mirroring the SQL's
+  // conditional UPDATE. Returns the claim token stamp/release require.
+  claimPendingAmendment: async (id: string, _orgId: string | null, _claimedBy: string) => {
+    callOrder.push("claim");
+    const idx = mockPendingAmendments.findIndex((r) => r.id === id);
+    if (idx < 0) return null;
+    const [row] = mockPendingAmendments.splice(idx, 1);
+    claimedRows.set(id, row);
+    return {
+      id: row.id,
+      source_entity: row.source_entity,
+      connection_group_id: row.connection_group_id,
+      amendment_payload: row.amendment_payload,
+      claimed_at: `claimed-${row.id}`,
+    };
+  },
+  stampClaimedAmendmentApproved: async (id: string, claimedAt: string) => {
+    callOrder.push("stamp");
+    if (claimedAt !== `claimed-${id}`) return false;
+    stampCalls.push(id);
+    return claimedRows.delete(id);
+  },
+  releaseClaimedAmendment: async (id: string, claimedAt: string, reason: string) => {
+    callOrder.push("release");
+    if (claimedAt !== `claimed-${id}`) return false;
+    releaseCalls.push({ id, reason });
+    const row = claimedRows.get(id);
+    if (!row) return false;
+    claimedRows.delete(id);
+    mockPendingAmendments.push(row);
+    return true;
+  },
+  // Atomic conditional reject: pending → rejected. Matches zero rows once an
+  // approve has claimed the row.
+  rejectPendingAmendment: async (id: string, orgId: string | null, _rejectedBy: string) => {
+    callOrder.push("reject");
+    rejectCalls.push({ id, orgId });
+    const idx = mockPendingAmendments.findIndex((r) => r.id === id);
+    if (idx < 0) return false;
+    mockPendingAmendments.splice(idx, 1);
+    return true;
   },
 }));
 
-// The approve branch dynamically imports the YAML-apply helper. Mock it so the
-// happy-path test never touches disk / the semantic layer — we only assert it
-// was invoked with the target row before the DB status flip. `applyAmendment`
-// is included to keep the module mock total (mock-all-exports discipline) even
-// though this route only reaches the two helpers below.
+// The seam dynamically imports the YAML-apply helper. Mock it so the tests
+// never touch disk / the semantic layer — we assert it was invoked with the
+// claimed row between claim and stamp. The mock mirrors the real contract's
+// null-payload guard (unit-tested in apply-from-payload.test.ts): a missing
+// payload THROWS, it is never silently skipped (#4506). `applyAmendment` /
+// `resolveAmendmentBaseline` keep the module mock total (mock-all-exports).
 void mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   applyAmendmentFromPayload: async (args: Record<string, unknown>) => {
     callOrder.push("apply");
     if (applyShouldThrow) throw new Error("yaml apply failed");
+    if (!args.rawPayload) {
+      throw new Error(`Amendment ${String(args.label)} has no amendment_payload — cannot apply its YAML change.`);
+    }
     applyPayloadCalls.push(args);
   },
   applyAmendmentToEntity: async () => {},
   applyAmendment: () => ({}),
+  resolveAmendmentBaseline: async () => {
+    throw new Error("not used by the review route");
+  },
 }));
 
 void mock.module("@atlas/api/lib/auth/middleware", () => ({
@@ -184,7 +231,10 @@ describe("admin-semantic-improve", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockPendingAmendments = [];
-    reviewedCalls = [];
+    claimedRows = new Map();
+    rejectCalls = [];
+    releaseCalls = [];
+    stampCalls = [];
     applyPayloadCalls = [];
     applyShouldThrow = false;
     callOrder = [];
@@ -277,26 +327,30 @@ describe("admin-semantic-improve", () => {
       created_at: "2026-07-10T00:00:00Z",
     });
 
-    it("approves a proposal: applies the YAML then flips the same row to approved (one identity)", async () => {
-      // Group-scoped row: the route must thread the STORED row's
+    function review(id: string, decision: "approved" | "rejected") {
+      return adminSemanticImprove.request(`/amendments/${id}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+    }
+
+    it("approves a proposal: claim → apply → stamp, one identity (#4506)", async () => {
+      // Group-scoped row: the seam must thread the STORED row's
       // `connection_group_id` into the apply (#4498) — an interactive
       // proposeAmendment row persists the group its baseline was resolved
       // from, and dropping it here would send the apply through the
       // default-scope → unscoped-fallback path (409 on ambiguous names).
       mockPendingAmendments = [{ ...row("amd-1"), connection_group_id: "eu_prod" }];
 
-      const res = await adminSemanticImprove.request("/amendments/amd-1/review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision: "approved" }),
-      });
+      const res = await review("amd-1", "approved");
 
       expect(res.status).toBe(200);
       const body = (await res.json()) as { ok: boolean; id: string; decision: string };
       expect(body).toEqual({ ok: true, id: "amd-1", decision: "approved" });
 
-      // YAML applied from the row's payload before the status flip — scoped to
-      // the row's own Connection group, never NULL for a group-scoped row.
+      // YAML applied from the STORED row's payload — scoped to the row's own
+      // Connection group, never NULL for a group-scoped row.
       expect(applyPayloadCalls).toHaveLength(1);
       expect(applyPayloadCalls[0]).toMatchObject({
         sourceEntity: "orders",
@@ -304,47 +358,95 @@ describe("admin-semantic-improve", () => {
         connectionGroupId: "eu_prod",
       });
 
-      // The same learned_patterns row is flipped to approved — no stale
-      // pending row left behind.
-      expect(reviewedCalls).toEqual([{ id: "amd-1", orgId: "org-test", decision: "approved" }]);
-
-      // Ordering invariant: YAML apply happens strictly before the DB flip.
-      expect(callOrder).toEqual(["apply", "review"]);
+      // Ordering invariant (#4506): the row is CLAIMED before the apply, and
+      // `approved` is stamped only after the apply succeeds.
+      expect(callOrder).toEqual(["claim", "apply", "stamp"]);
+      expect(stampCalls).toEqual(["amd-1"]);
     });
 
-    it("approve → YAML apply fails: 500 and the row is NOT flipped to approved", async () => {
-      // The approve branch must apply YAML first and only flip the DB status on
-      // success — otherwise a row could be stamped `approved` with no YAML
-      // written. Pin that: when the apply throws, the route must surface a 500
-      // (via runHandler) and never call reviewSemanticAmendment.
+    it("approve → YAML apply fails: 500, no stamp, row compensated back to pending with the reason", async () => {
       mockPendingAmendments = [row("amd-3")];
       applyShouldThrow = true;
 
-      const res = await adminSemanticImprove.request("/amendments/amd-3/review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision: "approved" }),
-      });
+      const res = await review("amd-3", "approved");
 
       // The throw maps to a 500 with a requestId envelope.
       expect(res.status).toBe(500);
       const body = (await res.json()) as { requestId?: string };
       expect(body.requestId).toBeDefined();
-      // The load-bearing invariant: the row stays pending — the flip never ran.
-      expect(reviewedCalls).toHaveLength(0);
-      expect(callOrder).toEqual(["apply"]);
+      // The load-bearing invariant: approved was never stamped, and the seam
+      // compensated — the row is back in the pending queue with a visible
+      // reason, not stranded in the claim state.
+      expect(callOrder).toEqual(["claim", "apply", "release"]);
+      expect(stampCalls).toHaveLength(0);
+      expect(releaseCalls).toEqual([{ id: "amd-3", reason: "yaml apply failed" }]);
+      expect(mockPendingAmendments.map((r) => r.id)).toEqual(["amd-3"]);
     });
 
-    it("returns 404 when rejecting an absent row (reject skips the payload peek)", async () => {
-      // The reject branch bypasses getPendingAmendments and 404s off a null
-      // return from reviewSemanticAmendment — a different path than approve's.
+    it("approve of a null-payload row: error response, row left pending — never a silent stamp (#4506)", async () => {
+      mockPendingAmendments = [{ ...row("amd-null"), amendment_payload: null }];
+
+      const res = await review("amd-null", "approved");
+
+      // Pre-#4506 behavior was `if (payload)` — skip the apply, stamp
+      // approved anyway. Now the apply seam throws on the missing payload and
+      // the row is compensated back to pending untouched.
+      expect(res.status).toBe(500);
+      expect(stampCalls).toHaveLength(0);
+      expect(applyPayloadCalls).toHaveLength(0);
+      expect(releaseCalls).toHaveLength(1);
+      expect(releaseCalls[0].reason).toContain("no amendment_payload");
+      expect(mockPendingAmendments.map((r) => r.id)).toEqual(["amd-null"]);
+    });
+
+    it("concurrent approves of the same amendment: exactly one applies, the loser gets 404 (#4506)", async () => {
+      mockPendingAmendments = [row("amd-race")];
+
+      const [res1, res2] = await Promise.all([
+        review("amd-race", "approved"),
+        review("amd-race", "approved"),
+      ]);
+
+      const statuses = [res1.status, res2.status].toSorted((a, b) => a - b);
+      expect(statuses).toEqual([200, 404]);
+      // Exactly ONE YAML mutation and one stamp — the losing claim never
+      // reaches the apply.
+      expect(applyPayloadCalls).toHaveLength(1);
+      expect(stampCalls).toEqual(["amd-race"]);
+      const loser = res1.status === 404 ? res1 : res2;
+      const loserBody = (await loser.json()) as { error: string; message: string };
+      expect(loserBody.error).toBe("not_found");
+      expect(loserBody.message).toContain("already reviewed");
+    });
+
+    it("approve racing reject: an applied change is never stamped rejected (#4506)", async () => {
+      mockPendingAmendments = [row("amd-ar")];
+
+      const [approveRes, rejectRes] = await Promise.all([
+        review("amd-ar", "approved"),
+        review("amd-ar", "rejected"),
+      ]);
+
+      // Exactly one decision wins; both responses are truthful.
+      const statuses = [approveRes.status, rejectRes.status].toSorted((a, b) => a - b);
+      expect(statuses).toEqual([200, 404]);
+      // The two terminal states cannot coexist: either the approve claimed
+      // first (apply ran, reject matched zero rows) or the reject won (no
+      // apply at all). "Applied YAML + row stamped rejected" is impossible.
+      if (applyPayloadCalls.length === 1) {
+        expect(rejectRes.status).toBe(404);
+        expect(stampCalls).toEqual(["amd-ar"]);
+      } else {
+        expect(applyPayloadCalls).toHaveLength(0);
+        expect(approveRes.status).toBe(404);
+        expect(stampCalls).toHaveLength(0);
+      }
+    });
+
+    it("returns 404 when rejecting an absent row", async () => {
       mockPendingAmendments = [];
 
-      const res = await adminSemanticImprove.request("/amendments/does-not-exist/review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision: "rejected" }),
-      });
+      const res = await review("does-not-exist", "rejected");
 
       expect(res.status).toBe(404);
       const body = (await res.json()) as { error: string };
@@ -355,11 +457,7 @@ describe("admin-semantic-improve", () => {
     it("rejects a proposal: marks the row rejected without applying YAML", async () => {
       mockPendingAmendments = [row("amd-2")];
 
-      const res = await adminSemanticImprove.request("/amendments/amd-2/review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision: "rejected" }),
-      });
+      const res = await review("amd-2", "rejected");
 
       expect(res.status).toBe(200);
       const body = (await res.json()) as { ok: boolean; id: string; decision: string };
@@ -367,23 +465,62 @@ describe("admin-semantic-improve", () => {
 
       // Rejection never touches the semantic layer.
       expect(applyPayloadCalls).toHaveLength(0);
-      expect(reviewedCalls).toEqual([{ id: "amd-2", orgId: "org-test", decision: "rejected" }]);
+      expect(rejectCalls).toEqual([{ id: "amd-2", orgId: "org-test" }]);
+      expect(mockPendingAmendments).toHaveLength(0);
     });
 
     it("returns 404 when the amendment row is absent (already reviewed or wrong org)", async () => {
       mockPendingAmendments = [];
 
-      const res = await adminSemanticImprove.request("/amendments/does-not-exist/review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision: "approved" }),
-      });
+      const res = await review("does-not-exist", "approved");
 
       expect(res.status).toBe(404);
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe("not_found");
       // Missing target short-circuits before any YAML apply.
       expect(applyPayloadCalls).toHaveLength(0);
+    });
+  });
+
+  describe("GET /pending — applyError surfacing (#4506)", () => {
+    it("maps the row's last_apply_error to applyError so a bounced approval is never silent", async () => {
+      mockPendingAmendments = [
+        {
+          ...((): MockAmendmentRow => ({
+            id: "amd-err",
+            source_entity: "orders",
+            connection_group_id: null,
+            description: "[add_measure] orders: total revenue",
+            confidence: 0.9,
+            amendment_payload: {
+              entityName: "orders",
+              amendmentType: "add_measure",
+              amendment: { name: "total_revenue", type: "number" },
+              rationale: "r",
+            },
+            created_at: "2026-07-10T00:00:00Z",
+          }))(),
+          last_apply_error: "Version snapshot failed for entity \"orders\": versions table unavailable",
+        } as MockAmendmentRow & { last_apply_error: string },
+        {
+          id: "amd-clean",
+          source_entity: "orders",
+          connection_group_id: null,
+          description: null,
+          confidence: 0.5,
+          amendment_payload: { amendmentType: "add_dimension", amendment: { name: "region" } },
+          created_at: "2026-07-10T00:00:00Z",
+        },
+      ];
+
+      const res = await adminSemanticImprove.request("/pending");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { amendments: Array<{ id: string; applyError: string | null }> };
+      const byId = new Map(body.amendments.map((a) => [a.id, a]));
+      expect(byId.get("amd-err")?.applyError).toContain("Version snapshot failed");
+      // Rows that never bounced report null, not undefined — the wire schema
+      // pins the field as nullable.
+      expect(byId.get("amd-clean")?.applyError).toBeNull();
     });
   });
 

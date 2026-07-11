@@ -44,6 +44,7 @@ interface PendingAmendment {
   diff: string | null;
   testQuery: string | null;
   testResult: TestResult | null;
+  applyError: string | null;
   createdAt: string;
 }
 
@@ -170,6 +171,15 @@ function ProposalCard({
           </div>
         )}
 
+        {/* A previous approval failed to apply — the decide seam returned the
+            row to pending with the reason (#4506). Show it so retrying isn't
+            blind. */}
+        {proposal.applyError && (
+          <p className="text-xs text-red-600 dark:text-red-400">
+            <span className="font-medium">Last approval failed:</span> {proposal.applyError}
+          </p>
+        )}
+
         {!decided && (
           <div className="flex items-center gap-2 pt-1">
             <Button
@@ -276,6 +286,7 @@ export default function SemanticImprovePage() {
     diff: a.diff ?? undefined,
     testQuery: a.testQuery ?? undefined,
     testResult: a.testResult ?? undefined,
+    applyError: a.applyError ?? undefined,
     confidence: a.confidence,
     decision: null,
     dbId: a.id,

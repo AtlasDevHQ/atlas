@@ -23483,6 +23483,31 @@
               }
             }
           },
+          "409": {
+            "description": "Semantic amendment already reviewed, applied, or claimed by a concurrent request (#4506) — amendment status transitions are owned by the decide seam",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -61965,6 +61990,12 @@
                               "sampleRows"
                             ]
                           },
+                          "applyError": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "createdAt": {
                             "type": "string"
                           }
@@ -61980,6 +62011,7 @@
                           "diff",
                           "testQuery",
                           "testResult",
+                          "applyError",
                           "createdAt"
                         ]
                       }

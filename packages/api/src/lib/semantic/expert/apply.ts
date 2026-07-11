@@ -1,8 +1,11 @@
 /**
  * Apply a semantic expert amendment to the org's semantic layer.
  *
- * Reads the current entity YAML, applies the amendment, writes the
- * updated YAML, records a version snapshot, and invalidates caches.
+ * Reads the current entity YAML, applies the amendment, writes the updated
+ * YAML, invalidates caches, then records a version snapshot. Rollback-ability
+ * is part of the apply (#4506): a snapshot failure fails the whole apply and
+ * best-effort restores the pre-image, so the decide seam's compensation
+ * (row → pending) stays truthful. The disk-mirror sync stays warn-only.
  */
 
 import * as yaml from "js-yaml";
@@ -154,31 +157,64 @@ export async function applyAmendmentToEntity(
   // Upsert entity into its own group scope.
   await upsertEntityForGroup(effectiveOrgId, "entity", result.entityName, newYaml, targetGroupId);
 
-  // Create version snapshot. Tagged errors (AmbiguousEntityError) must
-  // re-throw so the route layer maps them to 409 with `groups`; a generic
-  // warn-log would bury the structural ambiguity that the expert agent
-  // needs the operator to resolve.
-  try {
-    const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName, targetGroupId);
-    if (refreshed) {
-      const changeSummary = await generateChangeSummary(entity.yaml_content, newYaml);
-      const versionSummary = `Expert agent: ${result.rationale}${changeSummary ? ` (${changeSummary})` : ""}`;
-      await createVersion(
-        refreshed.id, effectiveOrgId, "entity", result.entityName, newYaml, versionSummary,
-        "expert-agent", "Semantic Expert Agent",
-      );
-    }
-  } catch (versionErr) {
-    if (versionErr instanceof AmbiguousEntityError) throw versionErr;
-    log.warn(
-      { err: versionErr instanceof Error ? versionErr.message : String(versionErr), requestId, orgId, entity: result.entityName },
-      "Amendment applied but version snapshot failed",
-    );
-  }
-
-  // Invalidate caches
+  // Invalidate caches immediately — the mutation has landed, so a stale
+  // whitelist must not outlive it even if the version snapshot below fails.
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
   invalidateOrgWhitelist(effectiveOrgId);
+
+  // Create version snapshot. Rollback-ability is part of the apply (#4506):
+  // a snapshot failure FAILS the whole apply, so the decide seam compensates
+  // the row back to pending instead of stamping `approved` on a change that
+  // can't be rolled back. Tagged errors (AmbiguousEntityError) re-throw
+  // untouched so the route layer maps them to 409 with `groups`.
+  try {
+    const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName, targetGroupId);
+    if (!refreshed) {
+      throw new Error("entity row not found after upsert");
+    }
+    const changeSummary = await generateChangeSummary(entity.yaml_content, newYaml);
+    const versionSummary = `Expert agent: ${result.rationale}${changeSummary ? ` (${changeSummary})` : ""}`;
+    await createVersion(
+      refreshed.id, effectiveOrgId, "entity", result.entityName, newYaml, versionSummary,
+      "expert-agent", "Semantic Expert Agent",
+    );
+  } catch (versionErr) {
+    if (versionErr instanceof AmbiguousEntityError) throw versionErr;
+    const msg = versionErr instanceof Error ? versionErr.message : String(versionErr);
+    log.warn(
+      { err: msg, requestId, orgId, entity: result.entityName },
+      "Version snapshot failed — failing the amendment apply (rollback-ability is part of the apply)",
+    );
+    // The upsert has already landed, so a compensated "pending" row would lie
+    // about the layer's state. Best-effort restore of the pre-image keeps the
+    // compensation truthful; if the restore itself fails, say so loudly in the
+    // error (which becomes the row's visible `last_apply_error`) so an admin
+    // never reads "pending" + a neutral reason and rejects a LIVE change.
+    let restored = false;
+    try {
+      await upsertEntityForGroup(
+        effectiveOrgId, "entity", result.entityName, entity.yaml_content, targetGroupId,
+      );
+      invalidateOrgWhitelist(effectiveOrgId);
+      restored = true;
+    } catch (restoreErr) {
+      log.error(
+        {
+          err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr),
+          requestId,
+          orgId,
+          entity: result.entityName,
+        },
+        "Failed to roll back entity YAML after snapshot failure — the change is LIVE while the amendment returns to pending",
+      );
+    }
+    throw new Error(
+      restored
+        ? `Version snapshot failed for entity "${result.entityName}": ${msg}. The YAML change was rolled back — retry the approval.`
+        : `Version snapshot failed for entity "${result.entityName}": ${msg}. WARNING: the YAML change is still applied (rollback also failed) — retry the approval to converge; do not reject.`,
+      { cause: versionErr },
+    );
+  }
 
   // Sync to disk (non-fatal) — same group so the on-disk mirror lands in
   // `groups/<group>/entities/` rather than the flat default dir.

@@ -79,8 +79,9 @@ The amendment object should match the YAML structure for that type (e.g., { name
       // ABSENT from the flat disk root (ADR-0012). Read them through the SAME
       // org/group-aware resolver the apply path uses, so the diff the admin
       // reviews describes exactly what approval writes (#4488). The resolved
-      // `targetGroupId` is the row's OWN group — threaded into the auto-approve
-      // apply below so the write lands in the scope the diff was computed from.
+      // `targetGroupId` is the row's OWN group — persisted on the insert below
+      // (the decide seam applies from the stored row), so every approve lands
+      // in the scope the diff was computed from.
       let entity: Record<string, unknown>;
       let applyGroupId: string | null = null;
 
@@ -215,11 +216,11 @@ The amendment object should match the YAML structure for that type (e.g., { name
           confidence,
           amendmentPayload: payload as unknown as Record<string, unknown>,
           // Persist the group the baseline was resolved from (the row's OWN
-          // `connection_group_id`) so a HUMAN-reviewed approve — which applies
-          // with the stored row's group via `applyAmendmentFromPayload`, the
-          // seam every admin approve path shares — targets the same row this
+          // `connection_group_id`). The stored row is the ONLY channel the
+          // decide seam applies from — auto-approve and human review alike —
+          // so this field is what makes every approve target the same row this
           // diff was computed against, instead of falling back to unscoped
-          // resolution (409 on ambiguous names) (#4498).
+          // resolution (409 on ambiguous names) (#4498, #4506).
           connectionGroupId: applyGroupId,
         });
 
@@ -249,66 +250,44 @@ The amendment object should match the YAML structure for that type (e.g., { name
 
         proposalId = result.id;
 
-        if (result.status === "approved") {
-          // Auto-approve resolved this to `approved` at insert time. `approved`
-          // is terminal for the pending queue, so — exactly like the scheduler
-          // path (semantic/expert/scheduler.ts) — we MUST apply it now, or the
-          // row claims applied while the semantic layer is unchanged and the
-          // diff shown to the user is fiction (#4486). On apply failure, revert
-          // the row to `pending` so the invariant "status='approved' ⇒ applied"
-          // holds and an admin still sees the proposal in the review queue.
+        if (result.autoApprove) {
+          // The insert reported auto-approve ELIGIBILITY; the decide seam
+          // (#4506) is the only path to `approved`. It claims the row
+          // (conditional update on pending), applies from the STORED payload
+          // — the exact envelope persisted above — and stamps `approved` only
+          // after a successful apply + version snapshot. On apply failure it
+          // has already compensated the row back to `pending` with a visible
+          // reason before the error reaches this catch; the model is told the
+          // truth ("queued"), never "auto_approved" without an apply.
           try {
-            // Dynamic imports (matching the scheduler + admin approve path):
-            // keeps the apply/revert seam out of this tool's static graph, so
-            // the many partial `mock.module("…/db/internal")` test stubs that
+            // Dynamic import (matching the scheduler + admin approve path):
+            // keeps the decide seam out of this tool's static graph, so the
+            // many partial `mock.module("…/db/internal")` test stubs that
             // don't exercise the auto-approve branch don't have to add the
-            // export just to link.
-            const { applyAmendmentFromPayload } = await import(
-              "@atlas/api/lib/semantic/expert/apply"
+            // seam helpers just to link.
+            const { decideAmendment } = await import(
+              "@atlas/api/lib/semantic/expert/decide"
             );
-            await applyAmendmentFromPayload({
+            const outcome = await decideAmendment({
+              id: proposalId,
               orgId,
-              sourceEntity: entityName,
-              // Thread the SAME group the baseline was resolved from (the
-              // resolved row's own `connection_group_id`) so approval writes
-              // the scope the diff was computed against — never the flat/NULL
-              // default for an org/group-scoped entity (#4488).
-              connectionGroupId: applyGroupId,
-              // `rawPayload` is typed `unknown`, so the AmendmentPayload passes
-              // through directly (matches the admin approve call sites).
-              rawPayload: payload,
+              decision: "approved",
+              reviewedBy: "auto-approve",
               requestId: getRequestContext()?.requestId ?? `propose-${Date.now()}`,
-              label: proposalId,
             });
-            status = "auto_approved";
+            // `not_pending` means a concurrent decision beat this one to the
+            // just-inserted row (admin raced the tool) — report queued; the
+            // queue/audit trail carries the real terminal state.
+            status = outcome.kind === "approved" ? "auto_approved" : "queued";
           } catch (applyErr) {
-            // Surface the failure: revert the row so it never lingers as
-            // `approved`-but-unapplied, and log — never swallow.
-            const { revertAmendmentToPending } = await import(
-              "@atlas/api/lib/db/internal"
-            );
-            const reverted = await revertAmendmentToPending(proposalId).catch(
-              (revertErr: unknown) => {
-                log.error(
-                  {
-                    err: revertErr instanceof Error ? revertErr.message : String(revertErr),
-                    proposalId,
-                    entityName,
-                  },
-                  "Failed to revert auto-approved amendment to pending after apply failure — row may remain approved-but-unapplied",
-                );
-                return false;
-              },
-            );
             log.warn(
               {
                 err: applyErr instanceof Error ? applyErr.message : String(applyErr),
                 entityName,
                 amendmentType,
                 proposalId,
-                reverted,
               },
-              "Auto-approved amendment failed to apply — reverted to pending for admin review",
+              "Auto-approve apply failed — the decide seam returned the row to pending for admin review",
             );
             status = "queued";
           }

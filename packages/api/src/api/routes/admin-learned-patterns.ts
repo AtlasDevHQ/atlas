@@ -45,7 +45,10 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
       : null,
     confidence: row.confidence as number,
     repetitionCount: row.repetition_count as number,
-    status: row.status as LearnedPattern["status"],
+    // `applying` is the decide seam's transient claim state (#4506), not a
+    // wire status — present it as `pending` (the row is still undecided; a
+    // stale claim resurfaces as claimable).
+    status: (row.status === "applying" ? "pending" : row.status) as LearnedPattern["status"],
     proposedBy: (row.proposed_by as LearnedPattern["proposedBy"]) ?? null,
     reviewedBy: (row.reviewed_by as string) ?? null,
     createdAt: String(row.created_at),
@@ -87,34 +90,75 @@ function orgFilter(
 const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
 
 /**
- * Apply a `semantic_amendment` learned-pattern row's YAML side-effect.
+ * Route a `semantic_amendment` row's status decision through the decide seam
+ * (#4506) — the ONLY code path that stamps `approved` on an amendment.
  *
- * Approving a `semantic_amendment` row must rewrite the entity YAML on disk and
- * the entity row — the same path the dedicated review endpoint
- * (`/admin/semantic/improve/amendments/:id/review`) runs. Both the single-PATCH
- * and bulk-approve handlers call this BEFORE persisting `status='approved'`, so
- * a failed apply never leaves an approved-but-unapplied row whose YAML stays
- * stale until restart (#3613).
+ * The seam owns `pending → approved | rejected` with claim-then-apply
+ * ordering: `approved` is stamped only after a successful YAML apply +
+ * version snapshot, and a failed apply compensates the row back to `pending`
+ * with a visible reason (the error still propagates so the handler surfaces
+ * it). A rejected row being re-approved is atomically reopened
+ * (`rejected → pending`, the reconsider arm) before the seam decides it.
  *
- * Adapts a `learned_patterns` row to the shared `applyAmendmentFromPayload`
- * helper, which owns the envelope→`AnalysisResult` mapping (incl. extracting the
- * inner `amendment` object and recovering the Connection group). Throws on a
- * missing/malformed payload or a failed apply.
+ * Returns `"decided"` on success; `"conflict"` with a truthful message when
+ * the row was already reviewed / is being applied by a concurrent request.
+ * Throws when the apply itself fails.
  */
-async function applyAmendmentRow(
-  row: Record<string, unknown>,
-  orgId: string | null,
-  requestId: string,
-): Promise<void> {
-  const { applyAmendmentFromPayload } = await import("@atlas/api/lib/semantic/expert/apply");
-  await applyAmendmentFromPayload({
-    orgId,
-    sourceEntity: String(row.source_entity),
-    connectionGroupId: (row.connection_group_id as string | null) ?? null,
-    rawPayload: row.amendment_payload,
+async function decideAmendmentRow(params: {
+  id: string;
+  rowStatus: string;
+  decision: "approved" | "rejected";
+  orgId: string | null | undefined;
+  userId: string | null;
+  requestId: string;
+}): Promise<{ kind: "decided" } | { kind: "conflict"; message: string }> {
+  const { id, rowStatus, decision, orgId, userId, requestId } = params;
+
+  if (rowStatus === "approved") {
+    return {
+      kind: "conflict",
+      message:
+        "This amendment is already approved and applied to the semantic layer. Use the entity's version history to roll it back instead of re-reviewing it.",
+    };
+  }
+  if (rowStatus === "rejected") {
+    if (decision === "rejected") {
+      return { kind: "conflict", message: "This amendment is already rejected." };
+    }
+    // Reconsider: atomically reopen the rejected row, then let the seam decide
+    // it. A concurrent decision between the reopen and the claim just makes
+    // the claim lose — truthful conflict, never a double apply.
+    const reopenParams: unknown[] = [id];
+    const reopenOrg = orgFilter(orgId, reopenParams, reopenParams.length + 1);
+    const reopened = await internalQuery<{ id: string }>(
+      `UPDATE learned_patterns SET status = 'pending', updated_at = now()
+       WHERE id = $1 AND type = 'semantic_amendment' AND status = 'rejected' AND ${reopenOrg.clause}
+       RETURNING id`,
+      reopenParams,
+    );
+    if (reopened.length === 0) {
+      return {
+        kind: "conflict",
+        message: "Amendment was reviewed by another request. Refresh and retry.",
+      };
+    }
+  }
+
+  const { decideAmendment } = await import("@atlas/api/lib/semantic/expert/decide");
+  const outcome = await decideAmendment({
+    id,
+    orgId: orgId ?? null,
+    decision,
+    reviewedBy: userId ?? "admin",
     requestId,
-    label: String(row.id),
   });
+  if (outcome.kind === "not_pending") {
+    return {
+      kind: "conflict",
+      message: "Amendment was already reviewed or is being applied by another request.",
+    };
+  }
+  return { kind: "decided" };
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +330,11 @@ const updatePatternRoute = createRoute({
       description: "Pattern not found or internal database not configured",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    409: {
+      description:
+        "Semantic amendment already reviewed, applied, or claimed by a concurrent request (#4506) — amendment status transitions are owned by the decide seam",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     429: {
       description: "Rate limit exceeded",
       content: { "application/json": { schema: AuthErrorSchema } },
@@ -438,7 +487,13 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     whereParts.push(org.clause);
     let nextIdx = org.nextIdx;
 
-    if (status) { params.push(status); whereParts.push(`status = $${nextIdx}`); nextIdx++; }
+    if (status === "pending") {
+      // `applying` is the decide seam's transient claim state, presented as
+      // `pending` on the wire (see toLearnedPattern, #4506) — the filter must
+      // match the presentation, or a crash-stranded claim becomes invisible
+      // under the one filter admins use to find pending work.
+      whereParts.push(`status IN ('pending', 'applying')`);
+    } else if (status) { params.push(status); whereParts.push(`status = $${nextIdx}`); nextIdx++; }
     if (patternType) { params.push(patternType); whereParts.push(`type = $${nextIdx}`); nextIdx++; }
     if (sourceEntity) { params.push(sourceEntity); whereParts.push(`source_entity = $${nextIdx}`); nextIdx++; }
     if (minConfidence !== null) { params.push(parseFloat(minConfidence)); whereParts.push(`confidence >= $${nextIdx}`); nextIdx++; }
@@ -495,15 +550,55 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     const existing = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
     if (existing.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
 
-    // Approving a semantic_amendment must rewrite the entity YAML BEFORE the
-    // status flips to approved — apply first so a failed apply (incl. an
-    // AmbiguousEntityError → 409) aborts the request and never leaves an
-    // approved-but-unapplied row (#3613).
-    if (status === "approved" && existing[0].type === "semantic_amendment") {
-      yield* Effect.tryPromise({
-        try: () => applyAmendmentRow(existing[0], orgId ?? null, requestId),
+    // Semantic-amendment status decisions are seam-owned (#4506): the decide
+    // seam claims the pending row, applies the YAML + version snapshot, and
+    // only then stamps `approved` — this handler must never write an
+    // amendment's approved/rejected status itself. A failed apply (incl. an
+    // AmbiguousEntityError → 409) aborts the request with the row already
+    // compensated back to pending. `seamDecided` suppresses the generic
+    // status SET below so the seam's stamp is never overwritten.
+    let seamDecided = false;
+    if (
+      (status === "approved" || status === "rejected") &&
+      existing[0].type === "semantic_amendment"
+    ) {
+      const decided = yield* Effect.tryPromise({
+        try: () =>
+          decideAmendmentRow({
+            id,
+            rowStatus: String(existing[0].status),
+            decision: status,
+            orgId,
+            userId: user?.id ?? null,
+            requestId,
+          }),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
+      if (decided.kind === "conflict") {
+        return c.json({ error: "conflict", message: decided.message, requestId }, 409);
+      }
+      seamDecided = true;
+    } else if (
+      status === "pending" &&
+      existing[0].type === "semantic_amendment" &&
+      (existing[0].status === "approved" || existing[0].status === "applying")
+    ) {
+      // Un-approving an applied amendment would leave the row claiming
+      // "pending" while its YAML change is live — the same class of lie the
+      // decide seam exists to prevent (roll back via version history instead).
+      // Likewise a row mid-claim (`applying`) belongs to the in-flight
+      // decision, not this handler.
+      return c.json(
+        {
+          error: "conflict",
+          message:
+            existing[0].status === "applying"
+              ? "This amendment is currently being applied by another request."
+              : "This amendment is already approved and applied to the semantic layer. Use the entity's version history to roll it back instead of re-reviewing it.",
+          requestId,
+        },
+        409,
+      );
     }
 
     const setClauses: string[] = ["updated_at = now()"];
@@ -514,7 +609,10 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     // `auto_promoted` so a row the nightly job promoted (then perhaps decayed to
     // pending) no longer renders the machine "Auto-approved" badge once a person
     // reviews it, and so decay never demotes it out from under the admin (#3636).
-    if (status !== undefined) { updateParams.push(status); setClauses.push(`status = $${paramIdx}`); paramIdx++; updateParams.push(user?.id ?? null); setClauses.push(`reviewed_by = $${paramIdx}`); paramIdx++; setClauses.push(`reviewed_at = now()`); setClauses.push(`auto_promoted = false`); }
+    // Seam-decided amendment statuses are excluded: the seam already stamped
+    // status + reviewer, and amendments are never auto-promoted (#3636 scopes
+    // promote-decay to query_pattern rows).
+    if (status !== undefined && !seamDecided) { updateParams.push(status); setClauses.push(`status = $${paramIdx}`); paramIdx++; updateParams.push(user?.id ?? null); setClauses.push(`reviewed_by = $${paramIdx}`); paramIdx++; setClauses.push(`reviewed_at = now()`); setClauses.push(`auto_promoted = false`); }
 
     updateParams.push(id);
     const idIdx = paramIdx;
@@ -608,16 +706,26 @@ adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
         try: async () => {
           const checkParams: unknown[] = [id];
           const org = orgFilter(orgId, checkParams, checkParams.length + 1);
-          const existing = await internalQuery<Record<string, unknown>>(`SELECT id, type, source_entity, amendment_payload, connection_group_id FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
+          const existing = await internalQuery<Record<string, unknown>>(`SELECT id, type, status, source_entity, amendment_payload, connection_group_id FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
           if (existing.length === 0) return "not_found" as const;
 
-          // Approving a semantic_amendment must rewrite the entity YAML BEFORE
-          // the status flips to approved — otherwise the row reads "approved"
-          // while the on-disk YAML + in-memory layer stay stale until restart
-          // (#3613). Apply first; a failed apply throws, is recorded per-id in
-          // `errors`, and the status update never runs.
-          if (status === "approved" && existing[0].type === "semantic_amendment") {
-            await applyAmendmentRow(existing[0], orgId ?? null, requestId);
+          // Semantic-amendment decisions are seam-owned (#4506): the decide
+          // seam claims the pending row, applies YAML + version snapshot, and
+          // stamps `approved` only on success — this handler never writes an
+          // amendment's status itself. A conflict (already reviewed / claimed
+          // by a concurrent request) is recorded per-id in `errors`; a failed
+          // apply throws with the row already compensated back to pending.
+          if (existing[0].type === "semantic_amendment") {
+            const decided = await decideAmendmentRow({
+              id,
+              rowStatus: String(existing[0].status),
+              decision: status,
+              orgId,
+              userId: user?.id ?? null,
+              requestId,
+            });
+            if (decided.kind === "conflict") throw new Error(decided.message);
+            return "updated" as const;
           }
 
           const updateParams: unknown[] = [status, user?.id ?? null, id];

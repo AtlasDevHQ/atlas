@@ -46,6 +46,13 @@ export interface Proposal {
    * unreviewable and is never rendered.
    */
   dbId?: string;
+  /**
+   * Reason the last approve-apply failed (#4506). The decide seam returns a
+   * failed approval to pending with this reason attached, so the card can
+   * tell the admin WHY the amendment bounced instead of silently re-listing.
+   * Only pending-list cards carry it (chat-streamed cards are pre-review).
+   */
+  applyError?: string;
 }
 
 /**

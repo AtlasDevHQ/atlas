@@ -286,6 +286,12 @@ const PendingAmendmentSchema = z.object({
   diff: z.string().nullable(),
   testQuery: z.string().nullable(),
   testResult: TestResultSchema.nullable(),
+  /**
+   * Reason the last approve-apply failed (#4506) — set when the decide seam
+   * compensated the row back to pending. Lets the queue show WHY an approval
+   * bounced instead of silently re-listing the row.
+   */
+  applyError: z.string().nullable(),
   createdAt: z.string(),
 });
 
@@ -438,6 +444,7 @@ adminSemanticImprove.openapi(pendingListRoute, async (c) =>
         diff: str("diff"),
         testQuery: str("testQuery"),
         testResult: parsedTestResult.success ? parsedTestResult.data : null,
+        applyError: row.last_apply_error ?? null,
         createdAt: row.created_at,
       };
     });
@@ -453,41 +460,23 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
     const { id } = c.req.valid("param");
     const { decision } = c.req.valid("json");
 
-    const { reviewSemanticAmendment } = await import("@atlas/api/lib/db/internal");
+    // The decide seam owns the whole `pending → approved | rejected`
+    // transition (#4506): claim-then-apply, `approved` stamped only after a
+    // successful apply + version snapshot, compensation back to `pending`
+    // (with a visible reason) on failure. A null/corrupt payload is an error
+    // inside the seam — never a silent stamp. Apply errors propagate:
+    // runHandler maps an AmbiguousEntityError to 409 (with `groups`) and
+    // everything else to 500 — by then the row is already back to pending.
+    const { decideAmendment } = await import("@atlas/api/lib/semantic/expert/decide");
+    const outcome = await decideAmendment({
+      id,
+      orgId,
+      decision,
+      reviewedBy: "admin",
+      requestId,
+    });
 
-    // For approvals, apply YAML first — only update DB status on success
-    if (decision === "approved") {
-      // Peek at the row to get payload before changing status
-      const { getPendingAmendments } = await import("@atlas/api/lib/db/internal");
-      const pending = await getPendingAmendments(orgId);
-      const target = pending.find((r) => r.id === id);
-      if (!target) {
-        return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
-      }
-
-      const payload = target.amendment_payload;
-      if (payload) {
-        const { applyAmendmentFromPayload } = await import("@atlas/api/lib/semantic/expert/apply");
-        // This throws on failure — runHandler maps it to 500 (or 409 for an
-        // AmbiguousEntityError). The shared helper owns the envelope→
-        // AnalysisResult mapping, including extracting the INNER `amendment`
-        // object (the YAML mutation reads `payload.amendment`, not the whole
-        // envelope) and recovering the Connection group (#3284).
-        await applyAmendmentFromPayload({
-          orgId,
-          sourceEntity: target.source_entity,
-          connectionGroupId: target.connection_group_id ?? null,
-          rawPayload: payload,
-          requestId,
-          label: target.id,
-        });
-      }
-    }
-
-    // YAML applied (or rejection) — now update DB status
-    const reviewed = await reviewSemanticAmendment(id, orgId, decision, "admin");
-
-    if (!reviewed) {
+    if (outcome.kind === "not_pending") {
       return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
     }
 

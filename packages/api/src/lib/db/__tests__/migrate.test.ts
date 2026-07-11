@@ -214,7 +214,9 @@ describe("runMigrations", () => {
     //   last-reconciled-at columns for the connector spine, ADR-0030, #4376) = 169.
     //   Plus 0169 (convert notebook conversations to web chat — phase 1 of the
     //   notebook-surface retirement, ADR-0035, #4587) = 170.
-    expect(count).toBe(170);
+    //   Plus 0170 (learned_patterns.last_apply_error — the visible reason when
+    //   the decide seam compensates a failed approve back to pending, #4506) = 171.
+    expect(count).toBe(171);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -413,6 +415,7 @@ describe("runMigrations", () => {
         "0167_knowledge_documents_fts.sql",
         "0168_knowledge_sync_state_high_water.sql",
         "0169_convert_notebook_conversations.sql",
+        "0170_learned_patterns_last_apply_error.sql",
       ],
     });
 

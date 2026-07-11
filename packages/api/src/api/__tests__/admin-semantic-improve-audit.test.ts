@@ -30,10 +30,29 @@ import { Hono } from "hono";
 import type { OrgContextEnv } from "../routes/admin-router";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
-const mockGetPendingAmendments: Mock<(orgId: string) => Promise<unknown[]>> =
-  mock(async () => []);
-const mockReviewSemanticAmendment: Mock<
-  (id: string, orgId: string, decision: string, reviewer: string) => Promise<boolean>
+// The review route delegates to the decide seam (#4506); the seam's DB
+// surface is the claim helpers, so the audit tests drive those. Defaults
+// model a decidable pending row (claim wins / reject wins).
+const mockClaimPendingAmendment: Mock<
+  (id: string, orgId: string | null, claimedBy: string) => Promise<Record<string, unknown> | null>
+> = mock(async (id: string) => ({
+  id,
+  source_entity: "events",
+  connection_group_id: null,
+  amendment_payload: {
+    category: "coverage_gaps",
+    amendmentType: "update_description",
+    amendment: { field: "table", description: "Updated" },
+    rationale: "text",
+  },
+  claimed_at: "2026-07-10T00:00:00+00",
+}));
+const mockStampClaimedAmendmentApproved: Mock<(id: string) => Promise<boolean>> =
+  mock(async () => true);
+const mockReleaseClaimedAmendment: Mock<(id: string, reason: string) => Promise<boolean>> =
+  mock(async () => true);
+const mockRejectPendingAmendment: Mock<
+  (id: string, orgId: string | null, rejectedBy: string) => Promise<boolean>
 > = mock(async () => true);
 
 const mocks = createApiTestMocks({
@@ -46,8 +65,10 @@ const mocks = createApiTestMocks({
   },
   authMode: "managed",
   internal: {
-    getPendingAmendments: mockGetPendingAmendments,
-    reviewSemanticAmendment: mockReviewSemanticAmendment,
+    claimPendingAmendment: mockClaimPendingAmendment,
+    stampClaimedAmendmentApproved: mockStampClaimedAmendmentApproved,
+    releaseClaimedAmendment: mockReleaseClaimedAmendment,
+    rejectPendingAmendment: mockRejectPendingAmendment,
   },
 });
 
@@ -169,10 +190,12 @@ function hostRequest(
 beforeEach(() => {
   mocks.hasInternalDB = true;
   mockLogAdminAction.mockClear();
-  mockGetPendingAmendments.mockReset();
-  mockGetPendingAmendments.mockImplementation(async () => []);
-  mockReviewSemanticAmendment.mockReset();
-  mockReviewSemanticAmendment.mockImplementation(async () => true);
+  mockClaimPendingAmendment.mockClear();
+  mockStampClaimedAmendmentApproved.mockClear();
+  mockStampClaimedAmendmentApproved.mockImplementation(async () => true);
+  mockReleaseClaimedAmendment.mockClear();
+  mockRejectPendingAmendment.mockClear();
+  mockRejectPendingAmendment.mockImplementation(async () => true);
 });
 
 // ---------------------------------------------------------------------------
@@ -226,21 +249,6 @@ describe("POST /api/v1/admin/semantic-improve/chat — audit emission", () => {
 
 describe("POST /api/v1/admin/semantic-improve/amendments/:id/review — audit emission", () => {
   it("approved decision emits semantic.improve_apply with id + decision", async () => {
-    mockGetPendingAmendments.mockImplementation(async () => [
-      {
-        id: "amd-1",
-        source_entity: "events",
-        description: "Update",
-        confidence: 0.8,
-        amendment_payload: {
-          category: "coverage_gaps",
-          amendmentType: "update_description",
-          rationale: "text",
-        },
-        created_at: "2026-04-24T00:00:00Z",
-      },
-    ]);
-
     const res = await app.fetch(
       adminRequest(
         "POST",
@@ -277,7 +285,7 @@ describe("POST /api/v1/admin/semantic-improve/amendments/:id/review — audit em
   });
 
   it("does not emit when the amendment is missing (404)", async () => {
-    mockReviewSemanticAmendment.mockImplementation(async () => false);
+    mockRejectPendingAmendment.mockImplementation(async () => false);
 
     const res = await app.fetch(
       adminRequest(

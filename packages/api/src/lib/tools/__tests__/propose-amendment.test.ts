@@ -25,22 +25,28 @@ const companiesEntity: Record<string, unknown> = {
 // insertSemanticAmendment now returns a discriminated union (#4507):
 // { outcome: "inserted" | "already_pending" | "rejected", ... }.
 const mockInsertSemanticAmendment: Mock<
-  (args: Record<string, unknown>) => Promise<{ outcome: string; id?: string; status?: string }>
-> = mock(() => Promise.resolve({ outcome: "inserted", id: "prop-1", status: "pending" }));
-
-const mockRevertAmendmentToPending: Mock<(id: string) => Promise<boolean>> = mock(() =>
-  Promise.resolve(true),
-);
+  (args: Record<string, unknown>) => Promise<{ outcome: string; id?: string; autoApprove?: boolean }>
+> = mock(() => Promise.resolve({ outcome: "inserted", id: "prop-1", autoApprove: false }));
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   insertSemanticAmendment: mockInsertSemanticAmendment,
-  revertAmendmentToPending: mockRevertAmendmentToPending,
 }));
 
-// The auto-approve apply seam (#4486). When insertSemanticAmendment resolves a
-// proposal to `approved` at insert time, the tool must apply it in the same
-// flow (mirroring the scheduler) — never leave it approved-but-unapplied.
+// The decide seam (#4506). When insertSemanticAmendment reports auto-approve
+// eligibility, the tool must route the approval through `decideAmendment`
+// (claim → apply → stamp) — never stamp or apply anything itself.
+type DecideOutcome = { kind: "approved" | "rejected" | "not_pending"; id: string };
+const mockDecideAmendment: Mock<
+  (params: { id: string; orgId: string | null; decision: string; reviewedBy: string; requestId: string }) => Promise<DecideOutcome>
+> = mock(async (params) => ({ kind: "approved", id: params.id }));
+
+void mock.module("@atlas/api/lib/semantic/expert/decide", () => ({
+  decideAmendment: mockDecideAmendment,
+}));
+
+// Kept total for mock-all-exports; the tool itself no longer calls the apply
+// helper directly (the seam does).
 const mockApplyAmendmentFromPayload: Mock<(args: Record<string, unknown>) => Promise<void>> = mock(
   () => Promise.resolve(),
 );
@@ -150,7 +156,7 @@ describe("proposeAmendment test query routing (#4485)", () => {
     mockRunUserQueryPipeline.mockClear();
     mockRunUserQueryPipeline.mockResolvedValue(okOutcome);
     mockInsertSemanticAmendment.mockClear();
-    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-1", status: "pending" });
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-1", autoApprove: false });
   });
 
   it("routes the test query through runUserQueryPipeline with an explicit connectionId", async () => {
@@ -218,45 +224,38 @@ describe("proposeAmendment test query routing (#4485)", () => {
   });
 });
 
-describe("proposeAmendment auto-approve applies in the same flow (#4486)", () => {
+describe("proposeAmendment auto-approve routes through the decide seam (#4486, #4506)", () => {
   beforeEach(() => {
     mockRunUserQueryPipeline.mockClear();
     mockRunUserQueryPipeline.mockResolvedValue(okOutcome);
     mockInsertSemanticAmendment.mockClear();
-    mockApplyAmendmentFromPayload.mockClear();
-    mockApplyAmendmentFromPayload.mockResolvedValue(undefined);
-    mockRevertAmendmentToPending.mockClear();
-    mockRevertAmendmentToPending.mockResolvedValue(true);
+    mockDecideAmendment.mockClear();
+    mockDecideAmendment.mockImplementation(async (params) => ({ kind: "approved", id: params.id }));
   });
 
-  it("does NOT apply when the insert lands pending (auto-approve disabled)", async () => {
-    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-pending", status: "pending" });
+  it("does NOT invoke the seam when the insert is not eligible (auto-approve disabled)", async () => {
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-pending", autoApprove: false });
     const result = await run();
-    expect(mockApplyAmendmentFromPayload).not.toHaveBeenCalled();
-    expect(mockRevertAmendmentToPending).not.toHaveBeenCalled();
+    expect(mockDecideAmendment).not.toHaveBeenCalled();
     expect(result.status).toBe("queued");
   });
 
-  it("applies the amendment in the same flow when the insert auto-approves", async () => {
-    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-approved", status: "approved" });
+  it("routes an eligible insert through the seam with the inserted row's id", async () => {
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-approved", autoApprove: true });
     const result = await run();
 
-    // The invariant: an `approved` insert triggers exactly one apply.
-    expect(mockApplyAmendmentFromPayload).toHaveBeenCalledTimes(1);
-    const applyArgs = mockApplyAmendmentFromPayload.mock.calls[0][0] as {
-      sourceEntity: string;
-      connectionGroupId: string | null;
-      label: string;
-      rawPayload: { amendment: Record<string, unknown> };
-    };
-    expect(applyArgs.sourceEntity).toBe("companies");
-    expect(applyArgs.connectionGroupId).toBeNull();
-    expect(applyArgs.label).toBe("prop-approved");
-    // The inner amendment object is carried through so the YAML mutation applies.
-    expect(applyArgs.rawPayload.amendment).toMatchObject({ name: "region" });
+    // The invariant: eligibility triggers exactly one seam decision — the
+    // seam applies from the STORED payload (claim → apply → stamp), so the
+    // tool passes only the identity, never a payload copy that could diverge.
+    expect(mockDecideAmendment).toHaveBeenCalledTimes(1);
+    const [params] = mockDecideAmendment.mock.calls[0];
+    expect(params).toMatchObject({
+      id: "prop-approved",
+      orgId: null,
+      decision: "approved",
+      reviewedBy: "auto-approve",
+    });
 
-    // Apply succeeded → the row legitimately stays approved; no revert.
-    expect(mockRevertAmendmentToPending).not.toHaveBeenCalled();
     expect(result.status).toBe("auto_approved");
     // Pin the wire contract the web relies on (#4499): an auto_approved result
     // still carries the row id — `extractProposals` drops results without a
@@ -264,50 +263,41 @@ describe("proposeAmendment auto-approve applies in the same flow (#4486)", () =>
     expect(result.proposalId).toBe("prop-approved");
   });
 
-  it("reverts the row to pending and reports queued when the auto-approve apply fails", async () => {
-    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-approved", status: "approved" });
-    mockApplyAmendmentFromPayload.mockRejectedValue(new Error("entity not found for org"));
+  it("reports queued when the seam's apply fails (row already compensated to pending)", async () => {
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-approved", autoApprove: true });
+    mockDecideAmendment.mockImplementation(async () => {
+      throw new Error("entity not found for org");
+    });
 
     const result = await run();
 
-    // Apply was attempted, then the row was reverted so it never lingers as
-    // approved-but-unapplied (invariant restored + surfaced, not swallowed).
-    expect(mockApplyAmendmentFromPayload).toHaveBeenCalledTimes(1);
-    expect(mockRevertAmendmentToPending).toHaveBeenCalledTimes(1);
-    expect(mockRevertAmendmentToPending.mock.calls[0][0]).toBe("prop-approved");
-    // The model is told the truth: the proposal is queued, not auto-applied.
-    expect(result.status).toBe("queued");
-    // The apply failure never surfaces as a tool-level error that hides the row.
-    expect(result.error).toBeUndefined();
-  });
-
-  it("still reports queued (never throws) when both the apply AND the revert fail", async () => {
-    // Worst case: apply fails and the revert-to-pending also fails, so the row
-    // genuinely stays `approved`-but-unapplied. This must still be surfaced via
-    // logs and reported honestly to the model (queued), never swallowed into a
-    // tool-level error or an `auto_approved` lie.
-    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-approved", status: "approved" });
-    mockApplyAmendmentFromPayload.mockRejectedValue(new Error("apply exploded"));
-    mockRevertAmendmentToPending.mockRejectedValue(new Error("revert exploded"));
-
-    const result = await run();
-
-    expect(mockApplyAmendmentFromPayload).toHaveBeenCalledTimes(1);
-    expect(mockRevertAmendmentToPending).toHaveBeenCalledTimes(1);
-    // The double failure never surfaces as a thrown error or auto_approved.
+    // The seam threw AFTER compensating the row back to pending — the model
+    // is told the truth: queued, not auto-applied, and never a tool error
+    // that hides the row.
+    expect(mockDecideAmendment).toHaveBeenCalledTimes(1);
     expect(result.status).toBe("queued");
     expect(result.error).toBeUndefined();
   });
 
-  it("invariant: the tool never returns auto_approved without having applied", async () => {
-    // Sweep both insert outcomes; assert apply-count tracks approved+success.
-    for (const status of ["pending", "approved"] as const) {
-      mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: `prop-${status}`, status });
-      mockApplyAmendmentFromPayload.mockClear();
+  it("reports queued when a concurrent decision beat the tool to its own insert", async () => {
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-approved", autoApprove: true });
+    mockDecideAmendment.mockImplementation(async (params) => ({ kind: "not_pending", id: params.id }));
+
+    const result = await run();
+
+    expect(result.status).toBe("queued");
+    expect(result.error).toBeUndefined();
+  });
+
+  it("invariant: the tool never returns auto_approved without a seam-approved outcome", async () => {
+    // Sweep both eligibility outcomes; auto_approved requires the seam's
+    // approved outcome (which itself requires a successful apply + stamp).
+    for (const autoApprove of [false, true]) {
+      mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: `prop-${autoApprove}`, autoApprove });
+      mockDecideAmendment.mockClear();
       const result = await run();
       if (result.status === "auto_approved") {
-        // The only way to report auto_approved is a successful apply call.
-        expect(mockApplyAmendmentFromPayload).toHaveBeenCalledTimes(1);
+        expect(mockDecideAmendment).toHaveBeenCalledTimes(1);
       } else {
         expect(result.status).toBe("queued");
       }

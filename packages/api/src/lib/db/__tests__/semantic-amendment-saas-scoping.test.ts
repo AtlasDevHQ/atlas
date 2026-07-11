@@ -1,20 +1,23 @@
 /**
  * SaaS scoping + one-workspace-owner invariant for semantic amendments
- * (#4487, #4510).
+ * (#4487, #4510) — plus the SQL shape of the decide seam's conditional
+ * transitions (#4506): claim-on-pending, stamp-on-claim, release-on-claim,
+ * which are the races' DB-level protection.
  *
  * Reader scoping (#4487): NULL-org ("global scope") amendment rows are the
  * intended shared scope on self-hosted, but on SaaS they must NEVER surface
  * in — or be reviewable from — any tenant workspace. The SQL shape flips with
  * deploy mode:
- *   - self-hosted (or unloaded config): `(org_id = $1 OR org_id IS NULL)`
- *   - saas:                              `org_id = $1` only, and the org-less
+ *   - self-hosted (or unloaded config): `(org_id = $N OR org_id IS NULL)`
+ *   - saas:                              `org_id = $N` only, and the org-less
  *                                        path is refused before any query.
  *
  * #4510 consolidates that conditional into ONE shared helper,
- * `amendmentOrgScope`, that every reader (count, list, review) MUST use — pinned
- * here by a reader-enumeration test — and ratchets the insert seam so no code
- * path can mint a NULL-owner row anew on SaaS (the one-workspace-owner
- * invariant; legacy NULL-owner rows stay readable on self-hosted).
+ * `amendmentOrgScope`, that every reader (count, list, and the decide seam's
+ * claim/reject) MUST use — pinned here by a reader-enumeration test — and
+ * ratchets the insert seam so no code path can mint a NULL-owner row anew on
+ * SaaS (the one-workspace-owner invariant; legacy NULL-owner rows stay
+ * readable on self-hosted).
  *
  * Deploy mode is resolved through `isSaasModeForGuard()` (fail-closed), which
  * reads the cached config — we drive it here via `_setConfigForTest`.
@@ -31,7 +34,10 @@ process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/atlas_test";
 import {
   getPendingAmendmentCount,
   getPendingAmendments,
-  reviewSemanticAmendment,
+  claimPendingAmendment,
+  stampClaimedAmendmentApproved,
+  releaseClaimedAmendment,
+  rejectPendingAmendment,
   insertSemanticAmendment,
   amendmentOrgScope,
   _resetPool,
@@ -51,8 +57,9 @@ function makeStubPool() {
   return {
     query: async (sql: string, params?: unknown[]) => {
       captured.push({ sql, params: params ?? [] });
-      // insertSemanticAmendment's INSERT reads back the new row's id; the reader
-      // SELECT/UPDATEs and the insert-time conflict SELECT read an empty set.
+      // insertSemanticAmendment's INSERT reads back the new row's id; the
+      // reader/claim SELECT/UPDATEs and the insert-time conflict SELECT read
+      // an empty set.
       if (sql.includes("INSERT INTO learned_patterns")) return { rows: [{ id: "new-row-id" }] };
       return { rows: [] };
     },
@@ -118,12 +125,21 @@ describe("semantic amendment queries — self-hosted scoping (unchanged)", () =>
     expect(captured[0]!.sql).toContain("(org_id = $1 OR org_id IS NULL)");
   });
 
-  it("reviewSemanticAmendment includes the OR org_id IS NULL arm for an org", async () => {
+  it("claimPendingAmendment includes the OR org_id IS NULL arm for an org", async () => {
     setDeployMode("self-hosted");
-    await reviewSemanticAmendment("amd-1", "org-a", "approved", "admin");
+    await claimPendingAmendment("amd-1", "org-a", "admin");
 
     expect(captured).toHaveLength(1);
-    expect(captured[0]!.sql).toContain("(org_id = $4 OR org_id IS NULL)");
+    expect(captured[0]!.sql).toContain("(org_id = $3 OR org_id IS NULL)");
+    expect(captured[0]!.params).toEqual(["admin", "amd-1", "org-a"]);
+  });
+
+  it("rejectPendingAmendment includes the OR org_id IS NULL arm for an org", async () => {
+    setDeployMode("self-hosted");
+    await rejectPendingAmendment("amd-1", "org-a", "admin");
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.sql).toContain("(org_id = $3 OR org_id IS NULL)");
   });
 
   it("null-org (global admin) path still targets org_id IS NULL rows", async () => {
@@ -132,6 +148,106 @@ describe("semantic amendment queries — self-hosted scoping (unchanged)", () =>
 
     expect(captured).toHaveLength(1);
     expect(captured[0]!.sql).toContain("org_id IS NULL");
+  });
+});
+
+describe("decide-seam conditional transitions (#4506) — the DB-level race protection", () => {
+  // These pin the WHERE shapes that make the seam's guarantees hold under
+  // concurrency: exactly one claim wins (conditional on `pending`), a reject
+  // can never stamp an applied change (same conditional), and stamp/release
+  // only act on the claim that owns the row.
+
+  it("claim is conditional on pending (or a stale claim) and moves the row to 'applying'", async () => {
+    setDeployMode("self-hosted");
+    await claimPendingAmendment("amd-1", "org-a", "admin");
+
+    const { sql } = captured[0]!;
+    expect(sql).toContain("SET status = 'applying'");
+    expect(sql).toContain("status = 'pending' OR (status = 'applying'");
+    expect(sql).toContain("type = 'semantic_amendment'");
+    // A retried approve starts clean: the claim clears the previous failure.
+    expect(sql).toContain("last_apply_error = NULL");
+    // The claim returns its token — stamp/release condition on it.
+    expect(sql).toContain("reviewed_at::text AS claimed_at");
+    // Pin the stale-window comparison DIRECTION verbatim: a flipped `>` would
+    // make every FRESH claim re-claimable (re-opening the double-apply race)
+    // while stranding genuinely stale ones — and a looser substring assertion
+    // would stay green.
+    expect(sql).toContain("updated_at < now() - interval '10 minutes'");
+  });
+
+  it("reject is conditional on pending — never flips an approved or freshly-claimed row", async () => {
+    setDeployMode("self-hosted");
+    await rejectPendingAmendment("amd-1", "org-a", "admin");
+
+    const { sql } = captured[0]!;
+    expect(sql).toContain("SET status = 'rejected'");
+    expect(sql).toContain("status = 'pending' OR (status = 'applying'");
+    expect(sql).not.toContain("status = 'approved'");
+  });
+
+  it("stamp-approved is conditional on THIS claim ('applying' + the claim token), never on pending", async () => {
+    setDeployMode("self-hosted");
+    await stampClaimedAmendmentApproved("amd-1", "2026-07-10T00:00:00+00");
+
+    const { sql, params } = captured[0]!;
+    expect(sql).toContain("SET status = 'approved'");
+    expect(sql).toContain("status = 'applying'");
+    // Claim-ownership guard: an apply that outlived the stale window can't
+    // stamp over a takeover's live claim.
+    expect(sql).toContain("reviewed_at = $2::timestamptz");
+    expect(sql).not.toContain("status = 'pending'");
+    expect(params).toEqual(["amd-1", "2026-07-10T00:00:00+00"]);
+  });
+
+  it("release compensates a held claim back to pending with the visible reason (token-guarded)", async () => {
+    setDeployMode("self-hosted");
+    await releaseClaimedAmendment("amd-1", "2026-07-10T00:00:00+00", "snapshot failed");
+
+    const { sql, params } = captured[0]!;
+    expect(sql).toContain("SET status = 'pending'");
+    expect(sql).toContain("last_apply_error = $3");
+    expect(sql).toContain("status = 'applying'");
+    expect(sql).toContain("reviewed_at = $2::timestamptz");
+    expect(params).toEqual(["amd-1", "2026-07-10T00:00:00+00", "snapshot failed"]);
+  });
+
+  it("pending reads resurface stale 'applying' claims so a crash can't strand a row", async () => {
+    setDeployMode("self-hosted");
+    await getPendingAmendments("org-a");
+    await getPendingAmendmentCount("org-a");
+
+    expect(captured[0]!.sql).toContain("status = 'pending' OR (status = 'applying'");
+    expect(captured[0]!.sql).toContain("updated_at < now() - interval '10 minutes'");
+    expect(captured[1]!.sql).toContain("status = 'pending' OR (status = 'applying'");
+  });
+
+  it("insertSemanticAmendment lands 'pending' even when auto-approve eligibility is met (#4506)", async () => {
+    // The seam is the only writer of `approved`: the INSERT hardcodes
+    // 'pending' and eligibility is only REPORTED. A regression re-adding a
+    // status parameter to the VALUES would ship the old insert-time ghost
+    // approval back — this pins the SQL itself.
+    setDeployMode("self-hosted");
+    process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD = "0.5";
+    try {
+      const result = await insertSemanticAmendment({
+        orgId: "org-a",
+        description: "test",
+        sourceEntity: "orders",
+        confidence: 0.95,
+        connectionGroupId: null,
+        amendmentPayload: { amendmentType: "add_dimension", amendment: { name: "region" } },
+      });
+
+      expect(result).toEqual({ outcome: "inserted", id: "new-row-id", autoApprove: true });
+      const insert = captured.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+      expect(insert).toBeDefined();
+      expect(insert!.sql).toContain("'pending'");
+      expect(insert!.sql).not.toContain("'approved'");
+      expect(insert!.params).not.toContain("approved");
+    } finally {
+      delete process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD;
+    }
   });
 });
 
@@ -157,13 +273,23 @@ describe("semantic amendment queries — SaaS scoping (#4487)", () => {
     expect(sql).not.toContain("org_id IS NULL");
   });
 
-  it("reviewSemanticAmendment drops the OR org_id IS NULL arm for a workspace", async () => {
+  it("claimPendingAmendment drops the OR org_id IS NULL arm for a workspace", async () => {
     setDeployMode("saas");
-    await reviewSemanticAmendment("amd-1", "org-a", "approved", "admin");
+    await claimPendingAmendment("amd-1", "org-a", "admin");
 
     expect(captured).toHaveLength(1);
     const { sql } = captured[0]!;
-    expect(sql).toContain("org_id = $4");
+    expect(sql).toContain("org_id = $3");
+    expect(sql).not.toContain("org_id IS NULL");
+  });
+
+  it("rejectPendingAmendment drops the OR org_id IS NULL arm for a workspace", async () => {
+    setDeployMode("saas");
+    await rejectPendingAmendment("amd-1", "org-a", "admin");
+
+    expect(captured).toHaveLength(1);
+    const { sql } = captured[0]!;
+    expect(sql).toContain("org_id = $3");
     expect(sql).not.toContain("org_id IS NULL");
   });
 
@@ -183,11 +309,19 @@ describe("semantic amendment queries — SaaS scoping (#4487)", () => {
     expect(captured).toHaveLength(0);
   });
 
-  it("refuses the org-less path without touching the DB (review → null)", async () => {
+  it("refuses the org-less path without touching the DB (claim → null)", async () => {
     setDeployMode("saas");
-    const reviewed = await reviewSemanticAmendment("amd-1", null, "approved", "admin");
+    const claimed = await claimPendingAmendment("amd-1", null, "admin");
 
-    expect(reviewed).toBeNull();
+    expect(claimed).toBeNull();
+    expect(captured).toHaveLength(0);
+  });
+
+  it("refuses the org-less path without touching the DB (reject → false)", async () => {
+    setDeployMode("saas");
+    const rejected = await rejectPendingAmendment("amd-1", null, "admin");
+
+    expect(rejected).toBe(false);
     expect(captured).toHaveLength(0);
   });
 });
@@ -237,7 +371,7 @@ describe("amendmentOrgScope helper — direct (#4510)", () => {
 
 describe("one-workspace-owner invariant — insert seam (#4510)", () => {
   const insertBase = {
-    orgId: null as string | null,
+    orgId: null as string | null | undefined,
     description: "[add_dimension] orders: adds region",
     sourceEntity: "orders",
     confidence: 0.5,
@@ -293,11 +427,14 @@ describe("shared org-scope helper — reader/inserter enumeration (#4510)", () =
 
   // The canonical amendment readers. Adding a new tenant-scoped amendment reader
   // means adding it here AND routing its org filter through amendmentOrgScope —
-  // the discovery test below fails if either is skipped.
+  // the discovery test below fails if either is skipped. The decide seam's
+  // claim/reject (#4506) are readers too: they filter on the claimable-pending
+  // arm and take a tenant scope.
   const AMENDMENT_READERS = [
     "getPendingAmendmentCount",
     "getPendingAmendments",
-    "reviewSemanticAmendment",
+    "claimPendingAmendment",
+    "rejectPendingAmendment",
   ];
 
   const stripComments = (s: string) =>
@@ -343,22 +480,26 @@ describe("shared org-scope helper — reader/inserter enumeration (#4510)", () =
 
   it("pins the reader set — discovery tolerant of predicate order/whitespace/alias", () => {
     // A reader SELECT/UPDATEs pending amendments: an equality `type =
-    // 'semantic_amendment'` predicate AND a `status = 'pending'` *filter* (in a
-    // WHERE/AND position — not a `SET status = 'pending'` write). Matched
-    // independently and comment-stripped, tolerant of a table alias (`lp.`),
-    // extra whitespace, reordered predicates, or a line break, so a paraphrased
-    // new reader is still discovered and must be added to AMENDMENT_READERS +
-    // route through the helper. Intentionally excludes: findConflictingAmendment
+    // 'semantic_amendment'` predicate AND a pending *filter* in a WHERE/AND
+    // position — either the literal `status = 'pending'` or the shared
+    // `${CLAIMABLE_STATUS_SQL}` arm (#4506: pending-or-stale-claim), never a
+    // `SET status = 'pending'` write. Matched independently and
+    // comment-stripped, tolerant of a table alias (`lp.`), extra whitespace,
+    // reordered predicates, or a line break, so a paraphrased new reader is
+    // still discovered and must be added to AMENDMENT_READERS + route through
+    // the helper. Intentionally excludes: findConflictingAmendment
     // (`status IN (...)`, scoped NULL-safe by `IS NOT DISTINCT FROM` — an
-    // identity dedup, not a tenant read), revertAmendmentToPending (which SETs
-    // status='pending' but filters `status = 'approved'`), and the learned-
-    // pattern decay query (`type != 'semantic_amendment'`).
+    // identity dedup, not a tenant read), releaseClaimedAmendment /
+    // stampClaimedAmendmentApproved (which filter `status = 'applying'` —
+    // claim-token-scoped, not tenant-scoped), and the learned-pattern decay
+    // query (`type != 'semantic_amendment'`).
     const discovered = topLevelFunctions()
       .filter((f) => {
         const code = stripComments(f.body);
         return (
           /(?:\w+\.)?type\s*=\s*'semantic_amendment'/.test(code) &&
-          /(?:WHERE|AND)\s+(?:\w+\.)?status\s*=\s*'pending'/.test(code)
+          (/(?:WHERE|AND)\s+(?:\w+\.)?status\s*=\s*'pending'/.test(code) ||
+            /(?:WHERE|AND)\s+\$\{CLAIMABLE_STATUS_SQL\}/.test(code))
         );
       })
       .map((f) => f.name);

@@ -1816,7 +1816,12 @@ export function makeSchedulerLive(
         onTickFailure: { level: "warn", message: "Onboarding email tick failed" },
       });
 
-      // ── Periodic fiber: semantic expert scheduler (#1269) ──────────
+      // ── Periodic fiber: autonomous-improvement scheduler (#1269, #4516) ──
+      // SaaS-first: the gate is the PLATFORM master switch (does the fiber run
+      // on this deployment at all). The per-workspace opt-in + billing gate +
+      // org-stamping live INSIDE the tick (runExpertSchedulerTick), so the
+      // deploy-mode force-disable boot-guard (#4487) is retired — the fiber
+      // runs on SaaS, gated per-workspace.
       yield* registerPeriodicFiber({
         name: "expert_scheduler",
         // Settings-registry-backed (platform DB override > env > default);

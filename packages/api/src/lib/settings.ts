@@ -580,25 +580,47 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
 
   // Semantic Expert
   //
-  // Scope split (#3392): the scheduler pair is PLATFORM-scoped — the expert
-  // scheduler is a single process-global fiber forked once at boot
-  // (`makeSchedulerLive` in lib/effect/layers.ts); there is no per-workspace
-  // tick, so a workspace override would have nothing to apply to. Both are
-  // consumed once at boot, hence `requiresRestart`. The auto-approve pair
-  // below stays WORKSPACE-scoped: it is read per proposal in
-  // `insertSemanticAmendment` (lib/db/internal.ts), which has the
-  // amendment's orgId in scope.
+  // Scope split (#3392, #4516): the scheduler PAIR below is PLATFORM-scoped.
+  // `ATLAS_EXPERT_SCHEDULER_ENABLED` is the platform MASTER SWITCH — does the
+  // single process-global autonomous-improvement fiber run on this deployment
+  // at all (forked once at boot by `makeSchedulerLive` in lib/effect/layers.ts,
+  // hence `requiresRestart`)? The per-workspace opt-in decision moved OUT of
+  // this key in #4516: on SaaS the tick iterates workspaces that set the
+  // WORKSPACE-scoped `ATLAS_AUTONOMOUS_IMPROVE_ENABLED` below; on self-hosted the
+  // whole deployment is one implicit workspace gated by this master switch (the
+  // degenerate case, equivalent to the pre-#4516 behavior). The auto-approve
+  // pair is WORKSPACE-scoped: read per proposal in `insertSemanticAmendment`
+  // (lib/db/internal.ts), which has the amendment's orgId in scope.
   {
     key: "ATLAS_EXPERT_SCHEDULER_ENABLED",
     section: "Intelligence",
     label: "Expert Scheduler",
-    description: "Enable periodic semantic layer analysis (runs the improvement engine automatically)",
+    description: "Enable the autonomous-improvement fiber platform-wide (per-workspace opt-in is separate on SaaS)",
     type: "boolean",
     default: "false",
     envVar: "ATLAS_EXPERT_SCHEDULER_ENABLED",
     requiresRestart: true,
     scope: "platform",
     saasVisible: false,
+  },
+  {
+    // #4516 — per-workspace autonomous-improvement opt-in. Off by default and
+    // WORKSPACE-scoped so enabling it is a workspace-admin settings action
+    // (visible + writable to SaaS workspace admins via the default of the
+    // saasVisible/saasWritable axis). Read per-tick (no `requiresRestart`):
+    // the SaaS scheduler enumerates workspaces where this resolves true. It is
+    // orthogonal to auto-approve below — autonomy governs whether the scheduler
+    // runs for a workspace; auto-approve governs whether eligible proposals
+    // self-apply vs. queue, and is never implied by autonomy.
+    key: "ATLAS_AUTONOMOUS_IMPROVE_ENABLED",
+    section: "Intelligence",
+    label: "Autonomous Improvement",
+    description:
+      "Let Atlas propose semantic-layer amendments for this workspace on its own cadence (spends this workspace's budget; off by default)",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_AUTONOMOUS_IMPROVE_ENABLED",
+    scope: "workspace",
   },
   {
     key: "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",

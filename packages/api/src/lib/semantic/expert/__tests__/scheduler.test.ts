@@ -75,11 +75,13 @@ describe("isExpertSchedulerEnabled", () => {
   });
 });
 
-// #4487 — the scheduler inserts NULL-org ("global scope") amendment rows,
-// which are only sound on self-hosted. In `saas` deploy mode the scheduler is
-// force-disabled regardless of the setting, so it can never produce global
-// rows that would leak into every workspace's pending list.
-describe("isExpertSchedulerEnabled — SaaS boot-guard (#4487)", () => {
+// #4516 — the #4487 SaaS boot-guard is RETIRED. The scheduler no longer inserts
+// NULL-org ("global scope") rows: every insert is org-stamped and the tick is
+// gated per-workspace (billing gate + `ATLAS_AUTONOMOUS_IMPROVE_ENABLED`). So
+// `isExpertSchedulerEnabled` is now the DEPLOYMENT master switch only — the
+// fiber runs on SaaS too, deploy mode is not consulted here. This block pins the
+// retirement: if a future change re-adds a `saas → false` branch, it ships red.
+describe("isExpertSchedulerEnabled — SaaS boot-guard retired (#4516)", () => {
   // Fully-typed `ResolvedConfig` so a `deployMode` typo can't compile silently.
   function configWithDeployMode(deployMode: "saas" | "self-hosted"): ResolvedConfig {
     return {
@@ -102,9 +104,9 @@ describe("isExpertSchedulerEnabled — SaaS boot-guard (#4487)", () => {
     _resetConfig();
   });
 
-  it("returns false in saas deploy mode even when the setting is enabled", () => {
+  it("returns true in saas deploy mode when the setting is enabled (boot-guard gone)", () => {
     _setConfigForTest(configWithDeployMode("saas"));
-    expect(isExpertSchedulerEnabled()).toBe(false);
+    expect(isExpertSchedulerEnabled()).toBe(true);
   });
 
   it("returns true in self-hosted deploy mode when the setting is enabled", () => {
@@ -112,9 +114,10 @@ describe("isExpertSchedulerEnabled — SaaS boot-guard (#4487)", () => {
     expect(isExpertSchedulerEnabled()).toBe(true);
   });
 
-  it("returns true when config is unloaded (self-hosted default) and the setting is enabled", () => {
-    _resetConfig();
-    expect(isExpertSchedulerEnabled()).toBe(true);
+  it("returns false in saas deploy mode when the setting is disabled", () => {
+    delete process.env.ATLAS_EXPERT_SCHEDULER_ENABLED;
+    _setConfigForTest(configWithDeployMode("saas"));
+    expect(isExpertSchedulerEnabled()).toBe(false);
   });
 });
 

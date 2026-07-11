@@ -16,13 +16,15 @@
 import { describe, it, expect, mock } from "bun:test";
 
 let capturedSql = "";
+let capturedParams: unknown[] = [];
 
 // context-loader dynamically imports internal ONLY inside loadRejectedKeys, and
 // uses just these two exports — a partial mock is complete for this file.
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
-  internalQuery: async (sql: string) => {
+  internalQuery: async (sql: string, params: unknown[]) => {
     capturedSql = sql;
+    capturedParams = params;
     return [
       {
         source_entity: "orders",
@@ -58,5 +60,22 @@ describe("loadRejectedKeys (#4507)", () => {
     expect(keys.has("eu:orders:add_dimension:region")).toBe(true);
     expect(keys.has("default:orders:add_measure:total_amount")).toBe(true);
     expect(keys.size).toBe(2);
+  });
+
+  // #4516 — the SaaS per-workspace scheduler passes an orgId so the pre-filter
+  // is scoped to one tenant; without it the union of every tenant's rejections
+  // would over-suppress. Self-hosted / CLI omit it (global NULL-org scan).
+  it("scopes the scan to one workspace when an orgId is passed", async () => {
+    await loadRejectedKeys("org-42");
+
+    expect(capturedSql).toContain("org_id = $1");
+    expect(capturedParams).toEqual(["org-42"]);
+  });
+
+  it("does not filter by org when no orgId is passed (self-hosted / CLI)", async () => {
+    await loadRejectedKeys();
+
+    expect(capturedSql).not.toContain("org_id = $1");
+    expect(capturedParams).toEqual([]);
   });
 });

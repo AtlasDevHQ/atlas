@@ -12,11 +12,16 @@
  */
 
 import { describe, it, expect } from "bun:test";
+import { AMENDMENT_TYPES } from "@useatlas/types";
 import {
   amendmentIdentityKey,
   amendmentIdentityFromRow,
   amendmentTargetName,
 } from "../amendment-identity";
+// The identity module inlines its glossary-type predicate to stay import-free
+// for production consumers (see its module doc); importing the apply-side
+// predicate HERE (a test) guards the mirror without violating that constraint.
+import { isGlossaryAmendmentType } from "@atlas/api/lib/semantic/expert/apply";
 
 describe("amendmentIdentityKey", () => {
   it("is group-scoped — NULL and undefined groups map to 'default'", () => {
@@ -41,6 +46,40 @@ describe("amendmentIdentityKey", () => {
     expect(amendmentIdentityKey("default", "orders", "add_query_pattern", "")).toBe(
       "default:orders:add_query_pattern",
     );
+  });
+
+  it("glossary identity is host-entity-agnostic — same (group, term) is one key regardless of host entity (#4518)", () => {
+    // The glossary is one document per group, so a term proposed under `orders`
+    // and the same term under `customers` must reconstruct to the SAME identity
+    // — otherwise rejecting one wouldn't suppress the other and dedup would queue
+    // two rows writing the identical term.
+    const fromOrders = amendmentIdentityKey("eu", "orders", "add_glossary_term", "MRR");
+    const fromCustomers = amendmentIdentityKey("eu", "customers", "add_glossary_term", "MRR");
+    expect(fromOrders).toBe(fromCustomers);
+    expect(fromOrders).toBe("eu:glossary:add_glossary_term:MRR");
+  });
+
+  it("glossary group scoping and add-vs-update stay distinct (#4518)", () => {
+    // Different groups remain distinct...
+    expect(amendmentIdentityKey("eu", "orders", "add_glossary_term", "MRR")).not.toBe(
+      amendmentIdentityKey("us", "orders", "add_glossary_term", "MRR"),
+    );
+    // ...and add vs update are distinct verbs (as add_/update_dimension are).
+    expect(amendmentIdentityKey("eu", "orders", "add_glossary_term", "MRR")).not.toBe(
+      amendmentIdentityKey("eu", "orders", "update_glossary_term", "MRR"),
+    );
+  });
+
+  it("host-agnostic collapse fires for EXACTLY the glossary types apply.ts routes (mirror guard, #4518)", () => {
+    // The identity module's inlined glossary predicate and apply.ts's
+    // isGlossaryAmendmentType must agree for every amendment type, or a future
+    // glossary type keyed on the host entity would silently re-open the leak.
+    // Observed via the key: the entity component collapses to "glossary" iff the
+    // type is a glossary type.
+    for (const t of AMENDMENT_TYPES) {
+      const collapsed = amendmentIdentityKey("g", "entityX", t, "tgt").startsWith("g:glossary:");
+      expect(collapsed).toBe(isGlossaryAmendmentType(t));
+    }
   });
 });
 
@@ -67,6 +106,9 @@ describe("amendmentTargetName", () => {
 
   it("reads .term for glossary terms", () => {
     expect(amendmentTargetName("add_glossary_term", { term: "arr", definition: "" })).toBe("arr");
+    // #4518: update_glossary_term keys on .term too, so rejection memory + pending
+    // dedup identify a term amendment regardless of add-vs-update verb.
+    expect(amendmentTargetName("update_glossary_term", { term: "churn", definition: "x" })).toBe("churn");
   });
 
   it("is coarse (undefined) for add_query_pattern — the stored name carries a per-run index", () => {
@@ -125,6 +167,23 @@ describe("amendmentIdentityFromRow", () => {
     expect(tableKey).toBe("default:orders:update_description:table");
     expect(dimKey).toBe("default:orders:update_description:region");
     expect(tableKey).not.toBe(dimKey);
+  });
+
+  it("reconstructs a host-agnostic identity for glossary rows — same (group, term), different source entity (#4518)", () => {
+    // Two pending glossary rows for the same term, surfaced under different host
+    // entities, must dedup: they reconstruct to one host-agnostic identity.
+    const underOrders = amendmentIdentityFromRow({
+      sourceEntity: "orders",
+      connectionGroupId: "eu",
+      amendmentPayload: { amendmentType: "add_glossary_term", amendment: { term: "MRR", definition: "x" } },
+    });
+    const underCustomers = amendmentIdentityFromRow({
+      sourceEntity: "customers",
+      connectionGroupId: "eu",
+      amendmentPayload: { amendmentType: "add_glossary_term", amendment: { term: "MRR", definition: "y" } },
+    });
+    expect(underOrders).toBe("eu:glossary:add_glossary_term:MRR");
+    expect(underOrders).toBe(underCustomers);
   });
 
   it("returns null for a malformed payload (missing amendmentType)", () => {

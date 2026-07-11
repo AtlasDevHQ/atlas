@@ -64,6 +64,7 @@ export function amendmentTargetName(
       if (typeof a.dimension === "string") return a.dimension;
       return undefined;
     case "add_glossary_term":
+    case "update_glossary_term":
       return typeof a.term === "string" ? a.term : undefined;
     default:
       return typeof a.name === "string" ? a.name : undefined;
@@ -71,10 +72,31 @@ export function amendmentTargetName(
 }
 
 /**
+ * Amendment types whose identity binds to the group's single glossary document
+ * rather than the host entity the term was found under (#4518). Inlined — this
+ * leaf module imports nothing — mirroring `isGlossaryAmendmentType` in
+ * `expert/apply.ts`; the literal `"glossary"` below mirrors `GLOSSARY_DOC_NAME`.
+ */
+function isGlossaryIdentityType(amendmentType: string): boolean {
+  return amendmentType === "add_glossary_term" || amendmentType === "update_glossary_term";
+}
+
+/**
  * Build the canonical identity key. A NULL/absent group maps to `"default"`
  * (ADR-0012 flat group), matching `entity.group` in the analyzer so one
  * group's rejection never suppresses another group's same-named amendment.
  * The target is omitted when absent (e.g. coarse query-pattern identities).
+ *
+ * Glossary amendments bind to the group's ONE glossary document (`name =
+ * "glossary"`), so their identity is host-entity-agnostic (#4518): the same
+ * `(group, term)` is a single identity no matter which entity surfaced the
+ * term. Keying a glossary amendment on the host entity would leak — a rejection
+ * of "MRR" proposed under `orders` would not suppress "MRR" under `customers`,
+ * and pending dedup would queue two rows that both upsert the identical term
+ * into the same per-group glossary. Collapsing the entity component to the
+ * fixed `"glossary"` document name closes that leak; `amendmentType` stays in
+ * the key, so an `add`- and `update_glossary_term` for the same term remain
+ * distinct verbs (as `add_`/`update_dimension` are).
  */
 export function amendmentIdentityKey(
   group: string | null | undefined,
@@ -83,7 +105,8 @@ export function amendmentIdentityKey(
   target?: string | null,
 ): string {
   const g = group ?? "default";
-  return `${g}:${entity}:${amendmentType}${target ? `:${target}` : ""}`;
+  const e = isGlossaryIdentityType(amendmentType) ? "glossary" : entity;
+  return `${g}:${e}:${amendmentType}${target ? `:${target}` : ""}`;
 }
 
 /**

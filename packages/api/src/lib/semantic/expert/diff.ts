@@ -63,19 +63,32 @@ export function hashBaselineYaml(normalizedBaseline: string): string {
 }
 
 /**
- * Unified diff between two normalized YAML documents for `entityName`. Uses the
- * `diff` package's LCS patch so multi-hunk changes render as a proper unified
- * diff.
+ * Unified diff between two normalized YAML documents attributed to `filePath`.
+ * Uses the `diff` package's LCS patch so multi-hunk changes render as a proper
+ * unified diff. The document-kind-agnostic core: {@link computeEntityDiff}
+ * attributes it to an entity file, glossary amendments to the group glossary.yml
+ * (#4518).
+ */
+export function computeDocDiff(
+  filePath: string,
+  beforeNormalized: string,
+  afterNormalized: string,
+): string {
+  return createTwoFilesPatch(filePath, filePath, beforeNormalized, afterNormalized, "", "", {
+    context: 3,
+  });
+}
+
+/**
+ * Unified diff between two normalized YAML documents for `entityName`, attributed
+ * to its `semantic/entities/<name>.yml` path.
  */
 export function computeEntityDiff(
   entityName: string,
   beforeNormalized: string,
   afterNormalized: string,
 ): string {
-  const filePath = `semantic/entities/${entityName}.yml`;
-  return createTwoFilesPatch(filePath, filePath, beforeNormalized, afterNormalized, "", "", {
-    context: 3,
-  });
+  return computeDocDiff(`semantic/entities/${entityName}.yml`, beforeNormalized, afterNormalized);
 }
 
 /**
@@ -136,9 +149,15 @@ export async function computeAmendmentLiveDiff(params: {
   /** Surfaced in error messages (the amendment id). */
   label?: string;
 }): Promise<AmendmentLiveDiff> {
-  const { analysisResultFromStoredPayload, resolveAmendmentBaseline, applyAmendment } = await import(
-    "./apply"
-  );
+  const {
+    analysisResultFromStoredPayload,
+    resolveAmendmentBaseline,
+    applyAmendment,
+    isGlossaryAmendmentType,
+    resolveGlossaryBaseline,
+    applyGlossaryAmendment,
+    glossaryDiffPath,
+  } = await import("./apply");
 
   const result = analysisResultFromStoredPayload({
     sourceEntity: params.sourceEntity,
@@ -146,6 +165,21 @@ export async function computeAmendmentLiveDiff(params: {
     rawPayload: params.rawPayload,
     label: params.label,
   });
+
+  // Glossary amendments diff the group's glossary DOCUMENT, not the host entity
+  // the term was found under (#4518). Same live-diff contract — recompute
+  // against the current baseline, hash the normalized baseline — but resolved,
+  // mutated, and attributed against the glossary.
+  if (isGlossaryAmendmentType(result.amendmentType)) {
+    const { parsed } = await resolveGlossaryBaseline(params.orgId, result.group);
+    const updated = applyGlossaryAmendment(parsed, result);
+    const beforeNormalized = normalizeEntityYaml(parsed);
+    const afterNormalized = normalizeEntityYaml(updated);
+    return {
+      diff: computeDocDiff(glossaryDiffPath(result.group), beforeNormalized, afterNormalized),
+      baselineHash: hashBaselineYaml(beforeNormalized),
+    };
+  }
 
   const { parsed } = await resolveAmendmentBaseline(
     params.orgId,

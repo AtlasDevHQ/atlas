@@ -30,7 +30,7 @@ const log = createLogger("tool:propose-amendment");
 export const proposeAmendment = tool({
   description: `Propose a semantic layer YAML change. Generates a unified diff and writes to the review queue.
 
-Amendment types: add_dimension, add_measure, add_join, add_query_pattern, update_description, update_dimension, add_glossary_term, update_glossary_term, add_virtual_dimension.
+Amendment types: ${AMENDMENT_TYPES.join(", ")}.
 
 The amendment object should match the YAML structure for that type (e.g., { name, sql, type, description } for a dimension; { term, definition, ambiguous } for a glossary term). Glossary amendments (add_glossary_term / update_glossary_term) write the group's glossary document; entityName is the table the term relates to.`,
 

@@ -12,11 +12,16 @@
  */
 
 import { describe, it, expect } from "bun:test";
+import { AMENDMENT_TYPES } from "@useatlas/types";
 import {
   amendmentIdentityKey,
   amendmentIdentityFromRow,
   amendmentTargetName,
 } from "../amendment-identity";
+// The identity module inlines its glossary-type predicate to stay import-free
+// for production consumers (see its module doc); importing the apply-side
+// predicate HERE (a test) guards the mirror without violating that constraint.
+import { isGlossaryAmendmentType } from "@atlas/api/lib/semantic/expert/apply";
 
 describe("amendmentIdentityKey", () => {
   it("is group-scoped — NULL and undefined groups map to 'default'", () => {
@@ -63,6 +68,18 @@ describe("amendmentIdentityKey", () => {
     expect(amendmentIdentityKey("eu", "orders", "add_glossary_term", "MRR")).not.toBe(
       amendmentIdentityKey("eu", "orders", "update_glossary_term", "MRR"),
     );
+  });
+
+  it("host-agnostic collapse fires for EXACTLY the glossary types apply.ts routes (mirror guard, #4518)", () => {
+    // The identity module's inlined glossary predicate and apply.ts's
+    // isGlossaryAmendmentType must agree for every amendment type, or a future
+    // glossary type keyed on the host entity would silently re-open the leak.
+    // Observed via the key: the entity component collapses to "glossary" iff the
+    // type is a glossary type.
+    for (const t of AMENDMENT_TYPES) {
+      const collapsed = amendmentIdentityKey("g", "entityX", t, "tgt").startsWith("g:glossary:");
+      expect(collapsed).toBe(isGlossaryAmendmentType(t));
+    }
   });
 });
 

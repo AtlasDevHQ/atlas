@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
 import { extractProposals, type Proposal, type TestResult } from "./proposals";
@@ -231,24 +231,14 @@ export default function SemanticImprovePage() {
     Map<string, "accepted" | "rejected">
   >(new Map());
 
-  // Transport for the semantic expert agent endpoint
-  const sessionIdRef = useRef<string | null>(null);
-
+  // Transport for the semantic expert agent endpoint. The conversation lives
+  // entirely in this component's useChat state — there is no server-side
+  // session resource to round-trip (#4503).
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: `${apiUrl}/api/v1/admin/semantic-improve/chat`,
         credentials: isCrossOrigin ? "include" : undefined,
-        body: () =>
-          sessionIdRef.current
-            ? { sessionId: sessionIdRef.current }
-            : {},
-        fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
-          const response = await globalThis.fetch(input, init);
-          const sid = response.headers.get("x-session-id");
-          if (sid) sessionIdRef.current = sid;
-          return response;
-        }) as typeof fetch,
       }),
     [apiUrl, isCrossOrigin],
   );
@@ -319,8 +309,7 @@ export default function SemanticImprovePage() {
   async function handleReview(proposal: Proposal, decision: "approved" | "rejected") {
     // Every rendered proposal — chat-streamed or loaded from the pending list —
     // carries the `learned_patterns` row id, so all reviews go through the one
-    // working DB-backed path. The in-memory `/proposals/{index}` route is never
-    // populated in the web flow and always 404s.
+    // DB-backed review path.
     const dbId = proposal.dbId;
     if (!dbId) return;
     const label = decision === "approved" ? "approve" : "reject";

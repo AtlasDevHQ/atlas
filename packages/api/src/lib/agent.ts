@@ -682,6 +682,18 @@ export interface BuildSystemParamOptions {
    * {@link warnings} — a persona is the role, not a footnote appended after it.
    */
   readonly persona?: string;
+  /**
+   * #4514 — the Semantic-improve Briefing (lib/semantic/expert/briefing.ts): the
+   * deterministic turn-one context block (health, tracked-profile freshness, top
+   * findings, the pending review queue, recent panel decisions) front-loaded for
+   * every Improvement conversation, so the expert agent doesn't spend tool calls
+   * learning state it can be told. Re-assembled each turn from live inputs, so a
+   * panel decision shows up next turn without a synthetic message. Appended after
+   * the system-prompt body (the semantic index and any KB ToC / learned-patterns /
+   * dialect-specialist sections), just ahead of the source catalog. Improve-route
+   * only; omitted ⇒ nothing appended.
+   */
+  readonly briefing?: string;
   /** Org-scoped (DB-backed) semantic index section; preferred over the file-based index when present. */
   readonly orgSemanticIndex?: string;
   /**
@@ -777,6 +789,7 @@ export function buildSystemParam(
     registry = defaultRegistry,
     warnings,
     persona,
+    briefing,
     orgSemanticIndex,
     orgKnowledgeToc,
     learnedPatternsSection,
@@ -790,6 +803,15 @@ export function buildSystemParam(
     dialectSpecialists,
   } = options;
   let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext, orgKnowledgeToc, persona, dialectSpecialists);
+
+  // #4514 — the Semantic-improve Briefing rides at the END of the system-prompt
+  // body (`buildSystemPrompt` already folded in the semantic index + any KB ToC /
+  // learned-patterns / dialect-specialist sections above), just ahead of the
+  // source catalog appended below: the layer, then its current
+  // health/queue/decisions. Improve-route only; a no-op everywhere else.
+  if (briefing) {
+    content += "\n\n" + briefing;
+  }
 
   if (sourceCatalog) {
     content += "\n\n" + sourceCatalog;
@@ -1064,6 +1086,7 @@ export async function runAgent({
   conversationId,
   warnings,
   persona,
+  briefing,
   contextWarnings,
   maxSteps: maxStepsOverride,
   /** Optional pre-resolved AI model. When provided, skips provider resolution. */
@@ -1086,6 +1109,17 @@ export async function runAgent({
    * the analyst prefix. Threaded verbatim to {@link buildSystemParam}.
    */
   persona?: string;
+  /**
+   * #4514 — the Semantic-improve Briefing block (lib/semantic/expert/briefing.ts).
+   * The improve route assembles it per turn and passes it here; `buildSystemParam`
+   * appends it at the end of the system-prompt body (after the semantic index and
+   * any KB / learned-patterns / dialect sections) so the expert agent is
+   * front-loaded with the layer's current health, tracked-profile freshness, top
+   * findings, pending queue, and recent panel decisions — no tool call needed to
+   * learn them. Every other surface omits it (no change). Threaded verbatim to
+   * {@link buildSystemParam}.
+   */
+  briefing?: string;
   /**
    * Out-parameter (#1988 B5). When supplied, the agent's preflight loaders
    * push a structured {@link ChatContextWarning} entry per failure so the
@@ -1723,6 +1757,7 @@ export async function runAgent({
     registry: activeRegistry,
     warnings,
     persona,
+    briefing,
     orgSemanticIndex,
     orgKnowledgeToc,
     learnedPatternsSection,

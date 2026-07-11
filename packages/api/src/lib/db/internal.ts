@@ -2084,6 +2084,54 @@ export async function getPendingAmendments(orgId: string | null): Promise<Pendin
   );
 }
 
+/** Row shape returned by {@link getRecentlyDecidedAmendments}. */
+export type DecidedAmendmentRow = Record<string, unknown> & {
+  id: string;
+  source_entity: string;
+  connection_group_id: string | null;
+  amendment_payload: Record<string, unknown> | null;
+  status: "approved" | "rejected";
+  reviewed_at: string;
+};
+
+/**
+ * List the most-recently DECIDED semantic amendments (approved or rejected) for
+ * an org, newest-decision first — the briefing's "recent panel decisions" feed
+ * (#4514). Lets the expert agent learn what the admin decided in the review
+ * panel mid-conversation without a synthetic transcript message.
+ *
+ * Org scope routes through {@link amendmentOrgScope} like the pending readers,
+ * so a NULL-owner ("global scope") row never surfaces in a tenant workspace on
+ * SaaS. Filters on `status IN ('approved','rejected')` — deliberately NOT the
+ * claimable-pending arm — so the reader-enumeration guard
+ * (`semantic-amendment-saas-scoping.test.ts`) does not (and should not) pin it
+ * with the pending readers; it is a decided-history read, not a queue read.
+ * Returns [] when no internal DB is available.
+ */
+export async function getRecentlyDecidedAmendments(
+  orgId: string | null,
+  limit = 10,
+): Promise<DecidedAmendmentRow[]> {
+  if (!hasInternalDB()) return [];
+
+  const scope = amendmentOrgScope(orgId, "$1");
+  if (scope.withhold) return [];
+
+  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 10;
+
+  return internalQuery<DecidedAmendmentRow>(
+    `SELECT id, source_entity, connection_group_id, amendment_payload, status, reviewed_at::text
+       FROM learned_patterns
+       WHERE type = 'semantic_amendment'
+       AND status IN ('approved', 'rejected')
+       AND reviewed_at IS NOT NULL
+       AND ${scope.clause}
+       ORDER BY reviewed_at DESC
+       LIMIT ${safeLimit}`,
+    orgId ? [orgId] : [],
+  );
+}
+
 /** Row shape returned by getRejectedAmendments. */
 export type RejectedAmendmentRow = Record<string, unknown> & {
   id: string;
@@ -2167,7 +2215,6 @@ export async function reconsiderRejectedAmendment(id: string, orgId: string | nu
 
   return rows.length > 0;
 }
-
 
 /**
  * Increment repetition_count by 1 and increase confidence by 0.1 (capped at 1.0).

@@ -26,6 +26,7 @@ import { runAgent } from "@atlas/api/lib/agent";
 import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
 import { buildExpertRegistry } from "@atlas/api/lib/tools/expert-registry";
 import { EXPERT_PERSONA_PROMPT } from "@atlas/api/lib/semantic/expert/persona";
+import { SEMANTIC_HEALTH_STATUSES } from "@atlas/api/lib/semantic/expert/briefing";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -152,6 +153,17 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
     // Build the expert tool registry
     const expertRegistry = buildExpertRegistry();
 
+    // #4514 — assemble the Briefing: the deterministic turn-one context block
+    // (health, tracked-profile freshness, top findings, the pending queue,
+    // recent panel decisions) front-loaded into the expert agent's prompt so it
+    // doesn't spend tool calls learning state it can be told. Built from tracked
+    // profiles + internal DB only — NO customer-database query at chat start
+    // (#4514 AC3). Re-assembled each turn, so a panel decision made between turns
+    // shows up in the next turn's context without a synthetic message. Fail-soft:
+    // a load hiccup starts the chat without the block rather than 500-ing it.
+    const { buildBriefingBlock } = await import("@atlas/api/lib/semantic/expert/briefing-inputs");
+    const briefing = await buildBriefingBlock(orgId);
+
     // #4508 — stamp the agent origin so origin-scoped approval rules (#2072)
     // fire for the expert agent's `executeSQL`. The interactive improve chat is
     // a web surface, so it stamps `'chat'` like /chat · /query · /demo; without
@@ -187,6 +199,9 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
             // role section (not appended under `## Warnings`), so the model gets
             // one identity. See lib/semantic/expert/persona.ts.
             persona: EXPERT_PERSONA_PROMPT,
+            // #4514 — front-load the Briefing (null when it couldn't be built ⇒
+            // buildSystemParam appends nothing, chat still starts).
+            briefing: briefing ?? undefined,
           });
 
           // Audit the draft surface: an expert-agent chat turn that can propose
@@ -454,6 +469,14 @@ const healthScoreRoute = createRoute({
             dimensionCount: z.number(),
             measureCount: z.number(),
             glossaryTermCount: z.number(),
+            // #4514 — the status discriminator: the widget renders a
+            // parse-failure zero ("N of M entities failed to parse") differently
+            // from a no-data zero ("no entities yet"). `parseFailures`/`totalRows`
+            // carry the counts the corruption caption needs. Enum reuses the
+            // single-source tuple so it can't drift from the type.
+            status: z.enum(SEMANTIC_HEALTH_STATUSES),
+            parseFailures: z.number(),
+            totalRows: z.number(),
           }),
         },
       },
@@ -659,60 +682,32 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
 adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
   runHandler(c, "semantic-health-score", async () => {
     const { orgId } = c.get("orgContext");
-    const { loadEntitiesForOrg, loadEntitiesFromDisk, loadGlossaryFromDisk } =
-      await import("@atlas/api/lib/semantic/expert/context-loader");
-    const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
+    const { loadAnalysisContext, deriveHealthStatus } =
+      await import("@atlas/api/lib/semantic/expert/briefing-inputs");
     const { computeSemanticHealth } = await import("@atlas/api/lib/semantic/expert/health");
 
-    // `loadEntitiesForOrg` merges DB rows with the per-org disk mirror under
-    // the same `(name, connection_group_id)` dedup the Overview tile + chat
-    // empty state + semantic file tree all read through (#2503). Reading only
-    // DB rows here used to drop the disk-mirror half of the merge, leaving the
-    // Health caption "23 entities" next to a file tree showing 46.
+    // #4514 — the SAME assembly the briefing uses: `loadAnalysisContext` builds
+    // the AnalysisContext from REAL tracked inputs (baseline profiles #4509 +
+    // audit patterns), replacing the old empty-inputs call that fixed coverage
+    // and join sub-scores at 100 regardless of the actual schema. Reads only
+    // tracked/internal data — no live customer-database query.
     //
-    // The no-DB / no-orgId branch still falls back to bundled YAML — the
-    // self-hosted stdio loop and bare CLI scenario. On SaaS this path can't
-    // trigger: an authenticated admin request always carries an orgId, and
-    // SaaS always runs with an internal DB.
-    let entities: Awaited<ReturnType<typeof loadEntitiesFromDisk>>;
-    let parseFailures = 0;
-    let totalRows: number;
-    if (orgId && hasInternalDB()) {
-      const dbResult = await loadEntitiesForOrg(orgId, "published");
-      entities = dbResult.entities;
-      parseFailures = dbResult.parseFailures;
-      totalRows = dbResult.totalRows;
-    } else {
-      entities = await loadEntitiesFromDisk();
-      totalRows = entities.length;
-    }
-    const glossary = await loadGlossaryFromDisk();
+    // `loadEntitiesForOrg` (inside) merges DB rows with the per-org disk mirror
+    // under the same `(name, connection_group_id)` dedup the Overview tile + chat
+    // empty state + semantic file tree read through (#2503). The no-DB / no-orgId
+    // branch falls back to bundled YAML (self-hosted stdio / bare CLI); on SaaS
+    // that branch can't trigger — an authenticated admin request always carries
+    // an orgId and SaaS always runs with an internal DB.
+    const { ctx, totalRows, parseFailures } = await loadAnalysisContext(orgId, "published");
+    const score = computeSemanticHealth(ctx);
 
-    const score = computeSemanticHealth({
-      profiles: [],
-      entities,
-      glossary,
-      auditPatterns: [],
-      rejectedKeys: new Set(),
-    });
-
-    // Surface a status discriminator so the widget can distinguish the
-    // empty case (`no_entities`) from the corruption case (`corrupt` —
-    // every entity row failed parse) instead of conflating both with a
-    // 0% score that gives no actionable signal.
-    //
-    // `corrupt` gates on `totalRows` (DB-rows-considered) so a workspace
-    // whose every DB row fails YAML parse still trips the signal even when
-    // the disk mirror has healthy entries that would otherwise pad
-    // `entities.length` past `parseFailures`. `no_entities` gates on the
-    // merged `entities.length` because a workspace with 0 DB rows but a
-    // populated disk mirror genuinely has entities to query — flagging it
-    // empty would be the same misleading signal in reverse (#2503 review).
-    const status = parseFailures > 0 && parseFailures === totalRows && totalRows > 0
-      ? ("corrupt" as const)
-      : entities.length === 0
-        ? ("no_entities" as const)
-        : ("ok" as const);
+    // Status discriminator: distinguish the empty case (`no_entities`) from the
+    // corruption case (`corrupt` — every DB entity row failed parse) instead of
+    // conflating both with a 0% score. `corrupt` gates on `totalRows`
+    // (DB-rows-considered) so a healthy disk mirror can't mask corruption;
+    // `no_entities` gates on the merged entity count (#2503). Shared with the
+    // briefing via `deriveHealthStatus` so both read the same rule.
+    const status = deriveHealthStatus(parseFailures, totalRows, ctx.entities.length);
 
     return c.json({ ...score, status, parseFailures, totalRows }, 200);
   }),

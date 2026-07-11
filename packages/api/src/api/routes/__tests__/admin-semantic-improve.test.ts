@@ -58,6 +58,10 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   insertSemanticAmendment: async () => ({ id: "mock-amendment-id", autoApprove: false }),
   getPendingAmendmentCount: async () => 0,
   getPendingAmendments: async () => mockPendingAmendments,
+  // #4514 — the briefing loader reads recent panel decisions. Empty here; the
+  // dedicated briefing seam test (admin-semantic-improve-briefing.test.ts) drives
+  // the turn-one + rejection-reflected behavior.
+  getRecentlyDecidedAmendments: async () => [],
   getRejectedAmendments: async () => mockRejectedAmendments,
   // Atomic conditional rejected → pending flip (#4512). Models the DB: only a
   // currently-rejected row moves, and it re-enters the pending queue cleared of
@@ -689,6 +693,10 @@ describe("admin-semantic-improve", () => {
           return [];
         },
         loadGlossaryFromDisk: async () => [],
+        // #4514 — loadAnalysisContext (the shared real-inputs builder the health
+        // route now uses) also reads audit patterns + rejection memory.
+        loadAuditPatterns: async () => [],
+        loadRejectedKeys: async () => new Set(),
       }));
       void mock.module("@atlas/api/lib/semantic/expert/health", () => ({
         computeSemanticHealth: (ctx: { entities: unknown[]; glossary: unknown[] }) => ({
@@ -748,6 +756,10 @@ describe("admin-semantic-improve", () => {
         }),
         loadEntitiesFromDisk: async () => [],
         loadGlossaryFromDisk: async () => [],
+        // #4514 — loadAnalysisContext (the shared real-inputs builder the health
+        // route now uses) also reads audit patterns + rejection memory.
+        loadAuditPatterns: async () => [],
+        loadRejectedKeys: async () => new Set(),
       }));
       const res = await adminSemanticImprove.request("/health");
       expect(res.status).toBe(200);
@@ -781,6 +793,10 @@ describe("admin-semantic-improve", () => {
         }),
         loadEntitiesFromDisk: async () => [],
         loadGlossaryFromDisk: async () => [],
+        // #4514 — loadAnalysisContext (the shared real-inputs builder the health
+        // route now uses) also reads audit patterns + rejection memory.
+        loadAuditPatterns: async () => [],
+        loadRejectedKeys: async () => new Set(),
       }));
       const res = await adminSemanticImprove.request("/health");
       expect(res.status).toBe(200);
@@ -795,6 +811,10 @@ describe("admin-semantic-improve", () => {
         loadEntitiesForOrg: async () => ({ entities: [], totalRows: 2, parseFailures: 2 }),
         loadEntitiesFromDisk: async () => [],
         loadGlossaryFromDisk: async () => [],
+        // #4514 — loadAnalysisContext (the shared real-inputs builder the health
+        // route now uses) also reads audit patterns + rejection memory.
+        loadAuditPatterns: async () => [],
+        loadRejectedKeys: async () => new Set(),
       }));
       const res = await adminSemanticImprove.request("/health");
       expect(res.status).toBe(200);

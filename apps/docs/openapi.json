@@ -62513,6 +62513,20 @@
                     },
                     "glossaryTermCount": {
                       "type": "number"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "no_entities",
+                        "corrupt"
+                      ]
+                    },
+                    "parseFailures": {
+                      "type": "number"
+                    },
+                    "totalRows": {
+                      "type": "number"
                     }
                   },
                   "required": [
@@ -62524,7 +62538,10 @@
                     "entityCount",
                     "dimensionCount",
                     "measureCount",
-                    "glossaryTermCount"
+                    "glossaryTermCount",
+                    "status",
+                    "parseFailures",
+                    "totalRows"
                   ]
                 }
               }

@@ -14,6 +14,10 @@ import { ANALYSIS_CATEGORIES, type AnalysisResult, type AnalysisCategory } from 
 import { AMENDMENT_TYPES, type AmendmentType } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { SemanticEntityRow } from "@atlas/api/lib/semantic/entities";
+import {
+  AMENDMENT_MUTABLE_FIELDS,
+  parseEntityShapeOrError,
+} from "./amendment-validation";
 
 const log = createLogger("semantic-expert-apply");
 
@@ -150,6 +154,18 @@ export async function applyAmendmentToEntity(
 
   // Apply amendment (same logic as CLI's apply-amendment)
   const updated = applyAmendment(parsed, result);
+
+  // Post-apply gate (#4513): the mutated document must still parse as an entity
+  // BEFORE it is written. A failure fails the whole apply (nothing is upserted),
+  // so the decide seam compensates the claimed row back to `pending` with this
+  // reason in `last_apply_error` — an amendment can never corrupt the
+  // authoritative entity into a shape the whitelist/loader would silently drop.
+  const shapeError = parseEntityShapeOrError(updated);
+  if (shapeError) {
+    throw new Error(
+      `Post-apply validation failed for entity "${result.entityName}": ${shapeError}. The amendment was not applied.`,
+    );
+  }
 
   // Serialize back to YAML
   const newYaml = yaml.dump(updated, { lineWidth: 120, noRefs: true });
@@ -416,7 +432,18 @@ export function applyAmendment(
           `Cannot update dimension: "${String(amendment.name)}" not found in entity "${result.entityName}"`,
         );
       }
-      Object.assign(target, amendment);
+      // Typed mutation, not a blind `Object.assign` (#4513): copy ONLY the
+      // fields update_dimension declares it may touch. `name` is the selector
+      // (never renamed) and `sql` is protected — an update can never repoint a
+      // dimension's expression or smuggle a change bigger than its type
+      // (ADR-0032 containment). Defense in depth with the propose-time strict
+      // schema: even a legacy stored payload carrying `sql` cannot repoint here.
+      const mutable = AMENDMENT_MUTABLE_FIELDS.update_dimension ?? [];
+      for (const field of mutable) {
+        if (Object.hasOwn(amendment, field)) {
+          target[field] = amendment[field];
+        }
+      }
       break;
     }
     case "add_virtual_dimension": {

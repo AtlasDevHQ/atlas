@@ -133,6 +133,31 @@ describe("applyAmendment", () => {
     expect(() => applyAmendment(baseEntity, result)).toThrow("nonexistent");
   });
 
+  it("update_dimension is a typed mutation — it cannot repoint sql or rename (#4513)", () => {
+    // Even a payload that smuggles `sql` (repointing the column expression) and
+    // an undeclared field must only touch the DECLARED mutable fields
+    // (type/sample_values/description). name is the selector, sql is protected —
+    // an update can never grow beyond its type (ADR-0032 containment).
+    const result = makeResult("orders", "update_dimension", {
+      name: "status",
+      type: "enum",
+      sql: "lower(status)", // protected — must be ignored
+      bogus_field: "nope", // undeclared — must be ignored
+    });
+    const updated = applyAmendment(baseEntity, result);
+    const dims = updated.dimensions as Array<Record<string, unknown>>;
+    const status = dims.find((d) => d.name === "status");
+    // Declared field applied.
+    expect(status?.type).toBe("enum");
+    // Protected: the dimension still points at the ORIGINAL column expression.
+    expect(status?.sql).toBe("status");
+    // Undeclared field never lands on the dimension.
+    expect(status).not.toHaveProperty("bogus_field");
+    // The base fixture is untouched (applyAmendment clones).
+    const baseStatus = baseEntity.dimensions.find((d) => d.name === "status");
+    expect(baseStatus?.sql).toBe("status");
+  });
+
   it("adds a virtual dimension with virtual=true", () => {
     const result = makeResult("orders", "add_virtual_dimension", {
       name: "order_month", sql: "EXTRACT(MONTH FROM created_at)", type: "number",

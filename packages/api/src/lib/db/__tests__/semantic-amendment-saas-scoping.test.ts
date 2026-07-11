@@ -34,6 +34,8 @@ process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/atlas_test";
 import {
   getPendingAmendmentCount,
   getPendingAmendments,
+  getRejectedAmendments,
+  reconsiderRejectedAmendment,
   claimPendingAmendment,
   stampClaimedAmendmentApproved,
   releaseClaimedAmendment,
@@ -123,6 +125,31 @@ describe("semantic amendment queries — self-hosted scoping (unchanged)", () =>
 
     expect(captured).toHaveLength(1);
     expect(captured[0]!.sql).toContain("(org_id = $1 OR org_id IS NULL)");
+  });
+
+  it("getRejectedAmendments includes the OR org_id IS NULL arm for an org", async () => {
+    setDeployMode("self-hosted");
+    await getRejectedAmendments("org-a");
+
+    expect(captured).toHaveLength(1);
+    const { sql } = captured[0]!;
+    // The Rejected view reads the rejected-status arm, tenant-scoped exactly
+    // like the pending reads (#4512).
+    expect(sql).toContain("status = 'rejected'");
+    expect(sql).toContain("(org_id = $1 OR org_id IS NULL)");
+  });
+
+  it("reconsiderRejectedAmendment includes the OR org_id IS NULL arm for an org", async () => {
+    setDeployMode("self-hosted");
+    await reconsiderRejectedAmendment("amd-1", "org-a");
+
+    expect(captured).toHaveLength(1);
+    const { sql } = captured[0]!;
+    // The atomic rejected → pending flip, tenant-scoped and conditional on the
+    // row currently being rejected (so it can only ever LIFT a rejection).
+    expect(sql).toContain("SET status = 'pending'");
+    expect(sql).toContain("status = 'rejected'");
+    expect(sql).toContain("(org_id = $2 OR org_id IS NULL)");
   });
 
   it("claimPendingAmendment includes the OR org_id IS NULL arm for an org", async () => {
@@ -293,6 +320,26 @@ describe("semantic amendment queries — SaaS scoping (#4487)", () => {
     expect(sql).not.toContain("org_id IS NULL");
   });
 
+  it("getRejectedAmendments drops the OR org_id IS NULL arm for a workspace", async () => {
+    setDeployMode("saas");
+    await getRejectedAmendments("org-a");
+
+    expect(captured).toHaveLength(1);
+    const { sql } = captured[0]!;
+    expect(sql).toContain("org_id = $1");
+    expect(sql).not.toContain("org_id IS NULL");
+  });
+
+  it("reconsiderRejectedAmendment drops the OR org_id IS NULL arm for a workspace", async () => {
+    setDeployMode("saas");
+    await reconsiderRejectedAmendment("amd-1", "org-a");
+
+    expect(captured).toHaveLength(1);
+    const { sql } = captured[0]!;
+    expect(sql).toContain("org_id = $2");
+    expect(sql).not.toContain("org_id IS NULL");
+  });
+
   it("refuses the org-less path without touching the DB (count → 0)", async () => {
     setDeployMode("saas");
     const count = await getPendingAmendmentCount(null);
@@ -322,6 +369,22 @@ describe("semantic amendment queries — SaaS scoping (#4487)", () => {
     const rejected = await rejectPendingAmendment("amd-1", null, "admin");
 
     expect(rejected).toBe(false);
+    expect(captured).toHaveLength(0);
+  });
+
+  it("refuses the org-less path without touching the DB (rejected list → [])", async () => {
+    setDeployMode("saas");
+    const rows = await getRejectedAmendments(null);
+
+    expect(rows).toEqual([]);
+    expect(captured).toHaveLength(0);
+  });
+
+  it("refuses the org-less path without touching the DB (reconsider → false)", async () => {
+    setDeployMode("saas");
+    const reconsidered = await reconsiderRejectedAmendment("amd-1", null);
+
+    expect(reconsidered).toBe(false);
     expect(captured).toHaveLength(0);
   });
 });
@@ -429,12 +492,15 @@ describe("shared org-scope helper — reader/inserter enumeration (#4510)", () =
   // means adding it here AND routing its org filter through amendmentOrgScope —
   // the discovery test below fails if either is skipped. The decide seam's
   // claim/reject (#4506) are readers too: they filter on the claimable-pending
-  // arm and take a tenant scope.
+  // arm and take a tenant scope. The Rejected view + Reconsider (#4512) filter
+  // on the `status = 'rejected'` arm and are tenant-scoped just the same.
   const AMENDMENT_READERS = [
     "getPendingAmendmentCount",
     "getPendingAmendments",
+    "getRejectedAmendments",
     "claimPendingAmendment",
     "rejectPendingAmendment",
+    "reconsiderRejectedAmendment",
   ];
 
   const stripComments = (s: string) =>
@@ -479,26 +545,30 @@ describe("shared org-scope helper — reader/inserter enumeration (#4510)", () =
   });
 
   it("pins the reader set — discovery tolerant of predicate order/whitespace/alias", () => {
-    // A reader SELECT/UPDATEs pending amendments: an equality `type =
-    // 'semantic_amendment'` predicate AND a pending *filter* in a WHERE/AND
-    // position — either the literal `status = 'pending'` or the shared
-    // `${CLAIMABLE_STATUS_SQL}` arm (#4506: pending-or-stale-claim), never a
-    // `SET status = 'pending'` write. Matched independently and
-    // comment-stripped, tolerant of a table alias (`lp.`), extra whitespace,
-    // reordered predicates, or a line break, so a paraphrased new reader is
-    // still discovered and must be added to AMENDMENT_READERS + route through
-    // the helper. Intentionally excludes: findConflictingAmendment
-    // (`status IN (...)`, scoped NULL-safe by `IS NOT DISTINCT FROM` — an
-    // identity dedup, not a tenant read), releaseClaimedAmendment /
-    // stampClaimedAmendmentApproved (which filter `status = 'applying'` —
-    // claim-token-scoped, not tenant-scoped), and the learned-pattern decay
-    // query (`type != 'semantic_amendment'`).
+    // A reader SELECT/UPDATEs amendment rows in a tenant-scoped status arm: an
+    // equality `type = 'semantic_amendment'` predicate AND a status *filter* in
+    // a WHERE/AND position — the literal `status = 'pending'`, the shared
+    // `${CLAIMABLE_STATUS_SQL}` arm (#4506: pending-or-stale-claim), or the
+    // `status = 'rejected'` arm the Rejected view + Reconsider read/flip
+    // (#4512). Matched independently and comment-stripped, tolerant of a table
+    // alias (`lp.`), extra whitespace, reordered predicates, or a line break, so
+    // a paraphrased new reader is still discovered and must be added to
+    // AMENDMENT_READERS + route through the helper. reconsiderRejectedAmendment
+    // is discovered on its WHERE `status = 'rejected'` filter, not its SET
+    // `status = 'pending'` write (which the `WHERE|AND` anchor excludes).
+    // Intentionally excludes: findConflictingAmendment (`status IN (...)`,
+    // scoped NULL-safe by `IS NOT DISTINCT FROM` — an identity dedup, not a
+    // tenant read), releaseClaimedAmendment / stampClaimedAmendmentApproved
+    // (which filter `status = 'applying'` — claim-token-scoped, not
+    // tenant-scoped), and the learned-pattern decay query
+    // (`type != 'semantic_amendment'`).
     const discovered = topLevelFunctions()
       .filter((f) => {
         const code = stripComments(f.body);
         return (
           /(?:\w+\.)?type\s*=\s*'semantic_amendment'/.test(code) &&
           (/(?:WHERE|AND)\s+(?:\w+\.)?status\s*=\s*'pending'/.test(code) ||
+            /(?:WHERE|AND)\s+(?:\w+\.)?status\s*=\s*'rejected'/.test(code) ||
             /(?:WHERE|AND)\s+\$\{CLAIMABLE_STATUS_SQL\}/.test(code))
         );
       })

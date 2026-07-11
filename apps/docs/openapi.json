@@ -61587,7 +61587,7 @@
           "Admin — Semantic Improve"
         ],
         "summary": "Chat with the semantic expert agent (streaming)",
-        "description": "Sends a conversation to the semantic expert agent and streams the response. Uses the 5 expert tools (profileTable, checkDataDistribution, searchAuditLog, proposeAmendment, validateProposal) plus standard explore and executeSQL.",
+        "description": "Sends a conversation to the semantic expert agent and streams the response. Uses the 4 expert tools (profileTable, checkDataDistribution, searchAuditLog, proposeAmendment) plus standard explore and executeSQL.",
         "requestBody": {
           "required": true,
           "content": {
@@ -62027,6 +62027,290 @@
           }
         },
         "operationId": "getAdminSemanticImprovePending"
+      }
+    },
+    "/api/v1/admin/semantic-improve/rejected": {
+      "get": {
+        "tags": [
+          "Admin — Semantic Improve"
+        ],
+        "summary": "List rejected semantic amendment proposals",
+        "description": "Returns the org's rejected amendments, most-recently-rejected first. The Rejected view lists these so an admin can Reconsider one — the only action that lifts a rejection and returns the change to the Pending queue (#4512).",
+        "responses": {
+          "200": {
+            "description": "Rejected amendments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "amendments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "entityName": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "confidence": {
+                            "type": "number"
+                          },
+                          "amendmentType": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "amendment": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "additionalProperties": {}
+                          },
+                          "rationale": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "diff": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "testQuery": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "testResult": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "success": {
+                                "type": "boolean"
+                              },
+                              "rowCount": {
+                                "type": "number"
+                              },
+                              "sampleRows": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": {}
+                                }
+                              },
+                              "error": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "success",
+                              "rowCount",
+                              "sampleRows"
+                            ]
+                          },
+                          "rejectedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "rejectedBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "entityName",
+                          "description",
+                          "confidence",
+                          "amendmentType",
+                          "amendment",
+                          "rationale",
+                          "diff",
+                          "testQuery",
+                          "testResult",
+                          "rejectedAt",
+                          "rejectedBy",
+                          "createdAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "amendments"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminSemanticImproveRejected"
+      }
+    },
+    "/api/v1/admin/semantic-improve/amendments/{id}/reconsider": {
+      "post": {
+        "tags": [
+          "Admin — Semantic Improve"
+        ],
+        "summary": "Reconsider a rejected amendment",
+        "description": "Lifts a rejection (#4512): returns the rejected amendment to the Pending queue and removes its identity from rejection memory, so it becomes proposable again. The only way a rejected change comes back.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Amendment returned to pending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "id"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Amendment not found or not currently rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminSemanticImproveAmendmentsByIdReconsider"
       }
     },
     "/api/v1/admin/semantic-improve/amendments/{id}/review": {

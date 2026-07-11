@@ -161,6 +161,18 @@ void mock.module("@atlas/api/lib/settings", () => ({
   isSaasModeForGuard: () => saasMode,
 }));
 
+// Proactive notification bridge — partial mock (the tick calls only
+// notifyAmendmentsPending). The bridge's own Noop→clean-skip mechanics are
+// unit-tested in lib/proactive/__tests__/notify-amendments.test.ts; here we
+// pin that the SCHEDULER emits one batched notice per workspace-tick (#4520).
+type NotifyOutcome = { posted: boolean; messageId?: string; reason?: string };
+const mockNotifyAmendmentsPending: Mock<
+  (input: { workspaceId: string; count: number }) => Promise<NotifyOutcome>
+> = mock(async () => ({ posted: true, messageId: "notice-1" }));
+void mock.module("@atlas/api/lib/proactive/notify-amendments", () => ({
+  notifyAmendmentsPending: mockNotifyAmendmentsPending,
+}));
+
 const { runExpertSchedulerTick, AUTONOMOUS_IMPROVE_ENABLED_KEY } = await import("../scheduler");
 
 function resetMocks(): void {
@@ -182,6 +194,8 @@ function resetMocks(): void {
   mockDecideAmendment.mockImplementation(async (params) => ({ kind: "approved", id: params.id }));
   mockInsertSemanticAmendment.mockClear();
   mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "sch-1", autoApprove: true });
+  mockNotifyAmendmentsPending.mockClear();
+  mockNotifyAmendmentsPending.mockImplementation(async () => ({ posted: true, messageId: "notice-1" }));
 }
 
 describe("runExpertSchedulerTick auto-approve → decide seam invariant (#4486, #4506)", () => {
@@ -453,6 +467,163 @@ describe("runExpertSchedulerTick — SaaS per-workspace iteration (#4516)", () =
     // [{ orgId: null }] path and produce a global-scope tick on SaaS.
     expect(mockInsertSemanticAmendment).not.toHaveBeenCalled();
     expect(gateCalls).toEqual([]);
+  });
+});
+
+describe("runExpertSchedulerTick — proactive amendments-pending notice (#4520)", () => {
+  beforeEach(resetMocks);
+
+  it("emits ONE batched notice per workspace when the tick left net-new pending Amendments", async () => {
+    saasMode = true;
+    optedInOrgs = ["org-a"];
+    // Three proposals, all queued (not auto-approve eligible) — the notice must
+    // batch them into a single message with count 3, not fire per row.
+    proposals = [proposal, proposal, proposal];
+    mockInsertSemanticAmendment.mockResolvedValue({
+      outcome: "inserted",
+      id: "sch-q",
+      autoApprove: false,
+    });
+
+    const result = await runExpertSchedulerTick();
+
+    expect(result.queued).toBe(3);
+    expect(mockNotifyAmendmentsPending).toHaveBeenCalledTimes(1);
+    expect(mockNotifyAmendmentsPending.mock.calls[0][0]).toEqual({
+      workspaceId: "org-a",
+      count: 3,
+    });
+  });
+
+  it("batches on net-new pending count (queued), not total proposals, in a mixed tick", async () => {
+    saasMode = true;
+    optedInOrgs = ["org-a"];
+    // Three proposals: the first auto-approves (applied, no longer pending),
+    // the other two queue. The notice count must be the 2 net-new pending
+    // rows — NOT the 3 total proposals, and NOT autoApproved+queued.
+    proposals = [proposal, proposal, proposal];
+    let n = 0;
+    mockInsertSemanticAmendment.mockImplementation(async () => {
+      n++;
+      return n === 1
+        ? { outcome: "inserted", id: "auto", autoApprove: true }
+        : { outcome: "inserted", id: `q${n}`, autoApprove: false };
+    });
+
+    const result = await runExpertSchedulerTick();
+
+    expect(result.proposalsGenerated).toBe(3);
+    expect(result.autoApproved).toBe(1);
+    expect(result.queued).toBe(2);
+    expect(mockNotifyAmendmentsPending).toHaveBeenCalledTimes(1);
+    expect(mockNotifyAmendmentsPending.mock.calls[0][0]).toEqual({
+      workspaceId: "org-a",
+      count: 2,
+    });
+  });
+
+  it("does not notify when nothing was queued (every proposal auto-approved)", async () => {
+    saasMode = true;
+    optedInOrgs = ["org-a"];
+    // Default insert mock is auto-approve eligible → decide seam approves → the
+    // tick applies them, leaving zero pending. No pending queue ⇒ no notice.
+    const result = await runExpertSchedulerTick();
+
+    expect(result.autoApproved).toBe(1);
+    expect(result.queued).toBe(0);
+    expect(mockNotifyAmendmentsPending).not.toHaveBeenCalled();
+  });
+
+  it("does not notify a rejected/deduped-only tick (no net-new pending rows)", async () => {
+    saasMode = true;
+    optedInOrgs = ["org-a"];
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "already_pending", id: "pend" });
+
+    const result = await runExpertSchedulerTick();
+
+    expect(result.deduped).toBe(1);
+    expect(result.queued).toBe(0);
+    expect(mockNotifyAmendmentsPending).not.toHaveBeenCalled();
+  });
+
+  it("notifies each opted-in workspace independently with its own batched count", async () => {
+    saasMode = true;
+    optedInOrgs = ["org-a", "org-b"];
+    mockInsertSemanticAmendment.mockResolvedValue({
+      outcome: "inserted",
+      id: "sch-q",
+      autoApprove: false,
+    });
+
+    await runExpertSchedulerTick();
+
+    expect(mockNotifyAmendmentsPending).toHaveBeenCalledTimes(2);
+    const targets = mockNotifyAmendmentsPending.mock.calls.map((c) => c[0]);
+    expect(targets).toEqual([
+      { workspaceId: "org-a", count: 1 },
+      { workspaceId: "org-b", count: 1 },
+    ]);
+  });
+
+  it("does not notify the self-hosted degenerate workspace (null org, no workspace identity)", async () => {
+    // Self-hosted: orgId is null, proposals queue, but there is no workspace id
+    // to key the proactive channel on — the notice is skipped by construction.
+    mockInsertSemanticAmendment.mockResolvedValue({
+      outcome: "inserted",
+      id: "sch-q",
+      autoApprove: false,
+    });
+
+    const result = await runExpertSchedulerTick();
+
+    expect(result.queued).toBe(1);
+    expect(mockNotifyAmendmentsPending).not.toHaveBeenCalled();
+  });
+
+  it("a not-posted notice (enterprise disabled / degraded) never fails the tick", async () => {
+    saasMode = true;
+    optedInOrgs = ["org-a"];
+    mockInsertSemanticAmendment.mockResolvedValue({
+      outcome: "inserted",
+      id: "sch-q",
+      autoApprove: false,
+    });
+    // The bridge is best-effort: on a non-EE deploy it resolves a clean skip.
+    mockNotifyAmendmentsPending.mockImplementation(async () => ({
+      posted: false,
+      reason: "enterprise_disabled",
+    }));
+
+    const result = await runExpertSchedulerTick();
+
+    // The tick completed normally — the queued Amendment is the real work; the
+    // absent notice is not an error (#4520 AC3).
+    expect(mockNotifyAmendmentsPending).toHaveBeenCalledTimes(1);
+    expect(result.queued).toBe(1);
+    expect(result.errors).toBe(0);
+  });
+
+  it("a THROWING notice never taints the tick's reporting (defensive containment)", async () => {
+    saasMode = true;
+    optedInOrgs = ["org-a"];
+    mockInsertSemanticAmendment.mockResolvedValue({
+      outcome: "inserted",
+      id: "sch-q",
+      autoApprove: false,
+    });
+    // Contract violation: the bridge should never throw, but if it (or the
+    // dynamic import) ever did, the scheduler's own try/catch must contain it
+    // so the already-committed queued row is not dropped from the aggregate by
+    // the sweep-level catch (which would also mis-count errors) (#4520 AC3).
+    mockNotifyAmendmentsPending.mockImplementation(async () => {
+      throw new Error("bridge contract violated");
+    });
+
+    const result = await runExpertSchedulerTick();
+
+    expect(result.workspacesConsidered).toBe(1);
+    expect(result.queued).toBe(1);
+    expect(result.errors).toBe(0);
   });
 });
 

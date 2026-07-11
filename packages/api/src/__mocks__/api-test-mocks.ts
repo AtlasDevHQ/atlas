@@ -269,6 +269,9 @@ export function buildInternalDbMockDefaults(deps: {
     })),
     getPendingAmendmentCount: mock(async () => 0),
     getPendingAmendments: mock(async () => []),
+    // Rejected view + Reconsider (#4512) — defaults model "no rejected rows".
+    getRejectedAmendments: mock(async () => []),
+    reconsiderRejectedAmendment: mock(async () => false),
     // Decide-seam claim helpers (#4506) — defaults model "no pending row".
     claimPendingAmendment: mock(async () => null),
     stampClaimedAmendmentApproved: mock(async () => false),

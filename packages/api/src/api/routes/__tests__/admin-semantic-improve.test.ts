@@ -31,9 +31,16 @@ interface MockAmendmentRow {
   created_at: string;
 }
 let mockPendingAmendments: MockAmendmentRow[] = [];
+/** Rejected rows the Rejected view lists + Reconsider lifts (#4512). */
+interface MockRejectedRow extends MockAmendmentRow {
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+}
+let mockRejectedAmendments: MockRejectedRow[] = [];
 /** Rows currently holding an `applying` claim, by id. */
 let claimedRows = new Map<string, MockAmendmentRow>();
 let rejectCalls: Array<{ id: string; orgId: string | null }> = [];
+let reconsiderCalls: Array<{ id: string; orgId: string | null }> = [];
 let releaseCalls: Array<{ id: string; reason: string }> = [];
 let stampCalls: string[] = [];
 let applyPayloadCalls: Array<Record<string, unknown>> = [];
@@ -55,6 +62,26 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   // dedicated briefing seam test (admin-semantic-improve-briefing.test.ts) drives
   // the turn-one + rejection-reflected behavior.
   getRecentlyDecidedAmendments: async () => [],
+  getRejectedAmendments: async () => mockRejectedAmendments,
+  // Atomic conditional rejected → pending flip (#4512). Models the DB: only a
+  // currently-rejected row moves, and it re-enters the pending queue cleared of
+  // its reviewer fields — so a subsequent GET /pending shows it "like any other".
+  reconsiderRejectedAmendment: async (id: string, orgId: string | null) => {
+    reconsiderCalls.push({ id, orgId });
+    const idx = mockRejectedAmendments.findIndex((r) => r.id === id);
+    if (idx < 0) return false;
+    const [row] = mockRejectedAmendments.splice(idx, 1);
+    mockPendingAmendments.push({
+      id: row.id,
+      source_entity: row.source_entity,
+      connection_group_id: row.connection_group_id,
+      description: row.description,
+      confidence: row.confidence,
+      amendment_payload: row.amendment_payload,
+      created_at: row.created_at,
+    });
+    return true;
+  },
   // Atomic conditional claim: pending → applying. Synchronous state flip, so
   // two interleaved requests can never both win — mirroring the SQL's
   // conditional UPDATE. Returns the claim token stamp/release require.
@@ -235,8 +262,10 @@ describe("admin-semantic-improve", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockPendingAmendments = [];
+    mockRejectedAmendments = [];
     claimedRows = new Map();
     rejectCalls = [];
+    reconsiderCalls = [];
     releaseCalls = [];
     stampCalls = [];
     applyPayloadCalls = [];
@@ -525,6 +554,119 @@ describe("admin-semantic-improve", () => {
       // Rows that never bounced report null, not undefined — the wire schema
       // pins the field as nullable.
       expect(byId.get("amd-clean")?.applyError).toBeNull();
+    });
+  });
+
+  describe("GET /rejected — the Rejected view (#4512)", () => {
+    const rejectedRow = (id: string): MockRejectedRow => ({
+      id,
+      source_entity: "orders",
+      connection_group_id: null,
+      description: "[add_measure] orders: total revenue",
+      confidence: 0.9,
+      amendment_payload: {
+        entityName: "orders",
+        amendmentType: "add_measure",
+        amendment: { name: "total_revenue", type: "number" },
+        rationale: "Frequently aggregated in the audit log.",
+        diff: "--- a\n+++ b\n+measure",
+      },
+      created_at: "2026-07-10T00:00:00Z",
+      reviewed_at: "2026-07-10T01:00:00Z",
+      reviewed_by: "admin",
+    });
+
+    it("lists rejected amendments with payload-derived fields + rejection metadata", async () => {
+      mockRejectedAmendments = [rejectedRow("amd-r1")];
+
+      const res = await adminSemanticImprove.request("/rejected");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        amendments: Array<{
+          id: string;
+          entityName: string;
+          amendmentType: string | null;
+          diff: string | null;
+          rejectedAt: string | null;
+          rejectedBy: string | null;
+        }>;
+      };
+      expect(body.amendments).toHaveLength(1);
+      const a = body.amendments[0];
+      // Shares the exact payload-derivation of the Pending view (one helper).
+      expect(a).toMatchObject({
+        id: "amd-r1",
+        entityName: "orders",
+        amendmentType: "add_measure",
+        diff: "--- a\n+++ b\n+measure",
+        rejectedAt: "2026-07-10T01:00:00Z",
+        rejectedBy: "admin",
+      });
+    });
+
+    it("returns an empty list when nothing is rejected", async () => {
+      mockRejectedAmendments = [];
+      const res = await adminSemanticImprove.request("/rejected");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { amendments: unknown[] };
+      expect(body.amendments).toEqual([]);
+    });
+  });
+
+  describe("POST /amendments/:id/reconsider — lift a rejection (#4512)", () => {
+    const rejectedRow = (id: string): MockRejectedRow => ({
+      id,
+      source_entity: "orders",
+      connection_group_id: null,
+      description: "[add_measure] orders: total revenue",
+      confidence: 0.9,
+      amendment_payload: {
+        entityName: "orders",
+        amendmentType: "add_measure",
+        amendment: { name: "total_revenue", type: "number" },
+        rationale: "r",
+      },
+      created_at: "2026-07-10T00:00:00Z",
+      reviewed_at: "2026-07-10T01:00:00Z",
+      reviewed_by: "admin",
+    });
+
+    function reconsider(id: string) {
+      return adminSemanticImprove.request(`/amendments/${id}/reconsider`, { method: "POST" });
+    }
+
+    it("returns the rejected row to pending — it then appears in the Pending queue", async () => {
+      mockRejectedAmendments = [rejectedRow("amd-r1")];
+
+      const res = await reconsider("amd-r1");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ok: boolean; id: string };
+      expect(body).toEqual({ ok: true, id: "amd-r1" });
+      expect(reconsiderCalls).toEqual([{ id: "amd-r1", orgId: "org-test" }]);
+
+      // AC #3 — the reconsidered Amendment is now in the Pending queue, rendered
+      // like any other pending row (same diff/payload derivation, no applyError).
+      const pending = await adminSemanticImprove.request("/pending");
+      const pendingBody = (await pending.json()) as {
+        amendments: Array<{ id: string; applyError: string | null }>;
+      };
+      expect(pendingBody.amendments.map((p) => p.id)).toContain("amd-r1");
+      expect(pendingBody.amendments.find((p) => p.id === "amd-r1")?.applyError).toBeNull();
+      // And it is gone from the Rejected view (removed from rejection memory).
+      const rejected = await adminSemanticImprove.request("/rejected");
+      const rejectedBody = (await rejected.json()) as { amendments: Array<{ id: string }> };
+      expect(rejectedBody.amendments).toHaveLength(0);
+    });
+
+    it("returns 404 when the amendment is absent or not currently rejected", async () => {
+      mockRejectedAmendments = [];
+
+      const res = await reconsider("does-not-exist");
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("not_found");
+      // No row moved into pending.
+      expect(mockPendingAmendments).toHaveLength(0);
     });
   });
 

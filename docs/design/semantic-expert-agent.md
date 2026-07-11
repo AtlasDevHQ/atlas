@@ -132,7 +132,6 @@ The expert agent uses a **superset** of the standard agent tools, registered via
 | `proposeAmendment` | New | Propose a YAML change (structured diff) with rationale |
 | `checkDataDistribution` | New | Run `SELECT column, COUNT(*) ... GROUP BY ... ORDER BY COUNT(*) DESC LIMIT 20` for a column |
 | `searchAuditLog` | New | Query audit log for patterns involving specific tables/columns |
-| `validateProposal` | New | Dry-run a proposed change: parse YAML, check table whitelist, run test queries |
 
 #### New tool specifications
 
@@ -214,25 +213,23 @@ Generates and executes a `SELECT column, COUNT(*) ... GROUP BY column ORDER BY C
 
 Queries the `audit_log` and `learned_patterns` tables. Subject to org scoping in SaaS mode.
 
-**`validateProposal`**
-```typescript
-// Input
-{ proposalId: string }
-// Output
-{
-  yamlValid: boolean,          // Parsed without errors
-  whitelistValid: boolean,     // All referenced tables in whitelist
-  testQueryResult?: {
-    success: boolean,
-    error?: string,
-    rowCount?: number,
-    sampleRows?: object[],
-  },
-  issues: string[],            // Human-readable warnings
-}
-```
+**Validation seam (retired standalone `validateProposal` tool, #4513)**
 
-Validation pipeline: (1) parse the amended YAML via the existing entity schema validator, (2) check that all tables/columns referenced exist in the whitelist and profiler output, (3) if the proposal includes a `testQuery`, execute it through the standard SQL pipeline and verify it returns reasonable results (non-zero rows, no errors).
+Validation is a seam, not a tool (CONTEXT.md § Semantic improvement). There is no
+standalone `validateProposal` step whose verdict floats free — the gates are folded
+into the two seams where an Amendment lives:
+
+- **Propose-time** (`proposeAmendment`): before a proposal becomes a pending
+  Amendment, its payload must parse against its type's schema, any embedded SQL
+  (dimension / measure / virtual-dimension expressions, full query patterns) must
+  pass the shared SQL validation, and the test query runs through the production
+  pipeline against the amendment's own connection group. A proposal that fails any
+  gate is never queued; the tool result tells the model why.
+- **Apply-time** (`expert/apply.ts`): after the amendment is applied and before the
+  entity is written, the post-apply document must parse as an `EntityShape`. A
+  failure fails the apply, and the decide seam returns the row to pending with the
+  reason. Each amendment type may touch only its declared fields — `update_dimension`
+  can never repoint a dimension's `sql` (ADR-0032 containment).
 
 #### Decision logic: what to improve
 
@@ -465,8 +462,8 @@ Approved semantic amendments are reflected in the agent's system prompt on the n
 - `packages/api/src/lib/tools/profile-table.ts` — `profileTable` tool
 - `packages/api/src/lib/tools/check-distribution.ts` — `checkDataDistribution` tool
 - `packages/api/src/lib/tools/search-audit-log.ts` — `searchAuditLog` tool
-- `packages/api/src/lib/tools/propose-amendment.ts` — `proposeAmendment` tool
-- `packages/api/src/lib/tools/validate-proposal.ts` — `validateProposal` tool
+- `packages/api/src/lib/tools/propose-amendment.ts` — `proposeAmendment` tool (with built-in propose-time validation seam, #4513)
+- `packages/api/src/lib/semantic/expert/amendment-validation.ts` — the shared validation seam (payload schema, embedded-SQL, EntityShape gates)
 - `packages/cli/src/commands/improve.ts` — `atlas improve` CLI command (batch mode)
 - Migration: `learned_patterns` table additions (`type`, `amendment_payload` columns)
 - Admin UI: extend learned patterns page with `semantic_amendment` filter + diff view

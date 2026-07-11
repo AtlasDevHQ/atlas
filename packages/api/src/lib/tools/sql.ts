@@ -1551,7 +1551,7 @@ function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> 
 //   row limit → execute + audit (+ mask + afterQuery)
 //
 // `runUserQueryPipeline` (the raw-query path: dashboards, metrics,
-// validate-proposal, executeSQL-over-REST) and `executeSqlForConnection`
+// amendment-proposal test queries, executeSQL-over-REST) and `executeSqlForConnection`
 // (the agent `executeSQL` leaf, called directly and via
 // `executeSqlFanout`) are THIN wrappers over this core: each contributes
 // only its pre-step (dashboard parameter binding vs result-cache check),
@@ -2151,8 +2151,8 @@ export interface RunUserQueryOpts {
  * contributes the dashboard-parameter pre-step (#2267) and adapts the
  * shared outcome onto the {@link UserQueryOutcome} union. Used by the
  * dashboard canvas preview, single-card refresh, bulk refresh, metrics,
- * validate-proposal, and executeSQL-over-REST — every site that runs
- * user-authored SQL but isn't the agent tool itself.
+ * amendment-proposal test queries, and executeSQL-over-REST — every site that
+ * runs user-authored SQL but isn't the agent tool itself.
  */
 export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryOutcome> {
   const connId = opts.connectionId ?? "default";

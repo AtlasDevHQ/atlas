@@ -4,6 +4,8 @@ import { useState, useMemo, useEffect } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
 import { extractProposals, buildProposalQueue, type Proposal, type QueueRow, type TestResult } from "./proposals";
+import { RejectedCard, type RejectedAmendment } from "./rejected";
+import { DiffViewer, formatAmendment } from "./amendment-display";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -13,6 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   ResizablePanelGroup,
   ResizablePanel,
@@ -46,38 +49,6 @@ interface PendingAmendment {
   testResult: TestResult | null;
   applyError: string | null;
   createdAt: string;
-}
-
-// ---------------------------------------------------------------------------
-// DiffViewer — color-coded unified diff
-// ---------------------------------------------------------------------------
-
-function diffLineStyle(line: string): string {
-  if (line.startsWith("+++") || line.startsWith("---")) {
-    return "text-muted-foreground bg-muted font-semibold";
-  }
-  if (line.startsWith("@@")) {
-    return "text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-950/30";
-  }
-  if (line.startsWith("+")) {
-    return "text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/30";
-  }
-  if (line.startsWith("-")) {
-    return "text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-950/30";
-  }
-  return "text-muted-foreground";
-}
-
-function DiffViewer({ diff }: { diff: string }) {
-  return (
-    <pre className="rounded-md border text-xs font-mono p-0 m-0 whitespace-pre-wrap break-words">
-      {diff.split("\n").map((line, i) => (
-        <div key={i} className={`px-3 py-0.5 ${diffLineStyle(line)}`}>
-          {line || "\u00A0"}
-        </div>
-      ))}
-    </pre>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -216,25 +187,6 @@ function ProposalCard({
   );
 }
 
-/** Format amendment data for display. */
-function formatAmendment(type: string, amendment: Record<string, unknown>): string {
-  const lines: string[] = [];
-  for (const [key, value] of Object.entries(amendment)) {
-    if (value === undefined || value === null) continue;
-    if (typeof value === "object" && !Array.isArray(value)) {
-      lines.push(`${key}:`);
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        lines.push(`  ${k}: ${String(v as string)}`);
-      }
-    } else if (Array.isArray(value)) {
-      lines.push(`${key}: [${value.join(", ")}]`);
-    } else {
-      lines.push(`${key}: ${String(value as string)}`);
-    }
-  }
-  return lines.join("\n") || `(${type})`;
-}
-
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -249,6 +201,9 @@ export default function SemanticImprovePage() {
   const [proposalDecisions, setProposalDecisions] = useState<
     Map<string, "accepted" | "rejected">
   >(new Map());
+  // Which review list the proposals panel shows: the Pending queue or the
+  // Rejected view (#4512). Rejected is where an admin lifts a rejection.
+  const [view, setView] = useState<"pending" | "rejected">("pending");
 
   // Transport for the semantic expert agent endpoint. The conversation lives
   // entirely in this component's useChat state — there is no server-side
@@ -270,7 +225,14 @@ export default function SemanticImprovePage() {
   const { data: pendingData, loading: pendingLoading, error: pendingError, refetch: refetchPending } =
     useAdminFetch<{ amendments: PendingAmendment[] }>("/api/v1/admin/semantic-improve/pending");
 
-  // Single mutation hook for approve/reject
+  // Fetch the org's rejected amendments — the Rejected view offers Reconsider
+  // on each (#4512). Fetched eagerly so the tab badge shows a count without
+  // opening the tab; it's a cheap org-scoped read.
+  const { data: rejectedData, loading: rejectedLoading, error: rejectedError, refetch: refetchRejected } =
+    useAdminFetch<{ amendments: RejectedAmendment[] }>("/api/v1/admin/semantic-improve/rejected");
+  const rejectedAmendments = rejectedData?.amendments ?? [];
+
+  // Single mutation hook for approve/reject/reconsider
   const { mutate, isMutating, error: mutationError } = useAdminMutation({
     method: "POST",
   });
@@ -359,6 +321,20 @@ export default function SemanticImprovePage() {
       setProposalDecisions((prev) =>
         new Map(prev).set(dbId, decision === "approved" ? "accepted" : "rejected"),
       );
+      void refetchPending();
+    }
+  }
+
+  async function handleReconsider(id: string) {
+    // Lift the rejection: the row returns to pending and its identity leaves
+    // rejection memory (#4512). Refetch BOTH lists so the row leaves Rejected
+    // and appears in the Pending queue with a live diff, like any other.
+    const result = await mutate({
+      path: `/api/v1/admin/semantic-improve/amendments/${id}/reconsider`,
+      itemId: `reconsider-${id}`,
+    });
+    if (result.ok) {
+      void refetchRejected();
       void refetchPending();
     }
   }
@@ -503,20 +479,35 @@ export default function SemanticImprovePage() {
 
           {/* Proposals panel */}
           <ResizablePanel defaultSize={45} minSize={25}>
-            <div className="flex h-full min-h-0 flex-col">
+            <Tabs
+              value={view}
+              onValueChange={(v) => setView(v as "pending" | "rejected")}
+              className="flex h-full min-h-0 flex-col gap-0"
+            >
               <div className="shrink-0 border-b px-4 py-3">
-                <h2 className="text-sm font-semibold">
-                  Proposals
-                  {proposals.length > 0 && (
-                    <span className="ml-2 text-muted-foreground font-normal">
-                      {/* Every row here is approvable, so this badge can never
-                          disagree with the rendered queue (#4504). */}
-                      ({proposals.length} pending)
-                    </span>
-                  )}
-                </h2>
+                <TabsList>
+                  <TabsTrigger value="pending">
+                    Pending
+                    {/* Every row in the pending queue is approvable, so this
+                        count can never disagree with it (#4504). */}
+                    {proposals.length > 0 && (
+                      <span className="ml-1 text-muted-foreground font-normal">
+                        {proposals.length}
+                      </span>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="rejected">
+                    Rejected
+                    {rejectedAmendments.length > 0 && (
+                      <span className="ml-1 text-muted-foreground font-normal">
+                        {rejectedAmendments.length}
+                      </span>
+                    )}
+                  </TabsTrigger>
+                </TabsList>
               </div>
-              <ScrollArea className="min-h-0 flex-1 p-4">
+              <TabsContent value="pending" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <ScrollArea className="min-h-0 flex-1 p-4">
                 <div className="space-y-3">
                   <MutationErrorSurface error={pendingError} feature="Semantic Layer" onRetry={refetchPending} />
                   <MutationErrorSurface error={mutationError} feature="Semantic Layer" />
@@ -569,8 +560,37 @@ export default function SemanticImprovePage() {
                     </div>
                   )}
                 </div>
-              </ScrollArea>
-            </div>
+                </ScrollArea>
+              </TabsContent>
+
+              <TabsContent value="rejected" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <ScrollArea className="min-h-0 flex-1 p-4">
+                  <div className="space-y-3">
+                    <MutationErrorSurface error={rejectedError} feature="Semantic Layer" onRetry={refetchRejected} />
+                    <MutationErrorSurface error={mutationError} feature="Semantic Layer" />
+                    {rejectedAmendments.length === 0 && !rejectedLoading && (
+                      <div className="py-12 text-center text-xs text-muted-foreground">
+                        No rejected amendments. When you reject a proposal it appears here — Reconsider brings it back to the pending queue.
+                      </div>
+                    )}
+                    {rejectedLoading && rejectedAmendments.length === 0 && (
+                      <div className="flex items-center justify-center py-12 text-xs text-muted-foreground">
+                        <Loader2 className="size-3 animate-spin mr-2" />
+                        Loading rejected amendments...
+                      </div>
+                    )}
+                    {rejectedAmendments.map((a) => (
+                      <RejectedCard
+                        key={a.id}
+                        amendment={a}
+                        onReconsider={() => handleReconsider(a.id)}
+                        reconsidering={isMutating(`reconsider-${a.id}`)}
+                      />
+                    ))}
+                  </div>
+                </ScrollArea>
+              </TabsContent>
+            </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>

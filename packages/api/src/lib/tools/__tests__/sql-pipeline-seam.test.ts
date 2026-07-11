@@ -2,7 +2,7 @@
  * Direct tests for the unified SQL execution pipeline seam (#4185).
  *
  * `runSqlPipelineEffect` is the ONE core effect both `runUserQueryPipeline`
- * (raw path: dashboards, metrics, validate-proposal, executeSQL-over-REST)
+ * (raw path: dashboards, metrics, amendment-proposal test queries, executeSQL-over-REST)
  * and the agent `executeSQL` leaf wrap. These tests exercise the shared
  * seam itself — approval fail-closed, RLS injection, auto row limit — and
  * pin that governance behavior is identical regardless of which pre-step

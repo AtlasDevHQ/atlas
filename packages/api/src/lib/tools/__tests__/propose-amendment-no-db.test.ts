@@ -10,6 +10,7 @@ import { describe, it, expect, mock } from "bun:test";
 
 const entityYaml = [
   "name: companies",
+  "table: companies",
   "description: Customer companies",
   "dimensions:",
   "  - name: id",

@@ -1,5 +1,5 @@
 /**
- * Expert agent tool registry — superset of standard tools plus 5 semantic expert tools.
+ * Expert agent tool registry — superset of standard tools plus 4 semantic expert tools.
  *
  * Used by the semantic expert agent for autonomous and interactive analysis.
  */
@@ -11,7 +11,6 @@ import { profileTable } from "./profile-table";
 import { checkDataDistribution } from "./check-distribution";
 import { searchAuditLog } from "./search-audit-log";
 import { proposeAmendment } from "./propose-amendment";
-import { validateProposal } from "./validate-proposal";
 
 // ── Workflow descriptions for expert tools ──
 
@@ -37,15 +36,11 @@ const PROPOSE_AMENDMENT_DESCRIPTION = `### 8. Propose a Semantic Layer Amendment
 Use the proposeAmendment tool to propose a structured YAML change:
 - Always include a testQuery to validate the amendment when possible
 - Set confidence based on evidence: high (0.8+) for changes backed by audit log data, medium (0.5-0.8) for profiler-based suggestions, low (<0.5) for speculative improvements
-- Include a clear rationale explaining why this change improves the semantic layer`;
-
-const VALIDATE_PROPOSAL_DESCRIPTION = `### 9. Validate a Proposal
-Use the validateProposal tool to dry-run validate a previously proposed amendment:
-- Checks YAML syntax, table whitelist compliance, and test query execution
-- Run this after proposeAmendment to catch issues before admin review`;
+- Include a clear rationale explaining why this change improves the semantic layer
+- Validation is built in: the payload schema, any embedded SQL, and the test query are all checked before the proposal is queued. A proposal that fails validation is never queued — the tool result tells you exactly what to fix and re-propose.`;
 
 /**
- * Build the expert agent ToolRegistry with all 7 tools.
+ * Build the expert agent ToolRegistry with all 6 tools.
  */
 export function buildExpertRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
@@ -82,11 +77,6 @@ export function buildExpertRegistry(): ToolRegistry {
     name: "proposeAmendment",
     description: PROPOSE_AMENDMENT_DESCRIPTION,
     tool: proposeAmendment,
-  });
-  registry.register({
-    name: "validateProposal",
-    description: VALIDATE_PROPOSAL_DESCRIPTION,
-    tool: validateProposal,
   });
 
   registry.freeze();

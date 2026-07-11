@@ -6,21 +6,19 @@
 
 import { mapSQLType } from "@atlas/api/lib/profiler-utils";
 import { suggestMeasureType, describeMeasure } from "@atlas/api/lib/profiler-patterns";
+import { amendmentIdentityKey } from "@atlas/api/lib/semantic/amendment-identity";
 import type { AnalysisContext, AnalysisResult, ParsedEntity } from "./types";
 import { createAnalysisResult, tableFrequencyImpact } from "./scoring";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-// Rejection/staleness keys are group-scoped (#3284): a review decision in one
-// Connection group must not suppress the same-named amendment in another group.
-// `loadRejectedKeys` builds the matching key from each rejected row's
-// `connection_group_id` (NULL → "default").
-function rejectionKey(group: string, entity: string, type: string, name?: string): string {
-  return `${group}:${entity}:${type}${name ? `:${name}` : ""}`;
-}
-
+// Rejection/staleness keys are the canonical group-scoped amendment identity
+// (#3284, #4507): a review decision in one Connection group must not suppress
+// the same-named amendment in another group. `loadRejectedKeys` and the
+// insert-time guard build the matching key from the same
+// `amendmentIdentityKey` — the single source of truth for "same change".
 function stalenessFactor(group: string, entity: string, type: string, name: string | undefined, rejectedKeys: Set<string>): number {
-  return rejectedKeys.has(rejectionKey(group, entity, type, name)) ? 0.8 : 0;
+  return rejectedKeys.has(amendmentIdentityKey(group, entity, type, name)) ? 0.8 : 0;
 }
 
 /**
@@ -273,7 +271,10 @@ export function findMissingJoins(ctx: AnalysisContext): AnalysisResult[] {
         if (!targetInGroup) continue;
 
         const joinSql = `${profile.table_name}.${fk.from_column} = ${fk.to_table}.${fk.to_column}`;
-        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_join", fk.to_table, ctx.rejectedKeys);
+        // Key on the stored join name (`to_<table>`), not the bare table, so
+        // the staleness identity matches what `amendmentIdentityFromRow`
+        // reconstructs from the persisted `amendment.name` (#4507).
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_join", `to_${fk.to_table}`, ctx.rejectedKeys);
         const impact = 0.8;
         const confidence = fk.source === "constraint" ? 0.95 : 0.6;
 

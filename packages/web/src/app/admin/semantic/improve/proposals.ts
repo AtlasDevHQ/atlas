@@ -120,3 +120,111 @@ export function extractProposals(messages: UIMessage[]): Proposal[] {
   }
   return proposals;
 }
+
+// ---------------------------------------------------------------------------
+// buildProposalQueue — the one Pending queue (#4504)
+//
+// The proposals panel renders a single data source: the org's Pending queue
+// (per CONTEXT.md). A live conversation must never hide pre-existing pending
+// Amendments — including ones the scheduler queued. So the approvable list is
+// exactly `/pending`; the conversation only supplies *markers* (which rows it
+// created, so they badge + sort to the top) and *decided rows* that never
+// entered the queue (an auto-approved amendment is already live). The marker is
+// presentation state, not a second data source — a proposal streamed this turn
+// becomes approvable only once the refetch lands it in `/pending`.
+// ---------------------------------------------------------------------------
+
+export interface QueueRow extends Proposal {
+  /**
+   * True when this row's `dbId` was created by a `proposeAmendment` in the live
+   * conversation. A presentation marker (badge + sort-to-top) only — the row's
+   * approvability comes solely from the pending queue.
+   */
+  fromConversation: boolean;
+}
+
+/**
+ * A queue row that is approvable. Approvable rows are undecided by construction,
+ * so `ProposalQueue.pending.length` is the pending badge and the two can never
+ * disagree (#4504) — the type, not just a runtime branch, holds that guarantee.
+ */
+export interface ApprovableRow extends QueueRow {
+  decision: null;
+}
+
+export interface ProposalQueue {
+  /**
+   * The approvable Pending queue, conversation-created rows sorted to the top.
+   * Its length is the pending badge; every row is `decision: null`.
+   */
+  pending: ApprovableRow[];
+  /**
+   * Presentation-only strip of rows decided this session (approve/reject) or
+   * auto-applied in-flow. Never approvable; shown so the admin sees what just
+   * happened.
+   */
+  recentlyDecided: QueueRow[];
+}
+
+/**
+ * Merge the DB Pending queue with the live conversation into the panel's two
+ * lists. `pending` is the sole source of approvable rows; `conversation` (from
+ * {@link extractProposals}) contributes markers and auto-applied rows; and
+ * `decisions` reflects approve/reject clicks this session so a decided row
+ * leaves the approvable list immediately, before the refetch drops it.
+ */
+export function buildProposalQueue(args: {
+  pending: Proposal[];
+  conversation: Proposal[];
+  decisions: Map<string, "accepted" | "rejected">;
+}): ProposalQueue {
+  const { pending, conversation, decisions } = args;
+
+  const conversationIds = new Set(
+    conversation.map((p) => p.dbId).filter((id): id is string => Boolean(id)),
+  );
+
+  // One entry per dbId. The pending queue is the sole source of approvable
+  // rows; the conversation only adds rows not yet in it — an auto-applied one
+  // surfaces in the decided strip, a just-streamed undecided one waits for the
+  // refetch.
+  interface Entry {
+    id: string;
+    row: Proposal;
+    inPending: boolean;
+    fromConversation: boolean;
+  }
+  const byId = new Map<string, Entry>();
+  for (const row of pending) {
+    if (!row.dbId) continue;
+    byId.set(row.dbId, { id: row.dbId, row, inPending: true, fromConversation: conversationIds.has(row.dbId) });
+  }
+  for (const row of conversation) {
+    if (!row.dbId || byId.has(row.dbId)) continue;
+    byId.set(row.dbId, { id: row.dbId, row, inPending: false, fromConversation: true });
+  }
+
+  const pendingQueue: ApprovableRow[] = [];
+  const recentlyDecided: QueueRow[] = [];
+  for (const { id, row, inPending, fromConversation } of byId.values()) {
+    // A session approve/reject wins over the row's own decision so the click
+    // reflects before the refetch; otherwise a chat-streamed row carries its
+    // `applied` (auto-approved) status.
+    const decision = decisions.get(id) ?? row.decision;
+    if (decision === null) {
+      // Only rows actually in the pending queue are approvable — a proposal
+      // streamed this turn but not yet refetched into `/pending` waits. The
+      // narrowed `decision: null` makes each pushed row an `ApprovableRow`.
+      if (inPending) pendingQueue.push({ ...row, decision, fromConversation });
+    } else {
+      recentlyDecided.push({ ...row, decision, fromConversation });
+    }
+  }
+
+  return {
+    pending: pendingQueue.toSorted(
+      (a, b) => Number(b.fromConversation) - Number(a.fromConversation),
+    ),
+    recentlyDecided,
+  };
+}

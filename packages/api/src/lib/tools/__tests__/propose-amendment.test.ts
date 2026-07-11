@@ -22,9 +22,11 @@ const companiesEntity: Record<string, unknown> = {
   dimensions: [{ name: "id", type: "number" }],
 };
 
+// insertSemanticAmendment now returns a discriminated union (#4507):
+// { outcome: "inserted" | "already_pending" | "rejected", ... }.
 const mockInsertSemanticAmendment: Mock<
-  (args: Record<string, unknown>) => Promise<{ id: string; autoApprove: boolean }>
-> = mock(() => Promise.resolve({ id: "prop-1", autoApprove: false }));
+  (args: Record<string, unknown>) => Promise<{ outcome: string; id?: string; autoApprove?: boolean }>
+> = mock(() => Promise.resolve({ outcome: "inserted", id: "prop-1", autoApprove: false }));
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
@@ -154,7 +156,7 @@ describe("proposeAmendment test query routing (#4485)", () => {
     mockRunUserQueryPipeline.mockClear();
     mockRunUserQueryPipeline.mockResolvedValue(okOutcome);
     mockInsertSemanticAmendment.mockClear();
-    mockInsertSemanticAmendment.mockResolvedValue({ id: "prop-1", autoApprove: false });
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-1", autoApprove: false });
   });
 
   it("routes the test query through runUserQueryPipeline with an explicit connectionId", async () => {
@@ -232,14 +234,14 @@ describe("proposeAmendment auto-approve routes through the decide seam (#4486, #
   });
 
   it("does NOT invoke the seam when the insert is not eligible (auto-approve disabled)", async () => {
-    mockInsertSemanticAmendment.mockResolvedValue({ id: "prop-pending", autoApprove: false });
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-pending", autoApprove: false });
     const result = await run();
     expect(mockDecideAmendment).not.toHaveBeenCalled();
     expect(result.status).toBe("queued");
   });
 
   it("routes an eligible insert through the seam with the inserted row's id", async () => {
-    mockInsertSemanticAmendment.mockResolvedValue({ id: "prop-approved", autoApprove: true });
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-approved", autoApprove: true });
     const result = await run();
 
     // The invariant: eligibility triggers exactly one seam decision — the
@@ -262,7 +264,7 @@ describe("proposeAmendment auto-approve routes through the decide seam (#4486, #
   });
 
   it("reports queued when the seam's apply fails (row already compensated to pending)", async () => {
-    mockInsertSemanticAmendment.mockResolvedValue({ id: "prop-approved", autoApprove: true });
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-approved", autoApprove: true });
     mockDecideAmendment.mockImplementation(async () => {
       throw new Error("entity not found for org");
     });
@@ -278,7 +280,7 @@ describe("proposeAmendment auto-approve routes through the decide seam (#4486, #
   });
 
   it("reports queued when a concurrent decision beat the tool to its own insert", async () => {
-    mockInsertSemanticAmendment.mockResolvedValue({ id: "prop-approved", autoApprove: true });
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-approved", autoApprove: true });
     mockDecideAmendment.mockImplementation(async (params) => ({ kind: "not_pending", id: params.id }));
 
     const result = await run();
@@ -291,7 +293,7 @@ describe("proposeAmendment auto-approve routes through the decide seam (#4486, #
     // Sweep both eligibility outcomes; auto_approved requires the seam's
     // approved outcome (which itself requires a successful apply + stamp).
     for (const autoApprove of [false, true]) {
-      mockInsertSemanticAmendment.mockResolvedValue({ id: `prop-${autoApprove}`, autoApprove });
+      mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: `prop-${autoApprove}`, autoApprove });
       mockDecideAmendment.mockClear();
       const result = await run();
       if (result.status === "auto_approved") {
@@ -300,5 +302,43 @@ describe("proposeAmendment auto-approve routes through the decide seam (#4486, #
         expect(result.status).toBe("queued");
       }
     }
+  });
+});
+
+describe("proposeAmendment permanent rejection memory + pending dedup (#4507)", () => {
+  beforeEach(() => {
+    mockRunUserQueryPipeline.mockClear();
+    mockRunUserQueryPipeline.mockResolvedValue(okOutcome);
+    mockInsertSemanticAmendment.mockClear();
+    mockApplyAmendmentFromPayload.mockClear();
+    mockApplyAmendmentFromPayload.mockResolvedValue(undefined);
+  });
+
+  it("reports rejected (with a reason the model can see) and applies nothing when the identity was previously rejected", async () => {
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "rejected", id: "rej-1" });
+
+    const result = await run();
+
+    expect(result.status).toBe("rejected");
+    // The tool result says WHY (acceptance criterion 1) — the model must learn
+    // not to re-propose it.
+    expect(String((result as { reason?: string }).reason)).toMatch(/previously rejected/i);
+    // A refused insert never applies and never claims a queued proposal id.
+    expect(mockApplyAmendmentFromPayload).not.toHaveBeenCalled();
+    expect(result.proposalId).toBeUndefined();
+    // The diff is still surfaced so the model sees what it tried to change.
+    expect(result.diff).toBeDefined();
+  });
+
+  it("converges on the existing pending row instead of re-applying or duplicating", async () => {
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "already_pending", id: "pend-1" });
+
+    const result = await run();
+
+    expect(result.status).toBe("already_pending");
+    // Points the model at the existing proposal, not a new one.
+    expect(result.proposalId).toBe("pend-1");
+    // An already-pending identity is not auto-approved/applied.
+    expect(mockApplyAmendmentFromPayload).not.toHaveBeenCalled();
   });
 });

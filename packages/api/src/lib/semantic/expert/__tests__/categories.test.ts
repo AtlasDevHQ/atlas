@@ -268,6 +268,25 @@ describe("findMissingJoins", () => {
     expect(results[0].confidence).toBe(0.95); // constraint = high confidence
   });
 
+  test("a rejected join identity dampens staleness — keyed on the stored `to_<table>` name (#4507)", () => {
+    // The staleness key must match what `amendmentIdentityFromRow`
+    // reconstructs from the persisted `amendment.name` (`to_users`), NOT the
+    // bare `to_table`. A rejection of `default:orders:add_join:to_users` must
+    // mark this proposal stale.
+    const ctx = makeContext({
+      profiles: [makeProfile({
+        table_name: "orders",
+        foreign_keys: [{ from_column: "user_id", to_table: "users", to_column: "id", source: "constraint" }],
+      })],
+      entities: [makeEntity({ name: "orders" }), makeEntity({ name: "users" })],
+      rejectedKeys: new Set(["default:orders:add_join:to_users"]),
+    });
+
+    const results = findMissingJoins(ctx);
+    expect(results.length).toBe(1);
+    expect(results[0].staleness).toBe(0.8);
+  });
+
   test("inferred FKs get lower confidence", () => {
     const ctx = makeContext({
       profiles: [makeProfile({

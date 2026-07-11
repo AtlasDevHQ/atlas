@@ -18,6 +18,10 @@ export interface ExpertTickResult {
   proposalsGenerated: number;
   autoApproved: number;
   queued: number;
+  /** Refused at insert — the identity was previously rejected (#4507). */
+  rejected: number;
+  /** Converged on an existing pending row — no duplicate queued (#4507). */
+  deduped: number;
   errors: number;
 }
 
@@ -77,6 +81,8 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
     proposalsGenerated: 0,
     autoApproved: 0,
     queued: 0,
+    rejected: 0,
+    deduped: 0,
     errors: 0,
   };
 
@@ -130,7 +136,7 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
         // maps to a NULL `connection_group_id` like everywhere else.
         const connectionGroupId =
           proposal.group && proposal.group !== "default" ? proposal.group : null;
-        const { id, autoApprove } = await insertSemanticAmendment({
+        const insertResult = await insertSemanticAmendment({
           orgId: null, // global scope for self-hosted
           description: proposal.rationale,
           sourceEntity: proposal.entityName,
@@ -143,6 +149,20 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
             testQuery: proposal.testQuery,
           },
         });
+
+        // Permanent rejection memory + pending dedup (#4507): a rejected
+        // identity is refused at insert; an identical pending proposal
+        // converges on the existing row. Neither queues a new row.
+        if (insertResult.outcome === "rejected") {
+          result.rejected++;
+          continue;
+        }
+        if (insertResult.outcome === "already_pending") {
+          result.deduped++;
+          continue;
+        }
+
+        const { id, autoApprove } = insertResult;
 
         if (autoApprove) {
           // Route the auto-approve through the decide seam: claim-then-apply,
@@ -198,7 +218,14 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
     }
 
     log.info(
-      { total: result.proposalsGenerated, autoApproved: result.autoApproved, queued: result.queued, errors: result.errors },
+      {
+        total: result.proposalsGenerated,
+        autoApproved: result.autoApproved,
+        queued: result.queued,
+        rejected: result.rejected,
+        deduped: result.deduped,
+        errors: result.errors,
+      },
       "Expert scheduler tick complete",
     );
   } catch (err) {

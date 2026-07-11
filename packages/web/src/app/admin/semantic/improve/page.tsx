@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
-import { extractProposals, type Proposal, type TestResult } from "./proposals";
+import { extractProposals, buildProposalQueue, type Proposal, type QueueRow, type TestResult } from "./proposals";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -91,7 +91,7 @@ function ProposalCard({
   approving,
   rejecting,
 }: {
-  proposal: Proposal;
+  proposal: QueueRow;
   onApprove: () => void;
   onReject: () => void;
   approving: boolean;
@@ -115,6 +115,15 @@ function ProposalCard({
             <Badge variant="outline" className="text-[10px]">
               {proposal.amendmentType.replace(/_/g, " ")}
             </Badge>
+            {/* Presentation marker — this row was created in the live
+                conversation (#4504): a mark on the one-queue model, not a
+                parallel list. Also renders on the recently-decided strip. */}
+            {proposal.fromConversation && (
+              <Badge variant="secondary" className="gap-1 text-[10px]">
+                <Sparkles className="size-2.5" />
+                this conversation
+              </Badge>
+            )}
           </CardTitle>
           <div className="flex items-center gap-2">
             <span className={`text-xs font-medium ${confidenceColor}`}>
@@ -283,14 +292,28 @@ export default function SemanticImprovePage() {
     dbId: a.id,
   }));
 
-  // Extract proposals from current chat session messages
-  const chatProposals = extractProposals(messages).map((p) => ({
-    ...p,
-    decision: (p.dbId ? proposalDecisions.get(p.dbId) : undefined) ?? p.decision,
-  }));
+  // The live conversation's proposals — supply markers on the one Pending
+  // queue plus the already-decided rows in the strip below, never a second
+  // source of approvable rows (#4504).
+  const chatProposals = extractProposals(messages);
 
-  // Show chat proposals when a session is active, otherwise show DB pending
-  const proposals = chatProposals.length > 0 ? chatProposals : pendingAmendments;
+  // The one Pending queue: pre-existing pending Amendments and this
+  // conversation's rows together, conversation rows marked and sorted to the
+  // top. Decided/auto-applied rows drop to the presentation-only strip below.
+  const { pending: proposals, recentlyDecided } = buildProposalQueue({
+    pending: pendingAmendments,
+    conversation: chatProposals,
+    decisions: proposalDecisions,
+  });
+
+  // A new proposeAmendment result must surface in the queue: refetch /pending
+  // when the set of conversation-created rows changes. `refetchPending`
+  // (TanStack Query) is referentially stable, so this fires only on new rows,
+  // not every render.
+  const conversationIdsKey = chatProposals.map((p) => p.dbId ?? "").join(",");
+  useEffect(() => {
+    if (conversationIdsKey) void refetchPending();
+  }, [conversationIdsKey, refetchPending]);
 
   function handleSend() {
     if (!inputValue.trim() || isLoading) return;
@@ -486,7 +509,9 @@ export default function SemanticImprovePage() {
                   Proposals
                   {proposals.length > 0 && (
                     <span className="ml-2 text-muted-foreground font-normal">
-                      ({proposals.filter((p) => p.decision === null).length} pending)
+                      {/* Every row here is approvable, so this badge can never
+                          disagree with the rendered queue (#4504). */}
+                      ({proposals.length} pending)
                     </span>
                   )}
                 </h2>
@@ -495,14 +520,14 @@ export default function SemanticImprovePage() {
                 <div className="space-y-3">
                   <MutationErrorSurface error={pendingError} feature="Semantic Layer" onRetry={refetchPending} />
                   <MutationErrorSurface error={mutationError} feature="Semantic Layer" />
-                  {proposals.length === 0 && !pendingLoading && (
+                  {proposals.length === 0 && recentlyDecided.length === 0 && !pendingLoading && (
                     <div className="py-12 text-center text-xs text-muted-foreground">
                       {messages.length === 0
                         ? "No pending improvements. Run an analysis to identify opportunities."
                         : "Proposals will appear here as the agent identifies improvements."}
                     </div>
                   )}
-                  {pendingLoading && proposals.length === 0 && (
+                  {pendingLoading && proposals.length === 0 && recentlyDecided.length === 0 && (
                     <div className="flex items-center justify-center py-12 text-xs text-muted-foreground">
                       <Loader2 className="size-3 animate-spin mr-2" />
                       Loading pending amendments...
@@ -522,6 +547,27 @@ export default function SemanticImprovePage() {
                       />
                     );
                   })}
+
+                  {/* Recently decided — presentation-only. These rows are
+                      auto-applied or reviewed this session; they're not in the
+                      pending queue and are clearly not approvable (#4504). */}
+                  {recentlyDecided.length > 0 && (
+                    <div className="space-y-3 pt-2">
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                        Recently decided
+                      </p>
+                      {recentlyDecided.map((proposal) => (
+                        <ProposalCard
+                          key={proposal.dbId ?? `decided-${proposal.index}`}
+                          proposal={proposal}
+                          onApprove={() => {}}
+                          onReject={() => {}}
+                          approving={false}
+                          rejecting={false}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               </ScrollArea>
             </div>

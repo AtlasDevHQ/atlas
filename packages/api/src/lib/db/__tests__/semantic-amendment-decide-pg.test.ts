@@ -246,7 +246,7 @@ describeIfPg("decide-seam claim helpers (real Postgres, #4506)", () => {
       // eligibility (#4506).
       process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD = "0.5";
       try {
-        const { id, autoApprove } = await insertSemanticAmendment({
+        const result = await insertSemanticAmendment({
           orgId: ORG,
           description: "test",
           sourceEntity: "orders",
@@ -255,8 +255,11 @@ describeIfPg("decide-seam claim helpers (real Postgres, #4506)", () => {
           amendmentPayload: { amendmentType: "add_dimension", amendment: { name: "region" } },
         });
 
-        expect(autoApprove).toBe(true);
-        expect(await statusOf(id)).toBe("pending");
+        // Fresh identity → a real insert (#4507), reported eligible (#4506).
+        expect(result.outcome).toBe("inserted");
+        if (result.outcome !== "inserted") throw new Error("unreachable");
+        expect(result.autoApprove).toBe(true);
+        expect(await statusOf(result.id)).toBe("pending");
       } finally {
         delete process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD;
       }

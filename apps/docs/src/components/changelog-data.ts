@@ -20,6 +20,19 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.47",
+    title: "Notebook Surface Retired",
+    date: "2026-07-10",
+    summary:
+      "The notebook surface is retired. Its job — an agent-built, curated, shareable analysis artifact — now belongs to dashboards, which reached a sounder draft-first, publish-gated model in the recent dashboards work. Existing notebook conversations are converted to ordinary web chats with their full message history preserved; conversations that were forked from a notebook become standalone chats, and no messages are deleted. This is the first step of a two-step removal: this release stops all reads and writes of notebook state, and the underlying column is dropped in the next release.",
+    highlights: [
+      "The notebook surface — cells, fork/branch, convert-to-notebook, and the \"Share as Report\" viewer — is removed end-to-end (#4589)",
+      "Existing notebook conversations migrate to web chat with full message history preserved; forked notebooks become standalone chats; no rows are deleted (migration 0169)",
+      "Dashboards own the curated, agent-built, shareable-artifact job going forward, on the draft-first, publish-gated model (ADR-0029/0034)",
+      "Two-phase drop: this release stops every read and write of notebook state; the underlying column is dropped in the next release (#4588)",
+    ],
+  },
+  {
     version: "v0.0.46",
     title: "KB Support Center Connectors",
     date: "2026-07-10",

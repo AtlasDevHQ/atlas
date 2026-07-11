@@ -522,9 +522,16 @@ function buildSystemPrompt(
   routingContext?: ScopeRoutingContext,
   boundDashboardContext?: BoundDashboardAgentContext,
   orgKnowledgeToc?: string,
+  persona?: string,
 ): string {
   const suffix = boundDashboardContext ? BOUND_AGENT_PROMPT_GUIDANCE : SYSTEM_PROMPT_SUFFIX;
-  let base = SYSTEM_PROMPT_PREFIX + "\n\n" + registry.describe() + "\n\n" + suffix;
+  // #4508 — "expert is a mode": a persona REPLACES the standard analyst role
+  // section (`SYSTEM_PROMPT_PREFIX`), so the model receives one identity. The
+  // improve route passes the expert persona here instead of smuggling it in as
+  // a `## Warnings` bullet after the analyst prefix. Persona-independent
+  // sections (tool guidance, suffix rules, semantic index) are unchanged.
+  const prefix = persona ?? SYSTEM_PROMPT_PREFIX;
+  let base = prefix + "\n\n" + registry.describe() + "\n\n" + suffix;
   if (boundDashboardContext) {
     base += "\n\n" + boundDashboardContext.cardSummary;
   }
@@ -638,6 +645,16 @@ export interface BuildSystemParamOptions {
   readonly registry?: ToolRegistry;
   /** Startup/context warnings surfaced to the agent under a `## Warnings` section. */
   readonly warnings?: readonly string[];
+  /**
+   * #4508 — the agent's ROLE section, replacing `SYSTEM_PROMPT_PREFIX` ("You
+   * are Atlas, an expert data analyst"). "Expert is a mode": the improve route
+   * passes the expert persona (lib/semantic/expert/persona.ts) so the model
+   * carries one identity — the sibling seam to {@link answerStyle}, which swaps
+   * the editorial voice while this swaps the role. Omitted ⇒ the analyst
+   * prefix, unchanged for every other surface. Do NOT route a persona through
+   * {@link warnings} — a persona is the role, not a footnote appended after it.
+   */
+  readonly persona?: string;
   /** Org-scoped (DB-backed) semantic index section; preferred over the file-based index when present. */
   readonly orgSemanticIndex?: string;
   /**
@@ -722,6 +739,7 @@ export function buildSystemParam(
   const {
     registry = defaultRegistry,
     warnings,
+    persona,
     orgSemanticIndex,
     orgKnowledgeToc,
     learnedPatternsSection,
@@ -733,7 +751,7 @@ export function buildSystemParam(
     memoryBlock,
     sourceCatalog,
   } = options;
-  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext, orgKnowledgeToc);
+  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext, orgKnowledgeToc, persona);
 
   if (sourceCatalog) {
     content += "\n\n" + sourceCatalog;
@@ -1007,6 +1025,7 @@ export async function runAgent({
   tools: toolRegistry = defaultRegistry,
   conversationId,
   warnings,
+  persona,
   contextWarnings,
   maxSteps: maxStepsOverride,
   /** Optional pre-resolved AI model. When provided, skips provider resolution. */
@@ -1022,6 +1041,13 @@ export async function runAgent({
   tools?: ToolRegistry;
   conversationId?: string;
   warnings?: string[];
+  /**
+   * #4508 — the agent's ROLE section, replacing `SYSTEM_PROMPT_PREFIX`
+   * ("expert is a mode"). The improve route passes the expert persona
+   * (lib/semantic/expert/persona.ts); every other surface omits it and keeps
+   * the analyst prefix. Threaded verbatim to {@link buildSystemParam}.
+   */
+  persona?: string;
   /**
    * Out-parameter (#1988 B5). When supplied, the agent's preflight loaders
    * push a structured {@link ChatContextWarning} entry per failure so the
@@ -1654,6 +1680,7 @@ export async function runAgent({
   const systemParam = buildSystemParam(providerType, {
     registry: activeRegistry,
     warnings,
+    persona,
     orgSemanticIndex,
     orgKnowledgeToc,
     learnedPatternsSection,

@@ -89,12 +89,20 @@ void mock.module("@atlas/api/lib/auth/middleware", () => ({
   getClientIP: () => null,
 }));
 
+// #4508 — the chat handler re-enters withRequestContext to stamp the agent
+// origin; capture the ctx it stamps so the origin/user-binding assertions can
+// read it. The route's call is the innermost, so it wins `lastRequestContext`.
+let lastRequestContext: Record<string, unknown> | undefined;
+
 void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return {
     createLogger: () => logger,
-    withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+    withRequestContext: (ctx: Record<string, unknown>, fn: () => unknown) => {
+      lastRequestContext = ctx;
+      return fn();
+    },
     getRequestContext: () => ({ requestId: "test-req-id" }),
   };
 });
@@ -137,11 +145,21 @@ void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkPlanLimits: async () => ({ allowed: true }),
 }));
 
-// Mock the agent and expert registry (not needed for session/proposal tests)
+// Mock the agent and expert registry. The chat-endpoint tests (#4508) capture
+// the runAgent options to assert the persona seam and that the retired
+// hardcoded `maxSteps: 15` is gone — the route now defers to runAgent's default
+// (`stepCountIs(getAgentMaxSteps())`), whose workspace-knob + bounds resolution
+// is pinned by agent-max-steps.test.ts and whose loop-capping is pinned by
+// agent-integration.test.ts.
+let runAgentArgs: Record<string, unknown> | undefined;
+
 void mock.module("@atlas/api/lib/agent", () => ({
-  runAgent: async () => ({
-    toUIMessageStream: () => new ReadableStream(),
-  }),
+  runAgent: async (args: Record<string, unknown>) => {
+    runAgentArgs = args;
+    return {
+      toUIMessageStream: () => new ReadableStream(),
+    };
+  },
 }));
 
 void mock.module("@atlas/api/lib/tools/expert-registry", () => ({
@@ -156,6 +174,7 @@ void mock.module("@atlas/api/lib/tools/expert-registry", () => ({
 // ---------------------------------------------------------------------------
 
 import { adminSemanticImprove } from "../admin-semantic-improve";
+import { EXPERT_PERSONA_PROMPT } from "@atlas/api/lib/semantic/expert/persona";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -169,6 +188,57 @@ describe("admin-semantic-improve", () => {
     applyPayloadCalls = [];
     applyShouldThrow = false;
     callOrder = [];
+    runAgentArgs = undefined;
+    lastRequestContext = undefined;
+  });
+
+  describe("POST /chat — expert is a mode (#4508)", () => {
+    async function postChat(): Promise<Response> {
+      return adminSemanticImprove.request("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            { id: "m1", role: "user", parts: [{ type: "text", text: "Improve the orders entity." }] },
+          ],
+        }),
+      });
+    }
+
+    it("runs the expert agent with the persona in the role position, never as a warning", async () => {
+      const res = await postChat();
+      expect(res.status).toBe(200);
+
+      // The expert persona is passed as the first-class ROLE section (the
+      // `persona` seam), NOT smuggled into `warnings` — the model gets one
+      // identity. This is the route-seam half of the "expert is a mode" fix;
+      // the prompt-assembly half is agent-expert-persona-prompt.test.ts.
+      expect(runAgentArgs?.persona).toBe(EXPERT_PERSONA_PROMPT);
+      expect(runAgentArgs?.warnings).toBeUndefined();
+    });
+
+    it("passes no hardcoded step cap — defers to runAgent's workspace-knob default", async () => {
+      const res = await postChat();
+      expect(res.status).toBe(200);
+
+      // The retired `maxSteps: 15` is gone: the route passes no override, so
+      // runAgent's `stepCountIs(getAgentMaxSteps())` default governs the loop,
+      // resolving the workspace agent-max-steps knob (with bounds) from the
+      // active org on the request-context frame the route stamps. The knob
+      // resolution itself is pinned by agent-max-steps.test.ts.
+      expect(runAgentArgs?.maxSteps).toBeUndefined();
+    });
+
+    it("stamps agentOrigin 'chat' and binds the requester so origin-scoped approval rules apply", async () => {
+      const res = await postChat();
+      expect(res.status).toBe(200);
+
+      // Without this frame agentOrigin is undefined and origin-scoped approval
+      // rules (#2072) silently no-op for the expert agent's executeSQL. The
+      // requester (approval binding) is bound from authResult.
+      expect(lastRequestContext?.agentOrigin).toBe("chat");
+      expect(lastRequestContext?.user).toBeDefined();
+    });
   });
 
   // The four in-memory session/proposal routes (GET /sessions,

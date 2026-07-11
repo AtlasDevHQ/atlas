@@ -509,6 +509,7 @@ describe("importBundle — learned-pattern amendment identity (#4569)", () => {
         amendmentPayload: AMENDMENT_PAYLOAD,
         connectionGroupId: "g_prod_us",
         reviewedBy: "admin-1",
+        reviewedAt: "2026-07-10T12:00:00Z",
         repetitionCount: 3,
       },
     ]), "org-test");
@@ -517,7 +518,7 @@ describe("importBundle — learned-pattern amendment identity (#4569)", () => {
     expect(insert).toBeDefined();
     // Columns: org_id, pattern_sql, description, source_entity, confidence,
     // status, type, amendment_payload, connection_group_id, reviewed_by,
-    // repetition_count.
+    // reviewed_at, repetition_count.
     const p = insert!.params;
     expect(p[6]).toBe("semantic_amendment");
     // jsonb param must be a serialized string, not the raw object.
@@ -525,7 +526,8 @@ describe("importBundle — learned-pattern amendment identity (#4569)", () => {
     expect(JSON.parse(p[7] as string)).toEqual(AMENDMENT_PAYLOAD);
     expect(p[8]).toBe("g_prod_us");
     expect(p[9]).toBe("admin-1");
-    expect(p[10]).toBe(3);
+    expect(p[10]).toBe("2026-07-10T12:00:00Z");
+    expect(p[11]).toBe(3);
   });
 
   it("defaults a pre-#4569 bundle (no amendment fields) to a query pattern", async () => {
@@ -547,6 +549,7 @@ describe("importBundle — learned-pattern amendment identity (#4569)", () => {
     expect(p[7]).toBeNull(); // amendment_payload
     expect(p[8]).toBeNull(); // connection_group_id
     expect(p[9]).toBeNull(); // reviewed_by
-    expect(p[10]).toBe(1); // repetition_count default
+    expect(p[10]).toBeNull(); // reviewed_at
+    expect(p[11]).toBe(1); // repetition_count default
   });
 });

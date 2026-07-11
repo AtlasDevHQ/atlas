@@ -91,18 +91,20 @@ export interface ExportedLearnedPattern {
    */
   type?: LearnedPattern["type"];
   /**
-   * The stored amendment envelope (entity, amendment type, diff/payload) for a
+   * The stored amendment envelope (entity, amendment type, diff, payload) for a
    * `semantic_amendment` row; `null`/absent for query patterns. Opaque
    * passthrough — carried verbatim from source jsonb to target so the
-   * amendment's identity ("an Amendment has exactly one workspace owner") stays
-   * intact across a migration (#4569), without coupling the bundle to a
-   * specific `AmendmentPayload` schema version.
+   * amendment's content survives the migration (#4569) without coupling the
+   * bundle to a specific `AmendmentPayload` schema version. (Workspace
+   * ownership is carried by `orgId` + `connectionGroupId`, not this envelope.)
    */
   amendmentPayload?: Record<string, unknown> | null;
-  /** Connection group the amendment targets (ADR-0012); `null`/absent = default group. */
+  /** Connection group the row targets (ADR-0012); `null`/absent = default group. */
   connectionGroupId?: string | null;
   /** Reviewer attribution carried through the migration; `null`/absent if unreviewed. */
   reviewedBy?: string | null;
+  /** Review timestamp (paired with `reviewedBy`); `null`/absent if unreviewed. */
+  reviewedAt?: string | null;
   /** Observed repetition count — pattern/amendment strength; absent ⇒ 1. */
   repetitionCount?: number;
 }

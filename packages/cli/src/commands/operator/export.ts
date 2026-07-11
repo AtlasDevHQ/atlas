@@ -105,7 +105,7 @@ export async function handleExport(args: string[]): Promise<void> {
     // amendment instead of round-tripping as an orphaned query pattern.
     const patRows = await pool.query(
       `SELECT pattern_sql, description, source_entity, confidence, status,
-              type, amendment_payload, connection_group_id, reviewed_by, repetition_count
+              type, amendment_payload, connection_group_id, reviewed_by, reviewed_at, repetition_count
        FROM learned_patterns
        WHERE ${orgClause}
        ORDER BY created_at`,
@@ -122,6 +122,7 @@ export async function handleExport(args: string[]): Promise<void> {
         amendmentPayload: (r.amendment_payload as Record<string, unknown> | null) ?? null,
         connectionGroupId: (r.connection_group_id as string) ?? null,
         reviewedBy: (r.reviewed_by as string) ?? null,
+        reviewedAt: r.reviewed_at ? String(r.reviewed_at) : null,
         repetitionCount: (r.repetition_count as number) ?? 1,
       }),
     );

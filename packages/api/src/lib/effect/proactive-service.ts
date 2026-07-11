@@ -46,6 +46,8 @@ import type {
   PublicDatasetEntry,
   PublicRefusedRollupRow,
   AnnouncementOutcome,
+  AmendmentNoticeInput,
+  AmendmentNoticeOutcome,
   ChannelDirectoryResult,
 } from "@atlas/api/lib/proactive/types";
 
@@ -109,6 +111,21 @@ export interface ProactiveServiceShape {
   readonly listWorkspaceChannels: (
     workspaceId: string,
   ) => Effect.Effect<ChannelDirectoryResult, EnterpriseError>;
+
+  // ── autonomous-improvement notification (scheduler → seam, #4520) ──
+  /**
+   * Post ONE proactive notice to a workspace's admins that autonomous
+   * improvement queued `count` new pending Amendments. Batched per
+   * scheduler tick (not per row) by the caller; `count` is that batch.
+   * The EE impl posts to the workspace's proactive announcement channel —
+   * the same seam as `announceActivation`, no bespoke channel. The Noop
+   * default fails with `EnterpriseError`, which the core caller
+   * (`lib/proactive/notify-amendments.ts`) swallows into a clean skip so
+   * a non-EE deploy degrades to "no notification" (#4520 AC3).
+   */
+  readonly notifyAmendmentsPending: (
+    input: AmendmentNoticeInput,
+  ) => Effect.Effect<AmendmentNoticeOutcome, EnterpriseError>;
 }
 
 export class ProactiveService extends Context.Tag("ProactiveService")<
@@ -144,6 +161,7 @@ export const NoopProactiveServiceLayer: Layer.Layer<ProactiveService> =
     summarizePublicRefused: notAvailable,
     announceActivation: notAvailable,
     listWorkspaceChannels: notAvailable,
+    notifyAmendmentsPending: notAvailable,
   } satisfies ProactiveServiceShape);
 
 /**
@@ -179,5 +197,7 @@ export function createProactiveServiceTestLayer(
     announceActivation: partial.announceActivation ?? fail("announceActivation"),
     listWorkspaceChannels:
       partial.listWorkspaceChannels ?? fail("listWorkspaceChannels"),
+    notifyAmendmentsPending:
+      partial.notifyAmendmentsPending ?? fail("notifyAmendmentsPending"),
   } satisfies ProactiveServiceShape);
 }

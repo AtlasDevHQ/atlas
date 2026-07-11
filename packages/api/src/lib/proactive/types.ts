@@ -209,6 +209,73 @@ export interface AnnounceActivationInput {
 }
 
 // ---------------------------------------------------------------------------
+// autonomous-improvement notification (#4520)
+// ---------------------------------------------------------------------------
+
+/** Input to the amendments-pending notice seam — the workspace to notify
+ * and the batched count of net-new pending Amendments from the tick. */
+export interface AmendmentNoticeInput {
+  workspaceId: string;
+  count: number;
+}
+
+/**
+ * Skip reasons that always carry a diagnostic `message` (a caught error's
+ * text or a platform-side rejection reason). Split out so the outcome type
+ * can require `message` on exactly these and forbid it on the rest —
+ * mirroring the fully-discriminated `AnnouncementOutcome` sibling.
+ */
+export type AmendmentNoticeMessageReason =
+  | "error"
+  | "announcer_threw"
+  | "announcer_rejected";
+
+/**
+ * Why a skip happened when an amendments-pending notice was not posted.
+ * Purely an API-side port shape — the scheduler consumes it for logging
+ * and it is never serialised onto the wire (unlike `AnnouncementOutcome`,
+ * which is declared in `@useatlas/types`, the wire package). Both layers
+ * that produce it:
+ *
+ *   - the core bridge (`lib/proactive/notify-amendments.ts`):
+ *     `nothing_to_notify` (count ≤ 0 — guarded before the seam),
+ *     `enterprise_disabled` (the Noop `ProactiveService` failed with
+ *     `EnterpriseError` — the clean degrade path, AC3), `error`
+ *     (any other unexpected bridge failure/defect).
+ *   - the EE delivery (`ee/src/proactive/amendment-notification.ts`):
+ *     `nothing_to_notify` (defensive count guard), `no_internal_db`,
+ *     `no_config_row` (workspace never engaged proactive), `no_channel`
+ *     (proactive config exists but no announcement channel to post to),
+ *     `no_announcer_configured` / `announcer_rejected` / `announcer_threw`
+ *     (chat-platform port), and `error` (the config-row read threw).
+ */
+export type AmendmentNoticeSkipReason =
+  | AmendmentNoticeMessageReason
+  | "nothing_to_notify"
+  | "enterprise_disabled"
+  | "no_internal_db"
+  | "no_config_row"
+  | "no_channel"
+  | "no_announcer_configured";
+
+/**
+ * Outcome of an attempt to notify a workspace's admins that autonomous
+ * improvement queued new pending Amendments (#4520). Best-effort by
+ * construction: a skip is never an error the scheduler tick surfaces —
+ * autonomy must not fail a tick on a delivery hiccup or an enterprise-off
+ * deployment. `message` is present iff the `reason` carries a diagnostic
+ * (a caught error / a platform rejection) — the type enforces that split
+ * rather than leaving `message` optional everywhere.
+ */
+export type AmendmentNoticeOutcome =
+  | { posted: true; messageId?: string }
+  | { posted: false; reason: AmendmentNoticeMessageReason; message: string }
+  | {
+      posted: false;
+      reason: Exclude<AmendmentNoticeSkipReason, AmendmentNoticeMessageReason>;
+    };
+
+// ---------------------------------------------------------------------------
 // quota (#2301)
 // ---------------------------------------------------------------------------
 

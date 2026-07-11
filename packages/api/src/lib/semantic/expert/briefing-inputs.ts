@@ -25,6 +25,7 @@ import type { AnalysisContext } from "./types";
 import { computeSemanticHealth } from "./health";
 import { analyzeSemanticLayer } from "./analyzer";
 import type { BriefingInputs, BriefingProfileLine, SemanticHealthStatus } from "./briefing";
+import { resolveBriefingAnchor, type ImproveAnchor } from "./anchor";
 
 const log = createLogger("semantic-expert-briefing");
 
@@ -154,8 +155,18 @@ function payloadStr(payload: Record<string, unknown> | null, key: string): strin
  * Gather everything the pure `assembleBriefing` needs for one turn. `now` is
  * injected for deterministic freshness. Reads only tracked/internal data — no
  * customer-database query (#4514 AC3).
+ *
+ * `anchor` (#4519) scopes the briefing: it is resolved PURELY against the same
+ * entities + profiles already loaded here (no extra I/O). A group anchor
+ * front-loads its entity inventory; an entity anchor front-loads its YAML +
+ * profile. Omit it for an anchorless sweep — the briefing is then byte-identical
+ * to the pre-anchor block.
  */
-export async function loadBriefingInputs(orgId: string | null, now: Date = new Date()): Promise<BriefingInputs> {
+export async function loadBriefingInputs(
+  orgId: string | null,
+  now: Date = new Date(),
+  anchor?: ImproveAnchor,
+): Promise<BriefingInputs> {
   const { profiles, lines } = await loadTrackedProfiles(orgId, now);
   const { ctx, totalRows, parseFailures } = await loadAnalysisContext(orgId, "published", { profiles });
 
@@ -182,6 +193,13 @@ export async function loadBriefingInputs(orgId: string | null, now: Date = new D
     decision: row.status,
   }));
 
+  // Resolve the anchor from the entities + profiles already in hand — no extra
+  // read. An entity anchor whose target isn't in scope resolves to null; the
+  // briefing then starts unanchored rather than fabricating the entity.
+  const resolvedAnchor = anchor
+    ? (resolveBriefingAnchor(anchor, ctx.entities, ctx.profiles) ?? undefined)
+    : undefined;
+
   return {
     health,
     healthStatus,
@@ -193,6 +211,7 @@ export async function loadBriefingInputs(orgId: string | null, now: Date = new D
     pending,
     recentDecisions,
     rejectionMemoryCount: ctx.rejectedKeys.size,
+    anchor: resolvedAnchor,
   };
 }
 
@@ -208,10 +227,14 @@ export async function loadBriefingInputs(orgId: string | null, now: Date = new D
  * optimization that otherwise degrades silently; matching the stream handler in
  * admin-semantic-improve.ts.
  */
-export async function buildBriefingBlock(orgId: string | null, now: Date = new Date()): Promise<string | null> {
+export async function buildBriefingBlock(
+  orgId: string | null,
+  now: Date = new Date(),
+  anchor?: ImproveAnchor,
+): Promise<string | null> {
   try {
     const { assembleBriefing } = await import("./briefing");
-    const inputs = await loadBriefingInputs(orgId, now);
+    const inputs = await loadBriefingInputs(orgId, now, anchor);
     return assembleBriefing(inputs);
   } catch (err) {
     log.warn(

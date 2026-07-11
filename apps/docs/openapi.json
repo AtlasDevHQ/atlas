@@ -61634,6 +61634,52 @@
                       ]
                     },
                     "minItems": 1
+                  },
+                  "anchor": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "group"
+                            ]
+                          },
+                          "group": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "group"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "entity"
+                            ]
+                          },
+                          "entity": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "group": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "entity"
+                        ]
+                      }
+                    ]
                   }
                 },
                 "required": [

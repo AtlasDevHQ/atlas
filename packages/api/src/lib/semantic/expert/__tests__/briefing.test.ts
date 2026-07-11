@@ -12,6 +12,7 @@ import { describe, it, expect } from "bun:test";
 import { assembleBriefing, type BriefingInputs } from "../briefing";
 import type { SemanticHealthScore } from "../health";
 import type { AnalysisResult, AuditPattern } from "../types";
+import type { BriefingAnchor } from "../anchor";
 
 function makeHealth(overrides: Partial<SemanticHealthScore> = {}): SemanticHealthScore {
   return {
@@ -215,5 +216,89 @@ describe("assembleBriefing", () => {
       recentDecisions: [{ entityName: "orders", amendmentType: "add_measure", decision: "rejected" }],
     });
     expect(assembleBriefing(inputs)).toBe(assembleBriefing(inputs));
+  });
+});
+
+describe("assembleBriefing — anchors (#4519)", () => {
+  it("front-loads a group anchor's entity inventory ahead of the general state (AC1)", () => {
+    const anchor: BriefingAnchor = {
+      kind: "group",
+      group: "prod",
+      entities: [
+        { name: "orders", table: "orders", description: "Orders", dimensionCount: 5, measureCount: 2, joinCount: 1 },
+        { name: "customers", table: "customers", description: null, dimensionCount: 3, measureCount: 0, joinCount: 0 },
+      ],
+    };
+    const block = assembleBriefing(makeInputs({ anchor }));
+
+    expect(block).toContain("### Anchor: connection group `prod`");
+    expect(block).toContain("Entities in this group (2):");
+    expect(block).toContain("`orders` (orders) — 5 dimensions · 2 measures · 1 join · described");
+    expect(block).toContain("`customers` (customers) — 3 dimensions · 0 measures · 0 joins · no description");
+    // The anchor is placed ahead of the health section so the agent orients to it.
+    expect(block.indexOf("### Anchor:")).toBeLessThan(block.indexOf("### Health:"));
+  });
+
+  it("routes an empty group anchor to enrich instead of an amendment", () => {
+    const anchor: BriefingAnchor = { kind: "group", group: "prod", entities: [] };
+    const block = assembleBriefing(makeInputs({ anchor }));
+    expect(block).toContain("### Anchor: connection group `prod`");
+    expect(block).toContain("No entities are mapped in this group yet");
+    expect(block).toContain("enrich flow, never an amendment");
+  });
+
+  it("caps a large group inventory with overflow copy", () => {
+    const entities = Array.from({ length: 30 }, (_, i) => ({
+      name: `e${String(i).padStart(2, "0")}`,
+      table: `t${i}`,
+      description: null,
+      dimensionCount: 1,
+      measureCount: 0,
+      joinCount: 0,
+    }));
+    const anchor: BriefingAnchor = { kind: "group", group: "prod", entities };
+    const block = assembleBriefing(makeInputs({ anchor }));
+    expect(block).toContain("Entities in this group (30):");
+    expect(block).toContain("…and 5 more.");
+  });
+
+  it("front-loads an entity anchor's YAML and profile (AC1)", () => {
+    const anchor: BriefingAnchor = {
+      kind: "entity",
+      entity: "orders",
+      group: "prod",
+      yaml: "name: orders\ntable: orders\ndescription: Order records",
+      profile: { table: "orders", rowCount: 1234567, columnCount: 12 },
+    };
+    const block = assembleBriefing(makeInputs({ anchor }));
+
+    expect(block).toContain("### Anchor: entity `orders` (group `prod`)");
+    expect(block).toContain("```yaml");
+    expect(block).toContain("name: orders");
+    expect(block).toContain("description: Order records");
+    // Row count is thousands-grouped; column count pluralized.
+    expect(block).toContain("Profile: `orders` — 1,234,567 rows, 12 columns.");
+  });
+
+  it("notes a missing profile on an entity anchor rather than omitting the line", () => {
+    const anchor: BriefingAnchor = {
+      kind: "entity",
+      entity: "orders",
+      group: null,
+      yaml: "name: orders\ntable: orders",
+      profile: null,
+    };
+    const block = assembleBriefing(makeInputs({ anchor }));
+    expect(block).toContain("### Anchor: entity `orders`");
+    expect(block).not.toContain("(group `");
+    expect(block).toContain("no tracked baseline profile for `orders`'s table yet");
+  });
+
+  it("renders no anchor section for an anchorless sweep (AC4 — unchanged)", () => {
+    const anchored = assembleBriefing(makeInputs({ anchor: { kind: "group", group: "prod", entities: [] } }));
+    const sweep = assembleBriefing(makeInputs());
+    expect(sweep).not.toContain("### Anchor:");
+    // The anchorless block is exactly the pre-anchor block.
+    expect(anchored).not.toBe(sweep);
   });
 });

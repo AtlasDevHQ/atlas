@@ -139,12 +139,13 @@ void mock.module("@atlas/api/lib/tools/expert-registry", () => ({
 
 import { adminSemanticImprove } from "../admin-semantic-improve";
 
-async function postChat(): Promise<Response> {
+async function postChat(anchor?: Record<string, unknown>): Promise<Response> {
   return adminSemanticImprove.request("/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "Improve the orders entity." }] }],
+      ...(anchor ? { anchor } : {}),
     }),
   });
 }
@@ -206,5 +207,34 @@ describe("semantic-improve briefing at the route → agent seam (#4514 AC2)", ()
     expect(briefing2).toContain("### Pending review queue (0)");
     expect(briefing2).toContain("Empty — nothing is awaiting");
     expect(briefing2).toContain("rejected: orders · add_measure");
+  });
+
+  it("a group anchor produces a group-scoped briefing at the seam (#4519 AC1)", async () => {
+    // The mocked entity carries no group ⇒ the flat `default` scope.
+    const res = await postChat({ kind: "group", group: "default" });
+    expect(res.status).toBe(200);
+
+    const briefing = runAgentArgs?.briefing as string;
+    expect(briefing).toContain("### Anchor: connection group `default`");
+    expect(briefing).toContain("Entities in this group (1):");
+    expect(briefing).toContain("`orders` (orders)");
+    // The general briefing state still rides alongside the anchor.
+    expect(briefing).toContain("### Health:");
+  });
+
+  it("an entity anchor front-loads that entity's YAML at the seam (#4519 AC1)", async () => {
+    const res = await postChat({ kind: "entity", entity: "orders" });
+    expect(res.status).toBe(200);
+
+    const briefing = runAgentArgs?.briefing as string;
+    expect(briefing).toContain("### Anchor: entity `orders`");
+    expect(briefing).toContain("```yaml");
+    expect(briefing).toContain("table: orders");
+  });
+
+  it("an anchorless request carries no anchor section (#4519 AC4 — unchanged)", async () => {
+    const res = await postChat();
+    expect(res.status).toBe(200);
+    expect(runAgentArgs?.briefing as string).not.toContain("### Anchor:");
   });
 });

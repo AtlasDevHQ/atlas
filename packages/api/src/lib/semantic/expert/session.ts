@@ -106,32 +106,3 @@ export function getSessionSummary(session: SessionState): {
     remaining: session.proposals.length - session.currentIndex,
   };
 }
-
-/**
- * Build a system prompt context string summarizing session state.
- * Used to feed conversation context back into the agent for follow-up suggestions.
- */
-export function buildSessionContext(session: SessionState): string {
-  const summary = getSessionSummary(session);
-  const lines: string[] = [
-    `Session progress: ${session.currentIndex}/${session.proposals.length} proposals reviewed.`,
-    `Accepted: ${summary.accepted}, Rejected: ${summary.rejected}, Skipped: ${summary.skipped}, Remaining: ${summary.remaining}.`,
-  ];
-
-  if (session.rejectedKeys.size > 0) {
-    lines.push(
-      `Rejected proposals (do not re-suggest): ${[...session.rejectedKeys].join(", ")}`,
-    );
-  }
-
-  // Include recent conversation context (last 6 messages)
-  const recentMessages = session.messages.slice(-6);
-  if (recentMessages.length > 0) {
-    lines.push("", "Recent conversation:");
-    for (const msg of recentMessages) {
-      lines.push(`  ${msg.role}: ${msg.content.slice(0, 200)}${msg.content.length > 200 ? "..." : ""}`);
-    }
-  }
-
-  return lines.join("\n");
-}

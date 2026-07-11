@@ -246,7 +246,8 @@ export default function SemanticImprovePage() {
   const { messages, sendMessage, status, error: chatError } = useChat({ transport });
   const isLoading = status === "streaming" || status === "submitted";
 
-  // Fetch pending amendments from the DB (created by previous sessions)
+  // Fetch pending amendments from the DB (created by earlier conversations
+  // or the expert scheduler)
   const { data: pendingData, loading: pendingLoading, error: pendingError, refetch: refetchPending } =
     useAdminFetch<{ amendments: PendingAmendment[] }>("/api/v1/admin/semantic-improve/pending");
 

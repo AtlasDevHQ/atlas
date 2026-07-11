@@ -124,8 +124,7 @@ function findAuditCall(actionType: string): AuditEntry | undefined {
  * Mount the router into a minimal Hono host that pre-populates the
  * request context (requestId + atlasMode + authResult + orgContext). This
  * avoids bringing the full app's streaming pipeline online for the
- * `/chat` and `/proposals/{id}/*` routes while still exercising the
- * router's real audit emissions.
+ * `/chat` route while still exercising the router's real audit emissions.
  */
 function makeRouterHost() {
   const host = new Hono<OrgContextEnv>();

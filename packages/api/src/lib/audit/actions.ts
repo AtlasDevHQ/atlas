@@ -282,7 +282,7 @@ export const ADMIN_ACTIONS = {
    * the AI-assisted expert-agent surface (`admin-semantic-improve.ts`):
    * `improveDraft` marks a chat turn with the expert agent (which can
    * persist pending amendments mid-stream), `improveApply` fires when an
-   * amendment review flips a pending row to applied (YAML written to
+   * amendment review flips a pending row to approved (YAML written to
    * disk), and `improveReject` fires when a review rejects one — the
    * review route branches on `decision`, so forensic queries can filter
    * on a single action_type per intent. See F-35. The former

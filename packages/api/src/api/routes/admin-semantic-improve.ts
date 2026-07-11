@@ -2,13 +2,14 @@
  * Admin semantic expert improvement routes.
  *
  * Mounted under /api/v1/admin/semantic-improve via admin.route().
- * Provides the streaming chat endpoint for the semantic expert agent and
- * the DB-backed pending-amendment review queue (list, count, review, health).
+ * Provides the streaming chat endpoint for the semantic expert agent, the
+ * DB-backed pending-amendment review queue (list, count, review), and the
+ * semantic-layer health score.
  *
  * There is deliberately no server-side session resource here: an improvement
  * conversation is a conversation, not a stored resource — the persisted
- * `semantic_amendments` row is the only proposal identity, and all reviews go
- * through POST /amendments/{id}/review (#4503).
+ * `learned_patterns` row (`type = 'semantic_amendment'`) is the only proposal
+ * identity, and all reviews go through POST /amendments/{id}/review (#4503).
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -186,10 +187,10 @@ Analyze the semantic layer and propose improvements. For each finding:
 
       // Audit the draft surface: an expert-agent chat turn that can propose
       // amendments via `proposeAmendment`. The tool may persist a pending
-      // `semantic_amendments` row mid-stream, so the audit row is the single
-      // anchor for "admin ran the improve chat at time T" even if the stream
-      // errors later. The requestId is the correlation handle — there is no
-      // server-side session resource (#4503).
+      // `learned_patterns` amendment row mid-stream, so the audit row is the
+      // single anchor for "admin ran the improve chat at time T" even if the
+      // stream errors later. The requestId is the correlation handle — there
+      // is no server-side session resource (#4503).
       logAdminAction({
         actionType: ADMIN_ACTIONS.semantic.improveDraft,
         targetType: "semantic",

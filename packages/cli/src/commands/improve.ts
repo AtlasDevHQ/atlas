@@ -221,28 +221,14 @@ export async function handleImprove(args: string[]): Promise<void> {
 
       console.log(`  Analyzed ${pc.bold(String(auditPatterns.length))} audit log patterns`);
 
-      // Fetch rejected proposals
-      const rejectedRows = await internalQuery<{
-        source_entity: string;
-        amendment_payload: string | Record<string, unknown> | null;
-      }>(
-        `SELECT source_entity, amendment_payload FROM learned_patterns
-         WHERE type = 'semantic_amendment' AND status = 'rejected'
-         AND reviewed_at >= now() - interval '30 days'`,
-        [],
-      );
-
-      for (const row of rejectedRows) {
-        try {
-          const payload = typeof row.amendment_payload === "string"
-            ? JSON.parse(row.amendment_payload)
-            : row.amendment_payload;
-          if (payload && payload.amendmentType) {
-            rejectedKeys.add(`${row.source_entity}:${payload.amendmentType}:${payload.amendment?.name ?? ""}`);
-          }
-        } catch {
-          // intentionally ignored: malformed payload
-        }
+      // Rejection memory — converge on the ONE canonical, group-scoped loader
+      // (#4507). This command used to build its own key set that omitted the
+      // Connection-group prefix, so its keys never matched the group-scoped
+      // identities the analyzer and scheduler use (drift bug). `loadRejectedKeys`
+      // is the single loader; rejection is permanent (no time window).
+      const { loadRejectedKeys } = await import("@atlas/api/lib/semantic/expert/context-loader");
+      for (const key of await loadRejectedKeys()) {
+        rejectedKeys.add(key);
       }
 
       await closeInternalDB();
@@ -363,9 +349,11 @@ export async function handleImprove(args: string[]): Promise<void> {
       getInternalDB();
 
       let stored = 0;
+      let suppressed = 0;
+      let deduped = 0;
       for (const r of filtered) {
         try {
-          await insertSemanticAmendment({
+          const res = await insertSemanticAmendment({
             orgId: null, // CLI runs in single-org mode
             description: `[${r.amendmentType}] ${r.entityName}: ${r.rationale}`,
             sourceEntity: r.entityName,
@@ -384,13 +372,24 @@ export async function handleImprove(args: string[]): Promise<void> {
               ...(r.testQuery && { testQuery: r.testQuery }),
             },
           });
-          stored++;
+          // Permanent rejection memory + pending dedup (#4507): a rejected
+          // identity is refused; an identical pending proposal converges on
+          // the existing row. Neither stores a new row.
+          if (res.outcome === "rejected") suppressed++;
+          else if (res.outcome === "already_pending") deduped++;
+          else stored++;
         } catch (err) {
           console.debug(`Failed to store proposal: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
-      console.log(pc.dim(`\nStored ${stored} proposal(s) in learned_patterns table for admin review.`));
+      console.log(
+        pc.dim(
+          `\nStored ${stored} proposal(s) in learned_patterns table for admin review.` +
+            (deduped > 0 ? ` ${deduped} already pending.` : "") +
+            (suppressed > 0 ? ` ${suppressed} suppressed (previously rejected).` : ""),
+        ),
+      );
       await closeInternalDB();
     } catch (err) {
       console.debug(`Failed to store proposals: ${err instanceof Error ? err.message : String(err)}`);

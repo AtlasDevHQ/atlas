@@ -223,6 +223,30 @@ The amendment object should match the YAML structure for that type (e.g., { name
           connectionGroupId: applyGroupId,
         });
 
+        // Permanent rejection memory (#4507): the identity was previously
+        // rejected by an admin. Surface WHY so the model stops re-proposing it
+        // — the row is not re-queued and nothing is applied.
+        if (result.outcome === "rejected") {
+          return {
+            status: "rejected",
+            reason:
+              "This change was previously rejected by an admin and will not be re-queued. Rejection memory is permanent — do not re-propose the same amendment unless the admin reconsiders it.",
+            diff,
+          };
+        }
+
+        // Pending dedup (#4507): an identical change is already awaiting
+        // review. Point the model at the existing proposal instead of queuing
+        // a duplicate; the diff is unchanged, so nothing new is applied.
+        if (result.outcome === "already_pending") {
+          return {
+            proposalId: result.id,
+            status: "already_pending",
+            diff,
+            ...(testResult && { testResult }),
+          };
+        }
+
         proposalId = result.id;
 
         if (result.status === "approved") {

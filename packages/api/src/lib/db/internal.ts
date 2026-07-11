@@ -25,6 +25,11 @@ import { normalizeError } from "@atlas/api/lib/effect/errors";
 import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { foldRollingMean } from "@atlas/api/lib/learn/rolling-mean";
+import {
+  amendmentIdentityFromRow,
+  amendmentIdentityKey,
+  type AmendmentIdentityRow,
+} from "@atlas/api/lib/semantic/amendment-identity";
 
 const log = createLogger("internal-db");
 
@@ -1567,9 +1572,88 @@ export function getAutoApproveTypes(orgId?: string): Set<string> {
 }
 
 /**
+ * Outcome of an amendment insert (#4507). A discriminated union so callers
+ * handle all three terminal states explicitly:
+ *   - `inserted`       — a new row was queued (or auto-approved at insert).
+ *   - `already_pending`— an identical change is already pending review; the
+ *                        insert converged on that row instead of duplicating.
+ *   - `rejected`       — the identity was previously rejected by an admin;
+ *                        rejection memory is permanent, so the insert is
+ *                        refused. `id` is the existing rejected row.
+ */
+export type InsertSemanticAmendmentResult =
+  | { outcome: "inserted"; id: string; status: "approved" | "pending" }
+  | { outcome: "already_pending"; id: string }
+  | { outcome: "rejected"; id: string };
+
+/**
+ * Find an existing rejected-or-pending amendment sharing `identityKey` within
+ * the same org (#4507). Rejected wins over pending: a rejected identity must
+ * never be re-queued even if a stale pending duplicate also exists. Scoped to
+ * the amendment's own org (`IS NOT DISTINCT FROM` matches the NULL/self-hosted
+ * scope), so one workspace's review decision never governs another's. Matching
+ * is by reconstructed identity (`amendmentIdentityFromRow`), not by
+ * `pattern_sql` equality, so rows written before the identity storage key
+ * (older `amendment:<entity>:<ts>` keys) are still caught.
+ */
+async function findConflictingAmendment(
+  orgId: string | null,
+  sourceEntity: string,
+  identityKey: string,
+): Promise<{ outcome: "rejected" | "already_pending"; id: string } | null> {
+  const rows = await internalQuery<{
+    id: string;
+    status: string;
+    connection_group_id: string | null;
+    amendment_payload: string | Record<string, unknown> | null;
+  }>(
+    `SELECT id, status, connection_group_id, amendment_payload
+       FROM learned_patterns
+      WHERE type = 'semantic_amendment'
+        AND status IN ('rejected', 'pending')
+        AND source_entity = $1
+        AND org_id IS NOT DISTINCT FROM $2`,
+    [sourceEntity, orgId],
+  );
+
+  let pendingId: string | null = null;
+  for (const row of rows) {
+    const key = amendmentIdentityFromRow({
+      sourceEntity,
+      connectionGroupId: row.connection_group_id,
+      amendmentPayload: row.amendment_payload,
+    });
+    if (key === null) {
+      // A stored rejected/pending row whose payload can't be reconstructed to
+      // an identity stops being enforced — surface it so an operator can spot
+      // a rejection that has silently gone dark (should never happen: the
+      // writer always stamps `amendmentType`).
+      log.warn(
+        { existingId: row.id, status: row.status, sourceEntity },
+        "learned_patterns amendment row has an unreconstructable identity — not enforced by the rejection/dedup guard",
+      );
+      continue;
+    }
+    if (key !== identityKey) continue;
+    if (row.status === "rejected") return { outcome: "rejected", id: row.id };
+    if (row.status === "pending" && pendingId === null) pendingId = row.id;
+  }
+  return pendingId ? { outcome: "already_pending", id: pendingId } : null;
+}
+
+/**
  * Insert a semantic amendment proposal. Status is "approved" only when confidence
  * meets the threshold AND the amendment type is in the eligible set; otherwise "pending".
  * Unlike insertLearnedPattern (fire-and-forget), this awaits the result.
+ *
+ * Insert-enforced rejection memory + pending dedup (#4507): before queuing, the
+ * amendment's canonical group-scoped identity is checked against the org's
+ * existing rejected/pending rows. A rejected identity refuses the insert
+ * (permanent — no time window); an identical pending identity converges on the
+ * existing row. The identity is also the row's storage key (`pattern_sql`),
+ * replacing the timestamp-uniquified key that made every re-proposal a
+ * duplicate. This is the single choke point every path (chat tool, scheduler,
+ * CLI) shares, so the guard holds on all three by construction.
  */
 export async function insertSemanticAmendment(amendment: {
   orgId: string | null | undefined;
@@ -1593,7 +1677,7 @@ export async function insertSemanticAmendment(amendment: {
    * unscoped fallback (which remains only for stale group labels).
    */
   connectionGroupId: string | null;
-}): Promise<{ id: string; status: "approved" | "pending" }> {
+}): Promise<InsertSemanticAmendmentResult> {
   // #3392 — thread the amendment's org through so a per-workspace
   // auto-approve override (admin settings page) governs its own proposals.
   // null orgId (self-hosted / global scope) resolves at the platform tier.
@@ -1608,6 +1692,37 @@ export async function insertSemanticAmendment(amendment: {
       { entity: amendment.sourceEntity, payloadKeys: Object.keys(amendment.amendmentPayload) },
       "amendmentPayload.amendmentType is missing or not a string — amendment will not be eligible for auto-approval",
     );
+  }
+
+  // Canonical group-scoped identity (#4507): (group, entity, type, target).
+  // Drives the rejection guard + pending dedup below and becomes the row's
+  // storage key. A malformed payload (no amendmentType) yields no identity —
+  // fall back to a stable per-entity key so the NOT NULL storage slot is
+  // filled without reintroducing timestamp uniquification.
+  const identityRow: AmendmentIdentityRow = {
+    sourceEntity: amendment.sourceEntity,
+    connectionGroupId: amendment.connectionGroupId,
+    amendmentPayload: amendment.amendmentPayload,
+  };
+  const identityKey =
+    amendmentIdentityFromRow(identityRow) ??
+    amendmentIdentityKey(amendment.connectionGroupId, amendment.sourceEntity, "unknown");
+
+  // Insert-enforced rejection memory + pending dedup. A rejected identity is
+  // refused permanently; an identical pending identity converges on its row.
+  const conflict = await findConflictingAmendment(
+    amendment.orgId ?? null,
+    amendment.sourceEntity,
+    identityKey,
+  );
+  if (conflict) {
+    log.debug(
+      { entity: amendment.sourceEntity, amendmentType, outcome: conflict.outcome, existingId: conflict.id },
+      conflict.outcome === "rejected"
+        ? "Amendment refused — identity previously rejected (permanent rejection memory)"
+        : "Amendment converged on existing pending row — no duplicate queued",
+    );
+    return conflict;
   }
 
   const meetsThreshold = amendment.confidence >= threshold;
@@ -1630,7 +1745,7 @@ export async function insertSemanticAmendment(amendment: {
      RETURNING id`,
     [
       amendment.orgId ?? null,
-      `amendment:${amendment.sourceEntity}:${Date.now()}`,
+      identityKey,
       amendment.description,
       amendment.sourceEntity,
       amendment.confidence,
@@ -1646,7 +1761,7 @@ export async function insertSemanticAmendment(amendment: {
     );
   }
 
-  return { id: rows[0].id, status };
+  return { outcome: "inserted", id: rows[0].id, status };
 }
 
 /**

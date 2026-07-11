@@ -11,7 +11,9 @@
 
 import { describe, it, expect } from "bun:test";
 import type { UIMessage } from "@ai-sdk/react";
-import { extractProposals, buildProposalQueue, type Proposal } from "../proposals";
+import { extractProposals, buildProposalQueue, buildReviewBody, classifyReviewResult, type Proposal } from "../proposals";
+import type { FetchError } from "@/ui/lib/fetch-error";
+import type { MutateResult } from "@/ui/hooks/use-admin-mutation";
 
 // Build an assistant message carrying a single proposeAmendment tool part.
 // `output === undefined` models an in-flight call (no result yet).
@@ -323,5 +325,103 @@ describe("buildProposalQueue", () => {
     });
 
     expect(q).toEqual({ pending: [], recentlyDecided: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyReviewResult — the review-interaction outcome (#4511)
+// ---------------------------------------------------------------------------
+
+function err(partial: Partial<FetchError>): MutateResult<unknown> {
+  return { ok: false, error: { message: "x", ...partial } };
+}
+
+describe("classifyReviewResult (#4511)", () => {
+  it("ok on a successful mutation", () => {
+    expect(classifyReviewResult({ ok: true, data: undefined })).toEqual({ kind: "ok" });
+  });
+
+  it("stale when a 409 stale_baseline carries the fresh diff + hash", () => {
+    const outcome = classifyReviewResult(
+      err({ status: 409, code: "stale_baseline", stale: { diff: "--- a\n+++ b\n+x", baselineHash: "bh" } }),
+    );
+    expect(outcome).toEqual({ kind: "stale", diff: "--- a\n+++ b\n+x", baselineHash: "bh" });
+  });
+
+  it("falls back to error when stale_baseline is missing its payload (never a broken confirm)", () => {
+    const outcome = classifyReviewResult(err({ status: 409, code: "stale_baseline" }));
+    expect(outcome.kind).toBe("error");
+  });
+
+  it("ambiguous when a 409 entity_ambiguous carries candidate groups", () => {
+    const outcome = classifyReviewResult(
+      err({ status: 409, code: "entity_ambiguous", groups: ["us_prod", "eu_prod"] }),
+    );
+    expect(outcome).toEqual({ kind: "ambiguous", groups: ["us_prod", "eu_prod"] });
+  });
+
+  it("preserves a null candidate group (legacy / global) so the picker can offer it", () => {
+    const outcome = classifyReviewResult(
+      err({ status: 409, code: "entity_ambiguous", groups: [null, "eu_prod"] }),
+    );
+    expect(outcome).toEqual({ kind: "ambiguous", groups: [null, "eu_prod"] });
+  });
+
+  it("the picker never appears without candidate groups — an empty groups list is a plain error", () => {
+    const outcome = classifyReviewResult(err({ status: 409, code: "entity_ambiguous", groups: [] }));
+    expect(outcome.kind).toBe("error");
+  });
+
+  it("any other failure is a plain error surfaced through the banner", () => {
+    const outcome = classifyReviewResult(err({ status: 500, code: "internal_error", message: "boom" }));
+    expect(outcome.kind).toBe("error");
+    if (outcome.kind === "error") expect(outcome.error.message).toBe("boom");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildReviewBody — the review request contract (#4511)
+// ---------------------------------------------------------------------------
+
+describe("buildReviewBody (#4511)", () => {
+  it("approve carries the hash-carried claim", () => {
+    expect(buildReviewBody("approved", { baselineHash: "bh" })).toEqual({
+      decision: "approved",
+      baselineHash: "bh",
+    });
+  });
+
+  it("a confirm carries the FRESH hash it was given (not a stale one)", () => {
+    // handleConfirmStale passes the fresh hash from the 409; the builder just
+    // formats it — this pins that the fresh hash reaches the wire.
+    expect(buildReviewBody("approved", { baselineHash: "fresh-hash" })).toMatchObject({
+      baselineHash: "fresh-hash",
+    });
+  });
+
+  it("a group pick carries the group, including an explicit null (legacy/flat scope)", () => {
+    expect(buildReviewBody("approved", { group: "eu_prod" })).toEqual({
+      decision: "approved",
+      group: "eu_prod",
+    });
+    expect(buildReviewBody("approved", { group: null })).toEqual({
+      decision: "approved",
+      group: null,
+    });
+  });
+
+  it("an omitted group stays absent (distinct from an explicit null)", () => {
+    const body = buildReviewBody("approved", { baselineHash: "bh" });
+    expect("group" in body).toBe(false);
+  });
+
+  it("a reject carries neither hash nor group — it never resolves a baseline", () => {
+    expect(buildReviewBody("rejected", { baselineHash: "bh", group: "eu_prod" })).toEqual({
+      decision: "rejected",
+    });
+  });
+
+  it("a bare approve with no opts is just the decision", () => {
+    expect(buildReviewBody("approved")).toEqual({ decision: "approved" });
   });
 });

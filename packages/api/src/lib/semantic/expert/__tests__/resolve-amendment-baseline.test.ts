@@ -109,4 +109,77 @@ describe("resolveAmendmentBaseline (#4488)", () => {
       "exists in 2 environments",
     );
   });
+
+  // ── #4511 — disambiguationGroup (the legacy cross-group group picker) ──────
+  describe("disambiguationGroup (#4511)", () => {
+    // A legacy row: the scoped lookup misses and the unscoped fallback is
+    // ambiguous. The 4th arg (`disambiguationGroup`) resolves that — and ONLY
+    // that — branch.
+    function legacyAmbiguous(resolveAt: { group: string | null; groupId: string | null }) {
+      getEntity.mockImplementation(async (_o, _t, _n, group?: string | null) => {
+        if (group === "stale_group") return null; // scoped miss
+        if (group === undefined) {
+          throw new AmbiguousEntityError({ message: "orders in 2 groups", groups: [null, "eu_prod"] });
+        }
+        // The disambiguation re-resolve, at the picked scope.
+        if (group === resolveAt.group) {
+          return { id: "orders-picked", connection_group_id: resolveAt.groupId, yaml_content: "name: orders\n" };
+        }
+        return null;
+      });
+    }
+
+    it("resolves at the admin-picked group when the unscoped fallback is ambiguous (AC4 success)", async () => {
+      legacyAmbiguous({ group: "eu_prod", groupId: "eu_prod" });
+
+      const result = await resolveAmendmentBaseline("org-1", "orders", "stale_group", "eu_prod");
+
+      // scoped miss → unscoped ambiguous → re-resolve at the picked group.
+      expect(getEntity).toHaveBeenCalledTimes(3);
+      expect(getEntity.mock.calls[2][3]).toBe("eu_prod");
+      expect(result.targetGroupId).toBe("eu_prod");
+    });
+
+    it("a null pick targets the legacy/default (flat) scope", async () => {
+      legacyAmbiguous({ group: null, groupId: null });
+
+      const result = await resolveAmendmentBaseline("org-1", "orders", "stale_group", null);
+
+      expect(getEntity).toHaveBeenCalledTimes(3);
+      // `null` is a real candidate — the `!== undefined` guard consults it.
+      expect(getEntity.mock.calls[2][3]).toBeNull();
+      expect(result.targetGroupId).toBeNull();
+    });
+
+    it("INVARIANT: a well-scoped amendment is NEVER redirected by a caller-supplied group", async () => {
+      // The scoped primary lookup HITS, so the ambiguity branch is unreachable
+      // and the disambiguation group is dead code on this path.
+      getEntity.mockResolvedValue({
+        id: "orders-eu",
+        connection_group_id: "eu_prod",
+        yaml_content: "name: orders\n",
+      });
+
+      const result = await resolveAmendmentBaseline("org-1", "orders", "eu_prod", "us_prod");
+
+      // One read, at the amendment's OWN scope — the "us_prod" pick is ignored.
+      expect(getEntity).toHaveBeenCalledTimes(1);
+      expect(getEntity.mock.calls[0][3]).toBe("eu_prod");
+      expect(result.targetGroupId).toBe("eu_prod");
+    });
+
+    it("re-raises the ambiguity when no disambiguation group is supplied (surfaces the picker)", async () => {
+      getEntity.mockImplementation(async (_o, _t, _n, group?: string | null) => {
+        if (group === "stale_group") return null;
+        if (group === undefined) {
+          throw new AmbiguousEntityError({ message: "orders in 2 groups", groups: [null, "eu_prod"] });
+        }
+        return null;
+      });
+
+      await expect(resolveAmendmentBaseline("org-1", "orders", "stale_group")).rejects.toThrow(
+        "orders in 2 groups",
+      );
+    });
+  });
 });

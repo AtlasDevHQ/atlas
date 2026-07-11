@@ -61920,6 +61920,12 @@
                               "null"
                             ]
                           },
+                          "baselineHash": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "testQuery": {
                             "type": [
                               "string",
@@ -61974,6 +61980,7 @@
                           "amendment",
                           "rationale",
                           "diff",
+                          "baselineHash",
                           "testQuery",
                           "testResult",
                           "applyError",
@@ -62319,7 +62326,7 @@
           "Admin — Semantic Improve"
         ],
         "summary": "Approve or reject a pending amendment",
-        "description": "Updates the status of a pending semantic amendment in the database.",
+        "description": "Updates the status of a pending semantic amendment. An approve carries an optional `baselineHash` (the hash the admin rendered) — a mismatch against the current baseline returns 409 `stale_baseline` with the fresh diff for inline update-and-confirm (#4511). A legacy cross-group-ambiguous row returns 409 `entity_ambiguous` with candidate `groups`; retry with the optional `group` field to disambiguate.",
         "parameters": [
           {
             "schema": {
@@ -62345,6 +62352,15 @@
                     "enum": [
                       "approved",
                       "rejected"
+                    ]
+                  },
+                  "baselineHash": {
+                    "type": "string"
+                  },
+                  "group": {
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 },
@@ -62438,6 +62454,85 @@
                   "required": [
                     "error",
                     "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Baseline changed since render (`stale_baseline`, carries the fresh diff), or a legacy cross-group-ambiguous row (`entity_ambiguous`, carries candidate `groups`) (#4511)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "stale_baseline"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "diff": {
+                          "type": "string"
+                        },
+                        "baselineHash": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message",
+                        "diff",
+                        "baselineHash"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "entity_ambiguous"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "groups": {
+                          "type": "array",
+                          "items": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "entityName": {
+                          "type": "string"
+                        },
+                        "entityType": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message",
+                        "groups",
+                        "entityName",
+                        "entityType"
+                      ]
+                    }
                   ]
                 }
               }

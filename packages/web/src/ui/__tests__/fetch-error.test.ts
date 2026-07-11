@@ -161,6 +161,42 @@ describe("extractFetchError", () => {
     const err = await extractFetchError(res);
     expect(err.workspaces).toBeUndefined();
   });
+
+  // #4511 — `stale_baseline` 409 carries the fresh diff + baseline hash the
+  // improve panel swaps in for inline update-and-confirm.
+  test("extracts the fresh diff + baseline hash alongside stale_baseline code", async () => {
+    const res = mockResponse(409, {
+      error: "stale_baseline",
+      message: "This entity changed while you were reviewing.",
+      diff: "--- a\n+++ b\n@@\n+region",
+      baselineHash: "fresh-hash",
+      requestId: "req-1",
+    });
+    const err = await extractFetchError(res);
+    expect(err.code).toBe("stale_baseline");
+    expect(err.stale).toEqual({ diff: "--- a\n+++ b\n@@\n+region", baselineHash: "fresh-hash" });
+  });
+
+  test("ignores a partial stale_baseline payload (missing baselineHash) so a broken confirm can't render", async () => {
+    const res = mockResponse(409, {
+      error: "stale_baseline",
+      message: "x",
+      diff: "--- a\n+++ b",
+    });
+    const err = await extractFetchError(res);
+    expect(err.stale).toBeUndefined();
+  });
+
+  test("omits stale when the code isn't stale_baseline", async () => {
+    const res = mockResponse(409, {
+      error: "conflict",
+      message: "x",
+      diff: "--- a\n+++ b",
+      baselineHash: "h",
+    });
+    const err = await extractFetchError(res);
+    expect(err.stale).toBeUndefined();
+  });
 });
 
 describe("friendlyError", () => {

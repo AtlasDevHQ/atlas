@@ -195,8 +195,12 @@ describe("POST /api/v1/admin/semantic-improve/chat — audit emission", () => {
     const entry = findAuditCall("semantic.improve_draft");
     expect(entry).toBeDefined();
     expect(entry!.targetType).toBe("semantic");
-    expect(entry!.targetId).toBe("req-test-1");
-    expect(entry!.metadata).toMatchObject({ requestId: "req-test-1", messageCount: 1 });
+    // requireOrgContext mints a fresh requestId per request (the host-set
+    // one is overwritten), so assert shape + consistency rather than value:
+    // the row's target IS the request correlation handle.
+    expect(typeof entry!.targetId).toBe("string");
+    expect(entry!.targetId.length).toBeGreaterThan(0);
+    expect(entry!.metadata).toMatchObject({ requestId: entry!.targetId, messageCount: 1 });
     expect(entry!.metadata).not.toHaveProperty("sessionId");
   });
 });

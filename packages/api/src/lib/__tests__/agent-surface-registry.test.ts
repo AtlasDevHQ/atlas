@@ -77,11 +77,13 @@ const KNOWN_AGENT_CALLERS: AgentCallerSpec[] = [
   },
   {
     file: "packages/api/src/api/routes/admin-semantic-improve.ts",
-    // Admin route — gated by requireAuth middleware that binds the user
-    // via withRequestContext upstream. The route itself uses runAgent
-    // inside that frame, so any of the upstream withRequestContext calls
-    // satisfies the binding requirement.
-    bindingProof: /\b(runAgent|executeAgentQuery)\b/,
+    // #4508: the improve chat re-enters `withRequestContext` around its
+    // `runAgent` call, binding the user (approval requester) from `authResult`
+    // and stamping the origin. The pre-#4508 proof here was the vacuous
+    // `/\b(runAgent|executeAgentQuery)\b/` — satisfied by the import alone, so
+    // it could never fail. This proof matches /chat's and genuinely fails if the
+    // binding frame is dropped.
+    bindingProof: /withRequestContext\(\s*\{[^}]*\buser\b/,
   },
 ];
 
@@ -115,6 +117,11 @@ const KNOWN_ORIGIN_STAMPERS: OriginStamperSpec[] = [
   { file: "packages/api/src/api/routes/demo.ts", originProof: /agentOrigin:\s*"chat"/ },
   // Scheduler executor stamps 'scheduler' on every scheduled run.
   { file: "packages/api/src/lib/scheduler/executor.ts", originProof: /agentOrigin:\s*"scheduler"/ },
+  // #4508 — the interactive semantic-improve chat runs the expert agent on a
+  // web surface, so it stamps 'chat' (like /chat · /query · /demo). Before
+  // #4508 the route stamped nothing and was absent here, so origin-scoped
+  // approval rules (#2072) silently no-op'd for the expert agent's executeSQL.
+  { file: "packages/api/src/api/routes/admin-semantic-improve.ts", originProof: /agentOrigin:\s*"chat"/ },
   // MCP — #3602 centralized the per-tool dispatch frame into one shared
   // wrapper, so the 'mcp' origin stamp for explore / executeSQL / the semantic
   // tools / the datasource lifecycle tools now lives ONCE here (they all route

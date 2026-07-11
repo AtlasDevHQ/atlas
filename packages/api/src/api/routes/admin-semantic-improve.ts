@@ -18,13 +18,14 @@ import {
   createUIMessageStreamResponse,
   type UIMessage,
 } from "ai";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import type { Context as HonoContext } from "hono";
 import { runAgent } from "@atlas/api/lib/agent";
 import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
 import { buildExpertRegistry } from "@atlas/api/lib/tools/expert-registry";
+import { EXPERT_PERSONA_PROMPT } from "@atlas/api/lib/semantic/expert/persona";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -151,88 +152,93 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
     // Build the expert tool registry
     const expertRegistry = buildExpertRegistry();
 
-    // Build a system prefix for the expert agent
-    const expertSystemPrefix = `You are the Atlas Semantic Expert Agent. You analyze and improve the semantic layer by examining data distributions, identifying gaps, and proposing validated amendments.
+    // #4508 — stamp the agent origin so origin-scoped approval rules (#2072)
+    // fire for the expert agent's `executeSQL`. The interactive improve chat is
+    // a web surface, so it stamps `'chat'` like /chat · /query · /demo; without
+    // this frame `agentOrigin` is undefined and origin-scoped rules silently
+    // no-op for the expert agent. `runAgent` reads the user (approval requester)
+    // + origin from this context — the F-54/F-55 + #2072 agent-surface-registry
+    // guards pin the binding. We bind the user from `authResult` (the source of
+    // truth the adminAuth middleware set), matching /chat, rather than depending
+    // on the upstream ALS frame surviving the Effect bridge; the trust-device id
+    // (which `logAdminAction` reads) is preserved from the same context.
+    const authResult = c.get("authResult");
+    return withRequestContext(
+      {
+        requestId,
+        user: authResult.user,
+        atlasMode: c.get("atlasMode"),
+        trustDeviceIdentifier: c.get("trustDeviceIdentifier"),
+        agentOrigin: "chat",
+      },
+      async () => {
+        try {
+          // #4508 — no `maxSteps` override. The old hardcoded `maxSteps: 15`
+          // is retired: `runAgent`'s default is `stepCountIs(getAgentMaxSteps())`,
+          // which resolves the workspace agent-max-steps knob (workspace DB >
+          // platform DB > env > default, clamped to its bounds) from the active
+          // organization on the request-context frame stamped just above — so
+          // the improve chat honors the same operator knob as every other agent
+          // surface, hot-reloaded per turn, with no separate resolution path.
+          const agentResult = await runAgent({
+            messages,
+            tools: expertRegistry,
+            // #4508 — "expert is a mode": the expert persona REPLACES the analyst
+            // role section (not appended under `## Warnings`), so the model gets
+            // one identity. See lib/semantic/expert/persona.ts.
+            persona: EXPERT_PERSONA_PROMPT,
+          });
 
-## Your Goal
-Analyze the semantic layer and propose improvements. For each finding:
-1. Explain what you found and why it matters
-2. Use your tools to gather evidence (profile tables, check distributions, search audit log)
-3. Propose a specific amendment with a clear rationale and test query
-4. Wait for the user to approve or reject before moving on
+          // Audit the draft surface: an expert-agent chat turn that can propose
+          // amendments via `proposeAmendment`. The tool may persist a pending
+          // `learned_patterns` amendment row mid-stream, so the audit row is the
+          // single anchor for "admin ran the improve chat at time T" even if the
+          // stream errors later. The requestId is the correlation handle — there
+          // is no server-side session resource (#4503).
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.semantic.improveDraft,
+            targetType: "semantic",
+            targetId: requestId,
+            ipAddress: clientIpFor(c),
+            metadata: { requestId, messageCount: messages.length },
+          });
 
-## Available Tools
-- profileTable: Examine table structure, cardinality, null rates, sample values
-- checkDataDistribution: Analyze a column's value distribution
-- searchAuditLog: Find query patterns from actual usage
-- proposeAmendment: Propose a structured YAML change with rationale and confidence
-- validateProposal: Dry-run validate a proposed amendment
-- explore: Read semantic YAML files
-- executeSQL: Run test queries to validate proposals
+          const stream = createUIMessageStream({
+            execute: ({ writer }) => {
+              writer.merge(agentResult.toUIMessageStream());
+            },
+            onError: (error) => {
+              log.error(
+                { err: error instanceof Error ? error : new Error(String(error)), requestId },
+                "Semantic improve stream error",
+              );
+              return `An error occurred while analyzing the semantic layer (ref: ${requestId.slice(0, 8)}). Try again.`;
+            },
+          });
 
-## Guidelines
-- Start with the highest-impact improvements first
-- Always gather evidence before proposing changes
-- Set confidence based on evidence strength
-- Include test queries to validate amendments
-- If the user asks about a specific table or area, focus there`;
-
-    try {
-      const agentResult = await runAgent({
-        messages,
-        tools: expertRegistry,
-        maxSteps: 15,
-        warnings: [expertSystemPrefix],
-      });
-
-      // Audit the draft surface: an expert-agent chat turn that can propose
-      // amendments via `proposeAmendment`. The tool may persist a pending
-      // `learned_patterns` amendment row mid-stream, so the audit row is the
-      // single anchor for "admin ran the improve chat at time T" even if the
-      // stream errors later. The requestId is the correlation handle — there
-      // is no server-side session resource (#4503).
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.semantic.improveDraft,
-        targetType: "semantic",
-        targetId: requestId,
-        ipAddress: clientIpFor(c),
-        metadata: { requestId, messageCount: messages.length },
-      });
-
-      const stream = createUIMessageStream({
-        execute: ({ writer }) => {
-          writer.merge(agentResult.toUIMessageStream());
-        },
-        onError: (error) => {
+          return createUIMessageStreamResponse({
+            stream,
+            headers: {
+              "X-Accel-Buffering": "no",
+              "Cache-Control": "no-cache, no-transform",
+            },
+          });
+        } catch (err) {
           log.error(
-            { err: error instanceof Error ? error : new Error(String(error)), requestId },
-            "Semantic improve stream error",
+            { err: err instanceof Error ? err.message : String(err), requestId },
+            "Failed to start semantic improve agent",
           );
-          return `An error occurred while analyzing the semantic layer (ref: ${requestId.slice(0, 8)}). Try again.`;
-        },
-      });
-
-      return createUIMessageStreamResponse({
-        stream,
-        headers: {
-          "X-Accel-Buffering": "no",
-          "Cache-Control": "no-cache, no-transform",
-        },
-      });
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err.message : String(err), requestId },
-        "Failed to start semantic improve agent",
-      );
-      return c.json(
-        {
-          error: "agent_error",
-          message: `Failed to start the semantic expert agent: ${err instanceof Error ? err.message : String(err)}`,
-          requestId,
-        },
-        500,
-      );
-    }
+          return c.json(
+            {
+              error: "agent_error",
+              message: `Failed to start the semantic expert agent: ${err instanceof Error ? err.message : String(err)}`,
+              requestId,
+            },
+            500,
+          );
+        }
+      },
+    );
   }),
 );
 

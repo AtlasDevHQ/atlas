@@ -1684,6 +1684,24 @@ export async function insertSemanticAmendment(amendment: {
    */
   connectionGroupId: string | null;
 }): Promise<InsertSemanticAmendmentResult> {
+  // One-workspace-owner invariant (#4510): on SaaS an Amendment MUST be owned by
+  // exactly one workspace. A NULL-owner ("global scope") row is a cross-tenant
+  // leak vector — it would surface in, or be reviewable from, another workspace
+  // (mirror of the reader guard in `amendmentOrgScope` / #4487). Refuse it at
+  // this single insert choke point — the one path every caller (chat tool,
+  // scheduler, CLI) shares — so no code path can mint a NULL-owner row anew on
+  // SaaS, and a future SaaS-capable scheduler (#4516; today force-disabled on
+  // SaaS) would be org-safe by construction. On self-hosted the single workspace
+  // IS the whole deployment, so a NULL owner is that one
+  // workspace's legacy global scope — tolerated (the CLI and scheduler
+  // single-org paths still write it). Fail LOUD, never a silent global insert.
+  if (!amendment.orgId && requireIsSaasModeForGuard()()) {
+    throw new Error(
+      "insertSemanticAmendment: a semantic amendment requires a workspace owner on SaaS " +
+        "(org_id must be non-null). Refusing to queue a NULL-owner / global-scope amendment.",
+    );
+  }
+
   // #3392 — thread the amendment's org through so a per-workspace
   // auto-approve override (admin settings page) governs its own proposals.
   // null orgId (self-hosted / global scope) resolves at the platform tier.
@@ -1844,23 +1862,18 @@ export async function claimPendingAmendment(
     throw new Error("Internal database is not configured. Amendment review requires DATABASE_URL.");
   }
 
-  const saas = requireIsSaasModeForGuard()();
-  if (saas && !orgId) return null;
+  // Tenant scoping lives in the shared helper (#4487, #4510) — the org-less
+  // SaaS path withholds (null → "not pending" at the seam).
+  const scope = amendmentOrgScope(orgId, "$3");
+  if (scope.withhold) return null;
 
   const rows = await internalQuery<ClaimedAmendmentRow>(
-    orgId
-      ? `UPDATE learned_patterns
-         SET status = 'applying', reviewed_by = $1, reviewed_at = now(),
-             updated_at = now(), last_apply_error = NULL
-         WHERE id = $2 AND type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
-         AND ${saas ? "org_id = $3" : "(org_id = $3 OR org_id IS NULL)"}
-         RETURNING id, source_entity, connection_group_id, amendment_payload, reviewed_at::text AS claimed_at`
-      : `UPDATE learned_patterns
-         SET status = 'applying', reviewed_by = $1, reviewed_at = now(),
-             updated_at = now(), last_apply_error = NULL
-         WHERE id = $2 AND type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
-         AND org_id IS NULL
-         RETURNING id, source_entity, connection_group_id, amendment_payload, reviewed_at::text AS claimed_at`,
+    `UPDATE learned_patterns
+       SET status = 'applying', reviewed_by = $1, reviewed_at = now(),
+           updated_at = now(), last_apply_error = NULL
+     WHERE id = $2 AND type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
+     AND ${scope.clause}
+     RETURNING id, source_entity, connection_group_id, amendment_payload, reviewed_at::text AS claimed_at`,
     orgId ? [claimedBy, id, orgId] : [claimedBy, id],
   );
 
@@ -1943,25 +1956,66 @@ export async function rejectPendingAmendment(
     throw new Error("Internal database is not configured. Amendment review requires DATABASE_URL.");
   }
 
-  const saas = requireIsSaasModeForGuard()();
-  if (saas && !orgId) return false;
+  // Tenant scoping lives in the shared helper (#4487, #4510) — the org-less
+  // SaaS path withholds (false → "not pending" at the seam).
+  const scope = amendmentOrgScope(orgId, "$3");
+  if (scope.withhold) return false;
 
   const rows = await internalQuery<{ id: string }>(
-    orgId
-      ? `UPDATE learned_patterns
-         SET status = 'rejected', reviewed_by = $1, reviewed_at = now(), updated_at = now()
-         WHERE id = $2 AND type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
-         AND ${saas ? "org_id = $3" : "(org_id = $3 OR org_id IS NULL)"}
-         RETURNING id`
-      : `UPDATE learned_patterns
-         SET status = 'rejected', reviewed_by = $1, reviewed_at = now(), updated_at = now()
-         WHERE id = $2 AND type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
-         AND org_id IS NULL
-         RETURNING id`,
+    `UPDATE learned_patterns
+       SET status = 'rejected', reviewed_by = $1, reviewed_at = now(), updated_at = now()
+     WHERE id = $2 AND type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
+     AND ${scope.clause}
+     RETURNING id`,
     orgId ? [rejectedBy, id, orgId] : [rejectedBy, id],
   );
 
   return rows.length > 0;
+}
+
+/**
+ * Result of {@link amendmentOrgScope}: either the reader withholds (returns its
+ * empty value without querying) or it has a ready-to-splice `org_id` predicate.
+ */
+export type AmendmentOrgScope = { withhold: true } | { withhold: false; clause: string };
+
+/**
+ * Shared org-scope filter for the semantic-amendment readers — the ONE home for
+ * the SaaS-vs-self-hosted `org_id` conditional (#4487, #4510). Every amendment
+ * reader (count, list, and the decide seam's claim/reject, #4506) MUST derive
+ * its predicate from here rather than inlining the ternary;
+ * `semantic-amendment-saas-scoping.test.ts` pins the reader set and fails if a
+ * new reader bypasses this helper.
+ *
+ *   - SaaS + workspace        → `org_id = <ph>` — a NULL-owner ("global scope")
+ *                               row never surfaces in a tenant workspace (the
+ *                               #4487 leak fix).
+ *   - self-hosted + workspace → `(org_id = <ph> OR org_id IS NULL)` — legacy
+ *                               NULL-owner rows stay readable as the single
+ *                               workspace's global scope (never produced anew —
+ *                               see the invariant in `insertSemanticAmendment`).
+ *   - org-less, self-hosted   → `org_id IS NULL` (the global-admin view).
+ *   - org-less, SaaS          → `{ withhold: true }`: there is no global tenant,
+ *                               so the caller returns its empty value without
+ *                               touching the DB.
+ *
+ * @param orgId       the workspace owner, or null for the org-less path.
+ * @param placeholder the positional parameter that binds `orgId` (e.g. "$1").
+ */
+export function amendmentOrgScope(
+  orgId: string | null,
+  // A positional bind marker, not free text — the raw splice below is only safe
+  // because the type forbids anything but `$<n>` (both call sites pass literals).
+  placeholder: `$${number}`,
+): AmendmentOrgScope {
+  const saas = requireIsSaasModeForGuard()();
+  if (!orgId) {
+    return saas ? { withhold: true } : { withhold: false, clause: "org_id IS NULL" };
+  }
+  return {
+    withhold: false,
+    clause: saas ? `org_id = ${placeholder}` : `(org_id = ${placeholder} OR org_id IS NULL)`,
+  };
 }
 
 /**
@@ -1971,20 +2025,13 @@ export async function rejectPendingAmendment(
 export async function getPendingAmendmentCount(orgId: string | null): Promise<number> {
   if (!hasInternalDB()) return 0;
 
-  const saas = requireIsSaasModeForGuard()();
-  // SaaS: NULL-org ("global scope") rows must never surface in any workspace
-  // (#4487). Refuse the org-less path outright, and below drop the
-  // `OR org_id IS NULL` arm so a workspace only ever counts its own rows.
-  if (saas && !orgId) return 0;
+  const scope = amendmentOrgScope(orgId, "$1");
+  if (scope.withhold) return 0;
 
   const rows = await internalQuery<{ count: string }>(
-    orgId
-      ? `SELECT COUNT(*)::text AS count FROM learned_patterns
-         WHERE type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
-         AND ${saas ? "org_id = $1" : "(org_id = $1 OR org_id IS NULL)"}`
-      : `SELECT COUNT(*)::text AS count FROM learned_patterns
-         WHERE type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
-         AND org_id IS NULL`,
+    `SELECT COUNT(*)::text AS count FROM learned_patterns
+       WHERE type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
+       AND ${scope.clause}`,
     orgId ? [orgId] : [],
   );
 
@@ -2022,26 +2069,19 @@ export type PendingAmendmentRow = Record<string, unknown> & {
 export async function getPendingAmendments(orgId: string | null): Promise<PendingAmendmentRow[]> {
   if (!hasInternalDB()) return [];
 
-  const saas = requireIsSaasModeForGuard()();
-  // SaaS: withhold NULL-org rows from every workspace (#4487) — refuse the
-  // org-less path and drop the `OR org_id IS NULL` arm below.
-  if (saas && !orgId) return [];
+  const scope = amendmentOrgScope(orgId, "$1");
+  if (scope.withhold) return [];
 
   return internalQuery<PendingAmendmentRow>(
-    orgId
-      ? `SELECT id, source_entity, connection_group_id, description, confidence, amendment_payload, last_apply_error, created_at::text
-         FROM learned_patterns
-         WHERE type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
-         AND ${saas ? "org_id = $1" : "(org_id = $1 OR org_id IS NULL)"}
-         ORDER BY created_at DESC`
-      : `SELECT id, source_entity, connection_group_id, description, confidence, amendment_payload, last_apply_error, created_at::text
-         FROM learned_patterns
-         WHERE type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
-         AND org_id IS NULL
-         ORDER BY created_at DESC`,
+    `SELECT id, source_entity, connection_group_id, description, confidence, amendment_payload, last_apply_error, created_at::text
+       FROM learned_patterns
+       WHERE type = 'semantic_amendment' AND ${CLAIMABLE_STATUS_SQL}
+       AND ${scope.clause}
+       ORDER BY created_at DESC`,
     orgId ? [orgId] : [],
   );
 }
+
 
 /**
  * Increment repetition_count by 1 and increase confidence by 0.1 (capped at 1.0).

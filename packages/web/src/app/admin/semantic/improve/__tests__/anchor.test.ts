@@ -15,6 +15,7 @@ import {
   describeAnchor,
   groupKickoffMessage,
   entityKickoffMessage,
+  columnKickoffMessage,
   SWEEP_KICKOFF_MESSAGE,
   type ImproveAnchor,
 } from "../anchor";
@@ -33,6 +34,13 @@ describe("anchorRequestField", () => {
   it("carries an entity anchor (with optional group) through unchanged", () => {
     const anchor: ImproveAnchor = { kind: "entity", entity: "orders", group: "grp_prod" };
     expect(anchorRequestField(anchor)).toEqual({ anchor });
+  });
+
+  it("carries a column anchor through unchanged (#4521)", () => {
+    const anchor: ImproveAnchor = { kind: "column", entity: "orders", column: "status", group: "grp_prod" };
+    expect(anchorRequestField(anchor)).toEqual({ anchor });
+    const body = buildImproveChatBody([{ id: "m1", role: "user", parts: [] }], anchor);
+    expect(body.anchor).toEqual(anchor);
   });
 });
 
@@ -65,6 +73,13 @@ describe("kick-off messages", () => {
   it("has a stable sweep kick-off", () => {
     expect(SWEEP_KICKOFF_MESSAGE).toContain("highest-impact improvements");
   });
+
+  it("names both the column and its entity in the column kick-off (#4521)", () => {
+    const msg = columnKickoffMessage("orders", "status");
+    expect(msg).toContain('"status" column');
+    expect(msg).toContain('"orders"');
+    expect(msg).toContain("refine");
+  });
 });
 
 describe("describeAnchor", () => {
@@ -74,5 +89,11 @@ describe("describeAnchor", () => {
 
   it("labels an entity anchor", () => {
     expect(describeAnchor({ kind: "entity", entity: "orders" }, "orders")).toBe("Entity: orders");
+  });
+
+  it("labels a column anchor (#4521)", () => {
+    expect(describeAnchor({ kind: "column", entity: "orders", column: "status" }, "orders.status")).toBe(
+      "Column: orders.status",
+    );
   });
 });

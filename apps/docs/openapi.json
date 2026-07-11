@@ -61678,6 +61678,34 @@
                           "kind",
                           "entity"
                         ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "column"
+                            ]
+                          },
+                          "entity": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "column": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "group": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "entity",
+                          "column"
+                        ]
                       }
                     ]
                   }
@@ -62730,6 +62758,248 @@
           }
         },
         "operationId": "getAdminSemanticImproveHealth"
+      }
+    },
+    "/api/v1/admin/semantic-improve/coverage": {
+      "get": {
+        "tags": [
+          "Admin — Semantic Improve"
+        ],
+        "summary": "Table/column coverage of the physical schema vs the semantic layer",
+        "description": "Browses each connection's physical schema (from its baseline profile, #4509) matched against the semantic store, reporting per table/column whether coverage exists and how good it is. A connection without a baseline triggers the lazy backfill and reports `status: \"profiling\"` (poll until it lands). Uncovered tables/columns route to the enrich flow — never an amendment (ADR-0032).",
+        "responses": {
+          "200": {
+            "description": "Per-connection coverage overview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connections": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "installId": {
+                            "type": "string"
+                          },
+                          "group": {
+                            "type": "string"
+                          },
+                          "dbType": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "ready",
+                              "profiling",
+                              "error"
+                            ]
+                          },
+                          "error": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "freshness": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "coverage": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "tables": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "table": {
+                                      "type": "string"
+                                    },
+                                    "rowCount": {
+                                      "type": "number"
+                                    },
+                                    "entity": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "group": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "state": {
+                                      "type": "string",
+                                      "enum": [
+                                        "covered",
+                                        "partial",
+                                        "uncovered"
+                                      ]
+                                    },
+                                    "columns": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "column": {
+                                            "type": "string"
+                                          },
+                                          "type": {
+                                            "type": "string"
+                                          },
+                                          "isPrimaryKey": {
+                                            "type": "boolean"
+                                          },
+                                          "covered": {
+                                            "type": "boolean"
+                                          },
+                                          "dimension": {
+                                            "type": [
+                                              "string",
+                                              "null"
+                                            ]
+                                          },
+                                          "described": {
+                                            "type": "boolean"
+                                          },
+                                          "sampled": {
+                                            "type": "boolean"
+                                          }
+                                        },
+                                        "required": [
+                                          "column",
+                                          "type",
+                                          "isPrimaryKey",
+                                          "covered",
+                                          "dimension",
+                                          "described",
+                                          "sampled"
+                                        ]
+                                      }
+                                    },
+                                    "coveredColumnCount": {
+                                      "type": "number"
+                                    },
+                                    "coverableColumnCount": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "table",
+                                    "rowCount",
+                                    "entity",
+                                    "group",
+                                    "state",
+                                    "columns",
+                                    "coveredColumnCount",
+                                    "coverableColumnCount"
+                                  ]
+                                }
+                              },
+                              "summary": {
+                                "type": "object",
+                                "properties": {
+                                  "coveredTables": {
+                                    "type": "number"
+                                  },
+                                  "partialTables": {
+                                    "type": "number"
+                                  },
+                                  "uncoveredTables": {
+                                    "type": "number"
+                                  },
+                                  "totalTables": {
+                                    "type": "number"
+                                  }
+                                },
+                                "required": [
+                                  "coveredTables",
+                                  "partialTables",
+                                  "uncoveredTables",
+                                  "totalTables"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "tables",
+                              "summary"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "installId",
+                          "group",
+                          "dbType",
+                          "status",
+                          "error",
+                          "freshness",
+                          "coverage"
+                        ]
+                      }
+                    },
+                    "profiling": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "connections",
+                    "profiling"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminSemanticImproveCoverage"
       }
     },
     "/api/v1/admin/semantic/entities/edit/{name}": {

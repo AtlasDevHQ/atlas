@@ -3,10 +3,11 @@
  * improvement → "Anchor") — the web side.
  *
  * An anchor is what a conversation launched from: a connection group ("improve
- * this database's layer") or a single entity. It is a **launcher, never a cage** —
- * it scopes the turn-one Briefing and rides every turn (so the briefing stays
- * scoped), while free-form typing keeps working anchored or not. A **sweep** is
- * simply the anchorless start.
+ * this database's layer"), a single entity, or a single column (the coverage
+ * view's entry, #4521). It is a **launcher, never a cage** — it scopes the
+ * turn-one Briefing and rides every turn (so the briefing stays scoped), while
+ * free-form typing keeps working anchored or not. A **sweep** is simply the
+ * anchorless start.
  *
  * This module is the PURE, unit-testable core: the wire shape, the launcher
  * kick-off copy, the chip label, and the request-field rule (omit the anchor key
@@ -21,7 +22,13 @@
 /** The anchor an improve conversation carries. Absent ⇒ an anchorless sweep. */
 export type ImproveAnchor =
   | { readonly kind: "group"; readonly group: string }
-  | { readonly kind: "entity"; readonly entity: string; readonly group?: string };
+  | { readonly kind: "entity"; readonly entity: string; readonly group?: string }
+  | {
+      readonly kind: "column";
+      readonly entity: string;
+      readonly column: string;
+      readonly group?: string;
+    };
 
 /**
  * The canned sweep kick-off ("find improvements") — the anchorless start. Kept
@@ -44,9 +51,20 @@ export function entityKickoffMessage(label: string): string {
   return `Let's work on the "${label}" entity. Review its current YAML and profile from the briefing, then propose the highest-impact improvements.`;
 }
 
+/**
+ * The kick-off message a column launcher sends (#4521) — the coverage view's
+ * covered-column entry. Names both the column and its entity so the agent orients
+ * to the exact modeling question; refinement only, never growing the table set.
+ */
+export function columnKickoffMessage(entity: string, column: string): string {
+  return `Let's refine how the "${column}" column of "${entity}" is modeled. Review its profile, its current dimension YAML, and its coverage state from the briefing, then propose the highest-impact refinement.`;
+}
+
 /** The chip label for the active anchor shown in the conversation UI. */
 export function describeAnchor(anchor: ImproveAnchor, label: string): string {
-  return anchor.kind === "group" ? `Group: ${label}` : `Entity: ${label}`;
+  if (anchor.kind === "group") return `Group: ${label}`;
+  if (anchor.kind === "entity") return `Entity: ${label}`;
+  return `Column: ${label}`;
 }
 
 /**

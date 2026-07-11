@@ -1,8 +1,8 @@
 /**
  * proposeAmendment — the LLM-authored test query must run through the shared
  * user-query pipeline (validation → approval → RLS → auto-LIMIT → audit +
- * masking), never a raw `db.query` (#4485, mirroring the #3338 fix in
- * validate-proposal.ts). The rows persisted into learned_patterns.amendment_payload
+ * masking), never a raw `db.query` (#4485, the same discipline the #3338 fix
+ * established). The rows persisted into learned_patterns.amendment_payload
  * must be the pipeline's masked, capped output — never raw tenant data.
  */
 
@@ -18,6 +18,9 @@ import type { AmendmentPayload } from "@useatlas/types";
 // resolver rather than `fs`.
 const companiesEntity: Record<string, unknown> = {
   name: "companies",
+  // Real entities always carry `table` — the post-apply EntityShape gate (#4513)
+  // requires it, so the fixture must too.
+  table: "companies",
   description: "Customer companies",
   dimensions: [{ name: "id", type: "number" }],
 };

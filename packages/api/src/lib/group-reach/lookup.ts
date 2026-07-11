@@ -31,6 +31,7 @@
 
 import { loadOrgWhitelist } from "@atlas/api/lib/semantic";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { AtlasMode } from "@useatlas/types/auth";
 import type { VisibleGroup } from "./index";
 
 const log = createLogger("group-reach:lookup");
@@ -44,7 +45,7 @@ const log = createLogger("group-reach:lookup");
  */
 export async function loadVisibleGroups(
   orgId: string | undefined,
-  mode?: "published" | "developer",
+  mode?: AtlasMode,
 ): Promise<readonly VisibleGroup[]> {
   if (!orgId) return [];
 
@@ -101,4 +102,45 @@ export async function loadVisibleGroups(
     const members = (groupToMembers.get(id) ?? [id]).slice().sort();
     return { id, members, primary: members[0] ?? id } satisfies VisibleGroup;
   });
+}
+
+/**
+ * Resolve the connection id a semantic Amendment's evidence should execute
+ * against — its resolved Connection group's primary member (#4513). "Evidence
+ * runs where the change lives": an amendment on a group-scoped entity must run
+ * its test query against that group's datasource, not the default connection.
+ *
+ * - `null`/`undefined` group → `"default"` (the flat default scope).
+ * - a group id → its `primary` member from {@link loadVisibleGroups} (a
+ *   group-of-one standalone datasource resolves to its own connection id).
+ * - a group that no longer resolves (self-hosted with no visible-groups DB, or
+ *   a group hidden by content mode) → the group id itself, since a standalone
+ *   datasource keys its group under its own connection id; a genuinely
+ *   unresolvable group degrades to that id rather than silently retargeting the
+ *   default datasource.
+ *
+ * Never throws — {@link loadVisibleGroups} already degrades to `[]` on failure.
+ */
+export async function resolveGroupPrimaryConnectionId(
+  orgId: string | undefined,
+  groupId: string | null | undefined,
+  mode?: AtlasMode,
+): Promise<string> {
+  if (!groupId) return "default";
+  const visible = await loadVisibleGroups(orgId, mode);
+  const match = visible.find((g) => g.id === groupId);
+  if (!match) {
+    // The group did not resolve to a visible primary — content-mode hid it, it
+    // is not in this workspace, or (upstream) the whitelist load degraded to []
+    // (logged in loadVisibleGroups). Log the degradation so that if the fallback
+    // id turns out not to be a registered connection, the downstream
+    // `Connection "…" is not registered` error is traceable to HERE rather than
+    // read as a spurious SQL-validation failure.
+    log.debug(
+      { orgId, groupId, visibleCount: visible.length },
+      "resolveGroupPrimaryConnectionId: group did not resolve to a visible primary — falling back to the group id",
+    );
+    return groupId;
+  }
+  return match.primary;
 }

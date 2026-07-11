@@ -115,15 +115,14 @@ Proposals with `confidence >= 0.9` whose amendment type is in `ATLAS_EXPERT_AUTO
 
 ## Architecture
 
-The expert agent has 5 dedicated tools:
+The expert agent has 4 dedicated tools:
 
 - **profileTable** — Get column statistics (cardinality, nulls, sample values)
 - **checkDataDistribution** — Analyze a column's value distribution
 - **searchAuditLog** — Find query patterns from actual usage
-- **proposeAmendment** — Create a structured YAML change proposal
-- **validateProposal** — Dry-run validate a proposal (YAML parse, whitelist, test query)
+- **proposeAmendment** — Create a structured YAML change proposal. Validation is a built-in seam: the payload schema, any embedded SQL, and the test query are all checked before the proposal is queued, and the test query runs against the amendment's own connection group. A proposal that fails validation is never queued.
 
-These are registered in a dedicated `ToolRegistry` alongside the standard `explore` and `executeSQL` tools, giving the expert agent 7 tools total.
+These are registered in a dedicated `ToolRegistry` alongside the standard `explore` and `executeSQL` tools, giving the expert agent 6 tools total.
 
 ## Interactive Mode
 

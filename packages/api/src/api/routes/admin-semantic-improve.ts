@@ -26,6 +26,7 @@ import { runAgent } from "@atlas/api/lib/agent";
 import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
 import { buildExpertRegistry } from "@atlas/api/lib/tools/expert-registry";
 import { EXPERT_PERSONA_PROMPT } from "@atlas/api/lib/semantic/expert/persona";
+import { SEMANTIC_HEALTH_STATUSES } from "@atlas/api/lib/semantic/expert/briefing";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -396,8 +397,9 @@ const healthScoreRoute = createRoute({
             // #4514 — the status discriminator: the widget renders a
             // parse-failure zero ("N of M entities failed to parse") differently
             // from a no-data zero ("no entities yet"). `parseFailures`/`totalRows`
-            // carry the counts the corruption caption needs.
-            status: z.enum(["ok", "no_entities", "corrupt"]),
+            // carry the counts the corruption caption needs. Enum reuses the
+            // single-source tuple so it can't drift from the type.
+            status: z.enum(SEMANTIC_HEALTH_STATUSES),
             parseFailures: z.number(),
             totalRows: z.number(),
           }),

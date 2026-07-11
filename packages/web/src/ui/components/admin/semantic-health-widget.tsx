@@ -21,6 +21,9 @@ interface SemanticHealthScore {
   // an actionable "fix the YAML" signal; a no-data zero ("no_entities") is
   // "build the layer". `status` is optional so an older API response (pre-#4514)
   // that omits it degrades to the plain score view rather than crashing.
+  // These literals mirror the api-side `SEMANTIC_HEALTH_STATUSES` tuple
+  // (lib/semantic/expert/briefing.ts) — @atlas/web can't import @atlas/api, so
+  // this copy is kept in lockstep by hand (the wire contract, not a shared type).
   status?: "ok" | "no_entities" | "corrupt";
   parseFailures?: number;
   totalRows?: number;

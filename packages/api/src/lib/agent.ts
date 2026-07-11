@@ -688,8 +688,10 @@ export interface BuildSystemParamOptions {
    * findings, the pending review queue, recent panel decisions) front-loaded for
    * every Improvement conversation, so the expert agent doesn't spend tool calls
    * learning state it can be told. Re-assembled each turn from live inputs, so a
-   * panel decision shows up next turn without a synthetic message. Appended right
-   * after the semantic index. Improve-route only; omitted ⇒ nothing appended.
+   * panel decision shows up next turn without a synthetic message. Appended after
+   * the system-prompt body (the semantic index and any KB ToC / learned-patterns /
+   * dialect-specialist sections), just ahead of the source catalog. Improve-route
+   * only; omitted ⇒ nothing appended.
    */
   readonly briefing?: string;
   /** Org-scoped (DB-backed) semantic index section; preferred over the file-based index when present. */
@@ -802,9 +804,11 @@ export function buildSystemParam(
   } = options;
   let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext, orgKnowledgeToc, persona, dialectSpecialists);
 
-  // #4514 — the Semantic-improve Briefing rides right after the semantic index
-  // (which `buildSystemPrompt` appended to `content`): the layer, then its
-  // current health/queue/decisions. Improve-route only; a no-op everywhere else.
+  // #4514 — the Semantic-improve Briefing rides at the END of the system-prompt
+  // body (`buildSystemPrompt` already folded in the semantic index + any KB ToC /
+  // learned-patterns / dialect-specialist sections above), just ahead of the
+  // source catalog appended below: the layer, then its current
+  // health/queue/decisions. Improve-route only; a no-op everywhere else.
   if (briefing) {
     content += "\n\n" + briefing;
   }
@@ -1108,10 +1112,12 @@ export async function runAgent({
   /**
    * #4514 — the Semantic-improve Briefing block (lib/semantic/expert/briefing.ts).
    * The improve route assembles it per turn and passes it here; `buildSystemParam`
-   * appends it after the semantic index so the expert agent is front-loaded with
-   * the layer's current health, tracked-profile freshness, top findings, pending
-   * queue, and recent panel decisions — no tool call needed to learn them. Every
-   * other surface omits it (no change). Threaded verbatim to {@link buildSystemParam}.
+   * appends it at the end of the system-prompt body (after the semantic index and
+   * any KB / learned-patterns / dialect sections) so the expert agent is
+   * front-loaded with the layer's current health, tracked-profile freshness, top
+   * findings, pending queue, and recent panel decisions — no tool call needed to
+   * learn them. Every other surface omits it (no change). Threaded verbatim to
+   * {@link buildSystemParam}.
    */
   briefing?: string;
   /**

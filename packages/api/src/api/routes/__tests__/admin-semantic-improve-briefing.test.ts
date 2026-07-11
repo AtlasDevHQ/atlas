@@ -64,6 +64,11 @@ void mock.module("@atlas/api/lib/semantic/connection-profile", () => ({
   getBaselineProfiles: async () => [],
   describeProfileFreshness: (iso: string | null) =>
     iso ? { days: 3, label: "profiled 3 days ago" } : null,
+  // mock-all-exports for the small connection-profile module.
+  upsertBaselineProfile: async () => {},
+  recordBaselineError: async () => {},
+  recordLlmProfileRun: async () => {},
+  getConnectionProfileState: async () => null,
 }));
 
 void mock.module("@atlas/api/lib/auth/middleware", () => ({

@@ -21,14 +21,23 @@
  * spends its steps on evidence-gathering for the next Amendment instead. Because
  * it is re-assembled each turn from live inputs, a panel decision (an admin
  * approving/rejecting in the review queue mid-conversation) shows up in the next
- * turn's block WITHOUT any synthetic message being injected into the transcript.
+ * turn's block — via the most-recent-decisions feed — WITHOUT any synthetic
+ * message being injected into the transcript.
  */
 
 import type { AnalysisResult, AuditPattern } from "./types";
 import type { SemanticHealthScore } from "./health";
 
-/** Health discriminator — parse-failure zero is not the same as no-data zero. */
-export type HealthStatus = "ok" | "no_entities" | "corrupt";
+/**
+ * The health discriminator — a parse-failure zero ("corrupt") is not the same
+ * as a no-data zero ("no_entities"). The single source of the three literals:
+ * the type below derives from it, the route's OpenAPI enum reuses it, and the
+ * widget mirrors it (the web package can't import `@atlas/api`, so its own copy
+ * is the one exception — kept in lockstep by hand).
+ */
+export const SEMANTIC_HEALTH_STATUSES = ["ok", "no_entities", "corrupt"] as const;
+
+export type SemanticHealthStatus = (typeof SEMANTIC_HEALTH_STATUSES)[number];
 
 /**
  * One tracked connection's anchor line: which connection, its engine, and how
@@ -61,7 +70,14 @@ export interface BriefingDecision {
 /** Everything the pure assembler needs — a function of these inputs alone. */
 export interface BriefingInputs {
   readonly health: SemanticHealthScore;
-  readonly healthStatus: HealthStatus;
+  /**
+   * The discriminator, and `parseFailures`/`totalRows`, are always produced
+   * together by `deriveHealthStatus` (briefing-inputs.ts) from the same counts,
+   * so they agree by construction: `healthStatus === "corrupt"` implies
+   * `parseFailures === totalRows > 0`. `deriveHealthStatus` is the canonical
+   * producer — don't set these three independently.
+   */
+  readonly healthStatus: SemanticHealthStatus;
   /** DB rows that failed YAML parse (drives the corruption caption). */
   readonly parseFailures: number;
   /** DB rows considered (the corruption denominator). */

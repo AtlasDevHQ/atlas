@@ -24,7 +24,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import type { AnalysisContext } from "./types";
 import { computeSemanticHealth } from "./health";
 import { analyzeSemanticLayer } from "./analyzer";
-import type { BriefingInputs, BriefingProfileLine, HealthStatus } from "./briefing";
+import type { BriefingInputs, BriefingProfileLine, SemanticHealthStatus } from "./briefing";
 
 const log = createLogger("semantic-expert-briefing");
 
@@ -37,12 +37,16 @@ type EntityMode = "published" | "developer";
  * briefing so both read the SAME rule. `corrupt` gates on `totalRows`
  * (DB-rows-considered) so a healthy disk mirror can't mask the corruption; empty
  * gates on the merged `entityCount` (#2503).
+ *
+ * The three args are same-typed and NOT interchangeable — order is
+ * (parseFailures, totalRows, entityCount); pass them from a single load result
+ * (`loadAnalysisContext` + `ctx.entities.length`) so they can't be transposed.
  */
 export function deriveHealthStatus(
   parseFailures: number,
   totalRows: number,
   entityCount: number,
-): HealthStatus {
+): SemanticHealthStatus {
   if (parseFailures > 0 && parseFailures === totalRows && totalRows > 0) return "corrupt";
   if (entityCount === 0) return "no_entities";
   return "ok";
@@ -193,9 +197,15 @@ export async function loadBriefingInputs(orgId: string | null, now: Date = new D
 
 /**
  * Load + assemble the briefing block for a workspace, fail-soft. Returns the
- * rendered block, or `null` when it can't be built (no data yet, or a transient
- * load failure) — the improve chat must still start without it, just without the
- * front-loaded context. Never throws.
+ * rendered block, or `null` ONLY on a load failure (a DB read throwing, etc.) —
+ * the empty-workspace case still renders a valid block ("no entities", "queue
+ * empty"), so `null` is strictly the error path. On `null` the improve chat must
+ * still start, just without the front-loaded context. Never throws.
+ *
+ * The catch logs the whole `Error` (not just its message) so Pino's serializer
+ * keeps the stack — this is the sole observability seam for a per-turn
+ * optimization that otherwise degrades silently; matching the stream handler in
+ * admin-semantic-improve.ts.
  */
 export async function buildBriefingBlock(orgId: string | null, now: Date = new Date()): Promise<string | null> {
   try {
@@ -204,7 +214,7 @@ export async function buildBriefingBlock(orgId: string | null, now: Date = new D
     return assembleBriefing(inputs);
   } catch (err) {
     log.warn(
-      { err: err instanceof Error ? err.message : String(err), orgId },
+      { err: err instanceof Error ? err : new Error(String(err)), orgId },
       "Failed to assemble semantic-improve briefing — starting the chat without front-loaded context",
     );
     return null;

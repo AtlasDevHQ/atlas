@@ -26,13 +26,13 @@ export type {
 export { ANALYSIS_CATEGORIES } from "./types";
 export { computeSemanticHealth } from "./health";
 export type { SemanticHealthScore } from "./health";
-export { assembleBriefing } from "./briefing";
+export { assembleBriefing, SEMANTIC_HEALTH_STATUSES } from "./briefing";
 export type {
   BriefingInputs,
   BriefingProfileLine,
   BriefingPendingItem,
   BriefingDecision,
-  HealthStatus,
+  SemanticHealthStatus,
 } from "./briefing";
 export {
   loadBriefingInputs,

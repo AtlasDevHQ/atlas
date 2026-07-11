@@ -151,6 +151,35 @@ describe("assembleBriefing", () => {
     expect(empty).toContain("Empty — nothing is awaiting");
   });
 
+  it("caps the pending queue with its own overflow copy", () => {
+    const pending = Array.from({ length: 10 }, (_, i) => ({
+      entityName: `e${i}`,
+      amendmentType: "add_measure",
+      confidence: 0.5,
+      rationale: "r",
+    }));
+    const block = assembleBriefing(makeInputs({ pending }));
+    expect(block).toContain("### Pending review queue (10)");
+    expect(block).toContain("e7 · add_measure"); // 8th (index 7) shown
+    expect(block).not.toContain("e8 · add_measure"); // capped at 8
+    expect(block).toContain("…and 2 more queued.");
+  });
+
+  it("clamps out-of-range/non-finite scores and truncates a long rationale", () => {
+    const block = assembleBriefing(
+      makeInputs({
+        findings: [
+          makeFinding({ impact: 1.5, confidence: -0.2, rationale: "x".repeat(300) }),
+        ],
+      }),
+    );
+    // impact clamps to 100%, confidence to 0%.
+    expect(block).toContain("(impact 100%, confidence 0%)");
+    // The 300-char rationale is truncated with an ellipsis (≤160 chars).
+    expect(block).toContain("…");
+    expect(block).not.toContain("x".repeat(200));
+  });
+
   it("reflects recent panel decisions so the agent learns them without synthetic messages (#4514 AC2)", () => {
     const block = assembleBriefing(
       makeInputs({

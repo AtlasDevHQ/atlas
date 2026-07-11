@@ -27,6 +27,10 @@ let mockScore: Score | null = null;
 
 void mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({ data: mockScore, loading: false, error: null, refetch: () => {} }),
+  // mock-all-exports: the widget imports only useAdminFetch, but the module also
+  // re-exports these — provide them so a future co-import doesn't throw.
+  useInProgressSet: () => ({ has: () => false, add: () => {}, remove: () => {} }),
+  friendlyError: (e: unknown) => String(e),
 }));
 
 const { SemanticHealthWidget } = await import("../semantic-health-widget");
@@ -52,6 +56,12 @@ describe("SemanticHealthWidget — status discriminator (#4514)", () => {
     const { container } = render(<SemanticHealthWidget />);
     expect(container.textContent).toContain("3 of 3 entities failed to parse");
     expect(container.textContent).not.toContain("Coverage");
+  });
+
+  test("corrupt caption is singular when exactly one row failed", () => {
+    mockScore = baseScore({ status: "corrupt", parseFailures: 1, totalRows: 1 });
+    const { container } = render(<SemanticHealthWidget />);
+    expect(container.textContent).toContain("1 of 1 entity failed to parse");
   });
 
   test("no_entities status shows the build-the-layer caption", () => {

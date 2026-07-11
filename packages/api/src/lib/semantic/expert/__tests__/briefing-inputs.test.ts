@@ -42,16 +42,27 @@ void mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
   loadRejectedKeys: async () => mockRejectedKeys,
 }));
 
+let mockBaselineNull = false;
+
 void mock.module("@atlas/api/lib/semantic/connection-profile", () => ({
   listConnectionProfileStates: async () => {
     if (profilesThrow) throw new Error("profile state read failed");
     return mockStates;
   },
-  getBaselineProfiles: async () => mockBaselineProfiles,
+  // Return null to model a connection whose baseline profiling FAILED (payload
+  // never stored) — the loader must still emit an anchor line, just no profiles.
+  getBaselineProfiles: async () => (mockBaselineNull ? null : mockBaselineProfiles),
   // Deterministic freshness so the line copy is stable under test; the real
   // helper is unit-tested in connection-profile.test.ts.
   describeProfileFreshness: (iso: string | null) =>
     iso ? { days: 3, label: "profiled 3 days ago" } : null,
+  // mock-all-exports: the loader imports only the three above, but the module's
+  // other runtime exports must be present so a future co-import doesn't throw
+  // "Export named X not found" (caught only in CI).
+  upsertBaselineProfile: async () => {},
+  recordBaselineError: async () => {},
+  recordLlmProfileRun: async () => {},
+  getConnectionProfileState: async () => null,
 }));
 
 void mock.module("@atlas/api/lib/logger", () => {
@@ -118,6 +129,7 @@ beforeEach(() => {
   mockPending = [];
   mockDecided = [];
   profilesThrow = false;
+  mockBaselineNull = false;
 });
 
 describe("deriveHealthStatus", () => {
@@ -149,8 +161,26 @@ describe("loadTrackedProfiles", () => {
 
   it("falls back to the CLI disk cache with no anchor lines when there's no internal DB", async () => {
     mockHasInternalDB = false;
-    const { lines } = await loadTrackedProfiles(null, new Date());
+    const { profiles, lines } = await loadTrackedProfiles(null, new Date());
+    // The disk-cache path runs real profile-cache with no cache file present → [].
+    expect(profiles).toEqual([]);
     expect(lines).toEqual([]);
+  });
+
+  it("emits an anchor line but no profiles when a connection's baseline failed", async () => {
+    // A connection whose baseline profiling failed: state present (so an anchor
+    // line renders), payload null (so no profiles are pushed) — the health score
+    // degrades gracefully rather than throwing.
+    mockStates = [
+      { installId: "eu_prod", connectionGroupId: null, dbType: "postgres", baseline: null, baselineError: "connect timeout", llm: null },
+    ];
+    mockBaselineNull = true;
+
+    const { profiles, lines } = await loadTrackedProfiles("org-1", new Date("2026-07-11T00:00:00Z"));
+    expect(profiles).toEqual([]);
+    expect(lines).toEqual([
+      { connection: "eu_prod", dbType: "postgres", freshness: null, tableCount: null },
+    ]);
   });
 });
 
@@ -209,6 +239,18 @@ describe("loadBriefingInputs", () => {
     ];
     const inputs = await loadBriefingInputs("org-1", new Date("2026-07-11T00:00:00Z"));
     expect(inputs.pending[0].rationale).toBe("fallback desc");
+  });
+
+  it("tolerates a null/absent amendment payload and non-number confidence", async () => {
+    mockPending = [
+      // Fully null payload + non-number confidence → amendmentType null, rationale
+      // falls back to description, confidence coerces to 0.
+      { id: "p1", source_entity: "orders", connection_group_id: null, description: "d", confidence: "oops", amendment_payload: null, last_apply_error: null, created_at: "2026-07-10" },
+    ];
+    const inputs = await loadBriefingInputs("org-1", new Date("2026-07-11T00:00:00Z"));
+    expect(inputs.pending).toEqual([
+      { entityName: "orders", amendmentType: null, confidence: 0, rationale: "d" },
+    ]);
   });
 });
 

@@ -154,31 +154,41 @@ export async function applyAmendmentToEntity(
   // Upsert entity into its own group scope.
   await upsertEntityForGroup(effectiveOrgId, "entity", result.entityName, newYaml, targetGroupId);
 
-  // Create version snapshot. Tagged errors (AmbiguousEntityError) must
-  // re-throw so the route layer maps them to 409 with `groups`; a generic
-  // warn-log would bury the structural ambiguity that the expert agent
-  // needs the operator to resolve.
-  try {
-    const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName, targetGroupId);
-    if (refreshed) {
-      const changeSummary = await generateChangeSummary(entity.yaml_content, newYaml);
-      const versionSummary = `Expert agent: ${result.rationale}${changeSummary ? ` (${changeSummary})` : ""}`;
-      await createVersion(
-        refreshed.id, effectiveOrgId, "entity", result.entityName, newYaml, versionSummary,
-        "expert-agent", "Semantic Expert Agent",
-      );
-    }
-  } catch (versionErr) {
-    if (versionErr instanceof AmbiguousEntityError) throw versionErr;
-    log.warn(
-      { err: versionErr instanceof Error ? versionErr.message : String(versionErr), requestId, orgId, entity: result.entityName },
-      "Amendment applied but version snapshot failed",
-    );
-  }
-
-  // Invalidate caches
+  // Invalidate caches immediately — the mutation has landed, so a stale
+  // whitelist must not outlive it even if the version snapshot below fails.
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
   invalidateOrgWhitelist(effectiveOrgId);
+
+  // Create version snapshot. Rollback-ability is part of the apply (#4506):
+  // a snapshot failure FAILS the whole apply, so the decide seam compensates
+  // the row back to pending instead of stamping `approved` on a change that
+  // can't be rolled back. (The YAML upsert above has already landed — a retry
+  // re-applies idempotently via upsert-by-identity and re-attempts the
+  // snapshot.) Tagged errors (AmbiguousEntityError) re-throw untouched so the
+  // route layer maps them to 409 with `groups`.
+  try {
+    const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName, targetGroupId);
+    if (!refreshed) {
+      throw new Error("entity row not found after upsert");
+    }
+    const changeSummary = await generateChangeSummary(entity.yaml_content, newYaml);
+    const versionSummary = `Expert agent: ${result.rationale}${changeSummary ? ` (${changeSummary})` : ""}`;
+    await createVersion(
+      refreshed.id, effectiveOrgId, "entity", result.entityName, newYaml, versionSummary,
+      "expert-agent", "Semantic Expert Agent",
+    );
+  } catch (versionErr) {
+    if (versionErr instanceof AmbiguousEntityError) throw versionErr;
+    const msg = versionErr instanceof Error ? versionErr.message : String(versionErr);
+    log.warn(
+      { err: msg, requestId, orgId, entity: result.entityName },
+      "Version snapshot failed — failing the amendment apply (rollback-ability is part of the apply)",
+    );
+    throw new Error(
+      `Version snapshot failed for entity "${result.entityName}": ${msg}`,
+      { cause: versionErr },
+    );
+  }
 
   // Sync to disk (non-fatal) — same group so the on-disk mirror lands in
   // `groups/<group>/entities/` rather than the flat default dir.

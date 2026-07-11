@@ -262,10 +262,15 @@ export function buildInternalDbMockDefaults(deps: {
     }),
     getAutoApproveThreshold: mock(() => 2),
     getAutoApproveTypes: mock(() => new Set(["update_description", "add_dimension"])),
-    insertSemanticAmendment: mock(async () => ({ id: "mock-amendment-id", status: "pending" as const })),
+    insertSemanticAmendment: mock(async () => ({ id: "mock-amendment-id", autoApprove: false })),
     getPendingAmendmentCount: mock(async () => 0),
     getPendingAmendments: mock(async () => []),
-    reviewSemanticAmendment: mock(async () => null),
+    // Decide-seam claim helpers (#4506) — defaults model "no pending row".
+    claimPendingAmendment: mock(async () => null),
+    stampClaimedAmendmentApproved: mock(async () => false),
+    releaseClaimedAmendment: mock(async () => false),
+    rejectPendingAmendment: mock(async () => false),
+    AMENDMENT_CLAIM_STALE_MINUTES: 10,
     hardDeleteWorkspace: mock(async () => ({})),
   
     // Remaining named exports with no behavior worth faking — present so

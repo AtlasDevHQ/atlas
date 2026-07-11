@@ -1,14 +1,17 @@
 /**
- * Unit tests for the SaaS scoping of the three semantic-amendment queries
- * (#4487): `getPendingAmendmentCount`, `getPendingAmendments`, and
- * `reviewSemanticAmendment`.
+ * Unit tests for the SaaS scoping of the org-scoped semantic-amendment
+ * queries (#4487): `getPendingAmendmentCount`, `getPendingAmendments`, and
+ * the decide-seam claim helpers `claimPendingAmendment` /
+ * `rejectPendingAmendment` (#4506) — plus the SQL shape of the seam's
+ * conditional transitions (claim-on-pending, stamp-on-claim,
+ * release-on-claim), which are the races' DB-level protection.
  *
  * Security invariant: NULL-org ("global scope") amendment rows are the
  * intended shared scope on self-hosted, but on SaaS they must NEVER surface
  * in — or be reviewable from — any tenant workspace. These tests assert the
  * SQL shape flips with deploy mode:
- *   - self-hosted (or unloaded config): `(org_id = $1 OR org_id IS NULL)`
- *   - saas:                              `org_id = $1` only, and the org-less
+ *   - self-hosted (or unloaded config): `(org_id = $N OR org_id IS NULL)`
+ *   - saas:                              `org_id = $N` only, and the org-less
  *                                        path is refused before any query.
  *
  * Deploy mode is resolved through `isSaasModeForGuard()` (fail-closed), which
@@ -24,7 +27,10 @@ process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/atlas_test";
 import {
   getPendingAmendmentCount,
   getPendingAmendments,
-  reviewSemanticAmendment,
+  claimPendingAmendment,
+  stampClaimedAmendmentApproved,
+  releaseClaimedAmendment,
+  rejectPendingAmendment,
   _resetPool,
   _resetCircuitBreaker,
 } from "../internal";
@@ -107,12 +113,21 @@ describe("semantic amendment queries — self-hosted scoping (unchanged)", () =>
     expect(captured[0]!.sql).toContain("(org_id = $1 OR org_id IS NULL)");
   });
 
-  it("reviewSemanticAmendment includes the OR org_id IS NULL arm for an org", async () => {
+  it("claimPendingAmendment includes the OR org_id IS NULL arm for an org", async () => {
     setDeployMode("self-hosted");
-    await reviewSemanticAmendment("amd-1", "org-a", "approved", "admin");
+    await claimPendingAmendment("amd-1", "org-a", "admin");
 
     expect(captured).toHaveLength(1);
-    expect(captured[0]!.sql).toContain("(org_id = $4 OR org_id IS NULL)");
+    expect(captured[0]!.sql).toContain("(org_id = $3 OR org_id IS NULL)");
+    expect(captured[0]!.params).toEqual(["admin", "amd-1", "org-a"]);
+  });
+
+  it("rejectPendingAmendment includes the OR org_id IS NULL arm for an org", async () => {
+    setDeployMode("self-hosted");
+    await rejectPendingAmendment("amd-1", "org-a", "admin");
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.sql).toContain("(org_id = $3 OR org_id IS NULL)");
   });
 
   it("null-org (global admin) path still targets org_id IS NULL rows", async () => {
@@ -121,6 +136,64 @@ describe("semantic amendment queries — self-hosted scoping (unchanged)", () =>
 
     expect(captured).toHaveLength(1);
     expect(captured[0]!.sql).toContain("org_id IS NULL");
+  });
+});
+
+describe("decide-seam conditional transitions (#4506) — the DB-level race protection", () => {
+  // These pin the WHERE shapes that make the seam's guarantees hold under
+  // concurrency: exactly one claim wins (conditional on `pending`), a reject
+  // can never stamp an applied change (same conditional), and stamp/release
+  // only act on a held claim (`applying`).
+
+  it("claim is conditional on pending (or a stale claim) and moves the row to 'applying'", async () => {
+    setDeployMode("self-hosted");
+    await claimPendingAmendment("amd-1", "org-a", "admin");
+
+    const { sql } = captured[0]!;
+    expect(sql).toContain("SET status = 'applying'");
+    expect(sql).toContain("status = 'pending' OR (status = 'applying'");
+    expect(sql).toContain("type = 'semantic_amendment'");
+    // A retried approve starts clean: the claim clears the previous failure.
+    expect(sql).toContain("last_apply_error = NULL");
+  });
+
+  it("reject is conditional on pending — never flips an approved or freshly-claimed row", async () => {
+    setDeployMode("self-hosted");
+    await rejectPendingAmendment("amd-1", "org-a", "admin");
+
+    const { sql } = captured[0]!;
+    expect(sql).toContain("SET status = 'rejected'");
+    expect(sql).toContain("status = 'pending' OR (status = 'applying'");
+    expect(sql).not.toContain("status = 'approved'");
+  });
+
+  it("stamp-approved is conditional on the held claim ('applying'), never on pending", async () => {
+    setDeployMode("self-hosted");
+    await stampClaimedAmendmentApproved("amd-1");
+
+    const { sql, params } = captured[0]!;
+    expect(sql).toContain("SET status = 'approved'");
+    expect(sql).toContain("status = 'applying'");
+    expect(sql).not.toContain("status = 'pending'");
+    expect(params).toEqual(["amd-1"]);
+  });
+
+  it("release compensates a held claim back to pending with the visible reason", async () => {
+    setDeployMode("self-hosted");
+    await releaseClaimedAmendment("amd-1", "snapshot failed");
+
+    const { sql, params } = captured[0]!;
+    expect(sql).toContain("SET status = 'pending'");
+    expect(sql).toContain("last_apply_error = $2");
+    expect(sql).toContain("status = 'applying'");
+    expect(params).toEqual(["amd-1", "snapshot failed"]);
+  });
+
+  it("pending reads resurface stale 'applying' claims so a crash can't strand a row", async () => {
+    setDeployMode("self-hosted");
+    await getPendingAmendments("org-a");
+
+    expect(captured[0]!.sql).toContain("status = 'pending' OR (status = 'applying'");
   });
 });
 
@@ -146,13 +219,23 @@ describe("semantic amendment queries — SaaS scoping (#4487)", () => {
     expect(sql).not.toContain("org_id IS NULL");
   });
 
-  it("reviewSemanticAmendment drops the OR org_id IS NULL arm for a workspace", async () => {
+  it("claimPendingAmendment drops the OR org_id IS NULL arm for a workspace", async () => {
     setDeployMode("saas");
-    await reviewSemanticAmendment("amd-1", "org-a", "approved", "admin");
+    await claimPendingAmendment("amd-1", "org-a", "admin");
 
     expect(captured).toHaveLength(1);
     const { sql } = captured[0]!;
-    expect(sql).toContain("org_id = $4");
+    expect(sql).toContain("org_id = $3");
+    expect(sql).not.toContain("org_id IS NULL");
+  });
+
+  it("rejectPendingAmendment drops the OR org_id IS NULL arm for a workspace", async () => {
+    setDeployMode("saas");
+    await rejectPendingAmendment("amd-1", "org-a", "admin");
+
+    expect(captured).toHaveLength(1);
+    const { sql } = captured[0]!;
+    expect(sql).toContain("org_id = $3");
     expect(sql).not.toContain("org_id IS NULL");
   });
 
@@ -172,11 +255,19 @@ describe("semantic amendment queries — SaaS scoping (#4487)", () => {
     expect(captured).toHaveLength(0);
   });
 
-  it("refuses the org-less path without touching the DB (review → null)", async () => {
+  it("refuses the org-less path without touching the DB (claim → null)", async () => {
     setDeployMode("saas");
-    const reviewed = await reviewSemanticAmendment("amd-1", null, "approved", "admin");
+    const claimed = await claimPendingAmendment("amd-1", null, "admin");
 
-    expect(reviewed).toBeNull();
+    expect(claimed).toBeNull();
+    expect(captured).toHaveLength(0);
+  });
+
+  it("refuses the org-less path without touching the DB (reject → false)", async () => {
+    setDeployMode("saas");
+    const rejected = await rejectPendingAmendment("amd-1", null, "admin");
+
+    expect(rejected).toBe(false);
     expect(captured).toHaveLength(0);
   });
 });

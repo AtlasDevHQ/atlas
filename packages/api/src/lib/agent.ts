@@ -39,9 +39,10 @@ import { getStreamWriter } from "./tools/python-stream";
 import { getContextFragments, pluginDialectModules } from "./plugins/tools";
 import {
   composeDialectSpecialists,
+  dialectDisplayName,
   type DialectSpecialistGroup,
 } from "./dialect-specialist";
-import { connections, type ConnectionMetadata, type DBType } from "./db/connection";
+import { connections, type ConnectionMetadata } from "./db/connection";
 import { getCrossSourceJoins, type CrossSourceJoin, loadOrgWhitelist, getOrgSemanticIndex } from "./semantic";
 import { getSemanticIndex } from "./semantic/search";
 import { getConfig } from "./config";
@@ -255,16 +256,6 @@ How does this break down by region?
 Which accounts contribute the most?
 </suggestions>`;
 
-// Display names for core DB types. Plugin-registered types fall through
-// to the capitalize fallback intentionally.
-const DIALECT_DISPLAY_NAMES: Record<string, string> = {
-  postgres: "PostgreSQL",
-  mysql: "MySQL",
-};
-
-function dialectName(dbType: DBType): string {
-  return DIALECT_DISPLAY_NAMES[dbType] ?? dbType.charAt(0).toUpperCase() + dbType.slice(1);
-}
 
 /**
  * Filter the connection registry to the set the agent should see in its tool
@@ -431,7 +422,7 @@ function buildMultiSourceSection(
   sources: ConnectionMetadata[],
 ): string {
   const lines = sources.map((s) => {
-    const dialect = dialectName(s.dbType);
+    const dialect = dialectDisplayName(s.dbType);
     const desc = s.description ? ` — ${s.description}` : "";
     const healthNote = s.health?.status === "unhealthy"
       ? " (**UNAVAILABLE** — skip queries to this source)"
@@ -508,15 +499,21 @@ export interface BoundDashboardAgentContext {
  * under a cross-group sweep. Plugin-shipped modules ({@link pluginDialectModules})
  * win over the core modules for their engine.
  *
- * Falls back to the agent-visible connections directly — each connection standing
- * as its own group-of-one — when there is no workspace (self-hosted
- * single-connection) or no group resolves to a known engine, so the connected
- * engine's module still shows exactly as the pre-#4515 inline guide did. Never
- * throws: a reach-resolution failure degrades to that fallback rather than
- * costing the turn its answer (CLAUDE.md — never silently swallow; the failure is
- * logged).
+ * Two reach regimes, matching the Source catalog it sits beside (ADR-0022):
+ * - **Workspace present (`orgId` set)** — compose exactly the reachable groups.
+ *   An empty reachable set composes NOTHING (fails closed like the catalog); it
+ *   does NOT fan out to every visible connection, so a fail-closed reach result
+ *   (e.g. a whitelist scan that degraded to none) can't re-open into dialect
+ *   coaching for engines the conversation can't actually reach.
+ * - **No workspace (`orgId` undefined)** — the self-hosted single/flat-connection
+ *   case with no enumerable group surface: each agent-visible connection stands
+ *   as its own group-of-one, so the connected engine's module still shows.
+ *
+ * Never throws: a reach-resolution failure fails closed to no dialect section
+ * (logged, not swallowed — CLAUDE.md) rather than costing the turn its answer or
+ * fanning back out to an unreachable-engine list.
  */
-async function resolveConversationDialectSpecialists(
+export async function resolveConversationDialectSpecialists(
   orgId: string | undefined,
   mode: "published" | "developer" | undefined,
   reach: ReachState,
@@ -524,10 +521,6 @@ async function resolveConversationDialectSpecialists(
   const visible = filterAgentVisibleSources(connections.describe());
   const dbTypeById = new Map(visible.map((c) => [c.id, c.dbType]));
   const pluginModules = pluginDialectModules();
-
-  // Connection-based fallback: each visible connection stands as its own group.
-  const connectionGroups = (): DialectSpecialistGroup[] =>
-    visible.map((c) => ({ group: c.id, dbType: c.dbType }));
 
   let groups: DialectSpecialistGroup[];
   if (orgId) {
@@ -540,18 +533,19 @@ async function resolveConversationDialectSpecialists(
           grp.members.map((m) => dbTypeById.get(m)).find((t) => t !== undefined);
         if (dbType) resolved.push({ group: grp.id, dbType });
       }
-      // An empty reachable set (no groups, or none mapping to a known engine)
-      // falls back so a single-connection workspace still gets its module.
-      groups = resolved.length > 0 ? resolved : connectionGroups();
+      // Compose exactly the reachable set — empty ⇒ no dialect section, matching
+      // the Source catalog. NO fan-out to every visible connection here.
+      groups = resolved;
     } catch (err) {
       log.warn(
         { err: err instanceof Error ? err.message : String(err), orgId },
-        "Dialect specialists: reach resolution failed — falling back to visible connections",
+        "Dialect specialists: reach resolution failed — composing no dialect section (fail closed)",
       );
-      groups = connectionGroups();
+      groups = [];
     }
   } else {
-    groups = connectionGroups();
+    // No workspace: each visible connection is its own group-of-one.
+    groups = visible.map((c) => ({ group: c.id, dbType: c.dbType }));
   }
 
   return composeDialectSpecialists(groups, pluginModules);
@@ -1721,7 +1715,8 @@ export async function runAgent({
   // #4515 — the dialect-specialist section: engine expertise for the groups in
   // scope, composed once per turn keyed by dbType and attributed per group. Uses
   // the SAME reach state as the Source catalog so the modules and the menu
-  // describe the same reachable set. Fail-soft (empty string on any hiccup).
+  // describe the same reachable set (a reach failure fails closed to no section,
+  // logged — see resolveConversationDialectSpecialists).
   const dialectSpecialists = await resolveConversationDialectSpecialists(
     orgId,
     atlasMode,

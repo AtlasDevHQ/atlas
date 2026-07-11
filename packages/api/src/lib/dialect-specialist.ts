@@ -20,8 +20,9 @@
  *   guidance is already written in, so its module is a short orientation; the
  *   others are framed as "differences from PostgreSQL".
  * - **Plugins** ship a module alongside their datasource capability via the
- *   existing `dialect` field on `AtlasDatasourcePlugin` (surfaced as
- *   {@link PluginDialectModule} through `getDialectHints()`), so a plugin adds
+ *   existing `dialect` field on `AtlasDatasourcePlugin` (projected into
+ *   {@link PluginDialectModule} by `pluginDialectModules()` in
+ *   `lib/plugins/tools.ts`, which wraps `getDialectHints()`), so a plugin adds
  *   engine expertise for a new `dbType` with **no core change**. A plugin
  *   module for a `dbType` takes precedence over the core module for that same
  *   `dbType` — the plugin owns its engine and may carry richer, version-pinned
@@ -35,10 +36,11 @@
  */
 
 /**
- * Display names for known engines — the single source of truth for how a
- * `dbType` is spelled in a specialist heading (and reused by the wizard enrich
- * pass for its "valid <dialect> SQL" instruction). Unknown / plugin `dbType`s
- * fall through to a capitalize fallback in {@link dialectDisplayName}.
+ * Display names for known engines — the source of truth for how a `dbType` is
+ * spelled in a specialist heading, in the agent's multi-source listing
+ * (`agent.ts`'s `dialectName` delegates here), and in the wizard enrich pass's
+ * "valid <dialect> SQL" instruction. Unknown / plugin `dbType`s fall through to
+ * a capitalize fallback in {@link dialectDisplayName}.
  */
 const DIALECT_DISPLAY_NAMES: Record<string, string> = {
   postgres: "PostgreSQL",
@@ -94,24 +96,32 @@ const CLICKHOUSE_MODULE = `This datasource uses the ClickHouse SQL dialect. Key 
 - Do not add \`FORMAT\` clauses — the adapter handles output format automatically.
 - ClickHouse is column-oriented — avoid \`SELECT *\` on wide tables; project only the columns you need.`;
 
-/**
- * The core-shipped dialect specialist modules, keyed by `dbType`. Bodies carry
- * NO heading — {@link composeDialectSpecialists} generates
- * `## SQL Dialect: <name>` so single- and multi-group prompts render
- * consistently.
- */
-export const CORE_DIALECT_SPECIALISTS: Readonly<Record<string, string>> = {
-  postgres: POSTGRES_MODULE,
-  mysql: MYSQL_MODULE,
-  clickhouse: CLICKHOUSE_MODULE,
-};
-
 /** The `dbType`s core ships a specialist for, in display order. */
 export const CORE_DIALECT_SPECIALIST_DBTYPES = [
   "postgres",
   "mysql",
   "clickhouse",
 ] as const;
+
+/** A `dbType` core ships a specialist module for. */
+export type CoreDialectDbType = (typeof CORE_DIALECT_SPECIALIST_DBTYPES)[number];
+
+/**
+ * The core-shipped dialect specialist modules, keyed by `dbType`. Bodies carry
+ * NO heading — {@link composeDialectSpecialists} generates
+ * `## SQL Dialect: <name>` so single- and multi-group prompts render
+ * consistently.
+ *
+ * Keyed by {@link CoreDialectDbType} (derived from
+ * {@link CORE_DIALECT_SPECIALIST_DBTYPES}) so the Record's keys and the tuple
+ * can never drift — adding a module without listing its dbType (or vice versa)
+ * fails to compile, mirroring `answer-styles.ts`'s `ANSWER_STYLE_ADDENDA`.
+ */
+export const CORE_DIALECT_SPECIALISTS: Readonly<Record<CoreDialectDbType, string>> = {
+  postgres: POSTGRES_MODULE,
+  mysql: MYSQL_MODULE,
+  clickhouse: CLICKHOUSE_MODULE,
+};
 
 /**
  * A plugin-shipped dialect module, keyed by the engine it describes. Sourced
@@ -154,9 +164,14 @@ export function resolveDialectSpecialist(
   if (pluginMatch) {
     return { dbType, source: "plugin", module: pluginMatch.module };
   }
-  const coreModule = CORE_DIALECT_SPECIALISTS[dbType];
-  if (coreModule !== undefined) {
-    return { dbType, source: "core", module: coreModule };
+  // `dbType` is the open engine string; narrow to a core key via `Object.hasOwn`
+  // before indexing the tuple-keyed Record (no unsafe cast).
+  if (Object.hasOwn(CORE_DIALECT_SPECIALISTS, dbType)) {
+    return {
+      dbType,
+      source: "core",
+      module: CORE_DIALECT_SPECIALISTS[dbType as CoreDialectDbType],
+    };
   }
   return undefined;
 }

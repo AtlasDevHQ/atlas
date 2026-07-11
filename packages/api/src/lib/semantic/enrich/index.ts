@@ -232,10 +232,11 @@ export async function enrichEntityYaml(
   // #4515 — the display name AND the engine-specific specialist module both come
   // from the one dialect-specialist registry (`lib/dialect-specialist.ts`), the
   // same modules the agent conversation composes — so the enrich pass is
-  // engine-aware, not merely MySQL-vs-Postgres. A plugin engine (e.g. ClickHouse)
-  // resolves its module (plugin > core); an unknown engine composes cleanly with
-  // no module, just the display name. `pluginDialectModules()` is empty in the
-  // file-based CLI (no plugins wired), so that path resolves core modules only.
+  // engine-aware, not merely MySQL-vs-Postgres. A plugin-only engine (e.g.
+  // BigQuery) resolves its plugin module (plugin > core); an unknown engine
+  // composes cleanly with no module, just the display name.
+  // `pluginDialectModules()` is empty in the file-based CLI (no plugins wired),
+  // so that path resolves core modules only.
   const dialect = dbType ? dialectDisplayName(dbType) : "PostgreSQL";
   const specialist = dbType
     ? resolveDialectSpecialist(dbType, pluginDialectModules())?.module

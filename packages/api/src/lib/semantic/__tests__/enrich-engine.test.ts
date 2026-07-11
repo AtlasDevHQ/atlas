@@ -250,6 +250,31 @@ describe("enrichEntityYaml (in-memory primitive, #3236)", () => {
     expect(prompt).toContain("valid PostgreSQL");
     expect(prompt).not.toContain("valid MySQL");
   });
+
+  // #4515 — the enrich pass reuses the dialect-specialist registry, so the
+  // engine's specialist module (not just its display name) rides in the prompt.
+  it("injects the engine's dialect-specialist module for the connection's engine (MySQL)", async () => {
+    await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never, undefined, "mysql");
+    const prompt = mockGenerateText.mock.calls.at(-1)?.[0]?.prompt as string;
+    expect(prompt).toContain("Engine-specific SQL guidance for this MySQL datasource");
+    // A signature line of the MySQL module body reaches the prompt.
+    expect(prompt).toContain("col >= '2024-01-01' AND col < '2025-01-01'");
+  });
+
+  it("injects the ClickHouse specialist module for a clickhouse datasource", async () => {
+    await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never, undefined, "clickhouse");
+    const prompt = mockGenerateText.mock.calls.at(-1)?.[0]?.prompt as string;
+    expect(prompt).toContain("Engine-specific SQL guidance for this ClickHouse datasource");
+    expect(prompt).toContain("toStartOfMonth");
+  });
+
+  it("an unknown engine composes cleanly — no specialist module block", async () => {
+    await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never, undefined, "sparksql");
+    const prompt = mockGenerateText.mock.calls.at(-1)?.[0]?.prompt as string;
+    expect(prompt).not.toContain("Engine-specific SQL guidance");
+    // The display name still flows through for the "valid <dialect>" instruction.
+    expect(prompt).toContain("valid Sparksql");
+  });
 });
 
 describe("enrichEntity (per-table primitive)", () => {

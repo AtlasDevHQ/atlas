@@ -163,8 +163,15 @@ async function resolveConnectionCoverage(
         coverage,
       };
     }
-    // A baseline is recorded but its payload is unreadable (corrupt/non-array).
-    // Report honestly rather than pretending 100% coverage.
+    // A baseline is recorded but its payload is unreadable (corrupt/non-array) —
+    // a genuine data-integrity anomaly. Log it (the state row and the payload
+    // column disagree; a re-profile won't self-heal because a truthy
+    // `state.baseline` memoizes `ensureConnectionBaseline` — recovery needs an
+    // operator), and report honestly rather than pretending 100% coverage.
+    log.warn(
+      { installId: connection.installId, group: connection.groupId },
+      "Coverage view: baseline is recorded but its stored payload is unreadable",
+    );
     return { ...base, status: "error", error: "The stored baseline profile is unreadable.", freshness: null, coverage: null };
   }
 
@@ -172,26 +179,40 @@ async function resolveConnectionCoverage(
     return { ...base, status: "error", error: state.baselineError, freshness: null, coverage: null };
   }
 
-  // No baseline and no recorded failure ⇒ never profiled. Trigger the lazy
-  // backfill in the background and report a loading state; the client re-fetches
-  // until the baseline (or a baseline_error) lands. `dbType` is required to
-  // resolve the live connection — skip the trigger (still "profiling") if unknown,
-  // so the enumeration can't wedge on a malformed row.
-  if (connection.dbType) {
-    void deps
-      .ensureBaseline({
-        orgId,
-        installId: connection.installId,
-        connectionGroupId: connection.groupId,
-        dbType: connection.dbType,
-      })
-      .catch((err) =>
-        log.warn(
-          { err: err instanceof Error ? err.message : String(err), installId: connection.installId },
-          "Coverage view: lazy baseline backfill failed to start",
-        ),
-      );
+  // No baseline and no recorded failure ⇒ never profiled. A profilable connection
+  // needs its `dbType` to resolve the live connection — a null one is
+  // unprofilable-by-construction (a malformed `config->>'db_type'`), NOT a loading
+  // state: reporting `profiling` there would spin the client's poll forever with
+  // no root-cause signal. Surface it as an honest, actionable error + log instead.
+  if (!connection.dbType) {
+    log.warn(
+      { installId: connection.installId, group: connection.groupId },
+      "Coverage view: connection has no db_type — cannot resolve a live connection to profile",
+    );
+    return {
+      ...base,
+      status: "error",
+      error: "This connection is missing a database type, so its schema can't be profiled. Reconnect it to set the type.",
+      freshness: null,
+      coverage: null,
+    };
   }
+
+  // Trigger the lazy backfill in the background and report a loading state; the
+  // client re-fetches until the baseline (or a baseline_error) lands.
+  void deps
+    .ensureBaseline({
+      orgId,
+      installId: connection.installId,
+      connectionGroupId: connection.groupId,
+      dbType: connection.dbType,
+    })
+    .catch((err) =>
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), installId: connection.installId },
+        "Coverage view: lazy baseline backfill failed to start",
+      ),
+    );
   return { ...base, status: "profiling", error: null, freshness: null, coverage: null };
 }
 

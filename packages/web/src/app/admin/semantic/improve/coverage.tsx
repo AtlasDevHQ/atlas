@@ -186,10 +186,11 @@ export function CoverageTableRow({
 }
 
 /**
- * One column chip. A covered column is a button that launches the column anchor;
- * a PK or uncovered column is a muted, non-interactive marker (an uncovered
- * column is refined by covering the table's other columns or enriched, never an
- * "add entity" amendment — ADR-0032).
+ * One column chip. A *covered* column is a button that launches the column
+ * anchor; every other column — uncovered, or a PK with no dimension — is a muted,
+ * non-interactive marker. An uncovered column is covered by adding its dimension
+ * to the entity that already exists (a refinement), or via enrich — never an
+ * "add entity" amendment (ADR-0032).
  */
 function CoverageColumnChip({
   col,

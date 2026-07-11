@@ -174,8 +174,9 @@ function computeTableCoverage(
 /**
  * Compute the coverage matrix for one connection's physical schema against the
  * semantic store. `entities` should already be scoped to the connection's group
- * (the loader filters); `computeCoverage` matches purely by table name. Tables
- * are returned in the profile's order, so the view is stable across renders.
+ * (the loader filters); `computeCoverage` re-applies no group scoping — it matches
+ * each profile to an entity by table/name identity alone (see `findModelingEntity`).
+ * Tables are returned in the profile's order, so the view is stable across renders.
  */
 export function computeCoverage(
   profiles: readonly TableProfile[],

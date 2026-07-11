@@ -103,6 +103,45 @@ describe("ConnectionCoverageSection — covered column launches the anchor (#452
     fireEvent.click(getByText("amount"));
     expect(onColumnAnchor).not.toHaveBeenCalled();
   });
+
+  test("a covered column in the flat/default group launches with group null (#4521)", () => {
+    const onColumnAnchor = mock((_req: ColumnAnchorRequest, _label: string) => {});
+    const flat = connection({
+      coverage: {
+        tables: [table({ group: null })],
+        summary: { coveredTables: 0, partialTables: 1, uncoveredTables: 0, totalTables: 1 },
+      },
+    });
+    const { getByText } = render(
+      createElement(ConnectionCoverageSection, { connection: flat, onColumnAnchor, disabled: false }),
+    );
+    fireEvent.click(getByText("orders"));
+    fireEvent.click(getByText("status"));
+    expect(onColumnAnchor.mock.calls[0]).toEqual([
+      { entity: "orders", column: "status", group: null },
+      "orders.status",
+    ]);
+  });
+});
+
+describe("ConnectionCoverageSection — all three states + summary (AC1)", () => {
+  test("renders the covered state badge and the summary chip counts", () => {
+    const ready = connection({
+      coverage: {
+        tables: [table({ table: "customers", state: "covered", coveredColumnCount: 2, coverableColumnCount: 2 })],
+        summary: { coveredTables: 3, partialTables: 2, uncoveredTables: 1, totalTables: 6 },
+      },
+    });
+    const { getByText } = render(
+      createElement(ConnectionCoverageSection, { connection: ready, onColumnAnchor: () => {}, disabled: false }),
+    );
+    // Summary chips reflect the three states (AC1).
+    expect(getByText("3 covered")).toBeDefined();
+    expect(getByText("2 partial")).toBeDefined();
+    expect(getByText("1 uncovered")).toBeDefined();
+    // The table's own covered badge renders.
+    expect(getByText("covered")).toBeDefined();
+  });
 });
 
 describe("ConnectionCoverageSection — uncovered routes to enrich, never an amendment (ADR-0032)", () => {

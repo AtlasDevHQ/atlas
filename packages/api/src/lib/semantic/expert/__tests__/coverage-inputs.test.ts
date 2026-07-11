@@ -181,6 +181,24 @@ describe("loadCoverageOverview", () => {
     expect(overview.connections[0].coverage).toBeNull();
   });
 
+  it("reports a never-profiled connection with no db_type as an error, not perpetual profiling", async () => {
+    const ensureBaseline = mock(async () => undefined);
+    const overview = await loadCoverageOverview("org1", NOW, {
+      ...WITH_DB,
+      listConnections: async () => [{ installId: "i5", groupId: "grp_x", dbType: null }],
+      loadEntities: async () => [],
+      getState: async () => null, // never profiled
+      getBaseline: async () => null,
+      ensureBaseline,
+    });
+    // A null dbType can't resolve a live connection — surface it, don't spin the
+    // client's poll forever on a `profiling` that can never resolve.
+    expect(overview.profiling).toBe(false);
+    expect(overview.connections[0].status).toBe("error");
+    expect(overview.connections[0].error).toContain("missing a database type");
+    expect(ensureBaseline).not.toHaveBeenCalled();
+  });
+
   it("returns an empty overview with no org context", async () => {
     const overview = await loadCoverageOverview(null, NOW, {
       listConnections: async () => {

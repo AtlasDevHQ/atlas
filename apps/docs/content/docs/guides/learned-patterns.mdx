@@ -15,10 +15,11 @@ Learned patterns require an internal database (`DATABASE_URL`). Without one, cap
 
 A **learned query pattern** is the durable unit of learned query knowledge: a normalized SQL shape captured from a successful live execution, scoped to **one workspace and one connection group**. Because a pattern is scoped this way, one tenant's — or one datasource group's — patterns never leak into another's session.
 
-Patterns are proposed by:
+A pattern is captured automatically whenever **the agent** answers a question with SQL that runs cleanly during a conversation — that is the live source of learned patterns.
 
-- **The agent**, during a conversation, whenever a query it ran succeeds.
-- **The `atlas-operator learn` CLI**, which analyzes the audit log and proposes patterns (and semantic-layer improvements) in bulk. See [operator subcommands](/reference/cli).
+<Callout type="info">
+Don't confuse this with the [`atlas-operator learn`](/reference/cli#learn) CLI, which is a separate offline loop: it reads the audit log and proposes *semantic-layer* YAML improvements and query suggestions — it does **not** create learned patterns. On the admin surface, a `CLI` source label marks patterns brought in through an earlier operator-import path.
+</Callout>
 
 Every pattern carries an **evidence trail**: how many times the identical shape has been seen (`repetitionCount`), a confidence score derived from that repetition, and a rolling-mean execution time so Atlas knows which patterns are fast.
 
@@ -35,8 +36,8 @@ A pattern moves `pending → approved | rejected`. There are **two independent r
 
 | Stage | What it means |
 |-------|---------------|
-| **Captured** | A successful query's shape is written to the pattern store. A shape seen only once sits below the review threshold until it repeats. |
-| **Pending** | Captured and awaiting a decision. Visible in **Admin → Learned Patterns**. |
+| **Captured** | A successful query's shape is written to the pattern store as a low-confidence `pending` row. An identical repeat increments that row rather than adding a new one. |
+| **Pending** | Captured and awaiting a decision — visible in **Admin → Learned Patterns** from the first capture. A shape seen only once is reviewable right away; it simply can't clear the *machine* promotion gates (confidence and repetition) until it repeats. |
 | **Approved** | Injectable. Either a human approved it (see [Approval](#approval-an-eligibility-bypass)) or the workspace's auto-promotion dial promoted it (see [Auto-promotion](#auto-promotion-the-workspace-dial)). |
 | **Rejected** | A human declined it. Rejected patterns are frozen — never injected, never auto-promoted. |
 | **Injected** | Eligible **and** relevant to the current turn, so it was rendered into the agent's prompt (see [Injection](#injection-the-payoff)). |

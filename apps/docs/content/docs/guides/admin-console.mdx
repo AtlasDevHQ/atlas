@@ -396,12 +396,12 @@ Settings overrides require an internal database (`DATABASE_URL`). Without it, bo
 **Route:** `/admin/learned-patterns`
 
 <Callout type="info">
-Requires an internal database (`DATABASE_URL`). Patterns are proposed by the agent during conversations or by the `atlas-operator learn` CLI command. For the concepts behind this page — what approval means, the auto-promotion dial, and how patterns reach the agent — see the [Learned Query Patterns](/guides/learned-patterns) guide.
+Requires an internal database (`DATABASE_URL`). Query patterns are captured from the agent's successful queries during conversations. (The `atlas-operator learn` CLI is a separate offline loop for semantic-layer improvements and query suggestions — see the [CLI reference](/reference/cli#learn) — not learned patterns.) For the concepts behind this page — what approval means, the auto-promotion dial, and how patterns reach the agent — see the [Learned Query Patterns](/guides/learned-patterns) guide.
 </Callout>
 
 Review, approve, and manage the query patterns the agent has learned. **Approving a pattern makes it injectable immediately, regardless of its confidence** — approval is a grant of eligibility, not a change to the confidence score.
 
-- **Stats strip** — Live counts of pending, approved, rejected, and total patterns
+- **Stats strip** — Current counts of pending, approved, rejected, and total patterns
 - **Status filter** — All / Pending / Approved / Rejected
 - **Entity filter** — Filter by source entity (table)
 - **Confidence filter** — Restrict to a confidence range (e.g. review the weakest evidence first)
@@ -414,7 +414,7 @@ Review, approve, and manage the query patterns the agent has learned. **Approvin
 - **Confidence** — the machine's evidence meter, shown as a progress bar
 - **Avg latency** — the pattern's rolling-mean execution time
 - **Seen** — how many times the identical shape has been observed
-- **Source** — `Agent`, `CLI`, or `Expert`, depending on what proposed it
+- **Source** — `Agent` for a pattern the agent captured; `CLI` marks a pattern imported through an earlier operator path
 - **Created** — when the pattern was first captured
 
 **Detail sheet** — Click any row to open a side panel with the full SQL pattern, metadata (entity, source, confidence, times seen, avg latency, timestamps), review history (who reviewed and when), and the source queries that originated the pattern. Approve, reject, and delete are available here too.

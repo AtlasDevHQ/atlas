@@ -701,12 +701,12 @@ The first three plus `ATLAS_LEARN_PROMOTE_DECAY_ENABLED` are the self-host fallb
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_LEARN_CONFIDENCE_THRESHOLD` | `0.7` | Minimum confidence score (0–1) for a learned pattern to be eligible for retrieval. Also the confidence gate for nightly auto-promotion |
+| `ATLAS_LEARN_CONFIDENCE_THRESHOLD` | `0.7` | Minimum confidence score (0–1) for a learned pattern to be eligible for retrieval. Also the confidence gate for auto-promotion |
 | `ATLAS_LEARN_RETRIEVAL_TURNS` | `3` | Number of trailing user turns assembled into the learned-pattern retrieval query. Lets a keyword-less follow-up ("now break that down by region") still match patterns via the keywords of earlier turns |
-| `ATLAS_LEARN_LATENCY_BUDGET_MS` | `5000` | Patterns whose rolling-mean execution time stays at or under this budget rank normally in retrieval; slower patterns are down-weighted (never excluded). Also the latency ceiling for nightly auto-promotion |
+| `ATLAS_LEARN_LATENCY_BUDGET_MS` | `5000` | Patterns whose rolling-mean execution time stays at or under this budget rank normally in retrieval; slower patterns are down-weighted (never excluded). Also the latency ceiling for auto-promotion |
 | `ATLAS_LEARN_PROMOTE_DECAY_ENABLED` | `false` | Self-host default for the per-workspace auto-promotion dial: auto-promote a workspace's high-confidence, fast, frequently-seen pending patterns to approved and demote stale auto-promoted ones. Workspace-scoped and hot-reloaded — any workspace can override it from **Admin → Settings** with no restart |
 | `ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS` | `24` | Hours between auto-promote/decay runs. Platform-scoped; requires a restart |
-| `ATLAS_LEARN_PROMOTE_MIN_REPETITIONS` | `5` | Minimum times a pending pattern must have been seen before the nightly job will auto-promote it (alongside the confidence and latency gates) |
+| `ATLAS_LEARN_PROMOTE_MIN_REPETITIONS` | `5` | Minimum times a pending pattern must have been seen before the auto-promote job will promote it (alongside the confidence and latency gates) |
 | `ATLAS_LEARN_DECAY_UNSEEN_DAYS` | `30` | An auto-promoted pattern unseen for longer than this many days is demoted back to pending. Human-approved patterns are never auto-demoted |
 
 ---

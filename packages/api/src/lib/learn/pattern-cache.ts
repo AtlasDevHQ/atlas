@@ -25,6 +25,7 @@ import {
   getLatencyBudgetMs,
 } from "./learn-settings";
 import { extractKeywords, perfWeight, rankPatterns, type ScoredPattern } from "./pattern-ranking";
+import { selectEligiblePatterns } from "./eligible-set";
 import { getCachedPatterns, invalidatePatternCache, _resetPatternCache } from "./pattern-cache-store";
 
 // Public barrel — these moved into focused modules during the #3721 split (and
@@ -147,15 +148,18 @@ export async function getRelevantPatterns(
   const threshold = getConfidenceThreshold(orgId);
   const allPatterns = await getCachedPatterns(orgId, connectionGroupId);
 
-  // Filter by confidence threshold
-  const aboveThreshold = allPatterns.filter((p) => p.confidence >= threshold);
-  if (aboveThreshold.length === 0) return [];
+  // Select the eligible set: human-approved patterns bypass the confidence gate
+  // (approval is an eligibility grant, not a confidence write); machine-promoted
+  // patterns must clear the threshold. Ordering (human-approved first, then
+  // confidence, then last-observed) mirrors the SQL fetch so the two never drift.
+  const eligible = selectEligiblePatterns(allPatterns, threshold);
+  if (eligible.length === 0) return [];
 
   // Score by keyword relevance, down-weighting (not excluding) slow patterns.
   const questionKeywords = extractKeywords(question);
   if (questionKeywords.size === 0) return [];
 
-  const scored = rankPatterns(aboveThreshold, questionKeywords, {
+  const scored = rankPatterns(eligible, questionKeywords, {
     latencyBudgetMs: getLatencyBudgetMs(orgId),
     maxPatterns,
   });

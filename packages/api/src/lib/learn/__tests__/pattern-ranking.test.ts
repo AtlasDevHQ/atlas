@@ -15,6 +15,8 @@ function row(over: Partial<ApprovedPatternRow> & { id: string }): ApprovedPatter
     source_entity: "companies",
     confidence: 0.9,
     avg_duration_ms: null,
+    auto_promoted: true,
+    last_seen_at: null,
     ...over,
   };
 }

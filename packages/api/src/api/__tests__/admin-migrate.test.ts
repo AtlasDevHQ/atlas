@@ -530,7 +530,26 @@ describe("importBundle — learned-pattern amendment identity (#4569)", () => {
     expect(p[11]).toBe(3);
   });
 
-  it("defaults a pre-#4569 bundle (no amendment fields) to a query pattern", async () => {
+  it("carries the human-approval flag (#4571) so the eligibility bypass survives import", async () => {
+    const { client, calls } = captureClient();
+    await importBundle(client, bundleWithPatterns([
+      {
+        patternSql: "SELECT COUNT(*) FROM orders",
+        description: "Order count",
+        sourceEntity: "orders",
+        confidence: 0.1, // below threshold — only survives injection via the bypass
+        status: "approved",
+        autoPromoted: false,
+      },
+    ]), "org-test");
+
+    const insert = calls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insert).toBeDefined();
+    // auto_promoted is the last INSERT column (param $13 → index 12).
+    expect(insert!.params[12]).toBe(false);
+  });
+
+  it("defaults a pre-#4569 bundle (no amendment fields) to a query pattern, failing closed on auto_promoted (#4571)", async () => {
     const { client, calls } = captureClient();
     await importBundle(client, bundleWithPatterns([
       {
@@ -551,5 +570,8 @@ describe("importBundle — learned-pattern amendment identity (#4569)", () => {
     expect(p[9]).toBeNull(); // reviewed_by
     expect(p[10]).toBeNull(); // reviewed_at
     expect(p[11]).toBe(1); // repetition_count default
+    // A pre-#4571 bundle omits auto_promoted → fail closed to machine/gated
+    // (true), so an old bundle can never grant an unearned confidence bypass.
+    expect(p[12]).toBe(true);
   });
 });

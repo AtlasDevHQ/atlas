@@ -107,6 +107,16 @@ export interface ExportedLearnedPattern {
   reviewedAt?: string | null;
   /** Observed repetition count — pattern/amendment strength; absent ⇒ 1. */
   repetitionCount?: number;
+  /**
+   * Which road reached `status = 'approved'` (#4571): `false` = a human approved
+   * it, `true` = the nightly auto-promote job did. Carried so the injection
+   * eligibility bypass survives workspace migration — a human-approved pattern
+   * stays human-approved (injectable regardless of confidence), a machine-promoted
+   * one stays confidence-gated. Optional for backward-compat with pre-#4571
+   * bundles; the importer fails closed on absence (treats it as machine/gated) so
+   * an old bundle can never grant an unearned bypass.
+   */
+  autoPromoted?: boolean;
 }
 
 /** Exported setting key/value pair. */

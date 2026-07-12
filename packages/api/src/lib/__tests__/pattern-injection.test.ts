@@ -9,6 +9,11 @@ let mockApprovedPatterns: Array<{
   description: string | null;
   source_entity: string | null;
   confidence: number;
+  // #4571 — the eligible-set decision fields. Optional so existing fixtures that
+  // omit them read as machine-promoted (the gated road), which is the safe
+  // default; the bypass tests set `auto_promoted: false` explicitly.
+  auto_promoted?: boolean;
+  last_seen_at?: string | null;
 }> = [];
 
 let mockConfigLearn: { confidenceThreshold: number; retrievalTurns?: number } | undefined = {
@@ -446,6 +451,119 @@ describe("getRelevantPatterns", () => {
     expect(results.length).toBe(2);
     // Pattern 2 has more keyword overlap (revenue, region, companies)
     expect(results[0].patternSql).toContain("region");
+  });
+});
+
+// #4571 — the payoff seam: approval is an eligibility bypass, so a human-approved
+// pattern injects on the next turn regardless of confidence, while the confidence
+// gate still holds for machine-promoted rows. Exercised through the same cache →
+// getRelevantPatterns read path the agent uses.
+describe("approval is an eligibility bypass, not a confidence write (#4571)", () => {
+  beforeEach(() => {
+    _resetPatternCache();
+    mockApprovedPatterns = [];
+    mockConfigLearn = { confidenceThreshold: 0.7 };
+    mockGetApprovedPatternsError = null;
+  });
+
+  test("a human-approved low-confidence pattern is injectable on the next turn", async () => {
+    // Confidence 0.1 is far below the 0.7 threshold, but a human approved it
+    // (auto_promoted = false) → it must still surface.
+    mockApprovedPatterns = [
+      {
+        id: "1",
+        org_id: null,
+        pattern_sql: "SELECT SUM(revenue) FROM companies",
+        description: "Total revenue",
+        source_entity: "companies",
+        confidence: 0.1,
+        auto_promoted: false,
+      },
+    ];
+
+    const results = await getRelevantPatterns(null, "What is the total revenue?");
+    expect(results.length).toBe(1);
+    expect(results[0].patternSql).toContain("revenue");
+  });
+
+  test("a machine-promoted low-confidence pattern still gates on confidence", async () => {
+    // Same confidence 0.1, but this one reached approved via the nightly job
+    // (auto_promoted = true) → the gate still excludes it.
+    mockApprovedPatterns = [
+      {
+        id: "1",
+        org_id: null,
+        pattern_sql: "SELECT SUM(revenue) FROM companies",
+        description: "Total revenue",
+        source_entity: "companies",
+        confidence: 0.1,
+        auto_promoted: true,
+      },
+    ];
+
+    const results = await getRelevantPatterns(null, "What is the total revenue?");
+    expect(results.length).toBe(0);
+  });
+
+  test("approving flips eligibility across a cache invalidation (status flip → injectable)", async () => {
+    // Starts machine-promoted + below threshold → not injectable.
+    mockApprovedPatterns = [
+      {
+        id: "1",
+        org_id: "org-1",
+        pattern_sql: "SELECT SUM(revenue) FROM companies",
+        description: "Total revenue",
+        source_entity: "companies",
+        confidence: 0.2,
+        auto_promoted: true,
+      },
+    ];
+    const before = await getRelevantPatterns("org-1", "What is the total revenue?");
+    expect(before.length).toBe(0);
+
+    // A human approves it: auto_promoted → false (confidence UNCHANGED).
+    mockApprovedPatterns = [{ ...mockApprovedPatterns[0], auto_promoted: false }];
+
+    // Negative control: WITHOUT invalidation the stale cached (machine, gated)
+    // copy is still served — this makes the invalidation load-bearing below.
+    const stale = await getRelevantPatterns("org-1", "What is the total revenue?");
+    expect(stale.length).toBe(0);
+
+    // The approve path invalidates the org cache → the next read reflects the flip.
+    invalidatePatternCache("org-1");
+
+    const after = await getRelevantPatterns("org-1", "What is the total revenue?");
+    expect(after.length).toBe(1);
+    expect(after[0].patternSql).toContain("revenue");
+  });
+
+  test("a human-approved pattern survives a library larger than the old 100-row cap", async () => {
+    // 120 higher-confidence machine rows would have pushed a low-confidence human
+    // pattern past the old confidence-DESC 100-row pre-cut. The eligible set keeps
+    // it (all rows keyword-match, so relevance doesn't hide the regression).
+    const machineRows = Array.from({ length: 120 }, (_, i) => ({
+      id: `m${i}`,
+      org_id: null,
+      pattern_sql: "SELECT revenue FROM companies",
+      description: "revenue report",
+      source_entity: "companies",
+      confidence: 0.9,
+      auto_promoted: true,
+    }));
+    const humanLow = {
+      id: "human-low",
+      org_id: null,
+      pattern_sql: "SELECT SUM(revenue) FROM companies GROUP BY region",
+      description: "revenue by region",
+      source_entity: "companies",
+      confidence: 0.01,
+      auto_promoted: false,
+    };
+    mockApprovedPatterns = [...machineRows, humanLow];
+
+    // Ask for enough patterns that the human one can't be crowded out by relevance.
+    const results = await getRelevantPatterns(null, "revenue by region", null, 200);
+    expect(results.some((r) => r.patternSql.includes("GROUP BY region"))).toBe(true);
   });
 });
 

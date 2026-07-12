@@ -157,6 +157,7 @@ describe("exportWorkspaceBundle", () => {
           source_entity: "users",
           confidence: 0.9,
           status: "approved",
+          auto_promoted: false,
         },
       ],
     };
@@ -166,7 +167,28 @@ describe("exportWorkspaceBundle", () => {
     expect(bundle.learnedPatterns).toHaveLength(1);
     expect(bundle.learnedPatterns[0].patternSql).toBe("SELECT COUNT(*) FROM users");
     expect(bundle.learnedPatterns[0].confidence).toBe(0.9);
+    // Human-approval provenance carried so the eligibility bypass survives the
+    // region migration (#4571).
+    expect(bundle.learnedPatterns[0].autoPromoted).toBe(false);
     expect(bundle.manifest.counts.learnedPatterns).toBe(1);
+  });
+
+  it("carries the machine-promoted flag (#4571) so a migrated pattern stays confidence-gated", async () => {
+    mockPoolQueryResults["FROM learned_patterns"] = {
+      rows: [
+        {
+          pattern_sql: "SELECT COUNT(*) FROM orders",
+          description: "Order count",
+          source_entity: "orders",
+          confidence: 0.9,
+          status: "approved",
+          auto_promoted: true,
+        },
+      ],
+    };
+
+    const bundle = await exportWorkspaceBundle("org-1");
+    expect(bundle.learnedPatterns[0].autoPromoted).toBe(true);
   });
 
   it("exports org-scoped settings", async () => {

@@ -116,7 +116,7 @@ export async function exportWorkspaceBundle(
 
   // --- 3. Learned patterns ---
   const patternResult = await pool.query(
-    `SELECT pattern_sql, description, source_entity, confidence, status
+    `SELECT pattern_sql, description, source_entity, confidence, status, auto_promoted
      FROM learned_patterns WHERE org_id = $1
      ORDER BY created_at ASC`,
     [orgId],
@@ -128,6 +128,9 @@ export async function exportWorkspaceBundle(
     sourceEntity: (p.source_entity as string | null) ?? null,
     confidence: p.confidence as number,
     status: p.status as ExportedLearnedPattern["status"],
+    // Human vs machine approval road (#4571) — carried so the injection
+    // eligibility bypass survives region migration. Column is NOT NULL.
+    autoPromoted: Boolean(p.auto_promoted),
   }));
 
   // --- 4. Org-scoped settings ---

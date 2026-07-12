@@ -269,8 +269,8 @@ export async function importBundle(
     // already-decided row (its applied YAML travels in this same bundle's
     // `semantic_entities`), the same way a DB restore would.
     await client.query(
-      `INSERT INTO learned_patterns (org_id, pattern_sql, description, source_entity, confidence, status, type, amendment_payload, connection_group_id, reviewed_by, reviewed_at, repetition_count)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      `INSERT INTO learned_patterns (org_id, pattern_sql, description, source_entity, confidence, status, type, amendment_payload, connection_group_id, reviewed_by, reviewed_at, repetition_count, auto_promoted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         orgId,
         pattern.patternSql,
@@ -284,6 +284,13 @@ export async function importBundle(
         pattern.reviewedBy ?? null,
         pattern.reviewedAt ?? null,
         pattern.repetitionCount ?? 1,
+        // Human vs machine approval road (#4571): carried so the injection
+        // eligibility bypass survives migration. A human-approved pattern
+        // (`false`) stays injectable regardless of confidence; a machine one
+        // (`true`) stays confidence-gated. Fail closed on absence — a pre-#4571
+        // bundle can't prove provenance, so default to machine/gated (`true`)
+        // rather than granting an unearned bypass.
+        pattern.autoPromoted ?? true,
       ],
     );
     result.learnedPatterns.imported++;

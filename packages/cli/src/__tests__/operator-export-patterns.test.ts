@@ -90,6 +90,7 @@ describe("atlas-operator export — learned-pattern projection (#4569)", () => {
         reviewed_by: "admin-1",
         reviewed_at: "2026-07-10T12:00:00Z",
         repetition_count: 3,
+        auto_promoted: false,
       },
     ];
 
@@ -102,6 +103,30 @@ describe("atlas-operator export — learned-pattern projection (#4569)", () => {
     expect(p.reviewedBy).toBe("admin-1");
     expect(p.reviewedAt).toBe("2026-07-10T12:00:00Z");
     expect(p.repetitionCount).toBe(3);
+    // Human-approved provenance carried so the eligibility bypass survives (#4571).
+    expect(p.autoPromoted).toBe(false);
+  });
+
+  it("carries the machine-promoted flag (#4571) so a migrated pattern stays confidence-gated", async () => {
+    learnedRows = [
+      {
+        pattern_sql: "SELECT COUNT(*) FROM orders",
+        description: "Order count",
+        source_entity: "orders",
+        confidence: 0.9,
+        status: "approved",
+        type: "query_pattern",
+        amendment_payload: null,
+        connection_group_id: null,
+        reviewed_by: "atlas-auto-promote",
+        reviewed_at: "2026-07-10T12:00:00Z",
+        repetition_count: 6,
+        auto_promoted: true,
+      },
+    ];
+
+    const bundle = await runExport();
+    expect(bundle.learnedPatterns[0].autoPromoted).toBe(true);
   });
 
   it("defaults a legacy row (null type / null payload) to a query pattern", async () => {

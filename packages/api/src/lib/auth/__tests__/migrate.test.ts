@@ -490,6 +490,12 @@ describe("migrateAuthTables", () => {
             // runs in every auth mode — must be in the already-applied set so
             // this "all applied" test still sees zero new migrations.
             { name: "0172_learned_patterns_identity.sql" },
+            // 0173 (#4573) — learned_pattern_injections: per-turn injection
+            // attribution substrate + per-pattern usage counts. Additive
+            // CREATE TABLE, runs in every auth mode — must be in the
+            // already-applied set so this "all applied" test sees zero new
+            // migrations.
+            { name: "0173_learned_pattern_injections.sql" },
           ],
         };
       }

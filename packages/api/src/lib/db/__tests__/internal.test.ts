@@ -12,6 +12,7 @@ import {
   closeInternalDB,
   internalQuery,
   internalExecute,
+  recordPatternInjections,
   queryEffect,
   migrateInternalDB,
   loadSavedConnections,
@@ -291,6 +292,57 @@ describe("internal DB module", () => {
       internalExecute("INSERT INTO audit_log (auth_mode) VALUES ($1)", ["none"]);
       await new Promise((r) => setTimeout(r, 10));
       // String error was handled gracefully — no exception propagated
+    });
+  });
+
+  describe("recordPatternInjections()", () => {
+    it("batches one fire-and-forget INSERT row per injected pattern (#4573)", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool, calls } = createMockPool();
+      _resetPool(pool);
+
+      recordPatternInjections([
+        { patternId: "pat-a", orgId: "org-1", connectionGroupId: "us-prod", conversationId: "conv-1", requestId: "req-1" },
+        { patternId: "pat-b", orgId: "org-1", connectionGroupId: null, conversationId: null, requestId: "req-1" },
+      ]);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(calls.queries.length).toBe(1);
+      const { sql, params } = calls.queries[0];
+      expect(sql).toContain("INSERT INTO learned_pattern_injections");
+      expect(sql).toContain("(pattern_id, org_id, connection_group_id, conversation_id, request_id)");
+      // Two 5-tuple placeholder groups, sequentially numbered.
+      expect(sql).toContain("($1, $2, $3, $4, $5)");
+      expect(sql).toContain("($6, $7, $8, $9, $10)");
+      // Params are the flattened records in order (nulls preserved, not defaulted).
+      expect(params).toEqual([
+        "pat-a", "org-1", "us-prod", "conv-1", "req-1",
+        "pat-b", "org-1", null, null, "req-1",
+      ]);
+    });
+
+    it("is a no-op for an empty batch (no query issued)", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool, calls } = createMockPool();
+      _resetPool(pool);
+
+      recordPatternInjections([]);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(calls.queries.length).toBe(0);
+    });
+
+    it("is a no-op when the internal DB is absent (no DATABASE_URL)", async () => {
+      delete process.env.DATABASE_URL;
+      const { pool, calls } = createMockPool();
+      _resetPool(pool);
+
+      // hasInternalDB() is false → returns before touching the pool, so a
+      // self-hosted deploy without an internal DB never errors on injection.
+      recordPatternInjections([
+        { patternId: "pat-a", orgId: null, connectionGroupId: null, conversationId: null, requestId: null },
+      ]);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(calls.queries.length).toBe(0);
     });
   });
 

@@ -14,7 +14,12 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
-import { LearnedPatternSchema, LearnedPatternsListResponseSchema } from "@useatlas/schemas";
+import {
+  LearnedPatternSchema,
+  LearnedPatternsListResponseSchema,
+  LEARNED_PATTERN_SORT_DIRECTIONS,
+  type LearnedPatternSortKey,
+} from "@useatlas/schemas";
 import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
 import { ErrorSchema, AuthErrorSchema, parsePagination, createIdParamSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -90,6 +95,29 @@ function orgFilter(
 
 const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
 
+// Whitelisted sort key (from the shared `LEARNED_PATTERN_SORT_KEYS` wire
+// vocabulary) → real DB column. The ORDER BY column name is only ever taken
+// from this whitelist — via `SORT_COLUMNS.get()`, which is
+// prototype-pollution-safe and returns `undefined` for anything unknown — never
+// from the raw `sort=` value, so a non-whitelisted sort key is rejected with
+// 400 and can never be interpolated into SQL. `avg_duration_ms` is nullable, so
+// the query sorts NULLS LAST in
+// both directions (rows without a latency measurement sink to the bottom rather
+// than jumping to the top), with a stable `id DESC` tiebreaker so pagination is
+// deterministic when the primary sort ties. The `satisfies Record<...>` makes a
+// missing/typo'd key a compile error; the cockpit binds the *other* side (its
+// map's values are typed `LearnedPatternSortKey`), so the two can't drift.
+const SORT_COLUMN_BY_KEY = {
+  confidence: "confidence",
+  repetition: "repetition_count",
+  latency: "avg_duration_ms",
+  created: "created_at",
+} as const satisfies Record<LearnedPatternSortKey, string>;
+const SORT_COLUMNS = new Map<string, string>(Object.entries(SORT_COLUMN_BY_KEY));
+const SORT_DIRECTIONS = new Map<string, "ASC" | "DESC">(
+  LEARNED_PATTERN_SORT_DIRECTIONS.map((d) => [d, d.toUpperCase() as "ASC" | "DESC"]),
+);
+
 // This route governs `type = 'query_pattern'` rows ONLY (#4569). Every handler
 // scopes its reads and writes to this predicate, so `semantic_amendment` rows
 // are invisible and untouchable here — their sole decide door is the improve
@@ -135,6 +163,8 @@ const listPatternsRoute = createRoute({
       source_entity: z.string().optional().openapi({ description: "Filter by source entity name" }),
       min_confidence: z.string().optional().openapi({ description: "Minimum confidence (0–1)" }),
       max_confidence: z.string().optional().openapi({ description: "Maximum confidence (0–1)" }),
+      sort: z.string().optional().openapi({ description: "Sort field: confidence, repetition, latency, created (default created). Non-whitelisted values are rejected with 400." }),
+      dir: z.string().optional().openapi({ description: "Sort direction: asc or desc (default desc)" }),
       limit: z.string().optional().openapi({ description: "Maximum results (default 50, max 200)" }),
       offset: z.string().optional().openapi({ description: "Pagination offset (default 0)" }),
     }),
@@ -386,12 +416,33 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     const sourceEntity = url.searchParams.get("source_entity");
     const minConfidence = url.searchParams.get("min_confidence");
     const maxConfidence = url.searchParams.get("max_confidence");
+    const sort = url.searchParams.get("sort");
+    const dir = url.searchParams.get("dir");
     const { limit, offset } = parsePagination(c);
 
     if (status && !VALID_STATUSES.has(status)) return c.json({ error: "bad_request", message: `Invalid status filter. Must be one of: pending, approved, rejected.` }, 400);
     if (minConfidence !== null) { const val = parseFloat(minConfidence); if (!Number.isFinite(val) || val < 0 || val > 1) return c.json({ error: "bad_request", message: "min_confidence must be a number between 0 and 1." }, 400); }
     if (maxConfidence !== null) { const val = parseFloat(maxConfidence); if (!Number.isFinite(val) || val < 0 || val > 1) return c.json({ error: "bad_request", message: "max_confidence must be a number between 0 and 1." }, 400); }
     if (minConfidence !== null && maxConfidence !== null) { if (parseFloat(minConfidence) > parseFloat(maxConfidence)) return c.json({ error: "bad_request", message: "min_confidence must be less than or equal to max_confidence." }, 400); }
+
+    // Sort is whitelisted: the ORDER BY column/direction comes only from the
+    // SORT_COLUMNS/SORT_DIRECTIONS maps, never from the raw value — an unknown
+    // `sort`/`dir` is a 400, never interpolated. Absent params default to
+    // newest-first (now with a deterministic `id` tiebreaker, so pagination is
+    // stable even without an explicit sort).
+    let orderColumn = "created_at";
+    if (sort !== null) {
+      const mapped = SORT_COLUMNS.get(sort);
+      if (mapped === undefined) return c.json({ error: "bad_request", message: `Invalid sort field. Must be one of: ${[...SORT_COLUMNS.keys()].join(", ")}.` }, 400);
+      orderColumn = mapped;
+    }
+    let orderDir: "ASC" | "DESC" = "DESC";
+    if (dir !== null) {
+      const mapped = SORT_DIRECTIONS.get(dir);
+      if (mapped === undefined) return c.json({ error: "bad_request", message: "Invalid sort direction. Must be one of: asc, desc." }, 400);
+      orderDir = mapped;
+    }
+    const orderByClause = `ORDER BY ${orderColumn} ${orderDir} NULLS LAST, id DESC`;
 
     const whereParts: string[] = [];
     const params: unknown[] = [];
@@ -415,7 +466,7 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     const limitIdx = nextIdx;
     selectParams.push(offset);
     const offsetIdx = limitIdx + 1;
-    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns ${whereClause} ORDER BY created_at DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`, selectParams);
+    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns ${whereClause} ${orderByClause} LIMIT $${limitIdx} OFFSET $${offsetIdx}`, selectParams);
 
     return c.json({ patterns: rows.map(toLearnedPattern), total, limit, offset }, 200);
   }), { label: "list learned patterns" });

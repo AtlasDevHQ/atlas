@@ -79,6 +79,22 @@ export const LearnedPatternSchema = z.object({
 }) satisfies z.ZodType<LearnedPattern>;
 
 /**
+ * Whitelisted sort fields for `GET /api/v1/admin/learned-patterns` — the wire
+ * vocabulary shared by the route (which maps each key to a real DB column and
+ * rejects anything else with a 400) and the cockpit (which maps its sortable
+ * TanStack column ids onto these keys). Kept here, next to the other wire
+ * contracts (#4579), so the two sides can't drift: the route's column map is
+ * `satisfies Record<LearnedPatternSortKey, string>` (exhaustive) and the web
+ * map's values are typed `LearnedPatternSortKey` (a typo is a compile error).
+ */
+export const LEARNED_PATTERN_SORT_KEYS = ["confidence", "repetition", "latency", "created"] as const;
+export type LearnedPatternSortKey = (typeof LEARNED_PATTERN_SORT_KEYS)[number];
+
+/** Sort directions accepted by the same endpoint (`?dir=`). */
+export const LEARNED_PATTERN_SORT_DIRECTIONS = ["asc", "desc"] as const;
+export type LearnedPatternSortDirection = (typeof LEARNED_PATTERN_SORT_DIRECTIONS)[number];
+
+/**
  * Paginated list envelope for `GET /api/v1/admin/learned-patterns`
  * (`{ patterns, total, limit, offset }`). The route types its response against
  * this and the cockpit page runtime-parses the same schema, so the list shape

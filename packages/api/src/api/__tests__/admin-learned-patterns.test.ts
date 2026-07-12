@@ -244,6 +244,15 @@ describe("admin learned-patterns routes", () => {
       expect(params).toContain(0.9);
     });
 
+    it("rejects an inverted confidence range (min > max) with 400", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      const res = await req("GET", "/?min_confidence=0.9&max_confidence=0.5");
+      expect(res.status).toBe(400);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("bad_request");
+    });
+
     it("applies combined filters", async () => {
       mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/?status=pending&source_entity=orders&min_confidence=0.5");
@@ -262,6 +271,79 @@ describe("admin learned-patterns routes", () => {
       expect(params).toContain("pending");
       expect(params).toContain("orders");
       expect(params).toContain(0.5);
+    });
+
+    // ─── Sort (whitelisted) ─────────────────────────────────────────
+
+    it("defaults to newest-first with a deterministic tiebreaker when no sort param", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      await req("GET", "/");
+      const calls = mocks.mockInternalQuery.mock.calls;
+      // The SELECT (last call) carries the ORDER BY; the COUNT does not. Assert
+      // the FULL clause — the `NULLS LAST` and `id DESC` tiebreaker are
+      // load-bearing (deterministic pagination), so a loose substring wouldn't
+      // catch their removal.
+      const selectSql = calls[calls.length - 1][0] as string;
+      expect(selectSql).toContain("ORDER BY created_at DESC NULLS LAST, id DESC");
+    });
+
+    it("sorts by a whitelisted field + direction, keeping the tiebreaker", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      await req("GET", "/?sort=confidence&dir=asc");
+      const calls = mocks.mockInternalQuery.mock.calls;
+      const selectSql = calls[calls.length - 1][0] as string;
+      expect(selectSql).toContain("ORDER BY confidence ASC NULLS LAST, id DESC");
+    });
+
+    it("maps each whitelisted sort key to its real column", async () => {
+      const cases: Array<[string, string]> = [
+        ["repetition", "repetition_count"],
+        ["latency", "avg_duration_ms"],
+        ["created", "created_at"],
+      ];
+      for (const [key, column] of cases) {
+        mocks.mockInternalQuery.mockReset();
+        mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+        await req("GET", `/?sort=${key}&dir=desc`);
+        const calls = mocks.mockInternalQuery.mock.calls;
+        const selectSql = calls[calls.length - 1][0] as string;
+        expect(selectSql).toContain(`ORDER BY ${column} DESC NULLS LAST, id DESC`);
+      }
+    });
+
+    it("rejects a non-whitelisted sort field with 400 (never interpolated)", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      const res = await req("GET", "/?sort=pattern_sql");
+      expect(res.status).toBe(400);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("bad_request");
+      // The raw value must not appear in any executed SQL.
+      for (const call of mocks.mockInternalQuery.mock.calls) {
+        expect(call[0] as string).not.toContain("pattern_sql DESC");
+        expect(call[0] as string).not.toContain("pattern_sql ASC");
+      }
+    });
+
+    it("rejects a SQL-injection sort payload with 400", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      const res = await req("GET", `/?sort=${encodeURIComponent("created; DROP TABLE learned_patterns")}`);
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a prototype key as sort (Map.get is pollution-safe)", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      const res = await req("GET", "/?sort=constructor");
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a non-whitelisted sort direction with 400", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      const res = await req("GET", "/?sort=confidence&dir=sideways");
+      expect(res.status).toBe(400);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("bad_request");
     });
   });
 

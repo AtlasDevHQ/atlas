@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   LearnedPatternSchema,
   LearnedPatternsListResponseSchema,
+  LearnedPatternsSummaryResponseSchema,
   AmendmentPayloadSchema,
   LEARNED_PATTERN_SORT_KEYS,
   LEARNED_PATTERN_SORT_DIRECTIONS,
@@ -15,6 +16,7 @@ import {
 const validPattern = {
   id: "pat-1",
   orgId: "org-1",
+  connectionGroupId: null,
   patternSql: "SELECT COUNT(*) FROM orders",
   description: "Order count",
   sourceEntity: "orders",
@@ -24,6 +26,7 @@ const validPattern = {
   status: "pending" as const,
   proposedBy: "agent" as const,
   reviewedBy: null,
+  reviewedByLabel: null,
   createdAt: "2026-03-18T00:00:00Z",
   updatedAt: "2026-03-18T00:00:00Z",
   reviewedAt: null,
@@ -55,6 +58,29 @@ describe("happy-path parses", () => {
     const parsed = LearnedPatternSchema.parse(validPattern);
     const serialized = JSON.parse(JSON.stringify(parsed));
     expect(LearnedPatternSchema.parse(serialized)).toEqual(validPattern);
+  });
+
+  test("resolves reviewer to a label and carries the connection group (#4578)", () => {
+    const reviewed = {
+      ...validPattern,
+      reviewedBy: "user-abc",
+      reviewedByLabel: "Ada Lovelace",
+      connectionGroupId: "prod",
+      status: "approved" as const,
+      reviewedAt: "2026-03-19T00:00:00Z",
+    };
+    const parsed = LearnedPatternSchema.parse(reviewed);
+    expect(parsed.reviewedByLabel).toBe("Ada Lovelace");
+    expect(parsed.connectionGroupId).toBe("prod");
+  });
+
+  test("LearnedPatternsSummaryResponseSchema parses the cockpit summary (#4578)", () => {
+    const summary = {
+      stats: { total: 9, pending: 4, approved: 3, rejected: 2 },
+      entities: ["customers", "orders"],
+      multiGroup: true,
+    };
+    expect(LearnedPatternsSummaryResponseSchema.parse(summary)).toEqual(summary);
   });
 
   test("parses a semantic_amendment row with a structured amendmentPayload", () => {
@@ -131,6 +157,20 @@ describe("drift rejection", () => {
   test("non-numeric confidence fails parse", () => {
     const drifted = { ...validPattern, confidence: "0.8" };
     expect(LearnedPatternSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("a row missing connectionGroupId fails parse (the new field is required, #4578)", () => {
+    const { connectionGroupId: _drop, ...drifted } = validPattern;
+    expect(LearnedPatternSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("summary with a string count fails parse (#4578)", () => {
+    const drifted = {
+      stats: { total: "9", pending: 4, approved: 3, rejected: 2 },
+      entities: ["orders"],
+      multiGroup: false,
+    };
+    expect(LearnedPatternsSummaryResponseSchema.safeParse(drifted).success).toBe(false);
   });
 
   test("list envelope with a string total fails parse (the classic silent-empty drift)", () => {

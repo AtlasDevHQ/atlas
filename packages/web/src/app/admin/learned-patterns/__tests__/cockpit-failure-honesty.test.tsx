@@ -65,6 +65,7 @@ function jsonResponse(body: unknown, status = 200) {
 const PATTERN = {
   id: "lp-1",
   orgId: null,
+  connectionGroupId: null,
   patternSql: "SELECT 1",
   description: "Top customers by revenue",
   sourceEntity: "orders",
@@ -74,6 +75,7 @@ const PATTERN = {
   status: "pending" as const,
   proposedBy: "agent" as const,
   reviewedBy: null,
+  reviewedByLabel: null,
   createdAt: "2026-07-01T00:00:00.000Z",
   updatedAt: "2026-07-01T00:00:00.000Z",
   reviewedAt: null,
@@ -84,6 +86,11 @@ const PATTERN = {
 };
 
 const LIST_ENVELOPE = { patterns: [PATTERN], total: 1, limit: 50, offset: 0 };
+const SUMMARY_ENVELOPE = {
+  stats: { total: 1, pending: 1, approved: 0, rejected: 0 },
+  entities: ["orders"],
+  multiGroup: false,
+};
 
 interface MutationHandlers {
   /** Response for PATCH /learned-patterns/:id (status change). */
@@ -121,6 +128,12 @@ function mockLearnedPatternsApi(handlers: MutationHandlers) {
       counters.del += 1;
       if (!handlers.del) throw new Error(`unexpected DELETE ${url}`);
       return Promise.resolve(handlers.del());
+    }
+    if (method === "GET" && /\/api\/v1\/admin\/learned-patterns\/summary/.test(url)) {
+      return Promise.resolve(jsonResponse(SUMMARY_ENVELOPE));
+    }
+    if (method === "GET" && /\/api\/v1\/admin\/learned-patterns\/pending-count/.test(url)) {
+      return Promise.resolve(jsonResponse({ count: SUMMARY_ENVELOPE.stats.pending }));
     }
     if (method === "GET" && url.includes("/api/v1/admin/learned-patterns")) {
       return Promise.resolve(jsonResponse(LIST_ENVELOPE));

@@ -17,6 +17,7 @@ import {
   Calendar,
   Sparkles,
   Timer,
+  Layers,
 } from "lucide-react";
 import { formatDate } from "@/lib/format";
 
@@ -68,7 +69,33 @@ const sourceBadge: Record<string, { variant: "outline"; className: string; label
 
 // ── Columns ───────────────────────────────────────────────────────
 
-export function getLearnedPatternColumns(): ColumnDef<LearnedPattern>[] {
+/**
+ * Cockpit columns. The connection-group column is opt-in (`showGroup`) so it
+ * only appears for multi-group workspaces (#4578) — a single-group or
+ * self-hosted workspace stays uncluttered, and the default (no-arg) column set
+ * is unchanged, which the column-order contract test pins.
+ */
+export function getLearnedPatternColumns(
+  opts: { showGroup?: boolean } = {},
+): ColumnDef<LearnedPattern>[] {
+  const groupColumn: ColumnDef<LearnedPattern> = {
+    id: "connectionGroup",
+    accessorKey: "connectionGroupId",
+    header: ({ column }) => <DataTableColumnHeader column={column} label="Group" />,
+    cell: ({ row }) => {
+      const group = row.getValue<string | null>("connectionGroupId");
+      // A named group renders verbatim (group ids are human slugs, e.g. "prod");
+      // NULL is the default (flat `entities/`) scope.
+      return (
+        <span className="text-xs font-mono text-muted-foreground">
+          {group ?? "default"}
+        </span>
+      );
+    },
+    meta: { label: "Group", icon: Layers },
+    enableSorting: false,
+    size: 120,
+  };
   return [
     {
       id: "select",
@@ -175,6 +202,7 @@ export function getLearnedPatternColumns(): ColumnDef<LearnedPattern>[] {
       enableSorting: false,
       size: 140,
     },
+    ...(opts.showGroup ? [groupColumn] : []),
     {
       id: "confidence",
       accessorKey: "confidence",

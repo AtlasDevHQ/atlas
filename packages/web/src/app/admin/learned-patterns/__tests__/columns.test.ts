@@ -22,6 +22,27 @@ describe("getLearnedPatternColumns", () => {
     ]);
   });
 
+  test("inserts the connection-group column only when showGroup is set (#4578)", () => {
+    // Default (single-group / self-hosted) leaves the column set untouched — the
+    // contract test above pins that. `showGroup` inserts one non-sortable
+    // `connectionGroup` column right after `sourceEntity`, so a multi-group admin
+    // can tell near-identical twins apart before approving one.
+    const withGroup = getLearnedPatternColumns({ showGroup: true });
+    const ids = withGroup.map((c) => c.id);
+    expect(ids).toContain("connectionGroup");
+    expect(ids.indexOf("connectionGroup")).toBe(ids.indexOf("sourceEntity") + 1);
+
+    // The group column is display-only — it must not add a sort affordance the
+    // server ignores.
+    const groupCol = withGroup.find((c) => c.id === "connectionGroup");
+    expect(groupCol?.enableSorting).toBe(false);
+
+    // Opting out is exactly the default column set (no leakage).
+    expect(getLearnedPatternColumns({ showGroup: false }).map((c) => c.id)).toEqual(
+      getLearnedPatternColumns().map((c) => c.id),
+    );
+  });
+
   test("exactly the sortable columns map to a whitelisted API sort key", () => {
     // A column renders a sort affordance iff `enableSorting !== false`
     // (`DataTableColumnHeader` gates the chevron on `column.getCanSort()`).

@@ -49,13 +49,14 @@ import { matchesNavItem, navGroups, type NavGroup } from "./admin-nav";
 // Component
 // ---------------------------------------------------------------------------
 
-// The pending-amendment badge poll (#4517). Gated on `enabled` so it only runs
-// for admins — the `/pending-count` route requires the `admin:semantic`
-// permission (`requirePermission("admin:semantic")`), so a non-admin polling it
-// every 60s produced silent 403 spam. A 403 for an admin who nonetheless lacks
-// the granular permission (a custom admin role) stops the interval, so the badge
-// fetch can never become a recurring 403 either way.
-function usePendingAmendmentCount(enabled: boolean): number {
+// Nav-badge count poll (#4517, #4578). Polls a `{ count }` endpoint every 60s,
+// gated on `enabled` so it only runs for admins — a non-admin polling an
+// admin-gated `/pending-count` every 60s would be silent 403 spam. A 403 (e.g.
+// an admin whose custom role lacks the granular permission the amendment
+// endpoint requires) stops the interval, so the badge fetch can never become a
+// recurring 403 either way. Shared by the pending-amendment badge and the
+// learned-patterns reviewable-pending badge — both endpoints return `{ count }`.
+function usePolledCount(path: string, enabled: boolean): number {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const [count, setCount] = useState(0);
 
@@ -64,12 +65,12 @@ function usePendingAmendmentCount(enabled: boolean): number {
     let cancelled = false;
     let interval: ReturnType<typeof setInterval> | undefined;
     const fetchCount = () => {
-      fetch(`${apiUrl}/api/v1/admin/semantic-improve/pending-count`, {
+      fetch(`${apiUrl}${path}`, {
         credentials: isCrossOrigin ? "include" : "same-origin",
       })
         .then((r) => {
-          // 403 = this admin lacks admin:semantic — stop polling so it never
-          // becomes silent 403 spam.
+          // 403 = this admin lacks the required permission — stop polling so it
+          // never becomes silent 403 spam.
           if (r.status === 403) {
             if (interval) clearInterval(interval);
             return null;
@@ -88,7 +89,7 @@ function usePendingAmendmentCount(enabled: boolean): number {
     fetchCount();
     interval = setInterval(fetchCount, 60_000);
     return () => { cancelled = true; if (interval) clearInterval(interval); };
-  }, [apiUrl, isCrossOrigin, enabled]);
+  }, [apiUrl, isCrossOrigin, path, enabled]);
 
   return count;
 }
@@ -99,8 +100,9 @@ export function AdminSidebar() {
   const { branding } = useBranding();
   const { deployMode, resolved: modeResolved } = useDeployMode();
   const { mode, setMode, isAdmin } = useMode();
-  // Only admins poll the pending-amendment badge (#4517) — see the hook.
-  const pendingCount = usePendingAmendmentCount(isAdmin);
+  // Only admins poll the badge counts (#4517, #4578) — see the hook.
+  const pendingCount = usePolledCount("/api/v1/admin/semantic-improve/pending-count", isAdmin);
+  const learnedPendingCount = usePolledCount("/api/v1/admin/learned-patterns/pending-count", isAdmin);
   const isSaas = deployMode === "saas";
 
   function isGroupActive(group: NavGroup) {
@@ -138,11 +140,15 @@ export function AdminSidebar() {
         // surface (or hide) the wrong mode's pages.
         .filter((item) => !item.selfHostedOnly || (modeResolved && !isSaas))
         .filter((item) => !item.saasOnly || (modeResolved && isSaas))
-        .map((item) =>
-          item.href === "/admin/semantic/improve" && pendingCount > 0
-            ? { ...item, badge: pendingCount }
-            : item,
-        ),
+        .map((item) => {
+          if (item.href === "/admin/semantic/improve" && pendingCount > 0) {
+            return { ...item, badge: pendingCount };
+          }
+          if (item.href === "/admin/learned-patterns" && learnedPendingCount > 0) {
+            return { ...item, badge: learnedPendingCount };
+          }
+          return item;
+        }),
     }))
     .filter((group) => group.items.length > 0);
 

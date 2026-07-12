@@ -47,9 +47,10 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { ActionErrorAlert } from "./action-error";
+import { renderSurface, type ActionError, type StatusSurface } from "./action-error-state";
 import { bulkPartialSummary, RelativeTimestamp } from "@/ui/components/admin/queue";
-import { friendlyError, type FetchError } from "@/ui/lib/fetch-error";
+import { buildFetchError } from "@/ui/lib/fetch-error";
 import { useInProgressSet } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -89,7 +90,14 @@ export default function LearnedPatternsPage() {
   // Mutation-error surface (list-load errors come from the module below). The
   // `fetchKey` cache-buster now refreshes only the aux stats/entities fetches;
   // the paginated list refetches through the module + admin-fetch invalidation.
-  const [actionError, setActionError] = useState<FetchError | null>(null);
+  //
+  // A mutation failure is pinned to the surface the admin acted in — the detail
+  // `sheet`, the `delete` confirmation dialog, or the `page` body (row-menu /
+  // bulk actions) — so the error renders where the click happened instead of in
+  // a page banner behind the open overlay (#4574). The `action` descriptor lets
+  // the honest "Retry" re-run the exact failed mutation via the current-render
+  // handlers, so there are no stale-closure surprises.
+  const [actionError, setActionError] = useState<ActionError | null>(null);
   const [fetchKey, setFetchKey] = useState(0);
 
   const [params, setParams] = useQueryStates(learnedPatternsSearchParams);
@@ -166,7 +174,13 @@ export default function LearnedPatternsPage() {
     return () => { cancelled = true; };
   }, [apiUrl, credentials, fetchKey]);
 
-  async function updatePatternStatus(id: string, status: LearnedPatternStatus) {
+  // `surface` decides where a failure renders: "sheet" when the admin clicked
+  // Approve/Reject inside the detail sheet, "page" when from the row menu.
+  async function updatePatternStatus(
+    id: string,
+    status: LearnedPatternStatus,
+    surface: StatusSurface = "page",
+  ) {
     setActionError(null);
     inProgress.start(id);
 
@@ -181,7 +195,9 @@ export default function LearnedPatternsPage() {
       },
     });
 
-    if (!result.ok) setActionError(result.error);
+    if (!result.ok) {
+      setActionError({ error: result.error, action: { kind: "status", id, status, surface } });
+    }
     setFetchKey((k) => k + 1); // refresh aux stats/entities counts
     inProgress.stop(id);
   }
@@ -196,11 +212,13 @@ export default function LearnedPatternsPage() {
 
     if (result.ok) {
       if (detailPattern?.id === id) setDetailPattern(null);
+      setDeleteTarget(null); // close the confirm dialog only on success
     } else {
-      setActionError(result.error);
+      // Keep the confirm dialog open and surface the error inside it so a failed
+      // delete can't be mistaken for a completed one.
+      setActionError({ error: result.error, action: { kind: "delete", id } });
     }
     setFetchKey((k) => k + 1); // refresh aux stats/entities counts
-    setDeleteTarget(null);
     inProgress.stop(id);
   }
 
@@ -213,7 +231,7 @@ export default function LearnedPatternsPage() {
 
     if (!result.ok) {
       // Whole-request failure — keep selection so the operator can retry.
-      setActionError(result.error);
+      setActionError({ error: result.error, action: { kind: "bulk", status } });
       setFetchKey((k) => k + 1);
       return;
     }
@@ -233,7 +251,10 @@ export default function LearnedPatternsPage() {
 
     if (failedIds.size > 0) {
       const noun = status === "approved" ? "approvals" : status === "rejected" ? "rejections" : "updates";
-      setActionError({ message: bulkPartialSummary(data, selected.length, noun) });
+      setActionError({
+        error: buildFetchError({ message: bulkPartialSummary(data, selected.length, noun) }),
+        action: { kind: "bulk", status },
+      });
       // Narrow selection to failed IDs so retry hits exactly the unfinished work.
       table.setRowSelection(Object.fromEntries([...failedIds].map((id) => [id, true])));
     } else {
@@ -241,6 +262,44 @@ export default function LearnedPatternsPage() {
     }
 
     setFetchKey((k) => k + 1); // refresh aux stats/entities counts
+  }
+
+  // Honest "Retry" — re-run the exact failed mutation through the current-render
+  // handlers (each clears `actionError` at its start). "Dismiss" is a separate,
+  // truthfully-labelled affordance that just clears the error.
+  function retryAction() {
+    const action = actionError?.action;
+    if (!action) return;
+    switch (action.kind) {
+      case "status":
+        void updatePatternStatus(action.id, action.status, action.surface);
+        break;
+      case "delete":
+        void deletePattern(action.id);
+        break;
+      case "bulk":
+        void bulkUpdateStatus(action.status);
+        break;
+      default: {
+        // Exhaustiveness guard — a new RetryableAction kind is a compile error
+        // here rather than silently replaying as a bulk op.
+        const _never: never = action;
+        void _never;
+      }
+    }
+  }
+
+  function dismissError() {
+    setActionError(null);
+  }
+
+  // Opening a detail sheet or the delete dialog drops any lingering error from a
+  // prior action, so it can't sit behind — or bleed into — the new overlay (the
+  // exact "error hidden behind the modal" anti-pattern this cockpit fixes). A
+  // fresh action clears its own slot at the start anyway, so nothing in-flight
+  // is lost.
+  function clearActionError() {
+    setActionError(null);
   }
 
   const columns: ColumnDef<LearnedPattern>[] = (() => {
@@ -274,7 +333,7 @@ export default function LearnedPatternsPage() {
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-destructive"
-                onClick={() => setDeleteTarget(pattern)}
+                onClick={() => { clearActionError(); setDeleteTarget(pattern); }}
               >
                 <Trash2 className="mr-2 size-4" />
                 Delete
@@ -322,6 +381,15 @@ export default function LearnedPatternsPage() {
   });
 
   const selectedCount = table.getSelectedRowModel().rows.length;
+  // Where the pinned error renders — derived at render time from the action plus
+  // which overlays are open, never stored. A sheet/delete error whose overlay
+  // was dismissed mid-flight (or replaced by a different item) falls back to the
+  // page banner instead of vanishing behind or into the wrong surface.
+  const errorSurface = renderSurface(
+    actionError,
+    detailPattern?.id ?? null,
+    deleteTarget?.id ?? null,
+  );
   const hasFilters =
     !!params.status ||
     !!params.source_entity ||
@@ -443,10 +511,11 @@ export default function LearnedPatternsPage() {
               )}
             </div>
 
-            {actionError && (
-              <ErrorBanner
-                message={friendlyError(actionError)}
-                onRetry={() => setActionError(null)}
+            {actionError && errorSurface === "page" && (
+              <ActionErrorAlert
+                error={actionError.error}
+                onRetry={retryAction}
+                onDismiss={dismissError}
               />
             )}
 
@@ -467,13 +536,22 @@ export default function LearnedPatternsPage() {
               onClearFilters={() => setParams({ status: "", source_entity: "", min_confidence: "", max_confidence: "", page: 1 })}
               onRowClick={(row, e) => {
                 if ((e.target as HTMLElement).closest('[role="checkbox"], button')) return;
+                clearActionError();
                 setDetailPattern(row.original);
               }}
             />
           </div>
         </ErrorBoundary>
 
-        <Sheet open={!!detailPattern} onOpenChange={(open) => { if (!open) setDetailPattern(null); }}>
+        <Sheet
+          open={!!detailPattern}
+          onOpenChange={(open) => {
+            if (!open) setDetailPattern(null);
+            // A lingering in-sheet error isn't cleared here: `renderSurface`
+            // reroutes it to the page banner once the sheet is gone, so a late
+            // failure stays visible instead of silently vanishing on close.
+          }}
+        >
           <SheetContent className="sm:max-w-lg overflow-y-auto">
             {detailPattern && (
               <>
@@ -572,11 +650,19 @@ export default function LearnedPatternsPage() {
                     </div>
                   )}
 
+                  {actionError && errorSurface === "sheet" && (
+                    <ActionErrorAlert
+                      error={actionError.error}
+                      onRetry={retryAction}
+                      onDismiss={dismissError}
+                    />
+                  )}
+
                   <div className="flex gap-2 border-t pt-4">
                     {detailPattern.status !== "approved" && (
                       <Button
                         size="sm"
-                        onClick={() => updatePatternStatus(detailPattern.id, "approved")}
+                        onClick={() => updatePatternStatus(detailPattern.id, "approved", "sheet")}
                         disabled={inProgress.has(detailPattern.id)}
                       >
                         <Check className="mr-1.5 size-3.5" />
@@ -587,7 +673,7 @@ export default function LearnedPatternsPage() {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => updatePatternStatus(detailPattern.id, "rejected")}
+                        onClick={() => updatePatternStatus(detailPattern.id, "rejected", "sheet")}
                         disabled={inProgress.has(detailPattern.id)}
                       >
                         <X className="mr-1.5 size-3.5" />
@@ -599,6 +685,7 @@ export default function LearnedPatternsPage() {
                       size="sm"
                       className="text-destructive hover:text-destructive"
                       onClick={() => {
+                        setActionError(null);
                         setDetailPattern(null);
                         setDeleteTarget(detailPattern);
                       }}
@@ -616,7 +703,11 @@ export default function LearnedPatternsPage() {
 
         <AlertDialog
           open={!!deleteTarget}
-          onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+          onOpenChange={(open) => {
+            // Cancel / Escape / outside-click closes; `renderSurface` reroutes any
+            // lingering in-dialog error to the page banner so it stays visible.
+            if (!open) setDeleteTarget(null);
+          }}
         >
           <AlertDialogContent>
             <AlertDialogHeader>
@@ -625,11 +716,29 @@ export default function LearnedPatternsPage() {
                 This will permanently delete this pattern. This action cannot be undone.
               </AlertDialogDescription>
             </AlertDialogHeader>
+
+            {actionError && errorSurface === "delete" && (
+              <ActionErrorAlert
+                error={actionError.error}
+                onRetry={retryAction}
+                onDismiss={dismissError}
+              />
+            )}
+
             <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogCancel disabled={!!deleteTarget && inProgress.has(deleteTarget.id)}>
+                Cancel
+              </AlertDialogCancel>
               <AlertDialogAction
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                onClick={() => { if (deleteTarget) void deletePattern(deleteTarget.id); }}
+                disabled={!!deleteTarget && inProgress.has(deleteTarget.id)}
+                // preventDefault stops Radix from auto-closing the dialog: a
+                // failed delete must keep the dialog open to show the error, and
+                // `deletePattern` closes it itself only on success (#4574).
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (deleteTarget) void deletePattern(deleteTarget.id);
+                }}
               >
                 Delete
               </AlertDialogAction>

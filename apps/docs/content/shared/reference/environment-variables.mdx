@@ -188,6 +188,7 @@ ATLAS_DEMO_DATA=true
 | `ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS` | `60000` (60s) | Overall wall-clock budget for a headless dashboard PDF/PNG export. Clamped to `[5000, 180000]`; a lower override degrades to a documented **partial** capture rather than a 504. Source: `packages/api/src/lib/dashboard-screenshot.ts` |
 | `ATLAS_EXPERT_SCHEDULER_ENABLED` | `false` | Enable periodic semantic layer analysis. When true, the expert engine runs on a schedule and proposes improvements automatically |
 | `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS` | `24` | Hours between scheduled expert analysis runs |
+| `ATLAS_AUTONOMOUS_IMPROVE_ENABLED` | `false` | **Per-workspace autonomous-improvement opt-in** (#4516). The platform scheduler above only proposes for a workspace that has explicitly set this to `true` — autonomy spends that workspace's own budget. Orthogonal to auto-approve: this governs *whether* the scheduler runs for the workspace; the auto-approve pair below governs whether eligible proposals self-apply vs. queue. Workspace-scoped, hot-reloadable (read per scheduler tick, no restart); also settable per-workspace in Admin → Settings |
 | `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | _(disabled)_ | Auto-approve proposals with confidence ≥ this value and an eligible amendment type (e.g. `0.9`). Leave empty to require manual review for all proposals |
 | `ATLAS_EXPERT_AUTO_APPROVE_TYPES` | `update_description,add_dimension` | Comma-separated amendment types eligible for auto-approval. Types not in this list always queue for review |
 

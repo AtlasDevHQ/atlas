@@ -90,14 +90,26 @@ Dry run — no files modified. Use --apply to write changes.
 
 ## Reviewing Proposals in the Admin UI
 
-When the expert agent runs (via CLI or API), proposals are written to the `learned_patterns` table with `type = semantic_amendment`. Review them in the admin UI:
+When the expert agent runs (via CLI, chat, or the scheduler), every proposal lands in one **pending queue** on the dedicated improvement surface — **Admin > Semantic Layer > Improve** (also reachable as **Admin > Data > Improve Layer** in the sidebar). Amendments are *not* shown under **Admin > Learned Patterns**, which is scoped to learned query patterns only.
 
-1. Navigate to **Admin > Learned Patterns**
-2. Use the **Type** filter to select "Amendments"
-3. Click a proposal to see the YAML diff with color-coded additions (green) and removals (red)
-4. **Approve** to apply the change, **Reject** to suppress re-proposal for 30 days
+1. Open the **Improve** page — pending proposals fill the right-hand panel
+2. Click a proposal to see the YAML diff with color-coded additions (green) and removals (red)
+3. **Approve** to apply the change, or **Reject** to suppress it
 
-Bulk approve/reject is supported — select multiple proposals and use the toolbar buttons.
+Rejection is **permanent, not time-boxed**: a rejected proposal is remembered by its identity (entity + amendment type, scoped to its connection group) and the agent will not re-propose it. To lift a rejection, open the **Rejected** view and click **Reconsider** — the only path back. See [Permanent Rejection & Reconsider](#permanent-rejection--reconsider) below.
+
+## Permanent Rejection & Reconsider
+
+When you reject a proposal, Atlas records its **identity** — the entity name, the amendment type, and the connection group it belongs to — as a permanent rejection. This rejection memory has **no time window**: the expert agent (interactive or scheduled) will not re-propose that same change, and the analyzer suppresses it from future runs, so you never have to reject the same finding twice.
+
+Rejection memory is **scoped to the connection group**. Rejecting an "MRR" measure under the `orders` entity in one group never suppresses an "MRR" measure under `customers`, nor the same change in a different connection group — one tenant's or datasource group's decisions never leak into another's.
+
+To bring a rejected proposal back:
+
+1. On the **Improve** page, open the **Rejected** view
+2. Find the proposal and click **Reconsider**
+
+Reconsider is the *only* way to reverse a rejection — it lifts the suppression so the agent may propose the change again. Nothing else (a new analysis run, a restart, time passing) will resurface a rejected identity.
 
 ## Auto-Approval Threshold
 
@@ -260,8 +272,10 @@ The web interactive mode uses these admin API endpoints:
 | `GET` | `/api/v1/admin/semantic-improve/pending` | List pending amendment proposals, newest first |
 | `GET` | `/api/v1/admin/semantic-improve/pending-count` | Count of pending proposals (powers the sidebar badge) |
 | `POST` | `/api/v1/admin/semantic-improve/amendments/:id/review` | Approve or reject a pending amendment (`{ "decision": "approved" \| "rejected" }`) |
+| `GET` | `/api/v1/admin/semantic-improve/rejected` | List rejected amendments, most-recently-rejected first (powers the Rejected view) |
+| `POST` | `/api/v1/admin/semantic-improve/amendments/:id/reconsider` | Lift a rejection so the agent may propose the change again |
 
-Approving an amendment applies the YAML change and records it in version history before the row is marked reviewed — a row can never read approved without the change (and its rollback snapshot) actually landing. If the apply fails, the amendment returns to the pending queue with the failure reason attached (the `applyError` field on `/pending`), so a bounced approval is never silent. Concurrent decisions on the same amendment are safe: exactly one wins, the other gets a truthful "already reviewed" response. Rejecting down-ranks the same finding in the autonomous analyzer's scoring for 30 days (it does not prevent the agent from proposing it again). Both decisions land in the admin audit log (`semantic.improve_apply` / `semantic.improve_reject`).
+Approving an amendment applies the YAML change and records it in version history before the row is marked reviewed — a row can never read approved without the change (and its rollback snapshot) actually landing. If the apply fails, the amendment returns to the pending queue with the failure reason attached (the `applyError` field on `/pending`), so a bounced approval is never silent. Concurrent decisions on the same amendment are safe: exactly one wins, the other gets a truthful "already reviewed" response. Rejecting suppresses that identity **permanently** — the agent will not re-propose it until an admin clicks **Reconsider** in the Rejected view (see [Permanent Rejection & Reconsider](#permanent-rejection--reconsider)). Both decisions land in the admin audit log (`semantic.improve_apply` / `semantic.improve_reject`).
 
 ### Integration with Version History
 
@@ -273,12 +287,13 @@ The expert agent can run on a schedule, automatically analyzing your semantic la
 
 ### Enabling the Scheduler
 
-Set these environment variables or configure through the admin Settings pages under **Intelligence**. The two scheduler settings are platform-wide — the scheduler is one process-global background job, so they live on **Platform Settings** and changes require a restart. The two auto-approve settings are workspace-scoped — they live on **Workspace Settings**, are read per proposal, and a per-workspace override takes effect without a restart.
+Set these environment variables or configure through the admin Settings pages under **Intelligence**. The two `ATLAS_EXPERT_SCHEDULER_*` settings are platform-wide — the scheduler is one process-global background job, so they live on **Platform Settings** and changes require a restart. The three workspace-scoped settings (autonomous opt-in + the two auto-approve knobs) live on **Workspace Settings**, are read per tick / per proposal, and a per-workspace override takes effect without a restart. On SaaS the split matters: the platform switch decides whether the fiber runs at all, and each workspace opts *itself* in with `ATLAS_AUTONOMOUS_IMPROVE_ENABLED` — autonomy is never on for a workspace it hasn't explicitly enabled.
 
 | Setting | Env var | Scope | Default | Description |
 |---------|---------|-------|---------|-------------|
-| Expert Scheduler | `ATLAS_EXPERT_SCHEDULER_ENABLED` | Platform (restart) | `false` | Enable periodic analysis |
+| Expert Scheduler | `ATLAS_EXPERT_SCHEDULER_ENABLED` | Platform (restart) | `false` | Platform master switch — does the single process-global improvement fiber run on this deployment at all |
 | Schedule Interval | `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS` | Platform (restart) | `24` | Hours between runs |
+| Autonomous Improvement | `ATLAS_AUTONOMOUS_IMPROVE_ENABLED` | Workspace | `false` | Per-workspace opt-in. With the platform switch on, the scheduler only proposes for a workspace that has explicitly set this — autonomy spends that workspace's own budget. Read per tick, no restart |
 | Auto-Approve Threshold | `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | Workspace | (disabled) | Proposals with confidence ≥ this value and an eligible type are auto-applied |
 | Auto-Approve Types | `ATLAS_EXPERT_AUTO_APPROVE_TYPES` | Workspace | `update_description,add_dimension` | Comma-separated amendment types eligible for auto-approval. Types not in this list always queue for review |
 
@@ -323,6 +338,7 @@ The overall score is a weighted average. Use this to track your semantic layer q
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/admin/semantic-improve/health` | Semantic layer health score |
+| `GET` | `/api/v1/admin/semantic-improve/coverage` | Column-level coverage — physical schema columns mapped to entity dimensions, with an entry point to propose the missing ones |
 
 The pending queue endpoints (`/pending`, `/pending-count`, `/amendments/:id/review`) documented under [Web Interactive Mode](#api-endpoints) serve scheduler-produced proposals the same way — the queue is one list regardless of which surface proposed the amendment.
 

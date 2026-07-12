@@ -2337,16 +2337,24 @@ export interface QuerySuggestionRow {
 }
 
 /**
- * Fetch approved learned patterns, scoped to an org (or global when orgId is
- * null) AND a connection group (#3611).
+ * Fetch approved learned patterns for agent-context injection, scoped to an org
+ * AND a connection group (#3611). Restricted to `type = 'query_pattern'` rows
+ * (#4534) — `semantic_amendment` rows share this table and can reach
+ * `status = 'approved'`, but their sentinel `pattern_sql` is not an executable
+ * query and must never be injected as one.
  *
- * Group scoping mirrors the org rule: a pattern is in scope when its
+ * Org scoping is deploy-mode aware (#4487, #4534): on SaaS the `OR org_id IS
+ * NULL` arm is dropped for a workspace — and an org-less read withholds entirely
+ * (no global tenant) — so a NULL-org ("global scope") pattern can never surface
+ * cross-tenant in an agent's system prompt; on self-hosted the arm stays,
+ * keeping the single deployment's legacy global scope readable.
+ *
+ * Group scoping mirrors the self-hosted org rule: a pattern is in scope when its
  * `connection_group_id` matches the active group OR is NULL (the default flat
- * `entities/` scope, shared across groups the same way `org_id IS NULL` is
- * shared across orgs). When `connectionGroupId` is null/omitted the active
- * scope IS the default group, so only `connection_group_id IS NULL` rows match
- * — this keeps `us-prod` patterns out of a `eu-prod` agent session and
- * vice-versa. Ordered by confidence DESC, capped at 100 rows.
+ * `entities/` scope). When `connectionGroupId` is null/omitted the active scope
+ * IS the default group, so only `connection_group_id IS NULL` rows match — this
+ * keeps `us-prod` patterns out of a `eu-prod` agent session and vice-versa.
+ * Ordered by confidence DESC, capped at 100 rows.
  */
 export async function getApprovedPatterns(
   orgId: string | null,
@@ -2356,10 +2364,28 @@ export async function getApprovedPatterns(
 
   const params: unknown[] = [];
 
+  // Org scope, deploy-mode aware (#4487, #4534). On SaaS a NULL-org ("global
+  // scope") approved pattern must NEVER surface in a tenant's agent context:
+  //   - workspace → `org_id = $N` only (the `OR org_id IS NULL` leak arm is
+  //                 dropped, so a NULL-org row can't be injected cross-tenant);
+  //   - org-less  → withhold entirely — there is no global tenant on SaaS, so
+  //                 fail closed rather than return NULL-org rows to a no-tenant
+  //                 read.
+  // Both mirror `amendmentOrgScope`'s SaaS behavior. On self-hosted the single
+  // workspace IS the whole deployment, so a NULL-org row is that deployment's
+  // legacy global scope and stays readable in both cases. Inlined rather than
+  // routed through `amendmentOrgScope` — that helper is the amendment readers'
+  // and is pinned to that set by the #4510 reader-enumeration guard, and it emits
+  // no group clause; this is a `query_pattern` reader with its own group scope.
+  const saas = requireIsSaasModeForGuard()();
   let orgClause: string;
   if (orgId) {
     params.push(orgId);
-    orgClause = `(org_id = $${params.length} OR org_id IS NULL)`;
+    orgClause = saas
+      ? `org_id = $${params.length}`
+      : `(org_id = $${params.length} OR org_id IS NULL)`;
+  } else if (saas) {
+    return [];
   } else {
     orgClause = `org_id IS NULL`;
   }
@@ -2372,10 +2398,16 @@ export async function getApprovedPatterns(
     groupClause = `connection_group_id IS NULL`;
   }
 
+  // `type = 'query_pattern'` is load-bearing (#4534): `semantic_amendment` rows
+  // live in this same table and reach `status = 'approved'` on approval, but
+  // their `pattern_sql` is a non-executable identity-key sentinel (see
+  // `amendmentIdentityKey`), never a runnable query — injecting one as a query
+  // pattern is garbage in the prompt. Mirrors the filter
+  // `getPromoteDecayCandidates` already applies.
   return internalQuery<ApprovedPatternRow>(
     `SELECT id, org_id, connection_group_id, pattern_sql, description, source_entity, confidence, avg_duration_ms
      FROM learned_patterns
-     WHERE status = 'approved' AND ${orgClause} AND ${groupClause}
+     WHERE status = 'approved' AND type = 'query_pattern' AND ${orgClause} AND ${groupClause}
      ORDER BY confidence DESC
      LIMIT 100`,
     params,

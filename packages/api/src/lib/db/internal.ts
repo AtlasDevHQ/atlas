@@ -2501,6 +2501,23 @@ export async function getApprovedPatterns(
  *  before reading the `auto_promoted` flag. */
 export const AUTO_PROMOTE_REVIEWER = "atlas-auto-promote";
 
+/**
+ * Repetition floor at which a query pattern stops being "seen-once" and becomes
+ * reviewable + promotable (#4581). A pattern's `repetition_count` starts at 1 on
+ * first capture and increments on every repeat observation via the DB-enforced
+ * identity (#4572), so `>= 2` means "observed more than once". A seen-once row
+ * (`repetition_count = 1`) persists — the identity row must exist for the second
+ * observation to increment it — but sits below the default review queue, the
+ * pending badge, and every promotion gate until it repeats (CONTEXT.md § Learned
+ * query patterns: "a review queue full of seen-once noise" is an anti-goal).
+ *
+ * This is the single definition of that boundary, shared by the admin list route
+ * + pending-count badge (`api/routes/admin-learned-patterns.ts`) and the
+ * promote/decay candidate scan (`getPromoteDecayCandidates` below), so the three
+ * surfaces can never disagree on where seen-once ends.
+ */
+export const REPEATED_PATTERN_MIN_REPETITIONS = 2;
+
 /** Projection of `learned_patterns` the promote/decay decision needs. */
 export interface PromoteDecayCandidateRow {
   readonly id: string;
@@ -2555,12 +2572,21 @@ export async function getPromoteDecayCandidates(
     params.push(orgId);
     orgClause = `org_id = $${params.length}`;
   }
+  // Seen-once tier (#4581): a `repetition_count = 1` pending row is a single
+  // capture, not evidence — it is excluded from the promotion candidate set until
+  // it repeats, so the auto-promoter never amplifies a shape seen exactly once
+  // (regardless of a low `minRepetitions` threshold). The floor is scoped to the
+  // pending arm only: decay candidates (machine-approved rows) stay reachable at
+  // any repetition so a stale auto-promotion can always be demoted.
   return internalQuery<PromoteDecayCandidateRow>(
     `SELECT id, org_id, type, status, confidence, repetition_count,
             avg_duration_ms, last_seen_at::text AS last_seen_at, auto_promoted
      FROM learned_patterns
      WHERE type = 'query_pattern'
-       AND (status = 'pending' OR (status = 'approved' AND auto_promoted = true))
+       AND (
+         (status = 'pending' AND repetition_count >= ${REPEATED_PATTERN_MIN_REPETITIONS})
+         OR (status = 'approved' AND auto_promoted = true)
+       )
        AND ${orgClause}
      ORDER BY updated_at DESC
      LIMIT $1`,

@@ -37,6 +37,12 @@ export interface LearnedPatternsFilters {
   readonly source_entity: string;
   readonly min_confidence: string;
   readonly max_confidence: string;
+  /**
+   * Reveal seen-once (`repetition_count = 1`) patterns the route hides from the
+   * default review queue (#4581). Only emitted as `include_seen_once=true` when
+   * on — the off state relies on the route's default of hiding them.
+   */
+  readonly include_seen_once: boolean;
 }
 
 /**
@@ -69,6 +75,7 @@ export function buildLearnedPatternsPath(
   if (filters.source_entity) qs.set("source_entity", filters.source_entity);
   if (filters.min_confidence) qs.set("min_confidence", filters.min_confidence);
   if (filters.max_confidence) qs.set("max_confidence", filters.max_confidence);
+  if (filters.include_seen_once) qs.set("include_seen_once", "true");
 
   const sortKey = binding.sortId ? SORT_PARAM_BY_COLUMN.get(binding.sortId) : undefined;
   if (sortKey) {

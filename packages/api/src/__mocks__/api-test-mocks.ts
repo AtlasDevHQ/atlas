@@ -224,6 +224,11 @@ export function buildInternalDbMockDefaults(deps: {
     insertLearnedPattern: () => {},
     incrementPatternCount: () => {},
     getApprovedPatterns: mock(async () => []),
+    // Seen-once tier floor (#4581) — a plain constant the learned-patterns route
+    // interpolates into its list + pending-count SQL. Mirrors the real value so
+    // an `import { REPEATED_PATTERN_MIN_REPETITIONS }` never SyntaxErrors at load
+    // time under this partial mock.
+    REPEATED_PATTERN_MIN_REPETITIONS: 2,
     upsertSuggestion: mock(() => Promise.resolve("created")),
     getSuggestionsByTables: mock(() => Promise.resolve([])),
     getPopularSuggestions: mock(() => Promise.resolve([])),

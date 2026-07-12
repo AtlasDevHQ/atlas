@@ -273,6 +273,44 @@ describe("admin learned-patterns routes", () => {
       expect(params).toContain(0.5);
     });
 
+    // ─── Seen-once tier (#4581) ─────────────────────────────────────
+
+    it("hides seen-once (repetition_count = 1) patterns from the default queue (#4581)", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      await req("GET", "/");
+      const calls = mocks.mockInternalQuery.mock.calls;
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      // Both the COUNT and the SELECT carry the seen-once floor, so `total`
+      // reconciles with the rows shown.
+      for (const call of calls) {
+        expect(call[0] as string).toContain("repetition_count >= 2");
+      }
+    });
+
+    it("reveals seen-once patterns when include_seen_once=true (#4581)", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      await req("GET", "/?include_seen_once=true");
+      const calls = mocks.mockInternalQuery.mock.calls;
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      for (const call of calls) {
+        expect(call[0] as string).not.toContain("repetition_count >= 2");
+      }
+    });
+
+    it("a repeated pattern (repetition_count >= 2) surfaces with its accumulated stats (#4581)", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "1" }]);
+        return Promise.resolve([mockRow({ id: "repeated", repetition_count: 4, confidence: 0.6 })]);
+      });
+      const res = await req("GET", "/");
+      expect(res.status).toBe(200);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.total).toBe(1);
+      expect(body.patterns[0].id).toBe("repeated");
+      expect(body.patterns[0].repetitionCount).toBe(4);
+    });
+
     // ─── Sort (whitelisted) ─────────────────────────────────────────
 
     it("defaults to newest-first with a deterministic tiebreaker when no sort param", async () => {
@@ -616,6 +654,15 @@ describe("admin learned-patterns routes", () => {
       const sql = mocks.mockInternalQuery.mock.calls[0][0] as string;
       expect(sql).toContain("type = 'query_pattern'");
       expect(sql).toContain("status = 'pending'");
+    });
+
+    it("excludes seen-once captures from the badge count (#4581)", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      await req("GET", "/pending-count");
+      const sql = mocks.mockInternalQuery.mock.calls[0][0] as string;
+      // The badge counts reviewable == pending + repeated, never a single capture.
+      expect(sql).toContain("status = 'pending'");
+      expect(sql).toContain("repetition_count >= 2");
     });
   });
 

@@ -13,6 +13,7 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, queryEffect, amendmentOrgScope, type AmendmentOrgScope } from "@atlas/api/lib/db/internal";
+import { REPEATED_PATTERN_MIN_REPETITIONS } from "@atlas/api/lib/learn/pattern-tiers";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import {
   LearnedPatternSchema,
@@ -206,13 +207,14 @@ const listPatternsRoute = createRoute({
   tags: ["Admin — Learned Patterns"],
   summary: "List learned patterns",
   description:
-    "Returns a paginated list of learned query patterns. Supports filtering by status, source entity, and confidence range. Semantic amendments are governed by the improve surface and never appear here (#4569).",
+    "Returns a paginated list of learned query patterns. Supports filtering by status, source entity, and confidence range. Seen-once patterns (repetition_count = 1) are hidden from the default queue and revealed with include_seen_once=true (#4581). Semantic amendments are governed by the improve surface and never appear here (#4569).",
   request: {
     query: z.object({
       status: z.string().optional().openapi({ description: "Filter by status: pending, approved, rejected" }),
       source_entity: z.string().optional().openapi({ description: "Filter by source entity name" }),
       min_confidence: z.string().optional().openapi({ description: "Minimum confidence (0–1)" }),
       max_confidence: z.string().optional().openapi({ description: "Maximum confidence (0–1)" }),
+      include_seen_once: z.string().optional().openapi({ description: "Set to 'true' to include seen-once patterns (repetition_count = 1), which are hidden from the default review queue as raw-capture noise (#4581)." }),
       sort: z.string().optional().openapi({ description: "Sort field: confidence, repetition, latency, created (default created). Non-whitelisted values are rejected with 400." }),
       dir: z.string().optional().openapi({ description: "Sort direction: asc or desc (default desc)" }),
       limit: z.string().optional().openapi({ description: "Maximum results (default 50, max 200)" }),
@@ -508,6 +510,7 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     const maxConfidence = url.searchParams.get("max_confidence");
     const sort = url.searchParams.get("sort");
     const dir = url.searchParams.get("dir");
+    const includeSeenOnce = url.searchParams.get("include_seen_once") === "true";
     const { limit, offset } = parsePagination(c);
 
     if (status && !VALID_STATUSES.has(status)) return c.json({ error: "bad_request", message: `Invalid status filter. Must be one of: pending, approved, rejected.` }, 400);
@@ -543,6 +546,14 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     if (scope.withhold) return c.json({ patterns: [], total: 0, limit, offset }, 200);
     whereParts.push(scope.clause);
     whereParts.push(QUERY_PATTERN_SCOPE);
+    // Seen-once tier (#4581): a `repetition_count = 1` pattern is a single
+    // capture, not evidence — it's hidden from the default review queue so an
+    // admin reviews signal, not raw-capture noise. `include_seen_once=true`
+    // reveals it. A literal (not a bind param), so it doesn't shift `nextIdx`;
+    // shared by the COUNT and the page below, so `total` reconciles with the
+    // rows shown. The boundary is the one `REPEATED_PATTERN_MIN_REPETITIONS`
+    // definition the promotion gate also reads.
+    if (!includeSeenOnce) whereParts.push(`repetition_count >= ${REPEATED_PATTERN_MIN_REPETITIONS}`);
     let nextIdx = params.length + 1;
 
     if (status) { params.push(status); whereParts.push(`status = $${nextIdx}`); nextIdx++; }
@@ -634,11 +645,15 @@ adminLearnedPatterns.openapi(pendingCountRoute, async (c) => {
     const params: unknown[] = [];
     const scope = orgScope(orgId, params);
     if (scope.withhold) return c.json({ count: 0 }, 200);
-    // Reviewable == pending today. When the seen-once tier lands (#4581), narrow
-    // "reviewable" here (e.g. AND repetition_count > 1) — this is the single
-    // place the badge count is defined, so it stays == the cockpit's pending stat.
+    // Reviewable == a pending query pattern that has repeated at least once.
+    // Seen-once captures (`repetition_count = 1`) are excluded (#4581) so the
+    // sidebar badge nags the admin about evidence, not raw-capture noise — the
+    // same floor the default list view and every promotion gate apply. This is
+    // the single place the badge count is defined. (The cockpit `/summary` stats
+    // bar intentionally still counts ALL pending, incl. seen-once, as the
+    // raw-capture view — so the badge is `<=` `summary.stats.pending`.)
     const rows = yield* queryEffect<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM learned_patterns WHERE ${scope.clause} AND ${QUERY_PATTERN_SCOPE} AND status = 'pending'`,
+      `SELECT COUNT(*)::text AS count FROM learned_patterns WHERE ${scope.clause} AND ${QUERY_PATTERN_SCOPE} AND status = 'pending' AND repetition_count >= ${REPEATED_PATTERN_MIN_REPETITIONS}`,
       params,
     );
     return c.json({ count: parseInt(rows[0]?.count ?? "0", 10) }, 200);

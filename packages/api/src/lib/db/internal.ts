@@ -25,6 +25,7 @@ import { normalizeError } from "@atlas/api/lib/effect/errors";
 import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { foldRollingMean } from "@atlas/api/lib/learn/rolling-mean";
+import { REPEATED_PATTERN_MIN_REPETITIONS } from "@atlas/api/lib/learn/pattern-tiers";
 import {
   ELIGIBLE_SET_ORDER_BY_SQL,
   ELIGIBLE_SET_SAFETY_CAP,
@@ -2555,12 +2556,21 @@ export async function getPromoteDecayCandidates(
     params.push(orgId);
     orgClause = `org_id = $${params.length}`;
   }
+  // Seen-once tier (#4581): a `repetition_count = 1` pending row is a single
+  // capture, not evidence — it is excluded from the promotion candidate set until
+  // it repeats, so the auto-promoter never amplifies a shape seen exactly once
+  // (regardless of a low `minRepetitions` threshold). The floor is scoped to the
+  // pending arm only: decay candidates (machine-approved rows) stay reachable at
+  // any repetition so a stale auto-promotion can always be demoted.
   return internalQuery<PromoteDecayCandidateRow>(
     `SELECT id, org_id, type, status, confidence, repetition_count,
             avg_duration_ms, last_seen_at::text AS last_seen_at, auto_promoted
      FROM learned_patterns
      WHERE type = 'query_pattern'
-       AND (status = 'pending' OR (status = 'approved' AND auto_promoted = true))
+       AND (
+         (status = 'pending' AND repetition_count >= ${REPEATED_PATTERN_MIN_REPETITIONS})
+         OR (status = 'approved' AND auto_promoted = true)
+       )
        AND ${orgClause}
      ORDER BY updated_at DESC
      LIMIT $1`,

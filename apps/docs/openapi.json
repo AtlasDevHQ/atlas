@@ -22654,7 +22654,7 @@
           "Admin — Learned Patterns"
         ],
         "summary": "List learned patterns",
-        "description": "Returns a paginated list of learned query patterns. Supports filtering by status, source entity, and confidence range. Semantic amendments are governed by the improve surface and never appear here (#4569).",
+        "description": "Returns a paginated list of learned query patterns. Supports filtering by status, source entity, and confidence range. Seen-once patterns (repetition_count = 1) are hidden from the default queue and revealed with include_seen_once=true (#4581). Semantic amendments are governed by the improve surface and never appear here (#4569).",
         "parameters": [
           {
             "schema": {
@@ -22694,6 +22694,16 @@
             "required": false,
             "description": "Maximum confidence (0–1)",
             "name": "max_confidence",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Set to 'true' to include seen-once patterns (repetition_count = 1), which are hidden from the default review queue as raw-capture noise (#4581)."
+            },
+            "required": false,
+            "description": "Set to 'true' to include seen-once patterns (repetition_count = 1), which are hidden from the default review queue as raw-capture noise (#4581).",
+            "name": "include_seen_once",
             "in": "query"
           },
           {

@@ -187,6 +187,30 @@ describeIfPg("promote/decay DB helpers (real Postgres, #3636)", () => {
   );
 
   it(
+    "excludes seen-once (repetition_count = 1) pending rows from promotion candidates, never from decay (#4581)",
+    async () => {
+      // A single capture is not evidence — it must stay out of the auto-promoter's
+      // candidate set until it repeats, regardless of a low `minRepetitions`.
+      const seenOnce = await seed({ sql: "SELECT 40", status: "pending", repetitionCount: 1 });
+      const repeated = await seed({ sql: "SELECT 41", status: "pending", repetitionCount: 2 });
+      // Decay is a repetition-independent path: a machine-approved row must remain
+      // reachable for demotion even at repetition 1, so the floor is scoped to the
+      // pending arm only.
+      const machineRep1 = await seed({
+        sql: "SELECT 42",
+        status: "approved",
+        autoPromoted: true,
+        repetitionCount: 1,
+      });
+
+      const ids = (await getPromoteDecayCandidates(ORG)).map((c) => c.id).sort();
+      expect(ids).toEqual([repeated, machineRep1].sort());
+      expect(ids).not.toContain(seenOnce);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
     "candidate scope is per-workspace — a different org's rows are excluded (#4582)",
     async () => {
       const mine = await seed({ sql: "SELECT 20", status: "pending", orgId: ORG });

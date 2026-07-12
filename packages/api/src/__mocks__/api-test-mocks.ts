@@ -225,9 +225,13 @@ export function buildInternalDbMockDefaults(deps: {
     incrementPatternCount: () => {},
     getApprovedPatterns: mock(async () => []),
     // Seen-once tier floor (#4581) — a plain constant the learned-patterns route
-    // interpolates into its list + pending-count SQL. Mirrors the real value so
-    // an `import { REPEATED_PATTERN_MIN_REPETITIONS }` never SyntaxErrors at load
-    // time under this partial mock.
+    // interpolates into its list + pending-count SQL. Two obligations: it must
+    // EXIST as a named export or `import { REPEATED_PATTERN_MIN_REPETITIONS }`
+    // fails to link at load time under this partial mock; and it must EQUAL the
+    // real value (internal.ts) so the route-under-mock emits `repetition_count
+    // >= 2` and the SQL-content assertions in admin-learned-patterns.test.ts
+    // hold. A real-constant bump is still caught in CI by the real-Postgres
+    // candidate-scan test, which pins the boundary at rep 2.
     REPEATED_PATTERN_MIN_REPETITIONS: 2,
     upsertSuggestion: mock(() => Promise.resolve("created")),
     getSuggestionsByTables: mock(() => Promise.resolve([])),

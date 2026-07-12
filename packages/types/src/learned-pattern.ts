@@ -94,9 +94,10 @@ export interface LearnedPattern {
   proposedBy: LearnedPatternSource | null;
   reviewedBy: string | null;
   /**
-   * Reviewer resolved to a human-readable name or email (server-side JOIN on
-   * the `user` table), or null when unreviewed or the reviewer no longer
-   * exists. The UI renders this — never the raw `reviewedBy` UUID (#4578).
+   * Reviewer resolved to a human-readable name or email (server-side correlated
+   * subquery against the `user` table), or null when unreviewed or the reviewer
+   * no longer exists. The UI renders this — never the raw `reviewedBy` UUID
+   * (#4578).
    */
   reviewedByLabel: string | null;
   createdAt: string;

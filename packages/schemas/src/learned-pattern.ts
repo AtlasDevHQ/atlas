@@ -116,19 +116,20 @@ export const LearnedPatternsListResponseSchema = z.object({
  * can never inflate a "total" the table doesn't list.
  */
 export const LearnedPatternStatsSchema = z.object({
-  total: z.number(),
-  pending: z.number(),
-  approved: z.number(),
-  rejected: z.number(),
+  total: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+  approved: z.number().int().nonnegative(),
+  rejected: z.number().int().nonnegative(),
 });
 
 /**
  * Cockpit summary for `GET /api/v1/admin/learned-patterns/summary` — the single
  * request that powers the stats bar, the entity-filter dropdown, and the
- * multi-group column toggle. Replaces three hand-rolled page fetches with one
- * schema-validated `useAdminFetch` (#4578): a stats or entity load that 403s
- * now surfaces as an error instead of a silently vanished row, and the entity
- * list is no longer truncated to a page of patterns.
+ * multi-group column toggle. Replaces four per-status stats fetches and a
+ * truncated `limit=200` entity scrape with one schema-validated `useAdminFetch`,
+ * and adds the multi-group flag (#4578): a stats or entity load that 403s now
+ * surfaces as an error instead of a silently vanished row, and the entity list
+ * is no longer truncated to a page of patterns.
  *
  * `multiGroup` is true when the workspace's query patterns span more than one
  * connection-group bucket (a NULL/default bucket counts) — the table only shows

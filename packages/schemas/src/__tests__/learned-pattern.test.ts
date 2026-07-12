@@ -164,6 +164,11 @@ describe("drift rejection", () => {
     expect(LearnedPatternSchema.safeParse(drifted).success).toBe(false);
   });
 
+  test("a row missing reviewedByLabel fails parse (the new field is required, #4578)", () => {
+    const { reviewedByLabel: _drop, ...drifted } = validPattern;
+    expect(LearnedPatternSchema.safeParse(drifted).success).toBe(false);
+  });
+
   test("summary with a string count fails parse (#4578)", () => {
     const drifted = {
       stats: { total: "9", pending: 4, approved: 3, rejected: 2 },

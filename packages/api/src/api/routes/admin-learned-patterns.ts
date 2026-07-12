@@ -60,9 +60,10 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
     proposedBy: (row.proposed_by as LearnedPattern["proposedBy"]) ?? null,
     reviewedBy: (row.reviewed_by as string) ?? null,
     // Resolved reviewer name/email from the `reviewer_label` correlated subquery
-    // (REVIEWER_LABEL_SELECT). Absent on rows read without the join (existence
-    // checks) and null for unreviewed rows — the UI shows this, never the UUID
-    // in `reviewedBy` (#4578).
+    // (REVIEWER_LABEL_SELECT). Every current caller (list/get/update) selects it;
+    // null for an unreviewed row, a since-deleted reviewer, or a future caller
+    // that omits the subquery — the UI shows this, never the UUID in `reviewedBy`
+    // (#4578).
     reviewedByLabel: (row.reviewer_label as string) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -191,7 +192,7 @@ const BulkResponseSchema = z.object({
 // Reviewable-pending count for the nav badge — a single lightweight COUNT so the
 // sidebar poll (every 60s, from every admin page) never runs the heavier summary
 // query. Route-local: the badge hook only reads `count`.
-const PendingCountResponseSchema = z.object({ count: z.number() });
+const PendingCountResponseSchema = z.object({ count: z.number().int().nonnegative() });
 
 const DeletedSchema = DeletedResponseSchema;
 
@@ -569,11 +570,13 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
 // GET /summary — cockpit stats + entity list + multi-group flag
 // ---------------------------------------------------------------------------
 //
-// Registered before GET /{id} so the static path wins the match. One request
-// replaces three hand-rolled page fetches (#4578): stats scoped to
-// query_pattern (so the numbers reconcile with the table), the full distinct
-// entity list (no page-of-200 truncation), and whether the workspace's patterns
-// span more than one connection group.
+// Kept ahead of GET /{id} for readability — Hono already prioritizes the static
+// `/summary` segment over the `/{id}` param. One request replaces four
+// per-status stats fetches and a truncated `limit=200` entity scrape (#4578),
+// and adds the multi-group flag: stats scoped to query_pattern (so the numbers
+// reconcile with the table), the full distinct entity list (no page-of-200
+// truncation), and whether the workspace's patterns span more than one
+// connection group.
 
 adminLearnedPatterns.openapi(summaryRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {

@@ -80,10 +80,12 @@ export function getLearnedPatternColumns(
 ): ColumnDef<LearnedPattern>[] {
   const groupColumn: ColumnDef<LearnedPattern> = {
     id: "connectionGroup",
-    accessorKey: "connectionGroupId",
+    // Read from `row.original` (not `getValue`) since the column id
+    // ("connectionGroup") deliberately differs from the field
+    // ("connectionGroupId") — `getValue` keys off the column id.
     header: ({ column }) => <DataTableColumnHeader column={column} label="Group" />,
     cell: ({ row }) => {
-      const group = row.getValue<string | null>("connectionGroupId");
+      const group = row.original.connectionGroupId;
       // A named group renders verbatim (group ids are human slugs, e.g. "prod");
       // NULL is the default (flat `entities/`) scope.
       return (

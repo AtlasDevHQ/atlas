@@ -99,12 +99,14 @@ export default function LearnedPatternsPage() {
   const bulkMutation = useAdminMutation({ path: "/api/v1/admin/learned-patterns/bulk", method: "POST" });
 
   // The stats bar, entity dropdown, and multi-group column toggle all read one
-  // schema-validated summary (#4578) — replacing four hand-rolled list fetches
-  // for stats plus a truncated `limit=200` scrape for entities. `useAdminFetch`
-  // surfaces a 403/500 as a visible error instead of a silently vanished stats
-  // row, and `useAdminMutation` invalidates the `admin-fetch` namespace on every
-  // approve/reject/delete, so these counts refetch in lockstep with the table.
-  const { data: summary } = useAdminFetch<
+  // schema-validated summary (#4578) — replacing four per-status stats fetches
+  // and a truncated `limit=200` entity scrape with one request, and adding the
+  // multi-group flag. A 403/500/schema-mismatch is consumed via `summaryError`
+  // and rendered in place of the stats bar, so an auth or version failure is
+  // visible instead of a silently vanished stats row. `useAdminMutation`
+  // invalidates the `admin-fetch` namespace on every approve/reject/delete, so
+  // these counts refetch in lockstep with the table.
+  const { data: summary, error: summaryError } = useAdminFetch<
     z.infer<typeof LearnedPatternsSummaryResponseSchema>
   >("/api/v1/admin/learned-patterns/summary", {
     schema: LearnedPatternsSummaryResponseSchema,
@@ -348,7 +350,14 @@ export default function LearnedPatternsPage() {
 
         <ErrorBoundary>
           <div className="space-y-4">
-            {stats && (
+            {/* A failed summary load is shown here, not swallowed — an auth
+                (403) or version (schema-mismatch) failure must be visible, never
+                a silently vanished stats row (#4578). */}
+            {summaryError ? (
+              <p role="alert" className="text-sm text-destructive">
+                Couldn&apos;t load pattern summary: {summaryError.message}
+              </p>
+            ) : stats && (
               <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm text-muted-foreground">
                 <span className="inline-flex items-center gap-1.5">
                   <Clock className="size-3.5" />

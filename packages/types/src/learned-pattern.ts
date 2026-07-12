@@ -120,11 +120,14 @@ export interface LearnedPattern {
    */
   avgDurationMs: number | null;
   /**
-   * How many agent turns injected this pattern in the last 30 days (#4573,
-   * `learned_pattern_injections`). Makes an approved pattern's payoff observable
-   * in the cockpit — a `0` on an approved pattern flags a dead pattern to fix or
-   * retire. Always a non-negative count (never null): a never-injected pattern
-   * reads `0`.
+   * How many agent turns injected this pattern into the chat org-knowledge block
+   * in the last 30 days (#4573, `learned_pattern_injections`). Makes an approved
+   * pattern's payoff observable in the cockpit — a `0` on an approved pattern
+   * flags a likely-dead pattern to fix or retire. Scoped to the
+   * `resolveOrgKnowledgeSection` injection path; the dashboard-suggestions
+   * generation path (`buildLearnedPatternsSection`) is intentionally NOT
+   * attributed, so this can undercount that surface. Always a non-negative count
+   * (never null): a never-injected pattern reads `0`.
    */
   injectionCount: number;
 }

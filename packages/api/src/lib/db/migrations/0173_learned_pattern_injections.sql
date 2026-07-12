@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS learned_pattern_injections (
 CREATE INDEX IF NOT EXISTS idx_learned_pattern_injections_pattern
   ON learned_pattern_injections (pattern_id, injected_at DESC);
 
--- Workspace-scoped aggregates over a time window.
+-- Provisioned ahead of a not-yet-implemented workspace-scoped aggregate over a
+-- time window (no current consumer — the cockpit count filters on pattern_id).
 CREATE INDEX IF NOT EXISTS idx_learned_pattern_injections_org
   ON learned_pattern_injections (org_id, injected_at DESC);

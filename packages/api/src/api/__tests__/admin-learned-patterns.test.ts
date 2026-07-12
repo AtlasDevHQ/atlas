@@ -202,6 +202,17 @@ describe("admin learned-patterns routes", () => {
       expect(params).toContain(0);
     });
 
+    it("selects the per-pattern injection-count subquery (#4573)", async () => {
+      // Guards against silently dropping INJECTION_COUNT_SELECT from the SELECT
+      // (which would make every cockpit count read 0 with no other failing test).
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      await req("GET", "/");
+      const calls = mocks.mockInternalQuery.mock.calls;
+      const selectSql = calls[calls.length - 1][0] as string;
+      expect(selectSql).toContain("injection_count");
+      expect(selectSql).toContain("learned_pattern_injections");
+    });
+
     it("caps limit at 200", async () => {
       mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/?limit=500");
@@ -358,7 +369,7 @@ describe("admin learned-patterns routes", () => {
 
   describe("GET /:id", () => {
     it("returns single pattern", async () => {
-      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([mockRow()]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([mockRow({ injection_count: 4 })]));
       const res = await req("GET", "/pat-1");
       expect(res.status).toBe(200);
       // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
@@ -369,6 +380,11 @@ describe("admin learned-patterns routes", () => {
       expect(body.sourceEntity).toBe("orders");
       expect(body.confidence).toBe(0.8);
       expect(body.status).toBe("pending");
+      // Detail sheet reads injectionCount from this row (#4573).
+      expect(body.injectionCount).toBe(4);
+      // The single-pattern SELECT includes the injection-count subquery.
+      const sql = mocks.mockInternalQuery.mock.calls[0][0] as string;
+      expect(sql).toContain("injection_count");
     });
 
     it("returns 404 for missing pattern", async () => {
@@ -420,6 +436,9 @@ describe("admin learned-patterns routes", () => {
       const sql = updateCall[0] as string;
       expect(sql).toContain("reviewed_by");
       expect(sql).toContain("reviewed_at");
+      // RETURNING carries the injection count so the detail sheet's count
+      // survives an approve/reject in place, rather than resetting to 0 (#4573).
+      expect(sql).toContain("injection_count");
     });
 
     it("approving a pattern never writes confidence — approval is an eligibility grant, not a confidence write (#4571)", async () => {

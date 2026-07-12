@@ -184,6 +184,29 @@ describe("/admin/learned-patterns cockpit visibility (#4578)", () => {
     });
   });
 
+  test("surfaces the per-pattern injection count in the list column and detail sheet (#4573)", async () => {
+    mockApi({ multiGroup: false });
+    render(<LearnedPatternsPage />, { wrapper: Wrapper });
+
+    // List: the "Injected (30d)" column header + the fixture's count cell (7).
+    await waitFor(() => {
+      const headers = Array.from(document.querySelectorAll("th")).map((h) => h.textContent ?? "");
+      if (!headers.some((h) => h.includes("Injected (30d)"))) {
+        throw new Error("injection-count column header not rendered");
+      }
+      const cell = Array.from(document.querySelectorAll("td")).some((td) => td.textContent?.trim() === "7");
+      if (!cell) throw new Error("injection-count cell not rendered");
+    });
+
+    // Detail sheet: the "Injected (30d)" field label + its value.
+    await openDetailSheet();
+    const sheet = document.querySelector(SHEET)!;
+    await waitFor(() => {
+      if (!sheet.textContent?.includes("Injected (30d)")) throw new Error("injection-count field not in sheet");
+    });
+    expect(sheet.textContent).toContain("7");
+  });
+
   test("resolves the reviewer to a name/email in the sheet — never the raw UUID", async () => {
     mockApi({ multiGroup: false });
     render(<LearnedPatternsPage />, { wrapper: Wrapper });

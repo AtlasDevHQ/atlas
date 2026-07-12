@@ -216,6 +216,7 @@ export async function resolveOrgKnowledgeSection(
           err: err instanceof Error ? err.message : String(err),
           orgId: params.orgId,
           connectionGroupId: params.connectionGroupId,
+          conversationId: params.conversationId ?? null,
           requestId: params.requestId,
           count: patterns.length,
         },

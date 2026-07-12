@@ -155,10 +155,16 @@ void mock.module("@atlas/api/lib/settings", () => {
   };
 });
 
+// Capture warn calls so the best-effort-attribution test can assert the failure
+// was LOGGED (not silently swallowed) — the second half of the AC that a raw
+// "still returns a section" check can't see.
+let warnCalls: Array<{ ctx: unknown; msg: string }> = [];
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
-    warn: () => {},
+    warn: (ctx: unknown, msg: string) => {
+      warnCalls.push({ ctx, msg });
+    },
     error: () => {},
     debug: () => {},
   }),
@@ -456,6 +462,7 @@ describe("resolveOrgKnowledgeSection (injection attribution, #4573)", () => {
     patternRows = [];
     recordedInjections = [];
     throwOnRecord = false;
+    warnCalls = [];
   });
 
   test("writes one attribution record naming exactly the injected pattern IDs", async () => {
@@ -526,7 +533,7 @@ describe("resolveOrgKnowledgeSection (injection attribution, #4573)", () => {
     expect(recordedInjections).toHaveLength(0);
   });
 
-  test("a failed attribution write never fails the turn (best-effort, #4573)", async () => {
+  test("a failed attribution write never fails the turn, and is logged not swallowed (best-effort, #4573)", async () => {
     throwOnRecord = true;
     patternRows = [
       { id: "pat-a", org_id: "org-a", connection_group_id: null, pattern_sql: "SELECT revenue FROM a", description: "A", source_entity: "a", confidence: 0.9 },
@@ -543,5 +550,28 @@ describe("resolveOrgKnowledgeSection (injection attribution, #4573)", () => {
     });
 
     expect(section).toContain("### Previously successful query patterns");
+    // The failure was LOGGED (not an empty `catch {}`) — the other half of the AC.
+    const attributionWarn = warnCalls.find((w) => w.msg.includes("injection attribution"));
+    expect(attributionWarn).toBeDefined();
+    expect((attributionWarn?.ctx as { count?: number } | undefined)?.count).toBe(1);
+  });
+
+  test("an omitted conversationId is recorded as null (wire-contract default, #4573)", async () => {
+    patternRows = [
+      { id: "pat-a", org_id: "org-a", connection_group_id: null, pattern_sql: "SELECT revenue FROM a", description: "A", source_entity: "a", confidence: 0.9 },
+    ];
+
+    // No conversationId passed — the resolver defaults it to null on the record.
+    await resolveOrgKnowledgeSection({
+      orgId: "org-a",
+      userId: "user-a",
+      connectionGroupId: null,
+      mode: "published",
+      question: "show me revenue",
+    });
+
+    expect(recordedInjections).toHaveLength(1);
+    expect(recordedInjections[0][0].conversationId).toBeNull();
+    expect(recordedInjections[0][0].requestId).toBeNull();
   });
 });

@@ -753,9 +753,11 @@ export const learnedPatternInjections = pgTable(
   },
   (t) => [
     // Per-pattern count subquery: WHERE pattern_id = $1 AND injected_at >= cutoff.
-    index("idx_learned_pattern_injections_pattern").on(t.patternId, t.injectedAt),
-    // Workspace-scoped aggregates over a time window.
-    index("idx_learned_pattern_injections_org").on(t.orgId, t.injectedAt),
+    // `.desc()` on injected_at mirrors the migration DDL exactly so a later
+    // `drizzle-kit generate` can't emit a drop/recreate to reconcile direction.
+    index("idx_learned_pattern_injections_pattern").on(t.patternId, t.injectedAt.desc()),
+    // Provisioned ahead of a not-yet-implemented workspace-scoped aggregate.
+    index("idx_learned_pattern_injections_org").on(t.orgId, t.injectedAt.desc()),
   ],
 );
 

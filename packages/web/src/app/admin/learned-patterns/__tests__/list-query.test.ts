@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { LEARNED_PATTERN_SORT_KEYS } from "@/ui/lib/admin-schemas";
 import {
   buildLearnedPatternsPath,
   confidenceToPct,
@@ -104,6 +105,21 @@ describe("SORT_PARAM_BY_COLUMN", () => {
       ["avgDurationMs", "latency"],
       ["createdAt", "created"],
     ]);
+  });
+
+  test("every emitted sort value is in the shared API whitelist (no cross-package drift)", () => {
+    // The route accepts exactly `LEARNED_PATTERN_SORT_KEYS`; the cockpit must
+    // never emit a value outside it, or a legitimate sort click 400s. Binding
+    // the web map's values to the shared vocabulary here (plus the values being
+    // typed `LearnedPatternSortKey`) closes the drift the two lockstep comments
+    // otherwise guard by convention alone.
+    const emitted = new Set<string>(SORT_PARAM_BY_COLUMN.values());
+    const whitelist = new Set<string>(LEARNED_PATTERN_SORT_KEYS);
+    for (const value of emitted) {
+      expect(whitelist.has(value)).toBe(true);
+    }
+    // And the cockpit exercises the whole whitelist — no dead API sort key.
+    expect(emitted).toEqual(whitelist);
   });
 });
 

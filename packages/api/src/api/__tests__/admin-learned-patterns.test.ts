@@ -266,21 +266,24 @@ describe("admin learned-patterns routes", () => {
 
     // ─── Sort (whitelisted) ─────────────────────────────────────────
 
-    it("defaults to ORDER BY created_at DESC when no sort param", async () => {
+    it("defaults to newest-first with a deterministic tiebreaker when no sort param", async () => {
       mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/");
       const calls = mocks.mockInternalQuery.mock.calls;
-      // The SELECT (last call) carries the ORDER BY; the COUNT does not.
+      // The SELECT (last call) carries the ORDER BY; the COUNT does not. Assert
+      // the FULL clause — the `NULLS LAST` and `id DESC` tiebreaker are
+      // load-bearing (deterministic pagination), so a loose substring wouldn't
+      // catch their removal.
       const selectSql = calls[calls.length - 1][0] as string;
-      expect(selectSql).toContain("ORDER BY created_at DESC");
+      expect(selectSql).toContain("ORDER BY created_at DESC NULLS LAST, id DESC");
     });
 
-    it("sorts by a whitelisted field + direction", async () => {
+    it("sorts by a whitelisted field + direction, keeping the tiebreaker", async () => {
       mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/?sort=confidence&dir=asc");
       const calls = mocks.mockInternalQuery.mock.calls;
       const selectSql = calls[calls.length - 1][0] as string;
-      expect(selectSql).toContain("ORDER BY confidence ASC");
+      expect(selectSql).toContain("ORDER BY confidence ASC NULLS LAST, id DESC");
     });
 
     it("maps each whitelisted sort key to its real column", async () => {
@@ -295,7 +298,7 @@ describe("admin learned-patterns routes", () => {
         await req("GET", `/?sort=${key}&dir=desc`);
         const calls = mocks.mockInternalQuery.mock.calls;
         const selectSql = calls[calls.length - 1][0] as string;
-        expect(selectSql).toContain(`ORDER BY ${column} DESC`);
+        expect(selectSql).toContain(`ORDER BY ${column} DESC NULLS LAST, id DESC`);
       }
     });
 

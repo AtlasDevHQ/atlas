@@ -14,7 +14,12 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
-import { LearnedPatternSchema, LearnedPatternsListResponseSchema } from "@useatlas/schemas";
+import {
+  LearnedPatternSchema,
+  LearnedPatternsListResponseSchema,
+  LEARNED_PATTERN_SORT_DIRECTIONS,
+  type LearnedPatternSortKey,
+} from "@useatlas/schemas";
 import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
 import { ErrorSchema, AuthErrorSchema, parsePagination, createIdParamSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -90,26 +95,27 @@ function orgFilter(
 
 const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
 
-// Whitelisted sort fields → real DB columns. The ORDER BY column name is only
-// ever taken from THIS map (via `.get()`, which is prototype-pollution-safe and
-// returns `undefined` for anything unknown), never from the raw `sort=` value —
-// so a non-whitelisted sort key is rejected with 400 and can never be
-// interpolated into SQL. `avg_duration_ms` is nullable, so the query sorts
-// NULLS LAST in both directions (rows without a latency measurement sink to the
-// bottom rather than jumping to the top), with a stable `id DESC` tiebreaker so
-// pagination is deterministic when the primary sort ties. Keep the key set in
-// lockstep with the cockpit's `SORT_PARAM_BY_COLUMN` map
-// (packages/web/src/app/admin/learned-patterns/list-query.ts).
-const SORT_COLUMNS = new Map<string, string>([
-  ["confidence", "confidence"],
-  ["repetition", "repetition_count"],
-  ["latency", "avg_duration_ms"],
-  ["created", "created_at"],
-]);
-const SORT_DIRECTIONS = new Map<string, "ASC" | "DESC">([
-  ["asc", "ASC"],
-  ["desc", "DESC"],
-]);
+// Whitelisted sort key (from the shared `LEARNED_PATTERN_SORT_KEYS` wire
+// vocabulary) → real DB column. The ORDER BY column name is only ever taken
+// from THIS map (via `.get()`, which is prototype-pollution-safe and returns
+// `undefined` for anything unknown), never from the raw `sort=` value — so a
+// non-whitelisted sort key is rejected with 400 and can never be interpolated
+// into SQL. `avg_duration_ms` is nullable, so the query sorts NULLS LAST in
+// both directions (rows without a latency measurement sink to the bottom rather
+// than jumping to the top), with a stable `id DESC` tiebreaker so pagination is
+// deterministic when the primary sort ties. The `satisfies Record<...>` makes a
+// missing/typo'd key a compile error; the cockpit binds the *other* side (its
+// map's values are typed `LearnedPatternSortKey`), so the two can't drift.
+const SORT_COLUMN_BY_KEY = {
+  confidence: "confidence",
+  repetition: "repetition_count",
+  latency: "avg_duration_ms",
+  created: "created_at",
+} as const satisfies Record<LearnedPatternSortKey, string>;
+const SORT_COLUMNS = new Map<string, string>(Object.entries(SORT_COLUMN_BY_KEY));
+const SORT_DIRECTIONS = new Map<string, "ASC" | "DESC">(
+  LEARNED_PATTERN_SORT_DIRECTIONS.map((d) => [d, d.toUpperCase() as "ASC" | "DESC"]),
+);
 
 // This route governs `type = 'query_pattern'` rows ONLY (#4569). Every handler
 // scopes its reads and writes to this predicate, so `semantic_amendment` rows
@@ -420,8 +426,9 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
 
     // Sort is whitelisted: the ORDER BY column/direction comes only from the
     // SORT_COLUMNS/SORT_DIRECTIONS maps, never from the raw value — an unknown
-    // `sort`/`dir` is a 400, never interpolated. Absent params default to the
-    // prior behavior (newest first).
+    // `sort`/`dir` is a 400, never interpolated. Absent params default to
+    // newest-first (now with a deterministic `id` tiebreaker, so pagination is
+    // stable even without an explicit sort).
     let orderColumn = "created_at";
     if (sort !== null) {
       const mapped = SORT_COLUMNS.get(sort);

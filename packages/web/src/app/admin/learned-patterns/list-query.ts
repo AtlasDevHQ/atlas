@@ -12,37 +12,44 @@
  * column id (or anything else) yields no `sort` param and the route defaults to
  * newest-first. The route rejects any non-whitelisted `sort` with a 400, so the
  * whitelist is enforced server-side; this map just keeps the client from ever
- * sending one. Keep the values in lockstep with the route's `SORT_COLUMNS` map
- * (packages/api/src/api/routes/admin-learned-patterns.ts).
+ * sending one. Its values are typed `LearnedPatternSortKey` (the shared wire
+ * vocabulary in `@useatlas/schemas`), so a value that drifts from the route's
+ * `SORT_COLUMN_BY_KEY` whitelist is a compile error rather than a runtime 400.
  */
+import type { LearnedPatternSortKey } from "@/ui/lib/admin-schemas";
 
 /**
  * Maps a sortable TanStack column id (from `columns.tsx`) to the API's
  * whitelisted `sort` value. A `Map` (not a plain object) so an unexpected key
  * like `"constructor"` resolves to `undefined` rather than walking the
- * prototype chain.
+ * prototype chain. Values are the shared `LearnedPatternSortKey` union.
  */
-export const SORT_PARAM_BY_COLUMN = new Map<string, string>([
+export const SORT_PARAM_BY_COLUMN = new Map<string, LearnedPatternSortKey>([
   ["confidence", "confidence"],
   ["repetitionCount", "repetition"],
   ["avgDurationMs", "latency"],
   ["createdAt", "created"],
 ]);
 
-/** Page-owned filter state threaded into the list request. */
+/** Page-owned filter state threaded into the list request (a read-only input). */
 export interface LearnedPatternsFilters {
-  status: string;
-  source_entity: string;
-  min_confidence: string;
-  max_confidence: string;
+  readonly status: string;
+  readonly source_entity: string;
+  readonly min_confidence: string;
+  readonly max_confidence: string;
 }
 
-/** The pagination + sort binding `useServerDataTable` passes to `buildPath`. */
+/**
+ * The pagination + sort binding `useServerDataTable` passes to `buildPath`. An
+ * intentional decoupled subset of the hook's `ServerDataTableBinding` — keeping
+ * only the four fields this builder reads leaves `list-query.ts` free of the
+ * hook's generic `TData` so it stays trivially unit-testable.
+ */
 export interface LearnedPatternsBinding {
-  offset: number;
-  perPage: number;
-  sortId?: string;
-  sortDesc?: boolean;
+  readonly offset: number;
+  readonly perPage: number;
+  readonly sortId?: string;
+  readonly sortDesc?: boolean;
 }
 
 /**

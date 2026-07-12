@@ -3,6 +3,8 @@ import {
   LearnedPatternSchema,
   LearnedPatternsListResponseSchema,
   AmendmentPayloadSchema,
+  LEARNED_PATTERN_SORT_KEYS,
+  LEARNED_PATTERN_SORT_DIRECTIONS,
 } from "../learned-pattern";
 import {
   LEARNED_PATTERN_STATUSES,
@@ -166,5 +168,18 @@ describe("drift rejection", () => {
       confidence: 0.5,
     };
     expect(AmendmentPayloadSchema.safeParse(drifted).success).toBe(false);
+  });
+});
+
+describe("learned-pattern sort vocabulary", () => {
+  test("exposes the whitelisted sort keys as the shared wire contract", () => {
+    // The route's SORT_COLUMN_BY_KEY (satisfies Record<LearnedPatternSortKey,…>)
+    // and the cockpit's SORT_PARAM_BY_COLUMN values both derive from this tuple;
+    // pinning it here makes an accidental reorder/rename a visible change.
+    expect(LEARNED_PATTERN_SORT_KEYS).toEqual(["confidence", "repetition", "latency", "created"]);
+  });
+
+  test("exposes the two sort directions", () => {
+    expect(LEARNED_PATTERN_SORT_DIRECTIONS).toEqual(["asc", "desc"]);
   });
 });

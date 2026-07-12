@@ -21,6 +21,7 @@
     "./custom-domain": "./src/custom-domain.ts",
     "./dashboard": "./src/dashboard.ts",
     "./integrations": "./src/integrations.ts",
+    "./learned-pattern": "./src/learned-pattern.ts",
     "./mcp-prompts": "./src/mcp-prompts.ts",
     "./mcp-usage": "./src/mcp-usage.ts",
     "./platform": "./src/platform.ts",

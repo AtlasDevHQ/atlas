@@ -566,6 +566,17 @@ export type {
   PlatformSecurityMetrics,
 } from "@useatlas/types";
 
+// ── Learned patterns (/admin/learned-patterns) ────────────────
+// Wire schema lives in `@useatlas/schemas` (single source of truth shared
+// with the API route layer, #4579). Re-exported here for the cockpit page's
+// `useServerDataTable` call site, so a wire rename surfaces as a
+// `schema_mismatch` banner instead of a silently empty table.
+
+export {
+  LearnedPatternSchema,
+  LearnedPatternsListResponseSchema,
+} from "@useatlas/schemas";
+
 // ── Demo tracking (#3931) ────────────────────────────────────────────
 // Web-local mirrors of the inline shapes in
 // `packages/api/src/api/routes/platform-demo.ts`. Kept here (not in

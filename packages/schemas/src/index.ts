@@ -15,6 +15,7 @@ export * from "./execute-sql";
 export * from "./metric-run";
 export * from "./mode";
 export * from "./integrations";
+export * from "./learned-pattern";
 export * from "./mcp-prompts";
 export * from "./mcp-usage";
 export * from "./platform";

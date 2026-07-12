@@ -14,8 +14,9 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
+import { LearnedPatternSchema, LearnedPatternsListResponseSchema } from "@useatlas/schemas";
 import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
-import { ErrorSchema, AuthErrorSchema, parsePagination, createIdParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination, createIdParamSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-learned-patterns");
@@ -100,32 +101,14 @@ const QUERY_PATTERN_SCOPE = "type = 'query_pattern'";
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
-
-const LearnedPatternSchema = z.object({
-  id: z.string(),
-  orgId: z.string().nullable(),
-  patternSql: z.string(),
-  description: z.string().nullable(),
-  sourceEntity: z.string().nullable(),
-  sourceQueries: z.array(z.string()).nullable(),
-  confidence: z.number(),
-  repetitionCount: z.number(),
-  status: z.enum(["pending", "approved", "rejected"]),
-  proposedBy: z.enum(["agent", "atlas-learn", "expert-agent"]).nullable(),
-  reviewedBy: z.string().nullable(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-  reviewedAt: z.string().nullable(),
-  type: z.enum(["query_pattern", "semantic_amendment"]),
-  amendmentPayload: z.record(z.string(), z.unknown()).nullable(),
-  autoPromoted: z.boolean(),
-  avgDurationMs: z.number().nullable(),
-});
-
-const ListResponseSchema = createListResponseSchema("patterns", LearnedPatternSchema, {
-  limit: z.number(),
-  offset: z.number(),
-});
+//
+// The learned-pattern wire shape (`LearnedPatternSchema`) and its list
+// envelope (`LearnedPatternsListResponseSchema`) live in `@useatlas/schemas`
+// — one source of truth shared with the cockpit page's response parsing, so a
+// field rename can't silently drift between route and web (#4579). The enum
+// tuples come from `@useatlas/types`, and `satisfies z.ZodType<LearnedPattern>`
+// pins the schema to the wire type at compile time. Route-local schemas below
+// are the ones that describe route-only responses (bulk / deleted).
 
 const BulkResponseSchema = z.object({
   updated: z.array(z.string()),
@@ -159,7 +142,7 @@ const listPatternsRoute = createRoute({
   responses: {
     200: {
       description: "Paginated list of learned patterns",
-      content: { "application/json": { schema: ListResponseSchema } },
+      content: { "application/json": { schema: LearnedPatternsListResponseSchema } },
     },
     400: {
       description: "Invalid filter parameters",

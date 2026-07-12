@@ -25,6 +25,7 @@ import { normalizeError } from "@atlas/api/lib/effect/errors";
 import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { foldRollingMean } from "@atlas/api/lib/learn/rolling-mean";
+import { REPEATED_PATTERN_MIN_REPETITIONS } from "@atlas/api/lib/learn/pattern-tiers";
 import {
   ELIGIBLE_SET_ORDER_BY_SQL,
   ELIGIBLE_SET_SAFETY_CAP,
@@ -2500,23 +2501,6 @@ export async function getApprovedPatterns(
  *  audit trail and admin UI can tell a machine approval from a human one even
  *  before reading the `auto_promoted` flag. */
 export const AUTO_PROMOTE_REVIEWER = "atlas-auto-promote";
-
-/**
- * Repetition floor at which a query pattern stops being "seen-once" and becomes
- * reviewable + promotable (#4581). A pattern's `repetition_count` starts at 1 on
- * first capture and increments on every repeat observation via the DB-enforced
- * identity (#4572), so `>= 2` means "observed more than once". A seen-once row
- * (`repetition_count = 1`) persists — the identity row must exist for the second
- * observation to increment it — but sits below the default review queue, the
- * pending badge, and every promotion gate until it repeats (CONTEXT.md § Learned
- * query patterns: "a review queue full of seen-once noise" is an anti-goal).
- *
- * This is the single definition of that boundary, shared by the admin list route
- * + pending-count badge (`api/routes/admin-learned-patterns.ts`) and the
- * promote/decay candidate scan (`getPromoteDecayCandidates` below), so the three
- * surfaces can never disagree on where seen-once ends.
- */
-export const REPEATED_PATTERN_MIN_REPETITIONS = 2;
 
 /** Projection of `learned_patterns` the promote/decay decision needs. */
 export interface PromoteDecayCandidateRow {

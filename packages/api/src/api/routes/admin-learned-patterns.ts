@@ -12,7 +12,8 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { internalQuery, queryEffect, amendmentOrgScope, REPEATED_PATTERN_MIN_REPETITIONS, type AmendmentOrgScope } from "@atlas/api/lib/db/internal";
+import { internalQuery, queryEffect, amendmentOrgScope, type AmendmentOrgScope } from "@atlas/api/lib/db/internal";
+import { REPEATED_PATTERN_MIN_REPETITIONS } from "@atlas/api/lib/learn/pattern-tiers";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import {
   LearnedPatternSchema,

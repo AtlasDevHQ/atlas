@@ -333,6 +333,26 @@ describe("admin learned-patterns routes", () => {
       expect(sql).toContain("reviewed_at");
     });
 
+    it("approving a pattern never writes confidence — approval is an eligibility grant, not a confidence write (#4571)", async () => {
+      let callCount = 0;
+      mocks.mockInternalQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) return Promise.resolve([mockRow()]);
+        return Promise.resolve([mockRow({ status: "approved", reviewed_by: "admin-1" })]);
+      });
+
+      const res = await req("PATCH", "/pat-1", { status: "approved" });
+      expect(res.status).toBe(200);
+      const calls = mocks.mockInternalQuery.mock.calls;
+      const updateSql = calls[1][0] as string;
+      // The approve UPDATE must touch status/reviewer/auto_promoted only — never
+      // confidence. Confidence is the machine's evidence meter and no human
+      // action may mutate it (CONTEXT.md § Learned query patterns).
+      expect(updateSql).toContain("SET ");
+      expect(updateSql).toContain("auto_promoted = false");
+      expect(updateSql).not.toContain("confidence");
+    });
+
     it("returns 400 for invalid status", async () => {
       mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([mockRow()]));
       const res = await req("PATCH", "/pat-1", { status: "invalid" });

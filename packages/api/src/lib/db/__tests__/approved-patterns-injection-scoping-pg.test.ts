@@ -91,11 +91,13 @@ describeIfPg("getApprovedPatterns injection scoping (real Postgres, #4534)", () 
     description: string;
     sourceEntity: string;
     confidence?: number;
+    autoPromoted?: boolean;
+    lastSeenAt?: string | null;
   }): Promise<void> {
     await pool.query(
       `INSERT INTO learned_patterns
-         (org_id, type, status, pattern_sql, description, source_entity, confidence)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+         (org_id, type, status, pattern_sql, description, source_entity, confidence, auto_promoted, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         row.orgId,
         row.type,
@@ -104,6 +106,8 @@ describeIfPg("getApprovedPatterns injection scoping (real Postgres, #4534)", () 
         row.description,
         row.sourceEntity,
         row.confidence ?? 0.9,
+        row.autoPromoted ?? false,
+        row.lastSeenAt ?? null,
       ],
     );
   }
@@ -194,6 +198,85 @@ describeIfPg("getApprovedPatterns injection scoping (real Postgres, #4534)", () 
         "SELECT * FROM shared_shape",
         "SELECT * FROM tenant_a_orders",
       ]);
+    },
+    PG_TIMEOUT_MS,
+  );
+});
+
+describeIfPg("getApprovedPatterns eligible-set ordering (real Postgres, #4571)", () => {
+  let pool: Pool;
+  const schemaName = `eligible_set_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL, options: `-c search_path=${schemaName}` });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+    _resetPool(pool as unknown as InternalPool);
+    _setConfigForTest(configWithDeployMode("self-hosted"));
+  }, PG_TIMEOUT_MS);
+
+  afterAll(async () => {
+    if (!pool) return;
+    _resetPool(null);
+    _resetConfig();
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    await pool.end();
+  });
+
+  afterEach(async () => {
+    await pool.query("DELETE FROM learned_patterns");
+  });
+
+  async function insert(row: {
+    patternSql: string;
+    confidence: number;
+    autoPromoted: boolean;
+    lastSeenAt?: string | null;
+  }): Promise<void> {
+    await pool.query(
+      `INSERT INTO learned_patterns
+         (org_id, type, status, pattern_sql, description, source_entity, confidence, auto_promoted, last_seen_at)
+       VALUES ($1, 'query_pattern', 'approved', $2, 'd', 'e', $3, $4, $5)`,
+      ["org-a", row.patternSql, row.confidence, row.autoPromoted, row.lastSeenAt ?? null],
+    );
+  }
+
+  it(
+    "orders human-approved first, then confidence DESC, then last-observed DESC",
+    async () => {
+      // Machine, high confidence — but every human-approved row must still lead it.
+      await insert({ patternSql: "machine-high", confidence: 0.99, autoPromoted: true });
+      // Human, lowest confidence — leads the machine row but trails the 0.5 humans.
+      await insert({ patternSql: "human-low", confidence: 0.1, autoPromoted: false });
+      // Two human rows tie on confidence 0.5 → newer last_seen_at ranks first.
+      await insert({ patternSql: "human-old", confidence: 0.5, autoPromoted: false, lastSeenAt: "2026-01-01T00:00:00Z" });
+      await insert({ patternSql: "human-new", confidence: 0.5, autoPromoted: false, lastSeenAt: "2026-06-01T00:00:00Z" });
+
+      const rows = await getApprovedPatterns("org-a");
+      expect(rows.map((r) => r.pattern_sql)).toEqual([
+        "human-new", // human · 0.5 · newer
+        "human-old", // human · 0.5 · older
+        "human-low", // human · 0.1
+        "machine-high", // machine · 0.99 — last despite highest confidence
+      ]);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "the safety cap never truncates a low-confidence human-approved pattern (library > old 100-row cap)",
+    async () => {
+      // 120 higher-confidence machine rows would have pushed the human row past the
+      // old confidence-DESC LIMIT 100. Under the eligible-set ordering it sorts
+      // first, so the cap keeps it.
+      for (let i = 0; i < 120; i++) {
+        await insert({ patternSql: `machine-${i}`, confidence: 0.9, autoPromoted: true });
+      }
+      await insert({ patternSql: "human-low", confidence: 0.01, autoPromoted: false });
+
+      const rows = await getApprovedPatterns("org-a");
+      expect(rows[0].pattern_sql).toBe("human-low");
+      expect(rows.some((r) => r.pattern_sql === "human-low")).toBe(true);
     },
     PG_TIMEOUT_MS,
   );

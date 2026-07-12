@@ -26,6 +26,10 @@ import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { foldRollingMean } from "@atlas/api/lib/learn/rolling-mean";
 import {
+  ELIGIBLE_SET_ORDER_BY_SQL,
+  ELIGIBLE_SET_SAFETY_CAP,
+} from "@atlas/api/lib/learn/eligible-set";
+import {
   amendmentIdentityFromRow,
   amendmentIdentityKey,
   type AmendmentIdentityRow,
@@ -2310,6 +2314,13 @@ export interface ApprovedPatternRow {
   /** Rolling-mean wall-clock execution time (ms), or null until first observed
    *  (PRD #3617 B-0). Drives perf-weighted retrieval down-weighting (B-2). */
   avg_duration_ms: number | null;
+  /** True when the nightly auto-promote job promoted this row (machine road);
+   *  false for a human-approved pattern (#4571). Drives the eligible-set bypass:
+   *  human-approved rows are eligible for injection regardless of confidence. */
+  auto_promoted: boolean;
+  /** Last-observed timestamp (ISO text) or null until first observed. The
+   *  eligible-set saturation tiebreak among confidence ties (#4571). */
+  last_seen_at: string | null;
   [key: string]: unknown;
 }
 
@@ -2354,7 +2365,15 @@ export interface QuerySuggestionRow {
  * `entities/` scope). When `connectionGroupId` is null/omitted the active scope
  * IS the default group, so only `connection_group_id IS NULL` rows match — this
  * keeps `us-prod` patterns out of a `eu-prod` agent session and vice-versa.
- * Ordered by confidence DESC, capped at 100 rows.
+ *
+ * Returns ALL approved query patterns for the scope — the confidence gate is NOT
+ * applied here. Approval is an eligibility bypass, so a human-approved row must
+ * reach the injection stage regardless of confidence; the gate applies to
+ * machine-promoted rows and is enforced downstream by {@link selectEligiblePatterns}
+ * (`getRelevantPatterns`). Ordered by the shared {@link ELIGIBLE_SET_ORDER_BY_SQL}
+ * (human-approved first, then confidence DESC, then last-observed) and capped at
+ * {@link ELIGIBLE_SET_SAFETY_CAP} — the ordering makes the cap keep every
+ * human-approved row plus the highest-confidence machine rows (#4571).
  */
 export async function getApprovedPatterns(
   orgId: string | null,
@@ -2405,11 +2424,11 @@ export async function getApprovedPatterns(
   // pattern is garbage in the prompt. Mirrors the filter
   // `getPromoteDecayCandidates` already applies.
   return internalQuery<ApprovedPatternRow>(
-    `SELECT id, org_id, connection_group_id, pattern_sql, description, source_entity, confidence, avg_duration_ms
+    `SELECT id, org_id, connection_group_id, pattern_sql, description, source_entity, confidence, avg_duration_ms, auto_promoted, last_seen_at::text AS last_seen_at
      FROM learned_patterns
      WHERE status = 'approved' AND type = 'query_pattern' AND ${orgClause} AND ${groupClause}
-     ORDER BY confidence DESC
-     LIMIT 100`,
+     ORDER BY ${ELIGIBLE_SET_ORDER_BY_SQL}
+     LIMIT ${ELIGIBLE_SET_SAFETY_CAP}`,
     params,
   );
 }

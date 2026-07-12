@@ -22759,6 +22759,12 @@
                               "null"
                             ]
                           },
+                          "connectionGroupId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "patternSql": {
                             "type": "string"
                           },
@@ -22810,6 +22816,12 @@
                             ]
                           },
                           "reviewedBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "reviewedByLabel": {
                             "type": [
                               "string",
                               "null"
@@ -22925,6 +22937,7 @@
                         "required": [
                           "id",
                           "orgId",
+                          "connectionGroupId",
                           "patternSql",
                           "description",
                           "sourceEntity",
@@ -22934,6 +22947,7 @@
                           "status",
                           "proposedBy",
                           "reviewedBy",
+                          "reviewedByLabel",
                           "createdAt",
                           "updatedAt",
                           "reviewedAt",
@@ -23076,6 +23090,268 @@
         "operationId": "getAdminLearnedPatterns"
       }
     },
+    "/api/v1/admin/learned-patterns/summary": {
+      "get": {
+        "tags": [
+          "Admin — Learned Patterns"
+        ],
+        "summary": "Learned-patterns cockpit summary",
+        "description": "Query-pattern-only counts (total/pending/approved/rejected), the distinct source-entity list for the filter dropdown, and whether the workspace spans multiple connection groups. One request behind the cockpit's stats bar + entity dropdown (#4578).",
+        "responses": {
+          "200": {
+            "description": "Cockpit summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "stats": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "pending": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "approved": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "rejected": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "total",
+                        "pending",
+                        "approved",
+                        "rejected"
+                      ]
+                    },
+                    "entities": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "multiGroup": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "stats",
+                    "entities",
+                    "multiGroup"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminLearnedPatternsSummary"
+      }
+    },
+    "/api/v1/admin/learned-patterns/pending-count": {
+      "get": {
+        "tags": [
+          "Admin — Learned Patterns"
+        ],
+        "summary": "Reviewable pending count",
+        "description": "The count of reviewable pending query patterns — powers the nav badge so the queue announces itself (#4578). A cheap COUNT distinct from the summary so the sidebar poll stays lightweight.",
+        "responses": {
+          "200": {
+            "description": "Reviewable pending count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "count"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminLearnedPatternsPendingCount"
+      }
+    },
     "/api/v1/admin/learned-patterns/{id}": {
       "get": {
         "tags": [
@@ -23108,6 +23384,12 @@
                       "type": "string"
                     },
                     "orgId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "connectionGroupId": {
                       "type": [
                         "string",
                         "null"
@@ -23164,6 +23446,12 @@
                       ]
                     },
                     "reviewedBy": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "reviewedByLabel": {
                       "type": [
                         "string",
                         "null"
@@ -23279,6 +23567,7 @@
                   "required": [
                     "id",
                     "orgId",
+                    "connectionGroupId",
                     "patternSql",
                     "description",
                     "sourceEntity",
@@ -23288,6 +23577,7 @@
                     "status",
                     "proposedBy",
                     "reviewedBy",
+                    "reviewedByLabel",
                     "createdAt",
                     "updatedAt",
                     "reviewedAt",
@@ -23446,6 +23736,12 @@
                         "null"
                       ]
                     },
+                    "connectionGroupId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "patternSql": {
                       "type": "string"
                     },
@@ -23497,6 +23793,12 @@
                       ]
                     },
                     "reviewedBy": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "reviewedByLabel": {
                       "type": [
                         "string",
                         "null"
@@ -23612,6 +23914,7 @@
                   "required": [
                     "id",
                     "orgId",
+                    "connectionGroupId",
                     "patternSql",
                     "description",
                     "sourceEntity",
@@ -23621,6 +23924,7 @@
                     "status",
                     "proposedBy",
                     "reviewedBy",
+                    "reviewedByLabel",
                     "createdAt",
                     "updatedAt",
                     "reviewedAt",

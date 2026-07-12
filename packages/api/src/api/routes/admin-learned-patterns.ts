@@ -17,6 +17,7 @@ import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import {
   LearnedPatternSchema,
   LearnedPatternsListResponseSchema,
+  LearnedPatternsSummaryResponseSchema,
   LEARNED_PATTERN_SORT_DIRECTIONS,
   type LearnedPatternSortKey,
 } from "@useatlas/schemas";
@@ -34,6 +35,7 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
   return {
     id: row.id as string,
     orgId: (row.org_id as string) ?? null,
+    connectionGroupId: (row.connection_group_id as string) ?? null,
     patternSql: row.pattern_sql as string,
     description: (row.description as string) ?? null,
     sourceEntity: (row.source_entity as string) ?? null,
@@ -57,6 +59,12 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
     status: row.status as LearnedPattern["status"],
     proposedBy: (row.proposed_by as LearnedPattern["proposedBy"]) ?? null,
     reviewedBy: (row.reviewed_by as string) ?? null,
+    // Resolved reviewer name/email from the `reviewer_label` correlated subquery
+    // (REVIEWER_LABEL_SELECT). Every current caller (list/get/update) selects it;
+    // null for an unreviewed row, a since-deleted reviewer, or a future caller
+    // that omits the subquery — the UI shows this, never the UUID in `reviewedBy`
+    // (#4578).
+    reviewedByLabel: (row.reviewer_label as string) ?? null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     reviewedAt: row.reviewed_at ? String(row.reviewed_at as string) : null,
@@ -151,6 +159,18 @@ const SORT_DIRECTIONS = new Map<string, "ASC" | "DESC">(
 // invariant true for amendment rows.
 const QUERY_PATTERN_SCOPE = "type = 'query_pattern'";
 
+// Correlated subquery resolving `reviewed_by` (a `user.id`) to a human-readable
+// name or email, so the cockpit never renders a raw reviewer UUID (#4578). A
+// scalar subquery (not a top-level JOIN) keeps the surrounding `SELECT * FROM
+// learned_patterns` single-table — every WHERE/ORDER BY column ref stays
+// unqualified and unambiguous (both tables carry `id`/`created_at`). Selected
+// as `reviewer_label`; `toLearnedPattern` maps it to `reviewedByLabel`.
+// `NULLIF(u.name, '')` prefers a set display name but falls back to email when
+// the name is blank; the whole expression is null for an unreviewed row or a
+// since-deleted reviewer.
+const REVIEWER_LABEL_SELECT =
+  `(SELECT COALESCE(NULLIF(u.name, ''), u.email) FROM "user" u WHERE u.id = learned_patterns.reviewed_by) AS reviewer_label`;
+
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
@@ -168,6 +188,11 @@ const BulkResponseSchema = z.object({
   notFound: z.array(z.string()),
   errors: z.array(z.object({ id: z.string(), error: z.string() })).optional(),
 });
+
+// Reviewable-pending count for the nav badge — a single lightweight COUNT so the
+// sidebar poll (every 60s, from every admin page) never runs the heavier summary
+// query. Route-local: the badge hook only reads `count`.
+const PendingCountResponseSchema = z.object({ count: z.number().int().nonnegative() });
 
 const DeletedSchema = DeletedResponseSchema;
 
@@ -223,6 +248,46 @@ const listPatternsRoute = createRoute({
       description: "Internal server error",
       content: { "application/json": { schema: ErrorSchema } },
     },
+  },
+});
+
+const summaryRoute = createRoute({
+  method: "get",
+  path: "/summary",
+  tags: ["Admin — Learned Patterns"],
+  summary: "Learned-patterns cockpit summary",
+  description:
+    "Query-pattern-only counts (total/pending/approved/rejected), the distinct source-entity list for the filter dropdown, and whether the workspace spans multiple connection groups. One request behind the cockpit's stats bar + entity dropdown (#4578).",
+  responses: {
+    200: {
+      description: "Cockpit summary",
+      content: { "application/json": { schema: LearnedPatternsSummaryResponseSchema } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const pendingCountRoute = createRoute({
+  method: "get",
+  path: "/pending-count",
+  tags: ["Admin — Learned Patterns"],
+  summary: "Reviewable pending count",
+  description:
+    "The count of reviewable pending query patterns — powers the nav badge so the queue announces itself (#4578). A cheap COUNT distinct from the summary so the sidebar poll stays lightweight.",
+  responses: {
+    200: {
+      description: "Reviewable pending count",
+      content: { "application/json": { schema: PendingCountResponseSchema } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -495,10 +560,89 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     const limitIdx = nextIdx;
     selectParams.push(offset);
     const offsetIdx = limitIdx + 1;
-    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns ${whereClause} ${orderByClause} LIMIT $${limitIdx} OFFSET $${offsetIdx}`, selectParams);
+    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT *, ${REVIEWER_LABEL_SELECT} FROM learned_patterns ${whereClause} ${orderByClause} LIMIT $${limitIdx} OFFSET $${offsetIdx}`, selectParams);
 
     return c.json({ patterns: rows.map(toLearnedPattern), total, limit, offset }, 200);
   }), { label: "list learned patterns" });
+});
+
+// ---------------------------------------------------------------------------
+// GET /summary — cockpit stats + entity list + multi-group flag
+// ---------------------------------------------------------------------------
+//
+// Kept ahead of GET /{id} for readability — Hono already prioritizes the static
+// `/summary` segment over the `/{id}` param. One request replaces four
+// per-status stats fetches and a truncated `limit=200` entity scrape (#4578),
+// and adds the multi-group flag: stats scoped to query_pattern (so the numbers
+// reconcile with the table), the full distinct entity list (no page-of-200
+// truncation), and whether the workspace's patterns span more than one
+// connection group.
+
+adminLearnedPatterns.openapi(summaryRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+
+    const params: unknown[] = [];
+    const scope = orgScope(orgId, params);
+    // Fail closed like the list route: an org-less SaaS scope withholds rather
+    // than broaden to NULL-org rows — return an empty summary without querying.
+    if (scope.withhold) {
+      return c.json({ stats: { total: 0, pending: 0, approved: 0, rejected: 0 }, entities: [], multiGroup: false }, 200);
+    }
+    const where = `WHERE ${scope.clause} AND ${QUERY_PATTERN_SCOPE}`;
+
+    const statusRows = yield* queryEffect<{ status: string; count: string }>(
+      `SELECT status, COUNT(*)::text AS count FROM learned_patterns ${where} GROUP BY status`,
+      [...params],
+    );
+    const stats = { total: 0, pending: 0, approved: 0, rejected: 0 };
+    for (const r of statusRows) {
+      const n = parseInt(r.count, 10) || 0;
+      stats.total += n;
+      if (r.status === "pending") stats.pending = n;
+      else if (r.status === "approved") stats.approved = n;
+      else if (r.status === "rejected") stats.rejected = n;
+    }
+
+    const entityRows = yield* queryEffect<{ source_entity: string }>(
+      `SELECT DISTINCT source_entity FROM learned_patterns ${where} AND source_entity IS NOT NULL ORDER BY source_entity`,
+      [...params],
+    );
+    const entities = entityRows.map((r) => r.source_entity);
+
+    // Distinct connection-group buckets — Postgres DISTINCT counts a NULL
+    // (default scope) as its own bucket, so a workspace mixing default + named
+    // groups reads as multi-group and gets the disambiguating column (#4578).
+    const groupRows = yield* queryEffect<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM (SELECT DISTINCT connection_group_id FROM learned_patterns ${where}) t`,
+      [...params],
+    );
+    const multiGroup = parseInt(groupRows[0]?.count ?? "0", 10) > 1;
+
+    return c.json({ stats, entities, multiGroup }, 200);
+  }), { label: "learned-patterns summary" });
+});
+
+// ---------------------------------------------------------------------------
+// GET /pending-count — reviewable pending count for the nav badge
+// ---------------------------------------------------------------------------
+
+adminLearnedPatterns.openapi(pendingCountRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+
+    const params: unknown[] = [];
+    const scope = orgScope(orgId, params);
+    if (scope.withhold) return c.json({ count: 0 }, 200);
+    // Reviewable == pending today. When the seen-once tier lands (#4581), narrow
+    // "reviewable" here (e.g. AND repetition_count > 1) — this is the single
+    // place the badge count is defined, so it stays == the cockpit's pending stat.
+    const rows = yield* queryEffect<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM learned_patterns WHERE ${scope.clause} AND ${QUERY_PATTERN_SCOPE} AND status = 'pending'`,
+      params,
+    );
+    return c.json({ count: parseInt(rows[0]?.count ?? "0", 10) }, 200);
+  }), { label: "learned-patterns pending count" });
 });
 
 // ---------------------------------------------------------------------------
@@ -513,7 +657,7 @@ adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
     const params: unknown[] = [id];
     const scope = orgScope(orgId, params);
     if (scope.withhold) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
-    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${scope.clause}`, params);
+    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT *, ${REVIEWER_LABEL_SELECT} FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${scope.clause}`, params);
     if (rows.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
     return c.json(toLearnedPattern(rows[0]), 200);
   }), { label: "get learned pattern" });
@@ -554,7 +698,7 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     const idIdx = paramIdx;
     const updateScope = orgScope(orgId, updateParams);
     if (updateScope.withhold) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
-    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${QUERY_PATTERN_SCOPE} AND ${updateScope.clause} RETURNING *`, updateParams);
+    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${QUERY_PATTERN_SCOPE} AND ${updateScope.clause} RETURNING *, ${REVIEWER_LABEL_SELECT}`, updateParams);
     if (updated.length === 0) return c.json({ error: "not_found", message: "Pattern was deleted before update completed." }, 404);
 
     // Any status flip changes which patterns the agent sees: the approved set

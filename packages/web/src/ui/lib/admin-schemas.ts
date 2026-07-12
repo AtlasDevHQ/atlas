@@ -575,6 +575,7 @@ export type {
 export {
   LearnedPatternSchema,
   LearnedPatternsListResponseSchema,
+  LearnedPatternsSummaryResponseSchema,
   LEARNED_PATTERN_SORT_KEYS,
 } from "@useatlas/schemas";
 export type { LearnedPatternSortKey, LearnedPatternSortDirection } from "@useatlas/schemas";

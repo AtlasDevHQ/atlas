@@ -60,6 +60,7 @@ export const AmendmentPayloadSchema = z.object({
 export const LearnedPatternSchema = z.object({
   id: z.string(),
   orgId: z.string().nullable(),
+  connectionGroupId: z.string().nullable(),
   patternSql: z.string(),
   description: z.string().nullable(),
   sourceEntity: z.string().nullable(),
@@ -69,6 +70,7 @@ export const LearnedPatternSchema = z.object({
   status: z.enum(LEARNED_PATTERN_STATUSES),
   proposedBy: z.enum(LEARNED_PATTERN_SOURCES).nullable(),
   reviewedBy: z.string().nullable(),
+  reviewedByLabel: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
   reviewedAt: z.string().nullable(),
@@ -105,4 +107,37 @@ export const LearnedPatternsListResponseSchema = z.object({
   total: z.number(),
   limit: z.number(),
   offset: z.number(),
+});
+
+/**
+ * Query-pattern-only counts for the cockpit stats bar. Every count scopes to
+ * `type = 'query_pattern'` on the route (#4569/#4578), so the numbers on the
+ * page reconcile with the table (which shares that scope) — an amendment row
+ * can never inflate a "total" the table doesn't list.
+ */
+export const LearnedPatternStatsSchema = z.object({
+  total: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+  approved: z.number().int().nonnegative(),
+  rejected: z.number().int().nonnegative(),
+});
+
+/**
+ * Cockpit summary for `GET /api/v1/admin/learned-patterns/summary` — the single
+ * request that powers the stats bar, the entity-filter dropdown, and the
+ * multi-group column toggle. Replaces four per-status stats fetches and a
+ * truncated `limit=200` entity scrape with one schema-validated `useAdminFetch`,
+ * and adds the multi-group flag (#4578): a stats or entity load that 403s now
+ * surfaces as an error instead of a silently vanished row, and the entity list
+ * is no longer truncated to a page of patterns.
+ *
+ * `multiGroup` is true when the workspace's query patterns span more than one
+ * connection-group bucket (a NULL/default bucket counts) — the table only shows
+ * the group column then, so single-group (and self-hosted) workspaces stay
+ * uncluttered.
+ */
+export const LearnedPatternsSummaryResponseSchema = z.object({
+  stats: LearnedPatternStatsSchema,
+  entities: z.array(z.string()),
+  multiGroup: z.boolean(),
 });

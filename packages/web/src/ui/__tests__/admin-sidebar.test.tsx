@@ -104,8 +104,9 @@ function AdminWrapper({ children }: { children: ReactNode }) {
 }
 
 const PENDING_COUNT_URL = "/api/v1/admin/semantic-improve/pending-count";
+const LEARNED_PENDING_COUNT_URL = "/api/v1/admin/learned-patterns/pending-count";
 
-/** Render with `fetch` spied; return which URLs were requested. */
+/** Render with `fetch` spied; return which badge-count URLs were requested. */
 function renderWithFetchSpy(wrapper: ({ children }: { children: ReactNode }) => React.JSX.Element) {
   const fetchSpy = mock(async (_url: string | URL, _init?: RequestInit) => ({
     ok: true,
@@ -116,9 +117,11 @@ function renderWithFetchSpy(wrapper: ({ children }: { children: ReactNode }) => 
   globalThis.fetch = fetchSpy as unknown as typeof fetch;
   try {
     const { unmount } = render(<AdminSidebar />, { wrapper });
-    const polledPendingCount = fetchSpy.mock.calls.some((c) => String(c[0]).includes(PENDING_COUNT_URL));
+    const urls = fetchSpy.mock.calls.map((c) => String(c[0]));
+    const polledPendingCount = urls.some((u) => u.includes(PENDING_COUNT_URL));
+    const polledLearnedCount = urls.some((u) => u.includes(LEARNED_PENDING_COUNT_URL));
     unmount();
-    return { polledPendingCount };
+    return { polledPendingCount, polledLearnedCount };
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -168,5 +171,12 @@ describe("AdminSidebar", () => {
 
   test("polls the pending-count badge for an admin", () => {
     expect(renderWithFetchSpy(AdminWrapper).polledPendingCount).toBe(true);
+  });
+
+  // #4578 — the Learned Patterns nav entry gets a reviewable-pending badge so the
+  // queue announces itself. Same admin gate as the amendment badge.
+  test("polls the learned-patterns reviewable-pending count for an admin, not for a non-admin", () => {
+    expect(renderWithFetchSpy(AdminWrapper).polledLearnedCount).toBe(true);
+    expect(renderWithFetchSpy(Wrapper).polledLearnedCount).toBe(false);
   });
 });

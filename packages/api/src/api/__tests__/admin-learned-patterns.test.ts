@@ -547,6 +547,109 @@ describe("admin learned-patterns routes", () => {
     });
   });
 
+  // ─── GET /summary ─────────────────────────────────────────────────
+
+  describe("GET /summary", () => {
+    it("returns query-pattern stats, the entity list, and the multi-group flag (#4578)", async () => {
+      // Static /summary must win the match over /{id} — if it were captured as
+      // an id, none of these GROUP BY / DISTINCT queries would run and the
+      // assertions below would fail.
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("GROUP BY status")) {
+          return Promise.resolve([
+            { status: "pending", count: "2" },
+            { status: "approved", count: "1" },
+          ]);
+        }
+        if (sql.includes("DISTINCT source_entity")) {
+          return Promise.resolve([{ source_entity: "customers" }, { source_entity: "orders" }]);
+        }
+        if (sql.includes("DISTINCT connection_group_id")) {
+          return Promise.resolve([{ count: "2" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await req("GET", "/summary");
+      expect(res.status).toBe(200);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      // total is the sum of the status buckets — reconciles with the table.
+      expect(body.stats).toEqual({ total: 3, pending: 2, approved: 1, rejected: 0 });
+      expect(body.entities).toEqual(["customers", "orders"]);
+      expect(body.multiGroup).toBe(true);
+
+      // Every summary count is query-pattern-scoped so amendment rows can never
+      // inflate a number the table doesn't list (#4569/#4578).
+      const sqls = mocks.mockInternalQuery.mock.calls.map((c) => c[0] as string);
+      expect(sqls.every((s) => s.includes("type = 'query_pattern'"))).toBe(true);
+    });
+
+    it("reports multiGroup false when patterns share a single group bucket", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("GROUP BY status")) return Promise.resolve([{ status: "pending", count: "1" }]);
+        if (sql.includes("DISTINCT source_entity")) return Promise.resolve([{ source_entity: "orders" }]);
+        if (sql.includes("DISTINCT connection_group_id")) return Promise.resolve([{ count: "1" }]);
+        return Promise.resolve([]);
+      });
+      const res = await req("GET", "/summary");
+      expect(res.status).toBe(200);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.multiGroup).toBe(false);
+    });
+  });
+
+  // ─── GET /pending-count ───────────────────────────────────────────
+
+  describe("GET /pending-count", () => {
+    it("returns the reviewable (pending, query_pattern) count for the nav badge (#4578)", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("status = 'pending'")) return Promise.resolve([{ count: "5" }]);
+        return Promise.resolve([]);
+      });
+      const res = await req("GET", "/pending-count");
+      expect(res.status).toBe(200);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.count).toBe(5);
+      const sql = mocks.mockInternalQuery.mock.calls[0][0] as string;
+      expect(sql).toContain("type = 'query_pattern'");
+      expect(sql).toContain("status = 'pending'");
+    });
+  });
+
+  // ─── Reviewer identity + connection group (#4578) ─────────────────
+
+  describe("reviewer identity + connection group", () => {
+    it("resolves the reviewer to a name/email label and carries the connection group", async () => {
+      let callCount = 0;
+      mocks.mockInternalQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) return Promise.resolve([{ count: "2" }]);
+        return Promise.resolve([
+          mockRow({ id: "p1", reviewed_by: "user-9", reviewer_label: "Ada Lovelace", connection_group_id: "prod", status: "approved" }),
+          mockRow({ id: "p2" }), // no reviewer_label / connection_group_id in the row
+        ]);
+      });
+
+      const res = await req("GET", "/");
+      expect(res.status).toBe(200);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.patterns[0].reviewedByLabel).toBe("Ada Lovelace");
+      expect(body.patterns[0].connectionGroupId).toBe("prod");
+      // Unresolved / unreviewed rows carry nulls, never a raw UUID.
+      expect(body.patterns[1].reviewedByLabel).toBeNull();
+      expect(body.patterns[1].connectionGroupId).toBeNull();
+
+      // The SELECT resolves the label via a correlated subquery over the user table.
+      const selectSql = mocks.mockInternalQuery.mock.calls[1][0] as string;
+      expect(selectSql).toContain("reviewer_label");
+      expect(selectSql).toContain('FROM "user"');
+    });
+  });
+
   // ─── Org-scoping ──────────────────────────────────────────────────
 
   describe("org-scoping", () => {

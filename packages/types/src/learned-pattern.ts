@@ -75,6 +75,14 @@ export interface AmendmentPayload {
 export interface LearnedPattern {
   id: string;
   orgId: string | null;
+  /**
+   * Connection group the pattern was learned against (`connection_group_id`),
+   * or null for the default (flat `entities/`) scope. Surfaced so an admin in a
+   * multi-group workspace can tell two near-identical twins apart before
+   * approving one (#4578) — the injection reader already scopes by this column
+   * (`getApprovedPatterns`), so an approval must be attributable to a group.
+   */
+  connectionGroupId: string | null;
   patternSql: string;
   description: string | null;
   sourceEntity: string | null;
@@ -85,6 +93,13 @@ export interface LearnedPattern {
   status: LearnedPatternStatus;
   proposedBy: LearnedPatternSource | null;
   reviewedBy: string | null;
+  /**
+   * Reviewer resolved to a human-readable name or email (server-side correlated
+   * subquery against the `user` table), or null when unreviewed or the reviewer
+   * no longer exists. The UI renders this — never the raw `reviewedBy` UUID
+   * (#4578).
+   */
+  reviewedByLabel: string | null;
   createdAt: string;
   updatedAt: string;
   reviewedAt: string | null;

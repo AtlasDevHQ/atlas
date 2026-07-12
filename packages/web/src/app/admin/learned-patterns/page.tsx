@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { z } from "zod";
 import { useQueryStates } from "nuqs";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -9,10 +9,12 @@ import { learnedPatternsSearchParams } from "./search-params";
 import { buildLearnedPatternsPath } from "./list-query";
 import { ConfidenceFilter } from "./confidence-filter";
 import { getLearnedPatternColumns, statusBadge, autoApprovedBadge } from "./columns";
-import { useAtlasConfig } from "@/ui/context";
 import { ServerDataTable } from "@/ui/components/admin/server-data-table";
 import { useServerDataTable } from "@/ui/hooks/use-server-data-table";
-import { LearnedPatternsListResponseSchema } from "@/ui/lib/admin-schemas";
+import {
+  LearnedPatternsListResponseSchema,
+  LearnedPatternsSummaryResponseSchema,
+} from "@/ui/lib/admin-schemas";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -51,7 +53,7 @@ import { ActionErrorAlert } from "./action-error";
 import { renderSurface, type ActionError, type StatusSurface } from "./action-error-state";
 import { bulkPartialSummary, RelativeTimestamp } from "@/ui/components/admin/queue";
 import { buildFetchError } from "@/ui/lib/fetch-error";
-import { useInProgressSet } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch, useInProgressSet } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -66,14 +68,8 @@ import {
   Database,
   Bot,
   Calendar,
+  Layers,
 } from "lucide-react";
-
-interface PatternStats {
-  total: number;
-  pending: number;
-  approved: number;
-  rejected: number;
-}
 
 const LIMIT = 50;
 const STATUS_FILTERS: { value: string; label: string }[] = [
@@ -84,13 +80,6 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
 ];
 
 export default function LearnedPatternsPage() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-
-  // Mutation-error surface (list-load errors come from the module below). The
-  // `fetchKey` cache-buster now refreshes only the aux stats/entities fetches;
-  // the paginated list refetches through the module + admin-fetch invalidation.
-  //
   // A mutation failure is pinned to the surface the admin acted in — the detail
   // `sheet`, the `delete` confirmation dialog, or the `page` body (row-menu /
   // bulk actions) — so the error renders where the click happened instead of in
@@ -98,81 +87,33 @@ export default function LearnedPatternsPage() {
   // the honest "Retry" re-run the exact failed mutation via the current-render
   // handlers, so there are no stale-closure surprises.
   const [actionError, setActionError] = useState<ActionError | null>(null);
-  const [fetchKey, setFetchKey] = useState(0);
 
   const [params, setParams] = useQueryStates(learnedPatternsSearchParams);
 
-  const [stats, setStats] = useState<PatternStats | null>(null);
   const [detailPattern, setDetailPattern] = useState<LearnedPattern | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<LearnedPattern | null>(null);
-  const [sourceEntities, setSourceEntities] = useState<string[]>([]);
 
   const inProgress = useInProgressSet();
   const statusMutation = useAdminMutation<LearnedPattern>({ method: "PATCH" });
   const deleteMutation = useAdminMutation({ method: "DELETE" });
   const bulkMutation = useAdminMutation({ path: "/api/v1/admin/learned-patterns/bulk", method: "POST" });
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchStats() {
-      try {
-        const [allRes, pendingRes, approvedRes, rejectedRes] = await Promise.all([
-          fetch(`${apiUrl}/api/v1/admin/learned-patterns?limit=1&offset=0`, { credentials }),
-          fetch(`${apiUrl}/api/v1/admin/learned-patterns?limit=1&offset=0&status=pending`, { credentials }),
-          fetch(`${apiUrl}/api/v1/admin/learned-patterns?limit=1&offset=0&status=approved`, { credentials }),
-          fetch(`${apiUrl}/api/v1/admin/learned-patterns?limit=1&offset=0&status=rejected`, { credentials }),
-        ]);
-
-        if (cancelled) return;
-
-        if (allRes.ok && pendingRes.ok && approvedRes.ok && rejectedRes.ok) {
-          const [all, pending, approved, rejected] = await Promise.all([
-            allRes.json(), pendingRes.json(), approvedRes.json(), rejectedRes.json(),
-          ]);
-          if (!cancelled) {
-            setStats({
-              total: all.total ?? 0,
-              pending: pending.total ?? 0,
-              approved: approved.total ?? 0,
-              rejected: rejected.total ?? 0,
-            });
-          }
-        } else {
-          console.debug("Some stats fetches failed:", {
-            all: allRes.status, pending: pendingRes.status, approved: approvedRes.status, rejected: rejectedRes.status,
-          });
-        }
-      } catch (err) {
-        // Stats are non-critical — don't block the page.
-        console.debug("Failed to fetch learned pattern stats", err);
-      }
-    }
-
-    async function fetchEntities() {
-      try {
-        const res = await fetch(`${apiUrl}/api/v1/admin/learned-patterns?limit=200&offset=0`, { credentials });
-        if (cancelled) return;
-        if (!res.ok) {
-          console.debug(`Failed to fetch source entities: HTTP ${res.status}`);
-          return;
-        }
-        const data = await res.json();
-        const entities = new Set<string>();
-        for (const p of data.patterns ?? []) {
-          if (p.sourceEntity) entities.add(p.sourceEntity);
-        }
-        if (!cancelled) setSourceEntities([...entities].toSorted());
-      } catch (err) {
-        console.debug("Failed to fetch source entities", err);
-      }
-    }
-
-    // fire-and-forget: background loads guarded by the `cancelled` flag
-    void fetchStats();
-    void fetchEntities();
-    return () => { cancelled = true; };
-  }, [apiUrl, credentials, fetchKey]);
+  // The stats bar, entity dropdown, and multi-group column toggle all read one
+  // schema-validated summary (#4578) — replacing four per-status stats fetches
+  // and a truncated `limit=200` entity scrape with one request, and adding the
+  // multi-group flag. A 403/500/schema-mismatch is consumed via `summaryError`
+  // and rendered in place of the stats bar, so an auth or version failure is
+  // visible instead of a silently vanished stats row. `useAdminMutation`
+  // invalidates the `admin-fetch` namespace on every approve/reject/delete, so
+  // these counts refetch in lockstep with the table.
+  const { data: summary, error: summaryError } = useAdminFetch<
+    z.infer<typeof LearnedPatternsSummaryResponseSchema>
+  >("/api/v1/admin/learned-patterns/summary", {
+    schema: LearnedPatternsSummaryResponseSchema,
+  });
+  const stats = summary?.stats ?? null;
+  const sourceEntities = summary?.entities ?? [];
+  const multiGroup = summary?.multiGroup ?? false;
 
   // `surface` decides where a failure renders: "sheet" when the admin clicked
   // Approve/Reject inside the detail sheet, "page" when from the row menu.
@@ -198,7 +139,6 @@ export default function LearnedPatternsPage() {
     if (!result.ok) {
       setActionError({ error: result.error, action: { kind: "status", id, status, surface } });
     }
-    setFetchKey((k) => k + 1); // refresh aux stats/entities counts
     inProgress.stop(id);
   }
 
@@ -218,7 +158,6 @@ export default function LearnedPatternsPage() {
       // delete can't be mistaken for a completed one.
       setActionError({ error: result.error, action: { kind: "delete", id } });
     }
-    setFetchKey((k) => k + 1); // refresh aux stats/entities counts
     inProgress.stop(id);
   }
 
@@ -232,7 +171,6 @@ export default function LearnedPatternsPage() {
     if (!result.ok) {
       // Whole-request failure — keep selection so the operator can retry.
       setActionError({ error: result.error, action: { kind: "bulk", status } });
-      setFetchKey((k) => k + 1);
       return;
     }
 
@@ -260,8 +198,6 @@ export default function LearnedPatternsPage() {
     } else {
       table.resetRowSelection();
     }
-
-    setFetchKey((k) => k + 1); // refresh aux stats/entities counts
   }
 
   // Honest "Retry" — re-run the exact failed mutation through the current-render
@@ -303,7 +239,7 @@ export default function LearnedPatternsPage() {
   }
 
   const columns: ColumnDef<LearnedPattern>[] = (() => {
-    const base = getLearnedPatternColumns();
+    const base = getLearnedPatternColumns({ showGroup: multiGroup });
     const actionsCol: ColumnDef<LearnedPattern> = {
       id: "actions",
       header: () => null,
@@ -402,11 +338,26 @@ export default function LearnedPatternsPage() {
         <div className="mb-6">
           <h1 className="text-2xl font-bold tracking-tight">Learned Patterns</h1>
           <p className="text-sm text-muted-foreground">Review and manage agent-proposed query patterns</p>
+          {/* States approval's consequence so an admin knows what a click does
+              before making it (#4578): approval is an eligibility grant, not a
+              confidence write — it takes effect immediately regardless of the
+              machine's confidence score (CONTEXT.md § Learned query patterns). */}
+          <p className="mt-2 text-sm text-muted-foreground">
+            Approving a pattern injects it into the agent whenever it&apos;s
+            relevant — immediately, regardless of its confidence score.
+          </p>
         </div>
 
         <ErrorBoundary>
           <div className="space-y-4">
-            {stats && (
+            {/* A failed summary load is shown here, not swallowed — an auth
+                (403) or version (schema-mismatch) failure must be visible, never
+                a silently vanished stats row (#4578). */}
+            {summaryError ? (
+              <p role="alert" className="text-sm text-destructive">
+                Couldn&apos;t load pattern summary: {summaryError.message}
+              </p>
+            ) : stats && (
               <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm text-muted-foreground">
                 <span className="inline-flex items-center gap-1.5">
                   <Clock className="size-3.5" />
@@ -596,6 +547,16 @@ export default function LearnedPatternsPage() {
                       </span>
                       <p className="text-xs">{detailPattern.proposedBy ?? "\u2014"}</p>
                     </div>
+                    {/* Connection group \u2014 shown only for multi-group workspaces, so
+                        an admin confirms which group they're approving into (#4578). */}
+                    {multiGroup && (
+                      <div className="space-y-1">
+                        <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                          <Layers className="size-3" /> Group
+                        </span>
+                        <p className="font-mono text-xs">{detailPattern.connectionGroupId ?? "default"}</p>
+                      </div>
+                    )}
                     <div className="space-y-1">
                       <span className="text-xs font-medium text-muted-foreground">Confidence</span>
                       <p className="text-xs">{Math.round(detailPattern.confidence * 100)}%</p>
@@ -628,7 +589,8 @@ export default function LearnedPatternsPage() {
                     <div className="space-y-2 border-t pt-4">
                       <h3 className="text-sm font-medium">Review History</h3>
                       <div className="text-xs text-muted-foreground space-y-1">
-                        <p>Reviewed by: {detailPattern.reviewedBy ?? "Unknown"}</p>
+                        {/* Resolved name/email — never the raw reviewer UUID (#4578). */}
+                        <p>Reviewed by: {detailPattern.reviewedByLabel ?? "Unknown"}</p>
                         <p><RelativeTimestamp iso={detailPattern.reviewedAt} label="Reviewed" /></p>
                       </div>
                     </div>

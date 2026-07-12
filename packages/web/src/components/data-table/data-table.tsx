@@ -10,13 +10,24 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { getColumnPinningStyle } from "@/lib/data-table";
+import { getColumnPinningStyle, interactiveRowProps } from "@/lib/data-table";
 import { cn } from "@/lib/utils";
 
 interface DataTableProps<TData> extends React.ComponentProps<"div"> {
   table: TanstackTable<TData>;
   actionBar?: React.ReactNode;
-  onRowClick?: (row: Row<TData>, event: React.MouseEvent) => void;
+  /**
+   * Opt-in row activation (e.g. open a detail sheet). When set, each row becomes
+   * a focusable `role="button"` that fires on click *and* on Enter/Space, so
+   * keyboard and screen-reader users can open the same detail the pointer does.
+   * The event is a `MouseEvent` on click and a `KeyboardEvent` on key activation
+   * — consumers that guard nested controls read only `event.target`, common to
+   * both.
+   */
+  onRowClick?: (
+    row: Row<TData>,
+    event: React.MouseEvent | React.KeyboardEvent,
+  ) => void;
 }
 
 export function DataTable<TData>({
@@ -63,8 +74,9 @@ export function DataTable<TData>({
                 <TableRow
                   key={row.id}
                   data-state={row.getIsSelected() && "selected"}
-                  className={onRowClick ? "cursor-pointer" : undefined}
-                  onClick={(e) => onRowClick?.(row, e)}
+                  {...(onRowClick
+                    ? interactiveRowProps((e) => onRowClick(row, e))
+                    : {})}
                 >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell

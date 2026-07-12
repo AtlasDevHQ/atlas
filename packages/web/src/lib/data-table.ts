@@ -36,6 +36,56 @@ export function getColumnPinningStyle<TData>({
   };
 }
 
+/**
+ * Props that turn a table `<tr>` into a keyboard-operable button. A clickable
+ * row is otherwise pointer-only — no focus, no Enter/Space — so keyboard and
+ * screen-reader users can't reach a row-opened detail view at all. Spreading
+ * these onto the row gives it `role="button"`, tab focus, a focus-visible ring,
+ * and Enter/Space activation, all wired to the same `onActivate` the click uses.
+ *
+ * The keydown only fires `onActivate` when the row is itself the event target,
+ * so Enter/Space on a nested control (a selection checkbox, a row action menu)
+ * keeps its own default instead of being hijacked (and swallowed by the row's
+ * `preventDefault`) into opening the row.
+ *
+ * `role="button"` on the row mirrors the clickable-row contract established for
+ * the chat data table (#3212). It overrides the `<tr>`'s implicit `role="row"`,
+ * a deliberate trade for these row-opens-a-detail-sheet admin tables; the target
+ * guard above is what keeps the row's own nested controls operable despite it.
+ *
+ * Shared by the plain and expandable data tables so both keep one identical
+ * keyboard contract: each calls this with its row's activation callback (the
+ * plain table forwards the event, the expandable one omits it), so the helper —
+ * not the caller — owns the `onClick`/`onKeyDown` wiring. A non-interactive row
+ * spreads `{}` instead and is left untouched.
+ */
+export function interactiveRowProps(
+  onActivate: (event: React.MouseEvent | React.KeyboardEvent) => void,
+): {
+  role: "button";
+  tabIndex: 0;
+  className: string;
+  onClick: React.MouseEventHandler;
+  onKeyDown: React.KeyboardEventHandler;
+} {
+  return {
+    role: "button",
+    tabIndex: 0,
+    className:
+      "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+    onClick: onActivate,
+    onKeyDown: (event) => {
+      if (
+        (event.key === "Enter" || event.key === " ") &&
+        event.target === event.currentTarget
+      ) {
+        event.preventDefault();
+        onActivate(event);
+      }
+    },
+  };
+}
+
 export function getFilterOperators(filterVariant: FilterVariant) {
   const operatorMap: Record<
     FilterVariant,

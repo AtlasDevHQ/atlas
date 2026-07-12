@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { getColumnPinningStyle } from "@/lib/data-table";
+import { getColumnPinningStyle, interactiveRowProps } from "@/lib/data-table";
 import { cn } from "@/lib/utils";
 
 interface ExpandableDataTableProps<TData> extends React.ComponentProps<"div"> {
@@ -79,8 +79,9 @@ export function ExpandableDataTable<TData>({
                   <Fragment key={row.id}>
                     <TableRow
                       data-state={row.getIsSelected() && "selected"}
-                      className={onRowClick ? "cursor-pointer" : undefined}
-                      onClick={onRowClick ? () => onRowClick(row) : undefined}
+                      {...(onRowClick
+                        ? interactiveRowProps(() => onRowClick(row))
+                        : {})}
                     >
                       {row.getVisibleCells().map((cell) => (
                         <TableCell

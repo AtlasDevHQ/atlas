@@ -60,8 +60,15 @@ interface ServerDataTableExpandableProps<TData> {
 /** Plain-table variant: renders via `DataTable`, with optional row-click + bulk bar. */
 interface ServerDataTablePlainProps<TData> {
   expandable?: never;
-  /** Plain row-click (e.g. open a detail sheet). */
-  onRowClick?: (row: Row<TData>, event: React.MouseEvent) => void;
+  /**
+   * Plain row-click (e.g. open a detail sheet). Fires on pointer click and on
+   * keyboard Enter/Space, so the event is a `MouseEvent` or a `KeyboardEvent`;
+   * guards that inspect the row's nested controls read only `event.target`.
+   */
+  onRowClick?: (
+    row: Row<TData>,
+    event: React.MouseEvent | React.KeyboardEvent,
+  ) => void;
   /** Bulk action bar rendered by `DataTable` when rows are selected. */
   actionBar?: ReactNode;
 }

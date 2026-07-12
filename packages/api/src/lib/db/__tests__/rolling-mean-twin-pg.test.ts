@@ -2,7 +2,8 @@
  * Real-Postgres twin-pin for the learned-pattern latency rolling mean (#4576,
  * PRD #4570).
  *
- * `avg_duration_ms` is folded in THREE places that must agree bit-for-bit:
+ * `avg_duration_ms` is folded in THREE places that must fold identically
+ * (exactly for integer-valued means, within representation tolerance otherwise):
  *   1. `foldRollingMean` (rolling-mean.ts) — the canonical TypeScript definition.
  *   2. `incrementPatternCount`'s UPDATE `CASE` (db/internal.ts) — the production
  *      path for every repeat observation; a hand-written SQL twin of (1).
@@ -100,6 +101,7 @@ describeIfPg("SQL rolling-mean fold pinned to its TypeScript twin (real Postgres
   async function poll(
     patternSql: string,
     predicate: (row: PatternRow) => boolean,
+    label: string,
     timeoutMs = 5000,
   ): Promise<PatternRow> {
     const deadline = Date.now() + timeoutMs;
@@ -109,13 +111,24 @@ describeIfPg("SQL rolling-mean fold pinned to its TypeScript twin (real Postgres
       if (last && predicate(last)) return last;
       await new Promise((r) => setTimeout(r, 10));
     }
-    expect(last).not.toBeNull();
-    return last!;
+    // Timed out with the predicate never satisfied. insert/increment are
+    // fire-and-forget and `internalExecute` swallows write errors (and drops
+    // writes once its circuit breaker trips), so this poll is the ONLY detector
+    // that a write landed. A soft `not.toBeNull()` here would return a STALE row
+    // and green-pass on exactly the null-frozen-weight and constant-saturation
+    // steps whose oracle equals the prior value — the very divergences this suite
+    // exists to catch. Fail loudly instead, surfacing the last-seen row.
+    throw new Error(
+      `rolling-mean-twin-pg: timed out waiting for ${label}; last row: ${
+        last ? JSON.stringify(last) : "<none>"
+      }`,
+    );
   }
 
-  const waitForRow = (patternSql: string): Promise<PatternRow> => poll(patternSql, () => true);
+  const waitForRow = (patternSql: string): Promise<PatternRow> =>
+    poll(patternSql, () => true, `row to appear for ${patternSql}`);
   const waitForCount = (patternSql: string, count: number): Promise<PatternRow> =>
-    poll(patternSql, (r) => r.repetition_count === count);
+    poll(patternSql, (r) => r.repetition_count === count, `repetition_count=${count} for ${patternSql}`);
 
   /**
    * Assert the stored value equals the twin's oracle. A divergent fold formula
@@ -168,7 +181,9 @@ describeIfPg("SQL rolling-mean fold pinned to its TypeScript twin (real Postgres
     expectEqualsTwin(row.avg_duration_ms, avgTs);
 
     for (let i = 0; i < samples.length; i++) {
-      const sample = samples[i]!;
+      // `samples[i]` is genuinely `number | null` — the sequences deliberately
+      // feed nulls; both sinks accept null, so no assertion is needed.
+      const sample = samples[i];
       // Production repeat path: the proposer always passes a fingerprint (#3635).
       incrementPatternCount(row.id, `fp-${i}`, sample);
       // SQL weight is the pre-UPDATE repetition_count (= repTs); it bumps every
@@ -192,9 +207,10 @@ describeIfPg("SQL rolling-mean fold pinned to its TypeScript twin (real Postgres
   it(
     "folds a representative mixed sequence (zero, null-frozen weight advance, repeating decimal) identically to the twin",
     async () => {
-      // 10 → 15 → 10 (zero pulls the mean) → 8.75 → null (avg frozen, weight
-      // advances to 5) → 8.75 (folding the mean itself is a no-op) → repeating
-      // decimal. Every step's oracle comes from `foldRollingMean`, not a literal.
+      // Running mean: 10 → 15 → 10 (zero sample pulls the mean) → 8.75 →
+      // [null sample: avg frozen at 8.75, weight advances to 5] → 8.75 (folding
+      // the mean itself is a no-op) → 7.64… (repeating decimal). Every step's
+      // oracle comes from `foldRollingMean`, not a literal.
       await driveAndPin("SELECT a FROM twin_mixed", 10, [20, 0, 5, null, 8.75, 1]);
     },
     PG_TIMEOUT_MS,

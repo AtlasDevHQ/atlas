@@ -86,6 +86,7 @@ const REVIEWED_PATTERN = {
   amendmentPayload: null,
   autoPromoted: false,
   avgDurationMs: 12,
+  injectionCount: 7,
 };
 
 const LIST_ENVELOPE = { patterns: [REVIEWED_PATTERN], total: 1, limit: 50, offset: 0 };

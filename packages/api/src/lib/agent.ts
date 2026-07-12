@@ -1384,6 +1384,8 @@ export async function runAgent({
                 mode: atlasMode,
                 question,
                 requestId: reqCtx?.requestId,
+                // #4573 — attribute each injected pattern to this turn.
+                conversationId: conversationId ?? null,
               });
               return section || undefined;
             },

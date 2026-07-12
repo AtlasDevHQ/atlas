@@ -78,6 +78,7 @@ export const LearnedPatternSchema = z.object({
   amendmentPayload: AmendmentPayloadSchema.nullable(),
   autoPromoted: z.boolean(),
   avgDurationMs: z.number().nullable(),
+  injectionCount: z.number().int().nonnegative(),
 }) satisfies z.ZodType<LearnedPattern>;
 
 /**

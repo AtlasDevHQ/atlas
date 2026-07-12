@@ -157,7 +157,9 @@ describe("admin learned-patterns routes", () => {
         if (callCount === 1) {
           return Promise.resolve([{ count: "2" }]);
         }
-        return Promise.resolve([mockRow(), mockRow({ id: "pat-2" })]);
+        // First row carries the INJECTION_COUNT_SELECT subquery result; second
+        // omits it, so the fallback-to-0 mapping is exercised too (#4573).
+        return Promise.resolve([mockRow({ injection_count: 3 }), mockRow({ id: "pat-2" })]);
       });
 
       const res = await req("GET", "/");
@@ -179,6 +181,11 @@ describe("admin learned-patterns routes", () => {
         expect(body.patterns[0].createdAt).toBe("2026-03-18T00:00:00Z");
         expect(body.patterns[0].updatedAt).toBe("2026-03-18T00:00:00Z");
         expect(body.patterns[0].reviewedAt).toBeNull();
+        // Per-pattern injection count (#4573): mapped from injection_count, and
+        // a row without the subquery reads 0 (never null) — the wire type is a
+        // non-negative count.
+        expect(body.patterns[0].injectionCount).toBe(3);
+        expect(body.patterns[1].injectionCount).toBe(0);
       }
     });
 

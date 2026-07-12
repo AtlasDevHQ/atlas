@@ -83,6 +83,7 @@ const PATTERN = {
   amendmentPayload: null,
   autoPromoted: false,
   avgDurationMs: 12,
+  injectionCount: 0,
 };
 
 const LIST_ENVELOPE = { patterns: [PATTERN], total: 1, limit: 50, offset: 0 };

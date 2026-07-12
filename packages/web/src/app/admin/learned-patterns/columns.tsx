@@ -18,6 +18,7 @@ import {
   Sparkles,
   Timer,
   Layers,
+  Zap,
 } from "lucide-react";
 import { formatDate } from "@/lib/format";
 
@@ -257,6 +258,25 @@ export function getLearnedPatternColumns(
       ),
       meta: { label: "Times seen", icon: Hash },
       size: 72,
+    },
+    {
+      // Per-pattern injection count (#4573): how many agent turns injected this
+      // pattern in the last 30 days. Makes approval's payoff observable — a 0 on
+      // an approved pattern flags a dead pattern. Non-sortable (no server sort
+      // key), so it stays out of the sortable↔whitelist 1:1 contract.
+      id: "injectionCount",
+      accessorKey: "injectionCount",
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} label="Injected (30d)" />
+      ),
+      cell: ({ row }) => (
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {row.getValue<number>("injectionCount").toLocaleString()}
+        </span>
+      ),
+      meta: { label: "Injected (30d)", icon: Zap },
+      enableSorting: false,
+      size: 104,
     },
     {
       id: "proposedBy",

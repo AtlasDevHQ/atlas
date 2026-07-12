@@ -220,7 +220,9 @@ describe("runMigrations", () => {
     //   profile-tier tracking for the semantic-improve briefing, #4509) = 172.
     //   Plus 0172 (learned_patterns identity — partial unique index +
     //   status/type CHECK constraints, #4572) = 173.
-    expect(count).toBe(173);
+    //   Plus 0173 (learned_pattern_injections — per-turn injection attribution
+    //   substrate + per-pattern usage counts, #4573) = 174.
+    expect(count).toBe(174);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");

@@ -346,17 +346,19 @@ The pending queue endpoints (`/pending`, `/pending-count`, `/amendments/:id/revi
 
 Separately from semantic-layer amendments, Atlas learns **successful query patterns** from real usage. When the agent answers a question with SQL that runs cleanly, the shape is captured in the `learned_patterns` table (`type = query_pattern`) and, once approved, injected into future agent prompts as *organizational knowledge* — reference SQL the agent can reuse for similar questions. Each pattern is scoped to its org **and** connection group, so one tenant's or one datasource group's patterns never leak into another's session.
 
+For the full lifecycle — what approval means (an eligibility bypass, not a confidence write), the per-workspace auto-promotion dial, and how patterns are injected — see the dedicated [Learned Query Patterns](/guides/learned-patterns) guide. The mechanics below cover retrieval and the promote/decay job.
+
 ### Performance-weighted retrieval
 
 Every pattern carries a rolling-mean execution time (`avg_duration_ms`). At retrieval time, Atlas ranks patterns by keyword relevance **down-weighted by latency**: a pattern whose average stays at or under the [`ATLAS_LEARN_LATENCY_BUDGET_MS`](/reference/environment-variables#dynamic-learning) budget ranks normally, while slower patterns are pushed down — but never excluded, so a slow-but-uniquely-relevant pattern still surfaces. The injected context shows each pattern's typical latency (`avg ~123ms`) so the agent can prefer a faster pattern when two answer the question equally well.
 
-### Nightly auto-promote / decay
+### Auto-promotion and decay
 
-By default every learned query pattern waits for an admin to approve it in **Admin → Learned Patterns**. Enable the nightly job (`ATLAS_LEARN_PROMOTE_DECAY_ENABLED`) to maintain the set automatically:
+By default every learned query pattern waits for a human to approve it in **Admin → Learned Patterns**. Each workspace can instead turn on **auto-promotion** — a per-workspace dial (`ATLAS_LEARN_PROMOTE_DECAY_ENABLED`, off by default, set from **Admin → Settings → Dynamic Learning**) that maintains the set automatically:
 
 - **Auto-promote** — a pending pattern is promoted to approved when it clears all three gates: confidence ≥ `ATLAS_LEARN_CONFIDENCE_THRESHOLD`, seen ≥ `ATLAS_LEARN_PROMOTE_MIN_REPETITIONS` times, and an average latency at or under `ATLAS_LEARN_LATENCY_BUDGET_MS`. A pattern whose latency has never been measured is **not** auto-promoted.
 - **Decay (demote, never delete)** — a pattern the job itself promoted that then goes unseen for longer than `ATLAS_LEARN_DECAY_UNSEEN_DAYS` is demoted back to pending, so the injected set stays fresh. **Human approvals are never auto-demoted** — only a human removes them.
 
 Auto-promoted patterns are shown with a distinct **Auto-approved** badge in the admin UI so machine approvals are always distinguishable from human ones. Semantic-layer amendments (`type = semantic_amendment`) are out of scope for this job — they always keep human review, as described above.
 
-This job is a single process-global background fiber (like the expert scheduler), so its enable/interval settings are platform-scoped and require a restart; the gate thresholds are read once per run.
+The **enable** dial is per-workspace and hot-reloaded — a workspace turns it on with no restart. The job's **cadence** (`ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS`) and its gate thresholds are platform-scoped operator policy: the job is a single process-global background fiber (like the expert scheduler) that iterates the opted-in workspaces, so interval changes require a restart and the gates are read once per run.

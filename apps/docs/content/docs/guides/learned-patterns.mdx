@@ -1,0 +1,120 @@
+---
+title: Learned Query Patterns
+description: How Atlas captures successful SQL shapes, how approval and auto-promotion make them injectable, and how they reach the agent.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas learns from every query that works. When the agent answers a question with SQL that runs cleanly, the *shape* of that query is captured and — once it becomes eligible — injected into future agent prompts as reference SQL the agent can reuse for similar questions. This guide covers the full lifecycle: how a pattern is born, the two roads it can take to becoming injectable, and how it pays off.
+
+<Callout type="info">
+Learned patterns require an internal database (`DATABASE_URL`). Without one, capture and the review queue are unavailable — the agent still works, it just doesn't accumulate reusable patterns.
+</Callout>
+
+## What a learned pattern is
+
+A **learned query pattern** is the durable unit of learned query knowledge: a normalized SQL shape captured from a successful live execution, scoped to **one workspace and one connection group**. Because a pattern is scoped this way, one tenant's — or one datasource group's — patterns never leak into another's session.
+
+Patterns are proposed by:
+
+- **The agent**, during a conversation, whenever a query it ran succeeds.
+- **The `atlas-operator learn` CLI**, which analyzes the audit log and proposes patterns (and semantic-layer improvements) in bulk. See [operator subcommands](/reference/cli).
+
+Every pattern carries an **evidence trail**: how many times the identical shape has been seen (`repetitionCount`), a confidence score derived from that repetition, and a rolling-mean execution time so Atlas knows which patterns are fast.
+
+## The lifecycle
+
+```
+capture ──▶ pending ──▶ approved ──▶ injected
+                  │        ▲
+                  │        │
+                  └── auto-promoted
+```
+
+A pattern moves `pending → approved | rejected`. There are **two independent roads** from pending to approved (injectable) — a human road and a machine road — and they never overwrite each other's signal.
+
+| Stage | What it means |
+|-------|---------------|
+| **Captured** | A successful query's shape is written to the pattern store. A shape seen only once sits below the review threshold until it repeats. |
+| **Pending** | Captured and awaiting a decision. Visible in **Admin → Learned Patterns**. |
+| **Approved** | Injectable. Either a human approved it (see [Approval](#approval-an-eligibility-bypass)) or the workspace's auto-promotion dial promoted it (see [Auto-promotion](#auto-promotion-the-workspace-dial)). |
+| **Rejected** | A human declined it. Rejected patterns are frozen — never injected, never auto-promoted. |
+| **Injected** | Eligible **and** relevant to the current turn, so it was rendered into the agent's prompt (see [Injection](#injection-the-payoff)). |
+
+### Pattern identity
+
+What makes two observations the *same* pattern is the triple **(workspace, connection group, normalized SQL fingerprint)**, enforced by the database. A repeat observation **increments** the existing pattern's repetition count — it can never mint a second row. Two concurrent runs of the same query strengthen one pattern instead of inflating each other's weight.
+
+## Approval: an eligibility bypass
+
+Approving a pattern is a human grant of **injection eligibility**: *"this pattern is correct — inject it whenever it's relevant."*
+
+The key property: **an approved pattern is injectable immediately, regardless of its confidence.** Approval is not a vote that raises a score to clear a threshold — it *bypasses* the threshold entirely. A rare-but-important query you approve after seeing it once is just as eligible as one the machine has watched a hundred times.
+
+<Callout type="info">
+**Approval never rewrites confidence.** Confidence stays the machine's untouched evidence meter — a measure of how often the shape was actually observed, nothing more. Human approval and machine confidence are the two separate roads to eligibility; a human decision never moves the machine's meter, and the meter never encodes human trust.
+</Callout>
+
+This is why approval pays off where it used to do nothing: previously a valuable-but-rare pattern stayed below the confidence threshold forever no matter how many times an admin approved it. Now the human road is unconditional.
+
+## Auto-promotion: the workspace dial
+
+The machine road to eligibility is **auto-promotion**, and it is a **per-workspace dial that is off by default**.
+
+Capture is always on everywhere — it's free and deterministic. Auto-promotion is the one trust dial a workspace turns deliberately. When enabled, Atlas promotes a workspace's high-confidence, fast, frequently-seen patterns on its own cadence, and demotes stale auto-promoted ones so the injected set stays fresh.
+
+### Turning it on
+
+The dial lives in **Admin → Settings**, under **Dynamic Learning**, as **Auto-Promote Learned Patterns**. It is a workspace-scoped runtime setting: hot-reloaded (no redeploy, no operator, no restart), off by default, and something each workspace chooses for itself.
+
+<Callout type="info">
+This replaces a former platform-wide, env-only switch that required a restart. Auto-promotion is now tenant behavior a workspace admin controls directly — the same posture as [autonomous semantic improvement](/guides/semantic-expert). Self-hosted's single workspace is simply the degenerate case of the same loop.
+</Callout>
+
+The setting resolves in the usual precedence order — **workspace override > platform override > `ATLAS_LEARN_PROMOTE_DECAY_ENABLED` env var > default (off)** — so a self-host can set a default via the env var, and any workspace can override it from the console.
+
+### The promotion gates
+
+When the dial is on, a pending pattern is auto-promoted to approved only when it clears **all three** gates:
+
+| Gate | Setting | Default |
+|------|---------|---------|
+| Confidence at or above threshold | `ATLAS_LEARN_CONFIDENCE_THRESHOLD` | `0.7` |
+| Seen at least N times | `ATLAS_LEARN_PROMOTE_MIN_REPETITIONS` | `5` |
+| Average latency within budget | `ATLAS_LEARN_LATENCY_BUDGET_MS` | `5000` ms |
+
+A pattern whose latency has never been measured is **not** auto-promoted. Auto-promoted patterns are shown with a distinct **Auto-approved** badge (violet, with a sparkle) so machine approvals never masquerade as your sign-off.
+
+### Decay
+
+Auto-promotion's counterpart is **decay**: a pattern the job itself promoted that then goes unseen for longer than `ATLAS_LEARN_DECAY_UNSEEN_DAYS` (default `30`) is demoted back to pending, so the injected set never fills with stale shapes. **Decay never touches human approvals** — only a human removes a human-approved pattern.
+
+The job runs on a fixed cadence (`ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS`, default `24`) as a single process-global fiber; that cadence and the gate thresholds above are platform-scoped operator policy. Only the **enable** dial is per-workspace — one platform fiber iterates the workspaces that opted in.
+
+## Injection: the payoff
+
+Approval and auto-promotion make a pattern *eligible*. **Injection** is where eligibility pays off: for each agent turn, Atlas selects the eligible patterns that are **relevant** to what the user is asking and renders them into the agent's prompt as reference SQL.
+
+The **eligible set** for a workspace-and-group is every human-approved pattern (unconditionally) plus every machine-promoted pattern that clears the confidence threshold. It is ordered so human-approved patterns come first — they can never fall off a truncation edge — then by confidence, then by most-recently-seen. Relevance (keyword matching against the last few user turns, tunable via `ATLAS_LEARN_RETRIEVAL_TURNS`) then decides which eligible patterns actually enter a given turn.
+
+Injected patterns carry their typical latency into the prompt (`avg ~123ms`) so the agent can prefer a faster pattern when two answer the question equally well. Slower patterns are down-weighted in ranking but never excluded, so a slow-but-uniquely-relevant pattern still surfaces.
+
+### Seeing a pattern's standing
+
+The **Admin → Learned Patterns** cockpit surfaces each pattern's evidence so its payoff is observable rather than asserted: its status (and whether a human or the machine approved it), its confidence, how many times it's been seen, and its average latency. Sort or filter by any of these to find, for example, an approved pattern that has never gained repetitions — a candidate to refine its description or retire.
+
+## Learned patterns vs. query suggestions (by design)
+
+Atlas has two learning surfaces that look similar and are deliberately kept apart. This split is intentional, not an accident of history:
+
+| | **Learned patterns** | **Query suggestions** |
+|---|---|---|
+| **Audience** | The **agent** | The **end user** |
+| **What it is** | A reusable SQL shape injected into the agent's prompt | A "question you can ask" surfaced in the chat/table UI |
+| **How it ranks** | Human approval (bypass) + machine confidence, then relevance | Score, weighted by how often the underlying query runs and how often the suggestion is clicked |
+| **Where it's managed** | **Admin → Learned Patterns** | **Admin → Query Suggestions** |
+| **Stored in** | `learned_patterns` | `query_suggestions` |
+
+They serve different consumers with different currencies: a learned pattern is *reference SQL the agent trusts*, gated by curator approval; a suggestion is *a prompt a human might click*, ranked by engagement. Unifying them would force one pipeline to answer two questions it can't answer at once — "is this SQL correct enough for the agent to reuse?" and "is this phrasing appealing enough for a person to click?" Keeping them separate lets each be tuned for its own audience.
+
+See the [Admin Console guide](/guides/admin-console#learned-patterns) for the full UI walkthrough of both surfaces, and the [environment variables reference](/reference/environment-variables#dynamic-learning) for the complete list of tuning knobs.

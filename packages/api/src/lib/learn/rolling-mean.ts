@@ -1,16 +1,21 @@
 /**
  * Incremental rolling mean for learned-pattern latency (PRD #3617 B-1).
  *
- * The canonical definition of the `avg_duration_ms` arithmetic. The seed
- * (INSERT, `insertLearnedPattern`) path is genuinely derived from it — it calls
- * `foldRollingMean(null, 0, sample)` directly, so that path cannot diverge. The
- * fold (UPDATE, `incrementPatternCount`) path re-implements the same arithmetic
- * as an inline SQL `CASE` (it must stay SQL so the fold is atomic with the
- * `repetition_count` bump — see that function). That `CASE` mirrors this
- * function clause-for-clause, but the coupling is *manual*: no compile-time
- * check or test links them, and `rolling-mean.test.ts` exercises only this TS
- * function. Editing the SQL `CASE` without updating this function (or vice
- * versa) will silently diverge — keep the two in lockstep by hand.
+ * The canonical definition of the `avg_duration_ms` arithmetic. The INSERT
+ * VALUES seed (`insertLearnedPattern`) is genuinely derived from it — it calls
+ * `foldRollingMean(null, 0, sample)` directly, so that seed cannot diverge. But
+ * TWO SQL folds re-implement the arithmetic by hand as inline `CASE`s: the
+ * repeat-observation UPDATE (`incrementPatternCount`) and the lost-insert-race
+ * `ON CONFLICT DO UPDATE` in `insertLearnedPattern` (both must stay SQL so the
+ * fold is atomic with the `repetition_count` bump — see those functions). Each
+ * mirrors this function clause-for-clause, but the coupling is *manual*: no
+ * compile-time check links them. `rolling-mean.test.ts` exercises only this TS
+ * function; the real-Postgres `db/__tests__/rolling-mean-twin-pg.test.ts` (#4576)
+ * pins BOTH SQL folds' stored `avg_duration_ms` EQUAL to this function across
+ * representative sequences (first observation, mid-sequence, integer boundaries,
+ * saturation), so a divergent edit to any side fails CI. Editing an SQL `CASE`
+ * without updating this function (or vice versa) will make that test fail — keep
+ * them in lockstep by hand.
  *
  * The new average weights the existing mean by the *old* observation count —
  * `(avg * n + sample) / (n + 1)` — which converges to the true arithmetic mean

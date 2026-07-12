@@ -305,23 +305,24 @@ if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
   log.debug("Action framework disabled (ATLAS_ACTIONS_ENABLED not set)");
 }
 
-// Scheduled tasks routes — lazy import, only loaded if ATLAS_SCHEDULER_ENABLED is set.
+// Scheduled tasks routes — mounted UNCONDITIONALLY, gated per-request inside the
+// router on the resolved `config.scheduler` (#4623).
 //
-// CO-GATING INVARIANT (#3687): this is the ONLY customer-facing path that INSERTs
-// into `scheduled_tasks` (via createScheduledTask), and it is gated on the exact
-// same `ATLAS_SCHEDULER_ENABLED === "true"` flag that drives the scheduler fiber
-// (config.scheduler.backend → makeSchedulerLive in lib/effect/layers.ts) and the
-// `/health` scheduler reporter. The single global (US) scheduler design is
-// therefore safe: a region without the scheduler fiber (EU/APAC) does not mount
-// this route either, so customers there get a 404 on creation rather than a task
-// that is written but never fires. Keep these three sites flag-coherent.
-if (process.env.ATLAS_SCHEDULER_ENABLED === "true") {
-  const { scheduledTasks } = await import("./routes/scheduled-tasks");
-  app.route("/api/v1/scheduled-tasks", scheduledTasks);
-  log.info("Scheduled tasks enabled");
-} else {
-  log.debug("Scheduled tasks disabled (ATLAS_SCHEDULER_ENABLED not set)");
-}
+// CO-GATING INVARIANT: this is the ONLY customer-facing path that INSERTs into
+// `scheduled_tasks`, and it must agree with the scheduler fiber
+// (`config.scheduler.backend` → makeSchedulerLive in lib/effect/layers.ts) and
+// the `/health` reporter. The earlier construction-time `ATLAS_SCHEDULER_ENABLED`
+// gate did NOT: on the file-config deploy the config sets `backend: "bun"` for
+// every region, so the engine ran in EU/APAC while this env-gated mount and
+// `/health` reported "disabled". All three now read the SAME source
+// (`config.scheduler`). Mounting must be unconditional because `getConfig()` is
+// null at module-construction time (the initConfig race — server.ts resolves
+// config AFTER the static `import { app }`); the router's per-request gate 404s
+// when no scheduler backend is configured, preserving the "never write a task
+// that silently never fires" guarantee without depending on the env var.
+const { scheduledTasks } = await import("./routes/scheduled-tasks");
+app.route("/api/v1/scheduled-tasks", scheduledTasks);
+log.info("Scheduled tasks route mounted (per-request scheduler gate)");
 
 // User session self-service routes — requires managed auth + internal DB.
 try {

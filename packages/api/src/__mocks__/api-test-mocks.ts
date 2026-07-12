@@ -856,6 +856,12 @@ export function createApiTestMocks(
     listScheduledTaskRuns: mock(async () => []),
     getRecentRuns: mock(async () => []),
     scheduledTaskBelongsToUser: mock(async () => false),
+    // The scheduled-tasks route now mounts unconditionally (#4623), so the
+    // full set of exports it imports must be present even when a suite never
+    // exercises the route (missing export → "not found" at module load).
+    listTaskRuns: mock(async () => []),
+    listAllRuns: mock(async () => ({ runs: [], total: 0 })),
+    validateCronExpression: mock(() => ({ valid: true })),
   }));
 
   void mock.module("@atlas/api/lib/scheduler", () => ({

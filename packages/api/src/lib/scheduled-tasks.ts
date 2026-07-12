@@ -608,9 +608,13 @@ export async function getTasksDueForExecution(): Promise<ScheduledTask[]> {
 /**
  * Atomically lock a task for execution.
  *
- * Uses a single UPDATE with AND next_run_at IS NOT NULL as a lightweight
- * lock: the first process to UPDATE sets next_run_at to the future, preventing
- * concurrent UPDATEs from matching. Also updates last_run_at.
+ * Uses a single UPDATE with `AND next_run_at <= now()` as the claim guard: the
+ * first process to UPDATE advances next_run_at to the future, so a concurrent
+ * claimer re-evaluating under READ COMMITTED sees `next_run_at > now()` and no
+ * longer matches (0 rows → false). This is a genuine time-based claim — an
+ * earlier `IS NOT NULL` guard did NOT prevent the race, since next_run_at stays
+ * non-null after the first claim (#4623). Now single-writer per region, but the
+ * guard must be correct for any multi-writer future. Also updates last_run_at.
  *
  * Returns true if lock acquired, false if task is already locked, disabled,
  * or not found.
@@ -628,8 +632,11 @@ export async function lockTaskForExecution(taskId: string): Promise<boolean> {
 
     const nextRun = computeNextRun(taskResult.data.cronExpression);
 
-    // Atomic UPDATE: only succeeds if enabled AND next_run_at IS NOT NULL
-    // (prevents double-execution — second process sees next_run_at already set to future).
+    // Atomic UPDATE: only succeeds if enabled AND next_run_at <= now(), i.e.
+    // the task is still due and unclaimed. The first claimer advances
+    // next_run_at to the future, so a concurrent claimer re-checking
+    // `next_run_at <= now()` no longer matches — a correct time-based claim that
+    // prevents double-execution (an `IS NOT NULL` guard would not; #4623).
     //
     // Orphan guard (#3180 / #3196 review): re-check plugin ownership HERE, not
     // just at getTasksDueForExecution time. The tick selects due tasks, then
@@ -644,7 +651,7 @@ export async function lockTaskForExecution(taskId: string): Promise<boolean> {
          last_run_at = now(),
          next_run_at = $1,
          updated_at = now()
-       WHERE id = $2 AND enabled = true AND next_run_at IS NOT NULL
+       WHERE id = $2 AND enabled = true AND next_run_at <= now()
          AND (
            plugin_id IS NULL
            OR EXISTS (

@@ -657,7 +657,7 @@ describe("scheduled-tasks module", () => {
     it("returns true when lock acquired", async () => {
       enableInternalDB();
       // First call: SELECT task (getScheduledTask to read cron expression)
-      // Second call: UPDATE with atomic lock (next_run_at IS NOT NULL)
+      // Second call: UPDATE with atomic time-based claim (next_run_at <= now())
       setResults(
         { rows: [makeTaskRow()] },
         { rows: [{ id: "task-123" }] },
@@ -670,7 +670,9 @@ describe("scheduled-tasks module", () => {
       // Second query is the atomic UPDATE
       expect(queryCalls[1].sql).toContain("UPDATE scheduled_tasks");
       expect(queryCalls[1].sql).toContain("last_run_at = now()");
-      expect(queryCalls[1].sql).toContain("next_run_at IS NOT NULL");
+      // Correct time-based claim guard (#4623) — an `IS NOT NULL` guard would
+      // not prevent a concurrent claimer from also matching.
+      expect(queryCalls[1].sql).toContain("next_run_at <= now()");
     });
 
     it("re-checks plugin ownership atomically in the lock UPDATE (#3180 TOCTOU guard)", async () => {

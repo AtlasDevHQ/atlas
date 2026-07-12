@@ -1,7 +1,9 @@
 /**
  * Scheduled tasks REST routes — CRUD + trigger + run history.
  *
- * Gated behind ATLAS_SCHEDULER_ENABLED=true (conditional mount in index.ts).
+ * Mounted unconditionally in index.ts and gated per-request on the resolved
+ * `config.scheduler` (#4623) — the same source the engine fiber and `/health`
+ * read, so all three agree per region. No scheduler backend configured → 404.
  * CRUD routes use `adminAuth` + `requireOrgContext` middleware (admin/owner
  * role required, org-scoped). The `/tick` endpoint uses its own cron-secret
  * auth and is registered on the outer app so it bypasses user-auth middleware.
@@ -17,6 +19,7 @@ import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { getConfig } from "@atlas/api/lib/config";
 import { verifyGroupBelongsToOrg } from "@atlas/api/lib/conversations";
 import {
   createScheduledTask,
@@ -263,6 +266,27 @@ const listTaskRunsRoute = createRoute({ method: "get", path: "/{id}/runs", tags:
 
 // Outer app: tick route (cron-secret auth, no user-auth middleware)
 const scheduledTasks = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+// Per-request scheduler gate (#4623). The router mounts UNCONDITIONALLY in
+// index.ts — `getConfig()` is null at module-construction time (the initConfig
+// race), so a construction-time env gate diverged from the engine which starts
+// per `config.scheduler`. Gate here on the RESOLVED config instead, the same
+// source the engine fiber and `/health` read. No scheduler backend configured
+// → 404, so a task is never created that would silently never fire. On the
+// 3-region deploy every region has `scheduler.backend`, so this passes
+// everywhere; only a self-hosted deploy without a scheduler backend 404s.
+scheduledTasks.use("*", async (c, next) => {
+  if (getConfig()?.scheduler == null) {
+    return c.json(
+      {
+        error: "not_found",
+        message: "Scheduled tasks are not enabled on this deployment.",
+      },
+      404,
+    );
+  }
+  return next();
+});
 
 // Inner app: admin-authenticated, org-scoped routes (adminAuth + requireOrgContext)
 const authed = createAdminRouter();

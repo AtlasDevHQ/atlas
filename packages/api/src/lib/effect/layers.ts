@@ -1751,15 +1751,17 @@ export function makeSchedulerLive(
 
       // Start main scheduler.
       //
-      // SINGLE GLOBAL (US) SCHEDULER (#3687): `config.scheduler.backend` is `bun`
-      // only when `ATLAS_SCHEDULER_ENABLED === "true"` (config.ts), which in SaaS
-      // is set on the US region only. EU/APAC report `scheduler: "disabled"` at
-      // `/health` by design. This is SAFE because the customer-facing task-creation
-      // route (`POST /api/v1/scheduled-tasks` in api/index.ts) is gated on the SAME
-      // flag — so a region without this fiber also rejects task creation with a 404
-      // rather than persisting a task that would never fire. The fiber reads/writes
-      // `scheduled_tasks` in the shared internal DB, so the US fiber executes every
-      // workspace's tasks regardless of the workspace's region.
+      // PER-REGION SCHEDULER (#4623, supersedes the #3687 "single global US"
+      // framing). The engine starts wherever `config.scheduler.backend === "bun"`.
+      // On the 3-region deploy the shared file config (deploy/api/atlas.config.ts)
+      // sets that for EVERY region, and each region runs its OWN internal DB
+      // (us/eu/apac-int-postgres, via each service's own DATABASE_URL) — so each
+      // region's fiber processes its own tenants' `scheduled_tasks` in-region.
+      // There is NO shared internal DB and no cross-region execution (the earlier
+      // "US fiber executes every workspace's tasks" note assumed a shared DB that
+      // does not exist here). `config.scheduler` is the single source of truth,
+      // shared with the `/health` reporter and the task-creation route gate, so
+      // all three agree per region.
       if (backend === "bun") {
         yield* Effect.tryPromise({
           try: async () => {

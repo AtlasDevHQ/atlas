@@ -8,9 +8,13 @@
  * as an inline SQL `CASE` (it must stay SQL so the fold is atomic with the
  * `repetition_count` bump — see that function). That `CASE` mirrors this
  * function clause-for-clause, but the coupling is *manual*: no compile-time
- * check or test links them, and `rolling-mean.test.ts` exercises only this TS
- * function. Editing the SQL `CASE` without updating this function (or vice
- * versa) will silently diverge — keep the two in lockstep by hand.
+ * check links them. `rolling-mean.test.ts` exercises only this TS function; the
+ * real-Postgres `db/__tests__/rolling-mean-twin-pg.test.ts` (#4576) pins the SQL
+ * fold's stored `avg_duration_ms` EQUAL to this function across representative
+ * sequences (first observation, mid-sequence, integer boundaries, saturation),
+ * so a divergent edit to either side fails CI. Editing the SQL `CASE` without
+ * updating this function (or vice versa) will make that test fail — keep the two
+ * in lockstep by hand.
  *
  * The new average weights the existing mean by the *old* observation count —
  * `(avg * n + sample) / (n + 1)` — which converges to the true arithmetic mean

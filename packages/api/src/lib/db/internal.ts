@@ -1490,7 +1490,9 @@ export function insertLearnedPattern(pattern: {
   // would-be-inserted seed = `foldRollingMean(null, 0, sample)` = the raw sample
   // (or NULL), so it feeds the fold as the observation exactly as the UPDATE
   // path's `$LAT` does — keep this CASE in lockstep with `incrementPatternCount`
-  // and `foldRollingMean` (#3723). The `WHERE ... status <> 'rejected'` mirrors
+  // and `foldRollingMean` (#3723); `db/__tests__/rolling-mean-twin-pg.test.ts`
+  // (#4576) pins this ON CONFLICT fold EQUAL to `foldRollingMean` so a divergent
+  // edit fails CI. The `WHERE ... status <> 'rejected'` mirrors
   // the fast path's reject guard (#3636): a race against an admin-rejected row
   // leaves it frozen (conflict handled, zero rows updated) rather than
   // resurrecting it.
@@ -2303,6 +2305,10 @@ export function incrementPatternCount(
   //   sample === null            → return oldAvg              (WHEN $LAT IS NULL)
   //   oldAvg === null            → return sample              (WHEN avg IS NULL)
   //   else (oldAvg*n + sample)/(n+1)                          (ELSE branch)
+  // The real-Postgres `db/__tests__/rolling-mean-twin-pg.test.ts` (#4576) drives
+  // repeated observations through this UPDATE and pins the stored
+  // `avg_duration_ms` EQUAL to `foldRollingMean` over the same sequence, so a
+  // divergent edit to either the CASE or the TS twin fails CI.
   const latencyAssignments = `
         avg_duration_ms = CASE
           WHEN $LAT::double precision IS NULL THEN avg_duration_ms

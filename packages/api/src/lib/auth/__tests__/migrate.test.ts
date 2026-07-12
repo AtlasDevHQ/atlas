@@ -485,6 +485,11 @@ describe("migrateAuthTables", () => {
             // it runs in every auth mode.
             { name: "0170_learned_patterns_last_apply_error.sql" },
             { name: "0171_connection_profile_state.sql" },
+            // 0172 (#4572) — learned_patterns identity: partial unique index +
+            // status/type CHECK constraints. Not a MANAGED_AUTH_MIGRATION and
+            // runs in every auth mode — must be in the already-applied set so
+            // this "all applied" test still sees zero new migrations.
+            { name: "0172_learned_patterns_identity.sql" },
           ],
         };
       }

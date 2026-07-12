@@ -103,6 +103,29 @@ describe("pattern-proposer", () => {
     expect(insertCall!.sql).toContain("'pending'");
   });
 
+  test("novel insert upserts on the DB identity — ON CONFLICT increments, never multiplies (#4572)", async () => {
+    setResults({ rows: [] });
+
+    await _analyzeAndPropose(defaultInput);
+
+    const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insertCall).toBeDefined();
+    // The insert is the guarantee against a concurrent-proposer race: on
+    // conflict with the partial unique identity it folds into the increment.
+    expect(insertCall!.sql).toContain(
+      "ON CONFLICT (org_id, connection_group_id, md5(pattern_sql)) WHERE type = 'query_pattern'",
+    );
+    expect(insertCall!.sql).toContain("DO UPDATE SET");
+    expect(insertCall!.sql).toContain("repetition_count = learned_patterns.repetition_count + 1");
+    // The reject guard rides the ON CONFLICT path too (#3636): a race against a
+    // rejected row must leave it frozen, not resurrect it.
+    expect(insertCall!.sql).toContain("WHERE learned_patterns.status <> 'rejected'");
+    // No new bind params — the fold reads EXCLUDED, so the VALUES params are
+    // unchanged (org, sql, description, entity, sourceQueries, proposedBy,
+    // connectionGroupId, avgDuration).
+    expect(insertCall!.params?.length).toBe(8);
+  });
+
   // ── Duplicate detection ────────────────────────────────────────────
 
   test("increments count when pattern already exists in DB", async () => {

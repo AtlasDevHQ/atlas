@@ -1430,7 +1430,18 @@ export async function findPatternBySQL(
 }
 
 /**
- * Insert a new learned pattern. Fire-and-forget — errors are logged, never thrown.
+ * Insert a novel learned pattern, upserting on the DB-enforced identity.
+ *
+ * Fire-and-forget — errors are logged, never thrown. The proposer calls this
+ * only on the novel path (findPatternBySQL missed), but two concurrent
+ * proposers can both miss the read and both reach here. The partial unique
+ * index `uq_learned_patterns_identity` (org_id, connection_group_id,
+ * md5(pattern_sql)) WHERE type = 'query_pattern', NULLS NOT DISTINCT (migration
+ * 0172, #4572) makes that race safe: exactly one INSERT wins and the loser's
+ * `ON CONFLICT DO UPDATE` folds into the same increment `incrementPatternCount`
+ * would have applied — so a concurrent duplicate becomes the repetition it
+ * should have been, never a second row. The application read-then-insert dedup
+ * is now a fast path; this ON CONFLICT is the guarantee.
  */
 export function insertLearnedPattern(pattern: {
   orgId: string | null | undefined;
@@ -1468,9 +1479,37 @@ export function insertLearnedPattern(pattern: {
   const avgDuration = foldRollingMean(null, 0, seedDuration);
   // `avgDuration` is null iff `seedDuration` is null, so the `$8 IS NULL` guard
   // below still stamps `last_seen_at` exactly when there is a real measurement.
+  // On a lost insert race, DO UPDATE must produce the SAME row mutation
+  // `incrementPatternCount` applies on the fast path: +1 repetition, +0.1
+  // confidence (capped), the rolling-mean latency fold, source-fingerprint
+  // append (capped at 100), and `updated_at`. `EXCLUDED.avg_duration_ms` is the
+  // would-be-inserted seed = `foldRollingMean(null, 0, sample)` = the raw sample
+  // (or NULL), so it feeds the fold as the observation exactly as the UPDATE
+  // path's `$LAT` does — keep this CASE in lockstep with `incrementPatternCount`
+  // and `foldRollingMean` (#3723). The `WHERE ... status <> 'rejected'` mirrors
+  // the fast path's reject guard (#3636): a race against an admin-rejected row
+  // leaves it frozen (conflict handled, zero rows updated) rather than
+  // resurrecting it.
   internalExecute(
     `INSERT INTO learned_patterns (org_id, pattern_sql, description, source_entity, source_queries, confidence, repetition_count, status, proposed_by, connection_group_id, avg_duration_ms, last_seen_at)
-     VALUES ($1, $2, $3, $4, $5, 0.1, 1, 'pending', $6, $7, $8, CASE WHEN $8::double precision IS NULL THEN NULL ELSE now() END)`,
+     VALUES ($1, $2, $3, $4, $5, 0.1, 1, 'pending', $6, $7, $8, CASE WHEN $8::double precision IS NULL THEN NULL ELSE now() END)
+     ON CONFLICT (org_id, connection_group_id, md5(pattern_sql)) WHERE type = 'query_pattern'
+     DO UPDATE SET
+       repetition_count = learned_patterns.repetition_count + 1,
+       confidence = LEAST(1.0, learned_patterns.confidence + 0.1),
+       avg_duration_ms = CASE
+         WHEN EXCLUDED.avg_duration_ms IS NULL THEN learned_patterns.avg_duration_ms
+         WHEN learned_patterns.avg_duration_ms IS NULL THEN EXCLUDED.avg_duration_ms
+         ELSE (learned_patterns.avg_duration_ms * learned_patterns.repetition_count + EXCLUDED.avg_duration_ms) / (learned_patterns.repetition_count + 1)
+       END,
+       last_seen_at = CASE WHEN EXCLUDED.avg_duration_ms IS NULL THEN learned_patterns.last_seen_at ELSE now() END,
+       source_queries = CASE
+         WHEN learned_patterns.source_queries IS NULL THEN EXCLUDED.source_queries
+         WHEN jsonb_array_length(learned_patterns.source_queries) >= 100 THEN learned_patterns.source_queries
+         ELSE learned_patterns.source_queries || EXCLUDED.source_queries
+       END,
+       updated_at = now()
+     WHERE learned_patterns.status <> 'rejected'`,
     [
       pattern.orgId ?? null,
       pattern.patternSql,

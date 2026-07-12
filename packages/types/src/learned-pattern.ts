@@ -1,6 +1,16 @@
 /** Learned query pattern types — wire format for the learned_patterns table. */
 
-/** All valid learned pattern statuses. */
+/**
+ * All valid learned pattern statuses **on the wire**.
+ *
+ * Deliberately a subset of the DB `chk_learned_patterns_status` CHECK (migration
+ * 0172), which also admits `applying` — the transient amendment-claim state the
+ * decide seam writes (pending → applying → approved|pending, #4506) and filters
+ * out before anything reaches the wire. Do NOT add `applying` here to "sync"
+ * with the CHECK, and do NOT drop it from the CHECK to "sync" with this: the
+ * claim UPDATE depends on the DB value existing, the review queue depends on the
+ * wire enum never surfacing it.
+ */
 export const LEARNED_PATTERN_STATUSES = ["pending", "approved", "rejected"] as const;
 /** Status lifecycle for learned query patterns. */
 export type LearnedPatternStatus = (typeof LEARNED_PATTERN_STATUSES)[number];

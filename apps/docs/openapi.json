@@ -22942,6 +22942,10 @@
                               "number",
                               "null"
                             ]
+                          },
+                          "injectionCount": {
+                            "type": "integer",
+                            "minimum": 0
                           }
                         },
                         "required": [
@@ -22964,7 +22968,8 @@
                           "type",
                           "amendmentPayload",
                           "autoPromoted",
-                          "avgDurationMs"
+                          "avgDurationMs",
+                          "injectionCount"
                         ]
                       }
                     },
@@ -23572,6 +23577,10 @@
                         "number",
                         "null"
                       ]
+                    },
+                    "injectionCount": {
+                      "type": "integer",
+                      "minimum": 0
                     }
                   },
                   "required": [
@@ -23594,7 +23603,8 @@
                     "type",
                     "amendmentPayload",
                     "autoPromoted",
-                    "avgDurationMs"
+                    "avgDurationMs",
+                    "injectionCount"
                   ]
                 }
               }
@@ -23919,6 +23929,10 @@
                         "number",
                         "null"
                       ]
+                    },
+                    "injectionCount": {
+                      "type": "integer",
+                      "minimum": 0
                     }
                   },
                   "required": [
@@ -23941,7 +23955,8 @@
                     "type",
                     "amendmentPayload",
                     "autoPromoted",
-                    "avgDurationMs"
+                    "avgDurationMs",
+                    "injectionCount"
                   ]
                 }
               }

@@ -424,6 +424,7 @@ describe("runMigrations", () => {
         "0170_learned_patterns_last_apply_error.sql",
         "0171_connection_profile_state.sql",
         "0172_learned_patterns_identity.sql",
+        "0173_learned_pattern_injections.sql",
       ],
     });
 

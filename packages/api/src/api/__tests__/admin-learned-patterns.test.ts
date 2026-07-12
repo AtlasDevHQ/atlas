@@ -317,7 +317,10 @@ describe("admin learned-patterns routes", () => {
 
     it("a repeated pattern (repetition_count >= 2) surfaces with its accumulated stats (#4581)", async () => {
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
-        if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "1" }]);
+        // Match the top-level count query specifically — the row SELECT now also
+        // contains a `COUNT(*)` in the injection-count subquery (#4573), so a bare
+        // `includes("COUNT(*)")` would misroute the SELECT to the count result.
+        if (sql.includes("COUNT(*) as count")) return Promise.resolve([{ count: "1" }]);
         return Promise.resolve([mockRow({ id: "repeated", repetition_count: 4, confidence: 0.6 })]);
       });
       const res = await req("GET", "/");

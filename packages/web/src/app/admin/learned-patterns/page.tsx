@@ -69,6 +69,7 @@ import {
   Bot,
   Calendar,
   Layers,
+  Eye,
 } from "lucide-react";
 
 const LIMIT = 50;
@@ -312,6 +313,7 @@ export default function LearnedPatternsPage() {
           source_entity: params.source_entity,
           min_confidence: params.min_confidence,
           max_confidence: params.max_confidence,
+          include_seen_once: params.include_seen_once,
         },
       ),
   });
@@ -424,6 +426,24 @@ export default function LearnedPatternsPage() {
                   void setParams({ min_confidence: min, max_confidence: max, page: 1 });
                 }}
               />
+              {/* Seen-once reveal (#4581): an independent view toggle, not a
+                  narrowing filter — it *widens* the queue to show the
+                  `repetition_count = 1` captures hidden by default, so it stays
+                  out of the `hasFilters` / Clear cluster and carries its own
+                  pressed state. */}
+              <Button
+                size="sm"
+                variant={params.include_seen_once ? "secondary" : "ghost"}
+                aria-pressed={params.include_seen_once}
+                onClick={() => {
+                  table.setPageIndex(0);
+                  // fire-and-forget: nuqs URL update
+                  void setParams({ include_seen_once: !params.include_seen_once, page: 1 });
+                }}
+              >
+                <Eye className="mr-1.5 size-3.5" />
+                Show seen-once
+              </Button>
               {hasFilters && (
                 <Button
                   variant="ghost"

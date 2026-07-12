@@ -1,4 +1,4 @@
-import { parseAsString, parseAsInteger } from "nuqs";
+import { parseAsString, parseAsInteger, parseAsBoolean } from "nuqs";
 
 export const learnedPatternsSearchParams = {
   status: parseAsString.withDefault(""),
@@ -8,5 +8,9 @@ export const learnedPatternsSearchParams = {
   // route's validated filter. Empty string = unset.
   min_confidence: parseAsString.withDefault(""),
   max_confidence: parseAsString.withDefault(""),
+  // Seen-once view toggle (#4581): off by default so the queue shows evidence
+  // (repeated patterns), not raw single-capture noise. `true` reveals the
+  // `repetition_count = 1` rows the route hides from the default view.
+  include_seen_once: parseAsBoolean.withDefault(false),
   page: parseAsInteger.withDefault(1),
 };

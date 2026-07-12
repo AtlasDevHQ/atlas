@@ -13,6 +13,7 @@ const NO_FILTERS: LearnedPatternsFilters = {
   source_entity: "",
   min_confidence: "",
   max_confidence: "",
+  include_seen_once: false,
 };
 
 function query(path: string): URLSearchParams {
@@ -31,7 +32,7 @@ describe("buildLearnedPatternsPath", () => {
   test("omits empty filters and sort when nothing is set", () => {
     const path = buildLearnedPatternsPath({ offset: 0, perPage: 50 }, NO_FILTERS);
     const qs = query(path);
-    for (const key of ["status", "source_entity", "min_confidence", "max_confidence", "sort", "dir"]) {
+    for (const key of ["status", "source_entity", "min_confidence", "max_confidence", "include_seen_once", "sort", "dir"]) {
       expect(qs.has(key)).toBe(false);
     }
   });
@@ -40,13 +41,23 @@ describe("buildLearnedPatternsPath", () => {
     const qs = query(
       buildLearnedPatternsPath(
         { offset: 0, perPage: 50 },
-        { status: "pending", source_entity: "orders", min_confidence: "0.5", max_confidence: "0.9" },
+        { status: "pending", source_entity: "orders", min_confidence: "0.5", max_confidence: "0.9", include_seen_once: false },
       ),
     );
     expect(qs.get("status")).toBe("pending");
     expect(qs.get("source_entity")).toBe("orders");
     expect(qs.get("min_confidence")).toBe("0.5");
     expect(qs.get("max_confidence")).toBe("0.9");
+  });
+
+  test("emits include_seen_once=true only when the seen-once toggle is on (#4581)", () => {
+    // Off (the default) relies on the route hiding seen-once rows — no param.
+    expect(query(buildLearnedPatternsPath({ offset: 0, perPage: 50 }, NO_FILTERS)).has("include_seen_once")).toBe(false);
+    // On reveals them.
+    const on = query(
+      buildLearnedPatternsPath({ offset: 0, perPage: 50 }, { ...NO_FILTERS, include_seen_once: true }),
+    );
+    expect(on.get("include_seen_once")).toBe("true");
   });
 
   test("maps a sortable column id to the whitelisted sort param + direction", () => {

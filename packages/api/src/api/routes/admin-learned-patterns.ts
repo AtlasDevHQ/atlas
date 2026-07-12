@@ -12,7 +12,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
+import { internalQuery, queryEffect, amendmentOrgScope, type AmendmentOrgScope } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import {
   LearnedPatternSchema,
@@ -81,16 +81,41 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
   };
 }
 
-function orgFilter(
-  orgId: string | null | undefined,
-  params: unknown[],
-  paramIdx: number,
-): { clause: string; nextIdx: number } {
-  if (orgId) {
-    params.push(orgId);
-    return { clause: `org_id = $${paramIdx}`, nextIdx: paramIdx + 1 };
-  }
-  return { clause: `org_id IS NULL`, nextIdx: paramIdx };
+/**
+ * Tenant org-scope for this route's `learned_patterns` reads and writes, via the
+ * shared helper `amendmentOrgScope` (#4487/#4510). The `learned_patterns` table
+ * holds both `semantic_amendment` and `query_pattern` rows; this route is the
+ * `query_pattern` reader/writer and adopts the same helper the amendment DB
+ * readers use, so scoping can't fork a second model (#4580). The agent-injection
+ * reader `getApprovedPatterns` keeps a behaviorally-aligned inlined copy over the
+ * same table (it carries an extra connection-group clause), so this route's
+ * review surface and the agent's injection surface now scope identically.
+ *
+ * The conditional flips with deploy mode. Adopting the helper changes behavior
+ * on two axes vs. the old local `orgFilter`:
+ *   - self-hosted + org  → `(org_id = $N OR org_id IS NULL)`. The old helper
+ *     emitted `org_id = $N` only, EXCLUDING legacy NULL-org rows;
+ *     `requireOrgContext` guarantees an org here, so this is the operative path,
+ *     and adopting the helper deliberately WIDENS it to also match NULL-org
+ *     ("global scope") rows — parity with what the agent already injects on
+ *     self-hosted.
+ *   - SaaS + org         → `org_id = $N` only — a NULL-org row never surfaces in
+ *     a tenant workspace (#4487).
+ *   - org-less           → this is the FAIL-CLOSED fix. The old helper fell OPEN
+ *     to `org_id IS NULL` (broadening to every global row); the shared helper
+ *     WITHHOLDS on SaaS (`{ withhold: true }`), so the caller returns its empty
+ *     value (empty list / 404 / notFound) without touching the DB.
+ *     `requireOrgContext` already 400s an org-less request, so `withhold` is
+ *     defense-in-depth — but if it ever fires we never broaden scope on the way
+ *     out.
+ *
+ * Binds `orgId` into `params` at the next positional slot only when the helper's
+ * clause references it (never on the org-less self-hosted `org_id IS NULL` arm).
+ */
+function orgScope(orgId: string | null | undefined, params: unknown[]): AmendmentOrgScope {
+  const scope = amendmentOrgScope(orgId ?? null, `$${params.length + 1}`);
+  if (!scope.withhold && orgId) params.push(orgId);
+  return scope;
 }
 
 const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
@@ -446,10 +471,14 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
 
     const whereParts: string[] = [];
     const params: unknown[] = [];
-    const org = orgFilter(orgId, params, params.length + 1);
-    whereParts.push(org.clause);
+    const scope = orgScope(orgId, params);
+    // Fail closed: an org-less scope on SaaS withholds rather than broaden to
+    // NULL-org rows. `requireOrgContext` makes this defensive; return an empty
+    // page without querying if it ever fires.
+    if (scope.withhold) return c.json({ patterns: [], total: 0, limit, offset }, 200);
+    whereParts.push(scope.clause);
     whereParts.push(QUERY_PATTERN_SCOPE);
-    let nextIdx = org.nextIdx;
+    let nextIdx = params.length + 1;
 
     if (status) { params.push(status); whereParts.push(`status = $${nextIdx}`); nextIdx++; }
     if (sourceEntity) { params.push(sourceEntity); whereParts.push(`source_entity = $${nextIdx}`); nextIdx++; }
@@ -482,8 +511,9 @@ adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
 
     const { id } = c.req.valid("param");
     const params: unknown[] = [id];
-    const org = orgFilter(orgId, params, params.length + 1);
-    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${org.clause}`, params);
+    const scope = orgScope(orgId, params);
+    if (scope.withhold) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
+    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${scope.clause}`, params);
     if (rows.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
     return c.json(toLearnedPattern(rows[0]), 200);
   }), { label: "get learned pattern" });
@@ -505,8 +535,9 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     // 404 here — its status is never writable through this route, so #4506's
     // "the seam is the only writer of `approved`" holds by construction.
     const checkParams: unknown[] = [id];
-    const org = orgFilter(orgId, checkParams, checkParams.length + 1);
-    const existing = yield* queryEffect<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${org.clause}`, checkParams);
+    const checkScope = orgScope(orgId, checkParams);
+    if (checkScope.withhold) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
+    const existing = yield* queryEffect<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${checkScope.clause}`, checkParams);
     if (existing.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
 
     const setClauses: string[] = ["updated_at = now()"];
@@ -521,9 +552,9 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
 
     updateParams.push(id);
     const idIdx = paramIdx;
-    paramIdx++;
-    const updateOrg = orgFilter(orgId, updateParams, paramIdx);
-    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${QUERY_PATTERN_SCOPE} AND ${updateOrg.clause} RETURNING *`, updateParams);
+    const updateScope = orgScope(orgId, updateParams);
+    if (updateScope.withhold) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
+    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${QUERY_PATTERN_SCOPE} AND ${updateScope.clause} RETURNING *`, updateParams);
     if (updated.length === 0) return c.json({ error: "not_found", message: "Pattern was deleted before update completed." }, 404);
 
     // Any status flip changes which patterns the agent sees: the approved set
@@ -536,12 +567,32 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
       invalidatePatternCache(orgId ?? null);
     }
 
+    const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+
+    // Governance parity (#4580): a description edit changes the human-facing
+    // text other reviewers trust, so it earns its own forensic row — audited
+    // independently of any status change. A PATCH that edits the description AND
+    // makes an approve/reject decision emits two rows (one decision + one
+    // description edit), each a distinct governance event. (An un-approve to
+    // `pending` is not an approve/reject decision, so that + a description edit
+    // emits only the description row — the pending-flip audit gap is pre-existing
+    // and out of scope for #4580.)
+    if (description !== undefined) {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.pattern.updateDescription,
+        targetType: "pattern",
+        targetId: id,
+        ipAddress,
+        metadata: { patternId: id },
+      });
+    }
+
     if (status === "approved") {
       logAdminAction({
         actionType: ADMIN_ACTIONS.pattern.approve,
         targetType: "pattern",
         targetId: id,
-        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        ipAddress,
         metadata: { patternId: id },
       });
     } else if (status === "rejected") {
@@ -549,7 +600,7 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
         actionType: ADMIN_ACTIONS.pattern.reject,
         targetType: "pattern",
         targetId: id,
-        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        ipAddress,
         metadata: { patternId: id },
       });
     }
@@ -569,13 +620,15 @@ adminLearnedPatterns.openapi(deletePatternRoute, async (c) => {
     const { id } = c.req.valid("param");
     // Scoped to query_pattern rows (#4569): an amendment id is a 404 here.
     const checkParams: unknown[] = [id];
-    const org = orgFilter(orgId, checkParams, checkParams.length + 1);
-    const existing = yield* queryEffect<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${org.clause}`, checkParams);
+    const checkScope = orgScope(orgId, checkParams);
+    if (checkScope.withhold) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
+    const existing = yield* queryEffect<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${checkScope.clause}`, checkParams);
     if (existing.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
 
     const deleteParams: unknown[] = [id];
-    const deleteOrg = orgFilter(orgId, deleteParams, deleteParams.length + 1);
-    yield* queryEffect(`DELETE FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${deleteOrg.clause}`, deleteParams);
+    const deleteScope = orgScope(orgId, deleteParams);
+    if (deleteScope.withhold) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
+    yield* queryEffect(`DELETE FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${deleteScope.clause}`, deleteParams);
     invalidatePatternCache(orgId ?? null);
 
     logAdminAction({
@@ -615,14 +668,18 @@ adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
           // status, so #4506's "the seam is the only writer of `approved`"
           // holds for amendment rows.
           const checkParams: unknown[] = [id];
-          const org = orgFilter(orgId, checkParams, checkParams.length + 1);
-          const existing = await internalQuery<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${org.clause}`, checkParams);
+          const checkScope = orgScope(orgId, checkParams);
+          // Fail closed (#4580): an org-less SaaS scope withholds — treat as
+          // not_found rather than broaden the scan to NULL-org rows.
+          if (checkScope.withhold) return "not_found" as const;
+          const existing = await internalQuery<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${checkScope.clause}`, checkParams);
           if (existing.length === 0) return "not_found" as const;
 
           const updateParams: unknown[] = [status, user?.id ?? null, id];
-          const updateOrg = orgFilter(orgId, updateParams, updateParams.length + 1);
+          const updateScope = orgScope(orgId, updateParams);
+          if (updateScope.withhold) return "not_found" as const;
           // Clear auto_promoted on a human review (see single-update path, #3636).
-          await internalQuery(`UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now(), auto_promoted = false WHERE id = $3 AND ${QUERY_PATTERN_SCOPE} AND ${updateOrg.clause}`, updateParams);
+          await internalQuery(`UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now(), auto_promoted = false WHERE id = $3 AND ${QUERY_PATTERN_SCOPE} AND ${updateScope.clause}`, updateParams);
           return "updated" as const;
         },
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -643,6 +700,25 @@ adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
     // 5-min TTL cache — only when at least one row actually changed (#3612).
     if (updated.length > 0) {
       invalidatePatternCache(orgId ?? null);
+    }
+
+    // Governance parity (#4580): a bulk decision is forensically identical to a
+    // stack of single decisions — one audit row per decided pattern, using the
+    // SAME `pattern.approve` / `pattern.reject` vocabulary as the PATCH path (one
+    // vocabulary per concept now that amendments are folded out of this route,
+    // #4569). Emitted only for rows that actually changed; notFound / errored
+    // ids leave no row, exactly like a single decision that 404s. The bulk
+    // schema pins `status` to approved|rejected, so this maps exhaustively.
+    const bulkAction = status === "approved" ? ADMIN_ACTIONS.pattern.approve : ADMIN_ACTIONS.pattern.reject;
+    const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
+    for (const id of updated) {
+      logAdminAction({
+        actionType: bulkAction,
+        targetType: "pattern",
+        targetId: id,
+        ipAddress,
+        metadata: { patternId: id },
+      });
     }
 
     return c.json({ updated, notFound, ...(errors.length > 0 ? { errors } : {}) }, 200);

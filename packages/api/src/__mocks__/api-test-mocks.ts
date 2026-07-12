@@ -277,6 +277,18 @@ export function buildInternalDbMockDefaults(deps: {
     stampClaimedAmendmentApproved: mock(async () => false),
     releaseClaimedAmendment: mock(async () => false),
     rejectPendingAmendment: mock(async () => false),
+    // Shared org-scope helper (#4510), adopted by the learned-patterns route in
+    // #4580. Returns the SELF-HOSTED clause, matching this harness's pinned
+    // `isSaasModeForGuard: () => false` (Settings mock below). The full
+    // SaaS/self-hosted branch matrix — including the SaaS org-less withhold — is
+    // pinned against the REAL helper in
+    // db/__tests__/semantic-amendment-saas-scoping.test.ts, so route suites
+    // don't need to re-drive deploy mode here. Present so a route's `import
+    // { amendmentOrgScope }` never SyntaxErrors at load time under this mock.
+    amendmentOrgScope: (orgId: string | null, placeholder: string) =>
+      orgId
+        ? { withhold: false, clause: `(org_id = ${placeholder} OR org_id IS NULL)` }
+        : { withhold: false, clause: "org_id IS NULL" },
     AMENDMENT_CLAIM_STALE_MINUTES: 10,
     hardDeleteWorkspace: mock(async () => ({})),
   

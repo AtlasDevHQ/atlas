@@ -47,6 +47,7 @@ import {
 } from "../internal";
 import type { ResolvedConfig } from "../../config";
 import { _setConfigForTest, _resetConfig } from "../../config";
+import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 
 interface Captured {
   sql: string;
@@ -590,5 +591,55 @@ describe("shared org-scope helper — reader/inserter enumeration (#4510)", () =
       )
       .map((f) => f.name);
     expect(inserters).toEqual(["insertSemanticAmendment"]);
+  });
+});
+
+describe("shared org-scope helper — learned-patterns route adoption (#4580)", () => {
+  // The `learned_patterns` table holds BOTH `semantic_amendment` and
+  // `query_pattern` rows. `amendmentOrgScope` is the shared SaaS-vs-self-hosted
+  // `org_id` conditional; the amendment DB readers (above) route through it, and
+  // #4580 makes the admin learned-patterns ROUTE (the `query_pattern`
+  // reader/writer) join them rather than keep its old fail-OPEN `org_id IS NULL`
+  // fallback. (`getApprovedPatterns` keeps a behaviorally-aligned inlined copy
+  // for the agent-injection path — pinned by its own tests, not this block.)
+  // This block is the route's seat in the enumeration: it reads the route source
+  // and pins that every org-scoped read/write derives its filter from the shared
+  // helper and no handler inlines a raw org clause.
+  const routeSource = readFileSync(
+    join(import.meta.dir, "..", "..", "..", "api", "routes", "admin-learned-patterns.ts"),
+    "utf8",
+  );
+  const stripComments = (s: string) =>
+    s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  const routeCode = stripComments(routeSource);
+
+  it("routes every org filter through the shared amendmentOrgScope helper", () => {
+    expect(routeCode).toContain("amendmentOrgScope(");
+    // Imported from the DB layer, not re-implemented locally.
+    expect(routeSource).toMatch(/import\s*\{[^}]*amendmentOrgScope[^}]*\}\s*from\s*["']@atlas\/api\/lib\/db\/internal["']/);
+  });
+
+  it("no handler inlines a raw org_id scope clause (bypassing the helper, failing open)", () => {
+    // The old fail-open fallback was a literal `org_id IS NULL` and a raw
+    // `org_id = $N` splice. After adoption both live ONLY inside
+    // amendmentOrgScope's runtime clause, never in the route source. (Row-field
+    // reads like `row.org_id` are neither pattern, so they don't false-trip.)
+    // `\d+` (not `\d`) so a re-inlined double-digit placeholder can't slip past.
+    expect(routeCode).not.toContain("org_id IS NULL");
+    expect(routeCode).not.toMatch(/org_id\s*=\s*\$\d+/);
+  });
+
+  it("the test-harness mock's self-hosted arm stays byte-identical to the real helper", () => {
+    // Route suites assert the mock's clause string, so a drift between the
+    // hand-written harness stub (`buildInternalDbMockDefaults`) and the real
+    // `amendmentOrgScope` would leave those suites green against a fiction. Pin
+    // the mock's self-hosted output to the real helper's under self-hosted
+    // config, so a change to the real clause fails HERE and forces the mock (and
+    // the 8 inline copies it documents) to be updated in lockstep.
+    setDeployMode("self-hosted");
+    const mockScope = buildInternalDbMockDefaults({ internalQuery: async () => [] })
+      .amendmentOrgScope as (orgId: string | null, ph: `$${number}`) => unknown;
+    expect(mockScope("org-a", "$1")).toEqual(amendmentOrgScope("org-a", "$1"));
+    expect(mockScope(null, "$1")).toEqual(amendmentOrgScope(null, "$1"));
   });
 });

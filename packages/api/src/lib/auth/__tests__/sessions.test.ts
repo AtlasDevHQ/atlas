@@ -128,6 +128,10 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   isPlaintextUrl: () => true,
   _resetEncryptionKeyCache: mock(() => {}),
   getApprovedPatterns: mock(async () => []),
+  // #4580 — the learned-patterns route (loaded at app boot) imports this shared
+  // org-scope helper; provide it so its named import doesn't SyntaxError here.
+  amendmentOrgScope: (orgId: string | null, ph: string) =>
+    orgId ? { withhold: false, clause: `(org_id = ${ph} OR org_id IS NULL)` } : { withhold: false, clause: "org_id IS NULL" },
   upsertSuggestion: mock(() => Promise.resolve("created")),
   getSuggestionsByTables: mock(() => Promise.resolve([])),
   getPopularSuggestions: mock(() => Promise.resolve([])),

@@ -702,6 +702,21 @@ export const learnedPatterns = pgTable(
     index("idx_learned_patterns_org_status").on(t.orgId, t.status),
     index("idx_learned_patterns_org_entity").on(t.orgId, t.sourceEntity),
     index("idx_learned_patterns_type").on(t.type),
+    // DB-enforced pattern identity (#4572, migration 0172): a PARTIAL UNIQUE
+    // INDEX `uq_learned_patterns_identity` over query_pattern rows on
+    // (org_id, connection_group_id, md5(pattern_sql)) with NULLS NOT DISTINCT.
+    // Handled via raw SQL in the migration because Drizzle can express neither
+    // NULLS NOT DISTINCT nor an md5(pattern_sql) expression column on a partial
+    // unique index (same as query_suggestions' NULLS NOT DISTINCT constraint).
+    // The proposer upserts against it via ON CONFLICT so a concurrent duplicate
+    // observation increments rather than multiplies.
+    check(
+      "chk_learned_patterns_status",
+      // `applying` is the transient amendment-claim state (#4506) — a DB value
+      // the wire enum LEARNED_PATTERN_STATUSES deliberately omits. Keep it here.
+      sql`status IN ('pending', 'applying', 'approved', 'rejected')`,
+    ),
+    check("chk_learned_patterns_type", sql`type IN ('query_pattern', 'semantic_amendment')`),
   ],
 );
 

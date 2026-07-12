@@ -6,8 +6,11 @@
  * workspaces that opted into auto-promotion — the workspace-scoped
  * `ATLAS_LEARN_PROMOTE_DECAY_ENABLED` trust dial, off by default. Self-hosted's
  * single implicit workspace is the degenerate case of the same per-workspace
- * tick, not a different model (mirrors the semantic-expert scheduler, #4516).
- * Each workspace's tick:
+ * tick, not a different model. The per-workspace ITERATION mirrors the
+ * semantic-expert scheduler (#4516); ENABLEMENT mirrors
+ * `ATLAS_AUTONOMOUS_IMPROVE_ENABLED` — but unlike the expert fiber (which keeps
+ * a platform master switch), this fiber drops its platform enable-gate entirely
+ * and gates only per-workspace. Each workspace's tick:
  *   - PROMOTES its pending `query_pattern` rows that clear a tunable gate
  *     (confidence + repetition + latency budget + recency) from pending →
  *     approved, so the learning loop maintains itself without an admin.
@@ -209,6 +212,15 @@ export async function runPromoteDecayTick(): Promise<PromoteDecayTickResult> {
     // Sequential, not Promise.all: a background sweep over a normally-small set —
     // serializing keeps the per-workspace DB work from bursting the internal
     // pool alongside live traffic (matches the expert scheduler).
+    //
+    // `workspacesFailed` counts only workspaces whose ENTIRE tick threw here
+    // (candidate fetch / decision / import failed) — distinct from the inner
+    // promote/demote/cache errors, which are logged at error level and folded
+    // into `result.errors`. When every considered workspace fails this way the
+    // cause is systemic (schema drift, internal-DB outage, a decision regression),
+    // so the tick summary escalates to error rather than reporting "complete" —
+    // a per-workspace warn alone would bury a whole-feature outage (panel review).
+    let workspacesFailed = 0;
     for (const orgId of workspaces) {
       result.workspacesConsidered++;
       try {
@@ -219,6 +231,7 @@ export async function runPromoteDecayTick(): Promise<PromoteDecayTickResult> {
         result.errors += ws.errors;
       } catch (err) {
         result.errors++;
+        workspacesFailed++;
         log.warn(
           { err: errorMessage(err), orgId },
           "Promote/decay tick failed for workspace — will retry next tick",
@@ -226,16 +239,21 @@ export async function runPromoteDecayTick(): Promise<PromoteDecayTickResult> {
       }
     }
 
-    log.info(
-      {
-        workspacesConsidered: result.workspacesConsidered,
-        candidates: result.candidates,
-        promoted: result.promoted,
-        demoted: result.demoted,
-        errors: result.errors,
-      },
-      "Promote/decay tick complete",
-    );
+    const summary = {
+      workspacesConsidered: result.workspacesConsidered,
+      candidates: result.candidates,
+      promoted: result.promoted,
+      demoted: result.demoted,
+      errors: result.errors,
+    };
+    if (workspacesFailed > 0 && workspacesFailed === result.workspacesConsidered) {
+      log.error(
+        summary,
+        "Promote/decay tick: every considered workspace failed — auto-promotion is not running (systemic error, not a per-workspace hiccup)",
+      );
+    } else {
+      log.info(summary, "Promote/decay tick complete");
+    }
   } catch (err) {
     log.error({ err: errorMessage(err) }, "Promote/decay tick failed");
     result.errors++;

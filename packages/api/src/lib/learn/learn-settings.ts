@@ -17,13 +17,17 @@
  *   - `ATLAS_LEARN_CONFIDENCE_THRESHOLD`
  *   - `ATLAS_LEARN_LATENCY_BUDGET_MS`
  *
- * **Workspace-scoped auto-promotion opt-in** (read per tick via
- * `getSettingAuto(key, orgId)` — the SaaS-first trust dial, #4582):
+ * **Workspace-scoped auto-promotion opt-in** — the SaaS-first trust dial (#4582):
  *   - `ATLAS_LEARN_PROMOTE_DECAY_ENABLED` — whether auto-promotion runs for a
  *     workspace, off by default. Moved OUT of platform scope (#4582): the single
  *     platform fiber now iterates the workspaces that opted in, so this is a
  *     per-workspace, hot-reloaded dial, not a boot-consumed master switch.
- *     Mirrors `ATLAS_AUTONOMOUS_IMPROVE_ENABLED`.
+ *     Mirrors `ATLAS_AUTONOMOUS_IMPROVE_ENABLED`. Read two ways: the self-hosted
+ *     degenerate workspace resolves it through `getSettingAuto(key, null)`
+ *     (the `isPromoteDecayEnabledForWorkspace` resolver below); the SaaS tick
+ *     enumerates opted-in workspaces straight from the `settings` table
+ *     (`listPromoteDecayOrgIds` in the scheduler) so an env/platform default
+ *     can't opt a specific tenant in.
  *
  * **Platform-scoped** (read with `getSetting(key)` — no orgId — because the
  * auto-promote/decay job is a single process-global fiber forked once at boot by

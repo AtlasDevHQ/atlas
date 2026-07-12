@@ -1125,7 +1125,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: "ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS",
     section: "Dynamic Learning",
     label: "Auto-Promote / Decay Interval",
-    description: "Hours between nightly auto-promote/decay runs.",
+    description: "Hours between auto-promote/decay runs.",
     type: "number",
     default: "24",
     envVar: "ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS",
@@ -1138,7 +1138,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Dynamic Learning",
     label: "Auto-Promote Min Repetitions",
     description:
-      "Minimum times a pending pattern must have been seen before the nightly job will auto-promote it (alongside the confidence threshold and latency budget).",
+      "Minimum times a pending pattern must have been seen before the auto-promote job will promote it (alongside the confidence threshold and latency budget).",
     type: "number",
     default: "5",
     envVar: "ATLAS_LEARN_PROMOTE_MIN_REPETITIONS",

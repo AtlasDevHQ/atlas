@@ -2528,8 +2528,9 @@ export interface PromoteDecayCandidateRow {
  * the cap.
  *
  * Capped at `limit` rows so a runaway table can't make one tick unbounded. The
- * order is `updated_at DESC` — freshest-touched first — so when the cap bites it
- * keeps the patterns a tenant is actively re-running (the ones worth promoting)
+ * order is `updated_at DESC` — most-recently-touched first (a re-run bumps
+ * `updated_at` via `incrementPatternCount`, the dominant writer for pending
+ * rows) — so when the cap bites it keeps the fresh patterns worth promoting
  * rather than starving them behind stale rows (#4582); the scheduler logs when
  * the cap is hit.
  */

@@ -29,10 +29,16 @@ let settingsRows: Array<{
 }> = [];
 
 let optedInOrgRows: Array<{ org_id: string }> = [];
+// Captured from the SaaS opt-in enumeration query so a test can assert it binds
+// the right key and keeps its tenant-safety filters (#4582).
+let enumerationSql: string | null = null;
+let enumerationParams: unknown[] | null = null;
+let enumerationThrows = false;
 
 let candidatesByOrg = new Map<string | null, Array<Record<string, unknown>>>();
 let defaultCandidates: Array<Record<string, unknown>> = [];
 let candidateFetchCalls: Array<string | null> = [];
+let failCandidateFetch = false;
 
 let promotedIds: readonly string[] = [];
 let demotedIds: readonly string[] = [];
@@ -41,12 +47,16 @@ let promoteOrgs: Array<string | null> = ["org-a"];
 let demoteOrgs: Array<string | null> = ["org-b"];
 let failPromote = false;
 let failDemote = false;
+let errorLogs: string[] = [];
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => dbAvailable,
   getInternalDB: () => ({ query: async () => ({ rows: [] }), end: async () => {}, on: () => {} }),
-  internalQuery: async (sql: string) => {
+  internalQuery: async (sql: string, params?: unknown[]) => {
     if (typeof sql === "string" && sql.includes("SELECT DISTINCT s.org_id")) {
+      enumerationSql = sql;
+      enumerationParams = params ?? null;
+      if (enumerationThrows) throw new Error("enumeration boom");
       return optedInOrgRows;
     }
     return settingsRows;
@@ -55,6 +65,7 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getApprovedPatterns: async () => [],
   getPromoteDecayCandidates: async (orgId: string | null) => {
     candidateFetchCalls.push(orgId);
+    if (failCandidateFetch) throw new Error("candidate fetch boom");
     const explicit = candidatesByOrg.get(orgId);
     return explicit ?? defaultCandidates;
   },
@@ -83,7 +94,14 @@ void mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
 }));
 
 void mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
+  createLogger: () => ({
+    info: () => {},
+    warn: () => {},
+    error: (_obj: unknown, msg?: string) => {
+      errorLogs.push(typeof msg === "string" ? msg : "");
+    },
+    debug: () => {},
+  }),
 }));
 
 const {
@@ -132,9 +150,13 @@ beforeEach(() => {
   dbAvailable = false;
   settingsRows = [];
   optedInOrgRows = [];
+  enumerationSql = null;
+  enumerationParams = null;
+  enumerationThrows = false;
   candidatesByOrg = new Map();
   defaultCandidates = [];
   candidateFetchCalls = [];
+  failCandidateFetch = false;
   promotedIds = [];
   demotedIds = [];
   invalidatedOrgs = [];
@@ -142,6 +164,7 @@ beforeEach(() => {
   demoteOrgs = ["org-b"];
   failPromote = false;
   failDemote = false;
+  errorLogs = [];
 });
 
 afterEach(() => {
@@ -355,6 +378,46 @@ describe("runPromoteDecayTick — SaaS", () => {
     const r = await runPromoteDecayTick();
     expect(r.workspacesConsidered).toBe(0);
     expect(candidateFetchCalls).toEqual([]);
+  });
+
+  it("the opt-in enumeration binds the promote key and keeps its tenant-safety filters", async () => {
+    optedInOrgRows = [{ org_id: "ws-1" }];
+    await runPromoteDecayTick();
+    // Bound to the exported key, not a stray literal — a rename that broke this
+    // would enroll ZERO tenants with no other signal.
+    expect(enumerationParams).toEqual([PROMOTE_DECAY_ENABLED_KEY]);
+    // The three clauses that keep the sweep org-safe: only explicit workspace
+    // overrides (never a platform/self-hosted NULL-org row), only truthy values,
+    // and joined to a live organization (a deleted workspace's stale row drops).
+    expect(enumerationSql).toContain("s.org_id IS NOT NULL");
+    expect(enumerationSql).toContain("value IN ('true', '1')");
+    expect(enumerationSql).toContain("JOIN organization");
+  });
+
+  it("an enumeration failure is contained — NO NULL-org fallthrough", async () => {
+    // If a future refactor added `catch { return [null] }` to the resolver, a DB
+    // blip during enumeration would trigger a cross-tenant NULL-org scan. Pin
+    // that the failure is counted and the sweep is skipped entirely instead.
+    enumerationThrows = true;
+    const r = await runPromoteDecayTick();
+    expect(r.errors).toBe(1);
+    expect(r.workspacesConsidered).toBe(0);
+    expect(candidateFetchCalls).not.toContain(null);
+    expect(candidateFetchCalls).toEqual([]);
+  });
+
+  it("escalates to an error log when EVERY considered workspace fails systemically", async () => {
+    // A schema drift / DB outage fails each workspace's candidate fetch at the
+    // outer catch. Per-workspace warns alone would bury a whole-feature outage,
+    // so the tick summary must escalate to error (panel review).
+    optedInOrgRows = [{ org_id: "ws-1" }, { org_id: "ws-2" }];
+    failCandidateFetch = true;
+
+    const r = await runPromoteDecayTick();
+
+    expect(r.workspacesConsidered).toBe(2);
+    expect(r.errors).toBe(2);
+    expect(errorLogs.some((m) => m.includes("every considered workspace failed"))).toBe(true);
   });
 
   it("a failure in one workspace does not abort the sweep of the others", async () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { z } from "zod";
 import { useQueryStates } from "nuqs";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LearnedPattern, LearnedPatternStatus } from "@/ui/lib/types";
@@ -9,6 +10,7 @@ import { getLearnedPatternColumns, statusBadge, autoApprovedBadge } from "./colu
 import { useAtlasConfig } from "@/ui/context";
 import { ServerDataTable } from "@/ui/components/admin/server-data-table";
 import { useServerDataTable } from "@/ui/hooks/use-server-data-table";
+import { LearnedPatternsListResponseSchema } from "@/ui/lib/admin-schemas";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -295,15 +297,16 @@ export default function LearnedPatternsPage() {
     loading,
     error,
     refetch,
-  } = useServerDataTable<LearnedPattern>({
+  } = useServerDataTable<
+    LearnedPattern,
+    z.infer<typeof LearnedPatternsListResponseSchema>
+  >({
     columns,
     getRowId: (row) => row.id,
     defaultPerPage: LIMIT,
     defaultSorting: [{ id: "createdAt", desc: true }],
-    select: (r) => {
-      const d = r as { patterns?: LearnedPattern[]; total?: number };
-      return { rows: d.patterns ?? [], total: d.total ?? 0 };
-    },
+    schema: LearnedPatternsListResponseSchema,
+    select: (r) => ({ rows: r.patterns, total: r.total }),
     buildPath: ({ offset, perPage }) => {
       const qs = new URLSearchParams({
         limit: String(perPage),

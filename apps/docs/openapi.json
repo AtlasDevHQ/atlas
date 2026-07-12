@@ -22819,7 +22819,78 @@
                               "object",
                               "null"
                             ],
-                            "additionalProperties": {}
+                            "properties": {
+                              "entityName": {
+                                "type": "string"
+                              },
+                              "amendmentType": {
+                                "type": "string",
+                                "enum": [
+                                  "add_dimension",
+                                  "add_measure",
+                                  "add_join",
+                                  "add_query_pattern",
+                                  "update_description",
+                                  "update_dimension",
+                                  "add_glossary_term",
+                                  "update_glossary_term",
+                                  "add_virtual_dimension"
+                                ]
+                              },
+                              "amendment": {
+                                "type": "object",
+                                "additionalProperties": {}
+                              },
+                              "rationale": {
+                                "type": "string"
+                              },
+                              "diff": {
+                                "type": "string"
+                              },
+                              "testQuery": {
+                                "type": "string"
+                              },
+                              "testResult": {
+                                "type": "object",
+                                "properties": {
+                                  "success": {
+                                    "type": "boolean"
+                                  },
+                                  "rowCount": {
+                                    "type": "number"
+                                  },
+                                  "sampleRows": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "additionalProperties": {}
+                                    }
+                                  },
+                                  "error": {
+                                    "type": "string"
+                                  },
+                                  "deferred": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "success",
+                                  "rowCount",
+                                  "sampleRows"
+                                ]
+                              },
+                              "confidence": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "entityName",
+                              "amendmentType",
+                              "amendment",
+                              "rationale",
+                              "diff",
+                              "confidence"
+                            ]
                           },
                           "autoPromoted": {
                             "type": "boolean"
@@ -22854,8 +22925,7 @@
                       }
                     },
                     "total": {
-                      "type": "number",
-                      "description": "Total count"
+                      "type": "number"
                     },
                     "limit": {
                       "type": "number"
@@ -23103,7 +23173,78 @@
                         "object",
                         "null"
                       ],
-                      "additionalProperties": {}
+                      "properties": {
+                        "entityName": {
+                          "type": "string"
+                        },
+                        "amendmentType": {
+                          "type": "string",
+                          "enum": [
+                            "add_dimension",
+                            "add_measure",
+                            "add_join",
+                            "add_query_pattern",
+                            "update_description",
+                            "update_dimension",
+                            "add_glossary_term",
+                            "update_glossary_term",
+                            "add_virtual_dimension"
+                          ]
+                        },
+                        "amendment": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        },
+                        "rationale": {
+                          "type": "string"
+                        },
+                        "diff": {
+                          "type": "string"
+                        },
+                        "testQuery": {
+                          "type": "string"
+                        },
+                        "testResult": {
+                          "type": "object",
+                          "properties": {
+                            "success": {
+                              "type": "boolean"
+                            },
+                            "rowCount": {
+                              "type": "number"
+                            },
+                            "sampleRows": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": {}
+                              }
+                            },
+                            "error": {
+                              "type": "string"
+                            },
+                            "deferred": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "success",
+                            "rowCount",
+                            "sampleRows"
+                          ]
+                        },
+                        "confidence": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "entityName",
+                        "amendmentType",
+                        "amendment",
+                        "rationale",
+                        "diff",
+                        "confidence"
+                      ]
                     },
                     "autoPromoted": {
                       "type": "boolean"
@@ -23365,7 +23506,78 @@
                         "object",
                         "null"
                       ],
-                      "additionalProperties": {}
+                      "properties": {
+                        "entityName": {
+                          "type": "string"
+                        },
+                        "amendmentType": {
+                          "type": "string",
+                          "enum": [
+                            "add_dimension",
+                            "add_measure",
+                            "add_join",
+                            "add_query_pattern",
+                            "update_description",
+                            "update_dimension",
+                            "add_glossary_term",
+                            "update_glossary_term",
+                            "add_virtual_dimension"
+                          ]
+                        },
+                        "amendment": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        },
+                        "rationale": {
+                          "type": "string"
+                        },
+                        "diff": {
+                          "type": "string"
+                        },
+                        "testQuery": {
+                          "type": "string"
+                        },
+                        "testResult": {
+                          "type": "object",
+                          "properties": {
+                            "success": {
+                              "type": "boolean"
+                            },
+                            "rowCount": {
+                              "type": "number"
+                            },
+                            "sampleRows": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": {}
+                              }
+                            },
+                            "error": {
+                              "type": "string"
+                            },
+                            "deferred": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "success",
+                            "rowCount",
+                            "sampleRows"
+                          ]
+                        },
+                        "confidence": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "entityName",
+                        "amendmentType",
+                        "amendment",
+                        "rationale",
+                        "diff",
+                        "confidence"
+                      ]
                     },
                     "autoPromoted": {
                       "type": "boolean"

@@ -320,7 +320,9 @@ describeIfPg("DB-enforced learned-pattern identity (real Postgres, #4572)", () =
 
       const settled = await pollRows(sql, (r) => r.length === 2);
       expect(settled).toHaveLength(2);
-      expect(settled.map((r) => r.org_id).sort()).toEqual(["o-1", "o-2"]);
+      const orgs = settled.map((r) => r.org_id);
+      expect(orgs).toContain("o-1");
+      expect(orgs).toContain("o-2");
       expect(settled.every((r) => r.repetition_count === 1)).toBe(true);
     },
     PG_TIMEOUT_MS,

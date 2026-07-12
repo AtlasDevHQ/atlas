@@ -1103,22 +1103,23 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_LEARN_LATENCY_BUDGET_MS",
     scope: "workspace",
   },
-  // Nightly auto-promote/decay job (#3636). The enable + interval pair is a
-  // single process-global fiber forked once at boot (makeSchedulerLive), so
-  // they are PLATFORM-scoped + requiresRestart — mirrors the expert scheduler.
-  // The gate knobs below are read once per tick (no orgId), hence platform too.
+  // Auto-promote/decay job (#3636, #4582). The enable dial is now the
+  // WORKSPACE'S OWN trust dial: workspace-scoped, off by default, hot-reloaded —
+  // one platform fiber iterates the workspaces that opted in (mirrors
+  // ATLAS_AUTONOMOUS_IMPROVE_ENABLED). The fiber CADENCE (`_INTERVAL_HOURS`) is
+  // still a single process-global fiber forked once at boot (makeSchedulerLive),
+  // hence PLATFORM-scoped + requiresRestart; the gate knobs below are operator
+  // policy read once per tick (no orgId), hence platform too.
   {
     key: "ATLAS_LEARN_PROMOTE_DECAY_ENABLED",
     section: "Dynamic Learning",
-    label: "Auto-Promote / Decay Job",
+    label: "Auto-Promote Learned Patterns",
     description:
-      "Enable the nightly job that auto-promotes high-confidence, fast, frequently-seen learned patterns and demotes stale auto-promoted ones. Human approvals are never demoted; semantic amendments are never auto-promoted.",
+      "Let Atlas auto-promote this workspace's high-confidence, fast, frequently-seen learned patterns and demote stale auto-promoted ones on its own cadence (off by default). Human approvals are never demoted; semantic amendments are never auto-promoted.",
     type: "boolean",
     default: "false",
     envVar: "ATLAS_LEARN_PROMOTE_DECAY_ENABLED",
-    requiresRestart: true,
-    scope: "platform",
-    saasVisible: false,
+    scope: "workspace",
   },
   {
     key: "ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS",

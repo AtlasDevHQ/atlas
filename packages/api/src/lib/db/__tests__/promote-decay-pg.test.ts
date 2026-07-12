@@ -84,20 +84,23 @@ describeIfPg("promote/decay DB helpers (real Postgres, #3636)", () => {
     type?: string;
     confidence?: number;
     repetitionCount?: number;
+    orgId?: string | null;
+    updatedAt?: string;
   }): Promise<string> {
     const res = await pool.query<{ id: string }>(
       `INSERT INTO learned_patterns
-        (org_id, pattern_sql, status, type, auto_promoted, confidence, repetition_count)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+        (org_id, pattern_sql, status, type, auto_promoted, confidence, repetition_count, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::timestamptz, now()))
        RETURNING id`,
       [
-        ORG,
+        opts.orgId === undefined ? ORG : opts.orgId,
         opts.sql,
         opts.status,
         opts.type ?? "query_pattern",
         opts.autoPromoted ?? false,
         opts.confidence ?? 0.9,
         opts.repetitionCount ?? 10,
+        opts.updatedAt ?? null,
       ],
     );
     return res.rows[0].id;
@@ -176,9 +179,47 @@ describeIfPg("promote/decay DB helpers (real Postgres, #3636)", () => {
       await seed({ sql: "SELECT 13", status: "rejected" }); // excluded
       await seed({ sql: "SELECT 14", status: "pending", type: "semantic_amendment" }); // excluded
 
-      const candidates = await getPromoteDecayCandidates();
+      const candidates = await getPromoteDecayCandidates(ORG);
       const ids = candidates.map((c) => c.id).sort();
       expect(ids).toEqual([pending, machine].sort());
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "candidate scope is per-workspace — a different org's rows are excluded (#4582)",
+    async () => {
+      const mine = await seed({ sql: "SELECT 20", status: "pending", orgId: ORG });
+      await seed({ sql: "SELECT 21", status: "pending", orgId: "other-org" });
+      // A NULL-org (self-hosted-shaped) row must not bleed into an org scan.
+      await seed({ sql: "SELECT 22", status: "pending", orgId: null });
+
+      const scoped = await getPromoteDecayCandidates(ORG);
+      expect(scoped.map((c) => c.id)).toEqual([mine]);
+
+      // A null scope sees only the NULL-org row, never the org-stamped ones.
+      const nullScoped = await getPromoteDecayCandidates(null);
+      expect(nullScoped.map((c) => c.org_id)).toEqual([null]);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "candidate order is freshest-touched first, so the cap keeps fresh rows (#4582)",
+    async () => {
+      // Insert oldest → newest by updated_at; the scan must return newest first
+      // so a `LIMIT` truncation drops the STALEST rows, never the fresh ones a
+      // tenant is actively re-running.
+      const stale = await seed({ sql: "SELECT 30", status: "pending", updatedAt: "2020-01-01T00:00:00Z" });
+      const mid = await seed({ sql: "SELECT 31", status: "pending", updatedAt: "2023-01-01T00:00:00Z" });
+      const fresh = await seed({ sql: "SELECT 32", status: "pending", updatedAt: "2026-01-01T00:00:00Z" });
+
+      const all = await getPromoteDecayCandidates(ORG);
+      expect(all.map((c) => c.id)).toEqual([fresh, mid, stale]);
+
+      // Under a cap of 2, the two freshest survive; the stalest is deferred.
+      const capped = await getPromoteDecayCandidates(ORG, 2);
+      expect(capped.map((c) => c.id)).toEqual([fresh, mid]);
     },
     PG_TIMEOUT_MS,
   );

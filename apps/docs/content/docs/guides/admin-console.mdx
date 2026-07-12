@@ -396,32 +396,38 @@ Settings overrides require an internal database (`DATABASE_URL`). Without it, bo
 **Route:** `/admin/learned-patterns`
 
 <Callout type="info">
-Requires an internal database (`DATABASE_URL`). Patterns are proposed by the agent during conversations or by the `atlas-operator learn` CLI command.
+Requires an internal database (`DATABASE_URL`). Query patterns are captured from the agent's successful queries during conversations. (The `atlas-operator learn` CLI is a separate offline loop for semantic-layer improvements and query suggestions — see the [CLI reference](/reference/cli#learn) — not learned patterns.) For the concepts behind this page — what approval means, the auto-promotion dial, and how patterns reach the agent — see the [Learned Query Patterns](/guides/learned-patterns) guide.
 </Callout>
 
-Review, approve, and manage query patterns the agent has learned:
+Review, approve, and manage the query patterns the agent has learned. **Approving a pattern makes it injectable immediately, regardless of its confidence** — approval is a grant of eligibility, not a change to the confidence score.
 
-- **Stats** — Total patterns, pending review, approved, rejected
-- **Status filter** — Tabs to filter by All / Pending / Approved / Rejected
-- **Entity filter** — Dropdown to filter by source entity (table)
-- **Pattern table** — Status badge, SQL pattern (monospace, truncated), description, source entity, confidence (progress bar), repetition count, source (Agent or CLI), created date
+- **Stats strip** — Current counts of pending, approved, rejected, and total patterns
+- **Status filter** — All / Pending / Approved / Rejected
+- **Entity filter** — Filter by source entity (table)
+- **Confidence filter** — Restrict to a confidence range (e.g. review the weakest evidence first)
+- **Sorting** — Click the Confidence, Avg latency, Seen, or Created headers to reorder rows (server-side sorting)
 
-**Detail sheet** — Click any row to open a side panel with:
-- Full SQL pattern in a monospace block
-- Metadata (entity, source, confidence, repetitions, timestamps)
-- Review history (who reviewed, when)
-- Source queries that originated the pattern
+**Pattern table columns:**
+- **Status** — `Pending` / `Approved` / `Rejected`. A machine-promoted row shows a distinct violet **Auto-approved** badge, so auto-promotion never reads as a human sign-off
+- **Pattern SQL** — the normalized shape (monospace, truncated; full text in the detail sheet)
+- **Description** and **Entity** (source table)
+- **Confidence** — the machine's evidence meter, shown as a progress bar
+- **Avg latency** — the pattern's rolling-mean execution time
+- **Seen** — how many times the identical shape has been observed
+- **Source** — `Agent` for a pattern the agent captured; `CLI` marks a pattern imported through an earlier operator path
+- **Created** — when the pattern was first captured
+
+**Detail sheet** — Click any row to open a side panel with the full SQL pattern, metadata (entity, source, confidence, times seen, avg latency, timestamps), review history (who reviewed and when), and the source queries that originated the pattern. Approve, reject, and delete are available here too.
 
 **Actions (per pattern):**
-- **Approve** — Mark a pattern as approved
-- **Reject** — Mark a pattern as rejected
-- **Delete** — Permanently remove a pattern (with confirmation dialog)
+- **Approve** / **Reject** — set the pattern's status; the reviewer and timestamp are recorded
+- **Delete** — permanently remove a pattern (with a confirmation dialog)
 
 **Bulk actions:**
-- Select multiple patterns with checkboxes
-- **Approve selected** / **Reject selected** — Update all selected patterns at once (max 100 per operation)
+- Select patterns with the row checkboxes, then **Approve** or **Reject** the selection (max 100 per operation)
+- A bulk action that partially fails keeps only the failed rows selected and reports what didn't apply, so a failed review is never mistaken for a success
 
-All status changes record the reviewer and timestamp. Approve/reject use optimistic UI updates — the table updates immediately, reverting on failure.
+Review actions go through the server and the table refetches on success; a failure surfaces in an error banner above the table rather than silently reverting.
 
 ---
 
@@ -431,7 +437,7 @@ All status changes record the reviewer and timestamp. Approve/reject use optimis
 Requires an internal database (`DATABASE_URL`). Suggestions are auto-generated from query frequency — there's nothing to author by hand.
 </Callout>
 
-Query suggestions are the **contextual "questions you can ask"** Atlas surfaces to end users for a given table. They're distinct from [Learned Patterns](#learned-patterns): a learned pattern is a SQL template the agent reuses, while a suggestion is a user-facing prompt, **score-ranked** by how often the underlying query is run and how often the suggestion is clicked. They're stored in `query_suggestions` and served to the chat/table UI by the user-facing endpoints:
+Query suggestions are the **contextual "questions you can ask"** Atlas surfaces to end users for a given table. They're deliberately distinct from [Learned Patterns](#learned-patterns) — a learned pattern is agent-facing SQL the agent reuses, while a suggestion is a user-facing prompt, **score-ranked** by how often the underlying query is run and how often the suggestion is clicked. See [why the two are kept separate](/guides/learned-patterns#learned-patterns-vs-query-suggestions-by-design). They're stored in `query_suggestions` and served to the chat/table UI by the user-facing endpoints:
 
 | Method | Path | Description |
 |--------|------|-------------|

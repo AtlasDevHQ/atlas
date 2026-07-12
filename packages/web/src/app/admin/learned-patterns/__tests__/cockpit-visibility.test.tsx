@@ -198,13 +198,20 @@ describe("/admin/learned-patterns cockpit visibility (#4578)", () => {
       if (!cell) throw new Error("injection-count cell not rendered");
     });
 
-    // Detail sheet: the "Injected (30d)" field label + its value.
+    // Detail sheet: the "Injected (30d)" field label + its value. Pin the value
+    // to the field's own <p> (the sibling of the label span) rather than the
+    // whole sheet text — ISO dates elsewhere in the sheet also contain "7".
     await openDetailSheet();
     const sheet = document.querySelector(SHEET)!;
-    await waitFor(() => {
-      if (!sheet.textContent?.includes("Injected (30d)")) throw new Error("injection-count field not in sheet");
+    const valueEl = await waitFor(() => {
+      const label = Array.from(sheet.querySelectorAll("span")).find(
+        (s) => s.textContent?.trim() === "Injected (30d)",
+      );
+      const value = label?.parentElement?.querySelector("p");
+      if (!value) throw new Error("injection-count field not in sheet");
+      return value;
     });
-    expect(sheet.textContent).toContain("7");
+    expect(valueEl.textContent?.trim()).toBe("7");
   });
 
   test("resolves the reviewer to a name/email in the sheet — never the raw UUID", async () => {

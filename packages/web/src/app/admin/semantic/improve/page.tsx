@@ -845,10 +845,16 @@ export default function SemanticImprovePage() {
   }
 
   return (
-    // Fill the admin content area exactly (#4517) — the old `calc(100dvh-4rem)`
-    // hardcoded a top-bar height that no longer matches and double-counted inside
-    // the admin layout's own scroll area, drifting the page height.
-    <div className="flex h-full flex-col overflow-hidden">
+    // Fill the admin content area exactly. `h-full` does NOT work here: the admin
+    // layout renders every page inside a Radix ScrollArea, whose Viewport injects
+    // an auto-height content wrapper (`[&>div]` in scroll-area.tsx) — a percentage
+    // height resolves against that wrapper and collapses to content height, leaving
+    // the page short (the pre-#4522 regression). `calc(100dvh-4rem)` isn't right
+    // either: it hardcodes the top-bar height and ignores the staging banner. So
+    // fill the positioned ScrollArea Root (it's `relative`) directly — `absolute
+    // inset-0` adapts to banner + top-bar with no magic constant, and the page
+    // manages its own internal scroll below.
+    <div className="absolute inset-0 flex flex-col overflow-hidden">
       {/* Header */}
       <div className="flex shrink-0 items-center gap-3 border-b px-6 py-4">
         <Link href="/admin/semantic">

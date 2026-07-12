@@ -20,6 +20,19 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.49",
+    title: "Knowledge Base Connector Picker",
+    date: "2026-07-12",
+    summary:
+      "Every Knowledge Base import source is now reachable from the product. The \"New collection\" picker became a searchable, data-driven grid over the full connector catalog — so the nine connectors that were wired server-side but had no way in (Confluence Cloud and Data Center, GitBook, Zendesk Guide, Salesforce Knowledge, Intercom, Front, Help Scout, and Freshdesk) join Upload, Endpoint, and Notion. Each source collects exactly the credentials it needs, rendered from its own catalog definition, and a connector added later shows up automatically with no picker change.",
+    highlights: [
+      "All 12 Knowledge Base import sources are selectable from New collection — the 9 previously-unreachable connectors gain a UI entry point (#4619)",
+      "A searchable connector grid replaces the fixed 3-tab strip; each connector renders its own credential form from the catalog definition and installs through the shared form-install path",
+      "Data-driven by construction — a future connector added to the built-in catalog surfaces automatically, so this gap can't silently recur",
+      "Existing Upload / Endpoint / Notion flows unchanged",
+    ],
+  },
+  {
     version: "v0.0.48",
     title: "Semantic-Improve Elevation",
     date: "2026-07-11",

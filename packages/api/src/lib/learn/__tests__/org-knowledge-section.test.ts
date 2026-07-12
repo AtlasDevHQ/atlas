@@ -37,6 +37,20 @@ interface PatRow {
 }
 let patternRows: PatRow[] = [];
 
+// Captures every recordPatternInjections(records) call so the attribution tests
+// can assert exactly which pattern IDs got attributed for a turn (#4573). Reset
+// per-test. `throwOnRecord` proves attribution is best-effort — a write failure
+// must never fail the turn.
+interface InjectionRecord {
+  patternId: string;
+  orgId: string | null;
+  connectionGroupId: string | null;
+  conversationId: string | null;
+  requestId: string | null;
+}
+let recordedInjections: InjectionRecord[][] = [];
+let throwOnRecord = false;
+
 // --- Mocks (all named exports) ---
 
 // internalQuery is the single Postgres-emulation chokepoint, routed by SQL
@@ -120,6 +134,12 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   incrementSuggestionClick: () => {},
   deleteSuggestion: async () => false,
   getAuditLogQueries: async () => [],
+  // Injection attribution write (#4573) — captured, not persisted. Throws only
+  // when `throwOnRecord` is set, so a test can prove the write is best-effort.
+  recordPatternInjections: (records: InjectionRecord[]) => {
+    if (throwOnRecord) throw new Error("attribution write blew up");
+    recordedInjections.push(records);
+  },
 }));
 
 void mock.module("@atlas/api/lib/settings", () => {
@@ -135,10 +155,16 @@ void mock.module("@atlas/api/lib/settings", () => {
   };
 });
 
+// Capture warn calls so the best-effort-attribution test can assert the failure
+// was LOGGED (not silently swallowed) — the second half of the AC that a raw
+// "still returns a section" check can't see.
+let warnCalls: Array<{ ctx: unknown; msg: string }> = [];
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
-    warn: () => {},
+    warn: (ctx: unknown, msg: string) => {
+      warnCalls.push({ ctx, msg });
+    },
     error: () => {},
     debug: () => {},
   }),
@@ -154,6 +180,7 @@ const { _resetPatternCache } = await import("@atlas/api/lib/learn/pattern-cache"
 
 function pattern(over: Partial<RelevantPattern> = {}): RelevantPattern {
   return {
+    id: "pat-1",
     sourceEntity: "companies",
     description: "Total company revenue",
     patternSql: "SELECT SUM(revenue) FROM companies",
@@ -284,6 +311,8 @@ describe("resolveOrgKnowledgeSection (scoping)", () => {
     favoriteRows = [];
     suggestionRows = [];
     patternRows = [];
+    recordedInjections = [];
+    throwOnRecord = false;
   });
 
   test("folds favorites + approved suggestions + patterns for the active org", async () => {
@@ -412,5 +441,137 @@ describe("resolveOrgKnowledgeSection (scoping)", () => {
       question: "show me revenue",
     });
     expect(section).toBe("");
+  });
+});
+
+// ===========================================================================
+// Injection attribution (#4573)
+//
+// resolveOrgKnowledgeSection is the agent's org-knowledge prompt-assembly seam:
+// the only path that injects learned patterns into a turn. Testing attribution
+// here pins the observable behavior ("injected patterns → one attribution row
+// each; no injection → none") at the seam where injection actually happens,
+// rather than through the full agent loop.
+// ===========================================================================
+
+describe("resolveOrgKnowledgeSection (injection attribution, #4573)", () => {
+  beforeEach(() => {
+    _resetPatternCache();
+    favoriteRows = [];
+    suggestionRows = [];
+    patternRows = [];
+    recordedInjections = [];
+    throwOnRecord = false;
+    warnCalls = [];
+  });
+
+  test("writes one attribution record naming exactly the injected pattern IDs", async () => {
+    patternRows = [
+      { id: "pat-a", org_id: "org-a", connection_group_id: "us-prod", pattern_sql: "SELECT revenue FROM a", description: "A", source_entity: "a", confidence: 0.9 },
+      { id: "pat-b", org_id: "org-a", connection_group_id: "us-prod", pattern_sql: "SELECT revenue FROM b", description: "B", source_entity: "b", confidence: 0.9 },
+    ];
+
+    const section = await resolveOrgKnowledgeSection({
+      orgId: "org-a",
+      userId: "user-a",
+      connectionGroupId: "us-prod",
+      mode: "published",
+      question: "show me revenue",
+      requestId: "req-1",
+      conversationId: "conv-1",
+    });
+
+    // The block was injected...
+    expect(section).toContain("### Previously successful query patterns");
+    // ...and exactly those pattern IDs were attributed, workspace/group/turn-scoped.
+    expect(recordedInjections).toHaveLength(1);
+    const records = recordedInjections[0];
+    expect(records.map((r) => r.patternId).toSorted()).toEqual(["pat-a", "pat-b"]);
+    for (const r of records) {
+      expect(r.orgId).toBe("org-a");
+      expect(r.connectionGroupId).toBe("us-prod");
+      expect(r.conversationId).toBe("conv-1");
+      expect(r.requestId).toBe("req-1");
+    }
+  });
+
+  test("writes no attribution when no pattern is injected", async () => {
+    // Favorites present, but no patterns → the patterns subsection never renders,
+    // so nothing is attributed (attribution reflects what entered the prompt).
+    favoriteRows = [
+      { id: "f-a", user_id: "user-a", org_id: "org-a", text: "A favorite", position: 1, created_at: "2026-01-01" },
+    ];
+
+    const section = await resolveOrgKnowledgeSection({
+      orgId: "org-a",
+      userId: "user-a",
+      connectionGroupId: null,
+      mode: "published",
+      question: "show me revenue",
+    });
+
+    expect(section).toContain("A favorite");
+    expect(section).not.toContain("### Previously successful query patterns");
+    expect(recordedInjections).toHaveLength(0);
+  });
+
+  test("writes no attribution when the question has no keywords (nothing scored in)", async () => {
+    patternRows = [
+      { id: "pat-a", org_id: "org-a", connection_group_id: null, pattern_sql: "SELECT revenue FROM a", description: "A", source_entity: "a", confidence: 0.9 },
+    ];
+
+    // A stop-word-only question extracts no keywords, so getRelevantPatterns
+    // returns [] and nothing is injected — hence nothing attributed.
+    await resolveOrgKnowledgeSection({
+      orgId: "org-a",
+      userId: "user-a",
+      connectionGroupId: null,
+      mode: "published",
+      question: "the and of",
+    });
+
+    expect(recordedInjections).toHaveLength(0);
+  });
+
+  test("a failed attribution write never fails the turn, and is logged not swallowed (best-effort, #4573)", async () => {
+    throwOnRecord = true;
+    patternRows = [
+      { id: "pat-a", org_id: "org-a", connection_group_id: null, pattern_sql: "SELECT revenue FROM a", description: "A", source_entity: "a", confidence: 0.9 },
+    ];
+
+    // recordPatternInjections throws, but the section still assembles and returns
+    // — the injected block is present, the turn is unharmed.
+    const section = await resolveOrgKnowledgeSection({
+      orgId: "org-a",
+      userId: "user-a",
+      connectionGroupId: null,
+      mode: "published",
+      question: "show me revenue",
+    });
+
+    expect(section).toContain("### Previously successful query patterns");
+    // The failure was LOGGED (not an empty `catch {}`) — the other half of the AC.
+    const attributionWarn = warnCalls.find((w) => w.msg.includes("injection attribution"));
+    expect(attributionWarn).toBeDefined();
+    expect((attributionWarn?.ctx as { count?: number } | undefined)?.count).toBe(1);
+  });
+
+  test("an omitted conversationId is recorded as null (wire-contract default, #4573)", async () => {
+    patternRows = [
+      { id: "pat-a", org_id: "org-a", connection_group_id: null, pattern_sql: "SELECT revenue FROM a", description: "A", source_entity: "a", confidence: 0.9 },
+    ];
+
+    // No conversationId passed — the resolver defaults it to null on the record.
+    await resolveOrgKnowledgeSection({
+      orgId: "org-a",
+      userId: "user-a",
+      connectionGroupId: null,
+      mode: "published",
+      question: "show me revenue",
+    });
+
+    expect(recordedInjections).toHaveLength(1);
+    expect(recordedInjections[0][0].conversationId).toBeNull();
+    expect(recordedInjections[0][0].requestId).toBeNull();
   });
 });

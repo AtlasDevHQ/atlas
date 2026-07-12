@@ -34,6 +34,7 @@ const validPattern = {
   amendmentPayload: null,
   autoPromoted: false,
   avgDurationMs: null,
+  injectionCount: 0,
 };
 
 const validListResponse = {
@@ -167,6 +168,16 @@ describe("drift rejection", () => {
   test("a row missing reviewedByLabel fails parse (the new field is required, #4578)", () => {
     const { reviewedByLabel: _drop, ...drifted } = validPattern;
     expect(LearnedPatternSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("a row missing injectionCount fails parse (the new field is required, #4573)", () => {
+    const { injectionCount: _drop, ...drifted } = validPattern;
+    expect(LearnedPatternSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("a negative injectionCount fails parse (a count is a non-negative int, #4573)", () => {
+    expect(LearnedPatternSchema.safeParse({ ...validPattern, injectionCount: -1 }).success).toBe(false);
+    expect(LearnedPatternSchema.safeParse({ ...validPattern, injectionCount: 1.5 }).success).toBe(false);
   });
 
   test("summary with a string count fails parse (#4578)", () => {

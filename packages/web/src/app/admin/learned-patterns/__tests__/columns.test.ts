@@ -17,6 +17,7 @@ describe("getLearnedPatternColumns", () => {
       "confidence",
       "avgDurationMs",
       "repetitionCount",
+      "injectionCount",
       "proposedBy",
       "createdAt",
     ]);

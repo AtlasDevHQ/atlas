@@ -8,6 +8,7 @@ import {
 
 function pattern(over: Partial<RelevantPattern> = {}): RelevantPattern {
   return {
+    id: "pat-1",
     sourceEntity: "orders",
     description: "Total revenue by month",
     patternSql: "SELECT date_trunc('month', created_at), sum(amount) FROM orders GROUP BY 1",

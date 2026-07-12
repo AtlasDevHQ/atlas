@@ -87,6 +87,10 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
       row.avg_duration_ms === null || row.avg_duration_ms === undefined
         ? null
         : Number(row.avg_duration_ms),
+    // 30-day injection count from the INJECTION_COUNT_SELECT subquery (#4573).
+    // Absent (a caller that omits the subquery) reads 0 — the never-injected
+    // state — never null, since the wire type is a non-negative count.
+    injectionCount: Number(row.injection_count ?? 0),
   };
 }
 
@@ -171,6 +175,16 @@ const QUERY_PATTERN_SCOPE = "type = 'query_pattern'";
 // since-deleted reviewer.
 const REVIEWER_LABEL_SELECT =
   `(SELECT COALESCE(NULLIF(u.name, ''), u.email) FROM "user" u WHERE u.id = learned_patterns.reviewed_by) AS reviewer_label`;
+
+// Per-pattern 30-day injection count (#4573). Scalar correlated subquery over
+// `learned_pattern_injections` — like REVIEWER_LABEL_SELECT, it keeps the
+// surrounding `SELECT * FROM learned_patterns` single-table (no JOIN, so every
+// WHERE/ORDER BY ref stays unqualified). Windowed to the trailing 30 days so the
+// cockpit reads "is this pattern earning its keep NOW", and a `0` on an approved
+// pattern flags it dead. `::int` keeps the driver from returning a bigint string;
+// `toLearnedPattern` maps `injection_count` → `injectionCount`.
+const INJECTION_COUNT_SELECT =
+  `(SELECT COUNT(*)::int FROM learned_pattern_injections lpi WHERE lpi.pattern_id = learned_patterns.id AND lpi.injected_at >= now() - interval '30 days') AS injection_count`;
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -571,7 +585,7 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     const limitIdx = nextIdx;
     selectParams.push(offset);
     const offsetIdx = limitIdx + 1;
-    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT *, ${REVIEWER_LABEL_SELECT} FROM learned_patterns ${whereClause} ${orderByClause} LIMIT $${limitIdx} OFFSET $${offsetIdx}`, selectParams);
+    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT *, ${REVIEWER_LABEL_SELECT}, ${INJECTION_COUNT_SELECT} FROM learned_patterns ${whereClause} ${orderByClause} LIMIT $${limitIdx} OFFSET $${offsetIdx}`, selectParams);
 
     return c.json({ patterns: rows.map(toLearnedPattern), total, limit, offset }, 200);
   }), { label: "list learned patterns" });
@@ -672,7 +686,7 @@ adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
     const params: unknown[] = [id];
     const scope = orgScope(orgId, params);
     if (scope.withhold) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
-    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT *, ${REVIEWER_LABEL_SELECT} FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${scope.clause}`, params);
+    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT *, ${REVIEWER_LABEL_SELECT}, ${INJECTION_COUNT_SELECT} FROM learned_patterns WHERE id = $1 AND ${QUERY_PATTERN_SCOPE} AND ${scope.clause}`, params);
     if (rows.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
     return c.json(toLearnedPattern(rows[0]), 200);
   }), { label: "get learned pattern" });
@@ -713,7 +727,7 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     const idIdx = paramIdx;
     const updateScope = orgScope(orgId, updateParams);
     if (updateScope.withhold) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
-    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${QUERY_PATTERN_SCOPE} AND ${updateScope.clause} RETURNING *, ${REVIEWER_LABEL_SELECT}`, updateParams);
+    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${QUERY_PATTERN_SCOPE} AND ${updateScope.clause} RETURNING *, ${REVIEWER_LABEL_SELECT}, ${INJECTION_COUNT_SELECT}`, updateParams);
     if (updated.length === 0) return c.json({ error: "not_found", message: "Pattern was deleted before update completed." }, 404);
 
     // Any status flip changes which patterns the agent sees: the approved set

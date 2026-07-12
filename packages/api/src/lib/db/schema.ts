@@ -724,6 +724,44 @@ export const learnedPatterns = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Learned-pattern injection attribution (#4573, migration 0173)
+// ---------------------------------------------------------------------------
+//
+// One row per (pattern, turn) injection — prompt assembly records which
+// learned-pattern IDs entered which agent turn (CONTEXT.md § Learned query
+// patterns, "Injection"). The cockpit joins a per-pattern count so an approved
+// pattern's usage is observable and a never-injected one is diagnosable. The
+// write is fire-and-forget at injection time (recordPatternInjections); crediting
+// adapted SQL and demotion-on-outcome are deferred until this data exists.
+export const learnedPatternInjections = pgTable(
+  "learned_pattern_injections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // The injected pattern. CASCADE so a pattern delete reaps its attribution
+    // rows — the cockpit count can never reference a deleted pattern.
+    patternId: uuid("pattern_id")
+      .notNull()
+      .references(() => learnedPatterns.id, { onDelete: "cascade" }),
+    // Workspace + group scope, denormalized from the pattern (NULL = legacy
+    // global / default flat scope) so workspace-scoped aggregates skip the join.
+    orgId: text("org_id"),
+    connectionGroupId: text("connection_group_id"),
+    // The turn the injection served (both nullable — best-effort correlation).
+    conversationId: text("conversation_id"),
+    requestId: text("request_id"),
+    injectedAt: timestamp("injected_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Per-pattern count subquery: WHERE pattern_id = $1 AND injected_at >= cutoff.
+    // `.desc()` on injected_at mirrors the migration DDL exactly so a later
+    // `drizzle-kit generate` can't emit a drop/recreate to reconcile direction.
+    index("idx_learned_pattern_injections_pattern").on(t.patternId, t.injectedAt.desc()),
+    // Provisioned ahead of a not-yet-implemented workspace-scoped aggregate.
+    index("idx_learned_pattern_injections_org").on(t.orgId, t.injectedAt.desc()),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Prompt library
 // ---------------------------------------------------------------------------
 

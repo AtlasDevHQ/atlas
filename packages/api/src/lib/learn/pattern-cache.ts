@@ -120,6 +120,10 @@ export function buildRetrievalQuery(
 const DEFAULT_MAX_PATTERNS = 10;
 
 export interface RelevantPattern {
+  /** The pattern's `learned_patterns.id`. Surfaced so prompt assembly can
+   *  attribute this injection to the source pattern (#4573) — the render path
+   *  itself doesn't use it. */
+  id: string;
   sourceEntity: string | null;
   description: string | null;
   patternSql: string;
@@ -165,6 +169,7 @@ export async function getRelevantPatterns(
   });
 
   return scored.map((s) => ({
+    id: s.pattern.id,
     sourceEntity: s.pattern.source_entity,
     description: s.pattern.description,
     patternSql: s.pattern.pattern_sql,

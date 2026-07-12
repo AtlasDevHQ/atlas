@@ -585,6 +585,13 @@ export default function LearnedPatternsPage() {
                       <span className="text-xs font-medium text-muted-foreground">Times seen</span>
                       <p className="text-xs tabular-nums">{detailPattern.repetitionCount}</p>
                     </div>
+                    {/* Injection payoff (#4573): agent turns that injected this
+                        pattern in the last 30 days. A 0 on an approved pattern is
+                        the diagnosable "dead pattern" signal. */}
+                    <div className="space-y-1">
+                      <span className="text-xs font-medium text-muted-foreground">Injected (30d)</span>
+                      <p className="text-xs tabular-nums">{detailPattern.injectionCount.toLocaleString()}</p>
+                    </div>
                     <div className="space-y-1">
                       <span className="text-xs font-medium text-muted-foreground">Avg latency</span>
                       <p className="text-xs tabular-nums">

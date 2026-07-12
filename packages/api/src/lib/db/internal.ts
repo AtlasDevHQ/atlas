@@ -2495,6 +2495,54 @@ export async function getApprovedPatterns(
   return rows;
 }
 
+// ── Injection attribution (#4573) ─────────────────────────────────
+
+/** One injected pattern to attribute for a single agent turn. */
+export interface PatternInjectionRecord {
+  /** The injected pattern's `learned_patterns.id`. */
+  readonly patternId: string;
+  /** Workspace scope, denormalized from the pattern (null = legacy global). */
+  readonly orgId: string | null;
+  /** Connection group the injecting session ran under (null = default flat). */
+  readonly connectionGroupId: string | null;
+  /** The conversation the turn belonged to, when known. */
+  readonly conversationId: string | null;
+  /** Request correlation id for the turn, when known. */
+  readonly requestId: string | null;
+}
+
+/**
+ * Record injection attribution for one agent turn: one row per injected pattern
+ * (CONTEXT.md § Learned query patterns, "Injection" — every injection is
+ * attributed). Prompt assembly (`resolveOrgKnowledgeSection`) calls this with
+ * exactly the patterns it rendered into the turn, so attribution reflects what
+ * entered the prompt, not what was fetched.
+ *
+ * Fire-and-forget via {@link internalExecute}: a write failure is logged (never
+ * thrown) and the circuit breaker drops rows under sustained failure, so
+ * attribution can never fail the agent turn (PRD #4570 acceptance). No-op when
+ * the internal DB is absent (self-hosted without `DATABASE_URL`) or the batch is
+ * empty. A single multi-row INSERT keeps it one round-trip regardless of turn
+ * width.
+ */
+export function recordPatternInjections(records: readonly PatternInjectionRecord[]): void {
+  if (records.length === 0 || !hasInternalDB()) return;
+
+  const params: unknown[] = [];
+  const valueRows = records.map((r) => {
+    const base = params.length;
+    params.push(r.patternId, r.orgId, r.connectionGroupId, r.conversationId, r.requestId);
+    return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5})`;
+  });
+
+  internalExecute(
+    `INSERT INTO learned_pattern_injections
+       (pattern_id, org_id, connection_group_id, conversation_id, request_id)
+     VALUES ${valueRows.join(", ")}`,
+    params,
+  );
+}
+
 // ── Auto-promote / decay (PRD #3617 B-2, #3636) ─────────────────────
 
 /** `reviewed_by` stamp the nightly job writes on an auto-promotion, so the

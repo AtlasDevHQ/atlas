@@ -86,6 +86,7 @@ const REVIEWED_PATTERN = {
   amendmentPayload: null,
   autoPromoted: false,
   avgDurationMs: 12,
+  injectionCount: 7,
 };
 
 const LIST_ENVELOPE = { patterns: [REVIEWED_PATTERN], total: 1, limit: 50, offset: 0 };
@@ -181,6 +182,36 @@ describe("/admin/learned-patterns cockpit visibility (#4578)", () => {
         throw new Error("stats bar not rendered");
       }
     });
+  });
+
+  test("surfaces the per-pattern injection count in the list column and detail sheet (#4573)", async () => {
+    mockApi({ multiGroup: false });
+    render(<LearnedPatternsPage />, { wrapper: Wrapper });
+
+    // List: the "Injected (30d)" column header + the fixture's count cell (7).
+    await waitFor(() => {
+      const headers = Array.from(document.querySelectorAll("th")).map((h) => h.textContent ?? "");
+      if (!headers.some((h) => h.includes("Injected (30d)"))) {
+        throw new Error("injection-count column header not rendered");
+      }
+      const cell = Array.from(document.querySelectorAll("td")).some((td) => td.textContent?.trim() === "7");
+      if (!cell) throw new Error("injection-count cell not rendered");
+    });
+
+    // Detail sheet: the "Injected (30d)" field label + its value. Pin the value
+    // to the field's own <p> (the sibling of the label span) rather than the
+    // whole sheet text — ISO dates elsewhere in the sheet also contain "7".
+    await openDetailSheet();
+    const sheet = document.querySelector(SHEET)!;
+    const valueEl = await waitFor(() => {
+      const label = Array.from(sheet.querySelectorAll("span")).find(
+        (s) => s.textContent?.trim() === "Injected (30d)",
+      );
+      const value = label?.parentElement?.querySelector("p");
+      if (!value) throw new Error("injection-count field not in sheet");
+      return value;
+    });
+    expect(valueEl.textContent?.trim()).toBe("7");
   });
 
   test("resolves the reviewer to a name/email in the sheet — never the raw UUID", async () => {

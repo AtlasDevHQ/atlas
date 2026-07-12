@@ -224,6 +224,10 @@ export function buildInternalDbMockDefaults(deps: {
     insertLearnedPattern: () => {},
     incrementPatternCount: () => {},
     getApprovedPatterns: mock(async () => []),
+    // #4573 — injection-attribution writer; org-knowledge-section (loaded
+    // transitively via agent at app boot) imports it, so it must be in the
+    // complete surface or a transitive named import SyntaxErrors under bun.
+    recordPatternInjections: mock(() => {}),
     upsertSuggestion: mock(() => Promise.resolve("created")),
     getSuggestionsByTables: mock(() => Promise.resolve([])),
     getPopularSuggestions: mock(() => Promise.resolve([])),

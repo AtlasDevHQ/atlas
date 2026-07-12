@@ -157,7 +157,9 @@ describe("admin learned-patterns routes", () => {
         if (callCount === 1) {
           return Promise.resolve([{ count: "2" }]);
         }
-        return Promise.resolve([mockRow(), mockRow({ id: "pat-2" })]);
+        // First row carries the INJECTION_COUNT_SELECT subquery result; second
+        // omits it, so the fallback-to-0 mapping is exercised too (#4573).
+        return Promise.resolve([mockRow({ injection_count: 3 }), mockRow({ id: "pat-2" })]);
       });
 
       const res = await req("GET", "/");
@@ -179,6 +181,11 @@ describe("admin learned-patterns routes", () => {
         expect(body.patterns[0].createdAt).toBe("2026-03-18T00:00:00Z");
         expect(body.patterns[0].updatedAt).toBe("2026-03-18T00:00:00Z");
         expect(body.patterns[0].reviewedAt).toBeNull();
+        // Per-pattern injection count (#4573): mapped from injection_count, and
+        // a row without the subquery reads 0 (never null) — the wire type is a
+        // non-negative count.
+        expect(body.patterns[0].injectionCount).toBe(3);
+        expect(body.patterns[1].injectionCount).toBe(0);
       }
     });
 
@@ -193,6 +200,17 @@ describe("admin learned-patterns routes", () => {
       const params = lastCall[1] as unknown[];
       expect(params).toContain(50);
       expect(params).toContain(0);
+    });
+
+    it("selects the per-pattern injection-count subquery (#4573)", async () => {
+      // Guards against silently dropping INJECTION_COUNT_SELECT from the SELECT
+      // (which would make every cockpit count read 0 with no other failing test).
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      await req("GET", "/");
+      const calls = mocks.mockInternalQuery.mock.calls;
+      const selectSql = calls[calls.length - 1][0] as string;
+      expect(selectSql).toContain("injection_count");
+      expect(selectSql).toContain("learned_pattern_injections");
     });
 
     it("caps limit at 200", async () => {
@@ -299,7 +317,10 @@ describe("admin learned-patterns routes", () => {
 
     it("a repeated pattern (repetition_count >= 2) surfaces with its accumulated stats (#4581)", async () => {
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
-        if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "1" }]);
+        // Match the top-level count query specifically — the row SELECT now also
+        // contains a `COUNT(*)` in the injection-count subquery (#4573), so a bare
+        // `includes("COUNT(*)")` would misroute the SELECT to the count result.
+        if (sql.includes("COUNT(*) as count")) return Promise.resolve([{ count: "1" }]);
         return Promise.resolve([mockRow({ id: "repeated", repetition_count: 4, confidence: 0.6 })]);
       });
       const res = await req("GET", "/");
@@ -389,7 +410,7 @@ describe("admin learned-patterns routes", () => {
 
   describe("GET /:id", () => {
     it("returns single pattern", async () => {
-      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([mockRow()]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([mockRow({ injection_count: 4 })]));
       const res = await req("GET", "/pat-1");
       expect(res.status).toBe(200);
       // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
@@ -400,6 +421,11 @@ describe("admin learned-patterns routes", () => {
       expect(body.sourceEntity).toBe("orders");
       expect(body.confidence).toBe(0.8);
       expect(body.status).toBe("pending");
+      // Detail sheet reads injectionCount from this row (#4573).
+      expect(body.injectionCount).toBe(4);
+      // The single-pattern SELECT includes the injection-count subquery.
+      const sql = mocks.mockInternalQuery.mock.calls[0][0] as string;
+      expect(sql).toContain("injection_count");
     });
 
     it("returns 404 for missing pattern", async () => {
@@ -451,6 +477,9 @@ describe("admin learned-patterns routes", () => {
       const sql = updateCall[0] as string;
       expect(sql).toContain("reviewed_by");
       expect(sql).toContain("reviewed_at");
+      // RETURNING carries the injection count so the detail sheet's count
+      // survives an approve/reject in place, rather than resetting to 0 (#4573).
+      expect(sql).toContain("injection_count");
     });
 
     it("approving a pattern never writes confidence — approval is an eligibility grant, not a confidence write (#4571)", async () => {

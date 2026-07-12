@@ -128,6 +128,10 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   isPlaintextUrl: () => true,
   _resetEncryptionKeyCache: mock(() => {}),
   getApprovedPatterns: mock(async () => []),
+  // #4573 — org-knowledge-section (loaded transitively via agent at app boot)
+  // imports this injection-attribution writer; provide it so its named import
+  // doesn't SyntaxError here.
+  recordPatternInjections: mock(() => {}),
   // #4580 — the learned-patterns route (loaded at app boot) imports this shared
   // org-scope helper; provide it so its named import doesn't SyntaxError here.
   amendmentOrgScope: (orgId: string | null, ph: string) =>

@@ -22,7 +22,7 @@
  */
 import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
-import { getPopularSuggestions } from "@atlas/api/lib/db/internal";
+import { getPopularSuggestions, recordPatternInjections } from "@atlas/api/lib/db/internal";
 import { listFavorites } from "@atlas/api/lib/starter-prompts/favorite-store";
 import { getRelevantPatterns, type RelevantPattern } from "./pattern-cache";
 import { renderPattern, sanitizeForPrompt } from "./pattern-format";
@@ -153,8 +153,11 @@ export interface ResolveOrgKnowledgeParams {
   readonly mode: AtlasMode;
   /** Retrieval query (assembled from recent user turns). */
   readonly question: string;
-  /** Correlation id for log lines. */
+  /** Correlation id for log lines and injection attribution (#4573). */
   readonly requestId?: string;
+  /** Conversation the turn belongs to — recorded on injection attribution so a
+   *  pattern's usage is traceable to a turn (#4573). */
+  readonly conversationId?: string | null;
   readonly maxPatterns?: number;
   readonly maxFavorites?: number;
   readonly maxSuggestions?: number;
@@ -187,6 +190,40 @@ export async function resolveOrgKnowledgeSection(
     params.connectionGroupId,
     params.maxPatterns,
   );
+
+  // Injection attribution (#4573): a non-empty pattern set is rendered into the
+  // prompt verbatim by `buildOrgKnowledgeSection` (the patterns subsection emits
+  // iff `patterns.length > 0`), so these ARE the pattern IDs that enter the turn
+  // — recorded here, not from the cached fetch, so attribution reflects what
+  // actually entered the prompt. A turn with no injected patterns records
+  // nothing. `recordPatternInjections` is fire-and-forget, but wrap defensively
+  // so a synchronous failure is LOGGED and never fails the agent turn (PRD #4570
+  // acceptance: "attribution write failures never fail the agent turn").
+  if (patterns.length > 0) {
+    try {
+      recordPatternInjections(
+        patterns.map((p) => ({
+          patternId: p.id,
+          orgId: params.orgId,
+          connectionGroupId: params.connectionGroupId,
+          conversationId: params.conversationId ?? null,
+          requestId: params.requestId ?? null,
+        })),
+      );
+    } catch (err) {
+      log.warn(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          orgId: params.orgId,
+          connectionGroupId: params.connectionGroupId,
+          conversationId: params.conversationId ?? null,
+          requestId: params.requestId,
+          count: patterns.length,
+        },
+        "Failed to record learned-pattern injection attribution — continuing (attribution is best-effort)",
+      );
+    }
+  }
 
   const [favorites, suggestions] = await Promise.all([
     loadFavorites(params),

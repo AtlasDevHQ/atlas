@@ -306,10 +306,23 @@ export const ADMIN_ACTIONS = {
     improveReject: "semantic.improve_reject",
     improveReconsider: "semantic.improve_reconsider",
   },
+  /**
+   * Learned query-pattern review governance (#4580, PRD #4570). `approve` /
+   * `reject` are the SINGLE- and BULK-decision vocabulary — one audit row per
+   * decided pattern, one vocabulary per concept now that `semantic_amendment`
+   * rows are folded out of this route (#4569; amendment decisions live under
+   * `semantic.improve_*`). `delete` covers the hard delete. `updateDescription`
+   * covers a description edit (fires whenever a PATCH sets `description`): the
+   * human-facing text other reviewers trust changed with no forensic trace
+   * before this (F-35-style content-governance
+   * gap) — this row is that trail. All are `targetType: "pattern"`, `targetId`
+   * the pattern id; metadata carries `{ patternId }`.
+   */
   pattern: {
     approve: "pattern.approve",
     reject: "pattern.reject",
     delete: "pattern.delete",
+    updateDescription: "pattern.update_description",
   },
   /**
    * `test` is distinct from `email_provider.test` so compliance queries

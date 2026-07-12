@@ -6,6 +6,8 @@ import { useQueryStates } from "nuqs";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LearnedPattern, LearnedPatternStatus } from "@/ui/lib/types";
 import { learnedPatternsSearchParams } from "./search-params";
+import { buildLearnedPatternsPath } from "./list-query";
+import { ConfidenceFilter } from "./confidence-filter";
 import { getLearnedPatternColumns, statusBadge, autoApprovedBadge } from "./columns";
 import { useAtlasConfig } from "@/ui/context";
 import { ServerDataTable } from "@/ui/components/admin/server-data-table";
@@ -307,19 +309,24 @@ export default function LearnedPatternsPage() {
     defaultSorting: [{ id: "createdAt", desc: true }],
     schema: LearnedPatternsListResponseSchema,
     select: (r) => ({ rows: r.patterns, total: r.total }),
-    buildPath: ({ offset, perPage }) => {
-      const qs = new URLSearchParams({
-        limit: String(perPage),
-        offset: String(offset),
-      });
-      if (params.status) qs.set("status", params.status);
-      if (params.source_entity) qs.set("source_entity", params.source_entity);
-      return `/api/v1/admin/learned-patterns?${qs}`;
-    },
+    buildPath: ({ offset, perPage, sortId, sortDesc }) =>
+      buildLearnedPatternsPath(
+        { offset, perPage, sortId, sortDesc },
+        {
+          status: params.status,
+          source_entity: params.source_entity,
+          min_confidence: params.min_confidence,
+          max_confidence: params.max_confidence,
+        },
+      ),
   });
 
   const selectedCount = table.getSelectedRowModel().rows.length;
-  const hasFilters = !!params.status || !!params.source_entity;
+  const hasFilters =
+    !!params.status ||
+    !!params.source_entity ||
+    !!params.min_confidence ||
+    !!params.max_confidence;
 
   return (
     <TooltipProvider>
@@ -389,6 +396,15 @@ export default function LearnedPatternsPage() {
                   </SelectContent>
                 </Select>
               )}
+              <ConfidenceFilter
+                min={params.min_confidence}
+                max={params.max_confidence}
+                onApply={({ min, max }) => {
+                  table.setPageIndex(0);
+                  // fire-and-forget: nuqs URL update
+                  void setParams({ min_confidence: min, max_confidence: max, page: 1 });
+                }}
+              />
               {hasFilters && (
                 <Button
                   variant="ghost"
@@ -396,7 +412,7 @@ export default function LearnedPatternsPage() {
                   onClick={() => {
                     table.setPageIndex(0);
                     // fire-and-forget: nuqs URL update
-                    void setParams({ status: "", source_entity: "", page: 1 });
+                    void setParams({ status: "", source_entity: "", min_confidence: "", max_confidence: "", page: 1 });
                   }}
                 >
                   <X className="mr-1.5 size-3.5" />
@@ -448,7 +464,7 @@ export default function LearnedPatternsPage() {
                 description: "Patterns will appear here when the agent or atlas learn CLI proposes new query patterns.",
               }}
               hasFilters={hasFilters}
-              onClearFilters={() => setParams({ status: "", source_entity: "", page: 1 })}
+              onClearFilters={() => setParams({ status: "", source_entity: "", min_confidence: "", max_confidence: "", page: 1 })}
               onRowClick={(row, e) => {
                 if ((e.target as HTMLElement).closest('[role="checkbox"], button')) return;
                 setDetailPattern(row.original);

@@ -22699,6 +22699,26 @@
           {
             "schema": {
               "type": "string",
+              "description": "Sort field: confidence, repetition, latency, created (default created). Non-whitelisted values are rejected with 400."
+            },
+            "required": false,
+            "description": "Sort field: confidence, repetition, latency, created (default created). Non-whitelisted values are rejected with 400.",
+            "name": "sort",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Sort direction: asc or desc (default desc)"
+            },
+            "required": false,
+            "description": "Sort direction: asc or desc (default desc)",
+            "name": "dir",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "description": "Maximum results (default 50, max 200)"
             },
             "required": false,

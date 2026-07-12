@@ -2510,32 +2510,55 @@ export interface PromoteDecayCandidateRow {
 }
 
 /**
- * Fetch the rows the nightly promote/decay job evaluates: pending query
- * patterns (promotion candidates) and approved query patterns the job itself
- * promoted (decay candidates). `semantic_amendment` rows are excluded — they
- * keep human review. The apply step (`promoteLearnedPatterns` /
- * `demoteLearnedPatterns`) keys updates by `id` and never writes `org_id` or
- * `connection_group_id`, so a single global scan can never move a pattern across
- * tenants (#3610/#3611) — which is why this projection doesn't even select the
- * scope columns; each row's own `org_id` (for cache invalidation) is returned by
- * the apply step's `RETURNING`.
+ * Fetch the rows the promote/decay job evaluates for ONE workspace: that
+ * workspace's pending query patterns (promotion candidates) and the approved
+ * query patterns the job itself promoted (decay candidates). `semantic_amendment`
+ * rows are excluded — they keep human review. The apply step
+ * (`promoteLearnedPatterns` / `demoteLearnedPatterns`) still keys updates by `id`
+ * and never writes `org_id` / `connection_group_id`, so it can never move a
+ * pattern across tenants (#3610/#3611); each row's own `org_id` (for cache
+ * invalidation) rides along on the projection and the apply step's `RETURNING`.
  *
- * Capped at `limit` rows (oldest-touched first) so a runaway table can't make
- * one tick unbounded; the scheduler logs when the cap is hit.
+ * Workspace scope (#4582): the SaaS-first tick iterates opted-in workspaces and
+ * evaluates each in isolation, so `orgId` scopes the scan — `null` is the
+ * self-hosted single implicit workspace (its patterns carry a NULL org, matching
+ * the eligible-set retrieval's null-org scoping). Isolating the scan per
+ * workspace is what makes the freshest-first cap below fair: a single global
+ * scan would let one noisy tenant's churn crowd a quiet tenant's rows out past
+ * the cap.
+ *
+ * Capped at `limit` rows so a runaway table can't make one tick unbounded. The
+ * order is `updated_at DESC` — most-recently-touched first (a re-run bumps
+ * `updated_at` via `incrementPatternCount`, the dominant writer for pending
+ * rows) — so when the cap bites it keeps the fresh patterns worth promoting
+ * rather than starving them behind stale rows (#4582); the scheduler logs when
+ * the cap is hit.
  */
 export async function getPromoteDecayCandidates(
+  orgId: string | null,
   limit = 10000,
 ): Promise<PromoteDecayCandidateRow[]> {
   if (!hasInternalDB()) return [];
+  // `$1` is always the limit (referenced by LIMIT below); the org filter, when
+  // present, is `$2`. A null org narrows to the single-tenant NULL-org rows.
+  const params: Array<string | number> = [limit];
+  let orgClause: string;
+  if (orgId === null) {
+    orgClause = "org_id IS NULL";
+  } else {
+    params.push(orgId);
+    orgClause = `org_id = $${params.length}`;
+  }
   return internalQuery<PromoteDecayCandidateRow>(
     `SELECT id, org_id, type, status, confidence, repetition_count,
             avg_duration_ms, last_seen_at::text AS last_seen_at, auto_promoted
      FROM learned_patterns
      WHERE type = 'query_pattern'
        AND (status = 'pending' OR (status = 'approved' AND auto_promoted = true))
-     ORDER BY updated_at ASC
+       AND ${orgClause}
+     ORDER BY updated_at DESC
      LIMIT $1`,
-    [limit],
+    params,
   );
 }
 

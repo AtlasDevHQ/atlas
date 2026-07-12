@@ -17,10 +17,22 @@
  *   - `ATLAS_LEARN_CONFIDENCE_THRESHOLD`
  *   - `ATLAS_LEARN_LATENCY_BUDGET_MS`
  *
+ * **Workspace-scoped auto-promotion opt-in** — the SaaS-first trust dial (#4582):
+ *   - `ATLAS_LEARN_PROMOTE_DECAY_ENABLED` — whether auto-promotion runs for a
+ *     workspace, off by default. Moved OUT of platform scope (#4582): the single
+ *     platform fiber now iterates the workspaces that opted in, so this is a
+ *     per-workspace, hot-reloaded dial, not a boot-consumed master switch.
+ *     Mirrors `ATLAS_AUTONOMOUS_IMPROVE_ENABLED`. Read two ways: the self-hosted
+ *     degenerate workspace resolves it through `getSettingAuto(key, null)`
+ *     (the `isPromoteDecayEnabledForWorkspace` resolver below); the SaaS tick
+ *     enumerates opted-in workspaces straight from the `settings` table
+ *     (`listPromoteDecayOrgIds` in the scheduler) so an env/platform default
+ *     can't opt a specific tenant in.
+ *
  * **Platform-scoped** (read with `getSetting(key)` — no orgId — because the
- * nightly auto-promote/decay job is a single process-global fiber forked once at
- * boot by `makeSchedulerLive`, so there is no per-workspace tick):
- *   - `ATLAS_LEARN_PROMOTE_DECAY_ENABLED`     (boot-consumed, requiresRestart)
+ * auto-promote/decay job is a single process-global fiber forked once at boot by
+ * `makeSchedulerLive`, so its CADENCE and GATE TUNING are operator policy,
+ * uniform across the workspaces the tick iterates):
  *   - `ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS` (boot-consumed, requiresRestart)
  *   - `ATLAS_LEARN_PROMOTE_MIN_REPETITIONS`
  *   - `ATLAS_LEARN_DECAY_UNSEEN_DAYS`
@@ -108,7 +120,30 @@ export function getLatencyBudgetMs(orgId?: string | null): number {
 }
 
 // ---------------------------------------------------------------------------
-// Platform-scoped promote/decay knobs
+// Workspace-scoped auto-promotion opt-in (#4582)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether auto-promotion is enabled for a workspace (#4582). Workspace-scoped
+ * and hot-reloaded: a workspace admin flips it from Admin → Settings and it
+ * takes effect on the next scheduler tick with no restart. Resolution is the
+ * standard tier chain — workspace override > platform override > env >
+ * default(false) — so on self-hosted the single implicit workspace opts in via
+ * the env var (or a platform override) with no per-workspace row to set, and on
+ * SaaS each workspace opts in with its own DB override.
+ *
+ * This replaces the retired platform-scoped, boot-consumed master switch: the
+ * trust dial now belongs to the workspace, mirroring
+ * `ATLAS_AUTONOMOUS_IMPROVE_ENABLED`. Keep the literal key on the call line so
+ * `scripts/check-settings-readers.sh` (R1) sees a runtime reader.
+ */
+export function isPromoteDecayEnabledForWorkspace(orgId?: string | null): boolean {
+  const v = getSettingAuto("ATLAS_LEARN_PROMOTE_DECAY_ENABLED", orgId ?? undefined);
+  return v === "true" || v === "1";
+}
+
+// ---------------------------------------------------------------------------
+// Platform-scoped promote/decay knobs (fiber cadence + gate tuning)
 // ---------------------------------------------------------------------------
 
 /**
@@ -120,15 +155,6 @@ function parseNumeric(raw: string | undefined, fallback: number, min: number): n
   if (raw === undefined) return fallback;
   const parsed = parseFloat(raw);
   return Number.isFinite(parsed) && parsed >= min ? parsed : fallback;
-}
-
-/**
- * Whether the nightly promote/decay job is enabled. Platform-scoped, consumed
- * once at boot (requiresRestart): platform DB override > env > default.
- */
-export function isPromoteDecaySchedulerEnabled(): boolean {
-  const v = getSetting("ATLAS_LEARN_PROMOTE_DECAY_ENABLED");
-  return v === "true" || v === "1";
 }
 
 /**

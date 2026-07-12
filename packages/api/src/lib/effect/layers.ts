@@ -1857,7 +1857,13 @@ export function makeSchedulerLive(
         startLog: "Semantic expert scheduler started",
       });
 
-      // ── Periodic fiber: learned-pattern auto-promote/decay (#3636) ──
+      // ── Periodic fiber: learned-pattern auto-promote/decay (#3636, #4582) ──
+      // SaaS-first: NO platform enable gate. The retired master switch was
+      // boot-consumed, so it could never hot-reload a workspace opting in; the
+      // fiber now always runs and resolves the opted-in workspaces per tick (the
+      // workspace-scoped ATLAS_LEARN_PROMOTE_DECAY_ENABLED trust dial, off by
+      // default), so the dial takes effect on the next tick with no restart. The
+      // tick no-ops cheaply when no workspace opted in or there's no internal DB.
       yield* registerPeriodicFiber({
         name: "promote_decay",
         intervalMs: () => {
@@ -1866,17 +1872,6 @@ export function makeSchedulerLive(
             getPromoteDecaySchedulerIntervalMs: () => number;
           };
           return getPromoteDecaySchedulerIntervalMs();
-        },
-        gate: {
-          check: () => {
-            // oxlint-disable-next-line @typescript-eslint/no-require-imports
-            const { isPromoteDecaySchedulerEnabled } = require("@atlas/api/lib/learn/promote-decay-scheduler") as {
-              isPromoteDecaySchedulerEnabled: () => boolean;
-            };
-            return isPromoteDecaySchedulerEnabled();
-          },
-          failLog: "Promote/decay scheduler module not available — skipping",
-          skipLog: "Learned-pattern auto-promote/decay scheduler not started — feature disabled",
         },
         tick: Effect.tryPromise({
           try: async () => {

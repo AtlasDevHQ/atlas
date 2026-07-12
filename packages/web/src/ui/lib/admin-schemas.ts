@@ -577,7 +577,7 @@ export {
   LearnedPatternsListResponseSchema,
   LEARNED_PATTERN_SORT_KEYS,
 } from "@useatlas/schemas";
-export type { LearnedPatternSortKey } from "@useatlas/schemas";
+export type { LearnedPatternSortKey, LearnedPatternSortDirection } from "@useatlas/schemas";
 
 // ── Demo tracking (#3931) ────────────────────────────────────────────
 // Web-local mirrors of the inline shapes in

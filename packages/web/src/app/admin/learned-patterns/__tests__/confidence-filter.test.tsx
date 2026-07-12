@@ -33,6 +33,14 @@ describe("ConfidenceFilter", () => {
     expect(container.querySelector("button")?.textContent).toContain("Confidence 50–90%");
   });
 
+  test("labels a one-sided range with the open bound's placeholder", () => {
+    const minOnly = render(<ConfidenceFilter min="0.5" max="" onApply={() => {}} />);
+    expect(minOnly.container.querySelector("button")?.textContent).toContain("Confidence 50–100%");
+    cleanup();
+    const maxOnly = render(<ConfidenceFilter min="" max="0.9" onApply={() => {}} />);
+    expect(maxOnly.container.querySelector("button")?.textContent).toContain("Confidence 0–90%");
+  });
+
   test("apply converts percentage inputs to the API decimal bounds", async () => {
     const onApply = mock((_bounds: { min: string; max: string }) => {});
     const { container } = render(
@@ -41,6 +49,20 @@ describe("ConfidenceFilter", () => {
     const body = await openPopover(container);
     fireEvent.change(within(body).getByLabelText("Min %"), { target: { value: "50" } });
     fireEvent.change(within(body).getByLabelText("Max %"), { target: { value: "90" } });
+    fireEvent.click(within(body).getByText("Apply"));
+
+    expect(onApply).toHaveBeenCalledTimes(1);
+    expect(onApply.mock.calls[0][0]).toEqual({ min: "0.5", max: "0.9" });
+  });
+
+  test("apply swaps an inverted range so it is never sent min > max", async () => {
+    const onApply = mock((_bounds: { min: string; max: string }) => {});
+    const { container } = render(
+      <ConfidenceFilter min="" max="" onApply={onApply} />,
+    );
+    const body = await openPopover(container);
+    fireEvent.change(within(body).getByLabelText("Min %"), { target: { value: "90" } });
+    fireEvent.change(within(body).getByLabelText("Max %"), { target: { value: "50" } });
     fireEvent.click(within(body).getByText("Apply"));
 
     expect(onApply).toHaveBeenCalledTimes(1);

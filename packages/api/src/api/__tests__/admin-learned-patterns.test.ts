@@ -244,6 +244,15 @@ describe("admin learned-patterns routes", () => {
       expect(params).toContain(0.9);
     });
 
+    it("rejects an inverted confidence range (min > max) with 400", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      const res = await req("GET", "/?min_confidence=0.9&max_confidence=0.5");
+      expect(res.status).toBe(400);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("bad_request");
+    });
+
     it("applies combined filters", async () => {
       mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/?status=pending&source_entity=orders&min_confidence=0.5");

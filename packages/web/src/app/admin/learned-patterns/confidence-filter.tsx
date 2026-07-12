@@ -51,7 +51,16 @@ export function ConfidenceFilter({ min, max, onApply }: ConfidenceFilterProps) {
   }
 
   function apply() {
-    onApply({ min: pctToConfidence(minPct), max: pctToConfidence(maxPct) });
+    let min = pctToConfidence(minPct);
+    let max = pctToConfidence(maxPct);
+    // Forgive an inverted range: if both bounds are set and min > max, swap
+    // them. The user who typed 90/50 meant the 50–90 band, so ordering it
+    // avoids a doomed `min_confidence > max_confidence` 400 and the nonsensical
+    // "90–50%" trigger label.
+    if (min !== "" && max !== "" && Number(min) > Number(max)) {
+      [min, max] = [max, min];
+    }
+    onApply({ min, max });
     setOpen(false);
   }
 

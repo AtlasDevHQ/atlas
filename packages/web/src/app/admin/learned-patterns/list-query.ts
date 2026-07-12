@@ -16,7 +16,7 @@
  * vocabulary in `@useatlas/schemas`), so a value that drifts from the route's
  * `SORT_COLUMN_BY_KEY` whitelist is a compile error rather than a runtime 400.
  */
-import type { LearnedPatternSortKey } from "@/ui/lib/admin-schemas";
+import type { LearnedPatternSortKey, LearnedPatternSortDirection } from "@/ui/lib/admin-schemas";
 
 /**
  * Maps a sortable TanStack column id (from `columns.tsx`) to the API's
@@ -72,8 +72,9 @@ export function buildLearnedPatternsPath(
 
   const sortKey = binding.sortId ? SORT_PARAM_BY_COLUMN.get(binding.sortId) : undefined;
   if (sortKey) {
+    const dir: LearnedPatternSortDirection = binding.sortDesc ? "desc" : "asc";
     qs.set("sort", sortKey);
-    qs.set("dir", binding.sortDesc ? "desc" : "asc");
+    qs.set("dir", dir);
   }
 
   return `/api/v1/admin/learned-patterns?${qs}`;

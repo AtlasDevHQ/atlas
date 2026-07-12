@@ -97,10 +97,11 @@ const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
 
 // Whitelisted sort key (from the shared `LEARNED_PATTERN_SORT_KEYS` wire
 // vocabulary) → real DB column. The ORDER BY column name is only ever taken
-// from THIS map (via `.get()`, which is prototype-pollution-safe and returns
-// `undefined` for anything unknown), never from the raw `sort=` value — so a
-// non-whitelisted sort key is rejected with 400 and can never be interpolated
-// into SQL. `avg_duration_ms` is nullable, so the query sorts NULLS LAST in
+// from this whitelist — via `SORT_COLUMNS.get()`, which is
+// prototype-pollution-safe and returns `undefined` for anything unknown — never
+// from the raw `sort=` value, so a non-whitelisted sort key is rejected with
+// 400 and can never be interpolated into SQL. `avg_duration_ms` is nullable, so
+// the query sorts NULLS LAST in
 // both directions (rows without a latency measurement sink to the bottom rather
 // than jumping to the top), with a stable `id DESC` tiebreaker so pagination is
 // deterministic when the primary sort ties. The `satisfies Record<...>` makes a

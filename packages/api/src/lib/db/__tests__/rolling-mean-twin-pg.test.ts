@@ -102,7 +102,11 @@ describeIfPg("SQL rolling-mean fold pinned to its TypeScript twin (real Postgres
     patternSql: string,
     predicate: (row: PatternRow) => boolean,
     label: string,
-    timeoutMs = 5000,
+    // Generous vs. the sibling's 5s: the poll now fails loud rather than masking,
+    // so a slow-but-succeeding burst (the 120 detached increments in the constant-
+    // saturation case) on a loaded runner must not time out before landing. Stays
+    // well under the 30s `it()` budget.
+    timeoutMs = 20_000,
   ): Promise<PatternRow> {
     const deadline = Date.now() + timeoutMs;
     let last: PatternRow | null = null;

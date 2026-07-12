@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.48",
+    title: "Semantic-Improve Elevation",
+    date: "2026-07-11",
+    summary:
+      "The AI Semantic Layer Improvement console becomes a briefed, steerable, trustworthy loop — one Amendment identity from proposal to applied. Every proposed change, whether from a chat with the expert agent or the background scheduler, lands in one pending queue with a live diff you review and approve in place; approving applies the change and records it in version history in the same step, so a proposal can never read approved without actually landing. Rejections are now permanent, with a Reconsider path to bring one back. You can steer the agent by anchoring to a connection group, an entity, or a specific physical column from the new coverage view, and a SaaS-first per-workspace scheduler can propose improvements on its own cadence.",
+    highlights: [
+      "One pending queue with live-diff review and claim-then-apply — approving applies the change and snapshots it in the same step; a bounced apply returns to pending with the reason (#4504, #4506, #4511)",
+      "Permanent rejection memory with a Reconsider path — reject once and the agent won't re-propose it until you explicitly bring it back (#4507, #4512)",
+      "Anchors + a column-level coverage view — launch a scoped improvement conversation from a connection group, an entity, or a physical column (#4519, #4521)",
+      "Briefing assembly + dialect specialists — the agent opens each turn with real health inputs and engine-specific guidance (#4514, #4515)",
+      "Group-scoped glossary amendments — proposed glossary terms are written to the right group's glossary, no silent no-op (#4518)",
+      "SaaS-first autonomous improvement — an opt-in, per-workspace scheduler that fills the pending queue on its own cadence, with a proactive notification when it does (#4516, #4520)",
+      "Expert is a first-class mode with a workspace step cap; amendments folded out of Learned Patterns so the decide seam is the only writer of \"approved\" (#4508, #4569)",
+    ],
+  },
+  {
     version: "v0.0.47",
     title: "Notebook Surface Retired",
     date: "2026-07-10",

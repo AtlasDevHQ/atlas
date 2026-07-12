@@ -784,9 +784,9 @@ export default function SemanticImprovePage() {
           </Button>
         </Link>
         <div className="flex-1">
-          <h1 className="text-lg font-semibold tracking-tight flex items-center gap-2">
-            <Sparkles className="size-5" />
-            Semantic Layer Improvement
+          <h1 className="text-lg font-semibold tracking-tight flex items-start gap-2">
+            <Sparkles className="size-5 shrink-0 mt-0.5" />
+            <span>Semantic Layer Improvement</span>
           </h1>
           <p className="text-xs text-muted-foreground">
             AI-powered analysis and improvement of your semantic layer

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, type ReactNode } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
 import { extractProposals, buildProposalQueue, buildReviewBody, classifyReviewResult, toolPartStatus, type Proposal, type QueueRow, type TestResult } from "./proposals";
@@ -24,6 +24,12 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 // the shared billing/permission ErrorBanner (CTA + Retry-After countdown).
 import { Markdown } from "@/ui/components/chat/markdown";
 import { ErrorBanner } from "@/ui/components/chat/error-banner";
+// #4612 — the expert agent ends turns with a `<suggestions>` block (the same
+// contract as the main chat). Strip it from the rendered prose and surface it as
+// clickable follow-up chips, mirroring the main chat surface — otherwise the raw
+// `<suggestions>…</suggestions>` tags leak into the transcript as literal text.
+import { FollowUpChips } from "@/ui/components/chat/follow-up-chips";
+import { parseSuggestions } from "@/ui/lib/helpers";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -197,11 +203,20 @@ function ProposalCard({
             <span className="font-medium">Test query:</span>{" "}
             <code className="rounded bg-muted px-1 py-0.5">{proposal.testQuery}</code>
             {proposal.testResult && (
-              <p className={proposal.testResult.success ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
-                {proposal.testResult.success
-                  ? `Passed — ${proposal.testResult.rowCount} row${proposal.testResult.rowCount === 1 ? "" : "s"}`
-                  : `Failed${proposal.testResult.error ? ` — ${proposal.testResult.error}` : ""}`}
-              </p>
+              // #4614 — a deferred test query is NOT a failure: the entity isn't
+              // published yet (so it's absent from the query whitelist). Render a
+              // neutral note instead of a red "Failed — not in the allowed list".
+              proposal.testResult.deferred ? (
+                <p className="text-muted-foreground">
+                  Deferred — this entity isn&rsquo;t published yet; the test query runs after publish.
+                </p>
+              ) : (
+                <p className={proposal.testResult.success ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                  {proposal.testResult.success
+                    ? `Passed — ${proposal.testResult.rowCount} row${proposal.testResult.rowCount === 1 ? "" : "s"}`
+                    : `Failed${proposal.testResult.error ? ` — ${proposal.testResult.error}` : ""}`}
+                </p>
+              )
             )}
           </div>
         )}
@@ -407,6 +422,51 @@ export function ActiveAnchorChip({ anchor, onClear }: { anchor: ActiveAnchor; on
 }
 
 // ---------------------------------------------------------------------------
+// Adaptive split (#4611)
+//
+// Below the mobile breakpoint the two panes stack into a single column using
+// PLAIN flex divs — NOT react-resizable-panels with a dynamic `orientation`.
+// The library pins its layout at mount and doesn't re-measure when `orientation`
+// flips live (the SSR-`false` → mobile-`true` breakpoint transition), which left
+// the vertical stack stale/offscreen and rendered the review pane blank below
+// ~768px. A plain flex-col with two `flex-1` panes can't render blank. Desktop
+// keeps the resizable horizontal split (always horizontal — no live flip).
+// ---------------------------------------------------------------------------
+
+/** Group wrapper: resizable horizontal split on desktop, plain stacked column on mobile. */
+function AdaptiveSplit({ mobile, children }: { mobile: boolean; children: ReactNode }) {
+  return mobile ? (
+    <div className="flex h-full min-h-0 flex-col">{children}</div>
+  ) : (
+    <ResizablePanelGroup orientation="horizontal">{children}</ResizablePanelGroup>
+  );
+}
+
+/** Pane wrapper: a resizable panel on desktop, a plain `flex-1` div on mobile. */
+function AdaptivePane({
+  mobile,
+  defaultSize,
+  minSize,
+  mobileClassName,
+  children,
+}: {
+  mobile: boolean;
+  defaultSize: number;
+  minSize: number;
+  /** Extra classes applied only to the mobile div (e.g. a separating border). */
+  mobileClassName?: string;
+  children: ReactNode;
+}) {
+  return mobile ? (
+    <div className={`min-h-0 flex-1 overflow-hidden ${mobileClassName ?? ""}`}>{children}</div>
+  ) : (
+    <ResizablePanel defaultSize={defaultSize} minSize={minSize}>
+      {children}
+    </ResizablePanel>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -517,7 +577,11 @@ export default function SemanticImprovePage() {
   });
   const launcherGroups = groupsData ?? [];
 
-  const { data: entitiesData } = useAdminFetch<LauncherEntity[]>("/api/v1/admin/semantic/entities", {
+  // #4613 — `includeDrafts=true` forces the developer overlay so draft-only
+  // entities appear in the launcher. The improve surface edits the draft layer;
+  // without this the launcher shows only PUBLISHED entities and a draft-heavy
+  // (e.g. freshly-profiled) workspace looks empty until an amendment publishes one.
+  const { data: entitiesData } = useAdminFetch<LauncherEntity[]>("/api/v1/admin/semantic/entities?includeDrafts=true", {
     transform: (json) => {
       const raw = (json as { entities?: unknown }).entities;
       if (!Array.isArray(raw)) {
@@ -602,6 +666,16 @@ export default function SemanticImprovePage() {
         setInputValue(saved);
       },
     );
+  }
+
+  // #4612 — send a follow-up suggestion chip's text directly. Mirrors handleSend
+  // minus the composer round-trip (the text comes from the parsed `<suggestions>`
+  // block, not the input box).
+  function sendText(text: string) {
+    if (!text.trim() || isLoading) return;
+    sendMessage({ role: "user", parts: [{ type: "text" as const, text }] }).catch((err: unknown) => {
+      console.error("Failed to send suggestion:", err instanceof Error ? err.message : String(err));
+    });
   }
 
   // #4517 — retry the failed turn by replaying the last user message (mirrors the
@@ -805,11 +879,11 @@ export default function SemanticImprovePage() {
         />
       </div>
 
-      {/* Split view */}
+      {/* Split view — #4611: desktop resizable split, mobile stacked column. */}
       <div className="min-h-0 flex-1 overflow-hidden">
-        <ResizablePanelGroup orientation={isMobile ? "vertical" : "horizontal"}>
+        <AdaptiveSplit mobile={isMobile}>
           {/* Chat panel */}
-          <ResizablePanel defaultSize={55} minSize={35}>
+          <AdaptivePane mobile={isMobile} defaultSize={55} minSize={35}>
             <div className="flex h-full min-h-0 flex-col">
               {/* #4519 — the active anchor, visible in the conversation UI.
                   Free typing still works anchored; Clear drops the scope
@@ -847,8 +921,12 @@ export default function SemanticImprovePage() {
                           if (part.type === "text") {
                             // Agent prose renders markdown like the main chat
                             // surface (#4517); the user's own text stays plain.
+                            // #4612 — strip the trailing `<suggestions>` block
+                            // from the agent prose (it renders as chips below);
+                            // an unclosed block mid-stream is left in place until
+                            // it closes, matching the main chat.
                             return msg.role === "assistant" ? (
-                              <Markdown key={i} content={part.text} />
+                              <Markdown key={i} content={parseSuggestions(part.text).text} />
                             ) : (
                               <p key={i} className="whitespace-pre-wrap">{part.text}</p>
                             );
@@ -898,6 +976,22 @@ export default function SemanticImprovePage() {
                     </div>
                   ))}
 
+                  {/* #4612 — follow-up chips parsed from the last assistant
+                      turn's `<suggestions>` block. Rendered only when idle (a
+                      mid-stream partial block carries no closed suggestions yet);
+                      FollowUpChips renders nothing when the list is empty. */}
+                  {!isLoading && (() => {
+                    const lastAssistant = messages.filter((m) => m.role === "assistant").at(-1);
+                    if (!lastAssistant) return null;
+                    const lastText = lastAssistant.parts
+                      .filter((p): p is { type: "text"; text: string } => p.type === "text")
+                      .map((p) => p.text)
+                      .join("\n");
+                    return (
+                      <FollowUpChips suggestions={parseSuggestions(lastText).suggestions} onSelect={sendText} />
+                    );
+                  })()}
+
                   {isLoading && messages.length > 0 && (
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <Loader2 className="size-3 animate-spin" />
@@ -944,12 +1038,14 @@ export default function SemanticImprovePage() {
                 </div>
               </div>
             </div>
-          </ResizablePanel>
+          </AdaptivePane>
 
-          <ResizableHandle withHandle />
+          {/* Desktop-only drag handle; on mobile a top border separates the
+              stacked panes (#4611). */}
+          {!isMobile && <ResizableHandle withHandle />}
 
           {/* Proposals panel */}
-          <ResizablePanel defaultSize={45} minSize={25}>
+          <AdaptivePane mobile={isMobile} defaultSize={45} minSize={25} mobileClassName="border-t">
             <Tabs
               value={view}
               onValueChange={(v) => setView(v as "pending" | "rejected")}
@@ -1078,8 +1174,8 @@ export default function SemanticImprovePage() {
                 <CoverageView onColumnAnchor={launchColumn} disabled={isLoading} />
               </TabsContent>
             </Tabs>
-          </ResizablePanel>
-        </ResizablePanelGroup>
+          </AdaptivePane>
+        </AdaptiveSplit>
       </div>
     </div>
   );

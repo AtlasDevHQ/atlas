@@ -62030,6 +62030,9 @@
                               },
                               "error": {
                                 "type": "string"
+                              },
+                              "deferred": {
+                                "type": "boolean"
                               }
                             },
                             "required": [
@@ -62201,6 +62204,9 @@
                               },
                               "error": {
                                 "type": "string"
+                              },
+                              "deferred": {
+                                "type": "boolean"
                               }
                             },
                             "required": [
@@ -64602,6 +64608,15 @@
             },
             "required": false,
             "name": "connection",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "true"
+            },
+            "required": false,
+            "name": "includeDrafts",
             "in": "query"
           }
         ],

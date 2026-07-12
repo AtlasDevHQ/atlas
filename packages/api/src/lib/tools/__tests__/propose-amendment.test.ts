@@ -62,10 +62,17 @@ const mockResolveAmendmentBaseline: Mock<
     orgId: string | null,
     entityName: string,
     group: string | undefined,
-  ) => Promise<{ row: Record<string, unknown>; targetGroupId: string | null; parsed: Record<string, unknown> }>
+  ) => Promise<{
+    row: Record<string, unknown>;
+    targetGroupId: string | null;
+    parsed: Record<string, unknown>;
+    // #4614 — the published-existence probe result. Undefined here (the default
+    // mock doesn't opt in); the draft-only deferral suite overrides it per-test.
+    publishedExists?: boolean;
+  }>
 > = mock(() =>
   Promise.resolve({
-    row: { id: "companies-row", connection_group_id: null },
+    row: { id: "companies-row", connection_group_id: null, status: "published" },
     targetGroupId: null,
     parsed: structuredClone(companiesEntity),
   }),
@@ -234,6 +241,61 @@ describe("proposeAmendment test query routing (#4485)", () => {
     expect(result.testResult?.success).toBe(false);
     expect(result.testResult?.error).toContain("RLS");
     expect(result.testResult?.sampleRows).toEqual([]);
+  });
+});
+
+describe("proposeAmendment defers the test query for a draft-only entity (#4614)", () => {
+  beforeEach(() => {
+    mockRunUserQueryPipeline.mockClear();
+    mockRunUserQueryPipeline.mockResolvedValue(okOutcome);
+    mockInsertSemanticAmendment.mockClear();
+    mockInsertSemanticAmendment.mockResolvedValue({ outcome: "inserted", id: "prop-1", autoApprove: false });
+    mockResolveAmendmentBaseline.mockClear();
+  });
+
+  it("defers (never runs) the test query when no published sibling exists", async () => {
+    // A never-published (draft-only) entity is absent from the published-only
+    // query whitelist, so the pipeline would fail closed with "not in the allowed
+    // list". The tool must DEFER instead.
+    mockResolveAmendmentBaseline.mockResolvedValueOnce({
+      row: { id: "companies-row", connection_group_id: null, status: "draft" },
+      targetGroupId: null,
+      parsed: structuredClone(companiesEntity),
+      publishedExists: false,
+    });
+
+    const result = await run("SELECT email FROM companies");
+
+    // The query is never executed — no fail-closed "not in the allowed list".
+    expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+    expect(result.testResult?.deferred).toBe(true);
+    expect(result.testResult?.success).toBe(false);
+    expect(result.testResult?.sampleRows).toEqual([]);
+    // No error string — deferral is not a failure.
+    expect(result.testResult?.error).toBeUndefined();
+
+    // The deferred marker is persisted so the review card renders the neutral note.
+    const persisted = mockInsertSemanticAmendment.mock.calls[0][0] as {
+      amendmentPayload: { testResult?: { deferred?: boolean; success: boolean } };
+    };
+    expect(persisted.amendmentPayload.testResult?.deferred).toBe(true);
+    expect(persisted.amendmentPayload.testResult?.success).toBe(false);
+  });
+
+  it("runs the test query normally when a published sibling exists", async () => {
+    mockResolveAmendmentBaseline.mockResolvedValueOnce({
+      row: { id: "companies-row", connection_group_id: null, status: "published" },
+      targetGroupId: null,
+      parsed: structuredClone(companiesEntity),
+      publishedExists: true,
+    });
+
+    const result = await run("SELECT email FROM companies");
+
+    // Published entity ⇒ whitelisted ⇒ the test query runs as before.
+    expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+    expect(result.testResult?.deferred).toBeUndefined();
+    expect(result.testResult?.success).toBe(true);
   });
 });
 

@@ -1009,6 +1009,19 @@ describe("GET /api/v1/admin/semantic/entities — DB branch + mode fan-out", () 
     expect(mockListEntitiesAdmin).not.toHaveBeenCalled();
   });
 
+  it("includeDrafts=true forces the developer overlay even in published mode (#4613 — improve launcher)", async () => {
+    setOrgScopedAdmin("org-saas-1");
+    // No developer cookie ⇒ the global mode is published. The Semantic
+    // Improvement launcher opts into the draft layer via includeDrafts so
+    // draft-only entities aren't hidden.
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities?includeDrafts=true"),
+    );
+    expect(res.status).toBe(200);
+    expect(mockListEntitiesWithOverlay).toHaveBeenCalledWith("org-saas-1", "entity");
+    expect(mockListEntitiesAdmin).not.toHaveBeenCalled();
+  });
+
   it("DB-row's status reaches the response (draft shadows disk on name collision)", async () => {
     setOrgScopedAdmin("org-saas-1");
     mockListEntitiesWithOverlay.mockResolvedValue([

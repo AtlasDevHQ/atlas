@@ -16,7 +16,7 @@ class AmbiguousEntityError extends Error {
   }
 }
 
-type Row = { id: string; connection_group_id: string | null; yaml_content: string };
+type Row = { id: string; connection_group_id: string | null; yaml_content: string; status?: string };
 
 // Explicit param signatures so `.mock.calls[n][i]` is well-typed.
 const getEntity = mock(
@@ -25,6 +25,7 @@ const getEntity = mock(
     _type: string,
     _name: string,
     _group?: string | null,
+    _mode?: string,
   ): Promise<Row | null> => null,
 );
 
@@ -213,6 +214,70 @@ describe("resolveAmendmentBaseline (#4488)", () => {
       await expect(resolveAmendmentBaseline("org-1", "orders", "stale_group")).rejects.toThrow(
         "orders in 2 groups",
       );
+    });
+  });
+
+  // ── #4614 — the published-existence probe (opt-in, for the draft-only
+  // test-query deferral). Off by default so the per-render live-diff path pays
+  // no extra query; only proposeAmendment opts in. ──────────────────────────
+  describe("publishedExists probe (#4614)", () => {
+    it("does not probe when the caller doesn't opt in — publishedExists is undefined", async () => {
+      getEntity.mockResolvedValue({
+        id: "orders-eu",
+        connection_group_id: "eu_prod",
+        status: "draft",
+        yaml_content: "name: orders\n",
+      });
+
+      const result = await resolveAmendmentBaseline("org-1", "orders", "eu_prod");
+
+      // One scoped read, no separate published probe.
+      expect(getEntity).toHaveBeenCalledTimes(1);
+      expect(result.publishedExists).toBeUndefined();
+    });
+
+    it("a published resolved row proves publishedExists with no extra query", async () => {
+      getEntity.mockResolvedValue({
+        id: "orders-eu",
+        connection_group_id: "eu_prod",
+        status: "published",
+        yaml_content: "name: orders\n",
+      });
+
+      const result = await resolveAmendmentBaseline("org-1", "orders", "eu_prod", undefined, "developer", true);
+
+      // The resolved row IS published — no separate probe needed.
+      expect(getEntity).toHaveBeenCalledTimes(1);
+      expect(result.publishedExists).toBe(true);
+    });
+
+    it("a draft-only entity (no published sibling) reports publishedExists false", async () => {
+      getEntity.mockImplementation(
+        async (_o: string, _t: string, _n: string, _group?: string | null, mode?: string) =>
+          mode === "published"
+            ? null
+            : { id: "orders-draft", connection_group_id: "eu_prod", status: "draft", yaml_content: "name: orders\n" },
+      );
+
+      const result = await resolveAmendmentBaseline("org-1", "orders", "eu_prod", undefined, "developer", true);
+
+      // Developer read (draft) hit + one published probe that missed ⇒ draft-only.
+      expect(getEntity).toHaveBeenCalledTimes(2);
+      expect(getEntity.mock.calls[1][4]).toBe("published");
+      expect(result.publishedExists).toBe(false);
+    });
+
+    it("a draft over a published sibling reports publishedExists true", async () => {
+      getEntity.mockImplementation(
+        async (_o: string, _t: string, _n: string, _group?: string | null, mode?: string) =>
+          mode === "published"
+            ? { id: "orders-pub", connection_group_id: "eu_prod", status: "published", yaml_content: "name: orders\n" }
+            : { id: "orders-draft", connection_group_id: "eu_prod", status: "draft", yaml_content: "name: orders\n" },
+      );
+
+      const result = await resolveAmendmentBaseline("org-1", "orders", "eu_prod", undefined, "developer", true);
+
+      expect(result.publishedExists).toBe(true);
     });
   });
 });

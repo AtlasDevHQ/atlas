@@ -99,6 +99,13 @@ The amendment object should match the YAML structure for that type (e.g., { name
       // in the scope the diff was computed from.
       let entity: Record<string, unknown>;
       let applyGroupId: string | null = null;
+      // #4614 — a never-published (draft-only) entity is absent from the query
+      // whitelist (which is published-only), so any test query against it fails
+      // "not in the allowed list". Track it so the test query below is DEFERRED
+      // with a neutral "runs after publish" note rather than run-and-failed with
+      // a red error. Only the DB-backed entity path can be draft-only; glossary
+      // docs and the no-DB disk preview have no draft/published split.
+      let entityIsDraftOnly = false;
 
       if (hasInternalDB()) {
         if (isGlossary) {
@@ -115,9 +122,19 @@ The amendment object should match the YAML structure for that type (e.g., { name
             orgId,
             entityName,
             connectionGroupId,
+            // No admin disambiguation here, developer overlay (the default), and
+            // opt into the published-existence probe (#4614).
+            undefined,
+            "developer",
+            /* probePublished */ true,
           );
           entity = baseline.parsed;
           applyGroupId = baseline.targetGroupId;
+          // #4614 — draft-only when the resolver found no PUBLISHED sibling (the
+          // whitelisted one). `publishedExists === false` (never `undefined`)
+          // guards the deferral, so if the probe were ever off it defaults to
+          // running the test query as before.
+          entityIsDraftOnly = baseline.publishedExists === false;
         }
       } else if (isGlossary) {
         // No internal DB (self-hosted preview only): the group-scoped store/apply
@@ -244,7 +261,14 @@ The amendment object should match the YAML structure for that type (e.g., { name
       // unmasked-data-at-rest vector (#4485). The persisted `sampleRows` below
       // are therefore the pipeline's masked, capped output.
       let testResult: AmendmentPayload["testResult"];
-      if (testQuery) {
+      if (testQuery && entityIsDraftOnly) {
+        // #4614 — the entity isn't published yet, so it's not in the query
+        // whitelist. Running the test would fail closed with "not in the allowed
+        // list", which reads as a broken error on a fresh all-draft workspace.
+        // Defer it instead: `success: false` but `deferred: true`, so the review
+        // card shows a neutral "runs after publish" note, not a red failure.
+        testResult = { success: false, rowCount: 0, sampleRows: [], deferred: true };
+      } else if (testQuery) {
         const outcome = await runUserQueryPipeline({
           sql: testQuery,
           // Evidence runs where the change lives (#4513): the amendment's own

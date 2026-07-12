@@ -15,6 +15,8 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import {
@@ -173,6 +175,37 @@ describeIfPg("DB-enforced learned-pattern identity (real Postgres, #4572)", () =
     PG_TIMEOUT_MS,
   );
 
+  it(
+    "ON CONFLICT latency fold: a later observation with no duration leaves avg/last_seen untouched (EXCLUDED-NULL branch)",
+    async () => {
+      const sql = "select a from conflict_no_dur where b = ?";
+      seed(sql, { durationMs: 100, fp: "d1" });
+      const [before] = await pollRows(sql, (r) => r.length === 1 && r[0].avg_duration_ms === 100);
+      // Second observation via ON CONFLICT, but with no measurement → the fold's
+      // `WHEN EXCLUDED.avg_duration_ms IS NULL THEN <keep old>` branch fires.
+      seed(sql, { fp: "d2" }); // no durationMs
+      const [after] = await pollRows(sql, (r) => r.length === 1 && r[0].repetition_count === 2);
+      expect(after.avg_duration_ms).toBe(100); // unchanged
+      expect(before.avg_duration_ms).toBe(100);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "ON CONFLICT latency fold: a first measurement arriving on the conflict seeds the previously-NULL average (avg-NULL branch)",
+    async () => {
+      const sql = "select a from conflict_late_seed where b = ?";
+      seed(sql, { fp: "l1" }); // seeded NULL latency
+      await pollRows(sql, (r) => r.length === 1 && r[0].avg_duration_ms === null);
+      // Second observation carries the first real duration → the fold's
+      // `WHEN learned_patterns.avg_duration_ms IS NULL THEN EXCLUDED` branch fires.
+      seed(sql, { durationMs: 200, fp: "l2" });
+      const [after] = await pollRows(sql, (r) => r.length === 1 && r[0].repetition_count === 2);
+      expect(after.avg_duration_ms).toBe(200); // seeded directly, not averaged against NULL
+    },
+    PG_TIMEOUT_MS,
+  );
+
   // ── AC #3: CHECK constraints reject invalid status/type ─────────────
 
   it(
@@ -270,6 +303,24 @@ describeIfPg("DB-enforced learned-pattern identity (real Postgres, #4572)", () =
   );
 
   it(
+    "the same SQL + same group under two different orgs stays two distinct rows (org_id is part of the identity)",
+    async () => {
+      // Guards the org_id column of the composite: under NULLS NOT DISTINCT, a
+      // dropped or reordered org_id term would let two tenants' identical SQL
+      // collide — a cross-tenant merge. Two orgs, identical sql+group → two rows.
+      const sql = "select a from cross_org where b = ?";
+      seed(sql, { org: "o-1", group: "g", fp: "t1" });
+      seed(sql, { org: "o-2", group: "g", fp: "t2" });
+
+      const settled = await pollRows(sql, (r) => r.length === 2);
+      expect(settled).toHaveLength(2);
+      expect(settled.map((r) => r.org_id).sort()).toEqual(["o-1", "o-2"]);
+      expect(settled.every((r) => r.repetition_count === 1)).toBe(true);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
     "semantic_amendment rows are unconstrained by the partial index (many per scope)",
     async () => {
       // The partial index is WHERE type = 'query_pattern', so amendment rows —
@@ -304,13 +355,125 @@ describeIfPg("DB-enforced learned-pattern identity (real Postgres, #4572)", () =
       // guard on DO UPDATE must no-op it (conflict handled, zero rows updated).
       seed(sql, { org: ORG, group: null, durationMs: 999, fp: "resurrect" });
 
-      // Give the fire-and-forget a beat, then assert the row never moved.
-      const settled = await pollRows(sql, () => true, 1500);
+      // The reject-race upsert is fire-and-forget, and its correct outcome
+      // ("row unchanged") is indistinguishable from "not run yet" — so a
+      // `() => true` poll could green even if the guard were deleted. Establish
+      // a happens-before barrier: fire a CONTROL upsert for a fresh identity
+      // through the same write path and drive it to rep 2. Once the control's
+      // second observation has landed, the write queue has demonstrably drained
+      // past the reject-race upsert dispatched before it, so a still-frozen
+      // rejected row is a real assertion, not a timing artifact.
+      const controlSql = "select a from reject_race_control where b = ?";
+      seed(controlSql, { org: ORG, group: null, fp: "c1" });
+      await pollRows(controlSql, (r) => r.length === 1);
+      seed(controlSql, { org: ORG, group: null, fp: "c2" });
+      await pollRows(controlSql, (r) => r.length === 1 && r[0].repetition_count === 2);
+
+      const settled = await rows(sql);
       expect(settled).toHaveLength(1);
       expect(settled[0].status).toBe("rejected");
       expect(settled[0].repetition_count).toBe(5); // not bumped to 6
       expect(settled[0].confidence).toBeCloseTo(0.9, 6); // not eroded
       expect(settled[0].avg_duration_ms).toBeNull(); // 999 never folded in
+    },
+    PG_TIMEOUT_MS,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Migration 0172 pre-dedup fold. The index this migration adds would abort the
+// deploy if prod already held concurrent-race duplicate rows (the artifact the
+// index exists to prevent). 0172 folds those into one survivor first. This can
+// only be exercised on a table that still HAS duplicates — i.e. before the
+// index exists — so this block runs every migration EXCEPT 0172 into its own
+// schema, seeds duplicates, then applies the real 0172 SQL file (not a copy, so
+// no drift) and asserts the fold + the now-live index/CHECK.
+// ---------------------------------------------------------------------------
+describeIfPg("migration 0172 pre-dedup fold (real Postgres, #4572)", () => {
+  let pool: Pool;
+  const schemaName = `identity_dedup_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  const migration0172 = readFileSync(
+    join(import.meta.dir, "../migrations/0172_learned_patterns_identity.sql"),
+    "utf8",
+  );
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    pool.on("connect", (client) => {
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`pattern-identity-pg dedup: SET search_path failed: ${message}`);
+      });
+    });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    // Every migration EXCEPT 0172 — so learned_patterns exists WITHOUT the
+    // unique index, and duplicates can be seeded to exercise the fold.
+    await runMigrations(pool, {
+      skip: [...MANAGED_AUTH_MIGRATIONS, "0172_learned_patterns_identity.sql"],
+    });
+  }, PG_TIMEOUT_MS);
+
+  afterAll(async () => {
+    if (!pool) return;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    await pool.end();
+  });
+
+  it(
+    "folds pre-existing duplicate query_pattern rows into one survivor, then the index + CHECK go live",
+    async () => {
+      // Three NULL-scope duplicates (rep 1/2/3, confidence .1/.3/.2) — exactly
+      // the concurrent-race artifact — plus a singleton that must survive intact
+      // and an amendment sharing the identity that must be left unconstrained.
+      await pool.query(
+        `INSERT INTO learned_patterns (org_id, connection_group_id, pattern_sql, repetition_count, confidence, status, type) VALUES
+           (NULL, NULL, 'dup sql', 1, 0.1, 'pending', 'query_pattern'),
+           (NULL, NULL, 'dup sql', 2, 0.3, 'pending', 'query_pattern'),
+           (NULL, NULL, 'dup sql', 3, 0.2, 'pending', 'query_pattern'),
+           ('o1', 'g1', 'single sql', 7, 0.5, 'pending', 'query_pattern'),
+           (NULL, NULL, 'dup sql', 1, 0.1, 'pending', 'semantic_amendment')`,
+      );
+
+      // Apply the real migration file (dedup fold + unique index + CHECKs).
+      await pool.query(migration0172);
+
+      // The three query_pattern duplicates collapsed to one, repetition summed
+      // (1+2+3) and confidence set to the group max (0.3).
+      const dup = await pool.query<{ repetition_count: number; confidence: number }>(
+        `SELECT repetition_count, confidence FROM learned_patterns
+          WHERE pattern_sql = 'dup sql' AND type = 'query_pattern'`,
+      );
+      expect(dup.rows).toHaveLength(1);
+      expect(dup.rows[0].repetition_count).toBe(6);
+      expect(dup.rows[0].confidence).toBeCloseTo(0.3, 5);
+
+      // The singleton is untouched; the amendment sharing the identity survives
+      // (the partial index is query_pattern-only).
+      const single = await pool.query<{ c: string }>(
+        `SELECT count(*)::text AS c FROM learned_patterns WHERE pattern_sql = 'single sql'`,
+      );
+      expect(single.rows[0].c).toBe("1");
+      const amend = await pool.query<{ c: string }>(
+        `SELECT count(*)::text AS c FROM learned_patterns
+          WHERE pattern_sql = 'dup sql' AND type = 'semantic_amendment'`,
+      );
+      expect(amend.rows[0].c).toBe("1");
+
+      // The unique index is now live: a raw duplicate insert (no ON CONFLICT)
+      // of the same identity is rejected with 23505.
+      await expect(
+        pool.query(
+          `INSERT INTO learned_patterns (org_id, connection_group_id, pattern_sql, type)
+           VALUES (NULL, NULL, 'dup sql', 'query_pattern')`,
+        ),
+      ).rejects.toMatchObject({ code: "23505" });
+
+      // And the CHECK is live: an out-of-set status is rejected with 23514.
+      await expect(
+        pool.query(
+          `INSERT INTO learned_patterns (pattern_sql, status) VALUES ('chk probe', 'bogus')`,
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
     },
     PG_TIMEOUT_MS,
   );

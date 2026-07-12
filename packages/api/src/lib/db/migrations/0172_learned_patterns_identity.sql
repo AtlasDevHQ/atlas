@@ -14,10 +14,12 @@
 --
 -- Indexed on md5(pattern_sql), NOT pattern_sql directly: a normalized query has
 -- no length cap (normalizeSQL), and a btree index tuple over the raw text would
--- exceed Postgres's ~2704-byte btree maximum for a large analytical query,
--- silently dropping the fire-and-forget INSERT. Hashing keeps the key
--- fixed-width — the same reason peer query_suggestions indexes normalized_hash
--- and user_favorite_prompts indexes md5(text). Collision risk is ~2^-128; the
+-- exceed Postgres's ~2704-byte btree maximum for a large analytical query —
+-- Postgres raises `index row size ... exceeds btree ... maximum`, which errors
+-- the fire-and-forget INSERT (the wrapper logs it, then the pattern is dropped:
+-- logged, but invisible to the user). Hashing keeps the key fixed-width — the
+-- same reason peer query_suggestions indexes normalized_hash and
+-- user_favorite_prompts indexes md5(text). Collision risk is ~2^-128; the
 -- application fast path (findPatternBySQL) still matches on exact pattern_sql.
 --
 -- NULLS NOT DISTINCT (PG15+; we run PG16 everywhere): the legacy/default scope
@@ -36,11 +38,57 @@
 -- (pending → applying → approved|pending, #4506). Omitting it would make the
 -- claim UPDATE violate the CHECK.
 --
--- Additive / single-release safe: index + CHECKs only — no column drop/rename,
--- no two-phase concern. Idempotent (IF NOT EXISTS / DROP-IF-EXISTS-then-ADD).
--- Mirrored in db/schema.ts (chk_learned_patterns_status /
+-- Additive / single-release safe: a one-time fold of pre-existing duplicate
+-- rows, then index + CHECKs — no column drop/rename, no two-phase concern. The
+-- index/CHECK DDL is idempotent (IF NOT EXISTS / DROP-IF-EXISTS-then-ADD); the
+-- dedup fold is a no-op on a table with no duplicates, so a manual re-run is
+-- safe. Mirrored in db/schema.ts (chk_learned_patterns_status /
 -- chk_learned_patterns_type + a comment for the raw-SQL partial unique index)
 -- in the same commit.
+
+-- Pre-dedup: fold any pre-existing duplicate query_pattern rows into one
+-- survivor per identity BEFORE creating the unique index, so CREATE UNIQUE
+-- INDEX cannot abort the deploy on the very concurrent-race artifact this
+-- migration exists to prevent (historical rows predating the ON CONFLICT
+-- guarantee). The window PARTITION treats NULL org/group as equal (SQL groups
+-- NULLs together in PARTITION BY), matching the index's NULLS NOT DISTINCT.
+-- Survivor = a rejected row if the group has one (preserve the sticky admin
+-- reject, #3636), else the most-repeated / most-recent. The survivor absorbs
+-- the folded rows' repetition_count (w_all is unordered, so its SUM is the
+-- full-partition total, not a running sum) and takes the group-max confidence;
+-- its source_queries / latency already represent the same normalized SQL. On a
+-- clean table with no duplicates both statements match zero rows.
+WITH ranked AS (
+  SELECT id,
+         row_number() OVER w_ord AS rn,
+         sum(repetition_count) OVER w_all AS group_total,
+         max(confidence) OVER w_all AS group_conf,
+         count(*) OVER w_all AS group_size
+    FROM learned_patterns
+   WHERE type = 'query_pattern'
+  WINDOW
+    w_ord AS (PARTITION BY org_id, connection_group_id, md5(pattern_sql)
+              ORDER BY (status = 'rejected') DESC, repetition_count DESC, updated_at DESC, id DESC),
+    w_all AS (PARTITION BY org_id, connection_group_id, md5(pattern_sql))
+)
+UPDATE learned_patterns lp
+   SET repetition_count = r.group_total,
+       confidence = r.group_conf,
+       updated_at = now()
+  FROM ranked r
+ WHERE lp.id = r.id AND r.rn = 1 AND r.group_size > 1;
+
+WITH ranked AS (
+  SELECT id,
+         row_number() OVER (
+           PARTITION BY org_id, connection_group_id, md5(pattern_sql)
+           ORDER BY (status = 'rejected') DESC, repetition_count DESC, updated_at DESC, id DESC
+         ) AS rn
+    FROM learned_patterns
+   WHERE type = 'query_pattern'
+)
+DELETE FROM learned_patterns
+ WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_learned_patterns_identity
   ON learned_patterns (org_id, connection_group_id, md5(pattern_sql))

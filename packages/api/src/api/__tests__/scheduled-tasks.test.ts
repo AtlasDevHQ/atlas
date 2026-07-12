@@ -245,6 +245,32 @@ describe("scheduled-tasks routes", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Per-request scheduler gate (#4623)
+  // -------------------------------------------------------------------------
+
+  describe("scheduler gate", () => {
+    it("404s CRUD when no scheduler backend is configured", async () => {
+      // getConfig() unresolved / no `scheduler` (e.g. self-hosted without a
+      // scheduler backend) → the router's per-request gate rejects before the handler.
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- simulate getConfig() === null
+      mockGetConfig.mockReturnValue(null as any);
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks"),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("404s /tick when no scheduler backend is configured", async () => {
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- simulate getConfig() === null
+      mockGetConfig.mockReturnValue(null as any);
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks/tick", { method: "POST" }),
+      );
+      expect(response.status).toBe(404);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // GET /api/v1/scheduled-tasks
   // -------------------------------------------------------------------------
 

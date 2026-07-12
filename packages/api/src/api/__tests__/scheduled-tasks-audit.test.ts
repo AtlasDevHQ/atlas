@@ -104,6 +104,17 @@ void mock.module("@atlas/api/lib/audit", async () => {
 // afterAll; the `??=` here is the module-load contract, not teardown.
 process.env.ATLAS_SCHEDULER_ENABLED ??= "true";
 
+// The scheduled-tasks router is now mounted unconditionally and gated per-request
+// on `getConfig()?.scheduler` (#4623). Override createApiTestMocks' default
+// `getConfig: () => null` with a resolved scheduler backend (later mock.module
+// wins) so the gate passes — otherwise every request 404s before its handler.
+void mock.module("@atlas/api/lib/config", () => ({
+  getConfig: () => ({
+    scheduler: { backend: "bun", maxConcurrentTasks: 5, taskTimeout: 60_000, tickIntervalSeconds: 60 },
+  }),
+  defineConfig: (c: unknown) => c,
+}));
+
 const { app } = await import("../index");
 
 afterAll(() => {

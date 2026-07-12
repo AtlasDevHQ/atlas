@@ -421,7 +421,13 @@ health.openapi(healthRoute, async (c) => {
 
     // Build components section for the health dashboard
     const now = new Date().toISOString();
-    const schedulerEnabled = process.env.ATLAS_SCHEDULER_ENABLED === "true";
+    // Scheduler status derives from the RESOLVED CONFIG — the same source the
+    // engine fiber starts from (`makeSchedulerLive` → `config.scheduler.backend`)
+    // — so `/health` reflects what actually runs. Reading `ATLAS_SCHEDULER_ENABLED`
+    // here diverged from the engine on the file-config deploy, mislabeling a live
+    // fiber as "disabled" in EU/APAC (#4623). `scheduler` is present in the
+    // resolved config iff the scheduler is configured (backend bun/webhook/vercel).
+    const schedulerEnabled = getConfig()?.scheduler != null;
 
     // #1987 — aggregate plugin healthcheck results into a `plugins` component.
     // Plugin failures NEVER escalate to 503 — that path is reserved for the
@@ -545,16 +551,15 @@ health.openapi(healthRoute, async (c) => {
         lastCheckedAt: now,
         ...(hasKeyError && { message: "MISSING_API_KEY" }),
       },
-      // Config-level status only — does not probe the scheduler engine at runtime.
-      //
-      // `disabled` is EXPECTED and SAFE on EU/APAC regions (#3687): the scheduler
-      // is a single global (US) fiber by design. Crucially, the customer-facing
-      // task-creation route `POST /api/v1/scheduled-tasks` is mounted behind the
-      // SAME `ATLAS_SCHEDULER_ENABLED === "true"` flag that starts the fiber
-      // (api/index.ts) — so a region reporting `scheduler: "disabled"` also
-      // returns 404 for task creation. Creation and execution are co-gated, so an
-      // EU/APAC customer can never create a scheduled task that silently never
-      // fires.
+      // Config-level status only — does not probe the scheduler engine at runtime,
+      // but derives from the SAME `config.scheduler` the engine starts from, so
+      // `healthy` here means the fiber is running in this region. The scheduler
+      // runs per-region against each region's own internal DB (#4623), so all
+      // regions with a configured backend report `healthy`; `disabled` means no
+      // scheduler backend is configured (e.g. self-hosted without one). The
+      // customer-facing task-creation route is co-gated on the same config, so a
+      // region that reports `disabled` also 404s task creation — no task is ever
+      // written that would silently never fire.
       scheduler: {
         status: schedulerEnabled ? "healthy" as const : "disabled" as const,
         lastCheckedAt: now,

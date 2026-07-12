@@ -217,14 +217,16 @@ describe("projectCatalogWithInstalls", () => {
   });
 
   describe("card-state per pillar", () => {
-    // Walks all three pillars with the four state-machine endpoints
+    // Walks all pillars with the four state-machine endpoints
     // (`coming_soon`, `upgrade_required`, `connected`, `accessible`).
     // `configured_but_downgraded` is covered above; the misconfigured
     // gate is pinned `true` in slice 3 — see module header comment.
+    // `knowledge` rows carry `type = 'context'` (#4619).
     const pillarCases: ReadonlyArray<{ pillar: Pillar; type: string }> = [
       { pillar: "chat", type: "chat" },
       { pillar: "action", type: "integration" },
       { pillar: "datasource", type: "datasource" },
+      { pillar: "knowledge", type: "context" },
     ];
 
     for (const { pillar, type } of pillarCases) {

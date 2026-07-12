@@ -68626,13 +68626,14 @@
           "Integrations"
         ],
         "summary": "List installable integrations for the current workspace",
-        "description": "Returns every enabled catalog entry visible to the requesting workspace. Rows above the workspace's plan tier are returned with `upsellOnly: true` so the UI can render a read-only upsell card. On SaaS deploys, `saas_eligible = false` rows are hidden entirely. The `installed` boolean reflects whether the workspace has a row in `workspace_plugins` for the catalog entry. Pass `?pillar=datasource` to list datasource-pillar catalog rows (with install status) instead of the default chat/integration listing.",
+        "description": "Returns every enabled catalog entry visible to the requesting workspace. Rows above the workspace's plan tier are returned with `upsellOnly: true` so the UI can render a read-only upsell card. On SaaS deploys, `saas_eligible = false` rows are hidden entirely. The `installed` boolean reflects whether the workspace has a row in `workspace_plugins` for the catalog entry. Pass `?pillar=datasource` to list datasource-pillar catalog rows (with install status), or `?pillar=knowledge` to list Knowledge Base connector rows, instead of the default chat/integration listing.",
         "parameters": [
           {
             "schema": {
               "type": "string",
               "enum": [
-                "datasource"
+                "datasource",
+                "knowledge"
               ]
             },
             "required": false,
@@ -68664,7 +68665,8 @@
                             "enum": [
                               "chat",
                               "integration",
-                              "datasource"
+                              "datasource",
+                              "context"
                             ]
                           },
                           "installModel": {
@@ -68733,7 +68735,8 @@
                             "enum": [
                               "datasource",
                               "chat",
-                              "action"
+                              "action",
+                              "knowledge"
                             ]
                           },
                           "implementationStatus": {

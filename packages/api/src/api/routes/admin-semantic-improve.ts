@@ -336,6 +336,9 @@ const TestResultSchema = z.object({
   rowCount: z.number(),
   sampleRows: z.array(z.record(z.string(), z.unknown())),
   error: z.string().optional(),
+  // #4614 — the test query was deferred (not run) because the entity is
+  // draft-only and absent from the query whitelist. Rendered as a neutral note.
+  deferred: z.boolean().optional(),
 });
 
 const PendingAmendmentSchema = z.object({

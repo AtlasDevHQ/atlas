@@ -806,6 +806,16 @@ const listEntitiesRoute = createRoute({
         param: { name: "connection", in: "query" },
         example: "default",
       }),
+      // #4613 — force the developer overlay (draft + published) regardless of
+      // the caller's global mode. The Semantic Improvement surface edits the
+      // draft layer, so its entity launcher must show draft-only entities that
+      // published mode hides. Admin-only route, so this grants no data an admin
+      // couldn't already see in developer mode — it just decouples this read
+      // from the global published/developer toggle.
+      includeDrafts: z.string().optional().openapi({
+        param: { name: "includeDrafts", in: "query" },
+        example: "true",
+      }),
     }),
   },
   responses: {
@@ -1671,9 +1681,11 @@ admin.openapi(overviewRoute, async (c) => {
 admin.openapi(listEntitiesRoute, async (c) => {
   const { authResult, requestId } = await adminAuthAndContext(c, "admin:semantic");
   const orgId = authResult.user?.activeOrganizationId;
+  const { connection: connectionId, includeDrafts } = c.req.valid("query");
   const atlasMode = getAtlasMode(c);
-  const mode = atlasMode === "developer" ? "developer" : "published";
-  const { connection: connectionId } = c.req.valid("query");
+  // #4613 — the improve launcher opts into the developer overlay so draft-only
+  // entities (invisible in published mode) still appear.
+  const mode = includeDrafts === "true" || atlasMode === "developer" ? "developer" : "published";
   try {
     const result = await listAdminEntities({ orgId, mode });
 

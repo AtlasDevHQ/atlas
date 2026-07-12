@@ -95,10 +95,23 @@ export async function resolveAmendmentBaseline(
   // the amendment's target (that case is the dual-apply's visible skip, not an
   // apply failure). Defaults to "developer" for any other caller.
   mode: "developer" | "published" = "developer",
+  // #4614 — opt into a PUBLISHED-existence probe (default off). Only
+  // `proposeAmendment` needs it; the per-render live-diff and apply/decide paths
+  // don't, so it stays off there — no extra query per pending-list row.
+  probePublished = false,
 ): Promise<{
   row: SemanticEntityRow;
   targetGroupId: string | null;
   parsed: Record<string, unknown>;
+  /**
+   * #4614 — whether a PUBLISHED row for this entity exists (in the resolved
+   * scope), or `undefined` when not probed (`probePublished` off). The query
+   * whitelist is published-only, so a draft-only entity (`publishedExists ===
+   * false`) can't be test-queried until it's published — `proposeAmendment` uses
+   * this to DEFER the test query instead of running it into a "not in the allowed
+   * list" failure. No extra query when the resolved row is already published.
+   */
+  publishedExists?: boolean;
 }> {
   // Self-hosted (null orgId) uses empty string as sentinel for global scope
   const effectiveOrgId = orgId ?? "";
@@ -170,7 +183,19 @@ export async function resolveAmendmentBaseline(
     throw new Error(`Failed to parse YAML for entity "${entityName}": expected a mapping`);
   }
 
-  return { row, targetGroupId, parsed };
+  // #4614 — does a PUBLISHED sibling exist? Only computed when the caller opts
+  // in (`probePublished`). A published resolved row IS the proof (no extra
+  // query); otherwise the resolved row is a draft, so probe the published
+  // overlay directly at the resolved row's OWN group (`targetGroupId`, a concrete
+  // scope — no unscoped fallback, so it can't 409 when published siblings exist
+  // across groups). A null result means never-published (draft-only).
+  const publishedExists = !probePublished
+    ? undefined
+    : row.status === "published"
+      ? true
+      : (await getEntity(effectiveOrgId, "entity", entityName, targetGroupId, "published")) !== null;
+
+  return { row, targetGroupId, parsed, publishedExists };
 }
 
 // ── Glossary amendments (#4518) ──────────────────────────────────────────────

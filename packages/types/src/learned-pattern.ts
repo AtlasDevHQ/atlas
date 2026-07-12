@@ -48,6 +48,14 @@ export interface AmendmentPayload {
     sampleRows: Record<string, unknown>[];
     /** Present when `success` is false — describes why the test query failed. */
     error?: string;
+    /**
+     * #4614 — the test query was NOT run: the amendment targets a draft-only
+     * entity, which is absent from the query whitelist (published-only), so the
+     * query would fail "not in the allowed list". It's deferred until the entity
+     * is published. `success` is `false` but this is not a failure — the card
+     * renders a neutral "deferred until publish" note, not a red error.
+     */
+    deferred?: boolean;
   };
   /** Agent's confidence this amendment is correct (0.0–1.0). */
   confidence: number;

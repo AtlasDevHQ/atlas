@@ -153,6 +153,23 @@ describe("extractProposals", () => {
     ]);
     expect(bad[0]?.testResult).toBeUndefined();
   });
+
+  it("carries a deferred testResult through (draft-only entity, #4614)", () => {
+    // A draft-only entity's test query is deferred, not run: success:false but
+    // deferred:true, so the card renders a neutral note, not a red failure.
+    const deferred = extractProposals([
+      assistantWithTool(baseInput, {
+        proposalId: "amd-1",
+        testResult: { success: false, rowCount: 0, sampleRows: [], deferred: true },
+      }),
+    ]);
+    expect(deferred[0]?.testResult).toEqual({
+      success: false,
+      rowCount: 0,
+      sampleRows: [],
+      deferred: true,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

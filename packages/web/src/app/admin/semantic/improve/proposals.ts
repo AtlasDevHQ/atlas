@@ -18,6 +18,13 @@ export interface TestResult {
   rowCount: number;
   sampleRows: Record<string, unknown>[];
   error?: string;
+  /**
+   * #4614 — the test query was deferred, not run: the entity is draft-only (not
+   * yet published), so it's absent from the query whitelist. `success` is false
+   * but this is not a failure — the card renders a neutral "deferred until
+   * publish" note rather than a red error.
+   */
+  deferred?: boolean;
 }
 
 /**

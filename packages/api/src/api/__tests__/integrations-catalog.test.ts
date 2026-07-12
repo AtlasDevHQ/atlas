@@ -28,7 +28,7 @@ import type { CatalogEntryWithState } from "@atlas/api/lib/effect/pillar-catalog
 const mockWithInstallStatusFor: Mock<
   (
     workspaceId: string,
-    pillar?: "datasource" | "chat" | "action",
+    pillar?: "datasource" | "chat" | "action" | "knowledge",
   ) => Effect.Effect<readonly CatalogEntryWithState[], Error>
 > = mock(() => Effect.succeed([] as readonly CatalogEntryWithState[]));
 
@@ -223,8 +223,16 @@ describe("GET /api/v1/integrations/catalog", () => {
       expect(mockWithInstallStatusFor).toHaveBeenCalledWith("org-1", "datasource");
     });
 
-    it("rejects unknown pillar values with 422 (only 'datasource' is exposed)", async () => {
+    it("forwards ?pillar=knowledge to the facade (#4619)", async () => {
       const app = buildApp();
+      await app.request("/integrations/catalog?pillar=knowledge");
+      expect(mockWithInstallStatusFor).toHaveBeenCalledWith("org-1", "knowledge");
+    });
+
+    it("rejects unknown pillar values with 422 (only 'datasource' + 'knowledge' are exposed)", async () => {
+      const app = buildApp();
+      // `chat` / `action` stay unexposed — the default listing covers them and
+      // widening would change their wire `type` guarantees.
       for (const bad of ["chat", "action", "bogus"]) {
         const res = await app.request(`/integrations/catalog?pillar=${bad}`);
         // 422 via the shared validationHook (`Invalid query parameters`).
@@ -312,6 +320,58 @@ describe("GET /api/v1/integrations/catalog", () => {
         { key: "description", type: "string" },
       ]);
       expect(entry.installed).toBe(false);
+    });
+  });
+
+  describe("knowledge pillar projection (#4619)", () => {
+    // Minimal registry entry — the flag derivation only consults registration,
+    // never invokes the handler.
+    const fakeKnowledgeHandler = {
+      kind: "form" as const,
+      validateConfig: () =>
+        Promise.reject(new Error("test handler: validateConfig must not be called")),
+    };
+
+    afterEach(() => {
+      _resetInstallHandlerRegistries();
+    });
+
+    it("projects knowledge rows (type='context', pillar='knowledge') through the same envelope", async () => {
+      registerFormHandler("confluence", fakeKnowledgeHandler);
+      const row = makeRichRow({
+        id: "catalog:confluence",
+        slug: "confluence",
+        name: "Knowledge Base (Confluence Cloud)",
+        description: "Mirror a Confluence Cloud space into a knowledge collection.",
+        type: "context",
+        installModel: "form",
+        pillar: "knowledge",
+        configSchema: [
+          { key: "base_url", type: "string", required: true },
+          { key: "api_token", type: "string", secret: true, required: true },
+        ],
+        state: "accessible",
+        planAccessible: true,
+      });
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog?pillar=knowledge");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      const entry = body.catalog[0];
+      expect(entry.slug).toBe("confluence");
+      expect(entry.type).toBe("context");
+      expect(entry.pillar).toBe("knowledge");
+      expect(entry.installModel).toBe("form");
+      // The connector picker's install form renders from configSchema —
+      // it must survive the projection untouched.
+      expect(entry.configSchema).toEqual([
+        { key: "base_url", type: "string", required: true },
+        { key: "api_token", type: "string", secret: true, required: true },
+      ]);
+      // Derived from the live form-handler registry, same as datasource rows.
+      expect(entry.formInstallable).toBe(true);
     });
   });
 

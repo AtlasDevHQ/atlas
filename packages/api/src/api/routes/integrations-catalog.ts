@@ -24,6 +24,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect, Layer } from "effect";
+import { PILLARS } from "@useatlas/types";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { hasInternalDB, makeInternalDBShimLayer } from "@atlas/api/lib/db/internal";
 import {
@@ -43,26 +44,30 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 // ---------------------------------------------------------------------------
 
 /**
- * Optional pillar narrowing (#3377). Only `datasource` is exposed: the
- * Connections Add picker needs the datasource-pillar listing (catalog
- * rows + install status) to drive its form-install tiles. The default
- * (no param) response stays byte-identical to the legacy
- * `type IN ('chat','integration')` listing. `chat` / `action` pillar
- * params are intentionally NOT accepted — the legacy listing already
- * covers those surfaces and widening would change their wire `type`
- * guarantees.
+ * Optional pillar narrowing (#3377, #4619). Two pillars are exposed:
+ * - `datasource` — the Connections Add picker's form-install tiles.
+ * - `knowledge` — the Knowledge Base "New collection" picker (#4619); its
+ *   rows carry `type = 'context'` and drive the schema-driven credential
+ *   forms per connector. Data-driven so a new `BUILTIN_KNOWLEDGE_CATALOG_ROWS`
+ *   entry surfaces in the UI without a picker edit.
+ *
+ * The default (no param) response stays byte-identical to the legacy
+ * `type IN ('chat','integration')` listing. `chat` / `action` pillar params
+ * are intentionally NOT accepted — the legacy listing already covers those
+ * surfaces and widening would change their wire `type` guarantees.
  */
 const CatalogQuerySchema = z.object({
-  pillar: z.enum(["datasource"]).optional(),
+  pillar: z.enum(["datasource", "knowledge"]).optional(),
 });
 
 const CatalogEntryResponseSchema = z.object({
   id: z.string(),
   slug: z.string(),
   // `datasource` appears only on the `?pillar=datasource` listing
-  // (#3377); the default listing is filtered to chat/integration
-  // server-side and never emits it.
-  type: z.enum(["chat", "integration", "datasource"]),
+  // (#3377); `context` only on `?pillar=knowledge` (#4619, knowledge rows
+  // carry `type = 'context'`). The default listing is filtered to
+  // chat/integration server-side and never emits either.
+  type: z.enum(["chat", "integration", "datasource", "context"]),
   // `installModel` (camelCase) — wire-side casing match for the rest of
   // the response shape. The DB column is `install_model`; the facade
   // does the translation. `oauth-datasource` is GitHub Data's model
@@ -100,11 +105,14 @@ const CatalogEntryResponseSchema = z.object({
   upgradeRequired: z.string().nullable(),
   // ── New in #2741 (slice 3 of 1.5.3) ───────────────────────────────
   /**
-   * Three-pillar taxonomy per [ADR-0006]. `datasource` rows live on
+   * Pillar taxonomy per [ADR-0006]. `datasource` rows live on
    * `/admin/connections`; `chat` and `action` rows live on
-   * `/admin/integrations`. Slice 8 wires the UI section split.
+   * `/admin/integrations`; `knowledge` rows live on `/admin/knowledge`
+   * (ADR-0028, surfaced via `?pillar=knowledge` — #4619). Slice 8 wires
+   * the UI section split. Derived from the `PILLARS` tuple so the wire
+   * enum can never drift from `@useatlas/types`.
    */
-  pillar: z.enum(["datasource", "chat", "action"]),
+  pillar: z.enum(PILLARS),
   /**
    * Whether Atlas has shipped a working install path. `coming_soon`
    * rows render as inert grey cards in admin UI (slice 9 wires the
@@ -164,7 +172,8 @@ const listCatalogRoute = createRoute({
     "`saas_eligible = false` rows are hidden entirely. The `installed` " +
     "boolean reflects whether the workspace has a row in `workspace_plugins` " +
     "for the catalog entry. Pass `?pillar=datasource` to list datasource-" +
-    "pillar catalog rows (with install status) instead of the default " +
+    "pillar catalog rows (with install status), or `?pillar=knowledge` to " +
+    "list Knowledge Base connector rows, instead of the default " +
     "chat/integration listing.",
   request: { query: CatalogQuerySchema },
   responses: {
@@ -254,10 +263,10 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
         slug: row.slug,
         // The facade's `type` is the raw DB string; the route narrows
         // back to the wire union. The legacy-type SQL exclusion (default
-        // listing) / pillar predicate (`?pillar=datasource`) in the
-        // facade keeps this safe — any other value would mean a CHECK
-        // constraint regression.
-        type: row.type as "chat" | "integration" | "datasource",
+        // listing) / pillar predicate (`?pillar=datasource|knowledge`) in
+        // the facade keeps this safe — any other value would mean a CHECK
+        // constraint regression. Knowledge rows carry `type = 'context'`.
+        type: row.type as "chat" | "integration" | "datasource" | "context",
         installModel: row.installModel as "oauth" | "form" | "static-bot" | "oauth-datasource",
         name: row.name,
         description: row.description,

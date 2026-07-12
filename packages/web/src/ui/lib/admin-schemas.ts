@@ -408,9 +408,11 @@ const RawCatalogEntrySchema = z.object({
   id: z.string(),
   slug: z.string(),
   // `datasource` appears only on the `?pillar=datasource` listing the
-  // /admin/connections Add picker uses (#3377); the default listing is
+  // /admin/connections Add picker uses (#3377); `context` only on the
+  // `?pillar=knowledge` listing the /admin/knowledge picker uses (#4619,
+  // knowledge rows carry `type = 'context'`). The default listing is
   // filtered to chat/integration server-side.
-  type: z.enum(["chat", "integration", "datasource"]),
+  type: z.enum(["chat", "integration", "datasource", "context"]),
   // `oauth-datasource` is the GitHub-Data install model (migration 0111) —
   // it rides the `?pillar=datasource` listing, so the picker schema must
   // accept it or one such row fails the whole catalog parse (#3384 review).
@@ -443,7 +445,7 @@ const RawCatalogEntrySchema = z.object({
   // coming-soon badge. Until those slices land the fields are present
   // but not rendered — the UI continues to derive its sections from
   // the legacy `type` field.
-  pillar: z.enum(["datasource", "chat", "action"]).optional(),
+  pillar: z.enum(["datasource", "chat", "action", "knowledge"]).optional(),
   implementationStatus: z.enum(["available", "coming_soon"]).optional(),
   // ── New in #2745 (slice 7 of 1.5.3) ──────────────────────────────
   // Non-secret subset of `workspace_plugins.config` for installed rows.

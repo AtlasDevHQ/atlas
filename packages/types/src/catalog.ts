@@ -75,15 +75,24 @@ export type CatalogEntryType = (typeof CATALOG_ENTRY_TYPES)[number];
  *   Google Chat, Telegram, WhatsApp.
  * - `action` — Atlas writes to / acts on it. Lives on `/admin/integrations`
  *   (Actions section). Examples: GitHub, Linear, Email, Webhooks.
+ * - `knowledge` — Atlas reads it as descriptive context (never as queryable
+ *   data). Lives on `/admin/knowledge` (the Knowledge Base pillar, ADR-0028).
+ *   Examples: Upload, Bundle Sync, Notion, Confluence, GitBook, Zendesk. These
+ *   rows carry `type = 'context'` and are seeded with `pillar = 'knowledge'`
+ *   explicitly (it is never derived from the catalog `type` — see
+ *   `pillarFromCatalogType`).
  *
  * Multi-pillar systems (e.g. GitHub-as-Action-Target + future
  * GitHub-as-Datasource) carry one catalog row per pillar, not one row
  * with a pillar array — see ADR-0006 for the least-privilege rationale.
  *
  * Mirrors the `chk_plugin_catalog_pillar` and `chk_workspace_plugins_pillar`
- * CHECK constraints on the DB (migration 0092).
+ * CHECK constraints on the DB (migration 0092, widened to admit `knowledge`
+ * by migration 0161). Like `datasource`, `knowledge` is multi-instance per
+ * (workspace, catalog) — the `workspace_plugins_singleton` partial unique
+ * index stays scoped to `chat`/`action`.
  */
-export const PILLARS = ["datasource", "chat", "action"] as const;
+export const PILLARS = ["datasource", "chat", "action", "knowledge"] as const;
 export type Pillar = (typeof PILLARS)[number];
 
 // ---------------------------------------------------------------------------

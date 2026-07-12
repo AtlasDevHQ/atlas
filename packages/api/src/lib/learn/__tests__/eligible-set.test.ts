@@ -145,7 +145,7 @@ describe("shared ordering + cap constants", () => {
     // The two must agree by construction; pin the SQL fragment's shape so a change
     // to one is a visible diff against the other.
     expect(ELIGIBLE_SET_ORDER_BY_SQL).toBe(
-      "(auto_promoted = false) DESC, confidence DESC, last_seen_at DESC NULLS LAST",
+      "(auto_promoted = false) DESC, confidence DESC, learned_patterns.last_seen_at DESC NULLS LAST",
     );
   });
 

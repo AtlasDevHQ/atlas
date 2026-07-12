@@ -64,12 +64,15 @@ export const ELIGIBLE_SET_SAFETY_CAP = 1000;
  * The canonical eligible-set ordering as a SQL `ORDER BY` fragment — human-
  * approved first (`auto_promoted = false`), then confidence DESC, then
  * last-observed DESC (NULLS LAST). {@link compareEligibleOrder} mirrors it
- * clause-for-clause so the SQL fetch and the in-memory stage agree by
- * construction. Referenced verbatim by `getApprovedPatterns`; it embeds no
- * user input, so it is safe to interpolate.
+ * clause-for-clause. `last_seen_at` is table-qualified so the sort binds to the
+ * real `timestamptz` column (chronological) rather than the query's
+ * `last_seen_at::text` output alias (which would sort lexically) — that keeps it
+ * in agreement with the comparator's epoch-millis sort regardless of session
+ * timezone. Referenced verbatim by `getApprovedPatterns` (which selects `FROM
+ * learned_patterns`); it embeds no user input, so it is safe to interpolate.
  */
 export const ELIGIBLE_SET_ORDER_BY_SQL =
-  "(auto_promoted = false) DESC, confidence DESC, last_seen_at DESC NULLS LAST";
+  "(auto_promoted = false) DESC, confidence DESC, learned_patterns.last_seen_at DESC NULLS LAST";
 
 /**
  * Whether a human approved this pattern (as opposed to the nightly auto-promote

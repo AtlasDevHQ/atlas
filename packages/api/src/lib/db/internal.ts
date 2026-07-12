@@ -2375,7 +2375,8 @@ export interface QuerySuggestionRow {
  * (`getRelevantPatterns`). Ordered by the shared {@link ELIGIBLE_SET_ORDER_BY_SQL}
  * (human-approved first, then confidence DESC, then last-observed) and capped at
  * {@link ELIGIBLE_SET_SAFETY_CAP} — the ordering makes the cap keep every
- * human-approved row plus the highest-confidence machine rows (#4571).
+ * human-approved row (up to the cap; see {@link ELIGIBLE_SET_SAFETY_CAP}) plus
+ * the highest-confidence machine rows (#4571).
  */
 export async function getApprovedPatterns(
   orgId: string | null,

@@ -2318,8 +2318,9 @@ export interface ApprovedPatternRow {
    *  false for a human-approved pattern (#4571). Drives the eligible-set bypass:
    *  human-approved rows are eligible for injection regardless of confidence. */
   auto_promoted: boolean;
-  /** Last-observed timestamp (ISO text) or null until first observed. The
-   *  eligible-set saturation tiebreak among confidence ties (#4571). */
+  /** Last-observed timestamp as `timestamptz::text` (space-separated, not strict
+   *  ISO-8601; `Date.parse`-able), or null until first observed. The eligible-set
+   *  saturation tiebreak among confidence ties (#4571). */
   last_seen_at: string | null;
   [key: string]: unknown;
 }
@@ -2366,10 +2367,11 @@ export interface QuerySuggestionRow {
  * IS the default group, so only `connection_group_id IS NULL` rows match — this
  * keeps `us-prod` patterns out of a `eu-prod` agent session and vice-versa.
  *
- * Returns ALL approved query patterns for the scope — the confidence gate is NOT
- * applied here. Approval is an eligibility bypass, so a human-approved row must
- * reach the injection stage regardless of confidence; the gate applies to
- * machine-promoted rows and is enforced downstream by {@link selectEligiblePatterns}
+ * Applies NO confidence gate here (unlike a confidence-filtered fetch) — it
+ * returns every approved query pattern for the scope, up to the safety cap.
+ * Approval is an eligibility bypass, so a human-approved row must reach the
+ * injection stage regardless of confidence; the gate applies to machine-promoted
+ * rows and is enforced downstream by {@link selectEligiblePatterns}
  * (`getRelevantPatterns`). Ordered by the shared {@link ELIGIBLE_SET_ORDER_BY_SQL}
  * (human-approved first, then confidence DESC, then last-observed) and capped at
  * {@link ELIGIBLE_SET_SAFETY_CAP} — the ordering makes the cap keep every
@@ -2423,7 +2425,7 @@ export async function getApprovedPatterns(
   // `amendmentIdentityKey`), never a runnable query — injecting one as a query
   // pattern is garbage in the prompt. Mirrors the filter
   // `getPromoteDecayCandidates` already applies.
-  return internalQuery<ApprovedPatternRow>(
+  const rows = await internalQuery<ApprovedPatternRow>(
     `SELECT id, org_id, connection_group_id, pattern_sql, description, source_entity, confidence, avg_duration_ms, auto_promoted, last_seen_at::text AS last_seen_at
      FROM learned_patterns
      WHERE status = 'approved' AND type = 'query_pattern' AND ${orgClause} AND ${groupClause}
@@ -2431,6 +2433,19 @@ export async function getApprovedPatterns(
      LIMIT ${ELIGIBLE_SET_SAFETY_CAP}`,
     params,
   );
+
+  // Surface the PRD #4570 scaling-exit trigger: at exactly the cap the scope's
+  // approved-pattern library has hit the eligible-set ceiling and rows may be
+  // truncated at fetch — the actionable signal that full-text retrieval is due
+  // (silent truncation would otherwise be invisible to an operator).
+  if (rows.length === ELIGIBLE_SET_SAFETY_CAP) {
+    log.warn(
+      { orgId, connectionGroupId, cap: ELIGIBLE_SET_SAFETY_CAP },
+      "Approved-pattern eligible set hit the safety cap — scope is at the eligible-set ceiling (PRD #4570 full-text-retrieval trigger)",
+    );
+  }
+
+  return rows;
 }
 
 // ── Auto-promote / decay (PRD #3617 B-2, #3636) ─────────────────────

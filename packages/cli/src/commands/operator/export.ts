@@ -105,7 +105,7 @@ export async function handleExport(args: string[]): Promise<void> {
     // amendment instead of round-tripping as an orphaned query pattern.
     const patRows = await pool.query(
       `SELECT pattern_sql, description, source_entity, confidence, status,
-              type, amendment_payload, connection_group_id, reviewed_by, reviewed_at, repetition_count
+              type, amendment_payload, connection_group_id, reviewed_by, reviewed_at, repetition_count, auto_promoted
        FROM learned_patterns
        WHERE ${orgClause}
        ORDER BY created_at`,
@@ -124,6 +124,9 @@ export async function handleExport(args: string[]): Promise<void> {
         reviewedBy: (r.reviewed_by as string) ?? null,
         reviewedAt: r.reviewed_at ? String(r.reviewed_at) : null,
         repetitionCount: (r.repetition_count as number) ?? 1,
+        // Human vs machine approval road (#4571) — carried so the eligibility
+        // bypass survives migration. Column is NOT NULL, so coerce defensively.
+        autoPromoted: Boolean(r.auto_promoted),
       }),
     );
     console.log(`  Patterns:      ${learnedPatterns.length}`);

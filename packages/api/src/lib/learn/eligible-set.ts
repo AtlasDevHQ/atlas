@@ -40,19 +40,23 @@ export interface EligibilityFields {
   /** True when the nightly auto-promote job promoted this row (the machine road);
    *  false when a human approved it (the eligibility-bypass road). */
   readonly auto_promoted: boolean;
-  /** Last-observed timestamp (ISO string) or null until first observed. The
-   *  saturation tiebreak among confidence ties. */
+  /** Last-observed timestamp or null until first observed. In production this is
+   *  PostgreSQL `timestamptz::text` (space-separated, `+00` offset — not strict
+   *  ISO-8601), parsed leniently by `Date.parse`; unparseable/null sorts last.
+   *  The saturation tiebreak among confidence ties. */
   readonly last_seen_at: string | null;
 }
 
 /**
  * A generous per-(workspace, group) ceiling on the injectable set pulled from
  * the DB — replaces the old arbitrary 100-row confidence-DESC pre-cut (#4571).
- * High enough that the full eligible set of any real library fits (so no
- * human-approved pattern is ever truncated at fetch time, since they sort first
- * under {@link ELIGIBLE_SET_ORDER_BY_SQL}), while still bounding the pattern
- * cache's memory. Beyond this scale the recorded exit is full-text retrieval
- * (PRD #4570), adopted on evidence, not preemptively.
+ * High enough that the full eligible set of any real library fits: because
+ * human-approved rows sort first under {@link ELIGIBLE_SET_ORDER_BY_SQL}, the
+ * LIMIT drops only the lowest-confidence machine rows — no human-approved pattern
+ * is truncated at fetch time UNLESS a single (workspace, group) has more than
+ * this many human-approved patterns, the recorded exit to full-text retrieval
+ * (PRD #4570), adopted on evidence, not preemptively. Also bounds the pattern
+ * cache's memory.
  */
 export const ELIGIBLE_SET_SAFETY_CAP = 1000;
 
@@ -69,11 +73,14 @@ export const ELIGIBLE_SET_ORDER_BY_SQL =
 
 /**
  * Whether a human approved this pattern (as opposed to the nightly auto-promote
- * job). A pattern reaches `status = 'approved'` by exactly two roads: a human
- * review stamps `auto_promoted = false` (see `admin-learned-patterns.ts`), the
- * machine stamps `auto_promoted = true`. So `auto_promoted === false` IS "a
- * human approved this". A partial row missing the flag is treated as machine —
- * the gated road — so a fixture can never accidentally grant the bypass.
+ * job). A live review decision reaches `status = 'approved'` by two roads: a
+ * human review stamps `auto_promoted = false` (see `admin-learned-patterns.ts`),
+ * the machine stamps `auto_promoted = true` — so `auto_promoted === false` marks
+ * a human approval. (Workspace-bundle import replays an already-decided row
+ * carrying its recorded flag; a pre-#4571 bundle lacks it and fails closed to
+ * the machine road — see `admin-migrate.ts`.) A partial row missing the flag is
+ * likewise treated as machine, so a fixture can never accidentally grant the
+ * bypass.
  */
 export function isHumanApproved(row: Pick<EligibilityFields, "auto_promoted">): boolean {
   return row.auto_promoted === false;

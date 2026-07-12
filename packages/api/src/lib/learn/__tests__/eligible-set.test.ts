@@ -93,6 +93,16 @@ describe("compareEligibleOrder / selectEligiblePatterns — ordering", () => {
     const b = row({ id: "b", auto_promoted: false, confidence: 0.8, last_seen_at: null });
     expect(compareEligibleOrder(a, b)).toBe(0);
   });
+
+  test("last-observed tiebreak parses the real Postgres timestamptz::text format", () => {
+    // Production feeds `last_seen_at::text` — space-separated with a `+00` offset,
+    // NOT the strict-ISO `…T…Z` the other tests use. Pin that the comparator
+    // orders it chronologically (Date.parse handles it).
+    const older = row({ id: "older", auto_promoted: false, confidence: 0.8, last_seen_at: "2026-01-01 00:00:00+00" });
+    const newer = row({ id: "newer", auto_promoted: false, confidence: 0.8, last_seen_at: "2026-06-01 12:30:00+00" });
+    const ordered = selectEligiblePatterns([older, newer], THRESHOLD);
+    expect(ordered.map((r) => r.id)).toEqual(["newer", "older"]);
+  });
 });
 
 describe("selectEligiblePatterns — eligibility filter", () => {

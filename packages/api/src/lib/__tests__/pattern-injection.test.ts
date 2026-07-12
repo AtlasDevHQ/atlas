@@ -521,9 +521,15 @@ describe("approval is an eligibility bypass, not a confidence write (#4571)", ()
     const before = await getRelevantPatterns("org-1", "What is the total revenue?");
     expect(before.length).toBe(0);
 
-    // A human approves it: auto_promoted → false (confidence UNCHANGED), and the
-    // approve path invalidates the org cache.
+    // A human approves it: auto_promoted → false (confidence UNCHANGED).
     mockApprovedPatterns = [{ ...mockApprovedPatterns[0], auto_promoted: false }];
+
+    // Negative control: WITHOUT invalidation the stale cached (machine, gated)
+    // copy is still served — this makes the invalidation load-bearing below.
+    const stale = await getRelevantPatterns("org-1", "What is the total revenue?");
+    expect(stale.length).toBe(0);
+
+    // The approve path invalidates the org cache → the next read reflects the flip.
     invalidatePatternCache("org-1");
 
     const after = await getRelevantPatterns("org-1", "What is the total revenue?");

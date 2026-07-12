@@ -40,6 +40,7 @@ interface PatternRow {
   repetition_count: number;
   confidence: number;
   avg_duration_ms: number | null;
+  last_seen_at: Date | null;
   status: string;
   source_queries: string[] | null;
 }
@@ -77,7 +78,7 @@ describeIfPg("DB-enforced learned-pattern identity (real Postgres, #4572)", () =
   async function rows(patternSql: string): Promise<PatternRow[]> {
     const res = await pool.query<PatternRow>(
       `SELECT id, org_id, connection_group_id, repetition_count, confidence,
-              avg_duration_ms, status, source_queries
+              avg_duration_ms, last_seen_at, status, source_queries
          FROM learned_patterns WHERE pattern_sql = $1 ORDER BY id`,
       [patternSql],
     );
@@ -182,11 +183,16 @@ describeIfPg("DB-enforced learned-pattern identity (real Postgres, #4572)", () =
       seed(sql, { durationMs: 100, fp: "d1" });
       const [before] = await pollRows(sql, (r) => r.length === 1 && r[0].avg_duration_ms === 100);
       // Second observation via ON CONFLICT, but with no measurement → the fold's
-      // `WHEN EXCLUDED.avg_duration_ms IS NULL THEN <keep old>` branch fires.
+      // `WHEN EXCLUDED.avg_duration_ms IS NULL THEN <keep old>` branch fires for
+      // BOTH avg_duration_ms and last_seen_at.
       seed(sql, { fp: "d2" }); // no durationMs
       const [after] = await pollRows(sql, (r) => r.length === 1 && r[0].repetition_count === 2);
       expect(after.avg_duration_ms).toBe(100); // unchanged
       expect(before.avg_duration_ms).toBe(100);
+      // last_seen_at also held to the seed's timestamp (its keep-old arm), not
+      // bumped to now() — a flip of that arm would go uncaught otherwise.
+      expect(after.last_seen_at).not.toBeNull();
+      expect(after.last_seen_at!.getTime()).toBe(before.last_seen_at!.getTime());
     },
     PG_TIMEOUT_MS,
   );
@@ -358,11 +364,15 @@ describeIfPg("DB-enforced learned-pattern identity (real Postgres, #4572)", () =
       // The reject-race upsert is fire-and-forget, and its correct outcome
       // ("row unchanged") is indistinguishable from "not run yet" — so a
       // `() => true` poll could green even if the guard were deleted. Establish
-      // a happens-before barrier: fire a CONTROL upsert for a fresh identity
-      // through the same write path and drive it to rep 2. Once the control's
-      // second observation has landed, the write queue has demonstrably drained
-      // past the reject-race upsert dispatched before it, so a still-frozen
-      // rejected row is a real assertion, not a timing artifact.
+      // a timing barrier: fire a CONTROL upsert for a fresh identity through the
+      // same write path and drive it to rep 2. The pool has >1 connection so
+      // this isn't strict FIFO serialization, but the reject-race upsert is
+      // dispatched first and is a single fast op, while the control spans two
+      // writes plus polling — by the time the control reaches rep 2 the earlier
+      // upsert has, with overwhelming probability, already run, making a
+      // still-frozen rejected row a real assertion rather than a timing artifact.
+      // (Strict serialization would need a max:1 pool, but the AC#1 concurrency
+      // test above shares this pool and needs the extra connections.)
       const controlSql = "select a from reject_race_control where b = ?";
       seed(controlSql, { org: ORG, group: null, fp: "c1" });
       await pollRows(controlSql, (r) => r.length === 1);
@@ -431,7 +441,13 @@ describeIfPg("migration 0172 pre-dedup fold (real Postgres, #4572)", () => {
            (NULL, NULL, 'dup sql', 2, 0.3, 'pending', 'query_pattern'),
            (NULL, NULL, 'dup sql', 3, 0.2, 'pending', 'query_pattern'),
            ('o1', 'g1', 'single sql', 7, 0.5, 'pending', 'query_pattern'),
-           (NULL, NULL, 'dup sql', 1, 0.1, 'pending', 'semantic_amendment')`,
+           (NULL, NULL, 'dup sql', 1, 0.1, 'pending', 'semantic_amendment'),
+           -- A duplicate group where one member is admin-rejected: the fold must
+           -- keep the rejected row as survivor (sticky reject, #3636, on the
+           -- deploy path) even though a pending duplicate has a higher rep — a
+           -- pending survivor here would silently resurrect a rejected pattern.
+           ('o2', 'g2', 'rej dup', 5, 0.4, 'pending', 'query_pattern'),
+           ('o2', 'g2', 'rej dup', 2, 0.9, 'rejected', 'query_pattern')`,
       );
 
       // Apply the real migration file (dedup fold + unique index + CHECKs).
@@ -458,6 +474,19 @@ describeIfPg("migration 0172 pre-dedup fold (real Postgres, #4572)", () => {
           WHERE pattern_sql = 'dup sql' AND type = 'semantic_amendment'`,
       );
       expect(amend.rows[0].c).toBe("1");
+
+      // Sticky reject on the deploy path (#3636): the rejected member survives
+      // the fold even though a pending duplicate had a higher rep. Survivor is
+      // rejected, absorbs both counts (5+2), and takes the group-max confidence
+      // (0.9). A pending survivor here would silently un-reject the pattern.
+      const rej = await pool.query<{ status: string; repetition_count: number; confidence: number }>(
+        `SELECT status, repetition_count, confidence FROM learned_patterns
+          WHERE pattern_sql = 'rej dup'`,
+      );
+      expect(rej.rows).toHaveLength(1);
+      expect(rej.rows[0].status).toBe("rejected");
+      expect(rej.rows[0].repetition_count).toBe(7);
+      expect(rej.rows[0].confidence).toBeCloseTo(0.9, 5);
 
       // The unique index is now live: a raw duplicate insert (no ON CONFLICT)
       // of the same identity is rejected with 23505.

@@ -708,10 +708,11 @@ export const learnedPatterns = pgTable(
     // Handled via raw SQL in the migration because no single Drizzle builder
     // combines all three properties: `unique().nullsNotDistinct()` accepts only
     // plain columns and is non-partial (no md5() expression, no WHERE), while
-    // `uniqueIndex()` supports the md5() expression column + partial `.where()`
-    // (cf. `uq_user_favorite_prompts` below) but has no `nullsNotDistinct()`
-    // method. The proposer upserts against it via ON CONFLICT so a concurrent
-    // duplicate observation increments rather than multiplies.
+    // `uniqueIndex()` supports an md5() expression column (cf. the `md5(...)` in
+    // `uq_user_favorite_prompts` below) plus a partial `.where()`, but has no
+    // `nullsNotDistinct()` method. The proposer upserts against it via ON
+    // CONFLICT so a concurrent duplicate observation increments rather than
+    // multiplies.
     check(
       "chk_learned_patterns_status",
       // `applying` is the transient amendment-claim state (#4506) — a DB value

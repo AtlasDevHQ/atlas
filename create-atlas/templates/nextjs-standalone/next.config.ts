@@ -32,6 +32,13 @@ const nextConfig: NextConfig = {
   // see `scripts/check-security-headers-drift.sh`, which fails CI on drift.
   // SECURITY-HEADERS-START
   async headers() {
+    // In dev, Turbopack serves `/_next/static/*` chunks under STABLE (unhashed)
+    // filenames, so the production `immutable` policy below would pin the
+    // browser to stale chunks across recompiles — broken HMR, and source edits
+    // that silently never reach the running page. Guard it: dev revalidates,
+    // prod keeps `immutable`. `next build` / `next start` set NODE_ENV to
+    // "production"; `next dev` does not.
+    const isDev = process.env.NODE_ENV !== "production";
     const csp = [
       "default-src 'self'",
       "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com",
@@ -106,15 +113,19 @@ const nextConfig: NextConfig = {
       },
       {
         // Hashed asset URLs (`/_next/static/chunks/foo-<hash>.js`) are
-        // content-addressed and safe to cache forever. Next.js sets this by
-        // default for files it serves directly, but declaring it explicitly
-        // here keeps the policy stable regardless of how the standalone server
-        // is wrapped (Railway, Docker, reverse proxies).
+        // content-addressed and safe to cache forever in production. Next.js
+        // sets this by default for files it serves directly, but declaring it
+        // explicitly here keeps the policy stable regardless of how the
+        // standalone server is wrapped (Railway, Docker, reverse proxies).
+        // In dev the filenames are stable but the content is not, so revalidate
+        // instead of pinning `immutable` (see `isDev` at the top of headers()).
         source: "/_next/static/:path*",
         headers: [
           {
             key: "Cache-Control",
-            value: "public, max-age=31536000, immutable",
+            value: isDev
+              ? "no-cache"
+              : "public, max-age=31536000, immutable",
           },
         ],
       },

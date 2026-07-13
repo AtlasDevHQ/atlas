@@ -173,8 +173,20 @@ const QUERY_PATTERN_SCOPE = "type = 'query_pattern'";
 // `NULLIF(u.name, '')` prefers a set display name but falls back to email when
 // the name is blank; the whole expression is null for an unreviewed row or a
 // since-deleted reviewer.
+//
+// The nightly auto-promote job stamps `reviewed_by = 'atlas-auto-promote'` (a
+// sentinel, not a `user.id`) precisely so the audit trail can tell a machine
+// approval from a human one (`AUTO_PROMOTE_REVIEWER`, db/internal.ts). Resolve it
+// to a readable label here — a bare user-id join returns NULL for the sentinel,
+// which the sheet then renders as the misleading "Reviewed by: Unknown" for a row
+// it also badges "Auto-approved". The sentinel is a literal here rather than a
+// value import of `AUTO_PROMOTE_REVIEWER`: importing it would make every test that
+// partially mocks `db/internal` (many, hand-rolled) SyntaxError on the missing
+// export and drop the admin routes. Keep this literal in lockstep with the
+// constant. Found in the #4584 cockpit impeccable pass.
 const REVIEWER_LABEL_SELECT =
-  `(SELECT COALESCE(NULLIF(u.name, ''), u.email) FROM "user" u WHERE u.id = learned_patterns.reviewed_by) AS reviewer_label`;
+  `(CASE WHEN learned_patterns.reviewed_by = 'atlas-auto-promote' THEN 'Atlas auto-promotion' ` +
+  `ELSE (SELECT COALESCE(NULLIF(u.name, ''), u.email) FROM "user" u WHERE u.id = learned_patterns.reviewed_by) END) AS reviewer_label`;
 
 // Per-pattern 30-day injection count (#4573). Scalar correlated subquery over
 // `learned_pattern_injections` — like REVIEWER_LABEL_SELECT, it keeps the

@@ -309,6 +309,32 @@ describe("findMissingJoins", () => {
     expect(results[0].confidence).toBe(0.6);
   });
 
+  test("a join with a missing `sql` doesn't crash the briefing (prod TypeError guard)", () => {
+    // Runtime data carried a join with no `sql` (malformed entity), and the
+    // `j.sql.split("=")` threw `undefined is not an object`, crashing the whole
+    // semantic-improve briefing assembly. One bad join must be skipped, not fatal.
+    const ctx = makeContext({
+      profiles: [makeProfile({
+        table_name: "orders",
+        foreign_keys: [{ from_column: "user_id", to_table: "users", to_column: "id", source: "constraint" }],
+      })],
+      entities: [
+        makeEntity({
+          name: "orders",
+          // The `sql` is absent at runtime despite the type declaring it required.
+          joins: [{ name: "broken" } as ParsedEntity["joins"][number]],
+        }),
+        makeEntity({ name: "users" }),
+      ],
+    });
+
+    // Must not throw; the FK is still suggested because the broken join is skipped
+    // (it contributes no existing target table).
+    const results = findMissingJoins(ctx);
+    expect(results.length).toBe(1);
+    expect(results[0].confidence).toBe(0.95);
+  });
+
   test("recognizes simple `a.x = b.x` joins as existing", () => {
     // Pins the join-SQL parser: a join with the exact `lhs.col = rhs.col`
     // shape must be recognized so the same FK isn't re-suggested.

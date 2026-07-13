@@ -193,6 +193,7 @@ launch oauth-helper-drift        bash scripts/check-oauth-helper-drift.sh
 launch ee-imports                bash scripts/check-ee-imports.sh
 launch twenty-resolver           bash scripts/check-twenty-resolver-imports.sh
 launch no-admin-plugin           bash scripts/check-no-admin-plugin.sh
+launch streaming-cors            bash scripts/check-streaming-cors.sh
 launch no-legacy-connections     bash scripts/check-no-legacy-connections-sql.sh
 launch test-discipline           bash scripts/check-test-discipline.sh
 launch settings-readers          bash scripts/check-settings-readers.sh

@@ -134,6 +134,12 @@ jobs:
       - name: Adversarial fixtures for the web vacuous-type-program guard (#4447/#4450)
         run: bash scripts/__tests__/check-type-program-not-vacuous.test.sh
 
+      - name: Check streaming agent responses attach CORS headers (#2037)
+        run: bash scripts/check-streaming-cors.sh
+
+      - name: Adversarial fixtures for the streaming-CORS gate (#2037)
+        run: bash scripts/__tests__/check-streaming-cors.test.sh
+
       - name: Check no legacy `connections` / `connection_groups` SQL outside migrations (#2744)
         run: bash scripts/check-no-legacy-connections-sql.sh
 

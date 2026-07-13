@@ -243,11 +243,18 @@ export function findMissingJoins(ctx: AnalysisContext): AnalysisResult[] {
     for (const entity of findEntitiesForTable(ctx.entities, profile.table_name)) {
       const existingJoinTables = new Set(
         entity.joins.map((j) => {
+          // Runtime data can carry a join with no `sql` (a malformed/partial
+          // entity), despite the type declaring `sql: string` — a `.split` on it
+          // throws `undefined is not an object` and crashes the whole briefing
+          // (prod TypeError, seen on the improve chat). One bad join must not sink
+          // the briefing: treat a non-string sql as "no target table" and skip it.
+          const joinSql = (j as { sql?: string }).sql;
+          if (typeof joinSql !== "string") return "";
           // Extract target table from join SQL like "table_a.col = table_b.col".
           // Split on the literal `=` (not `\s*=\s*`) and trim each side instead —
           // a `\s*` quantifier in a split regex tries every position, giving
           // O(n²) on inputs of long whitespace runs (CodeQL js/polynomial-redos).
-          const parts = j.sql.split("=");
+          const parts = joinSql.split("=");
           if (parts.length !== 2) return "";
           const lhs = parts[0].trim().match(/^(\w+)\.\w+$/);
           const rhs = parts[1].trim().match(/^(\w+)\.\w+$/);

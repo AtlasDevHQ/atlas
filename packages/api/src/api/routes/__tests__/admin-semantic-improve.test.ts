@@ -390,6 +390,25 @@ describe("admin-semantic-improve", () => {
       });
     }
 
+    it("attaches CORS headers to the streamed response (raw Response bypasses the middleware)", async () => {
+      // The streaming Response created by createUIMessageStreamResponse skips the
+      // CORS middleware (whose queued headers only merge onto c.json/c.body), so
+      // a cross-origin POST would arrive without Access-Control-Allow-Origin and
+      // the browser blocks it even though the preflight passed. Regression guard
+      // for the improve chat missing the corsResponseHeaders() spread chat.ts/
+      // demo.ts both carry (#2037).
+      const res = await adminSemanticImprove.request("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: "https://app.useatlas.dev" },
+        body: JSON.stringify({
+          messages: [{ id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      // Present (either the echoed origin or the wildcard, per the resolved config).
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBeTruthy();
+    });
+
     it("runs the expert agent with the persona in the role position, never as a warning", async () => {
       const res = await postChat();
       expect(res.status).toBe(200);

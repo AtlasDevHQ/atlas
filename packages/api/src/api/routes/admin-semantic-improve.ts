@@ -20,6 +20,7 @@ import {
 } from "ai";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { corsResponseHeaders } from "@atlas/api/lib/cors";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import type { Context as HonoContext } from "hono";
 import { runAgent } from "@atlas/api/lib/agent";
@@ -284,6 +285,12 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
             headers: {
               "X-Accel-Buffering": "no",
               "Cache-Control": "no-cache, no-transform",
+              // A raw streaming Response bypasses the CORS middleware (whose queued
+              // headers only merge onto c.json/c.body responses), so a cross-origin
+              // POST would arrive without Access-Control-Allow-Origin and the browser
+              // blocks it even though the preflight passed. Re-attach the CORS headers
+              // here, exactly as chat.ts / demo.ts do for their streams (#2037).
+              ...corsResponseHeaders(c.req.header("Origin") ?? ""),
             },
           });
         } catch (err) {

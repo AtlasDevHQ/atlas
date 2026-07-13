@@ -233,11 +233,23 @@ billing.openapi(getBillingStatusRoute, async (c) => {
     // agent loop resolves FIRST — both the BYOT rows and the billing page's
     // gateway-on-platform-credits picks live there (#4645). Read failures
     // degrade to the platform-default path rather than failing the page.
+    // Known display gap on this fallback: for a BYOT workspace, a transient
+    // read failure makes the page show the platform default while the row
+    // copy still says "managed by your provider configuration" (plan.byot is
+    // independent of this read). Accepted for now — the agent loop degrades
+    // the same way on its raw read (lib/agent.ts), so display and engine
+    // stay in lockstep; a `currentModelDegraded` wire field would be the
+    // full fix. The `tag` in the log keeps an EnterpriseError (licensing
+    // misconfiguration) distinguishable from a DB blip.
     const workspaceModelConfigEffect = ModelRouter.pipe(
       Effect.flatMap((router) => router.getWorkspaceModelConfig(orgId)),
       Effect.catchAll((err) => {
         log.warn(
-          { err: err instanceof Error ? err.message : String(err), orgId },
+          {
+            err: err instanceof Error ? err.message : String(err),
+            tag: typeof err === "object" && err !== null && "_tag" in err ? String((err as { _tag: unknown })._tag) : undefined,
+            orgId,
+          },
           "Failed to read workspace model config for billing page — falling back to platform default",
         );
         return Effect.succeed(null);

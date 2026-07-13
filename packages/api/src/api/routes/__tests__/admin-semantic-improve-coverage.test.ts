@@ -82,6 +82,8 @@ void mock.module("@atlas/api/lib/semantic/connection-profile", () => ({
   upsertBaselineProfile: async () => {},
   recordBaselineError: async () => {},
   recordLlmProfileRun: async () => {},
+  claimBaselineSlot: async () => true,
+  BASELINE_CLAIM_TTL_SECONDS: 300,
 }));
 
 void mock.module("@atlas/api/lib/datasources/connection-baseline", () => ({

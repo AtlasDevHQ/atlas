@@ -290,10 +290,31 @@ describe("ensureConnectionBaseline — lazy backfill", () => {
     ];
     const state = await ensureConnectionBaseline(
       { orgId: "org_1", installId: "cn", dbType: "postgres" },
-      { resolveConnection: okResolver(conn) },
+      { resolveConnection: okResolver(conn), claimSlot: async () => true },
     );
     expect(dbCalls.some((c) => c.sql.includes("INSERT INTO connection_profile_state"))).toBe(true);
     expect(state?.baseline?.tableCount).toBe(1);
+  });
+
+  it("does NOT run a profile when the in-flight claim is lost (a peer attempt is already running)", async () => {
+    // The atomic claim (migration 0174) is what stops the coverage view's 4s poll
+    // from launching overlapping profiles: a lost claim means someone else holds a
+    // fresh one, so this call returns the current state WITHOUT re-profiling.
+    let resolved = false;
+    selectRows = [[]]; // 1st read: no baseline yet
+    const state = await ensureConnectionBaseline(
+      { orgId: "org_1", installId: "cn", dbType: "postgres" },
+      {
+        resolveConnection: async () => {
+          resolved = true;
+          return { kind: "not_found" };
+        },
+        claimSlot: async () => false, // claim lost — another attempt in flight
+      },
+    );
+    expect(resolved).toBe(false); // no live-connection work
+    expect(dbCalls.every((c) => !c.sql.includes("INSERT INTO"))).toBe(true);
+    expect(state).toBeNull(); // returns the (unbaselined) existing state
   });
 
   it("re-attempts when the last baseline only FAILED (error row, no success facts)", async () => {
@@ -324,6 +345,7 @@ describe("ensureConnectionBaseline — lazy backfill", () => {
           resolved = true;
           return okResolver(conn)();
         },
+        claimSlot: async () => true,
       },
     );
     expect(resolved).toBe(true); // retried

@@ -144,6 +144,36 @@ describe("ConnectionCoverageSection — all three states + summary (AC1)", () =>
   });
 });
 
+describe("ConnectionCoverageSection — row is labelled by connection identity, not just group", () => {
+  test("a group member shows its own install id plus the shared group as context", () => {
+    // A 3-region `g_prod` group renders one row per member; each must be
+    // distinguishable, so the label leads with the connection id and shows the
+    // group only as context.
+    const { getByText } = render(
+      createElement(ConnectionCoverageSection, {
+        connection: connection({ installId: "eu-prod", group: "g_prod" }),
+        onColumnAnchor: () => {},
+        disabled: false,
+      }),
+    );
+    expect(getByText("eu-prod")).toBeDefined();
+    expect(getByText("g_prod")).toBeDefined();
+  });
+
+  test("a group-of-one (group === installId) does not repeat the group as context", () => {
+    const { getByText, queryByText } = render(
+      createElement(ConnectionCoverageSection, {
+        connection: connection({ installId: "solo", group: "solo" }),
+        onColumnAnchor: () => {},
+        disabled: false,
+      }),
+    );
+    expect(getByText("solo")).toBeDefined();
+    // No redundant "group solo" context label.
+    expect(queryByText(/^group$/)).toBeNull();
+  });
+});
+
 describe("ConnectionCoverageSection — uncovered routes to enrich, never an amendment (ADR-0032)", () => {
   test("an uncovered table exposes an Enrich deep-link and no add-entity affordance", () => {
     const uncovered = connection({

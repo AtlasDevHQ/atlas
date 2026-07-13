@@ -603,6 +603,12 @@ export const connectionProfileState = pgTable(
     baselineTableCount: integer("baseline_table_count"),
     baselineProfiledAt: timestamp("baseline_profiled_at", { withTimezone: true }),
     baselineError: text("baseline_error"),
+    // In-flight claim marker (migration 0174) — stamped before a baseline profile
+    // run, cleared to NULL on either terminal outcome (success upsert / recorded
+    // error). The atomic `claimBaselineSlot` UPSERT keys on it so poll-driven
+    // backfill calls collapse to one running profile per connection across
+    // replicas (the coverage re-storm fix).
+    baselineStartedAt: timestamp("baseline_started_at", { withTimezone: true }),
     // LLM tier — enrichment run tracking (never automatic, billing-gated).
     llmProfiledAt: timestamp("llm_profiled_at", { withTimezone: true }),
     llmProfileScope: jsonb("llm_profile_scope"),

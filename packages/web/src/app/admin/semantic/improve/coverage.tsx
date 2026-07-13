@@ -255,11 +255,23 @@ export function ConnectionCoverageSection({
     <div className="space-y-2">
       <div className="flex items-center gap-2 text-sm">
         <Database className="size-4 opacity-70" />
-        <span className="font-medium">{connection.group}</span>
+        {/*
+         * Label each row by the CONNECTION identity, not just the group: a group
+         * with several members (e.g. a 3-region `g_prod` of `us-prod`/`eu-prod`/
+         * `apac-prod`) otherwise renders as identical-looking duplicate rows. The
+         * group is shown as shared context only when it differs from the
+         * connection id (a group-of-one collapses `group === installId`).
+         */}
+        <span className="font-mono font-medium">{connection.installId}</span>
         {connection.dbType && (
           <Badge variant="secondary" className="text-[10px]">
             {connection.dbType}
           </Badge>
+        )}
+        {connection.group !== connection.installId && (
+          <span className="text-[11px] text-muted-foreground">
+            group <span className="font-mono">{connection.group}</span>
+          </span>
         )}
         {connection.freshness && (
           <span className="text-[11px] text-muted-foreground">{connection.freshness}</span>

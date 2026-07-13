@@ -222,7 +222,10 @@ describe("runMigrations", () => {
     //   status/type CHECK constraints, #4572) = 173.
     //   Plus 0173 (learned_pattern_injections — per-turn injection attribution
     //   substrate + per-pattern usage counts, #4573) = 174.
-    expect(count).toBe(174);
+    //   Plus 0174 (connection_profile_state.baseline_started_at — in-flight claim
+    //   marker collapsing the coverage view's poll-driven baseline backfill to one
+    //   running profile per connection, re-storm fix) = 175.
+    expect(count).toBe(175);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -425,6 +428,7 @@ describe("runMigrations", () => {
         "0171_connection_profile_state.sql",
         "0172_learned_patterns_identity.sql",
         "0173_learned_pattern_injections.sql",
+        "0174_connection_profile_baseline_started_at.sql",
       ],
     });
 

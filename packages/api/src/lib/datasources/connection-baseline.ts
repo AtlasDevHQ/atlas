@@ -33,6 +33,7 @@ import type {
   ResolveLiveConnectionResult,
 } from "@atlas/api/lib/datasources/mcp-lifecycle";
 import {
+  claimBaselineSlot,
   getConnectionProfileState,
   recordBaselineError,
   upsertBaselineProfile,
@@ -196,11 +197,25 @@ export async function runBaselineProfile(
  * load), not on every conversational turn. This is one connection on demand, NOT
  * a bulk sweep. Returns `null` when there's no internal DB. Never throws
  * ({@link runBaselineProfile} is total).
+ *
+ * IN-FLIGHT DEDUP (migration 0174): before profiling, an atomic
+ * {@link claimBaselineSlot} claims the connection. If the claim is lost — another
+ * caller (this poll, another replica) already has a fresh claim in flight — this
+ * returns the current state WITHOUT running a second profile. This is what stops
+ * the coverage view's 4-second poll from launching overlapping full-schema
+ * profiles that exhaust the target database's connection limit; the DB claim (not
+ * an in-process mutex) makes the dedup hold across replicas.
  */
 export async function ensureConnectionBaseline(
   target: BaselineProfileTarget,
   deps: {
     resolveConnection?: (orgId: string, installId: string) => Promise<ResolveLiveConnectionResult>;
+    claimSlot?: (input: {
+      orgId: string | null;
+      installId: string;
+      connectionGroupId?: string | null;
+      dbType: string;
+    }) => Promise<boolean>;
   } = {},
 ): Promise<ConnectionProfileState | null> {
   // Total by contract: the two state reads (not just the profile run) are
@@ -210,6 +225,16 @@ export async function ensureConnectionBaseline(
   try {
     const existing = await getConnectionProfileState(target.orgId, target.installId);
     if (existing?.baseline) return existing; // successful baseline already — no re-run
+    // Claim the in-flight slot atomically. A lost claim means another attempt is
+    // already running (this poll re-fired, or a peer replica) — do NOT re-storm.
+    const claimSlot = deps.claimSlot ?? claimBaselineSlot;
+    const claimed = await claimSlot({
+      orgId: target.orgId,
+      installId: target.installId,
+      connectionGroupId: target.connectionGroupId,
+      dbType: target.dbType,
+    });
+    if (!claimed) return existing;
     await runBaselineProfile(target, deps);
     return await getConnectionProfileState(target.orgId, target.installId);
   } catch (err) {

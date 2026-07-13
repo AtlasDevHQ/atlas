@@ -299,10 +299,6 @@ export function buildInternalDbMockDefaults(deps: {
     // Remaining named exports with no behavior worth faking — present so
     // a transitive `import { x }` never SyntaxErrors at load time.
     MANAGED_AUTH_MIGRATIONS: [],
-    // Auto-promote reviewer sentinel (mirrors the real value) — the learned-
-    // patterns route interpolates it into REVIEWER_LABEL_SELECT, so the mock
-    // must carry the same literal, not just a placeholder.
-    AUTO_PROMOTE_REVIEWER: "atlas-auto-promote",
     _hasRecoveryFiber: () => false,
     makeInternalDBLive: () => Layer.succeed(MockInternalDB, {
       sql: null,

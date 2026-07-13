@@ -12,7 +12,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { internalQuery, queryEffect, amendmentOrgScope, AUTO_PROMOTE_REVIEWER, type AmendmentOrgScope } from "@atlas/api/lib/db/internal";
+import { internalQuery, queryEffect, amendmentOrgScope, type AmendmentOrgScope } from "@atlas/api/lib/db/internal";
 import { REPEATED_PATTERN_MIN_REPETITIONS } from "@atlas/api/lib/learn/pattern-tiers";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import {
@@ -174,15 +174,18 @@ const QUERY_PATTERN_SCOPE = "type = 'query_pattern'";
 // the name is blank; the whole expression is null for an unreviewed row or a
 // since-deleted reviewer.
 //
-// The nightly auto-promote job stamps `reviewed_by = AUTO_PROMOTE_REVIEWER` (a
+// The nightly auto-promote job stamps `reviewed_by = 'atlas-auto-promote'` (a
 // sentinel, not a `user.id`) precisely so the audit trail can tell a machine
-// approval from a human one (db/internal.ts). Resolve it to a readable label
-// here — a bare user-id join returns NULL for the sentinel, which the sheet then
-// renders as the misleading "Reviewed by: Unknown" for a row it also badges
-// "Auto-approved". Interpolating the trusted compile-time constant (never user
-// input) keeps the two in lockstep. Found in the #4584 cockpit impeccable pass.
+// approval from a human one (`AUTO_PROMOTE_REVIEWER`, db/internal.ts). Resolve it
+// to a readable label here — a bare user-id join returns NULL for the sentinel,
+// which the sheet then renders as the misleading "Reviewed by: Unknown" for a row
+// it also badges "Auto-approved". The sentinel is a literal here rather than a
+// value import of `AUTO_PROMOTE_REVIEWER`: importing it would make every test that
+// partially mocks `db/internal` (many, hand-rolled) SyntaxError on the missing
+// export and drop the admin routes. Keep this literal in lockstep with the
+// constant. Found in the #4584 cockpit impeccable pass.
 const REVIEWER_LABEL_SELECT =
-  `(CASE WHEN learned_patterns.reviewed_by = '${AUTO_PROMOTE_REVIEWER}' THEN 'Atlas auto-promotion' ` +
+  `(CASE WHEN learned_patterns.reviewed_by = 'atlas-auto-promote' THEN 'Atlas auto-promotion' ` +
   `ELSE (SELECT COALESCE(NULLIF(u.name, ''), u.email) FROM "user" u WHERE u.id = learned_patterns.reviewed_by) END) AS reviewer_label`;
 
 // Per-pattern 30-day injection count (#4573). Scalar correlated subquery over

@@ -177,7 +177,15 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
   return (
     <SidebarProvider className="!min-h-0 h-full">
       <AdminSidebar />
-      <SidebarInset id="main" tabIndex={-1}>
+      {/*
+        `min-w-0` lets this flex column shrink below its content's intrinsic
+        width. Without it a flex item defaults to `min-width: auto` (min-content
+        ≈ the widest child), so a wide admin table forces the whole main column
+        past the viewport's right edge instead of the table scrolling inside its
+        own card. With `min-w-0` the column stays within the available width and
+        the table's internal `overflow-x-auto` handles the overflow.
+      */}
+      <SidebarInset id="main" tabIndex={-1} className="min-w-0">
         <AdminTopBar />
         <ScrollArea className="flex-1">
           {gateBlocking ? (

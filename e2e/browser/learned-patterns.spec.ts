@@ -249,9 +249,8 @@ test.describe("learned-patterns cockpit — full curation loop", () => {
 
     // Discoverability: land on a sibling Intelligence page (the group is expanded
     // there), follow the Learned Patterns nav entry to the cockpit, and see the
-    // seeded queue. NOTE: the numeric pending-count BADGE glyph does not render
-    // even when the count is > 0 — filed separately (cockpit-visibility); this
-    // leg asserts the endpoint + the nav entry that feed it, not the badge glyph.
+    // seeded queue. This leg asserts the endpoint + the nav entry; the badge
+    // glyph itself is asserted by the dedicated test below (#4639).
     await page.goto("/admin/prompts");
     const navLink = page.getByRole("link", { name: "Learned Patterns" });
     await expect(navLink).toBeVisible();
@@ -259,6 +258,63 @@ test.describe("learned-patterns cockpit — full curation loop", () => {
     await expect(page).toHaveURL(/\/admin\/learned-patterns/);
     await expect(seededRow(page, "nav-a")).toBeVisible();
     await expect(seededRow(page, "nav-b")).toBeVisible();
+  });
+
+  // #4639 — the badge GLYPH. The test above asserts the endpoint feeding the
+  // badge; this asserts the badge actually reaches the DOM (the count > 0 render
+  // that was never tested, which is why a missing badge slipped). Land on a
+  // sibling Intelligence page so the group is expanded and the sub-entry + its
+  // badge are in the DOM (mirrors the discoverability leg above).
+  test("the nav badge renders the pending-count glyph (#4639)", async ({ page }) => {
+    await withInternalDb(async (c) => {
+      await seedPattern(c, orgId, { tag: "badge-a", confidence: 0.4 });
+      await seedPattern(c, orgId, { tag: "badge-b", confidence: 0.6 });
+    });
+    await page.goto("/admin/prompts");
+    const navLink = page.getByRole("link", { name: /Learned Patterns/ });
+    await expect(navLink).toBeVisible();
+    // The badge is the rounded-full count span inside the nav link (#4578). The
+    // poll fires on mount; give it a moment to resolve and paint the glyph.
+    await expect(navLink.locator("span.rounded-full")).toHaveText("2");
+  });
+
+  // Layout regression: a wide table must scroll INSIDE its own card, never push
+  // the admin content column past the viewport's right edge. The flex content
+  // column (`SidebarInset`) needs `min-w-0` — without it a flex item's default
+  // `min-width: auto` (min-content ≈ the widest child) makes a wide table force
+  // the whole column ~sidebar-width off-screen to the right. Asserts the table
+  // container stays within the viewport while still scrolling its overflow.
+  test("a wide table stays within the viewport, scrolling inside its card (not off-screen)", async ({ page }) => {
+    await withInternalDb(async (c) => {
+      // Several rows so the full (wide) column set renders.
+      for (let i = 0; i < 4; i++) {
+        await seedPattern(c, orgId, { tag: `wide-${i}`, confidence: 0.3 + i * 0.1, avgDurationMs: 500 + i });
+      }
+    });
+    await page.goto("/admin/learned-patterns");
+    await expect(seededRow(page, "wide-0")).toBeVisible();
+
+    const metrics = await page.evaluate(() => {
+      const el = document.querySelector('[data-slot="table-container"]') as HTMLElement | null;
+      const inset = document.querySelector('[data-slot="sidebar-inset"]') as HTMLElement | null;
+      const de = document.documentElement;
+      return {
+        viewport: window.innerWidth,
+        docOverflowPx: de.scrollWidth - de.clientWidth,
+        containerRight: el ? Math.round(el.getBoundingClientRect().right) : null,
+        insetRight: inset ? Math.round(inset.getBoundingClientRect().right) : null,
+        scrollsInternally: el ? el.scrollWidth > el.clientWidth : null,
+      };
+    });
+
+    // The whole page never gains a horizontal scrollbar…
+    expect(metrics.docOverflowPx).toBeLessThanOrEqual(1);
+    // …and the content column + table card stay within the screen (the bug put
+    // them ~256px past the right edge).
+    expect(metrics.insetRight).toBeLessThanOrEqual(metrics.viewport + 1);
+    expect(metrics.containerRight).toBeLessThanOrEqual(metrics.viewport + 1);
+    // The wide content is still fully reachable — it scrolls inside the card.
+    expect(metrics.scrollsInternally).toBe(true);
   });
 
   test("sorting by confidence reorders the queue (server-driven sort param + visual order)", async ({ page }) => {

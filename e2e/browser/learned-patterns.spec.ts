@@ -294,27 +294,26 @@ test.describe("learned-patterns cockpit — full curation loop", () => {
     await page.goto("/admin/learned-patterns");
     await expect(seededRow(page, "wide-0")).toBeVisible();
 
-    const metrics = await page.evaluate(() => {
-      const el = document.querySelector('[data-slot="table-container"]') as HTMLElement | null;
-      const inset = document.querySelector('[data-slot="sidebar-inset"]') as HTMLElement | null;
-      const de = document.documentElement;
-      return {
-        viewport: window.innerWidth,
-        docOverflowPx: de.scrollWidth - de.clientWidth,
-        containerRight: el ? Math.round(el.getBoundingClientRect().right) : null,
-        insetRight: inset ? Math.round(inset.getBoundingClientRect().right) : null,
-        scrollsInternally: el ? el.scrollWidth > el.clientWidth : null,
-      };
-    });
+    // Measure via Playwright locators (boundingBox / typed `el` in
+    // locator.evaluate) rather than bare DOM globals — the e2e type program
+    // has no `dom` lib, so `document`/`window` don't type-check in a callback.
+    const viewport = page.viewportSize()!.width;
+    const insetBox = await page.locator('[data-slot="sidebar-inset"]').boundingBox();
+    const container = page.locator('[data-slot="table-container"]');
+    const containerBox = await container.boundingBox();
+    const docOverflowPx = await page
+      .locator("html")
+      .evaluate((el) => el.scrollWidth - el.clientWidth);
+    const scrollsInternally = await container.evaluate((el) => el.scrollWidth > el.clientWidth);
 
     // The whole page never gains a horizontal scrollbar…
-    expect(metrics.docOverflowPx).toBeLessThanOrEqual(1);
+    expect(docOverflowPx).toBeLessThanOrEqual(1);
     // …and the content column + table card stay within the screen (the bug put
     // them ~256px past the right edge).
-    expect(metrics.insetRight).toBeLessThanOrEqual(metrics.viewport + 1);
-    expect(metrics.containerRight).toBeLessThanOrEqual(metrics.viewport + 1);
+    expect(Math.round(insetBox!.x + insetBox!.width)).toBeLessThanOrEqual(viewport + 1);
+    expect(Math.round(containerBox!.x + containerBox!.width)).toBeLessThanOrEqual(viewport + 1);
     // The wide content is still fully reachable — it scrolls inside the card.
-    expect(metrics.scrollsInternally).toBe(true);
+    expect(scrollsInternally).toBe(true);
   });
 
   test("sorting by confidence reorders the queue (server-driven sort param + visual order)", async ({ page }) => {

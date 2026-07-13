@@ -68,7 +68,7 @@ void mock.module("@/components/ui/separator", () => {
   return { Separator: () => React.createElement("hr") };
 });
 
-import { render } from "@testing-library/react";
+import { render, waitFor, within } from "@testing-library/react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AtlasProvider, type AtlasAuthClient } from "../context";
 import { AdminSidebar } from "../components/admin/admin-sidebar";
@@ -178,5 +178,35 @@ describe("AdminSidebar", () => {
   test("polls the learned-patterns reviewable-pending count for an admin, not for a non-admin", () => {
     expect(renderWithFetchSpy(AdminWrapper).polledLearnedCount).toBe(true);
     expect(renderWithFetchSpy(Wrapper).polledLearnedCount).toBe(false);
+  });
+
+  // #4639 — the poll requesting the count is necessary but not sufficient: the
+  // returned count must actually reach the render as a badge glyph. The other
+  // learned-patterns tests mock `count: 0` and only assert the request fired, so
+  // badge *rendering with count > 0* was untested — which is why the missing
+  // badge slipped. This renders with the endpoint returning a non-zero count and
+  // asserts the badge span appears on the Learned Patterns entry.
+  test("renders the learned-patterns pending badge when the count endpoint returns > 0 (#4639)", async () => {
+    const fetchSpy = mock(async (url: string | URL) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ count: String(url).includes(LEARNED_PENDING_COUNT_URL) ? 2 : 0 }),
+    }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const { container } = render(<AdminSidebar />, { wrapper: AdminWrapper });
+      const link = await waitFor(() => {
+        const el = container.querySelector('a[href="/admin/learned-patterns"]');
+        if (!el) throw new Error("learned-patterns nav entry not rendered");
+        return el as HTMLElement;
+      });
+      // The badge glyph shows the count once the poll resolves.
+      await waitFor(() => {
+        expect(within(link).getByText("2")).toBeTruthy();
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

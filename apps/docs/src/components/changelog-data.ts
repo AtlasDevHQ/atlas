@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.54",
+    title: "Improve Chat CORS Hotfix",
+    date: "2026-07-13",
+    summary:
+      "Fixes the Semantic-Layer improvement chat failing to start in the hosted app. Its streaming response was skipping the layer that adds the browser's cross-origin permission header, so the browser blocked every request even though the request itself was valid — the same wiring the main chat and demo chat already have, which this newer endpoint had missed. A CI guard now makes it impossible for a future streaming endpoint to ship without that header. Also hardens the improvement briefing so a single malformed table join can no longer crash the context it front-loads into the chat.",
+    highlights: [
+      "The Semantic-Layer improvement chat starts again in the hosted app — the streaming response now carries the cross-origin header the browser requires",
+      "Added a CI guard so any new streaming endpoint that forgets its CORS headers fails the build instead of breaking in production",
+      "Hardened improvement-briefing assembly against a malformed join definition that could crash the front-loaded context",
+    ],
+  },
+  {
     version: "v0.0.53",
     title: "Coverage Backfill Re-storm Hotfix",
     date: "2026-07-13",

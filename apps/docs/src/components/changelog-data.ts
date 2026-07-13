@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.53",
+    title: "Coverage Backfill Re-storm Hotfix",
+    date: "2026-07-13",
+    summary:
+      "Fixes the Semantic-Improve coverage screen quietly overloading your own database. When you opened it, Atlas scanned each connection's schema and re-checked every few seconds while waiting — but each re-check kicked off a brand-new scan without noticing one was already running, so scans piled up until the database ran out of connection slots and started rejecting them. A group with several connections (e.g. multi-region) was hit hardest. The scan now takes a one-at-a-time lock per connection, so opening the screen does one lightweight pass instead of a stampede, and each row is labelled by its connection name so members of a group no longer look like duplicate groups.",
+    highlights: [
+      "Opening the coverage screen no longer floods a connection's database with overlapping schema scans (no more 'too many clients already')",
+      "Each connection is profiled once at a time — an atomic in-flight claim collapses the every-few-seconds re-checks to a single scan, and holds across regions",
+      "Coverage rows now show the connection name (with the group as context), so a multi-connection group stops rendering as identical-looking duplicate rows",
+    ],
+  },
+  {
     version: "v0.0.52",
     title: "Billing Subscription Query Hotfix",
     date: "2026-07-13",

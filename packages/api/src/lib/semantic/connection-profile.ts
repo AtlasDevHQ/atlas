@@ -82,9 +82,13 @@ function normGroup(connectionGroupId: string | null | undefined): string | null 
 /**
  * Default staleness TTL for an in-flight baseline claim (seconds). A claim older
  * than this is treated as ABANDONED (a crashed/killed run) and re-claimable, so a
- * connection can never wedge permanently in "profiling". Sized comfortably above a
- * real baseline run (a ~120-table schema profiled in a few minutes) so a genuinely
- * in-flight run is never mistaken for abandoned.
+ * connection can never wedge permanently in "profiling".
+ *
+ * INVARIANT: this MUST stay above the worst-case real profile duration. A run that
+ * legitimately exceeds the TTL is mistaken for abandoned and re-claimed while still
+ * live, re-admitting one overlapping profile per TTL — a bounded partial return of
+ * the re-storm. 300s clears a ~120-table schema (profiled in a few minutes) with
+ * margin; a much larger warehouse would need this raised (or a progress heartbeat).
  */
 export const BASELINE_CLAIM_TTL_SECONDS = 300;
 

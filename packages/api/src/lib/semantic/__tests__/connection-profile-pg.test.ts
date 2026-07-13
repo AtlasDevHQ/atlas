@@ -29,6 +29,7 @@ import {
   type InternalPool,
 } from "@atlas/api/lib/db/internal";
 import {
+  claimBaselineSlot,
   upsertBaselineProfile,
   recordBaselineError,
   recordLlmProfileRun,
@@ -176,6 +177,57 @@ describeIfPg("connection profile-tier store — live Postgres round-trip (#4509)
     const state = await getConnectionProfileState(null, installId);
     expect(state?.baseline?.tableCount).toBe(1);
     expect(state?.llm?.scope).toEqual({ tables: ["t"] });
+  });
+
+  // ── The in-flight claim (migration 0174) — the re-storm fix's core invariant.
+  // String-matching the guarded UPSERT proves intent but CANNOT prove the WHERE
+  // predicate + `make_interval` TTL actually gate concurrent claims; a drift there
+  // silently lets two profiles run and reinstates the `too many clients` re-storm
+  // with every unit test green. These execute the real UPSERT to pin it.
+
+  it("claimBaselineSlot: a fresh claim is won once, then blocked while it is held", async () => {
+    const orgId = `org-${Math.floor(Math.random() * 1e9)}`;
+    const installId = "cn_claim";
+    // First claim on a brand-new connection wins (INSERT).
+    expect(await claimBaselineSlot({ orgId, installId, connectionGroupId: "g", dbType: "postgres" })).toBe(true);
+    // A second claim while the first is fresh is BLOCKED — this is the dedup that
+    // stops the 4s poll from launching a second overlapping profile.
+    expect(await claimBaselineSlot({ orgId, installId, dbType: "postgres" })).toBe(false);
+    // Exactly one row exists (the claim didn't duplicate).
+    const rows = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM connection_profile_state WHERE org_id = $1 AND install_id = $2`,
+      [orgId, installId],
+    );
+    expect(rows.rows[0].n).toBe("1");
+  });
+
+  it("claimBaselineSlot: a claim older than the TTL is re-claimable (a crashed run self-heals)", async () => {
+    const orgId = `org-${Math.floor(Math.random() * 1e9)}`;
+    const installId = "cn_stale";
+    expect(await claimBaselineSlot({ orgId, installId, dbType: "postgres" })).toBe(true);
+    expect(await claimBaselineSlot({ orgId, installId, dbType: "postgres" })).toBe(false); // fresh → blocked
+    // Age the claim past the TTL (simulate an abandoned/crashed run) deterministically.
+    await pool.query(
+      `UPDATE connection_profile_state SET baseline_started_at = now() - interval '10 minutes'
+        WHERE org_id = $1 AND install_id = $2`,
+      [orgId, installId],
+    );
+    // Default TTL is 300s; a 10-minute-old claim is abandoned → re-claimable.
+    expect(await claimBaselineSlot({ orgId, installId, dbType: "postgres" })).toBe(true);
+  });
+
+  it("claimBaselineSlot: an error releases the claim (re-attemptable); a success blocks it permanently", async () => {
+    const orgId = `org-${Math.floor(Math.random() * 1e9)}`;
+    const installId = "cn_lifecycle";
+    // Claim → fail → the recorded error must RELEASE the claim so a fixed
+    // connection re-attempts on the next need.
+    expect(await claimBaselineSlot({ orgId, installId, dbType: "postgres" })).toBe(true);
+    await recordBaselineError({ orgId, installId, dbType: "postgres", error: "permission denied" });
+    expect(await claimBaselineSlot({ orgId, installId, dbType: "postgres" })).toBe(true); // released → re-claimable
+    // A successful baseline must BLOCK all further claims permanently (the
+    // `baseline_profiled_at IS NULL` guard) — no re-storm once profiled.
+    await upsertBaselineProfile({ orgId, installId, dbType: "postgres", profiles: [fakeProfile("orders")] });
+    expect(await claimBaselineSlot({ orgId, installId, dbType: "postgres" })).toBe(false);
   });
 
   it("listConnectionProfileStates scopes to the workspace", async () => {

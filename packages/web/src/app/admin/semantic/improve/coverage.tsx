@@ -260,7 +260,8 @@ export function ConnectionCoverageSection({
          * with several members (e.g. a 3-region `g_prod` of `us-prod`/`eu-prod`/
          * `apac-prod`) otherwise renders as identical-looking duplicate rows. The
          * group is shown as shared context only when it differs from the
-         * connection id (a group-of-one collapses `group === installId`).
+         * connection id — a connection with no explicit `group_id` defaults its
+         * wire `group` to the `installId` (COALESCE), so the label is suppressed.
          */}
         <span className="font-mono font-medium">{connection.installId}</span>
         {connection.dbType && (

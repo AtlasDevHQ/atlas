@@ -161,16 +161,20 @@ describe("ConnectionCoverageSection — row is labelled by connection identity, 
   });
 
   test("a group-of-one (group === installId) does not repeat the group as context", () => {
-    const { getByText, queryByText } = render(
+    const { getByText, getAllByText, queryByText } = render(
       createElement(ConnectionCoverageSection, {
         connection: connection({ installId: "solo", group: "solo" }),
         onColumnAnchor: () => {},
         disabled: false,
       }),
     );
+    // The identity renders exactly once — not once as the label AND again as a
+    // redundant group-context chip.
+    expect(getAllByText("solo")).toHaveLength(1);
+    // The "group" context word (rendered as a `group <mono>` span when shown) is
+    // absent entirely.
     expect(getByText("solo")).toBeDefined();
-    // No redundant "group solo" context label.
-    expect(queryByText(/^group$/)).toBeNull();
+    expect(queryByText(/group/)).toBeNull();
   });
 });
 

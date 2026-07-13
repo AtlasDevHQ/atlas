@@ -98,7 +98,7 @@ describe("profileConnectionOnCreate — the on-create hook seam", () => {
     const runBaseline = mock(async () => {});
     const decision = await profileConnectionOnCreate(
       { orgId: "org_1", installId: "cn_pg", connectionGroupId: "g", dbType: "postgres" },
-      { resolveCapability: async () => native, runBaseline },
+      { resolveCapability: async () => native, runBaseline, claimSlot: async () => true },
     );
     expect(decision).toEqual({ action: "scheduled" });
     expect(runBaseline).toHaveBeenCalledTimes(1);
@@ -108,6 +108,18 @@ describe("profileConnectionOnCreate — the on-create hook seam", () => {
       connectionGroupId: "g",
       dbType: "postgres",
     });
+  });
+
+  it("skips scheduling when the in-flight claim is lost (a peer is already profiling)", async () => {
+    // The claim collapses ALL profile initiators to one: if a concurrent lazy
+    // backfill already holds the claim, the on-create hook does NOT double-profile.
+    const runBaseline = mock(async () => {});
+    const decision = await profileConnectionOnCreate(
+      { orgId: "org_1", installId: "cn_pg", dbType: "postgres" },
+      { resolveCapability: async () => native, runBaseline, claimSlot: async () => false },
+    );
+    expect(decision).toEqual({ action: "skipped", reason: "already-profiling" });
+    expect(runBaseline).not.toHaveBeenCalled();
   });
 
   it("does NOT profile a REST/OpenAPI datasource", async () => {

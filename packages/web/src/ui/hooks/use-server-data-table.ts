@@ -217,7 +217,7 @@ export function useServerDataTable<TData, TResponse = unknown>(
   const total = selected?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / perPage));
 
-  const { table } = useDataTable<TData>({
+  const { table: baseTable } = useDataTable<TData>({
     data: rows,
     columns,
     pageCount,
@@ -227,6 +227,27 @@ export function useServerDataTable<TData, TResponse = unknown>(
     },
     getRowId: opts.getRowId,
   });
+
+  // TanStack's `table` is a stable reference whose row model and state
+  // (selection, pagination, sorting, visibility) mutate in place. Under React
+  // Compiler that stable ref lets memoized consumers (`ServerDataTable` →
+  // `DataTable`) skip re-rendering when only the table's internals change — the
+  // table holds the right rows while the DOM shows stale ones (verified: the
+  // seen-once toggle not un-revealing, selection checkboxes not updating).
+  // TanStack documents a `"use no memo"` opt-out, but that's a Babel-plugin
+  // directive and this app builds with Turbopack (SWC), so we don't rely on it.
+  //
+  // Instead, hand consumers a transparent Proxy of the table whose *reference*
+  // changes whenever a render-relevant slice does — bundler- and
+  // compiler-agnostic. The Proxy forwards every access to the real table (whose
+  // methods close over it, so the data stays live), so behaviour is identical:
+  // only identity-based memoization is defeated, exactly when the table changed.
+  const s = baseTable.getState();
+  const table = React.useMemo(
+    () => new Proxy(baseTable, {}),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deps ARE the render-relevant slices; `baseTable` is stable
+    [baseTable, rows, s.rowSelection, s.pagination, s.sorting, s.columnVisibility, s.columnFilters],
+  );
 
   return {
     ...binding,

@@ -127,11 +127,18 @@ export async function resolveBillingPeriod(
       periodStart: Date | string | null;
       periodEnd: Date | string | null;
     }>(
+      // Better Auth's subscription table has NO updatedAt/createdAt column;
+      // periodStart (newest current-period start) is the right "most recent
+      // subscription" proxy when a workspace carries more than one active row.
+      // Ordering by a non-existent updatedAt threw "column updatedAt does not
+      // exist" (42703) on every call, so this best-effort read ALWAYS hit the
+      // catch and silently fell back to the UTC month. Same fix as
+      // reconcile-plan-tiers.ts.
       `SELECT "periodStart", "periodEnd"
          FROM subscription
         WHERE "referenceId" = $1
           AND status = 'active'
-        ORDER BY "updatedAt" DESC NULLS LAST
+        ORDER BY "periodStart" DESC NULLS LAST
         LIMIT 1`,
       [workspaceId],
     );

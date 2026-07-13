@@ -496,6 +496,11 @@ describe("migrateAuthTables", () => {
             // already-applied set so this "all applied" test sees zero new
             // migrations.
             { name: "0173_learned_pattern_injections.sql" },
+            // 0174 (coverage re-storm fix) — connection_profile_state
+            // .baseline_started_at in-flight claim marker. Additive nullable
+            // column, runs in every auth mode — must be in the already-applied
+            // set so this "all applied" test sees zero new migrations.
+            { name: "0174_connection_profile_baseline_started_at.sql" },
           ],
         };
       }

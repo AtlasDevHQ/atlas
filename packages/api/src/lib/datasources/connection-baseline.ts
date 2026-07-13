@@ -33,6 +33,7 @@ import type {
   ResolveLiveConnectionResult,
 } from "@atlas/api/lib/datasources/mcp-lifecycle";
 import {
+  claimBaselineSlot,
   getConnectionProfileState,
   recordBaselineError,
   upsertBaselineProfile,
@@ -196,11 +197,23 @@ export async function runBaselineProfile(
  * load), not on every conversational turn. This is one connection on demand, NOT
  * a bulk sweep. Returns `null` when there's no internal DB. Never throws
  * ({@link runBaselineProfile} is total).
+ *
+ * IN-FLIGHT DEDUP (migration 0174): before profiling, an atomic
+ * {@link claimBaselineSlot} claims the connection. If the claim is lost — another
+ * caller (this poll, another replica) already has a fresh claim in flight — this
+ * returns the current state WITHOUT running a second profile. This is what stops
+ * the coverage view's 4-second poll from launching overlapping full-schema
+ * profiles that exhaust the target database's connection limit; the DB claim (not
+ * an in-process mutex) makes the dedup hold across replicas.
  */
 export async function ensureConnectionBaseline(
   target: BaselineProfileTarget,
   deps: {
     resolveConnection?: (orgId: string, installId: string) => Promise<ResolveLiveConnectionResult>;
+    // Derived from the concrete signature (minus the caller-irrelevant TTL knob)
+    // so the injectable can't drift from `claimBaselineSlot` — a renamed/added
+    // required field breaks this at compile time rather than at runtime.
+    claimSlot?: (input: Omit<Parameters<typeof claimBaselineSlot>[0], "ttlSeconds">) => Promise<boolean>;
   } = {},
 ): Promise<ConnectionProfileState | null> {
   // Total by contract: the two state reads (not just the profile run) are
@@ -210,12 +223,27 @@ export async function ensureConnectionBaseline(
   try {
     const existing = await getConnectionProfileState(target.orgId, target.installId);
     if (existing?.baseline) return existing; // successful baseline already — no re-run
+    // Claim the in-flight slot atomically. A lost claim means another attempt is
+    // already running (this poll re-fired, or a peer replica) — do NOT re-storm.
+    const claimSlot = deps.claimSlot ?? claimBaselineSlot;
+    const claimed = await claimSlot({
+      orgId: target.orgId,
+      installId: target.installId,
+      connectionGroupId: target.connectionGroupId,
+      dbType: target.dbType,
+    });
+    // Intentionally returns the pre-claim `existing` snapshot: if a peer replica
+    // finished a baseline in the read→claim window, the coverage view's next 4s
+    // poll converges — cheaper than an extra round-trip re-read here.
+    if (!claimed) return existing;
     await runBaselineProfile(target, deps);
     return await getConnectionProfileState(target.orgId, target.installId);
   } catch (err) {
+    // The try now spans the state read, the claim WRITE, and the profile run —
+    // name all three so a claim/profile write failure isn't mislabelled as a read.
     log.warn(
       { err: errorMessage(err), installId: target.installId },
-      "ensureConnectionBaseline: profile-state read failed — returning null",
+      "ensureConnectionBaseline failed (state read / claim / profile) — returning null",
     );
     return null;
   }
@@ -224,7 +252,10 @@ export async function ensureConnectionBaseline(
 /** Outcome of the on-create hook — observable so the creation seam + tests can assert. */
 export type OnCreateBaselineDecision =
   | { readonly action: "scheduled" }
-  | { readonly action: "skipped"; readonly reason: "not-profilable" | "no-internal-db" | "error" };
+  | {
+      readonly action: "skipped";
+      readonly reason: "not-profilable" | "no-internal-db" | "error" | "already-profiling";
+    };
 
 /**
  * On-create hook: baseline-profile a newly-created profilable connection without
@@ -232,18 +263,30 @@ export type OnCreateBaselineDecision =
  * skipped) and FIRE-AND-FORGET — the baseline runs in the background so it never
  * blocks or fails the install; its own success/failure is recorded durably and
  * the lazy backfill retries on first need. Never throws.
+ *
+ * Claims the in-flight slot (migration 0174) BEFORE scheduling, so the create
+ * hook and a concurrent coverage-view backfill can't both profile the same fresh
+ * connection — the claim collapses ALL profile initiators to one, not just the
+ * poll re-fires. A lost claim means a peer is already profiling → skip.
  */
 export async function profileConnectionOnCreate(
   target: BaselineProfileTarget,
   deps: {
     resolveCapability?: (dbType: string) => Promise<ProfileCapability>;
     runBaseline?: (target: BaselineProfileTarget) => Promise<void>;
+    claimSlot?: (input: Omit<Parameters<typeof claimBaselineSlot>[0], "ttlSeconds">) => Promise<boolean>;
   } = {},
 ): Promise<OnCreateBaselineDecision> {
   try {
     if (!hasInternalDB()) return { action: "skipped", reason: "no-internal-db" };
     const plan = await planConnectionBaseline(target.dbType, deps);
     if (!plan.profilable) return { action: "skipped", reason: "not-profilable" };
+
+    // Claim before scheduling — a concurrent lazy backfill would otherwise launch
+    // a second profile of the same connection. runBaselineProfile releases the
+    // claim on its terminal write (success upsert / recorded error).
+    const claimSlot = deps.claimSlot ?? claimBaselineSlot;
+    if (!(await claimSlot(target))) return { action: "skipped", reason: "already-profiling" };
 
     const runBaseline = deps.runBaseline ?? runBaselineProfile;
     void runBaseline(target).catch((err) =>

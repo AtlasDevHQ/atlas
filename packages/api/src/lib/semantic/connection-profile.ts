@@ -80,9 +80,72 @@ function normGroup(connectionGroupId: string | null | undefined): string | null 
 }
 
 /**
+ * Default staleness TTL for an in-flight baseline claim (seconds). A claim older
+ * than this is treated as ABANDONED (a crashed/killed run) and re-claimable, so a
+ * connection can never wedge permanently in "profiling".
+ *
+ * INVARIANT: this MUST stay above the worst-case real profile duration. A run that
+ * legitimately exceeds the TTL is mistaken for abandoned and re-claimed while still
+ * live, re-admitting one overlapping profile per TTL — a bounded partial return of
+ * the re-storm. 300s clears a ~120-table schema (profiled in a few minutes) with
+ * margin; a much larger warehouse would need this raised (or a progress heartbeat).
+ */
+export const BASELINE_CLAIM_TTL_SECONDS = 300;
+
+/**
+ * Atomically claim the in-flight baseline slot for one connection — the guard
+ * that collapses poll-driven backfill calls to ONE running profile per
+ * connection across replicas (the coverage re-storm fix, migration 0174).
+ *
+ * A single guarded UPSERT stamps `baseline_started_at = now()` and returns the
+ * row ONLY when the claim is won: no successful baseline exists yet AND no fresh
+ * claim is in flight within {@link BASELINE_CLAIM_TTL_SECONDS}. When another
+ * caller already holds a fresh claim (or a baseline already succeeded), the
+ * `WHERE` fails, no row is returned, and the caller MUST NOT run a profile.
+ *
+ * Correct under a race: two replicas both UPSERT a brand-new connection — one
+ * INSERTs (claim won), the other conflicts and its `DO UPDATE ... WHERE` sees the
+ * winner's fresh `baseline_started_at` and matches nothing (claim lost). Exactly
+ * one runs. Returns `false` when there's no internal DB (nowhere to profile).
+ */
+export async function claimBaselineSlot(input: {
+  orgId: string | null;
+  installId: string;
+  connectionGroupId?: string | null;
+  dbType: string;
+  ttlSeconds?: number;
+}): Promise<boolean> {
+  if (!hasInternalDB()) return false;
+  const rows = await internalQuery<{ id: string }>(
+    `INSERT INTO connection_profile_state
+       (org_id, install_id, connection_group_id, db_type, baseline_started_at)
+     VALUES ($1, $2, $3, $4, now())
+     ON CONFLICT ${ON_CONFLICT}
+     DO UPDATE SET baseline_started_at = now(),
+                   connection_group_id = EXCLUDED.connection_group_id,
+                   db_type = EXCLUDED.db_type,
+                   updated_at = now()
+       WHERE connection_profile_state.baseline_profiled_at IS NULL
+         AND (connection_profile_state.baseline_started_at IS NULL
+              OR connection_profile_state.baseline_started_at
+                   < now() - make_interval(secs => $5))
+     RETURNING id`,
+    [
+      input.orgId,
+      input.installId,
+      normGroup(input.connectionGroupId),
+      input.dbType,
+      input.ttlSeconds ?? BASELINE_CLAIM_TTL_SECONDS,
+    ],
+  );
+  return rows.length > 0;
+}
+
+/**
  * Store a fresh baseline profile for one connection. Upserts ONLY the baseline
- * columns (leaves the LLM tier untouched), stamps `baseline_profiled_at = now()`
- * and CLEARS any prior `baseline_error`.
+ * columns (leaves the LLM tier untouched), stamps `baseline_profiled_at = now()`,
+ * CLEARS any prior `baseline_error`, and RELEASES the in-flight claim
+ * (`baseline_started_at → NULL`) so a future genuine re-profile can re-claim.
  */
 export async function upsertBaselineProfile(input: {
   orgId: string | null;
@@ -106,6 +169,7 @@ export async function upsertBaselineProfile(input: {
                    baseline_table_count = EXCLUDED.baseline_table_count,
                    baseline_profiled_at = now(),
                    baseline_error = NULL,
+                   baseline_started_at = NULL,
                    updated_at = now()`,
     [
       input.orgId,
@@ -122,7 +186,9 @@ export async function upsertBaselineProfile(input: {
  * Record a baseline-profile FAILURE for one connection — the visible reason the
  * auto/backfill profile couldn't complete. Leaves any prior successful baseline
  * (payload + `baseline_profiled_at`) intact: a re-profile that fails keeps the
- * last good facts and surfaces the new error.
+ * last good facts and surfaces the new error. RELEASES the in-flight claim
+ * (`baseline_started_at → NULL`) so the connection is re-attempted on next need
+ * rather than blocked by a stale claim.
  */
 export async function recordBaselineError(input: {
   orgId: string | null;
@@ -142,6 +208,7 @@ export async function recordBaselineError(input: {
      DO UPDATE SET connection_group_id = EXCLUDED.connection_group_id,
                    db_type = EXCLUDED.db_type,
                    baseline_error = EXCLUDED.baseline_error,
+                   baseline_started_at = NULL,
                    updated_at = now()`,
     [input.orgId, input.installId, normGroup(input.connectionGroupId), input.dbType, input.error],
   );

@@ -26,6 +26,8 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 const {
+  claimBaselineSlot,
+  BASELINE_CLAIM_TTL_SECONDS,
   upsertBaselineProfile,
   recordBaselineError,
   recordLlmProfileRun,
@@ -55,6 +57,47 @@ beforeEach(() => {
   nextRows = [];
 });
 
+describe("claimBaselineSlot — atomic in-flight guard (migration 0174)", () => {
+  it("claims only when no baseline exists and no fresh claim is in flight, returning true on a won claim", async () => {
+    nextRows = [{ id: "row-1" }]; // the guarded UPSERT returned a row → claim won
+    const claimed = await claimBaselineSlot({
+      orgId: "org_1",
+      installId: "us-prod",
+      connectionGroupId: "g_prod",
+      dbType: "postgres",
+    });
+    expect(claimed).toBe(true);
+    const { sql, params } = dbCalls[0];
+    expect(sql).toContain("INSERT INTO connection_profile_state");
+    expect(sql).toContain("baseline_started_at = now()");
+    // Guards: no successful baseline yet AND no fresh claim within the TTL.
+    expect(sql).toContain("baseline_profiled_at IS NULL");
+    expect(sql).toContain("make_interval(secs => $5)");
+    expect(sql).toContain("RETURNING id");
+    expect(params[1]).toBe("us-prod");
+    expect(params[4]).toBe(BASELINE_CLAIM_TTL_SECONDS);
+  });
+
+  it("returns false when the guarded UPSERT matches nothing (a peer holds a fresh claim)", async () => {
+    nextRows = []; // WHERE failed — no row updated/inserted
+    expect(
+      await claimBaselineSlot({ orgId: "org_1", installId: "cn", dbType: "postgres" }),
+    ).toBe(false);
+  });
+
+  it("honours an explicit ttlSeconds override", async () => {
+    nextRows = [{ id: "row-1" }];
+    await claimBaselineSlot({ orgId: "o", installId: "c", dbType: "postgres", ttlSeconds: 42 });
+    expect(dbCalls[0].params[4]).toBe(42);
+  });
+
+  it("returns false (no DB call) when no internal DB is configured", async () => {
+    mockHasDB = false;
+    expect(await claimBaselineSlot({ orgId: "o", installId: "c", dbType: "postgres" })).toBe(false);
+    expect(dbCalls).toHaveLength(0);
+  });
+});
+
 describe("upsertBaselineProfile", () => {
   it("writes the baseline tier keyed on the COALESCE sentinel, stamping now() and clearing the error", async () => {
     await upsertBaselineProfile({
@@ -72,6 +115,8 @@ describe("upsertBaselineProfile", () => {
     expect(sql).toContain("ON CONFLICT (COALESCE(org_id, '__self_hosted__'), install_id)");
     expect(sql).toContain("baseline_profiled_at = now()");
     expect(sql).toContain("baseline_error = NULL");
+    // Releases the in-flight claim so a future genuine re-profile can re-claim.
+    expect(sql).toContain("baseline_started_at = NULL");
     // Touches ONLY the baseline tier on conflict (leaves the LLM tier alone).
     expect(sql).not.toContain("llm_profiled_at");
     expect(params[0]).toBe("org_1");
@@ -111,6 +156,8 @@ describe("recordBaselineError", () => {
     });
     const { sql, params } = dbCalls[0];
     expect(sql).toContain("baseline_error = EXCLUDED.baseline_error");
+    // Releases the in-flight claim so the connection is re-attempted on next need.
+    expect(sql).toContain("baseline_started_at = NULL");
     expect(sql).not.toContain("baseline_profiled_at");
     expect(sql).not.toContain("baseline_profiles");
     expect(params[4]).toBe("permission denied for schema public");

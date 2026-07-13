@@ -79,6 +79,11 @@ interface SeedOpts {
   avgDurationMs?: number | null;
   /** Extra description suffix so several seeded rows stay distinguishable. */
   tag?: string;
+  /**
+   * repetition_count. Default `SEEN` (3, above the seen-once floor). Pass `1` to
+   * seed a seen-once row the default queue hides and "Show seen-once" reveals.
+   */
+  repetitionCount?: number;
 }
 
 /**
@@ -98,6 +103,7 @@ async function seedPattern(c: Client, orgId: string, opts: SeedOpts = {}): Promi
     autoPromoted = false,
     avgDurationMs = null,
     tag = "",
+    repetitionCount = SEEN,
   } = opts;
   const reviewed = status !== "pending";
   const description = `${MARKER}${tag ? ` ${tag}` : ""}`;
@@ -109,7 +115,7 @@ async function seedPattern(c: Client, orgId: string, opts: SeedOpts = {}): Promi
         created_at, updated_at)
      VALUES
        (gen_random_uuid(), 'query_pattern', $2, $1, 'orders', NULL, $3,
-        ${SEEN}, $4, $5, 'agent',
+        ${repetitionCount}, $4, $5, 'agent',
         $6, $7, $8, $9, $10,
         now(), now())
      RETURNING id`,
@@ -478,5 +484,60 @@ test.describe("learned-patterns cockpit — full curation loop", () => {
     await expect(sheet.getByText("Auto-approved")).toBeVisible();
     await expect(sheet.getByText("Atlas auto-promotion")).toBeVisible();
     await expect(sheet.getByText("Reviewed by: Unknown")).toBeHidden();
+  });
+
+  // The two tests below guard a React-Compiler stale-render class that ONLY
+  // manifests in a compiler build (this browser lane), never in `bun test` —
+  // the compiler doesn't run there. TanStack Table's `table` is a stable
+  // reference whose row model/selection mutate in place; a memoized consumer
+  // keyed on the unchanged ref never re-renders, so the DOM lags the data. The
+  // fix is the render-relevant-slice Proxy in `useServerDataTable` (which hands
+  // consumers a fresh table reference when the table actually changes); these
+  // assert its effect end to end. Reproduced live on staging: unchecking the
+  // toggle left the API's 2 rows behind a stale 15-row render; row checkboxes
+  // never showed as checked.
+
+  test("seen-once toggle round-trips: reveal, then hide again on uncheck (#4581)", async ({ page }) => {
+    await withInternalDb(async (c) => {
+      // A repeated row (always shown) + a seen-once row (hidden by default).
+      await seedPattern(c, orgId, { tag: "repeated", confidence: 0.5 });
+      await seedPattern(c, orgId, { tag: "seenonce", confidence: 0.5, repetitionCount: 1 });
+    });
+    await page.goto("/admin/learned-patterns");
+
+    // Default view: the repeated row shows; the seen-once row is hidden.
+    await expect(seededRow(page, "repeated")).toBeVisible();
+    await expect(seededRow(page, "seenonce")).toHaveCount(0);
+
+    const toggle = page.getByRole("button", { name: /show seen-once/i });
+
+    // Check → the seen-once row is revealed.
+    await toggle.click();
+    await expect(seededRow(page, "seenonce")).toBeVisible();
+
+    // Uncheck → it hides again. The bug: the table kept the stale revealed rows
+    // even though the refetch (and the button/URL) had reverted.
+    await toggle.click();
+    await expect(seededRow(page, "seenonce")).toHaveCount(0);
+    await expect(seededRow(page, "repeated")).toBeVisible();
+  });
+
+  test("row selection re-renders the table: checkbox checks + bulk bar appears", async ({ page }) => {
+    await withInternalDb(async (c) => {
+      await seedPattern(c, orgId, { tag: "sel-a", confidence: 0.5 });
+      await seedPattern(c, orgId, { tag: "sel-b", confidence: 0.5 });
+    });
+    await page.goto("/admin/learned-patterns");
+
+    const row = seededRow(page, "sel-a");
+    await expect(row).toBeVisible();
+    const checkbox = row.getByRole("checkbox", { name: /select row/i });
+
+    // Selecting the row must visibly check the box and surface the bulk bar. The
+    // bug: `setRowSelection` fired but the memoized table never re-rendered, so
+    // the checkbox stayed unchecked and bulk actions never appeared.
+    await checkbox.click();
+    await expect(checkbox).toBeChecked();
+    await expect(page.getByRole("button", { name: /approve 1/i })).toBeVisible();
   });
 });

@@ -22,6 +22,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
   AuthContext,
+  ModelRouter,
 } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import {
@@ -226,9 +227,23 @@ billing.openapi(getBillingStatusRoute, async (c) => {
     const plan = getPlanDefinition(workspace.plan_tier);
     const limits = getPlanLimits(workspace.plan_tier);
 
-    // Fetch seat count, connection count, subscription, and the saved model +
-    // provider settings in parallel
-    const [seatCount, connectionCountResult, subResult, currentModelSetting, providerSetting] = yield* Effect.promise(() => Promise.all([
+    // Fetch seat count, connection count, subscription, the saved model +
+    // provider settings, and the workspace model config in parallel. The
+    // workspace config (EE ModelRouter; Noop layer yields null) is what the
+    // agent loop resolves FIRST — both the BYOT rows and the billing page's
+    // gateway-on-platform-credits picks live there (#4645). Read failures
+    // degrade to the platform-default path rather than failing the page.
+    const workspaceModelConfigEffect = ModelRouter.pipe(
+      Effect.flatMap((router) => router.getWorkspaceModelConfig(orgId)),
+      Effect.catchAll((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), orgId },
+          "Failed to read workspace model config for billing page — falling back to platform default",
+        );
+        return Effect.succeed(null);
+      }),
+    );
+    const [[seatCount, connectionCountResult, subResult, currentModelSetting, providerSetting], workspaceModelConfig] = yield* Effect.all([Effect.promise(() => Promise.all([
       // Seat count from the SHARED source (#3430) — the same `member` count
       // enforcement and /admin/usage read, so the budget shown here matches the
       // actual 429 threshold. getSeatCount serves the last-known value on a
@@ -349,25 +364,31 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         );
         return undefined;
       }),
-    ]));
+    ])), workspaceModelConfigEffect], { concurrency: "unbounded" });
 
     const connectionCount = connectionCountResult[0]?.count ?? 0;
     const subscription = subResult.length > 0 ? subResult[0] : null;
-    // SSOT (#3098): currentModel is exactly what the agent loop resolves for
-    // this workspace — the saved ATLAS_MODEL if present, else the provider's
-    // default (gateway → Sonnet 4.6). The billing "Default AI model" picker
-    // displays this verbatim, so it can never advertise a model the engine
-    // won't actually run. Falls back to the plan's recommended model only if
-    // resolution throws (e.g. an openai-compatible provider with no model set).
+    // SSOT (#3098, #4645): currentModel is exactly what the agent loop
+    // resolves for this workspace — the workspace model config if one exists
+    // (BYOT rows AND gateway-on-platform-credits picks from the billing
+    // page), else the platform ATLAS_MODEL setting, else the provider's
+    // default. The billing "Default AI model" picker displays this verbatim,
+    // so it can never advertise a model the engine won't actually run. Falls
+    // back to the plan's recommended model only if resolution throws (e.g.
+    // an openai-compatible provider with no model set).
     let currentModel: string;
-    try {
-      currentModel = resolveModelId(providerSetting, currentModelSetting);
-    } catch (err) {
-      log.debug(
-        { err: err instanceof Error ? err.message : String(err), orgId },
-        "Model resolution failed for billing currentModel — using plan default",
-      );
-      currentModel = currentModelSetting || plan.defaultModel || "default";
+    if (workspaceModelConfig) {
+      currentModel = workspaceModelConfig.model;
+    } else {
+      try {
+        currentModel = resolveModelId(providerSetting, currentModelSetting);
+      } catch (err) {
+        log.debug(
+          { err: err instanceof Error ? err.message : String(err), orgId },
+          "Model resolution failed for billing currentModel — using plan default",
+        );
+        currentModel = currentModelSetting || plan.defaultModel || "default";
+      }
     }
 
     // Per-seat token budget, retained for the wire's `limits.totalTokenBudget`

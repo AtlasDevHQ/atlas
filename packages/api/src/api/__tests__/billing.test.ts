@@ -15,6 +15,14 @@ import {
   mock,
   type Mock,
 } from "bun:test";
+import { Effect, Layer } from "effect";
+
+// --- Enterprise gate: flip the env var so the real `isEnterpriseEnabled`
+// resolves true and the `ConditionalEELayer` loads the mocked
+// `@atlas/ee/layers` below (same pattern as admin-model-config.test.ts).
+// Module-top env setup — must be set before the imports below read env at
+// module-load time; `??=` keeps the assignment hoisted.
+process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
 // --- Auth mock ---
 
@@ -149,6 +157,38 @@ void mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: mock(() => {}),
 }));
 
+// --- ModelRouter mock (#4645) ---
+//
+// `currentModel` resolves the workspace model config FIRST (mirroring the
+// agent loop), so the billing tests need a controllable `ModelRouter`. The
+// route reaches it via the `ModelRouter` Tag provided by the module-level
+// EnterpriseRuntime, whose `ConditionalEELayer` lazy-imports
+// `@atlas/ee/layers` — mock the aggregator and bind the Tag to a test fn
+// (same pattern as admin-model-config.test.ts).
+const mockGetWorkspaceModelConfig: Mock<(orgId: string) => unknown> = mock(() =>
+  Effect.succeed(null),
+);
+
+void mock.module("@atlas/ee/layers", () => ({
+  EELayer: Layer.unwrapEffect(
+    Effect.sync(() => {
+      // oxlint-disable-next-line @typescript-eslint/no-require-imports
+      const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+      return Layer.succeed(services.ModelRouter, {
+        available: true,
+        getWorkspaceModelConfig: mockGetWorkspaceModelConfig as never,
+        getWorkspaceModelConfigRaw: (() => Effect.succeed(null)) as never,
+        setWorkspaceModelConfig: (() => Effect.die(new Error("not under test"))) as never,
+        deleteWorkspaceModelConfig: (() => Effect.die(new Error("not under test"))) as never,
+        testModelConfig: (() => Effect.die(new Error("not under test"))) as never,
+        reconcileModelDeprecation: (() =>
+          Effect.succeed({ status: "healthy" as const, suggestion: null })) as never,
+        parseBedrockCredentialBundle: () => null,
+      } as never);
+    }),
+  ),
+}));
+
 // --- Logger mock ---
 
 void mock.module("@atlas/api/lib/logger", () => ({
@@ -203,6 +243,7 @@ describe("billing routes", () => {
     mockGetWorkspaceDetails.mockImplementation(() => Promise.resolve({ ...mockWorkspace }));
     mockUpdateWorkspaceByot.mockImplementation(() => Promise.resolve(true));
     mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    mockGetWorkspaceModelConfig.mockImplementation(() => Effect.succeed(null));
     // The shared seat-count source (#3430) keeps a module-level last-known
     // cache. Reset it so one test's member count can't leak into the next as a
     // last-known fallback.
@@ -540,6 +581,54 @@ describe("billing routes", () => {
       // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.currentModel).toBe("anthropic/claude-opus-4.8");
+    });
+
+    // ── Workspace model config precedence (#4645) ────────────────────
+    //
+    // The agent loop resolves the workspace model config (ModelRouter) BEFORE
+    // the platform ATLAS_MODEL setting — both the BYOT rows and the billing
+    // page's gateway-on-platform-credits picks live there. `currentModel`
+    // must mirror that order or the picker advertises a model the engine
+    // won't run.
+
+    it("prefers the workspace model config over the setting for currentModel (#4645)", async () => {
+      mockSettingLiveValue = "anthropic/claude-sonnet-5"; // platform setting present…
+      mockGetWorkspaceModelConfig.mockImplementation(() =>
+        Effect.succeed({
+          id: "cfg-1",
+          orgId: "org-1",
+          provider: "gateway",
+          model: "anthropic/claude-opus-4.8", // …but the workspace pick wins
+          apiKeyMasked: null,
+          apiKeyStatus: "platform_credits",
+          baseUrl: null,
+          bedrockRegion: null,
+          modelStatus: "healthy",
+          modelSuggestedReplacement: null,
+          createdAt: "2026-07-01T00:00:00Z",
+          updatedAt: "2026-07-01T00:00:00Z",
+        }),
+      );
+
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.currentModel).toBe("anthropic/claude-opus-4.8");
+    });
+
+    it("degrades to the platform default when the workspace config read fails (#4645)", async () => {
+      mockGetWorkspaceModelConfig.mockImplementation(() =>
+        Effect.fail(new Error("model config table unreachable")),
+      );
+
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      // Same value as the nothing-saved SSOT case — the page must not 500
+      // because the EE model-config read blipped.
+      expect(body.currentModel).toBe(resolveModelId(undefined, undefined));
     });
 
     // ── Subscription visibility (#3429) ────────────────────────────

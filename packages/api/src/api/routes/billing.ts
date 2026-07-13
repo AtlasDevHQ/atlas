@@ -297,6 +297,14 @@ billing.openapi(getBillingStatusRoute, async (c) => {
       // order healthy statuses first, then most-recently-updated. We also
       // surface cancelAtPeriodEnd / periodEnd so the UI can show a
       // pending-cancel end-date notice.
+      //
+      // Tiebreak by periodStart, NOT updatedAt: Better Auth's subscription
+      // table has no updatedAt/createdAt column, so ordering by it threw
+      // "column updatedAt does not exist" (42703) on every call — the query
+      // never returned a row and the endpoint reported `subscription: null`
+      // ("not subscribed") for every workspace, hiding the billing portal.
+      // periodStart (newest current-period start) is the right recency proxy.
+      // Same fix as reconcile-plan-tiers.ts.
       internalQuery<{
         stripeSubscriptionId: string;
         plan: string;
@@ -313,7 +321,7 @@ billing.openapi(getBillingStatusRoute, async (c) => {
               WHEN status IN ('past_due', 'unpaid', 'incomplete') THEN 1
               ELSE 2
             END,
-            "updatedAt" DESC NULLS LAST
+            "periodStart" DESC NULLS LAST
           LIMIT 1`,
         [orgId],
       ).catch((err) => {

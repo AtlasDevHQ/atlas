@@ -947,8 +947,13 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
   const currentModel = canonicalizeModel(data.currentModel);
   const currentLabel = modelLabel(currentModel);
 
+  // #4645 — the pick writes a per-workspace gateway row on platform credits
+  // (`workspace_model_config`), the same seam the agent loop resolves first.
+  // It must NOT write the `ATLAS_MODEL` setting: that key is platform-scoped,
+  // so the write 403s for workspace admins — and a platform-admin write would
+  // land on the global row and change the model for every workspace.
   const { mutate, saving, error, clearError } = useAdminMutation({
-    path: "/api/v1/admin/settings/ATLAS_MODEL",
+    path: "/api/v1/admin/model-config",
     method: "PUT",
     invalidates: onSaved,
   });
@@ -957,7 +962,21 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
     useDisclosure({ onCollapseCleanup: clearError });
 
   async function handleModelChange(value: string) {
-    await mutate({ body: { value } });
+    await mutate({ body: { provider: "gateway", model: value } });
+  }
+
+  // A BYOT workspace's model lives in its own provider configuration (the
+  // section under the BYOT toggle below) — writing a gateway row from here
+  // would clobber that config, so the row goes read-only.
+  if (data.plan.byot) {
+    return (
+      <CompactRow
+        icon={Bot}
+        title="Default AI model"
+        description={`${currentLabel} — managed by your provider configuration below`}
+        status="disconnected"
+      />
+    );
   }
 
   if (!expanded) {

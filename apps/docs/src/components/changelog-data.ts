@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.50",
+    title: "Learned-Patterns Elevation",
+    date: "2026-07-13",
+    summary:
+      "Atlas quietly learns from every successful query — now that learning visibly pays off. Approving a learned pattern makes it injectable immediately, regardless of its confidence score, which stays the machine's untouched evidence meter. Pattern identity is enforced by the database, so a repeated query increments one row instead of minting duplicates that inflate each other's weight, and seen-once noise stays out of the review queue. Every injection is attributed, so an approved pattern's row shows its real usage. Auto-promotion becomes a per-workspace, off-by-default dial instead of an invisible platform switch. And the review cockpit stops lying: sorting and filtering work, failed reviews surface where you're looking, reviewers have names, connection groups are visible, and the pending queue announces itself with a badge.",
+    highlights: [
+      "Approval is an eligibility bypass, not a confidence write — a rare-but-correct pattern becomes injectable the moment you approve it, while confidence stays the honest record of what was actually observed (#4571)",
+      "Database-enforced pattern identity — a repeat observation increments one row instead of minting duplicates; seen-once patterns stay below the review queue (#4572, #4581)",
+      "Every injection is attributed — an approved pattern's row shows real 30-day usage, so the payoff is observable instead of asserted (#4573)",
+      "Per-workspace auto-promotion knob — an opt-in, off-by-default settings dial replaces the invisible platform env switch (#4582)",
+      "The cockpit stops lying — working sort/filter, failures surfaced inside the review sheet where you act, named reviewers, visible connection groups, and a pending-queue badge (#4573–#4580)",
+    ],
+  },
+  {
     version: "v0.0.49",
     title: "Knowledge Base Connector Picker",
     date: "2026-07-12",

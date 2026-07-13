@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.52",
+    title: "Billing Subscription Query Hotfix",
+    date: "2026-07-13",
+    summary:
+      "Fixes a billing query that failed on every call. Two internal reads of the subscription table were sorting by a column that doesn't exist, so the database rejected them every time. One read silently fell back to a plain calendar month for usage metering instead of your real billing cycle; the other made every workspace look unsubscribed and hid the billing portal. Both now sort by the subscription's billing-period start, and a real-database regression test guards against this whole class of bug — the kind that mock-based tests can't catch.",
+    highlights: [
+      "Billing portal reliably reflects your real subscription state again — no more spurious 'not subscribed' from a failing query (#4648)",
+      "Usage metering anchors to your actual Stripe billing period instead of silently falling back to the calendar month",
+      "Added real-Postgres regression coverage so a missing-column query can't pass the test suite again",
+    ],
+  },
+  {
     version: "v0.0.51",
     title: "Workspace Model Picker Hotfix",
     date: "2026-07-13",

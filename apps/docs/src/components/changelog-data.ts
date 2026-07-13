@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.51",
+    title: "Workspace Model Picker Hotfix",
+    date: "2026-07-13",
+    summary:
+      "Workspace admins can change their workspace's default AI model again. The billing page's model picker was writing a platform-level setting — every workspace admin got a permissions error, and the setting wasn't per-workspace in the first place. The picker now saves a true per-workspace model choice (running on Atlas platform credits through the gateway), the same configuration the agent already honors first, and the billing page reports exactly the model your workspace actually runs — including when you bring your own provider key.",
+    highlights: [
+      "Default AI model is a per-workspace choice again — picking a model affects only your workspace and takes effect without a redeploy (#4646)",
+      "The billing page's reported model now mirrors the agent's real resolution order, so it can never advertise a model your workspace won't run",
+      "BYOT workspaces: the picker is read-only while a custom provider is configured, so it can never overwrite your provider credentials",
+    ],
+  },
+  {
     version: "v0.0.50",
     title: "Learned-Patterns Elevation",
     date: "2026-07-13",

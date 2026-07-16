@@ -275,6 +275,62 @@ describe("enrichEntityYaml (in-memory primitive, #3236)", () => {
     // The display name still flows through for the "valid <dialect>" instruction.
     expect(prompt).toContain("valid Sparksql");
   });
+
+  // #4465 — the shared YAML helpers must not console.warn on the server path:
+  // the wizard route injects a pino-backed sink so warnings carry requestId and
+  // go through redaction. The CLI path passes no sink and keeps console output.
+  describe("warning sink injection (#4465)", () => {
+    it("routes the missing-yaml-block warning through the injected sink, not console", async () => {
+      mockGenerateText.mockImplementationOnce(async () => ({
+        text: "Sorry, I cannot help with that.",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      }));
+      const warnings: string[] = [];
+      const { enriched } = await enrichEntityYaml(
+        ENTITY_YAML,
+        ordersProfile,
+        { modelId: "x" } as never,
+        undefined,
+        undefined,
+        (message) => warnings.push(message),
+      );
+      expect(enriched).toBe(false);
+      expect(warnings.some((m) => m.includes("did not contain a ```yaml block"))).toBe(true);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it("routes the YAML-parse-error warning through the injected sink, not console", async () => {
+      // A fenced block whose body throws in the YAML parser (unclosed flow seq).
+      mockGenerateText.mockImplementationOnce(async () => ({
+        text: "```yaml\nfoo: [unclosed\n```",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      }));
+      const warnings: string[] = [];
+      const { enriched } = await enrichEntityYaml(
+        ENTITY_YAML,
+        ordersProfile,
+        { modelId: "x" } as never,
+        undefined,
+        undefined,
+        (message) => warnings.push(message),
+      );
+      expect(enriched).toBe(false);
+      expect(warnings.some((m) => m.includes("YAML parse error"))).toBe(true);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it("defaults to console.warn with the pre-#4465 CLI formatting when no sink is given", async () => {
+      mockGenerateText.mockImplementationOnce(async () => ({
+        text: "Sorry, I cannot help with that.",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      }));
+      await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never);
+      // Byte-identical to the old CLI output: 4-space indent + "Note: " prefix.
+      expect(warnSpy).toHaveBeenCalledWith(
+        "    Note: LLM response did not contain a ```yaml block, attempting to parse raw response",
+      );
+    });
+  });
 });
 
 describe("enrichEntity (per-table primitive)", () => {

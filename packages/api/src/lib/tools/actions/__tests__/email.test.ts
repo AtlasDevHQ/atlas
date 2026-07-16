@@ -257,6 +257,7 @@ describe("sendEmailReport — recipient gate wiring", () => {
       opts,
     );
 
+    expect(lastGateCall).not.toBeNull();
     expect(lastGateCall!.workspaceId).toBeUndefined();
   });
 });

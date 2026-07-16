@@ -144,6 +144,18 @@ describe("checkRecipientsAllowed — single-address enforcement", () => {
     const result = await checkRecipientsAllowed(WSID, ["notanemail"], members());
     expect(result.allowed).toBe(false);
   });
+
+  it("blocks a leading stray address riding as display-name text", async () => {
+    // "@" is invalid in an unquoted RFC-5322 display name; a lenient
+    // downstream parser could split this into two recipients, so the gate
+    // must not judge only the angle-bracket address.
+    const result = await checkRecipientsAllowed(
+      WSID,
+      ["attacker@evil.example <member@corp.example>"],
+      members("member@corp.example"),
+    );
+    expect(result.allowed).toBe(false);
+  });
 });
 
 describe("checkRecipientsAllowed — legacy ATLAS_EMAIL_ALLOWED_DOMAINS fallback (#4479 → #4663)", () => {
@@ -193,6 +205,8 @@ describe("normalizeEmailAddress", () => {
     expect(normalizeEmailAddress("A <a@x.example>, B <b@y.example>")).toBeNull();
     expect(normalizeEmailAddress("a@x.example, b@y.example")).toBeNull();
     expect(normalizeEmailAddress("A <a@x.example>, b@y.example")).toBeNull();
+    expect(normalizeEmailAddress("a@x.example;b@y.example")).toBeNull();
+    expect(normalizeEmailAddress("attacker@evil.example <member@corp.example>")).toBeNull();
   });
 
   it("returns null for strings that are not a single address", () => {

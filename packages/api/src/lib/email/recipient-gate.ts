@@ -28,9 +28,12 @@
  * Deprecation (#4479, phase 1 of 2 — drop tracked in #4663): the retired
  * action-path knob `ATLAS_EMAIL_ALLOWED_DOMAINS` is honored as a fallback
  * domain list only while the surviving setting is not explicitly
- * configured anywhere (no workspace/platform DB override and no env var —
- * an admin explicitly clearing the setting therefore wins over a lingering
- * legacy var). Warns once per process on first use.
+ * configured anywhere (no workspace/platform DB override and no env var).
+ * An admin explicitly saving an empty value therefore wins over a
+ * lingering legacy var; note that *resetting* the override (Admin →
+ * Reset, which deletes the row) removes the configuration entirely and
+ * re-exposes the legacy fallback until #4663 drops it. Warns once per
+ * process on first use.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -136,17 +139,23 @@ const SINGLE_BARE_ADDRESS = /^[^\s@,;<>]+@[^\s@,;<>]+$/;
  * Reduce a recipient string to the single bare address the gate should
  * judge, or `null` when the string is not provably ONE address.
  *
- * Accepts a bare address or one RFC-5322 display-name wrapper
+ * Accepts a bare address or one simple display-name wrapper
  * ("User <user@corp.example>") — the `sendEmail` integration tool's input
  * schema only admits bare addresses, but the `sendEmailReport` action
- * historically accepted display-name format. Anything else (comma-joined
- * lists, multiple angle groups, stray addresses around the wrapper)
- * returns `null` so the caller fails closed: the transport chains parse
- * full RFC address lists, and the gate must never approve a string that
- * still contains an unjudged address.
+ * historically accepted display-name format. The display name must be
+ * unquoted and free of `,`/`;`/`@` (quoted RFC-5322 display names are
+ * rejected, fail-closed). Anything else (comma-joined lists, multiple
+ * angle groups, stray addresses before or after the wrapper) returns
+ * `null` so the caller fails closed: the transport chains parse full RFC
+ * address lists, and the gate must never approve a string that still
+ * contains an unjudged address.
  */
 export function normalizeEmailAddress(addr: string): string | null {
-  const angleMatch = addr.match(/^[^<>,;]*<([^<>]+)>\s*$/);
+  // `@` excluded from the display-name class so a leading stray address
+  // ("attacker@evil.example <member@corp.example>") can never ride in as
+  // display-name text; `@` is not valid in an unquoted RFC-5322 display
+  // name, so nothing legitimate is lost.
+  const angleMatch = addr.match(/^[^<>,;@]*<([^<>]+)>\s*$/);
   const bare = (angleMatch ? angleMatch[1] : addr).trim();
   return SINGLE_BARE_ADDRESS.test(bare) ? bare : null;
 }
@@ -193,13 +202,20 @@ export async function checkRecipientsAllowed(
   });
 
   if (blocked.length === 0) return { allowed: true };
+  // Don't recommend "send to a workspace member" when the member half of
+  // the boundary is inert (no workspace in context / no internal DB /
+  // memberless org) — that remediation structurally cannot succeed.
+  const boundary =
+    memberEmails.size > 0
+      ? `workspace member addresses and domains in the workspace's allowed-recipient-domains setting ` +
+        `(${EMAIL_RECIPIENT_DOMAINS_SETTING}). Ask an admin to add the domain, or send to a workspace member.`
+      : `domains in the allowed-recipient-domains setting (${EMAIL_RECIPIENT_DOMAINS_SETTING}) — ` +
+        `the workspace-member allowlist is unavailable for this request. Ask an admin to add the domain.`;
   return {
     allowed: false,
     blocked,
     message:
       `Recipient(s) not allowed: ${blocked.join(", ")}. Agent-initiated email is restricted to ` +
-      `workspace member addresses and domains in the workspace's allowed-recipient-domains setting ` +
-      `(${EMAIL_RECIPIENT_DOMAINS_SETTING}). Ask an admin to add the domain, or send to a workspace member. ` +
-      `Each recipient must be a single email address.`,
+      `${boundary} Each recipient must be a single email address.`,
   };
 }

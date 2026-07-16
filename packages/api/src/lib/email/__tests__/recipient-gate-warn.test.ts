@@ -85,6 +85,17 @@ describe("recipient gate deprecation warns (#4479)", () => {
     expect(deprecationWarns()).toHaveLength(2);
   });
 
+  it("re-arms the legacy-ignored latch via the test seam", async () => {
+    process.env[EMAIL_RECIPIENT_DOMAINS_SETTING] = "partner.example";
+    process.env[LEGACY_EMAIL_DOMAINS_ENV] = "legacy.example";
+
+    await checkRecipientsAllowed(WSID, ["a@partner.example"], noMembers);
+    resetRecipientGateWarnsForTests();
+    await checkRecipientsAllowed(WSID, ["a@partner.example"], noMembers);
+
+    expect(ignoredWarns()).toHaveLength(2);
+  });
+
   it("warns once that the legacy knob is ignored when both knobs are set", async () => {
     process.env[EMAIL_RECIPIENT_DOMAINS_SETTING] = "partner.example";
     process.env[LEGACY_EMAIL_DOMAINS_ENV] = "legacy.example";

@@ -233,6 +233,11 @@ const mockGetShareStatus = mock((): Promise<unknown> =>
 const mockGetSharedDashboard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: false, reason: "not_found" }),
 );
+// #4537 — captured so tests can assert the caller's viewerId is threaded into
+// the write-side gate (the PATCH refresh-schedule path).
+const mockSetRefreshSchedule = mock((..._args: unknown[]): Promise<unknown> =>
+  Promise.resolve({ ok: true }),
+);
 
 // #2424 — captured so individual tests can override with
 // `mockResolvedValueOnce("not_found")` to exercise the 400 reject path.
@@ -271,7 +276,7 @@ void mock.module("@atlas/api/lib/dashboards", () => ({
   // to the real projection, not undefined (CLAUDE.md mock-all-exports rule).
   projectSharedDashboardView: realDashboards.projectSharedDashboardView,
   buildSharedParameterSummary: realDashboards.buildSharedParameterSummary,
-  setRefreshSchedule: mock(() => Promise.resolve({ ok: true })),
+  setRefreshSchedule: mockSetRefreshSchedule,
   getDashboardsDueForRefresh: mock(() => Promise.resolve([])),
   lockDashboardForRefresh: mock(() => Promise.resolve(false)),
   refreshDashboardCards: mockRefreshDashboardCards,
@@ -591,6 +596,8 @@ describe("dashboard routes", () => {
     mockGetShareStatus.mockResolvedValue({ ok: true, data: { shared: false, token: null, expiresAt: null, shareMode: "public" } });
     mockGetSharedDashboard.mockReset();
     mockGetSharedDashboard.mockResolvedValue({ ok: false, reason: "not_found" });
+    mockSetRefreshSchedule.mockReset();
+    mockSetRefreshSchedule.mockResolvedValue({ ok: true });
     mockRunUserQueryPipeline.mockReset();
     mockRunUserQueryPipeline.mockResolvedValue({
       kind: "ok",
@@ -771,6 +778,33 @@ describe("dashboard routes", () => {
       expect(response.status).toBe(404);
     });
 
+    it("threads the caller's viewerId into the parameter + schedule writes (#4537)", async () => {
+      // The write-side first-publish gate lives in the lib SQL; the route's
+      // contribution is passing the acting identity through. Without it a
+      // same-org non-owner could write to a colleague's never-published board.
+      mockAuthenticateRequest.mockResolvedValue({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: { id: "u1", label: "test@test.com", mode: "simple-key" as const, role: "admin" as const, activeOrganizationId: "org-1" },
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            parameters: [{ key: "date_from", type: "date", default: null, label: "From" }],
+            refreshSchedule: "0 * * * *",
+          }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockSetRefreshSchedule).toHaveBeenCalledTimes(1);
+      expect(mockSetRefreshSchedule.mock.calls[0]?.[1]).toEqual({ orgId: "org-1", viewerId: "u1" });
+      expect(mockUpdateDashboard).toHaveBeenCalledTimes(1);
+      const updateArgs = (mockUpdateDashboard as Mock<(...args: unknown[]) => Promise<unknown>>).mock.calls[0];
+      expect(updateArgs?.[1]).toEqual({ orgId: "org-1", viewerId: "u1" });
+    });
+
     it("rejects a parameter update that orphans a card's placeholder (#2267)", async () => {
       const cardWithParam = { ...mockCardData, sql: "SELECT * FROM orders WHERE created_at >= :date_from" };
       mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [cardWithParam] } });
@@ -827,6 +861,16 @@ describe("dashboard routes", () => {
         }),
       );
       expect(response.status).toBe(404);
+    });
+
+    it("threads the caller's viewerId into deleteDashboard (#4537)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(204);
+      expect(mockDeleteDashboard).toHaveBeenCalledWith(VALID_ID, { orgId: "org-1", viewerId: "u1" });
     });
   });
 
@@ -2033,6 +2077,8 @@ describe("dashboard routes", () => {
       expect(response.status).toBe(200);
       const body = (await response.json()) as { token: string };
       expect(body.token).toBe("share-token-123");
+      // #4537 — the acting identity must reach the write-side gate.
+      expect(mockShareDashboard.mock.calls[0]?.[1]).toEqual({ orgId: "org-1", viewerId: "u1" });
     });
 
     // Regression for #1737 — the DB CHECK (chk_org_scoped_share, 0034)
@@ -2164,6 +2210,8 @@ describe("dashboard routes", () => {
         }),
       );
       expect(response.status).toBe(204);
+      // #4537 — the acting identity must reach the write-side gate.
+      expect(mockUnshareDashboard).toHaveBeenCalledWith(VALID_ID, { orgId: "org-1", viewerId: "u1" });
     });
   });
 
@@ -2175,6 +2223,8 @@ describe("dashboard routes", () => {
       expect(response.status).toBe(200);
       const body = (await response.json()) as { shared: boolean };
       expect(body.shared).toBe(false);
+      // #4537 — status carries the share token; the viewer gates the read.
+      expect(mockGetShareStatus).toHaveBeenCalledWith(VALID_ID, { orgId: "org-1", viewerId: "u1" });
     });
   });
 

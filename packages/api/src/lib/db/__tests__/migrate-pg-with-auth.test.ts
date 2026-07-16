@@ -415,9 +415,14 @@ describeIfPg("migrate-pg-with-auth (real Postgres, Better Auth tables present)",
       expect(exists.rows[0]?.exists).toBe(true);
 
       // The functional index 0151 creates must be present (so the probe is an
-      // indexed lookup, not a seq scan).
+      // indexed lookup, not a seq scan). Schema-qualified: against a shared
+      // local database (bun run db:up), the dev `public` schema carries the
+      // same index, and the unqualified lookup returned 2 rows — a false fail
+      // that never reproduces on CI's fresh service container.
       const idx = await pool.query<{ indexname: string }>(
-        `SELECT indexname FROM pg_indexes WHERE indexname = 'user_email_sha256_idx'`,
+        `SELECT indexname FROM pg_indexes
+          WHERE indexname = 'user_email_sha256_idx' AND schemaname = $1`,
+        [schemaName],
       );
       expect(idx.rows).toHaveLength(1);
     },

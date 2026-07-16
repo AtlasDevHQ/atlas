@@ -431,6 +431,7 @@ describe("runMigrations", () => {
         "0172_learned_patterns_identity.sql",
         "0173_learned_pattern_injections.sql",
         "0174_connection_profile_baseline_started_at.sql",
+        "0175_dashboard_draft_card_cache.sql",
       ],
     });
 

@@ -12,6 +12,7 @@ import { describe, it, expect } from "bun:test";
 import {
   projectSharedDashboardView,
   buildSharedParameterSummary,
+  resolveSharedSnapshotInstant,
 } from "../dashboards";
 import { sharedDashboardViewSchema } from "@useatlas/schemas";
 import type { DashboardWithCards, DashboardCard } from "../dashboard-types";
@@ -105,6 +106,47 @@ describe("projectSharedDashboardView (#4316)", () => {
     }
   });
 
+  it("freezes relative-date summaries against the snapshot's refresh instant, not request time (#4538)", () => {
+    // The card's cachedRows are frozen at lastRefreshAt; the parameter summary
+    // that labels them must resolve its relative-date defaults against the SAME
+    // frozen instant — never a fresh `new Date()` per view request (which would
+    // drift the chip ahead of the data window as the share link ages).
+    const dashboard: DashboardWithCards = {
+      ...fullDashboard,
+      lastRefreshAt: "2026-04-04T01:00:00.000Z",
+      parameters: [{ key: "since", type: "date", default: "now - 30 days", label: "Since" }],
+    };
+    const view = projectSharedDashboardView(dashboard);
+    // 2026-04-04 − 30 days = 2026-03-05 — the frozen window, independent of today.
+    expect(view.parameterSummary).toEqual([{ label: "Since", displayValue: "2026-03-05" }]);
+  });
+
+  it("keeps the relative-date summary stable across repeated view requests (#4538)", () => {
+    const dashboard: DashboardWithCards = {
+      ...fullDashboard,
+      lastRefreshAt: "2026-04-04T01:00:00.000Z",
+      parameters: [{ key: "since", type: "date", default: "now - 7 days", label: "Since" }],
+    };
+    const first = projectSharedDashboardView(dashboard);
+    const second = projectSharedDashboardView(dashboard);
+    expect(first.parameterSummary).toEqual(second.parameterSummary);
+    // 2026-04-04 − 7 days = 2026-03-28.
+    expect(first.parameterSummary).toEqual([{ label: "Since", displayValue: "2026-03-28" }]);
+  });
+
+  it("falls back to updatedAt for the frozen instant when never refreshed (#4538)", () => {
+    const dashboard: DashboardWithCards = {
+      ...fullDashboard,
+      lastRefreshAt: null,
+      // Never refreshed: no card has cached data either.
+      cards: [{ ...fullCard, cachedAt: null }],
+      parameters: [{ key: "since", type: "date", default: "now - 30 days", label: "Since" }],
+    };
+    const view = projectSharedDashboardView(dashboard);
+    // updatedAt 2026-04-03 − 30 days = 2026-03-04.
+    expect(view.parameterSummary).toEqual([{ label: "Since", displayValue: "2026-03-04" }]);
+  });
+
   it("resolves a relative-date default to a concrete date in the summary", () => {
     const now = new Date("2026-07-04T12:00:00.000Z");
     const summary = buildSharedParameterSummary(
@@ -139,6 +181,40 @@ describe("projectSharedDashboardView (#4316)", () => {
     expect(buildSharedParameterSummary([])).toEqual([]);
     expect(buildSharedParameterSummary(null)).toEqual([]);
     expect(buildSharedParameterSummary(undefined)).toEqual([]);
+  });
+
+  // #4538 — the frozen-instant resolver itself. The projection-level tests
+  // above prove the summary uses it; these pin the instant-selection order:
+  // newest of (lastRefreshAt, every card's cachedAt), else updatedAt.
+  describe("resolveSharedSnapshotInstant (#4538)", () => {
+    it("uses the newest card cachedAt when it is newer than lastRefreshAt", () => {
+      const instant = resolveSharedSnapshotInstant({
+        ...fullDashboard,
+        lastRefreshAt: "2026-04-04T01:00:00.000Z",
+        cards: [
+          fullCard,
+          { ...fullCard, id: "card-2", cachedAt: "2026-05-10T12:00:00.000Z" },
+        ],
+      });
+      expect(instant.toISOString()).toBe("2026-05-10T12:00:00.000Z");
+    });
+
+    it("uses card cachedAt when lastRefreshAt is null", () => {
+      const instant = resolveSharedSnapshotInstant({
+        ...fullDashboard,
+        lastRefreshAt: null,
+      });
+      expect(instant.toISOString()).toBe("2026-04-04T00:00:00.000Z");
+    });
+
+    it("falls back to updatedAt for a never-refreshed dashboard with no cached cards", () => {
+      const instant = resolveSharedSnapshotInstant({
+        ...fullDashboard,
+        lastRefreshAt: null,
+        cards: [{ ...fullCard, cachedAt: null }],
+      });
+      expect(instant.toISOString()).toBe("2026-04-03T00:00:00.000Z");
+    });
   });
 
   it("round-trips through the strict shared-view Zod schema", () => {

@@ -271,6 +271,7 @@ void mock.module("@atlas/api/lib/dashboards", () => ({
   // to the real projection, not undefined (CLAUDE.md mock-all-exports rule).
   projectSharedDashboardView: realDashboards.projectSharedDashboardView,
   buildSharedParameterSummary: realDashboards.buildSharedParameterSummary,
+  resolveSharedSnapshotInstant: realDashboards.resolveSharedSnapshotInstant,
   setRefreshSchedule: mock(() => Promise.resolve({ ok: true })),
   getDashboardsDueForRefresh: mock(() => Promise.resolve([])),
   lockDashboardForRefresh: mock(() => Promise.resolve(false)),
@@ -786,6 +787,40 @@ describe("dashboard routes", () => {
       const body = (await response.json()) as { error: string; message: string };
       expect(body.error).toBe("invalid_parameters");
       expect(body.message).toContain(":date_from");
+      expect(mockUpdateDashboard).not.toHaveBeenCalled();
+    });
+
+    it("fails the PATCH with requestId when the orphan-guard pre-read errors — never writes parameters blind (#4539)", async () => {
+      // A transient getDashboard failure must NOT skip the guard and fall
+      // through to the write: that can drop a :placeholder a card still
+      // references, 400-ing every subsequent render.
+      mockGetDashboard.mockResolvedValueOnce({ ok: false, reason: "error" });
+      mockUpdateDashboard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: [] }),
+        }),
+      );
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("internal_error");
+      expect(typeof body.requestId).toBe("string");
+      expect(mockUpdateDashboard).not.toHaveBeenCalled();
+    });
+
+    it("maps a not_found pre-read to 404 without writing parameters (#4539)", async () => {
+      mockGetDashboard.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+      mockUpdateDashboard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: [] }),
+        }),
+      );
+      expect(response.status).toBe(404);
       expect(mockUpdateDashboard).not.toHaveBeenCalled();
     });
 

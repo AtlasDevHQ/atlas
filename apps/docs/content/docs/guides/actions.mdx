@@ -212,7 +212,7 @@ Send email reports via [Resend](https://resend.com).
 
 **Optional:**
 - `ATLAS_EMAIL_FROM` -- From address (default: `Atlas <atlas@ship.useatlas.dev>`)
-- `ATLAS_EMAIL_ALLOWED_DOMAINS` -- Comma-separated domain whitelist for recipients
+- `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` -- Comma-separated domains recipients may belong to, in addition to workspace member addresses (unset = workspace members only). Shared with the `sendEmail` integration tool. The former `ATLAS_EMAIL_ALLOWED_DOMAINS` is deprecated and honored as a fallback for one release
 
 **Input:**
 - `to` -- Recipient email address(es)

@@ -775,14 +775,15 @@ describe("E2E: Action framework", () => {
     });
   });
 
-  describe("email domain validation", () => {
-    it("rejects blocked domains when allowlist is set", async () => {
-      const origDomains = process.env.ATLAS_EMAIL_ALLOWED_DOMAINS;
-      process.env.ATLAS_EMAIL_ALLOWED_DOMAINS = "example.com,acme.org";
+  describe("email recipient gate (#4479 — consolidated allowlist)", () => {
+    it("rejects recipients outside the member + allowlisted-domain boundary", async () => {
+      const origDomains = process.env.ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS;
+      process.env.ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS = "example.com,acme.org";
 
       try {
-        // Domain validation is in the tool's execute function (sendEmailReport.tool.execute),
-        // not in executeEmailSend. Call the tool's execute directly to test the allowlist.
+        // The recipient gate runs in the tool's execute function
+        // (sendEmailReport.tool.execute), not in executeEmailSend. Call the
+        // tool's execute directly to test the gate.
         const { sendEmailReport } = await import(
           "../../packages/api/src/lib/tools/actions/email"
         );
@@ -798,24 +799,24 @@ describe("E2E: Action framework", () => {
             ),
         );
 
-        // The tool should reject with an error status for the blocked domain
+        // The tool should reject with a failed status for the blocked recipient
         expect(result).toMatchObject({
-          status: "error",
+          status: "failed",
         });
         expect((result as { error: string }).error).toContain("not allowed");
         expect((result as { error: string }).error).toContain("blocked.com");
       } finally {
         if (origDomains !== undefined) {
-          process.env.ATLAS_EMAIL_ALLOWED_DOMAINS = origDomains;
+          process.env.ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS = origDomains;
         } else {
-          delete process.env.ATLAS_EMAIL_ALLOWED_DOMAINS;
+          delete process.env.ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS;
         }
       }
     });
 
-    it("allows valid domains when allowlist is set", async () => {
-      const origDomains = process.env.ATLAS_EMAIL_ALLOWED_DOMAINS;
-      process.env.ATLAS_EMAIL_ALLOWED_DOMAINS = "example.com,acme.org";
+    it("allows recipients on an allowlisted domain", async () => {
+      const origDomains = process.env.ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS;
+      process.env.ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS = "example.com,acme.org";
 
       const { restore } = interceptResendFetch();
 
@@ -835,14 +836,14 @@ describe("E2E: Action framework", () => {
             ),
         );
 
-        // Allowed domain should proceed to pending (not error)
+        // Allowed domain should proceed to pending (not blocked)
         expect((result as { status: string }).status).toBe("pending");
       } finally {
         restore();
         if (origDomains !== undefined) {
-          process.env.ATLAS_EMAIL_ALLOWED_DOMAINS = origDomains;
+          process.env.ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS = origDomains;
         } else {
-          delete process.env.ATLAS_EMAIL_ALLOWED_DOMAINS;
+          delete process.env.ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS;
         }
       }
     });

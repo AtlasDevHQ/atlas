@@ -324,7 +324,7 @@ The scheduler uses an in-process lock to prevent overlapping ticks. If you see d
 #### Execution Failed
 
 - Check credentials: `RESEND_API_KEY` for email, `JIRA_BASE_URL` + `JIRA_EMAIL` + `JIRA_API_TOKEN` for JIRA
-- For email: verify `ATLAS_EMAIL_ALLOWED_DOMAINS` if set (restricts recipient domains)
+- For email: recipients are restricted to workspace members plus domains in `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` (Admin → Settings → Security)
 - Check debug logs for the specific error from the external service
 
 ---

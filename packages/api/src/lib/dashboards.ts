@@ -214,8 +214,9 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
  * omitted — that's the deliberate opt-out for system/owner-internal callers
  * (the publish merge's own baseline load, auto-refresh, agent tools acting on
  * an already-bound board) that must still resolve a never-published row. Every
- * USER-FACING read surface passes `viewerId` so the gate is enforced at the
- * request boundary, where the acting identity lives.
+ * USER-FACING surface — reads AND the write/share/delete paths (#4537) —
+ * passes `viewerId` so the gate is enforced at the request boundary, where the
+ * acting identity lives.
  */
 function firstPublishVisibilityClause(
   viewerId: string | null | undefined,
@@ -455,7 +456,7 @@ export async function listDashboards(opts?: {
 
 export async function updateDashboard(
   id: string,
-  scope: { orgId?: string | null },
+  scope: { orgId?: string | null; viewerId?: string | null },
   updates: {
     title?: string;
     description?: string | null;
@@ -492,38 +493,53 @@ export async function updateDashboard(
 
   const org = orgScopeClause(scope.orgId, params, paramIdx);
   paramIdx = org.nextIdx;
+  // #4537 — write-side mirror of the read gate: a never-published dashboard
+  // only accepts writes from its creator.
+  const vis = firstPublishVisibilityClause(scope.viewerId, params, paramIdx);
+  paramIdx = vis.nextIdx;
+  const visClause = vis.clause ? ` AND ${vis.clause}` : "";
 
   try {
     const rows = await internalQuery<{ id: string }>(
       `UPDATE dashboards SET ${setClauses.join(", ")}
-       WHERE id = $${paramIdx} AND ${org.clause} AND deleted_at IS NULL
+       WHERE id = $${paramIdx} AND ${org.clause}${visClause} AND deleted_at IS NULL
        RETURNING id`,
       [...params, id],
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "updateDashboard failed");
+    log.error(
+      { dashboardId: id, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "updateDashboard failed",
+    );
     return { ok: false, reason: "error" };
   }
 }
 
 export async function deleteDashboard(
   id: string,
-  scope: { orgId?: string | null },
+  scope: { orgId?: string | null; viewerId?: string | null },
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const params: unknown[] = [id];
     const org = orgScopeClause(scope.orgId, params, 2);
+    // #4537 — a non-owner must not be able to blind-delete a never-published
+    // board (it would strand the creator's in-flight draft unreachable).
+    const vis = firstPublishVisibilityClause(scope.viewerId, params, org.nextIdx);
+    const visClause = vis.clause ? ` AND ${vis.clause}` : "";
     const rows = await internalQuery<{ id: string }>(
       `UPDATE dashboards SET deleted_at = now(), updated_at = now()
-       WHERE id = $1 AND ${org.clause} AND deleted_at IS NULL
+       WHERE id = $1 AND ${org.clause}${visClause} AND deleted_at IS NULL
        RETURNING id`,
       params,
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "deleteDashboard failed");
+    log.error(
+      { dashboardId: id, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "deleteDashboard failed",
+    );
     return { ok: false, reason: "error" };
   }
 }
@@ -795,7 +811,7 @@ export type ShareDashboardResult =
  */
 export async function shareDashboard(
   id: string,
-  scope: { orgId?: string | null },
+  scope: { orgId?: string | null; viewerId?: string | null },
   opts?: { expiresIn?: ShareExpiryKey | null; shareMode?: ShareMode; rotate?: boolean },
 ): Promise<ShareDashboardResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
@@ -824,8 +840,14 @@ export async function shareDashboard(
       // scope in the future should still hit this guard.
       const params: unknown[] = [id];
       const lookupOrg = orgScopeClause(scope.orgId, params, 2);
+      // #4537 — gated for the same reason as the relaxed-scope guard above:
+      // an ungated pre-check on a scope-relaxed callsite would answer
+      // invalid_org_scope (400) instead of not_found for someone else's
+      // never-published board — an existence oracle.
+      const lookupVis = firstPublishVisibilityClause(scope.viewerId, params, lookupOrg.nextIdx);
+      const lookupVisClause = lookupVis.clause ? ` AND ${lookupVis.clause}` : "";
       const orgRows = await internalQuery<{ org_id: string | null }>(
-        `SELECT org_id FROM dashboards WHERE id = $1 AND ${lookupOrg.clause} AND deleted_at IS NULL`,
+        `SELECT org_id FROM dashboards WHERE id = $1 AND ${lookupOrg.clause}${lookupVisClause} AND deleted_at IS NULL`,
         params,
       );
       if (orgRows.length === 0) return { ok: false, reason: "not_found" };
@@ -844,11 +866,15 @@ export async function shareDashboard(
     // first-time-share case, where there is no existing link to preserve.
     const params: unknown[] = [candidateToken, expiresAt, shareMode, rotate, id];
     const org = orgScopeClause(scope.orgId, params, 6, "src");
+    // #4537 — a non-owner must not mint (or rotate) a share link on a
+    // never-published board they cannot read.
+    const vis = firstPublishVisibilityClause(scope.viewerId, params, org.nextIdx, "src");
+    const visClause = vis.clause ? ` AND ${vis.clause}` : "";
 
     const rows = await internalQuery<{ share_token: string; old_token: string | null }>(
       `WITH prev AS (
          SELECT src.id, src.share_token AS old_token FROM dashboards src
-         WHERE src.id = $5 AND ${org.clause} AND src.deleted_at IS NULL
+         WHERE src.id = $5 AND ${org.clause}${visClause} AND src.deleted_at IS NULL
        )
        UPDATE dashboards d
        SET share_token = CASE WHEN $4::boolean OR prev.old_token IS NULL THEN $1 ELSE prev.old_token END,
@@ -866,43 +892,56 @@ export async function shareDashboard(
     const rotated = oldToken !== null && token !== oldToken;
     return { ok: true, data: { token, expiresAt, shareMode, rotated } };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "shareDashboard failed");
+    log.error(
+      { dashboardId: id, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "shareDashboard failed",
+    );
     return { ok: false, reason: "error" };
   }
 }
 
 export async function unshareDashboard(
   id: string,
-  scope: { orgId?: string | null },
+  scope: { orgId?: string | null; viewerId?: string | null },
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const params: unknown[] = [id];
     const org = orgScopeClause(scope.orgId, params, 2);
+    // #4537 — only the creator may revoke a never-published board's share.
+    const vis = firstPublishVisibilityClause(scope.viewerId, params, org.nextIdx);
+    const visClause = vis.clause ? ` AND ${vis.clause}` : "";
     const rows = await internalQuery<{ id: string }>(
       `UPDATE dashboards SET share_token = NULL, share_expires_at = NULL, updated_at = now()
-       WHERE id = $1 AND ${org.clause} AND deleted_at IS NULL
+       WHERE id = $1 AND ${org.clause}${visClause} AND deleted_at IS NULL
        RETURNING id`,
       params,
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "unshareDashboard failed");
+    log.error(
+      { dashboardId: id, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "unshareDashboard failed",
+    );
     return { ok: false, reason: "error" };
   }
 }
 
 export async function getShareStatus(
   id: string,
-  scope: { orgId?: string | null },
+  scope: { orgId?: string | null; viewerId?: string | null },
 ): Promise<CrudDataResult<{ shared: boolean; token: string | null; expiresAt: string | null; shareMode: ShareMode }>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const params: unknown[] = [id];
     const org = orgScopeClause(scope.orgId, params, 2);
+    // #4537 — the status response carries the share TOKEN; leaking it to a
+    // non-owner of a never-published board is a live-link disclosure.
+    const vis = firstPublishVisibilityClause(scope.viewerId, params, org.nextIdx);
+    const visClause = vis.clause ? ` AND ${vis.clause}` : "";
     const rows = await internalQuery<Record<string, unknown>>(
       `SELECT share_token, share_expires_at, share_mode FROM dashboards
-       WHERE id = $1 AND ${org.clause} AND deleted_at IS NULL`,
+       WHERE id = $1 AND ${org.clause}${visClause} AND deleted_at IS NULL`,
       params,
     );
     if (rows.length === 0) return { ok: false, reason: "not_found" };
@@ -918,7 +957,10 @@ export async function getShareStatus(
       },
     };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "getShareStatus failed");
+    log.error(
+      { dashboardId: id, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "getShareStatus failed",
+    );
     return { ok: false, reason: "error" };
   }
 }
@@ -1385,7 +1427,7 @@ async function getDashboardUnscoped(
  */
 export async function setRefreshSchedule(
   dashboardId: string,
-  scope: { orgId?: string | null },
+  scope: { orgId?: string | null; viewerId?: string | null },
   schedule: string | null,
   computeNextRun: (expr: string, after?: Date) => Date | null,
 ): Promise<CrudResult> {
@@ -1402,16 +1444,22 @@ export async function setRefreshSchedule(
     }
     const params: unknown[] = [schedule, nextRefresh, dashboardId];
     const org = orgScopeClause(scope.orgId, params, 4);
+    // #4537 — only the creator may (re)schedule a never-published board.
+    const vis = firstPublishVisibilityClause(scope.viewerId, params, org.nextIdx);
+    const visClause = vis.clause ? ` AND ${vis.clause}` : "";
 
     const rows = await internalQuery<{ id: string }>(
       `UPDATE dashboards SET refresh_schedule = $1, next_refresh_at = $2, updated_at = now()
-       WHERE id = $3 AND ${org.clause} AND deleted_at IS NULL
+       WHERE id = $3 AND ${org.clause}${visClause} AND deleted_at IS NULL
        RETURNING id`,
       params,
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "setRefreshSchedule failed");
+    log.error(
+      { dashboardId, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "setRefreshSchedule failed",
+    );
     return { ok: false, reason: "error" };
   }
 }

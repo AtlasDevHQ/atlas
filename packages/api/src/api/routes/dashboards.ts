@@ -1754,12 +1754,13 @@ authed.openapi(
       // Handle refreshSchedule separately (needs cron validation + next_refresh_at)
       if (parsed.refreshSchedule !== undefined) {
         if (parsed.refreshSchedule) {
+          const schedule = parsed.refreshSchedule;
           const { validateCronExpression, computeNextRun } = yield* Effect.promise(() => import("@atlas/api/lib/scheduled-tasks"));
-          const cronCheck = validateCronExpression(parsed.refreshSchedule);
+          const cronCheck = validateCronExpression(schedule);
           if (!cronCheck.valid) {
             return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
           }
-          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId }, parsed.refreshSchedule!, computeNextRun));
+          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId, viewerId: user?.id ?? "anonymous" }, schedule, computeNextRun));
           if (!schedResult.ok) {
             const fail = crudFailResponse(schedResult.reason, requestId);
             return c.json(fail.body, fail.status);
@@ -1767,7 +1768,7 @@ authed.openapi(
         } else {
           // Disabling auto-refresh (null)
           const { computeNextRun } = yield* Effect.promise(() => import("@atlas/api/lib/scheduled-tasks"));
-          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId }, null, computeNextRun));
+          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId, viewerId: user?.id ?? "anonymous" }, null, computeNextRun));
           if (!schedResult.ok) {
             const fail = crudFailResponse(schedResult.reason, requestId);
             return c.json(fail.body, fail.status);
@@ -1782,7 +1783,7 @@ authed.openapi(
       // private content edit).
       if (parsed.parameters !== undefined) {
         const result = yield* Effect.promise(() =>
-          updateDashboard(id, { orgId }, { parameters: parsed.parameters }),
+          updateDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }, { parameters: parsed.parameters }),
         );
         if (!result.ok) {
           const fail = crudFailResponse(result.reason, requestId);
@@ -1815,7 +1816,7 @@ authed.openapi(
           }
           return c.json(edit.view, 200);
         }
-        const result = yield* Effect.promise(() => updateDashboard(id, { orgId }, metaUpdates));
+        const result = yield* Effect.promise(() => updateDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }, metaUpdates));
         if (!result.ok) {
           const fail = crudFailResponse(result.reason, requestId);
           return c.json(fail.body, fail.status);
@@ -1843,13 +1844,15 @@ authed.openapi(
 authed.openapi(deleteDashboardRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
 
-    const result = yield* Effect.promise(() => deleteDashboard(id, { orgId }));
+    // #4537 — the viewer gates the delete: a never-published board 404s for
+    // anyone but its creator, exactly like the read paths.
+    const result = yield* Effect.promise(() => deleteDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2634,7 +2637,7 @@ authed.openapi(
   async (c) => {
     return runEffect(c, Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId } = yield* AuthContext;
+      const { orgId, user } = yield* AuthContext;
       const { id } = c.req.valid("param");
       if (!UUID_RE.test(id)) {
         return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
@@ -2686,7 +2689,7 @@ authed.openapi(
         parsed = validated.data;
       }
 
-      const result = yield* Effect.promise(() => shareDashboard(id, { orgId }, {
+      const result = yield* Effect.promise(() => shareDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }, {
         expiresIn: parsed.expiresIn ?? null,
         shareMode: parsed.shareMode ?? "public",
         rotate: parsed.rotate ?? false,
@@ -2714,13 +2717,13 @@ authed.openapi(
 authed.openapi(unshareDashboardRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
 
-    const result = yield* Effect.promise(() => unshareDashboard(id, { orgId }));
+    const result = yield* Effect.promise(() => unshareDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -2736,13 +2739,13 @@ authed.openapi(unshareDashboardRoute, async (c) => {
 authed.openapi(getShareStatusRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
 
-    const result = yield* Effect.promise(() => getShareStatus(id, { orgId }));
+    const result = yield* Effect.promise(() => getShareStatus(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!result.ok) {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);

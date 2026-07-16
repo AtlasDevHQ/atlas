@@ -60,6 +60,12 @@ import {
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
 import { rowToCard, loadDashboardUpdatedAtPrecise } from "@atlas/api/lib/dashboards";
+import {
+  loadDraftCardCache,
+  seedDraftCardCacheFromPublished,
+  type DraftCardCacheEntry,
+  type DraftCardCacheMap,
+} from "@atlas/api/lib/dashboard-draft-cache";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 // #4325 — the publish diff SSOT. The client publish-diff and this server merge
 // consume the SAME card-equality (full `chartConfig` + `position`), so the diff
@@ -774,6 +780,13 @@ export async function forkOrLoadDraft(
     );
     return null;
   }
+  // #4554 — a FRESH fork copies the published cards' cached data into the
+  // caller's draft cache (rows + capture instants), so the new draft view
+  // renders the same data published showed a moment ago. Only here, on the
+  // create path: an existing draft's cache is its own and must never be
+  // re-overwritten from published. Fail-soft (logged inside) — a failed seed
+  // degrades to "never run" tiles, not a failed fork.
+  await seedDraftCardCacheFromPublished(userId, published.id);
   return loadDraft(userId, published.id);
 }
 
@@ -848,10 +861,13 @@ export async function applyEditToDraft(
   if (!applied.ok) return { ok: false, reason: "unknown_card", cardId: applied.cardId };
   const saved = await saveDraft(userId, published.id, applied.snapshot);
   if (!saved) return { ok: false, reason: "save_failed" };
+  // #4554 — the returned view materializes the caller's draft cache (their
+  // own data home), never the published cards' cached rows.
+  const draftCache = await loadDraftCardCache(userId, published.id);
   return {
     ok: true,
     snapshot: applied.snapshot,
-    view: materializeDraftView(published, applied.snapshot),
+    view: materializeDraftView(published, applied.snapshot, draftCache),
   };
 }
 
@@ -1315,10 +1331,18 @@ export async function rebaseDraft(opts: {
  * answer "show me what the user would see if they switched to their
  * draft" without losing fields the draft doesn't track (share token,
  * refresh schedule, etc.).
+ *
+ * #4554 (ADR-0034 Decision 1): each card's data comes from the caller's
+ * DRAFT CACHE (`draftCache`, keyed by card id) — never from the matching
+ * published card's cached rows. The fork seeds the draft cache with a copy
+ * of the published data, so continuity is preserved without a read-time
+ * fallback; after that, only draft executions move what the draft holder
+ * sees. A card with no draft-cache entry renders "never run".
  */
 export function materializeDraftView(
   published: DashboardWithCards,
   draft: DashboardSnapshot,
+  draftCache: DraftCardCacheMap,
 ): DashboardWithCards {
   // For card timestamps we forward the published row's `updatedAt` —
   // the draft doesn't track per-card timestamps and stamping a fresh
@@ -1328,16 +1352,19 @@ export function materializeDraftView(
   // value; the API consumer that cares about per-card timestamps
   // should hit the published view, not the draft overlay.
   const fallbackTimestamp = published.updatedAt;
-  // Preserve any cached columns/rows from the matching published card
-  // so the draft overlay doesn't render with empty placeholders when
-  // the user hasn't actually changed the card's SQL.
   const publishedById = new Map(published.cards.map((c) => [c.id, c]));
   return {
     ...published,
     title: draft.title,
     description: draft.description,
     cards: draft.cards.map((c) =>
-      snapshotCardToDashboardCard(c, published.id, fallbackTimestamp, publishedById.get(c.id)),
+      snapshotCardToDashboardCard(
+        c,
+        published.id,
+        fallbackTimestamp,
+        draftCache.get(c.id),
+        publishedById.get(c.id),
+      ),
     ),
   };
 }
@@ -1346,6 +1373,7 @@ function snapshotCardToDashboardCard(
   c: DashboardSnapshotCard,
   dashboardId: string,
   fallbackTimestamp: string,
+  cache: DraftCardCacheEntry | undefined,
   publishedCard?: DashboardCard,
 ): DashboardCard {
   // Best-effort row → card via the existing helper for consistency
@@ -1364,9 +1392,12 @@ function snapshotCardToDashboardCard(
     // #3209: carry the draft's event annotations into the overlay so the
     // editor preview renders the same vertical markers the publish will persist.
     annotations: c.annotations ?? [],
-    cached_columns: publishedCard?.cachedColumns ?? null,
-    cached_rows: publishedCard?.cachedRows ?? null,
-    cached_at: publishedCard?.cachedAt ?? null,
+    // #4554 — the draft cache is the ONLY data source for a draft view.
+    // The published card is still consulted for TIMESTAMPS below (metadata),
+    // but never for cached data.
+    cached_columns: cache?.cachedColumns ?? null,
+    cached_rows: cache?.cachedRows ?? null,
+    cached_at: cache?.cachedAt ?? null,
     connection_group_id: c.connectionGroupId,
     layout: c.layout,
     created_at: publishedCard?.createdAt ?? fallbackTimestamp,

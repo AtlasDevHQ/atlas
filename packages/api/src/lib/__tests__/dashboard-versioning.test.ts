@@ -766,7 +766,7 @@ describe("materializeDraftView", () => {
     const draft = snapshot([card("c1", { title: "draft" }), card("c2", { position: 1 })], {
       title: "Draft Title",
     });
-    const view = materializeDraftView(published, draft);
+    const view = materializeDraftView(published, draft, new Map());
     expect(view.title).toBe("Draft Title");
     expect(view.cards).toHaveLength(2);
     expect(view.cards[0].title).toBe("draft");
@@ -775,12 +775,39 @@ describe("materializeDraftView", () => {
     expect(view.shareToken).toBe("tok");
   });
 
-  it("preserves cached_columns / cached_rows / cachedAt from the matching published card", () => {
-    // Without this fall-through, a draft view would render cards as
-    // empty placeholders even when the user only changed the title.
+  it("materializes cached data from the DRAFT CACHE entry for the card (#4554)", () => {
     const baseCard = card("c1", { title: "pub" });
-    // Build the published row directly so we can inject the cached-*
-    // fields that the dashboardWithCards helper hard-nulls.
+    const published: DashboardWithCards = {
+      ...dashboardWithCards([], {}),
+      cards: [],
+    };
+    const draft = snapshot([{ ...baseCard, title: "draft" }], {});
+    const view = materializeDraftView(
+      published,
+      draft,
+      new Map([
+        [
+          "c1",
+          {
+            cachedColumns: ["a", "b"],
+            cachedRows: [{ a: 1, b: 2 }],
+            cachedAt: "2026-05-01T00:00:00.000Z",
+          },
+        ],
+      ]),
+    );
+    expect(view.cards[0].cachedColumns).toEqual(["a", "b"]);
+    expect(view.cards[0].cachedRows).toEqual([{ a: 1, b: 2 }]);
+    expect(view.cards[0].cachedAt).toBe("2026-05-01T00:00:00.000Z");
+  });
+
+  it("never falls back to the published card's cached data (#4554, ADR-0034)", () => {
+    // The pre-ADR-0034 behavior — borrowing the matching PUBLISHED card's
+    // cached rows when the draft has none — is the retired fallback. A card
+    // with no draft-cache entry renders "never run" even when its published
+    // twin has data: the fork SEEDS the draft cache instead, so a read-time
+    // fallback would let post-fork published refreshes bleed into the draft.
+    const baseCard = card("c1", { title: "pub" });
     const publishedCardRow: DashboardCard = {
       id: baseCard.id,
       dashboardId: "dash-1",
@@ -804,10 +831,12 @@ describe("materializeDraftView", () => {
       cards: [publishedCardRow],
     };
     const draft = snapshot([{ ...baseCard, title: "draft" }], {});
-    const view = materializeDraftView(published, draft);
-    expect(view.cards[0].cachedColumns).toEqual(["a", "b"]);
-    expect(view.cards[0].cachedRows).toEqual([{ a: 1, b: 2 }]);
-    expect(view.cards[0].cachedAt).toBe("2026-05-01T00:00:00.000Z");
+    const view = materializeDraftView(published, draft, new Map());
+    expect(view.cards[0].cachedColumns).toBeNull();
+    expect(view.cards[0].cachedRows).toBeNull();
+    expect(view.cards[0].cachedAt).toBeNull();
+    // Timestamps (metadata) still fall through from the published card.
+    expect(view.cards[0].createdAt).toBe("2026-05-01T00:00:00.000Z");
   });
 
   it("falls back to published.updatedAt for card timestamps instead of new Date()", () => {
@@ -823,7 +852,7 @@ describe("materializeDraftView", () => {
       [card("c1", { title: "draft" }), card("c2", { position: 1, title: "new" })],
       { title: "Draft Title" },
     );
-    const view = materializeDraftView(published, draft);
+    const view = materializeDraftView(published, draft, new Map());
     expect(view.cards[1].updatedAt).toBe("2026-05-10T00:00:00.000Z");
     expect(view.cards[1].createdAt).toBe("2026-05-10T00:00:00.000Z");
   });
@@ -1001,9 +1030,11 @@ describe("dashboard-versioning DB helpers", () => {
     it("inserts a fresh draft when no row exists then re-loads it", async () => {
       enableInternalDB();
       const published = dashboardWithCards([card("c1")]);
-      // 1: initial load — empty. 2: INSERT — no rows return. 3: re-load.
+      // 1: initial load — empty. 2: INSERT — no rows return. 3: draft-cache
+      // seed (#4554). 4: re-load.
       const snap = forkDraftFromPublished(published);
       setResults(
+        { rows: [] },
         { rows: [] },
         { rows: [] },
         {
@@ -1021,6 +1052,24 @@ describe("dashboard-versioning DB helpers", () => {
       // params (user, dashboard, draft, baseline) — not a JS-truncated timestamp.
       expect(queryCalls[1].sql).toContain("FROM dashboards");
       expect(queryCalls[1].params?.length).toBe(4);
+      // #4554 — a FRESH fork seeds the caller's draft cache with a copy of the
+      // published cards' cached data (the one-time capture that replaces the
+      // retired read-time fallback).
+      expect(queryCalls[2].sql).toContain("INSERT INTO dashboard_draft_card_cache");
+      expect(queryCalls[2].sql).toContain("JOIN dashboard_cards");
+      expect(queryCalls[2].params).toEqual(["u1", published.id]);
+    });
+
+    it("does NOT seed the draft cache when the draft already existed (#4554)", async () => {
+      enableInternalDB();
+      const snap = snapshot([card("c1")]);
+      setResults({ rows: [draftRow({ draft: snap })] });
+      const published = dashboardWithCards([card("c1")]);
+      await forkOrLoadDraft("u1", published);
+      // Exactly one query — the initial load. Re-seeding an existing draft
+      // would let post-fork published refreshes bleed into the draft view.
+      const sqls = queryCalls.map((q) => q.sql).join("\n");
+      expect(sqls).not.toContain("dashboard_draft_card_cache");
     });
   });
 

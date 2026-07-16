@@ -501,6 +501,12 @@ describe("migrateAuthTables", () => {
             // column, runs in every auth mode — must be in the already-applied
             // set so this "all applied" test sees zero new migrations.
             { name: "0174_connection_profile_baseline_started_at.sql" },
+            // 0175 (#4554, ADR-0034) — dashboard_draft_card_cache: the draft
+            // cache (a draft card's own cached rows + capture instant).
+            // Additive CREATE TABLE + backfill from published card caches,
+            // runs in every auth mode — must be in the already-applied set so
+            // this "all applied" test sees zero new migrations.
+            { name: "0175_dashboard_draft_card_cache.sql" },
           ],
         };
       }

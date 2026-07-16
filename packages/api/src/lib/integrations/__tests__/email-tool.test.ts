@@ -545,16 +545,23 @@ describe("createSendEmailTool — execute paths", () => {
 
 describe("sendEmail recipient allowlist (#3341)", () => {
   const SETTING = "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS";
-  let savedDomains: string | undefined;
+  // Since #4479 the gate also honors the deprecated ATLAS_EMAIL_ALLOWED_DOMAINS
+  // env knob as a fallback — clear both so ambient env can't flip these tests.
+  const GATE_ENV_KEYS = [SETTING, "ATLAS_EMAIL_ALLOWED_DOMAINS"] as const;
+  const savedDomains: Record<string, string | undefined> = {};
 
   beforeEach(() => {
-    savedDomains = process.env[SETTING];
-    delete process.env[SETTING];
+    for (const key of GATE_ENV_KEYS) {
+      savedDomains[key] = process.env[key];
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
-    if (savedDomains === undefined) delete process.env[SETTING];
-    else process.env[SETTING] = savedDomains;
+    for (const key of GATE_ENV_KEYS) {
+      if (savedDomains[key] === undefined) delete process.env[key];
+      else process.env[key] = savedDomains[key];
+    }
   });
 
   function makeNeverLoader() {

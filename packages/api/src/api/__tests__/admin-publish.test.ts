@@ -113,6 +113,7 @@ void mock.module("@atlas/api/lib/settings", () => ({
   setSetting: async () => {},
   deleteSetting: async () => {},
   getSetting: () => undefined,
+  getSettingOverride: () => undefined,
   getSettingAuto: (key: string) => {
     if (key === "ATLAS_DEMO_INDUSTRY") {
       if (throwOnGet) throw throwOnGet;

@@ -223,14 +223,19 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
   {
-    // #3341 — recipient allowlist for the agent's `sendEmail` tool.
-    // Workspace members are always allowed; this adds extra domains.
-    // Empty (the default) = workspace members only.
+    // #3341 — recipient allowlist for agent-initiated email. Since #4479
+    // this single knob gates BOTH agent email paths (the `sendEmail`
+    // integration tool and the `sendEmailReport` action); the legacy
+    // action-path env knob `ATLAS_EMAIL_ALLOWED_DOMAINS` is honored as a
+    // deprecated fallback only while this setting is not explicitly
+    // configured (drop tracked in #4663). Workspace members are always
+    // allowed; this adds extra domains. Empty (the default) = workspace
+    // members only.
     key: "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS",
     section: "Security",
     label: "Email Recipient Domains",
     description:
-      "Comma-separated domains the agent's sendEmail tool may deliver to, in addition to workspace member addresses (e.g. example.com,partner.example). Empty = workspace members only.",
+      "Comma-separated domains agent-initiated email (sendEmail tool + sendEmailReport action) may deliver to, in addition to workspace member addresses (e.g. example.com,partner.example). Empty = workspace members only.",
     type: "string",
     default: "",
     envVar: "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS",

@@ -12,16 +12,19 @@
  *      DB touches", unit-tested with the env var unset / set to "us").
  *
  *   2. Real Postgres (gated on `TEST_DATABASE_URL`, skipped cleanly when
- *      unset): bootstraps the full Better Auth + Atlas schema into a scratch
- *      schema via `migrateAuthTables()` — the same boot path production uses —
- *      then seeds and asserts the four created entities, idempotency (second
- *      call = zero writes), and that the seeded admin is sign-in-able with the
- *      seeded password.
+ *      unset): bootstraps the full Better Auth + Atlas schema into a dedicated
+ *      scratch DATABASE via `migrateAuthTables()` — the same boot path
+ *      production uses — then seeds and asserts the four created entities,
+ *      idempotency (second call = zero writes), and that the seeded admin is
+ *      sign-in-able with the seeded password. A private database (not a scratch
+ *      schema) is required because Better Auth's migrator introspects the whole
+ *      database and would otherwise race concurrent sibling `-pg` tests' temp
+ *      schemas — see the beforeAll comment (#4647).
  *
  * The auth instance and `internalQuery` both read the module-level pool
- * (`getInternalDB()`), so a single schema-scoped pool injected via
- * `_resetPool` serves Better Auth's migrator + createUser/createOrganization
- * AND the seed's own queries — keeping every write inside the scratch schema.
+ * (`getInternalDB()`), so a single pool injected via `_resetPool` serves Better
+ * Auth's migrator + createUser/createOrganization AND the seed's own queries —
+ * keeping every write inside the scratch database.
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
@@ -208,7 +211,11 @@ const ENV_KEYS = [
 
 describeIfPg("ensureStagingSeed — real Postgres", () => {
   let pool: Pool;
-  const schemaName = `staging_seed_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  // A dedicated scratch DATABASE (not a schema) — see the beforeAll comment
+  // below for why schema isolation is insufficient for this suite (#4647).
+  const scratchDbName = `staging_seed_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  /** DSN for the scratch database, derived from TEST_DATABASE_URL in beforeAll. */
+  let scratchDbUrl: string;
   const savedEnv: Record<string, string | undefined> = {};
   /** Result of the single first-boot seed, asserted across the cases below. */
   let firstSeed: Awaited<ReturnType<typeof runSeed>>;
@@ -232,7 +239,42 @@ describeIfPg("ensureStagingSeed — real Postgres", () => {
   beforeAll(async () => {
     for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
 
-    process.env.DATABASE_URL = TEST_DB_URL;
+    // Dedicated scratch DATABASE, not a scratch schema (#4647). A scratch
+    // schema + `search_path` pin (the prior approach, hardened against
+    // public-schema pollution in b35e6d487) scopes THIS suite's own queries,
+    // but it cannot scope Better Auth's migrator: `migrateAuthTables()` →
+    // `runBootMigrations()` → `ctx.runMigrations()` calls Kysely's
+    // `db.introspection.getTables()`, which scans `pg_catalog` across EVERY
+    // schema the role can access (search_path is irrelevant to catalog
+    // introspection) and, per row, evaluates
+    // `pg_get_serial_sequence(quote_ident(nspname)||'.'||quote_ident(relname), …)`.
+    // Under the concurrent per-shard runner, a sibling `-pg` test's temp schema
+    // (e.g. `dualapply_*`, `conn_prof_*`) being CREATED/DROPPED mid-scan makes
+    // that function throw `relation "<sibling_schema>.<table>" does not exist`,
+    // aborting the Better Auth migration; `organization` is then never created
+    // and the seed fails downstream with `relation "organization" does not
+    // exist`. A private database is the only isolation that holds: the migrator
+    // introspects just this database, where no other test creates schemas.
+    const url = new URL(TEST_DB_URL as string);
+    url.pathname = `/${scratchDbName}`;
+    scratchDbUrl = url.toString();
+
+    const admin = new Pool({ connectionString: TEST_DB_URL });
+    try {
+      // CREATE DATABASE cannot run inside a transaction, and the target
+      // doesn't exist yet — so it runs on a one-shot admin pool bound to
+      // TEST_DATABASE_URL's own db.
+      await admin.query(`CREATE DATABASE "${scratchDbName}"`);
+    } finally {
+      // teardown-of-teardown: log, never mask a CREATE DATABASE failure.
+      await admin.end().catch((err: unknown) => {
+        console.warn(
+          `seed.test beforeAll: admin pool end failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
+
+    process.env.DATABASE_URL = scratchDbUrl;
     process.env.BETTER_AUTH_SECRET = "staging-seed-test-better-auth-secret-0001";
     // Better Auth's oauth-provider plugin parses this at init (`new URL`) —
     // an unset value makes the instance build throw, so the auth migrator
@@ -242,9 +284,9 @@ describeIfPg("ensureStagingSeed — real Postgres", () => {
     process.env.ATLAS_API_REGION = "staging";
     // The demo datasource install now persists an ENCRYPTED url resolved from
     // ATLAS_DATASOURCE_URL (#3847 — empty `{}` config failed the boot resolver
-    // every boot). Point it at the scratch test DB so the seed has a real,
+    // every boot). Point it at the scratch database so the seed has a real,
     // pg-scheme url to encrypt and store.
-    process.env.ATLAS_DATASOURCE_URL = TEST_DB_URL;
+    process.env.ATLAS_DATASOURCE_URL = scratchDbUrl;
     process.env.STAGING_ADMIN_PASSWORD = STAGING_ADMIN_PASSWORD;
     process.env.STAGING_TWENTY_API_KEY = "staging-twenty-api-key";
     process.env.STAGING_TWENTY_BASE_URL = "https://staging-crm.example.com";
@@ -253,33 +295,11 @@ describeIfPg("ensureStagingSeed — real Postgres", () => {
     // the staging seed is the only thing that creates rows here.
     delete process.env.ATLAS_ADMIN_EMAIL;
 
-    // Scratch schema, created on a one-shot client before the long-lived
-    // pool so the search_path-scoped connections have a real target.
-    const bootstrap = new Pool({ connectionString: TEST_DB_URL });
-    try {
-      await bootstrap.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
-    } finally {
-      await bootstrap.end();
-    }
-
-    // libpq `options` pins search_path at connection startup (server-side,
-    // before any query) to ONLY the scratch schema — deliberately WITHOUT a
-    // `public` fallback. This makes the harness IMMUNE to a concurrently-running
-    // -pg test that leaks its own tables into shared `public` (the systemic
-    // fire-and-forget `SET search_path` race, e.g. connection-profile-pg /
-    // amendment-dual-apply-pg): with no `public` in the path, Better Auth's
-    // migrator and every seed query resolve `__atlas_migrations` and all
-    // relations ONLY in this scratch schema, so a leaked `public.__atlas_migrations`
-    // (or any leaked table) can never satisfy an `IF NOT EXISTS` / be read in
-    // place of a row this seed must create. `pg_catalog` is always implicitly
-    // searched (built-ins like `gen_random_uuid()` resolve), and `pgcrypto`
-    // (its `digest()`) installs into the FIRST search_path schema — this scratch
-    // schema — so migration 0151's email-hash index still resolves. Extensions do
-    // NOT need `public`; the fallback only ever created the pollution exposure.
-    pool = new Pool({
-      connectionString: TEST_DB_URL,
-      options: `-c search_path="${schemaName}"`,
-    });
+    // The long-lived pool targets the scratch database and uses its default
+    // `public` schema. No `search_path` pin is needed — this database is
+    // private to this test, so `public` has no sibling-test pollution and the
+    // migrator's whole-database introspection sees only what this suite creates.
+    pool = new Pool({ connectionString: scratchDbUrl });
 
     // Reset caches and inject the scratch pool BEFORE building the auth
     // instance, so Better Auth binds to this pool (getInternalDB()).
@@ -305,11 +325,35 @@ describeIfPg("ensureStagingSeed — real Postgres", () => {
       if (savedEnv[k] !== undefined) process.env[k] = savedEnv[k];
       else delete process.env[k];
     }
-    if (pool) {
-      await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
-      await pool.end();
+    // Close this suite's pool first, then DROP DATABASE from an admin
+    // connection to the ORIGINAL database — DROP DATABASE fails if any
+    // session (including our own pool) is still connected to the target.
+    // The DROP lives in a `finally` so a `pool.end()` rejection can't skip
+    // it and leak the uniquely-named scratch database on the shared server
+    // (the pg_terminate_backend sweep makes the DROP safe even then).
+    try {
+      if (pool) await pool.end();
+    } finally {
+      const admin = new Pool({ connectionString: TEST_DB_URL });
+      try {
+        // Terminate any stragglers (e.g. a leaked Better Auth connection) so
+        // the DROP can't fail with "database is being accessed by other users".
+        await admin.query(
+          `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+            WHERE datname = $1 AND pid <> pg_backend_pid()`,
+          [scratchDbName],
+        );
+        await admin.query(`DROP DATABASE IF EXISTS "${scratchDbName}"`);
+      } finally {
+        // teardown-of-teardown: log, never mask a terminate/DROP failure.
+        await admin.end().catch((err: unknown) => {
+          console.warn(
+            `seed.test afterAll: admin pool end failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      }
     }
-  });
+  }, PG_TEST_TIMEOUT_MS);
 
   it("first call reports a fresh seed of all four entities", () => {
     expect(firstSeed.outcome).toBe("seeded");
@@ -374,9 +418,9 @@ describeIfPg("ensureStagingSeed — real Postgres", () => {
     const { resolveDatasourcePoolConfig } = await import(
       "@atlas/api/lib/db/datasource-pool-resolver"
     );
-    // `describeIfPg` only runs this block when TEST_DATABASE_URL is set, so
-    // the demo url the seed persisted is exactly this DSN.
-    const demoUrl = TEST_DB_URL as string;
+    // The seed encrypts and persists ATLAS_DATASOURCE_URL, which beforeAll
+    // pointed at the scratch database — so the resolvable demo url is that DSN.
+    const demoUrl = scratchDbUrl;
 
     const org = await pool.query<{ id: string }>(
       `SELECT id FROM organization WHERE slug = $1`,

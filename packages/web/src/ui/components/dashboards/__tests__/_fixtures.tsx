@@ -88,3 +88,48 @@ export function stubDashboardsFetch(rows: DashboardRow[]) {
     throw new Error(`Unexpected fetch: ${url}`);
   }) as typeof fetch;
 }
+
+/**
+ * Like {@link stubDashboardsFetch}, but also answers `POST /api/v1/dashboards`
+ * with the given `created` row — for the surface-native creation-navigation
+ * tests (#4563). Faithful to the real API: once the POST has fired, subsequent
+ * GETs include the created row (this is what makes the redirect-index page's
+ * post-creation refetch → `router.replace` race reproducible in tests).
+ * Returns the list of parsed POST bodies received so tests can pin the create
+ * payload.
+ */
+export function stubDashboardsFetchWithCreate(
+  rows: DashboardRow[],
+  created: DashboardRow,
+): unknown[] {
+  const createBodies: unknown[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const method =
+      init?.method ?? (input instanceof Request ? input.method : "GET");
+    if (url.endsWith("/api/v1/dashboards") && method === "POST") {
+      createBodies.push(init?.body ? JSON.parse(String(init.body)) : null);
+      return new Response(JSON.stringify(buildDashboardWireRow(created)), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.endsWith("/api/v1/dashboards")) {
+      const visible = createBodies.length > 0 ? [...rows, created] : rows;
+      return new Response(
+        JSON.stringify({
+          dashboards: visible.map(buildDashboardWireRow),
+          total: visible.length,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    throw new Error(`Unexpected fetch: ${method} ${url}`);
+  }) as typeof fetch;
+  return createBodies;
+}

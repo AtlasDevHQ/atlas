@@ -1,10 +1,11 @@
 import { describe, expect, test, mock, afterEach, beforeEach } from "bun:test";
 
 const replaceCalls: string[] = [];
+const pushCalls: string[] = [];
 
 void mock.module("next/navigation", () => ({
   useRouter: () => ({
-    push: () => {},
+    push: (url: string) => pushCalls.push(url),
     replace: (url: string) => replaceCalls.push(url),
     back: () => {},
   }),
@@ -17,7 +18,11 @@ void mock.module("next/navigation", () => ({
 
 import { render, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import DashboardsPage from "../page";
-import { dashboardsWrapper, stubDashboardsFetch } from "../../../../ui/components/dashboards/__tests__/_fixtures";
+import {
+  dashboardsWrapper,
+  stubDashboardsFetch,
+  stubDashboardsFetchWithCreate,
+} from "../../../../ui/components/dashboards/__tests__/_fixtures";
 
 const originalFetch = globalThis.fetch;
 
@@ -43,6 +48,7 @@ function stubDashboardsStatus(status: number, body: unknown = {}) {
 describe("DashboardsPage (redirect index)", () => {
   beforeEach(() => {
     replaceCalls.length = 0;
+    pushCalls.length = 0;
   });
   afterEach(() => {
     cleanup();
@@ -72,6 +78,49 @@ describe("DashboardsPage (redirect index)", () => {
     await screen.findByText("No dashboards yet");
     // The genuine empty state is NOT a redirect — no navigation should fire.
     expect(replaceCalls).toHaveLength(0);
+  });
+
+  // #4563 — surface-native creation: the empty state invites building right
+  // here (no "Go to chat" bounce), and creating lands on the new board's
+  // canvas with the bound editor open (`?openChat=true`).
+  test("the empty state has no 'Go to chat' bounce", async () => {
+    stubDashboardsFetch([]);
+
+    render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+    await screen.findByText("No dashboards yet");
+    expect(screen.queryByText(/Go to chat/i)).toBeNull();
+  });
+
+  test("creating from the empty state navigates to the canvas with the bound editor open", async () => {
+    stubDashboardsFetchWithCreate([], {
+      id: "d-9",
+      title: "Fresh",
+      updatedAt: "2026-07-16T10:00:00Z",
+      cardCount: 0,
+    });
+
+    render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+    await screen.findByText("No dashboards yet");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Create your first dashboard/ }),
+    );
+    const input = await screen.findByPlaceholderText("Dashboard title");
+    fireEvent.change(input, { target: { value: "Fresh" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() =>
+      expect(pushCalls).toContain("/dashboards/d-9?openChat=true"),
+    );
+
+    // The redirect-index effect must stand down after the creation handoff:
+    // the post-creation list refetch makes `targetId` flip to the new board,
+    // and an un-gated `router.replace("/dashboards/d-9")` would clobber the
+    // `?openChat=true` push before the canvas consumed it (the drawer would
+    // silently not open — caught live, 2026-07-16).
+    await new Promise((r) => setTimeout(r, 50));
+    expect(replaceCalls).not.toContain("/dashboards/d-9");
   });
 
   test("bounces an unauthenticated visitor (401) to /login", async () => {

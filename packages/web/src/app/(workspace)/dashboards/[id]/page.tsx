@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useQueryState } from "nuqs";
 import { toast } from "sonner";
-import Link from "next/link";
 import { MessagesSquare, Plus, Sparkles, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BoundChatDrawer } from "@/ui/components/dashboards/bound-chat-drawer";
@@ -1281,14 +1280,24 @@ export default function DashboardViewPage() {
             )}
 
             {dashboard.cards.length === 0 ? (
+              // #4563 — surface-native creation: the empty canvas invites
+              // building via the bound editor right here, never a "go to
+              // chat" bounce. Pinning from chat remains as a quiet hint for
+              // the manual path.
               <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center">
                 <h2 className="text-2xl font-semibold tracking-tight">An empty canvas</h2>
                 <p className="max-w-sm text-sm text-zinc-500 dark:text-zinc-400">
-                  Run a query in chat, then click <span className="font-medium">Add to Dashboard</span> to drop your first tile here.
+                  Open the editor and describe what you want to see — the agent
+                  builds the charts right here.
                 </p>
-                <Button asChild size="sm" className="mt-2">
-                  <Link href="/">Go to chat</Link>
+                <Button size="sm" className="mt-2" onClick={() => setChatOpen(true)}>
+                  <MessagesSquare className="mr-1.5 size-3.5" aria-hidden="true" />
+                  Describe your dashboard
                 </Button>
+                <p className="max-w-sm text-xs text-zinc-400 dark:text-zinc-500">
+                  Prefer to build by hand? Pin any chat result with{" "}
+                  <span className="font-medium">Add to Dashboard</span>.
+                </p>
               </div>
             ) : (
               <div className={`dash-density-${density} flex-1 px-3 py-4 sm:overflow-auto sm:px-5`}>

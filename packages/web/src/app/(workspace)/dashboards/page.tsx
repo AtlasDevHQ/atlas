@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -40,21 +40,29 @@ export default function DashboardsPage() {
     ? selectMostRecentDashboardId(data.dashboards ?? [])
     : null;
 
+  // #4563 — set when the empty state navigates to a just-created board (with
+  // `?openChat=true` so the bound editor opens on arrival). The post-creation
+  // list refetch flips `targetId` to that same board, and without this gate
+  // the redirect effect below would race the creation push with a plain
+  // `router.replace("/dashboards/{id}")` — stripping the editor-open intent
+  // before the canvas consumed it.
+  const [creationHandoff, setCreationHandoff] = useState(false);
+
   useEffect(() => {
     if (isAuthError) {
       router.replace("/login?redirect=/dashboards");
       return;
     }
-    if (targetId) {
+    if (targetId && !creationHandoff) {
       router.replace(`/dashboards/${targetId}`);
     }
-  }, [isAuthError, targetId, router]);
+  }, [isAuthError, targetId, router, creationHandoff]);
 
-  // Auth bounce or dashboard redirect in flight — show the layout-matching
-  // skeleton (not a blank frame) so the redirect never flashes an empty screen
-  // (#4323). The empty/error chrome is still gated below so it can't flash
-  // before navigation lands.
-  if (isAuthError || targetId) return <DashboardListSkeleton />;
+  // Auth bounce, dashboard redirect, or creation handoff in flight — show the
+  // layout-matching skeleton (not a blank frame) so the redirect never flashes
+  // an empty screen (#4323). The empty/error chrome is still gated below so it
+  // can't flash before navigation lands.
+  if (isAuthError || targetId || creationHandoff) return <DashboardListSkeleton />;
 
   if (error) {
     return (
@@ -82,5 +90,9 @@ export default function DashboardsPage() {
   if (loading || !data) return <DashboardListSkeleton />;
 
   // Loaded with no dashboards.
-  return <DashboardsEmptyState />;
+  return (
+    <DashboardsEmptyState
+      onCreationNavigate={() => setCreationHandoff(true)}
+    />
+  );
 }

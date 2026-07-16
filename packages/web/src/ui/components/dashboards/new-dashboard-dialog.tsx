@@ -67,7 +67,8 @@ export function NewDashboardDialog({
         <DialogHeader>
           <DialogTitle>New dashboard</DialogTitle>
           <DialogDescription>
-            Pin saved query results to a new dashboard for ongoing monitoring.
+            Name your dashboard — you&rsquo;ll land on its canvas with the
+            editor open, ready to describe what you want to see.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3 py-2">
@@ -98,8 +99,16 @@ export function NewDashboardDialog({
   );
 }
 
+/**
+ * #4563 — surface-native creation. Every surface origin (switcher, list empty
+ * state, view-all modal) lands on the new board's canvas with the bound
+ * editor OPEN, via the same `?openChat=true` entry the main-chat
+ * `createDashboard` handoff uses (#2369) — no `conversationId`, so the drawer
+ * opens a fresh session. Closing the drawer keeps a normal empty board, so
+ * the manual title-only path is unchanged.
+ */
 export function defaultOnDashboardCreated(
   router: Pick<ReturnType<typeof useRouter>, "push">,
 ): (d: Dashboard) => void {
-  return (d) => router.push(`/dashboards/${d.id}`);
+  return (d) => router.push(`/dashboards/${d.id}?openChat=true`);
 }

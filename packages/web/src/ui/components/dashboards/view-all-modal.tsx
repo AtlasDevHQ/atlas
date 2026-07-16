@@ -29,7 +29,7 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { cn } from "@/lib/utils";
 import { sortDashboardsByRecent } from "@/app/(workspace)/dashboards/select-recent";
-import { NewDashboardDialog } from "./new-dashboard-dialog";
+import { NewDashboardDialog, defaultOnDashboardCreated } from "./new-dashboard-dialog";
 import { timeAgo } from "./time-ago";
 import type { Dashboard } from "@/ui/lib/types";
 
@@ -97,7 +97,9 @@ export function ViewAllDashboardsModal({
 
   function handleCreated(d: Dashboard) {
     onOpenChange(false);
-    router.push(`/dashboards/${d.id}`);
+    // #4563 — same surface-native policy as the switcher / empty state: land
+    // on the new canvas with the bound editor open.
+    defaultOnDashboardCreated(router)(d);
   }
 
   return (

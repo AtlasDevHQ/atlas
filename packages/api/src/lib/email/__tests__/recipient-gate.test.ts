@@ -59,6 +59,7 @@ describe("checkRecipientsAllowed — member + domain boundary", () => {
     if (!result.allowed) {
       expect(result.blocked).toEqual(["outsider@evil.example"]);
       expect(result.message).toContain(EMAIL_RECIPIENT_DOMAINS_SETTING);
+      expect(result.message).toContain("send to a workspace member");
     }
   });
 
@@ -112,6 +113,11 @@ describe("checkRecipientsAllowed — member + domain boundary", () => {
       resolveMemberEmails,
     );
     expect(blocked.allowed).toBe(false);
+    if (!blocked.allowed) {
+      // Member half inert — the message must not recommend a remediation
+      // that structurally cannot succeed.
+      expect(blocked.message).not.toContain("send to a workspace member");
+    }
   });
 });
 

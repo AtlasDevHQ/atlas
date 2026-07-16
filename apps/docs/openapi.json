@@ -8198,7 +8198,7 @@
             }
           },
           "409": {
-            "description": "Approval required before execution",
+            "description": "Approval required before execution, or the draft was published/discarded mid-refresh (`draft_gone`)",
             "content": {
               "application/json": {
                 "schema": {

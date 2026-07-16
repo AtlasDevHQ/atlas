@@ -54,7 +54,10 @@ export function buildDashboardWireRow(r: DashboardRow): Dashboard {
     description: null,
     shareToken: null,
     shareExpiresAt: null,
-    shareMode: "private",
+    // Unshared on the wire = null token + the "public" default the API emits
+    // (`share_mode ?? "public"` in lib/dashboards.ts) — "private" is not a
+    // ShareMode; typing this fixture as Dashboard is what caught that drift.
+    shareMode: "public",
     refreshSchedule: null,
     lastRefreshAt: null,
     nextRefreshAt: null,

@@ -49,10 +49,22 @@ function addUsage(accumulator: TokenUsage, usage: Partial<TokenUsage>): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * Warning sink for the shared YAML helpers (#4465). These helpers run on BOTH
+ * the CLI (`atlas init --enrich`, where console output is the UX) and a server
+ * request path (the wizard `/enrich` route), so they must never write to
+ * console directly — the API caller injects a pino-backed sink for requestId
+ * correlation and structured logging; the CLI keeps the console default.
+ */
+export type EnrichWarnSink = (message: string) => void;
+
+/** Default sink — the CLI's console UX (byte-identical to the pre-#4465 output). */
+const consoleWarnSink: EnrichWarnSink = (message) => console.warn(`    ${message}`);
+
+/**
  * Extract YAML content from an LLM response that wraps output in
  * ```yaml ... ``` code blocks.
  */
-function extractYamlBlock(text: string): string {
+function extractYamlBlock(text: string, warn: EnrichWarnSink): string {
   // Match ```yaml or ```yml fenced blocks
   const match = text.match(/```ya?ml[ \t]*\r?\n([\s\S]*?)```/);
   if (match) return match[1].trim();
@@ -62,14 +74,14 @@ function extractYamlBlock(text: string): string {
   if (generic) return generic[1].trim();
 
   // Last resort: try to parse the whole response as YAML
-  console.warn("    Note: LLM response did not contain a ```yaml block, attempting to parse raw response");
+  warn("Note: LLM response did not contain a ```yaml block, attempting to parse raw response");
   return text.trim();
 }
 
 /**
  * Safely parse YAML, returning null on failure.
  */
-function safeParse(text: string): Record<string, unknown> | null {
+function safeParse(text: string, warn: EnrichWarnSink): Record<string, unknown> | null {
   try {
     const parsed = loadYaml(text);
     if (parsed && typeof parsed === "object") {
@@ -77,7 +89,7 @@ function safeParse(text: string): Record<string, unknown> | null {
     }
     return null;
   } catch (err) {
-    console.warn(`    YAML parse error: ${err instanceof Error ? err.message : String(err)}`);
+    warn(`YAML parse error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -220,7 +232,10 @@ export async function enrichEntityYaml(
   profile: TableProfile,
   model: ReturnType<typeof getModel>,
   usage?: TokenUsage,
-  dbType?: string
+  dbType?: string,
+  // #4465 — API callers inject a request-scoped pino sink; the default keeps
+  // the CLI's console output.
+  warn: EnrichWarnSink = consoleWarnSink
 ): Promise<EnrichEntityYamlResult> {
   const profileText = formatTableProfile(profile);
   // The generated query_patterns are saved into the semantic layer for THIS
@@ -304,8 +319,8 @@ Important:
     outputTokens: result.usage.outputTokens ?? 0,
   };
 
-  const yamlText = extractYamlBlock(result.text);
-  const enriched = safeParse(yamlText);
+  const yamlText = extractYamlBlock(result.text, warn);
+  const enriched = safeParse(yamlText, warn);
 
   if (!enriched) {
     // Successful call, unusable response — keep the mechanical baseline.
@@ -420,8 +435,10 @@ Important:
 
     addUsage(usage, result.usage);
 
-    const yamlText = extractYamlBlock(result.text);
-    const enriched = safeParse(yamlText);
+    // CLI-only path (reachable only via enrichSemanticLayer) — console IS the
+    // UX here; a future server caller must thread a sink like enrichEntityYaml (#4465).
+    const yamlText = extractYamlBlock(result.text, consoleWarnSink);
+    const enriched = safeParse(yamlText, consoleWarnSink);
 
     if (!enriched) {
       console.log("    Warning: Could not parse LLM response for glossary, skipping merge");
@@ -529,8 +546,10 @@ Important:
 
     addUsage(usage, result.usage);
 
-    const yamlText = extractYamlBlock(result.text);
-    const enriched = safeParse(yamlText);
+    // CLI-only path (reachable only via enrichSemanticLayer) — console IS the
+    // UX here; a future server caller must thread a sink like enrichEntityYaml (#4465).
+    const yamlText = extractYamlBlock(result.text, consoleWarnSink);
+    const enriched = safeParse(yamlText, consoleWarnSink);
 
     if (!enriched) {
       console.log(`    Warning: Could not parse LLM response for ${fileName}, skipping merge`);

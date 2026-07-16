@@ -21,7 +21,7 @@
  * (the real engine runs) and resolves the model through the AI test layer.
  */
 
-import { describe, expect, it, beforeEach, mock, type Mock } from "bun:test";
+import { describe, expect, it, beforeEach, mock, spyOn, type Mock } from "bun:test";
 import { Effect, Layer } from "effect";
 import { MockLanguageModelV3 } from "ai/test";
 import type { LanguageModel } from "ai";
@@ -38,9 +38,13 @@ process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test
 const ENRICH_RESPONSE =
   "```yaml\ndescription: |\n  Enriched by the mock LLM: ClickHouse orders.\nuse_cases:\n  - Analyze order volume over time\n```";
 
+// Mutable so a test can drive the unparseable-response path (#4465); reset it
+// back to ENRICH_RESPONSE in a finally.
+let mockResponseText = ENRICH_RESPONSE;
+
 const mockModel = new MockLanguageModelV3({
   doGenerate: async (_options: LanguageModelV3CallOptions) => ({
-    content: [{ type: "text" as const, text: ENRICH_RESPONSE }],
+    content: [{ type: "text" as const, text: mockResponseText }],
     finishReason: { unified: "stop" as const, raw: "end_turn" },
     usage: {
       inputTokens: { total: 50, noCache: 50, cacheRead: 0, cacheWrite: 0 },
@@ -213,8 +217,15 @@ void mock.module("@atlas/api/lib/semantic/sync", () => ({
   reconcileAllOrgs: async () => {},
 }));
 
+// Record warn calls so the #4465 test can assert helper warnings ride the
+// route logger (the pino seam) with request-scoped context, not console.
+// Spread the real module so every other logger export stays intact
+// (AGENTS.md: mock.module must mock every named export).
+import * as _loggerActual from "@atlas/api/lib/logger";
+const mockLogWarn = mock((_ctx: unknown, _msg?: string) => {});
 void mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
+  ..._loggerActual,
+  createLogger: () => ({ info: () => {}, warn: mockLogWarn, error: () => {}, debug: () => {} }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
@@ -340,6 +351,7 @@ describe("wizard two-phase generate via the mock-LLM test layer (#3621 AC#6, cli
     mockModel.doGenerateCalls.length = 0;
     mockCheckAgentBillingGate.mockClear();
     mockLogUsageEvent.mockClear();
+    mockLogWarn.mockClear();
   });
 
   it("phase 1 — mechanical generate emits entity YAML and makes NO LLM call", async () => {
@@ -402,6 +414,40 @@ describe("wizard two-phase generate via the mock-LLM test layer (#3621 AC#6, cli
     expect(llmParams[0]).toBe("org-1"); // org scope
     expect(llmParams[1]).toBe("analytics"); // install_id = the connection
     expect(JSON.parse(llmParams[3] as string)).toEqual({ tables: ["orders"] });
+  });
+
+  it("helper warnings during /enrich reach pino, never console (#4465)", async () => {
+    // The shared enrich helpers used to console.warn — bypassing pino and
+    // requestId correlation on this server request path. Drive the
+    // unparseable-response branch and assert the warning rides the route logger.
+    const consoleWarnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockResponseText = "Sorry, I cannot help with that.";
+      const res = await postJson("/api/v1/wizard/enrich", {
+        connectionId: "analytics",
+        tableName: "orders",
+        yaml: "table: orders\n",
+      });
+      expect(res.status).toBe(200);
+      const data = await json(res);
+      // Soft skip: the row keeps its mechanical baseline.
+      expect(data.enriched).toBe(false);
+      // No console.* fired during the request (#4465 acceptance criterion) —
+      // the helper warning went through the injected pino sink instead.
+      expect(consoleWarnSpy).not.toHaveBeenCalled();
+      const warnCall = mockLogWarn.mock.calls.find(
+        ([, msg]) => typeof msg === "string" && msg.includes("did not contain a ```yaml block"),
+      );
+      expect(warnCall).toBeDefined();
+      // The sink carries the request-scoped correlation context, and the route
+      // prefixes the operation name.
+      expect(warnCall?.[1]).toStartWith("Wizard enrich: ");
+      expect(warnCall?.[0]).toMatchObject({ connectionId: "analytics", tableName: "orders" });
+      expect((warnCall?.[0] as { requestId?: string }).requestId).toBeDefined();
+    } finally {
+      mockResponseText = ENRICH_RESPONSE;
+      consoleWarnSpy.mockRestore();
+    }
   });
 
   it("the AtlasAiModel test layer is the model source (sanity: layer resolves our mock)", async () => {

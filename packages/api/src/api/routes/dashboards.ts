@@ -1754,12 +1754,13 @@ authed.openapi(
       // Handle refreshSchedule separately (needs cron validation + next_refresh_at)
       if (parsed.refreshSchedule !== undefined) {
         if (parsed.refreshSchedule) {
+          const schedule = parsed.refreshSchedule;
           const { validateCronExpression, computeNextRun } = yield* Effect.promise(() => import("@atlas/api/lib/scheduled-tasks"));
-          const cronCheck = validateCronExpression(parsed.refreshSchedule);
+          const cronCheck = validateCronExpression(schedule);
           if (!cronCheck.valid) {
             return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
           }
-          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId, viewerId: user?.id ?? "anonymous" }, parsed.refreshSchedule!, computeNextRun));
+          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId, viewerId: user?.id ?? "anonymous" }, schedule, computeNextRun));
           if (!schedResult.ok) {
             const fail = crudFailResponse(schedResult.reason, requestId);
             return c.json(fail.body, fail.status);

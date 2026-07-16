@@ -381,8 +381,11 @@ describeIfPg("dashboard first-publish visibility gate (real Postgres, #4320)", (
     });
 
     it("omitting viewerId (system/owner-internal caller) still bypasses the write gate", async () => {
-      // Mirrors the read-path opt-out: system callers (sweep, publish
-      // internals) pass no viewerId and must still resolve never-published rows.
+      // Mirrors the read-path opt-out: an omitted viewerId bypasses the gate.
+      // No production WRITE caller relies on this today (the sweep and the
+      // refresh scheduler run their own SQL; publish internals only read) —
+      // this pins the contract so a future system caller isn't gated by
+      // accident.
       const id = await createPrivateBoard();
       expect((await setRefreshSchedule(id, { orgId: ORG }, "0 * * * *", nextRun)).ok).toBe(true);
       expect((await deleteDashboard(id, { orgId: ORG })).ok).toBe(true);

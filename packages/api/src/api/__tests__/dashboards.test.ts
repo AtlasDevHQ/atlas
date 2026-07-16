@@ -200,7 +200,7 @@ const mockGetDashboard = mock((): Promise<unknown> =>
 const mockListDashboards = mock((): Promise<unknown> =>
   Promise.resolve({ ok: true, data: { dashboards: [], total: 0 } }),
 );
-const mockUpdateDashboard = mock((): Promise<unknown> =>
+const mockUpdateDashboard = mock((..._args: unknown[]): Promise<unknown> =>
   Promise.resolve({ ok: true }),
 );
 const mockDeleteDashboard = mock((): Promise<unknown> =>
@@ -801,8 +801,7 @@ describe("dashboard routes", () => {
       expect(mockSetRefreshSchedule).toHaveBeenCalledTimes(1);
       expect(mockSetRefreshSchedule.mock.calls[0]?.[1]).toEqual({ orgId: "org-1", viewerId: "u1" });
       expect(mockUpdateDashboard).toHaveBeenCalledTimes(1);
-      const updateArgs = (mockUpdateDashboard as Mock<(...args: unknown[]) => Promise<unknown>>).mock.calls[0];
-      expect(updateArgs?.[1]).toEqual({ orgId: "org-1", viewerId: "u1" });
+      expect(mockUpdateDashboard.mock.calls[0]?.[1]).toEqual({ orgId: "org-1", viewerId: "u1" });
     });
 
     it("rejects a parameter update that orphans a card's placeholder (#2267)", async () => {
@@ -871,6 +870,27 @@ describe("dashboard routes", () => {
       );
       expect(response.status).toBe(204);
       expect(mockDeleteDashboard).toHaveBeenCalledWith(VALID_ID, { orgId: "org-1", viewerId: "u1" });
+    });
+
+    it("a userless caller is stopped by the org gate and never reaches deleteDashboard (#4537)", async () => {
+      // `viewerId: undefined` would bypass the write gate (the system
+      // opt-out), and the handlers' `user?.id ?? "anonymous"` fallback is
+      // only defense-in-depth: this router's requireOrgContext() rejects a
+      // user-less caller outright. Pin that fail-closed ordering — if the
+      // middleware ever starts admitting user-less requests, this fails and
+      // forces the fallback semantics to be re-examined.
+      mockAuthenticateRequest.mockResolvedValue({
+        authenticated: true as const,
+        mode: "none" as const,
+        user: undefined,
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(mockDeleteDashboard).not.toHaveBeenCalled();
     });
   });
 

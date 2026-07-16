@@ -508,7 +508,10 @@ export async function updateDashboard(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "updateDashboard failed");
+    log.error(
+      { dashboardId: id, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "updateDashboard failed",
+    );
     return { ok: false, reason: "error" };
   }
 }
@@ -533,7 +536,10 @@ export async function deleteDashboard(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "deleteDashboard failed");
+    log.error(
+      { dashboardId: id, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "deleteDashboard failed",
+    );
     return { ok: false, reason: "error" };
   }
 }
@@ -834,8 +840,10 @@ export async function shareDashboard(
       // scope in the future should still hit this guard.
       const params: unknown[] = [id];
       const lookupOrg = orgScopeClause(scope.orgId, params, 2);
-      // #4537 — the pre-check must 404 the same way the share write does, or
-      // it becomes an existence oracle for never-published boards.
+      // #4537 — gated for the same reason as the relaxed-scope guard above:
+      // an ungated pre-check on a scope-relaxed callsite would answer
+      // invalid_org_scope (400) instead of not_found for someone else's
+      // never-published board — an existence oracle.
       const lookupVis = firstPublishVisibilityClause(scope.viewerId, params, lookupOrg.nextIdx);
       const lookupVisClause = lookupVis.clause ? ` AND ${lookupVis.clause}` : "";
       const orgRows = await internalQuery<{ org_id: string | null }>(
@@ -884,7 +892,10 @@ export async function shareDashboard(
     const rotated = oldToken !== null && token !== oldToken;
     return { ok: true, data: { token, expiresAt, shareMode, rotated } };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "shareDashboard failed");
+    log.error(
+      { dashboardId: id, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "shareDashboard failed",
+    );
     return { ok: false, reason: "error" };
   }
 }
@@ -908,7 +919,10 @@ export async function unshareDashboard(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "unshareDashboard failed");
+    log.error(
+      { dashboardId: id, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "unshareDashboard failed",
+    );
     return { ok: false, reason: "error" };
   }
 }
@@ -943,7 +957,10 @@ export async function getShareStatus(
       },
     };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "getShareStatus failed");
+    log.error(
+      { dashboardId: id, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "getShareStatus failed",
+    );
     return { ok: false, reason: "error" };
   }
 }
@@ -1439,7 +1456,10 @@ export async function setRefreshSchedule(
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
-    log.error({ err: errorMessage(err) }, "setRefreshSchedule failed");
+    log.error(
+      { dashboardId, orgId: scope.orgId ?? null, viewerGated: scope.viewerId != null, err: errorMessage(err) },
+      "setRefreshSchedule failed",
+    );
     return { ok: false, reason: "error" };
   }
 }

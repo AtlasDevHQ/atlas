@@ -114,12 +114,17 @@ describe("DashboardsPage (redirect index)", () => {
       expect(pushCalls).toContain("/dashboards/d-9?openChat=true"),
     );
 
-    // The redirect-index effect must stand down after the creation handoff:
-    // the post-creation list refetch makes `targetId` flip to the new board,
-    // and an un-gated `router.replace("/dashboards/d-9")` would clobber the
+    // The redirect-index effect must CONVERGE after the creation handoff: the
+    // post-creation list refetch flips `targetId` to the new board, and an
+    // un-gated `router.replace("/dashboards/d-9")` would clobber the
     // `?openChat=true` push before the canvas consumed it (the drawer would
-    // silently not open — caught live, 2026-07-16).
-    await new Promise((r) => setTimeout(r, 50));
+    // silently not open — caught live, 2026-07-16). Instead the effect
+    // re-issues the same intent-preserving URL — waiting for that converged
+    // replace is the deterministic signal that the refetch → effect chain has
+    // run, so the bare-URL assertion below can't pass vacuously on a slow box.
+    await waitFor(() =>
+      expect(replaceCalls).toContain("/dashboards/d-9?openChat=true"),
+    );
     expect(replaceCalls).not.toContain("/dashboards/d-9");
   });
 

@@ -1,12 +1,14 @@
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
+import type { Dashboard } from "@/ui/lib/types";
 
 /**
- * Shared test fixtures for the dashboards switcher / view-all modal tests.
- * Both surfaces hit the same `/api/v1/dashboards` list endpoint and need the
- * same Atlas + Query providers — keeping the stub auth client, wrapper, and
- * fetch stubber here avoids drift between the two suites.
+ * Shared test fixtures for the dashboards surface tests (switcher, view-all
+ * modal, redirect index, new-dashboard dialog). They all hit the same
+ * `/api/v1/dashboards` endpoint and need the same Atlas + Query providers —
+ * keeping the stub auth client, wrapper, and fetch stubbers here avoids drift
+ * between the suites.
  */
 
 export const stubAuthClient: AtlasAuthClient = {
@@ -42,8 +44,10 @@ export interface DashboardRow {
   cardCount: number;
 }
 
-/** Build a full Dashboard wire-shape stub from a minimal row. */
-export function buildDashboardWireRow(r: DashboardRow) {
+/** Build a full Dashboard wire-shape stub from a minimal row. Typed as the
+ *  wire type so a `Dashboard` field addition is a compile error here instead
+ *  of silent fixture drift. */
+export function buildDashboardWireRow(r: DashboardRow): Dashboard {
   return {
     id: r.id,
     title: r.title,
@@ -54,6 +58,7 @@ export function buildDashboardWireRow(r: DashboardRow) {
     refreshSchedule: null,
     lastRefreshAt: null,
     nextRefreshAt: null,
+    parameters: [],
     cardCount: r.cardCount,
     createdAt: r.updatedAt,
     updatedAt: r.updatedAt,
@@ -75,7 +80,7 @@ export function stubDashboardsFetch(rows: DashboardRow[]) {
         ? input
         : input instanceof URL
           ? input.toString()
-          : (input as Request).url;
+          : input.url;
     if (url.endsWith("/api/v1/dashboards")) {
       return new Response(
         JSON.stringify({
@@ -109,7 +114,7 @@ export function stubDashboardsFetchWithCreate(
         ? input
         : input instanceof URL
           ? input.toString()
-          : (input as Request).url;
+          : input.url;
     const method =
       init?.method ?? (input instanceof Request ? input.method : "GET");
     if (url.endsWith("/api/v1/dashboards") && method === "POST") {

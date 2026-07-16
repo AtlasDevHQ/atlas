@@ -32,6 +32,7 @@ import { DashboardParameterBar, type ParameterValues } from "@/ui/components/das
 import { DashboardFilterChips } from "@/ui/components/dashboards/dashboard-filter-chips";
 import {
   DASHBOARD_PARAMS_KEY,
+  OPEN_CHAT_PARAM,
   dashboardParamsParser,
   parseOverrides,
   withOverride,
@@ -305,7 +306,7 @@ export default function DashboardViewPage() {
   // drawer once so the same conversation resumes in bound mode, then
   // strip the param so a refresh doesn't keep reopening it.
   useEffect(() => {
-    if (searchParams.get("openChat") !== "true") return;
+    if (searchParams.get(OPEN_CHAT_PARAM) !== "true") return;
     // #4322 — the handoff link carries `conversationId` so the originating
     // conversation carries into bound mode. Capture it before stripping the
     // URL; absent (e.g. a hand-typed `?openChat=true`) → fresh session.

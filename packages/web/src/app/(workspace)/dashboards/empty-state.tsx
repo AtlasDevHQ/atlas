@@ -12,9 +12,10 @@ import {
 interface DashboardsEmptyStateProps {
   /**
    * Called synchronously before the creation navigation fires, so the parent
-   * redirect-index page can stand down its own `router.replace` — the
-   * post-creation list refetch would otherwise race the `?openChat=true` push
-   * and strip the editor-open intent (#4563).
+   * redirect-index page can convert its own `router.replace` into the same
+   * intent-preserving `?openChat=true` navigation — the post-creation list
+   * refetch would otherwise race the push and strip the editor-open intent
+   * (#4563).
    */
   onCreationNavigate?: () => void;
 }

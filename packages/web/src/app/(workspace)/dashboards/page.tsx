@@ -8,6 +8,7 @@ import { friendlyError } from "@/ui/lib/fetch-error";
 import { DashboardsEmptyState } from "./empty-state";
 import { DashboardListSkeleton } from "@/ui/components/dashboards/dashboard-skeleton";
 import { selectMostRecentDashboardId } from "./select-recent";
+import { OPEN_CHAT_PARAM } from "./[id]/search-params";
 import type { Dashboard } from "@/ui/lib/types";
 
 /**
@@ -42,7 +43,7 @@ export default function DashboardsPage() {
 
   // #4563 — set when the empty state navigates to a just-created board (with
   // `?openChat=true` so the bound editor opens on arrival). The post-creation
-  // list refetch flips `targetId` to that same board, and without this gate
+  // list refetch flips `targetId` to that same board, and without this flag
   // the redirect effect below would race the creation push with a plain
   // `router.replace("/dashboards/{id}")` — stripping the editor-open intent
   // before the canvas consumed it.
@@ -53,9 +54,18 @@ export default function DashboardsPage() {
       router.replace("/login?redirect=/dashboards");
       return;
     }
-    if (targetId && !creationHandoff) {
-      router.replace(`/dashboards/${targetId}`);
-    }
+    if (!targetId) return;
+    // #4563 — during a creation handoff, converge on the same
+    // intent-preserving URL the empty state pushed instead of standing down:
+    // the replace is idempotent with the push (whichever navigation lands,
+    // the canvas opens the bound editor), so the redirect can neither strip
+    // the intent nor strand the index on the skeleton if the push is
+    // superseded.
+    router.replace(
+      creationHandoff
+        ? `/dashboards/${targetId}?${OPEN_CHAT_PARAM}=true`
+        : `/dashboards/${targetId}`,
+    );
   }, [isAuthError, targetId, router, creationHandoff]);
 
   // Auth bounce, dashboard redirect, or creation handoff in flight — show the

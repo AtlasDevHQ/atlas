@@ -52,7 +52,7 @@ describe("NewDashboardDialog", () => {
         title: "Revenue",
         updatedAt: "2026-07-16T10:00:00Z",
         cardCount: 0,
-      }) as Dashboard,
+      }),
     );
 
     expect(push).toEqual(["/dashboards/d-9?openChat=true"]);
@@ -86,6 +86,37 @@ describe("NewDashboardDialog", () => {
     // along; the editor-open intent lives in the navigation, not the create.
     expect(bodies).toEqual([{ title: "Revenue" }]);
     expect(created[0].id).toBe("d-9");
+  });
+
+  test("a failed create surfaces the error, keeps the dialog open, and never navigates", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ message: "Internal error" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof fetch;
+    const created: Dashboard[] = [];
+    const openChanges: boolean[] = [];
+
+    render(
+      <NewDashboardDialog
+        open
+        onOpenChange={(next) => openChanges.push(next)}
+        onCreated={(d) => created.push(d)}
+      />,
+      { wrapper: dashboardsWrapper },
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Dashboard title"), {
+      target: { value: "Revenue" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    // The server-authored message surfaces inline; the dialog stays open and
+    // onCreated never fires — a failed create must not navigate to (or set a
+    // creation handoff for) a board that doesn't exist.
+    await screen.findByText(/Internal error/);
+    expect(created).toHaveLength(0);
+    expect(openChanges).not.toContain(false);
   });
 
   test("Create stays disabled until a non-blank title is entered", () => {

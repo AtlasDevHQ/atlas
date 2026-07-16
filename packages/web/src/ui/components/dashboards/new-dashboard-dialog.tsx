@@ -15,12 +15,18 @@ import {
 } from "@/components/ui/dialog";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
+import { OPEN_CHAT_PARAM } from "@/app/(workspace)/dashboards/[id]/search-params";
 import type { Dashboard } from "@/ui/lib/types";
 
 interface NewDashboardDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Dialog has no opinion about navigation — every call site supplies its own policy. */
+  /**
+   * Dialog has no opinion about navigation — every call site supplies its own
+   * policy. NB: the dialog's description copy promises the
+   * {@link defaultOnDashboardCreated} landing (canvas with the editor open,
+   * #4563) — a call site with a different landing must rethink that copy too.
+   */
   onCreated: (dashboard: Dashboard) => void;
 }
 
@@ -110,5 +116,5 @@ export function NewDashboardDialog({
 export function defaultOnDashboardCreated(
   router: Pick<ReturnType<typeof useRouter>, "push">,
 ): (d: Dashboard) => void {
-  return (d) => router.push(`/dashboards/${d.id}?openChat=true`);
+  return (d) => router.push(`/dashboards/${d.id}?${OPEN_CHAT_PARAM}=true`);
 }

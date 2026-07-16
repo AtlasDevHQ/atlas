@@ -240,9 +240,10 @@ describeIfPg("ensureStagingSeed — real Postgres", () => {
     for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
 
     // Dedicated scratch DATABASE, not a scratch schema (#4647). A scratch
-    // schema + `search_path` pin (the prior approach, hardened for #2820)
-    // scopes THIS suite's own queries, but it cannot scope Better Auth's
-    // migrator: `migrateAuthTables()` → `ctx.runMigrations()` calls Kysely's
+    // schema + `search_path` pin (the prior approach, hardened against
+    // public-schema pollution in b35e6d487) scopes THIS suite's own queries,
+    // but it cannot scope Better Auth's migrator: `migrateAuthTables()` →
+    // `runBootMigrations()` → `ctx.runMigrations()` calls Kysely's
     // `db.introspection.getTables()`, which scans `pg_catalog` across EVERY
     // schema the role can access (search_path is irrelevant to catalog
     // introspection) and, per row, evaluates
@@ -260,11 +261,17 @@ describeIfPg("ensureStagingSeed — real Postgres", () => {
 
     const admin = new Pool({ connectionString: TEST_DB_URL });
     try {
-      // CREATE DATABASE cannot run inside a transaction and must run on a
-      // connection to a DIFFERENT database (TEST_DATABASE_URL's own db).
+      // CREATE DATABASE cannot run inside a transaction, and the target
+      // doesn't exist yet — so it runs on a one-shot admin pool bound to
+      // TEST_DATABASE_URL's own db.
       await admin.query(`CREATE DATABASE "${scratchDbName}"`);
     } finally {
-      await admin.end();
+      // teardown-of-teardown: log, never mask a CREATE DATABASE failure.
+      await admin.end().catch((err: unknown) => {
+        console.warn(
+          `seed.test beforeAll: admin pool end failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
     }
 
     process.env.DATABASE_URL = scratchDbUrl;
@@ -321,19 +328,30 @@ describeIfPg("ensureStagingSeed — real Postgres", () => {
     // Close this suite's pool first, then DROP DATABASE from an admin
     // connection to the ORIGINAL database — DROP DATABASE fails if any
     // session (including our own pool) is still connected to the target.
-    if (pool) await pool.end();
-    const admin = new Pool({ connectionString: TEST_DB_URL });
+    // The DROP lives in a `finally` so a `pool.end()` rejection can't skip
+    // it and leak the uniquely-named scratch database on the shared server
+    // (the pg_terminate_backend sweep makes the DROP safe even then).
     try {
-      // Terminate any stragglers (e.g. a leaked Better Auth connection) so
-      // the DROP can't fail with "database is being accessed by other users".
-      await admin.query(
-        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-          WHERE datname = $1 AND pid <> pg_backend_pid()`,
-        [scratchDbName],
-      );
-      await admin.query(`DROP DATABASE IF EXISTS "${scratchDbName}"`);
+      if (pool) await pool.end();
     } finally {
-      await admin.end();
+      const admin = new Pool({ connectionString: TEST_DB_URL });
+      try {
+        // Terminate any stragglers (e.g. a leaked Better Auth connection) so
+        // the DROP can't fail with "database is being accessed by other users".
+        await admin.query(
+          `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+            WHERE datname = $1 AND pid <> pg_backend_pid()`,
+          [scratchDbName],
+        );
+        await admin.query(`DROP DATABASE IF EXISTS "${scratchDbName}"`);
+      } finally {
+        // teardown-of-teardown: log, never mask a terminate/DROP failure.
+        await admin.end().catch((err: unknown) => {
+          console.warn(
+            `seed.test afterAll: admin pool end failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      }
     }
   }, PG_TEST_TIMEOUT_MS);
 

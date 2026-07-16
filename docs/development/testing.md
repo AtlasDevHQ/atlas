@@ -59,3 +59,5 @@ bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:543
 ```
 
 Migrations referencing Better Auth tables (`user`, `session`, `organization`, `account`, `verification`) **must** be added to `MANAGED_AUTH_MIGRATIONS` in `packages/api/src/lib/db/internal.ts` — the smoke test fails otherwise, keeping boot-time skip wiring in lockstep with the migration set.
+
+**Any suite that runs Better Auth's real migrator (`migrateAuthTables()`) against shared Postgres needs a dedicated scratch DATABASE, not a scratch schema** (#4647). The migrator's Kysely `getTables()` introspection scans `pg_catalog` across every schema — `search_path` cannot scope it — so concurrent `-pg` tests' temp schemas being created/dropped mid-scan abort the migration with phantom `relation ... does not exist` errors. See the `beforeAll` comment in `staging/__tests__/seed.test.ts` for the full mechanism and the CREATE/DROP DATABASE lifecycle pattern.

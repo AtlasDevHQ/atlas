@@ -45,6 +45,10 @@ import {
   materializeDraftView,
   type DashboardSnapshotCard,
 } from "@atlas/api/lib/dashboard-versioning";
+import {
+  loadDraftCardCache,
+  EMPTY_DRAFT_CARD_CACHE,
+} from "@atlas/api/lib/dashboard-draft-cache";
 import { stageChange } from "@atlas/api/lib/stage-tracker";
 
 const log = createLogger("tool:bound-dashboard");
@@ -170,7 +174,9 @@ export function createBoundDashboardTools(
       if (ctx.userId) {
         const draftRow = await forkOrLoadDraft(ctx.userId, dash.data);
         if (draftRow) {
-          view = materializeDraftView(dash.data, draftRow.snapshot);
+          // The compact summary carries no cached data (id/title/type/layout
+          // only), so the draft-cache read is skipped (#4554).
+          view = materializeDraftView(dash.data, draftRow.snapshot, EMPTY_DRAFT_CARD_CACHE);
         }
       }
       return {
@@ -206,7 +212,10 @@ export function createBoundDashboardTools(
       if (ctx.userId) {
         const draftRow = await forkOrLoadDraft(ctx.userId, dash.data);
         if (draftRow) {
-          card = materializeDraftView(dash.data, draftRow.snapshot).cards.find((c) => c.id === cardId);
+          // This detail read returns `cachedColumns`, so materialize with the
+          // caller's DRAFT cache — the data home for a draft card (#4554).
+          const draftCache = await loadDraftCardCache(ctx.userId, dashboardId);
+          card = materializeDraftView(dash.data, draftRow.snapshot, draftCache).cards.find((c) => c.id === cardId);
         }
       }
       card ??= dash.data.cards.find((c) => c.id === cardId);

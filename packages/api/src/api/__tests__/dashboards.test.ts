@@ -305,6 +305,11 @@ const mockApplyEditToDraft = mock(
 const mockLoadDraft = mock(
   (..._args: unknown[]): Promise<DraftRowT | null> => Promise.resolve(null),
 );
+// #4554 — controllable fork for the GET /:id/draft route test (the real one
+// opens a pg pool; a route-wiring test only needs the returned row).
+const mockForkOrLoadDraft = mock(
+  (..._args: unknown[]): Promise<DraftRowT | null> => Promise.resolve(null),
+);
 // #4325 — controllable publish so the route test can assert it returns
 // `refreshingCardIds` and enqueues the async refresh (the real publishDraft
 // opens a transaction, out of scope for a route-wiring test).
@@ -317,7 +322,30 @@ void mock.module("@atlas/api/lib/dashboard-versioning", () => ({
   ...realVersioning,
   applyEditToDraft: mockApplyEditToDraft,
   loadDraft: mockLoadDraft,
+  forkOrLoadDraft: mockForkOrLoadDraft,
   publishDraft: mockPublishDraft,
+}));
+
+// #4554 — the draft-cache seam (ADR-0034 Decision 1). Controllable so the
+// draft-aware refresh tests can assert the persist call + simulate failures,
+// and the ?view=draft read tests can hand the route a populated cache.
+type DraftCacheMapT = import("@atlas/api/lib/dashboard-draft-cache").DraftCardCacheMap;
+type SaveDraftCacheResultT = import("@atlas/api/lib/dashboard-draft-cache").SaveDraftCardCacheResult;
+const mockLoadDraftCardCache = mock(
+  (..._args: unknown[]): Promise<DraftCacheMapT> => Promise.resolve(new Map()),
+);
+const mockSaveDraftCardCache = mock(
+  (..._args: unknown[]): Promise<SaveDraftCacheResultT> =>
+    Promise.resolve({ ok: true, cachedAt: "2026-07-16T00:00:00.000Z" }),
+);
+const mockSeedDraftCardCacheFromPublished = mock(
+  (..._args: unknown[]): Promise<void> => Promise.resolve(),
+);
+void mock.module("@atlas/api/lib/dashboard-draft-cache", () => ({
+  loadDraftCardCache: mockLoadDraftCardCache,
+  saveDraftCardCache: mockSaveDraftCardCache,
+  seedDraftCardCacheFromPublished: mockSeedDraftCardCacheFromPublished,
+  EMPTY_DRAFT_CARD_CACHE: new Map(),
 }));
 
 // #2368 — bound-chat-context mocks for the new sessions endpoints.
@@ -588,6 +616,14 @@ describe("dashboard routes", () => {
     mockApplyEditToDraft.mockResolvedValue({ ok: false, reason: "no_db" });
     mockLoadDraft.mockReset();
     mockLoadDraft.mockResolvedValue(null);
+    mockForkOrLoadDraft.mockReset();
+    mockForkOrLoadDraft.mockResolvedValue(null);
+    mockLoadDraftCardCache.mockReset();
+    mockLoadDraftCardCache.mockResolvedValue(new Map());
+    mockSaveDraftCardCache.mockReset();
+    mockSaveDraftCardCache.mockResolvedValue({ ok: true, cachedAt: "2026-07-16T00:00:00.000Z" });
+    mockSeedDraftCardCacheFromPublished.mockReset();
+    mockSeedDraftCardCacheFromPublished.mockResolvedValue(undefined);
     mockShareDashboard.mockReset();
     mockShareDashboard.mockResolvedValue({ ok: true, data: { token: "share-token-123", expiresAt: null, shareMode: "public", rotated: false } });
     mockUnshareDashboard.mockReset();
@@ -3561,7 +3597,13 @@ describe("dashboard routes", () => {
       expect(runArg.sql).toBe("SELECT draft_refresh_sql");
       // The invariant: a draft refresh never writes the published card cache.
       expect(mockRefreshCard).not.toHaveBeenCalled();
-      // The freshly-run rows are overlaid on the draft card, in-memory.
+      // #4554 — the result persists to the caller's DRAFT CACHE (so it
+      // survives a page reload), keyed by the holder + dashboard + card.
+      expect(mockSaveDraftCardCache).toHaveBeenCalledTimes(1);
+      expect(mockSaveDraftCardCache).toHaveBeenCalledWith("u1", VALID_ID, VALID_CARD_ID, {
+        columns: ["month", "total"],
+        rows: [{ month: "Jan", total: 1000 }],
+      });
       const body = (await response.json()) as {
         id: string;
         cachedColumns: string[];
@@ -3571,7 +3613,198 @@ describe("dashboard routes", () => {
       expect(body.id).toBe(VALID_CARD_ID);
       expect(body.cachedColumns).toEqual(["month", "total"]);
       expect(body.cachedRows).toEqual([{ month: "Jan", total: 1000 }]);
-      expect(typeof body.cachedAt).toBe("string");
+      // The response's capture instant is the PERSISTED one — payload and
+      // stored row can never disagree.
+      expect(body.cachedAt).toBe("2026-07-16T00:00:00.000Z");
+    });
+
+    // #4554 — a draft-ONLY (never-published) card is fully operable: the draft
+    // resolution runs BEFORE the published-card existence gate, so no 404.
+    const draftOnlyRow = {
+      userId: "u1",
+      dashboardId: VALID_ID,
+      snapshot: {
+        dashboardId: VALID_ID,
+        title: "Revenue Dashboard",
+        description: null,
+        cards: [
+          {
+            id: VALID_CARD_ID,
+            position: 0,
+            title: "Draft-only card",
+            sql: "SELECT draft_only_card_sql",
+            chartConfig: null,
+            connectionGroupId: null,
+            layout: null,
+          },
+        ],
+      },
+      baseline: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+      publishedBaselineAt: mockDashboardData.updatedAt,
+      createdAt: mockDashboardData.updatedAt,
+      updatedAt: mockDashboardData.updatedAt,
+    };
+
+    it("refresh?view=draft succeeds for a DRAFT-ONLY card — no 404 from the published gate (#4554)", async () => {
+      mockLoadDraft.mockResolvedValue(draftOnlyRow);
+      // The card does NOT exist in the published table.
+      mockGetCard.mockResolvedValue({ ok: false, reason: "not_found" });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/refresh?view=draft`,
+          { method: "POST" },
+        ),
+      );
+      expect(response.status).toBe(200);
+      const runArg = mockRunUserQueryPipeline.mock.calls[0][0];
+      expect(runArg.sql).toBe("SELECT draft_only_card_sql");
+      // The override path never even consults the published-card gate.
+      expect(mockGetCard).not.toHaveBeenCalled();
+      // Persisted to the draft cache; the published cache untouched.
+      expect(mockSaveDraftCardCache).toHaveBeenCalledTimes(1);
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+    });
+
+    it("render?view=draft succeeds for a DRAFT-ONLY card — no 404 from the published gate (#4554)", async () => {
+      mockLoadDraft.mockResolvedValue(draftOnlyRow);
+      mockGetCard.mockResolvedValue({ ok: false, reason: "not_found" });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?view=draft`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parameters: {} }),
+          },
+        ),
+      );
+      expect(response.status).toBe(200);
+      const runArg = mockRunUserQueryPipeline.mock.calls[0][0];
+      expect(runArg.sql).toBe("SELECT draft_only_card_sql");
+      expect(mockGetCard).not.toHaveBeenCalled();
+      // Render is ephemeral — neither cache is written.
+      expect(mockSaveDraftCardCache).not.toHaveBeenCalled();
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+    });
+
+    it("a caller WITHOUT the draft cannot execute a draft-only card — 404, nothing runs (#4554)", async () => {
+      // view=draft but the caller has no draft row (loadDraft is keyed by the
+      // CALLER's userId — another user's draft is structurally unreachable).
+      mockLoadDraft.mockResolvedValue(null);
+      mockGetCard.mockResolvedValue({ ok: false, reason: "not_found" });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/refresh?view=draft`,
+          { method: "POST" },
+        ),
+      );
+      // Falls through to the published path → the card doesn't exist there →
+      // "Card not found" now means not-in-draft-AND-not-published.
+      expect(response.status).toBe(404);
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+      expect(mockSaveDraftCardCache).not.toHaveBeenCalled();
+    });
+
+    it("refresh?view=draft returns 409 draft_gone when the draft vanished mid-refresh (#4554)", async () => {
+      mockLoadDraft.mockResolvedValue(draftOnlyRow);
+      // The draft was published/discarded while the query ran — a client-state
+      // race, not a server fault: distinct machine-readable code, not a 500.
+      mockSaveDraftCardCache.mockResolvedValue({ ok: false, reason: "no_draft" });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/refresh?view=draft`,
+          { method: "POST" },
+        ),
+      );
+      expect(response.status).toBe(409);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("draft_gone");
+      expect(typeof body.requestId).toBe("string");
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+    });
+
+    it("refresh?view=draft returns 500 with requestId on a transient persist failure (#4554)", async () => {
+      mockLoadDraft.mockResolvedValue(draftOnlyRow);
+      mockSaveDraftCardCache.mockResolvedValue({ ok: false, reason: "error" });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/refresh?view=draft`,
+          { method: "POST" },
+        ),
+      );
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("internal_error");
+      expect(typeof body.requestId).toBe("string");
+      // Never silently return unpersisted rows as if they were saved.
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+    });
+
+    it("GET /:id/draft materializes the view from the DRAFT CACHE (#4554)", async () => {
+      mockForkOrLoadDraft.mockResolvedValue(draftOnlyRow);
+      mockLoadDraftCardCache.mockResolvedValue(
+        new Map([
+          [
+            VALID_CARD_ID,
+            {
+              cachedColumns: ["month"],
+              cachedRows: [{ month: "Mar" }],
+              cachedAt: "2026-07-11T00:00:00.000Z",
+            },
+          ],
+        ]),
+      );
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft`),
+      );
+      expect(response.status).toBe(200);
+      expect(mockLoadDraftCardCache).toHaveBeenCalledWith("u1", VALID_ID);
+      const body = (await response.json()) as {
+        view: {
+          cards: Array<{
+            cachedColumns: string[] | null;
+            cachedRows: Record<string, unknown>[] | null;
+            cachedAt: string | null;
+          }>;
+        };
+      };
+      expect(body.view.cards).toHaveLength(1);
+      expect(body.view.cards[0].cachedColumns).toEqual(["month"]);
+      expect(body.view.cards[0].cachedRows).toEqual([{ month: "Mar" }]);
+      expect(body.view.cards[0].cachedAt).toBe("2026-07-11T00:00:00.000Z");
+    });
+
+    it("GET /:id?view=draft materializes card data from the DRAFT CACHE (#4554)", async () => {
+      mockLoadDraft.mockResolvedValue(draftOnlyRow);
+      mockLoadDraftCardCache.mockResolvedValue(
+        new Map([
+          [
+            VALID_CARD_ID,
+            {
+              cachedColumns: ["month"],
+              cachedRows: [{ month: "Feb" }],
+              cachedAt: "2026-07-10T00:00:00.000Z",
+            },
+          ],
+        ]),
+      );
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}?view=draft`),
+      );
+      expect(response.status).toBe(200);
+      expect(mockLoadDraftCardCache).toHaveBeenCalledWith("u1", VALID_ID);
+      const body = (await response.json()) as {
+        cards: Array<{
+          id: string;
+          cachedColumns: string[] | null;
+          cachedRows: Record<string, unknown>[] | null;
+          cachedAt: string | null;
+        }>;
+      };
+      expect(body.cards).toHaveLength(1);
+      expect(body.cards[0].cachedColumns).toEqual(["month"]);
+      expect(body.cards[0].cachedRows).toEqual([{ month: "Feb" }]);
+      expect(body.cards[0].cachedAt).toBe("2026-07-10T00:00:00.000Z");
     });
 
     it("render?view=draft 404s when the card was removed in the draft (never runs published)", async () => {

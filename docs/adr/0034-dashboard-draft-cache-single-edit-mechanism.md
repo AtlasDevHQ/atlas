@@ -54,8 +54,13 @@ is built on.
 
 ## Consequences
 
-- The draft snapshot card gains data fields; per-user drafts grow by their
+- The draft card gains its own data home; per-user drafts grow by their
   cached rows (the abandoned-draft sweep already bounds retention).
+  Implementation note (#4554): the data lives in a side table
+  (`dashboard_draft_card_cache`, keyed by user/dashboard/card, FK-cascaded
+  from the draft row) rather than as fields on the snapshot JSONB — a
+  snapshot-embedded cache would ride along on every `saveDraft` full-snapshot
+  rewrite and leak into the publish merge's card equality.
 - Draft results never touch the published cached data or the Query Cache —
   the privacy invariant ADR-0029 stated is now held by construction, since
   draft executions have their own home.

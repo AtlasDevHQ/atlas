@@ -58,10 +58,17 @@ void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
+// #4554 / ADR-0034 — Query Cache SPIES with `cacheEnabled: () => true`: the
+// dashboard path (`runUserQueryPipeline`) must never read or write the shared
+// Query Cache even when caching is on, because it passes the
+// `bind-dashboard-parameters` pre-step, never `check-cache`. The spies let the
+// regression test below pin that structurally.
+const cacheGetSpy = mock((): unknown => null);
+const cacheSetSpy = mock((): void => {});
 void mock.module("@atlas/api/lib/cache/index", () => ({
-  getCache: () => ({ get: () => null, set: () => {}, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),
+  getCache: () => ({ get: cacheGetSpy, set: cacheSetSpy, stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }) }),
   buildCacheKey: () => "mock-key",
-  cacheEnabled: () => false,
+  cacheEnabled: () => true,
   getDefaultTtl: () => 300000,
   flushCache: () => {},
   setCacheBackend: () => {},
@@ -116,6 +123,8 @@ describe("runUserQueryPipeline — dashboard parameter binding", () => {
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/atlas";
     _resetPool(mockPool);
     queryFn = mock(() => Promise.resolve({ columns: ["day"], rows: [{ day: "2026-01-01" }] }));
+    cacheGetSpy.mockClear();
+    cacheSetSpy.mockClear();
   });
 
   afterEach(() => {
@@ -170,5 +179,22 @@ describe("runUserQueryPipeline — dashboard parameter binding", () => {
 
     expect(outcome.kind).toBe("validation_failed");
     expect(queryFn).not.toHaveBeenCalled();
+  });
+
+  // #4554 / ADR-0034 — dashboard executions (published AND draft: render,
+  // refresh, CSV export all funnel through runUserQueryPipeline) never touch
+  // the shared Query Cache, even with caching enabled. The cache is only
+  // reachable under the agent tool's `check-cache` pre-step; the dashboard
+  // path's `bind-dashboard-parameters` pre-step never sets a cache key, so a
+  // draft's rows can't leak into (or be served from) the tenant-shared store.
+  it("never reads or writes the shared Query Cache (cacheEnabled=true)", async () => {
+    const outcome = await runUserQueryPipeline({
+      sql: "SELECT day FROM signups",
+      explanation: "Dashboard card refresh: draft card",
+    });
+
+    expect(outcome.kind).toBe("ok");
+    expect(cacheGetSpy).not.toHaveBeenCalled();
+    expect(cacheSetSpy).not.toHaveBeenCalled();
   });
 });

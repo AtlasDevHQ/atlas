@@ -795,7 +795,7 @@ const refreshCardRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden or blocked by RLS", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
-    409: { description: "Approval required before execution", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Approval required before execution, or the draft was published/discarded mid-refresh (`draft_gone`)", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate or concurrency limit", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Connection or approval system unavailable", content: { "application/json": { schema: ErrorSchema } } },
@@ -2306,15 +2306,26 @@ authed.openapi(refreshCardRoute, async (c) => {
           );
         }
         // `no_draft` = the draft was published/discarded while this refresh
-        // ran; `error` = a transient DB failure. Both are retryable — never
-        // silently return unpersisted rows as if they were saved.
+        // ran — a client-state race, not a server fault, so it gets its own
+        // 409 + machine-readable code (a 500 here would page on an expected
+        // race and force clients to string-match the message). `error` = a
+        // genuine transient DB failure → 500. Either way, never silently
+        // return unpersisted rows as if they were saved.
+        if (saveResult.reason === "no_draft") {
+          return c.json(
+            {
+              error: "draft_gone",
+              message:
+                "Your draft was published or discarded while this refresh ran. Reload the dashboard and retry.",
+              requestId,
+            },
+            409,
+          );
+        }
         return c.json(
           {
             error: "internal_error",
-            message:
-              saveResult.reason === "no_draft"
-                ? "Your draft was published or discarded while this refresh ran. Reload the dashboard and retry."
-                : "Could not save the refreshed data to your draft. Please retry.",
+            message: "Could not save the refreshed data to your draft. Please retry.",
             requestId,
           },
           500,

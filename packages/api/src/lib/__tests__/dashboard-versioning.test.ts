@@ -1105,8 +1105,22 @@ describe("dashboard-versioning DB helpers", () => {
       enableInternalDB();
       const published = dashboardWithCards([card("c1")]);
       const snap = snapshot([card("c1")]);
-      // forkOrLoadDraft loads the existing row (1 query), then saveDraft UPDATE.
-      setResults({ rows: [draftRow({ draft: snap })] }, { rows: [{ user_id: "u1" }] });
+      // forkOrLoadDraft loads the existing row (1 query), then saveDraft
+      // UPDATE, then the draft-cache load (#4554) for the returned view.
+      setResults(
+        { rows: [draftRow({ draft: snap })] },
+        { rows: [{ user_id: "u1" }] },
+        {
+          rows: [
+            {
+              card_id: "c1",
+              cached_columns: ["v"],
+              cached_rows: [{ v: 7 }],
+              cached_at: "2026-07-01T00:00:00.000Z",
+            },
+          ],
+        },
+      );
       const result = await applyEditToDraft("u1", published, {
         kind: "updateMeta",
         title: "Renamed in draft",
@@ -1115,11 +1129,18 @@ describe("dashboard-versioning DB helpers", () => {
       if (result.ok) {
         expect(result.snapshot.title).toBe("Renamed in draft");
         expect(result.view.title).toBe("Renamed in draft");
+        // #4554 — the returned view materializes the caller's DRAFT cache.
+        // Passing EMPTY_DRAFT_CARD_CACHE here (the mistake this pins) would
+        // blank every tile in the editor after each drag/rename.
+        expect(result.view.cards[0].cachedColumns).toEqual(["v"]);
+        expect(result.view.cards[0].cachedRows).toEqual([{ v: 7 }]);
+        expect(result.view.cards[0].cachedAt).toBe("2026-07-01T00:00:00.000Z");
       }
       // The persisted UPDATE targeted the draft table, never a published one.
       const sqls = queryCalls.map((q) => q.sql).join("\n");
       expect(sqls).toContain("UPDATE dashboard_user_drafts");
-      expect(sqls).not.toContain("dashboard_cards");
+      expect(sqls).not.toContain("INSERT INTO dashboard_cards");
+      expect(sqls).not.toContain("UPDATE dashboard_cards");
     });
 
     it("returns no_db when the internal DB is not configured", async () => {

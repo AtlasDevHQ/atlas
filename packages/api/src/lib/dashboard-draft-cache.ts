@@ -3,25 +3,32 @@
  * data: cached rows + a capture instant, private to one user's draft of one
  * dashboard (`dashboard_draft_card_cache`, migration 0175).
  *
- * Executing a card while the caller holds a draft — refresh, retry, first
- * load of a never-published card — reads and writes THIS store, never the
- * published card's `dashboard_cards.cached_*` columns and never the shared
- * in-process Query Cache (the dashboard execution path structurally can't
- * reach it: `runUserQueryPipeline` never passes the `check-cache` pre-step).
+ * A draft refresh (and retry — the same endpoint) writes THIS store, and the
+ * draft view reads it — never the published card's `dashboard_cards.cached_*`
+ * columns and never the shared in-process Query Cache (the dashboard
+ * execution path structurally can't reach it: `runUserQueryPipeline` never
+ * passes the `check-cache` pre-step).
  * The draft materialization (`materializeDraftView`) reads this store instead
  * of falling back to the published card's cache, so tile trust states and age
  * captions are truthful for the data the draft holder is actually looking at.
  *
  * This module owns every touch of the table:
- *   - `loadDraftCardCache`  — the read seam (draft view + draft-aware exec).
- *   - `saveDraftCardCache`  — the write seam (single-card draft refresh).
+ *   - `loadDraftCardCache`  — the read seam (draft-view materialization + the
+ *     bound editor's card-detail read). Execution never reads the store —
+ *     `resolveDraftExecCard` needs only the card's definition and deliberately
+ *     passes `EMPTY_DRAFT_CARD_CACHE`.
+ *   - `saveDraftCardCache`  — the write seam (single-card draft refresh; a
+ *     parameter render stays ephemeral and writes nothing).
  *   - `seedDraftCardCacheFromPublished` — fork-time copy of the published
  *     cards' cached data, called by `forkOrLoadDraft` exactly when it CREATES
  *     the draft row, so a fresh draft renders the same rows published showed
  *     (its capture instants included). From that moment the copies diverge by
  *     design: post-fork published refreshes never bleed into the draft view.
  *   - Deletion is structural — the composite FK to `dashboard_user_drafts`
- *     cascades on publish/discard/sweep/dashboard-delete.
+ *     cascades when the draft row is deleted: publish, discard, and the
+ *     abandoned-draft sweep. (Dashboard delete is a SOFT delete — `deleted_at`
+ *     — so it fires no cascade; a deleted dashboard's drafts + cache are
+ *     reaped later by the sweep, or by org teardown's hard DELETE.)
  *
  * The follow-up slices (#4557, #4558, #4559) build on these three functions;
  * keep the surface small and named.
@@ -35,10 +42,10 @@ const log = createLogger("dashboard-draft-cache");
 
 /** One draft card's cached data + capture instant. */
 export interface DraftCardCacheEntry {
-  cachedColumns: string[] | null;
-  cachedRows: Record<string, unknown>[] | null;
+  readonly cachedColumns: string[] | null;
+  readonly cachedRows: Record<string, unknown>[] | null;
   /** ISO capture instant — when the rows were produced. */
-  cachedAt: string;
+  readonly cachedAt: string;
 }
 
 /** Card id → cache entry for one (user, dashboard) draft. */
@@ -168,8 +175,8 @@ export async function saveDraftCardCache(
  * published refresh after the fork can't bleed into the draft view. Idempotent
  * (`ON CONFLICT DO NOTHING`) so two tabs racing through the create path
  * converge. Fail-soft: a seed failure leaves the fresh draft with "never run"
- * tiles (the canvas-mount render fills them in) rather than failing the fork —
- * logged, never silent.
+ * tiles (a manual per-tile refresh fills them in; #4557 adds the canvas-mount
+ * render) rather than failing the fork — logged, never silent.
  */
 export async function seedDraftCardCacheFromPublished(
   userId: string,

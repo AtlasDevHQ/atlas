@@ -2229,9 +2229,10 @@ export const dashboardUserDrafts = pgTable(
 // user's draft. A SIDE table rather than fields in the draft snapshot JSONB so
 // `saveDraft`'s full-snapshot rewrite never carries data rows and the publish
 // merge's card equality never sees them. Composite FK → dashboard_user_drafts
-// ON DELETE CASCADE: publish/discard/sweep/dashboard-delete clear the cache by
-// deleting the draft row. `card_id` deliberately has NO FK to dashboard_cards —
-// a draft-only (never-published) card exists only in the draft snapshot.
+// ON DELETE CASCADE: publish/discard/sweep clear the cache by deleting the
+// draft row (dashboard delete is soft — no cascade; the sweep reaps later).
+// `card_id` deliberately has NO FK to dashboard_cards — a draft-only
+// (never-published) card exists only in the draft snapshot.
 export const dashboardDraftCardCache = pgTable(
   "dashboard_draft_card_cache",
   {

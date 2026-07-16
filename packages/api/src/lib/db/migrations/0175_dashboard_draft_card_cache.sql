@@ -7,9 +7,11 @@
 -- (draft-only) card 404'd on the published-card gate — an agent-built board
 -- was a grid of "Never run" tiles until publish. ADR-0034 Decision 1 closes
 -- the gap: the draft carries its own cached rows + capture instant (the
--- "draft cache", CONTEXT.md § Dashboard editing), read and written by every
--- draft execution — never the published card's cached data, never the shared
--- in-process Query Cache.
+-- "draft cache", CONTEXT.md § Dashboard editing) — never the published card's
+-- cached data, never the shared in-process Query Cache. This migration lays
+-- the store + the reachable exec path; the seeding that fills an agent-built
+-- board (tool-side execution #4558, canvas-mount render #4557) ships in the
+-- sibling slices.
 --
 -- Shape:
 --   * One row per (user_id, dashboard_id, card_id) — the card's cached data
@@ -22,8 +24,10 @@
 --     data volume — and the publish/rebase three-way merge (`cardEquals`)
 --     must never see data rows.
 --   * Composite FK → dashboard_user_drafts ON DELETE CASCADE: publish,
---     discard, the abandoned-draft sweep, and dashboard deletion all clear
---     the draft cache for free by deleting the draft row.
+--     discard, and the abandoned-draft sweep all clear the draft cache for
+--     free by deleting the draft row. (Dashboard delete is a SOFT delete —
+--     `deleted_at` — so it fires no cascade; a deleted dashboard's drafts +
+--     cache linger until the sweep, or org teardown's hard DELETE.)
 --   * card_id has NO FK to dashboard_cards — a draft-only card exists ONLY in
 --     the draft snapshot (that's the point). A cache row whose card was since
 --     removed from the draft is simply never materialized and dies with the

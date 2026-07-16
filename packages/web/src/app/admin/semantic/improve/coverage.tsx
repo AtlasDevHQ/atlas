@@ -14,6 +14,15 @@
  * affordance. A connection without a baseline reports `profiling`; the view shows
  * a loading state and polls until the backfill lands.
  *
+ * Scale for large multi-connection groups (#4652): a 3-region group can be 350+
+ * near-identical table rows in one scroll, so the view layers three composing
+ * affordances — a table-name search + coverage-state filter bar (view-wide),
+ * collapse-by-default connection sections that lead with their summary line
+ * (auto-expanded while a filter is active, and for a lone connection), and
+ * chunked incremental rendering so a long expanded list never mounts all its
+ * rows at once. Filter/collapse state is plain `useState`, deliberately outside
+ * the polled data path, so the profiling poll can't reset it.
+ *
  * The presentational pieces (`ConnectionCoverageSection`, `CoverageTableRow`) are
  * exported for direct render-testing without driving the fetch, mirroring how the
  * page exports `AnchorLaunchers` / `ActiveAnchorChip`.
@@ -24,7 +33,9 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { wizardGenerateHref } from "../../../wizard/wizard-generate-entry";
 import {
   CheckCircle2,
@@ -35,6 +46,7 @@ import {
   Loader2,
   Database,
   AlertTriangle,
+  Search,
   Sparkles,
 } from "lucide-react";
 import Link from "next/link";
@@ -240,44 +252,151 @@ function CoverageColumnChip({
   );
 }
 
-/** One connection's coverage section — its status + summary + table rows. */
+/**
+ * How many table rows a list mounts before offering "Show more" (#4652) — keeps
+ * a ~119-table connection from rendering every row (and its column chips) at
+ * once. Exported so the render tests aren't pinned to a magic number.
+ */
+export const COVERAGE_TABLE_PAGE_SIZE = 50;
+
+/** True when the table survives the view-wide name search + state filter. */
+function tableMatchesFilter(
+  table: WireTableCoverage,
+  query: string,
+  stateFilter: TableCoverageState | null,
+): boolean {
+  if (stateFilter !== null && table.state !== stateFilter) return false;
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return true;
+  return (
+    table.table.toLowerCase().includes(needle) ||
+    (table.entity !== null && table.entity.toLowerCase().includes(needle))
+  );
+}
+
+/**
+ * A connection's table rows, mounted in chunks of `COVERAGE_TABLE_PAGE_SIZE`
+ * with a "Show more" tail (#4652). The parent keys this component by the filter
+ * signature so a filter change resets the visible window without an effect.
+ */
+function CoverageTableList({
+  tables,
+  installId,
+  onColumnAnchor,
+  disabled,
+}: {
+  tables: WireTableCoverage[];
+  installId: string;
+  onColumnAnchor: (req: ColumnAnchorRequest, label: string) => void;
+  disabled: boolean;
+}) {
+  const [visibleCount, setVisibleCount] = useState(COVERAGE_TABLE_PAGE_SIZE);
+  const visible = tables.slice(0, visibleCount);
+  const hidden = tables.length - visible.length;
+
+  return (
+    <div className="space-y-1.5">
+      {visible.map((table) => (
+        <CoverageTableRow
+          key={table.table}
+          table={table}
+          installId={installId}
+          onColumnAnchor={onColumnAnchor}
+          disabled={disabled}
+        />
+      ))}
+      {hidden > 0 && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="w-full text-xs text-muted-foreground"
+          onClick={() => setVisibleCount((count) => count + COVERAGE_TABLE_PAGE_SIZE)}
+        >
+          Show {Math.min(hidden, COVERAGE_TABLE_PAGE_SIZE)} more ({hidden} hidden)
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One connection's coverage section — its status + summary + table rows.
+ *
+ * Collapsed to its summary line by default (#4652) so a multi-connection group
+ * never mounts N×119 rows at once; the caller opts a lone connection into
+ * `defaultOpen`. An active search/state filter force-expands the section —
+ * search results must be visible to be useful — and collapsing returns to the
+ * user's manual choice once the filter clears.
+ */
 export function ConnectionCoverageSection({
   connection,
   onColumnAnchor,
   disabled,
+  defaultOpen = false,
+  query = "",
+  stateFilter = null,
 }: {
   connection: WireConnectionCoverage;
   onColumnAnchor: (req: ColumnAnchorRequest, label: string) => void;
   disabled: boolean;
+  defaultOpen?: boolean;
+  query?: string;
+  stateFilter?: TableCoverageState | null;
 }) {
   const { coverage } = connection;
+  const [open, setOpen] = useState(defaultOpen);
+  const filtering = query.trim() !== "" || stateFilter !== null;
+  const expanded = open || filtering;
+  const hasTables = connection.status === "ready" && coverage !== null && coverage.tables.length > 0;
+  const filteredTables = hasTables
+    ? coverage.tables.filter((table) => tableMatchesFilter(table, query, stateFilter))
+    : [];
+  const Chevron = expanded ? ChevronDown : ChevronRight;
+
+  /*
+   * Label each row by the CONNECTION identity, not just the group: a group
+   * with several members (e.g. a 3-region `g_prod` of `us-prod`/`eu-prod`/
+   * `apac-prod`) otherwise renders as identical-looking duplicate rows. The
+   * group is shown as shared context only when it differs from the
+   * connection id — a connection with no explicit `group_id` defaults its
+   * wire `group` to the `installId` (COALESCE), so the label is suppressed.
+   */
+  const identity = (
+    <>
+      <Database className="size-4 opacity-70" />
+      <span className="font-mono font-medium">{connection.installId}</span>
+      {connection.dbType && (
+        <Badge variant="secondary" className="text-[10px]">
+          {connection.dbType}
+        </Badge>
+      )}
+      {connection.group !== connection.installId && (
+        <span className="text-[11px] text-muted-foreground">
+          group <span className="font-mono">{connection.group}</span>
+        </span>
+      )}
+      {connection.freshness && (
+        <span className="text-[11px] text-muted-foreground">{connection.freshness}</span>
+      )}
+    </>
+  );
+
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 text-sm">
-        <Database className="size-4 opacity-70" />
-        {/*
-         * Label each row by the CONNECTION identity, not just the group: a group
-         * with several members (e.g. a 3-region `g_prod` of `us-prod`/`eu-prod`/
-         * `apac-prod`) otherwise renders as identical-looking duplicate rows. The
-         * group is shown as shared context only when it differs from the
-         * connection id — a connection with no explicit `group_id` defaults its
-         * wire `group` to the `installId` (COALESCE), so the label is suppressed.
-         */}
-        <span className="font-mono font-medium">{connection.installId}</span>
-        {connection.dbType && (
-          <Badge variant="secondary" className="text-[10px]">
-            {connection.dbType}
-          </Badge>
-        )}
-        {connection.group !== connection.installId && (
-          <span className="text-[11px] text-muted-foreground">
-            group <span className="font-mono">{connection.group}</span>
-          </span>
-        )}
-        {connection.freshness && (
-          <span className="text-[11px] text-muted-foreground">{connection.freshness}</span>
-        )}
-      </div>
+      {hasTables ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-center gap-2 rounded-md text-left text-sm hover:bg-muted/50"
+        >
+          <Chevron className="size-3.5 shrink-0 opacity-60" />
+          {identity}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2 text-sm">{identity}</div>
+      )}
 
       {connection.status === "profiling" && (
         <div className="flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
@@ -295,28 +414,36 @@ export function ConnectionCoverageSection({
 
       {connection.status === "ready" && coverage && (
         <>
-          <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+          {/* The summary line stays visible while collapsed — it IS the collapsed view. */}
+          <div className="flex flex-wrap items-center gap-3 pl-5.5 text-[11px] text-muted-foreground">
             <span className="text-green-600 dark:text-green-400">{coverage.summary.coveredTables} covered</span>
             <span className="text-yellow-600 dark:text-yellow-400">{coverage.summary.partialTables} partial</span>
             <span>{coverage.summary.uncoveredTables} uncovered</span>
             <span>· {coverage.summary.totalTables} tables</span>
+            {filtering && hasTables && (
+              <span>
+                · {filteredTables.length} {filteredTables.length === 1 ? "match" : "matches"}
+              </span>
+            )}
           </div>
           {coverage.tables.length === 0 ? (
             <p className="py-2 text-xs text-muted-foreground">
               This connection&rsquo;s baseline profile has no tables.
             </p>
+          ) : !expanded ? null : filteredTables.length === 0 ? (
+            <p className="py-2 text-xs text-muted-foreground">
+              No tables match the current filter.
+            </p>
           ) : (
-            <div className="space-y-1.5">
-              {coverage.tables.map((table) => (
-                <CoverageTableRow
-                  key={table.table}
-                  table={table}
-                  installId={connection.installId}
-                  onColumnAnchor={onColumnAnchor}
-                  disabled={disabled}
-                />
-              ))}
-            </div>
+            // Keyed by the filter signature so a filter change resets the
+            // "Show more" window instead of carrying a stale count over.
+            <CoverageTableList
+              key={`${query}\u0000${stateFilter ?? ""}`}
+              tables={filteredTables}
+              installId={connection.installId}
+              onColumnAnchor={onColumnAnchor}
+              disabled={disabled}
+            />
           )}
         </>
       )}
@@ -328,11 +455,65 @@ export function ConnectionCoverageSection({
 // Fetching view
 // ---------------------------------------------------------------------------
 
+const STATE_FILTER_VALUES: readonly TableCoverageState[] = ["covered", "partial", "uncovered"];
+
+/**
+ * The view-wide search + coverage-state filter bar (#4652). Presentational —
+ * exported for direct render-testing without driving the fetch.
+ */
+export function CoverageFilterBar({
+  query,
+  onQueryChange,
+  stateFilter,
+  onStateFilterChange,
+}: {
+  query: string;
+  onQueryChange: (query: string) => void;
+  stateFilter: TableCoverageState | null;
+  onStateFilterChange: (state: TableCoverageState | null) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="relative w-full max-w-xs">
+        <Search className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={query}
+          onChange={(e) => onQueryChange(e.target.value)}
+          placeholder="Filter tables…"
+          aria-label="Filter tables by name"
+          className="h-8 pl-8 text-xs"
+        />
+      </div>
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        size="sm"
+        spacing={1}
+        value={stateFilter ?? ""}
+        onValueChange={(value: string) => {
+          const next = STATE_FILTER_VALUES.find((s) => s === value) ?? null;
+          onStateFilterChange(next);
+        }}
+        aria-label="Filter tables by coverage state"
+      >
+        {STATE_FILTER_VALUES.map((state) => (
+          <ToggleGroupItem key={state} value={state} className="h-8 text-xs">
+            {STATE_META[state].label}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+    </div>
+  );
+}
+
 /**
  * The coverage view — fetches the per-connection overview and polls while any
  * connection is still profiling (the lazy backfill). `onColumnAnchor` launches a
  * column-anchored conversation; `disabled` mirrors the page's `isLoading` so a
  * click can't race an in-flight turn.
+ *
+ * Filter/collapse state lives here in plain `useState`, outside the polled data
+ * path, so the 4s profiling poll re-fetch can't reset what the user typed.
  */
 export function CoverageView({
   onColumnAnchor,
@@ -344,6 +525,8 @@ export function CoverageView({
   const { data, loading, error, refetch } = useAdminFetch<CoverageOverviewResponse>(
     "/api/v1/admin/semantic-improve/coverage",
   );
+  const [query, setQuery] = useState("");
+  const [stateFilter, setStateFilter] = useState<TableCoverageState | null>(null);
 
   // Poll while any connection is still profiling — the lazy backfill lands
   // asynchronously, so re-fetch until `profiling` clears (or an error does).
@@ -375,12 +558,26 @@ export function CoverageView({
           </div>
         )}
 
+        {connections.length > 0 && (
+          <CoverageFilterBar
+            query={query}
+            onQueryChange={setQuery}
+            stateFilter={stateFilter}
+            onStateFilterChange={setStateFilter}
+          />
+        )}
+
         {connections.map((connection) => (
           <ConnectionCoverageSection
             key={connection.installId}
             connection={connection}
             onColumnAnchor={onColumnAnchor}
             disabled={disabled}
+            // A lone connection opens straight away — collapse-by-default is
+            // about not mounting N×119 rows for multi-connection groups (#4652).
+            defaultOpen={connections.length === 1}
+            query={query}
+            stateFilter={stateFilter}
           />
         ))}
       </div>

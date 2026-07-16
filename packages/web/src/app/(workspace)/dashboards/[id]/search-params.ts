@@ -23,6 +23,15 @@ import type { ParameterValues } from "@/ui/components/dashboards/dashboard-param
 /** URL query key holding the JSON-encoded dashboard parameter override map. */
 export const DASHBOARD_PARAMS_KEY = "dparams";
 
+/**
+ * URL query key that auto-opens the bound editor on arrival (`?openChat=true`)
+ * — the shared entry of the main-chat `createDashboard` handoff (#2369) and
+ * surface-native creation (#4563). Consumed once by the canvas page's
+ * auto-open effect, then stripped from the URL. Shared as a constant so the
+ * producers (creation navigation) and the consumer can't drift.
+ */
+export const OPEN_CHAT_PARAM = "openChat";
+
 /** nuqs parser for {@link DASHBOARD_PARAMS_KEY}. Shared by the page (drilldown
  *  writes) and the parameter bar (manual changes) so both subscribe to the
  *  same key. */

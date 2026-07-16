@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -8,6 +8,7 @@ import { friendlyError } from "@/ui/lib/fetch-error";
 import { DashboardsEmptyState } from "./empty-state";
 import { DashboardListSkeleton } from "@/ui/components/dashboards/dashboard-skeleton";
 import { selectMostRecentDashboardId } from "./select-recent";
+import { OPEN_CHAT_PARAM } from "./[id]/search-params";
 import type { Dashboard } from "@/ui/lib/types";
 
 /**
@@ -40,21 +41,38 @@ export default function DashboardsPage() {
     ? selectMostRecentDashboardId(data.dashboards ?? [])
     : null;
 
+  // #4563 — set when the empty state navigates to a just-created board (with
+  // `?openChat=true` so the bound editor opens on arrival). The post-creation
+  // list refetch flips `targetId` to that same board, and without this flag
+  // the redirect effect below would race the creation push with a plain
+  // `router.replace("/dashboards/{id}")` — stripping the editor-open intent
+  // before the canvas consumed it.
+  const [creationHandoff, setCreationHandoff] = useState(false);
+
   useEffect(() => {
     if (isAuthError) {
       router.replace("/login?redirect=/dashboards");
       return;
     }
-    if (targetId) {
-      router.replace(`/dashboards/${targetId}`);
-    }
-  }, [isAuthError, targetId, router]);
+    if (!targetId) return;
+    // #4563 — during a creation handoff, converge on the same
+    // intent-preserving URL the empty state pushed instead of standing down:
+    // the replace is idempotent with the push (whichever navigation lands,
+    // the canvas opens the bound editor), so the redirect can neither strip
+    // the intent nor strand the index on the skeleton if the push is
+    // superseded.
+    router.replace(
+      creationHandoff
+        ? `/dashboards/${targetId}?${OPEN_CHAT_PARAM}=true`
+        : `/dashboards/${targetId}`,
+    );
+  }, [isAuthError, targetId, router, creationHandoff]);
 
-  // Auth bounce or dashboard redirect in flight — show the layout-matching
-  // skeleton (not a blank frame) so the redirect never flashes an empty screen
-  // (#4323). The empty/error chrome is still gated below so it can't flash
-  // before navigation lands.
-  if (isAuthError || targetId) return <DashboardListSkeleton />;
+  // Auth bounce, dashboard redirect, or creation handoff in flight — show the
+  // layout-matching skeleton (not a blank frame) so the redirect never flashes
+  // an empty screen (#4323). The empty/error chrome is still gated below so it
+  // can't flash before navigation lands.
+  if (isAuthError || targetId || creationHandoff) return <DashboardListSkeleton />;
 
   if (error) {
     return (
@@ -82,5 +100,9 @@ export default function DashboardsPage() {
   if (loading || !data) return <DashboardListSkeleton />;
 
   // Loaded with no dashboards.
-  return <DashboardsEmptyState />;
+  return (
+    <DashboardsEmptyState
+      onCreationNavigate={() => setCreationHandoff(true)}
+    />
+  );
 }

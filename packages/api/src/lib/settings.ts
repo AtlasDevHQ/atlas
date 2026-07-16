@@ -227,7 +227,8 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // this single knob gates BOTH agent email paths (the `sendEmail`
     // integration tool and the `sendEmailReport` action); the legacy
     // action-path env knob `ATLAS_EMAIL_ALLOWED_DOMAINS` is honored as a
-    // deprecated fallback for one release. Workspace members are always
+    // deprecated fallback only while this setting is not explicitly
+    // configured (drop tracked in #4663). Workspace members are always
     // allowed; this adds extra domains. Empty (the default) = workspace
     // members only.
     key: "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS",

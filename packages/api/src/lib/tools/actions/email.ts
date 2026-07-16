@@ -93,9 +93,16 @@ export const sendEmailReport: AtlasAction = {
       // Recipient allowlist gate — runs pre-approval, shared with the
       // `sendEmail` integration tool (#4479). Fail-closed: recipients are
       // restricted to workspace members + admin-allowlisted domains. With
-      // no active workspace, member resolution yields no rows and only
-      // allowlisted domains pass.
-      const workspaceId = getRequestContext()?.user?.activeOrganizationId ?? "";
+      // no active workspace the gate's member half is empty and only
+      // allowlisted domains pass — log the degrade so a missing request
+      // context is diagnosable from the block that follows.
+      const workspaceId = getRequestContext()?.user?.activeOrganizationId;
+      if (!workspaceId) {
+        log.warn(
+          { subject },
+          "sendEmailReport: no active workspace in request context — gating against the platform-level allowlist only",
+        );
+      }
       const gate = await checkRecipientsAllowed(workspaceId, recipients);
       if (!gate.allowed) {
         log.warn(

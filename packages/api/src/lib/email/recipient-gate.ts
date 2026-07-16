@@ -21,29 +21,41 @@
  *      setting (comma-separated, workspace-scoped).
  *
  * Fail-closed: if the member list cannot be resolved, the send is blocked.
+ * A recipient that is not a single parseable address (e.g. a comma-joined
+ * list smuggled into one string) is blocked outright — the gate must judge
+ * exactly the address the transport would deliver to, never a prefix of it.
  *
- * Deprecation (#4479, phase 1 of 2): the retired action-path knob
- * `ATLAS_EMAIL_ALLOWED_DOMAINS` is honored as a fallback domain list when
- * the surviving setting is unset, with a warn. Drop in the next release.
+ * Deprecation (#4479, phase 1 of 2 — drop tracked in #4663): the retired
+ * action-path knob `ATLAS_EMAIL_ALLOWED_DOMAINS` is honored as a fallback
+ * domain list only while the surviving setting is not explicitly
+ * configured anywhere (no workspace/platform DB override and no env var —
+ * an admin explicitly clearing the setting therefore wins over a lingering
+ * legacy var). Warns once per process on first use.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { getSettingAuto } from "@atlas/api/lib/settings";
+import { getSettingOverride } from "@atlas/api/lib/settings";
 
 const log = createLogger("email.recipient-gate");
 
 /** The surviving knob — settings-registry-backed, workspace-scoped. */
 export const EMAIL_RECIPIENT_DOMAINS_SETTING = "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS";
 
-/** Retired env-only knob (#4479) — fallback this release, dropped next. */
+/** Retired env-only knob (#4479) — fallback this release, dropped in #4663. */
 export const LEGACY_EMAIL_DOMAINS_ENV = "ATLAS_EMAIL_ALLOWED_DOMAINS";
 
-let legacyKnobWarned = false;
+// Once-per-process warn latches — they gate log volume only, never the
+// security decision.
+let legacyFallbackWarned = false;
+let legacyIgnoredWarned = false;
+let noMemberDbWarned = false;
 
-/** Test-only: reset the once-per-process deprecation-warn latch. */
-export function resetLegacyKnobWarnForTests(): void {
-  legacyKnobWarned = false;
+/** Test-only: re-arm the once-per-process warn latches. */
+export function resetRecipientGateWarnsForTests(): void {
+  legacyFallbackWarned = false;
+  legacyIgnoredWarned = false;
+  noMemberDbWarned = false;
 }
 
 function parseAllowedDomains(raw: string | undefined): Set<string> {
@@ -58,22 +70,34 @@ function parseAllowedDomains(raw: string | undefined): Set<string> {
 /**
  * Resolve the admin-allowlisted recipient domains for a workspace.
  *
- * Reads the surviving setting first; when it resolves empty, falls back
- * to the deprecated `ATLAS_EMAIL_ALLOWED_DOMAINS` env knob (warn once per
- * process). The setting wins outright when both are present.
+ * The surviving setting wins whenever it is explicitly configured — a
+ * workspace/platform DB override (even one cleared to "", meaning
+ * members-only) or the env var. Only when neither exists does the
+ * deprecated `ATLAS_EMAIL_ALLOWED_DOMAINS` env knob apply (#4479; drop
+ * tracked in #4663). Each warn fires once per process.
  */
-function resolveAllowedDomains(workspaceId: string): Set<string> {
-  const domains = parseAllowedDomains(
-    getSettingAuto(EMAIL_RECIPIENT_DOMAINS_SETTING, workspaceId),
-  );
-  if (domains.size > 0) return domains;
+function resolveAllowedDomains(workspaceId: string | undefined): Set<string> {
+  const configured =
+    getSettingOverride(EMAIL_RECIPIENT_DOMAINS_SETTING, workspaceId) ??
+    process.env[EMAIL_RECIPIENT_DOMAINS_SETTING];
+
+  if (configured !== undefined) {
+    if (process.env[LEGACY_EMAIL_DOMAINS_ENV] !== undefined && !legacyIgnoredWarned) {
+      legacyIgnoredWarned = true;
+      log.warn(
+        { legacyKnob: LEGACY_EMAIL_DOMAINS_ENV, survivor: EMAIL_RECIPIENT_DOMAINS_SETTING },
+        `${LEGACY_EMAIL_DOMAINS_ENV} is set but ignored because ${EMAIL_RECIPIENT_DOMAINS_SETTING} is configured — remove the deprecated variable`,
+      );
+    }
+    return parseAllowedDomains(configured);
+  }
 
   const legacy = parseAllowedDomains(process.env[LEGACY_EMAIL_DOMAINS_ENV]);
-  if (legacy.size > 0 && !legacyKnobWarned) {
-    legacyKnobWarned = true;
+  if (legacy.size > 0 && !legacyFallbackWarned) {
+    legacyFallbackWarned = true;
     log.warn(
       { legacyKnob: LEGACY_EMAIL_DOMAINS_ENV, survivor: EMAIL_RECIPIENT_DOMAINS_SETTING },
-      `${LEGACY_EMAIL_DOMAINS_ENV} is deprecated and will be removed in the next release — ` +
+      `${LEGACY_EMAIL_DOMAINS_ENV} is deprecated and will be removed in the next release (#4663) — ` +
         `move the domain list to ${EMAIL_RECIPIENT_DOMAINS_SETTING} (Admin → Settings → Security, or the env var)`,
     );
   }
@@ -81,7 +105,20 @@ function resolveAllowedDomains(workspaceId: string): Set<string> {
 }
 
 async function defaultResolveMemberEmails(workspaceId: string): Promise<string[]> {
-  if (!hasInternalDB()) return [];
+  if (!hasInternalDB()) {
+    // Fail-closed direction (no member matches), but loudly: on deploys
+    // without an internal DB the member half of the boundary is inert and
+    // only allowlisted domains can pass — otherwise every send blocks with
+    // a message recommending an option that cannot work.
+    if (!noMemberDbWarned) {
+      noMemberDbWarned = true;
+      log.warn(
+        { setting: EMAIL_RECIPIENT_DOMAINS_SETTING },
+        "no internal DB — workspace-member allowlist unavailable; only recipients on allowlisted domains will pass the email gate",
+      );
+    }
+    return [];
+  }
   const rows = await internalQuery<{ email: string | null }>(
     `SELECT u.email FROM "user" u JOIN member m ON m."userId" = u.id WHERE m."organizationId" = $1`,
     [workspaceId],
@@ -90,42 +127,53 @@ async function defaultResolveMemberEmails(workspaceId: string): Promise<string[]
 }
 
 export type RecipientGateResult =
-  | { allowed: true }
-  | { allowed: false; blocked: string[]; message: string };
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly blocked: readonly string[]; readonly message: string };
+
+const SINGLE_BARE_ADDRESS = /^[^\s@,;<>]+@[^\s@,;<>]+$/;
 
 /**
- * Strip an RFC-5322 display-name wrapper ("User <user@corp.example>") down
- * to the bare address so gating compares apples to apples. The
- * `sendEmail` integration tool's input schema only admits bare addresses,
- * but the `sendEmailReport` action historically accepted display-name
- * format — normalize rather than silently block those.
+ * Reduce a recipient string to the single bare address the gate should
+ * judge, or `null` when the string is not provably ONE address.
+ *
+ * Accepts a bare address or one RFC-5322 display-name wrapper
+ * ("User <user@corp.example>") — the `sendEmail` integration tool's input
+ * schema only admits bare addresses, but the `sendEmailReport` action
+ * historically accepted display-name format. Anything else (comma-joined
+ * lists, multiple angle groups, stray addresses around the wrapper)
+ * returns `null` so the caller fails closed: the transport chains parse
+ * full RFC address lists, and the gate must never approve a string that
+ * still contains an unjudged address.
  */
-export function normalizeEmailAddress(addr: string): string {
-  const angleMatch = addr.match(/<([^>]+)>/);
-  return (angleMatch ? angleMatch[1] : addr).trim();
+export function normalizeEmailAddress(addr: string): string | null {
+  const angleMatch = addr.match(/^[^<>,;]*<([^<>]+)>\s*$/);
+  const bare = (angleMatch ? angleMatch[1] : addr).trim();
+  return SINGLE_BARE_ADDRESS.test(bare) ? bare : null;
 }
 
 /**
  * Check every recipient against the workspace-member + allowlisted-domain
- * boundary. Exported for tests; throws never — resolution failures return
- * a blocked verdict (fail-closed).
+ * boundary. `workspaceId` is `undefined` when the request has no active
+ * workspace — the member half of the boundary is then empty and only
+ * allowlisted domains pass. Exported for tests; throws never — resolution
+ * failures return a blocked verdict (fail-closed).
  */
 export async function checkRecipientsAllowed(
-  workspaceId: string,
+  workspaceId: string | undefined,
   to: readonly string[],
   resolveMemberEmails: (workspaceId: string) => Promise<string[]> = defaultResolveMemberEmails,
 ): Promise<RecipientGateResult> {
-  const allowedDomains = resolveAllowedDomains(workspaceId);
-
+  let allowedDomains: Set<string>;
   let memberEmails: Set<string>;
   try {
-    memberEmails = new Set(
-      (await resolveMemberEmails(workspaceId)).map((e) => e.toLowerCase()),
-    );
+    allowedDomains = resolveAllowedDomains(workspaceId);
+    memberEmails = workspaceId
+      ? new Set((await resolveMemberEmails(workspaceId)).map((e) => e.toLowerCase()))
+      : new Set();
   } catch (err) {
     log.error(
       { workspaceId, err: err instanceof Error ? err.message : String(err) },
-      "email recipient gate: member-list resolution failed — blocking send (fail-closed)",
+      "email recipient gate: allowlist resolution failed — blocking send (fail-closed)",
     );
     return {
       allowed: false,
@@ -136,7 +184,9 @@ export async function checkRecipientsAllowed(
   }
 
   const blocked = to.filter((address) => {
-    const lower = normalizeEmailAddress(address).toLowerCase();
+    const bare = normalizeEmailAddress(address);
+    if (bare === null) return true; // not a single parseable address — fail closed
+    const lower = bare.toLowerCase();
     if (memberEmails.has(lower)) return false;
     const domain = lower.split("@")[1] ?? "";
     return !allowedDomains.has(domain);
@@ -149,6 +199,7 @@ export async function checkRecipientsAllowed(
     message:
       `Recipient(s) not allowed: ${blocked.join(", ")}. Agent-initiated email is restricted to ` +
       `workspace member addresses and domains in the workspace's allowed-recipient-domains setting ` +
-      `(${EMAIL_RECIPIENT_DOMAINS_SETTING}). Ask an admin to add the domain, or send to a workspace member.`,
+      `(${EMAIL_RECIPIENT_DOMAINS_SETTING}). Ask an admin to add the domain, or send to a workspace member. ` +
+      `Each recipient must be a single email address.`,
   };
 }

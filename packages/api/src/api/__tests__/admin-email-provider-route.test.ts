@@ -264,6 +264,7 @@ void mock.module("@atlas/api/lib/settings", () => ({
   loadSettings: mock(async () => 0),
   getSetting: mock(() => undefined),
   getSettingAuto: mock(() => undefined),
+  getSettingOverride: mock(() => undefined),
   getSettingLive: mock(async () => undefined),
   getAllSettingOverrides: mock(async () => []),
   _resetSettingsCache: mock(() => {}),

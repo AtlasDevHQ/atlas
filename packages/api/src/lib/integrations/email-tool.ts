@@ -337,17 +337,10 @@ Use sendEmail to deliver a message via the workspace's installed SMTP transport:
 - Distinct from sendEmailReport (operator-configured Resend); pick whichever the workspace has set up`;
 
 // ---------------------------------------------------------------------------
-// Recipient allowlist (#3341) — shared gate, extracted to
-// `lib/email/recipient-gate.ts` when the `sendEmailReport` action was
-// consolidated onto the same boundary (#4479). Re-exported here so existing
-// importers and the test surface keep their paths.
+// Recipient allowlist (#3341) — the gate lives in
+// `lib/email/recipient-gate.ts` since the `sendEmailReport` action was
+// consolidated onto the same boundary (#4479).
 // ---------------------------------------------------------------------------
-
-export {
-  checkRecipientsAllowed,
-  EMAIL_RECIPIENT_DOMAINS_SETTING,
-  type RecipientGateResult,
-} from "@atlas/api/lib/email/recipient-gate";
 
 /**
  * Test seam — production calls go through the singleton
@@ -462,7 +455,7 @@ export function createSendEmailTool(deps: SendEmailToolDeps = {}) {
         return {
           status: "recipient_blocked",
           message: gate.message,
-          blockedRecipients: gate.blocked,
+          blockedRecipients: [...gate.blocked],
         };
       }
 

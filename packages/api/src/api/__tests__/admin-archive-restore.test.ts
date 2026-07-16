@@ -91,6 +91,7 @@ void mock.module("@atlas/api/lib/settings", () => ({
   setSetting: async () => {},
   deleteSetting: async () => {},
   getSetting: () => undefined,
+  getSettingOverride: () => undefined,
   getSettingAuto: (key: string) => {
     // Gate throw on the specific key under test — otherwise a future
     // unrelated getSettingAuto read inside the handler would silently

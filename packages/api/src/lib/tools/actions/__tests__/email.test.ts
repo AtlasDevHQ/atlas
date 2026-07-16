@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 // ---------------------------------------------------------------------------
 // Mock handler module so we don't hit real DB / auth
@@ -17,14 +17,27 @@ void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   },
 }));
 
+// All value exports of the real logger module — a partial mock breaks with
+// "Export named X not found" the moment another import in this file's graph
+// reads a missing name.
+const loggerStub = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {},
+};
+
 void mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"],
+  withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
   getRequestContext: () => mockRequestContext,
+  redactPaths: [],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (value: unknown) => value,
+  getLogger: () => loggerStub,
+  createLogger: () => loggerStub,
+  hashShareToken: (token: string) => token,
+  setLogLevel: () => true,
 }));
 
 let mockRequestContext:
@@ -43,17 +56,17 @@ type GateResult =
   | { allowed: false; blocked: string[]; message: string };
 
 let mockGateResult: GateResult = { allowed: true };
-let lastGateCall: { workspaceId: string; to: readonly string[] } | null = null;
+let lastGateCall: { workspaceId: string | undefined; to: readonly string[] } | null = null;
 
 void mock.module("@atlas/api/lib/email/recipient-gate", () => ({
   EMAIL_RECIPIENT_DOMAINS_SETTING: "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS",
   LEGACY_EMAIL_DOMAINS_ENV: "ATLAS_EMAIL_ALLOWED_DOMAINS",
-  checkRecipientsAllowed: async (workspaceId: string, to: readonly string[]) => {
+  checkRecipientsAllowed: async (workspaceId: string | undefined, to: readonly string[]) => {
     lastGateCall = { workspaceId, to };
     return mockGateResult;
   },
   normalizeEmailAddress: (addr: string) => addr,
-  resetLegacyKnobWarnForTests: () => {},
+  resetRecipientGateWarnsForTests: () => {},
 }));
 
 // Mock the delivery module — sendEmail is now the core of executeEmailSend
@@ -73,31 +86,16 @@ const { executeEmailSend, sendEmailReport } = await import(
 );
 
 // ---------------------------------------------------------------------------
-// Env snapshot
+// Per-test state reset
 // ---------------------------------------------------------------------------
 
-const ENV_KEYS = [
-  "RESEND_API_KEY",
-  "ATLAS_EMAIL_FROM",
-] as const;
-
-const saved: Record<string, string | undefined> = {};
-
 beforeEach(() => {
-  for (const key of ENV_KEYS) saved[key] = process.env[key];
   lastHandleActionCall = null;
   lastSendEmailCall = null;
   mockSendEmailResult = { success: true, provider: "resend", error: undefined };
   mockGateResult = { allowed: true };
   lastGateCall = null;
   mockRequestContext = undefined;
-});
-
-afterEach(() => {
-  for (const key of ENV_KEYS) {
-    if (saved[key] !== undefined) process.env[key] = saved[key];
-    else delete process.env[key];
-  }
 });
 
 // ---------------------------------------------------------------------------
@@ -251,7 +249,7 @@ describe("sendEmailReport — recipient gate wiring", () => {
     expect(lastGateCall!.to).toEqual(["a@corp.example", "b@corp.example"]);
   });
 
-  it("passes an empty workspaceId when there is no request context", async () => {
+  it("passes an undefined workspaceId when there is no request context", async () => {
     mockRequestContext = undefined;
 
     await aiTool.execute(
@@ -259,7 +257,7 @@ describe("sendEmailReport — recipient gate wiring", () => {
       opts,
     );
 
-    expect(lastGateCall!.workspaceId).toBe("");
+    expect(lastGateCall!.workspaceId).toBeUndefined();
   });
 });
 

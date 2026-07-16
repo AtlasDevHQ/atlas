@@ -316,7 +316,9 @@ items and re-baselined the counts:
   the registry-backed `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`; the unset
   default is uniformly fail-closed (workspace members only). The retired
   `ATLAS_EMAIL_ALLOWED_DOMAINS` is honored as a deprecated fallback domain
-  list (warn on use) for one release, then drops — two-phase discipline. The
+  list (warn once per process on first use) only while the survivor is not
+  explicitly configured, then drops in the next release — two-phase
+  discipline, phase 2 tracked in #4663. The
   repo-wide env-knob consolidation sweep + inverse `check-settings-readers`
   ratchet decision was split out to #4620 (`ready-for-human`); its findings
   fold back into this document.

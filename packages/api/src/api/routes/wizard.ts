@@ -1007,7 +1007,9 @@ wizard.openapi(enrichRoute, async (c) => {
         // Pass dbType so the prompt emits query_patterns in the datasource's
         // dialect (PostgreSQL vs MySQL), not always PostgreSQL. The warn sink
         // routes the engine's YAML-helper warnings through pino (#4465) —
-        // request-correlated and redacted, instead of raw console on a server path.
+        // request-correlated structured logging instead of raw console on a
+        // server path. (Pino redaction covers fields, not the msg string —
+        // don't route secret-bearing text through this sink.)
         const enriched = await enrichEntityYaml(baselineYaml, profile, model, undefined, dbType, (message) =>
           log.warn({ requestId, connectionId, tableName }, `Wizard enrich: ${message}`),
         );

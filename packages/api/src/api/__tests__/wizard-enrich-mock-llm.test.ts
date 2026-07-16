@@ -217,10 +217,14 @@ void mock.module("@atlas/api/lib/semantic/sync", () => ({
   reconcileAllOrgs: async () => {},
 }));
 
-// Record warn calls so the #4465 test can assert helper warnings reach pino
-// (with request-scoped context) instead of console.
+// Record warn calls so the #4465 test can assert helper warnings ride the
+// route logger (the pino seam) with request-scoped context, not console.
+// Spread the real module so every other logger export stays intact
+// (AGENTS.md: mock.module must mock every named export).
+import * as _loggerActual from "@atlas/api/lib/logger";
 const mockLogWarn = mock((_ctx: unknown, _msg?: string) => {});
 void mock.module("@atlas/api/lib/logger", () => ({
+  ..._loggerActual,
   createLogger: () => ({ info: () => {}, warn: mockLogWarn, error: () => {}, debug: () => {} }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
@@ -413,8 +417,8 @@ describe("wizard two-phase generate via the mock-LLM test layer (#3621 AC#6, cli
   });
 
   it("helper warnings during /enrich reach pino, never console (#4465)", async () => {
-    // The shared enrich helpers used to console.warn — bypassing pino, requestId
-    // correlation, and redaction on this server request path. Drive the
+    // The shared enrich helpers used to console.warn — bypassing pino and
+    // requestId correlation on this server request path. Drive the
     // unparseable-response branch and assert the warning rides the route logger.
     const consoleWarnSpy = spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -431,10 +435,15 @@ describe("wizard two-phase generate via the mock-LLM test layer (#3621 AC#6, cli
       // No console.* fired during the request (#4465 acceptance criterion) —
       // the helper warning went through the injected pino sink instead.
       expect(consoleWarnSpy).not.toHaveBeenCalled();
-      const warned = mockLogWarn.mock.calls.some(
+      const warnCall = mockLogWarn.mock.calls.find(
         ([, msg]) => typeof msg === "string" && msg.includes("did not contain a ```yaml block"),
       );
-      expect(warned).toBe(true);
+      expect(warnCall).toBeDefined();
+      // The sink carries the request-scoped correlation context, and the route
+      // prefixes the operation name.
+      expect(warnCall?.[1]).toStartWith("Wizard enrich: ");
+      expect(warnCall?.[0]).toMatchObject({ connectionId: "analytics", tableName: "orders" });
+      expect((warnCall?.[0] as { requestId?: string }).requestId).toBeDefined();
     } finally {
       mockResponseText = ENRICH_RESPONSE;
       consoleWarnSpy.mockRestore();

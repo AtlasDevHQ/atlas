@@ -52,8 +52,8 @@ function addUsage(accumulator: TokenUsage, usage: Partial<TokenUsage>): void {
  * Warning sink for the shared YAML helpers (#4465). These helpers run on BOTH
  * the CLI (`atlas init --enrich`, where console output is the UX) and a server
  * request path (the wizard `/enrich` route), so they must never write to
- * console directly — the API caller injects a pino-backed sink to keep
- * requestId correlation and redaction; the CLI keeps the console default.
+ * console directly — the API caller injects a pino-backed sink for requestId
+ * correlation and structured logging; the CLI keeps the console default.
  */
 export type EnrichWarnSink = (message: string) => void;
 
@@ -435,6 +435,8 @@ Important:
 
     addUsage(usage, result.usage);
 
+    // CLI-only path (reachable only via enrichSemanticLayer) — console IS the
+    // UX here; a future server caller must thread a sink like enrichEntityYaml (#4465).
     const yamlText = extractYamlBlock(result.text, consoleWarnSink);
     const enriched = safeParse(yamlText, consoleWarnSink);
 
@@ -544,6 +546,8 @@ Important:
 
     addUsage(usage, result.usage);
 
+    // CLI-only path (reachable only via enrichSemanticLayer) — console IS the
+    // UX here; a future server caller must thread a sink like enrichEntityYaml (#4465).
     const yamlText = extractYamlBlock(result.text, consoleWarnSink);
     const enriched = safeParse(yamlText, consoleWarnSink);
 

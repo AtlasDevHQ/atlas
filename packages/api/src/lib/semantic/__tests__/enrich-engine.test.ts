@@ -277,8 +277,8 @@ describe("enrichEntityYaml (in-memory primitive, #3236)", () => {
   });
 
   // #4465 — the shared YAML helpers must not console.warn on the server path:
-  // the wizard route injects a pino-backed sink so warnings carry requestId and
-  // go through redaction. The CLI path passes no sink and keeps console output.
+  // the wizard route injects a pino-backed sink so warnings carry requestId
+  // context. The CLI path passes no sink and keeps console output.
   describe("warning sink injection (#4465)", () => {
     it("routes the missing-yaml-block warning through the injected sink, not console", async () => {
       mockGenerateText.mockImplementationOnce(async () => ({

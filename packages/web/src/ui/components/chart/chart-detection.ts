@@ -40,6 +40,60 @@ type ChartableResult = {
 export type ChartDetectionResult = NonChartableResult | ChartableResult;
 
 /* ------------------------------------------------------------------ */
+/*  Tile chart-type pinning (#4688)                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The render-union chart types a dashboard tile can PIN itself to. `satisfies
+ * readonly ChartType[]` makes a typo'd member a compile error (so the pin set
+ * can't silently list a type the renderer doesn't know); the Set is typed
+ * `ReadonlySet<string>` so its `.has()` accepts a raw string with no cast.
+ */
+const RENDER_CHART_TYPES_LIST = [
+  "bar",
+  "line",
+  "pie",
+  "area",
+  "stacked-bar",
+  "scatter",
+] as const satisfies readonly ChartType[];
+const RENDER_CHART_TYPES: ReadonlySet<string> = new Set(RENDER_CHART_TYPES_LIST);
+
+/**
+ * #4688 — narrow a persisted `chartConfig.type` (the `@useatlas/types` ChartType:
+ * bar/line/pie/area/scatter/table/kpi) down to the render-union {@link ChartType}
+ * used to PIN a dashboard tile's chart to its configured type. The render union is
+ * intentionally broader than the persisted one (it also carries the detection-only
+ * `stacked-bar`), so this is a narrowing on the persisted side: `table`/`kpi` never
+ * reach a chart body (the tile renders a DataTable / KpiCard instead), so they —
+ * and any value outside the render set — map to `undefined`, meaning "no pin,
+ * auto-detect". Pure + string-tolerant so a loosely-parsed cached config (the
+ * un-Zod'd `rowToCard` read path) can't force a bogus type onto the chart. The
+ * return cast is sound: it only runs after the Set-membership check confirms the
+ * string IS a render `ChartType`.
+ */
+export function asEmbeddedChartType(type: string | null | undefined): ChartType | undefined {
+  return type != null && RENDER_CHART_TYPES.has(type) ? (type as ChartType) : undefined;
+}
+
+/**
+ * #4688 — pick which recommendation a chart renders. When `chartType` is set (a
+ * dashboard tile pinned to its `chartConfig.type`) return the matching
+ * recommendation, so the tile honors its saved type instead of the data's
+ * auto-detected default. When the current data yields no recommendation for that
+ * type (the config type no longer fits the rows), fall back to the top
+ * auto-detected recommendation — a divergent tile still renders SOME chart rather
+ * than nothing. `undefined` chartType (the chat surface) → the top recommendation.
+ */
+export function pickChartRecommendation(
+  recommendations: readonly [ChartRecommendation, ...ChartRecommendation[]],
+  chartType: ChartType | undefined,
+): ChartRecommendation {
+  if (!chartType) return recommendations[0];
+  return recommendations.find((r) => r.type === chartType) ?? recommendations[0];
+}
+
+/* ------------------------------------------------------------------ */
 /*  Color palettes (Tailwind weights)                                   */
 /* ------------------------------------------------------------------ */
 

@@ -4118,6 +4118,21 @@ describe("dashboard routes", () => {
       expect(mockApplyEditToDraft).not.toHaveBeenCalled();
     });
 
+    it("refuses when the dashboard is not readable (cross-org probe guard) without applying", async () => {
+      // getDashboard runs BEFORE the draft write, so an out-of-org / missing
+      // dashboard 404s here rather than leaking existence via the draft path.
+      mockGetDashboard.mockResolvedValue({ ok: false, reason: "not_found" });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft/undo`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "revert_sql", cardId: VALID_CARD_ID, sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(404);
+      expect(mockApplyEditToDraft).not.toHaveBeenCalled();
+    });
+
     it("maps an applyEditToDraft unknown_card failure to 404", async () => {
       mockApplyEditToDraft.mockResolvedValue({ ok: false, reason: "unknown_card", cardId: VALID_CARD_ID });
       const response = await app.fetch(

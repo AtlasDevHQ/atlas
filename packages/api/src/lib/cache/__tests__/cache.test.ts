@@ -439,6 +439,30 @@ describe("buildCacheKey", () => {
     expect(a).toBe(b);
   });
 
+  it("claims differing only at a nested path = different key", () => {
+    // Regression for #4532: a JSON.stringify replacer array applied the
+    // top-level key whitelist at every depth, so nested claim objects
+    // serialized to `{}` and the discriminating value was erased. Two users
+    // whose RLS tenant lives at a nested claim path then collided on one key.
+    const a = buildCacheKey("SELECT 1", "default", "org1", {
+      app_metadata: { org_id: "org-42" },
+    });
+    const b = buildCacheKey("SELECT 1", "default", "org1", {
+      app_metadata: { org_id: "org-99" },
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("nested claim key order does not affect hash", () => {
+    const a = buildCacheKey("SELECT 1", "default", "org1", {
+      app_metadata: { tenant: "acme", region: "us" },
+    });
+    const b = buildCacheKey("SELECT 1", "default", "org1", {
+      app_metadata: { region: "us", tenant: "acme" },
+    });
+    expect(a).toBe(b);
+  });
+
   it("no orgId produces different key than with orgId", () => {
     const a = buildCacheKey("SELECT 1", "default");
     const b = buildCacheKey("SELECT 1", "default", "org1");

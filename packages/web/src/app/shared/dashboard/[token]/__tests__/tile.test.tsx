@@ -12,8 +12,17 @@ function ChartStub({ dark }: { dark?: boolean }) {
 void mock.module("@/ui/components/chart/result-chart", () => ({ ResultChart: ChartStub }));
 void mock.module("next/dynamic", () => ({ default: () => ChartStub }));
 // The VISITOR's system theme resolves light here; a forced embed theme must win
-// over it, which is exactly what the #4686 threading test pins.
-void mock.module("@/ui/hooks/use-dark-mode", () => ({ useDarkMode: () => false }));
+// over it, which is exactly what the #4686 threading test pins. Mock ALL exports
+// (mock-all-exports discipline) so a future importer of another symbol doesn't
+// silently get `undefined`.
+void mock.module("@/ui/hooks/use-dark-mode", () => ({
+  useDarkMode: () => false,
+  useThemeMode: () => "system",
+  setTheme: () => {},
+  applyBrandColor: () => {},
+  DEFAULT_BRAND_COLOR: "oklch(0.4 0.115 158)",
+  OKLCH_RE: /^oklch\(/,
+}));
 
 import { SharedTile } from "../tile";
 

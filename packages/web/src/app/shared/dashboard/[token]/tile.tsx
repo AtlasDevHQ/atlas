@@ -35,10 +35,11 @@ export interface SharedTileProps {
   cachedIso: string | undefined;
   /**
    * Forced chart theme for the embed surface. The chrome themes off the embed's
-   * `.dark` wrapper, but the chart is JS-themed (`useDarkMode()` reads the
-   * VISITOR's `documentElement`/`prefers-color-scheme`, not the wrapper), so a
-   * forced `?theme=` embed must pass its resolved theme here or the chart would
-   * disagree with the chrome. `undefined` → follow the visitor's system theme.
+   * `.dark` wrapper, but the chart is JS-themed (`useDarkMode()` resolves from
+   * the visitor's OWN preference — localStorage mode + `prefers-color-scheme` —
+   * never the wrapper's `.dark` class), so a forced `?theme=` embed must pass its
+   * resolved theme here or the chart would disagree with the chrome. `undefined`
+   * → follow the visitor's system theme.
    */
   forcedDark?: boolean;
 }

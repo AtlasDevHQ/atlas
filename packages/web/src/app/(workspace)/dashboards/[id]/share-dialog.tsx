@@ -32,8 +32,24 @@ import { deriveExpiryKey } from "./share-expiry";
 import { buildEmbedSnippet, type EmbedThemeParam } from "./share-embed";
 
 /** Embed-tab theme control: "system" emits no `?theme=` param (visitor's own
- *  preference drives the frame); "light"/"dark" force a fixed appearance. */
-type EmbedThemeChoice = "system" | EmbedThemeParam;
+ *  preference drives the frame); "light"/"dark" force a fixed appearance. The
+ *  tuple is the SSOT for both the rendered toggle items and the `onValueChange`
+ *  narrowing, so an added/renamed choice can't silently drift; `satisfies` pins
+ *  every member to a valid `"system" | EmbedThemeParam`. */
+const EMBED_THEME_CHOICES = ["system", "light", "dark"] as const satisfies readonly (
+  | "system"
+  | EmbedThemeParam
+)[];
+type EmbedThemeChoice = (typeof EMBED_THEME_CHOICES)[number];
+
+/** Narrow Radix's `string` back onto the choice union. Radix emits `""` when the
+ *  active item is re-clicked (deselect); returning `undefined` there lets the
+ *  caller keep the current selection rather than blanking it. */
+function asEmbedThemeChoice(value: string): EmbedThemeChoice | undefined {
+  return (EMBED_THEME_CHOICES as readonly string[]).includes(value)
+    ? (value as EmbedThemeChoice)
+    : undefined;
+}
 
 const EXPIRY_LABELS: Record<ShareExpiryKey, string> = {
   "1h": "1 hour",
@@ -384,8 +400,12 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
                       size="sm"
                       value={embedTheme}
                       // Radix emits "" when the active item is re-clicked (deselect);
-                      // keep a theme always selected so the snippet stays valid.
-                      onValueChange={(v) => v && setEmbedTheme(v as EmbedThemeChoice)}
+                      // asEmbedThemeChoice returns undefined there, so a theme stays
+                      // selected and the snippet never carries an empty ?theme=.
+                      onValueChange={(v) => {
+                        const next = asEmbedThemeChoice(v);
+                        if (next) setEmbedTheme(next);
+                      }}
                       className="w-full"
                       aria-label="Embed appearance"
                     >

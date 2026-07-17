@@ -14,7 +14,17 @@ export type FetchResult =
   | { ok: true; data: SharedDashboard }
   | {
       ok: false;
-      reason: "not-found" | "expired" | "auth-required" | "server-error" | "network-error";
+      reason:
+        | "not-found"
+        | "expired"
+        // 401 vs 403 are kept DISTINCT (not one `auth-required`): a viewer with no
+        // session (`login-required`) is offered a login redirect, while a viewer who
+        // is signed in but not a member of the sharing org (`membership-required`)
+        // must not be dead-ended on a "Log in" CTA they've already satisfied (#4690).
+        | "login-required"
+        | "membership-required"
+        | "server-error"
+        | "network-error";
     };
 
 /**
@@ -75,7 +85,10 @@ export async function fetchSharedDashboardRaw(token: string): Promise<FetchResul
     if (!res.ok) {
       if (res.status === 404) return { ok: false, reason: "not-found" };
       if (res.status === 410) return { ok: false, reason: "expired" };
-      if (res.status === 401 || res.status === 403) return { ok: false, reason: "auth-required" };
+      // 401 = no session (offer login); 403 = authenticated but not a member of the
+      // sharing org (explain membership, don't force a redundant login). See #4690.
+      if (res.status === 401) return { ok: false, reason: "login-required" };
+      if (res.status === 403) return { ok: false, reason: "membership-required" };
       console.error(
         `[shared-dashboard] API returned ${res.status} for tokenHash=${hashShareToken(token)}`,
       );

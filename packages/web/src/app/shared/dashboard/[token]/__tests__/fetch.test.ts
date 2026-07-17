@@ -100,10 +100,19 @@ describe("fetchSharedDashboardRaw (#4317)", () => {
     expect(headers["x-forwarded-for"]).toBe("9.9.9.9");
   });
 
-  test("maps a 403 (no viewer session) to auth-required", async () => {
-    stubFetch(403, { error: "auth_required" });
+  // #4690: 401 (no session) and 403 (authenticated, wrong org) are DISTINCT
+  // reasons — not one `auth-required` — so the page can offer a login redirect
+  // only when there's genuinely no session.
+  test("maps a 401 (no viewer session) to login-required", async () => {
+    stubFetch(401, { error: "auth_required" });
     const result = await fetchSharedDashboardRaw("abc123def456ghi789jkl");
-    expect(result).toEqual({ ok: false, reason: "auth-required" });
+    expect(result).toEqual({ ok: false, reason: "login-required" });
+  });
+
+  test("maps a 403 (authenticated, not a member of the sharing org) to membership-required", async () => {
+    stubFetch(403, { error: "forbidden" });
+    const result = await fetchSharedDashboardRaw("abc123def456ghi789jkl");
+    expect(result).toEqual({ ok: false, reason: "membership-required" });
   });
 
   test("maps a 410 to expired and a 404 to not-found", async () => {

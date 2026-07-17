@@ -7,8 +7,24 @@ import type { DashboardCard } from "@/ui/lib/types";
 // under test.
 let widthOverride = 1024;
 void mock.module("react-grid-layout", () => ({
-  GridLayout: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="rgl-root">{children}</div>
+  // Surface the drag/resize gating (`enabled: editing`) as data-attributes so a
+  // test can assert the View-mode read-only contract (#4560) without a real RGL.
+  GridLayout: ({
+    children,
+    dragConfig,
+    resizeConfig,
+  }: {
+    children: React.ReactNode;
+    dragConfig?: { enabled?: boolean };
+    resizeConfig?: { enabled?: boolean };
+  }) => (
+    <div
+      data-testid="rgl-root"
+      data-drag-enabled={String(!!dragConfig?.enabled)}
+      data-resize-enabled={String(!!resizeConfig?.enabled)}
+    >
+      {children}
+    </div>
   ),
   useContainerWidth: () => ({ width: widthOverride, mounted: true, containerRef: { current: null } }),
   noCompactor: () => [],
@@ -85,6 +101,25 @@ describe("DashboardGrid", () => {
     widthOverride = 1024;
     render(<DashboardGrid {...baseProps} />);
     expect(screen.getByTestId("rgl-root")).toBeTruthy();
+  });
+
+  test("#4560 — View mode (editing=false) disables drag AND resize on the freeform grid", () => {
+    widthOverride = 1024;
+    render(<DashboardGrid {...baseProps} editing={false} />);
+    const root = screen.getByTestId("rgl-root");
+    expect(root.getAttribute("data-drag-enabled")).toBe("false");
+    expect(root.getAttribute("data-resize-enabled")).toBe("false");
+    // The read-only canvas also renders no drag handle on its tiles.
+    expect(root.querySelector(".dash-drag-handle")).toBeNull();
+  });
+
+  test("#4560 — Edit mode (editing=true) enables drag AND resize on the freeform grid", () => {
+    widthOverride = 1024;
+    render(<DashboardGrid {...baseProps} editing={true} />);
+    const root = screen.getByTestId("rgl-root");
+    expect(root.getAttribute("data-drag-enabled")).toBe("true");
+    expect(root.getAttribute("data-resize-enabled")).toBe("true");
+    expect(root.querySelector(".dash-drag-handle")).toBeTruthy();
   });
 
   test("#4567 — two concurrent tile refreshes both spin; neither clobbers the other", () => {

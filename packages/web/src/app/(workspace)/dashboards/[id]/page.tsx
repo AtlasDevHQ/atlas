@@ -41,6 +41,7 @@ import {
 } from "./search-params";
 import { activeFilters, incompatibleCardIds } from "./cross-filter";
 import { resolveShowDraftView } from "./draft-view";
+import { shouldIgnoreModeShortcut } from "./mode-shortcut";
 import { renderDashboardCard, renderDashboardCards, isRenderableCard } from "./dashboard-card-render";
 import {
   MOUNT_RENDER_CONCURRENCY,
@@ -346,12 +347,12 @@ export default function DashboardViewPage() {
     if (!chatOpen) setResumeConversationId(null);
   }, [chatOpen]);
 
-  // Skip when typing in inputs.
+  // #4560 — the View/Edit toggle is a page-surface shortcut: skip it whenever
+  // focus is on an interactive control or an editable field, so `e` typeahead
+  // in a Select and `Escape` closing an open dropdown never toggle the canvas.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+      if (shouldIgnoreModeShortcut(e.target)) return;
       if (e.key === "e" || e.key === "E") {
         e.preventDefault();
         setEditing((prev) => !prev);

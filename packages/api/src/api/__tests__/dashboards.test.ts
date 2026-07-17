@@ -4035,6 +4035,40 @@ describe("dashboard routes", () => {
       expect(body.cards[0].cachedAt).toBe("2026-07-10T00:00:00.000Z");
     });
 
+    // #4560 — a browsing gesture must never fork a draft row. Viewing the draft
+    // overlay and inspecting the draft-status badge both read through
+    // `loadDraft` (non-forking); only an explicit definition edit (or opening
+    // the draft editor via GET /:id/draft) may `forkOrLoadDraft`. These lock the
+    // read seam so a passive view can never create a `dashboard_user_drafts` row.
+    it("GET /:id?view=draft never forks a draft — reads through loadDraft only (#4560)", async () => {
+      mockLoadDraft.mockResolvedValue(draftOnlyRow);
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}?view=draft`),
+      );
+      expect(response.status).toBe(200);
+      expect(mockLoadDraft).toHaveBeenCalledWith("u1", VALID_ID);
+      expect(mockForkOrLoadDraft).not.toHaveBeenCalled();
+    });
+
+    it("GET /:id?view=draft with NO draft returns published and still never forks (#4560)", async () => {
+      mockLoadDraft.mockResolvedValue(null);
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}?view=draft`),
+      );
+      expect(response.status).toBe(200);
+      expect(mockForkOrLoadDraft).not.toHaveBeenCalled();
+    });
+
+    it("GET /:id/draft/status never forks a draft — the presence check is non-forking (#4560)", async () => {
+      mockLoadDraft.mockResolvedValue(null);
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft/status`),
+      );
+      expect(response.status).toBe(200);
+      expect((await response.json()) as { hasDraft: boolean }).toEqual({ hasDraft: false });
+      expect(mockForkOrLoadDraft).not.toHaveBeenCalled();
+    });
+
     it("render?view=draft 404s when the card was removed in the draft (never runs published)", async () => {
       // A draft exists, but its snapshot no longer contains VALID_CARD_ID.
       mockLoadDraft.mockResolvedValue({

@@ -344,6 +344,20 @@ The public/shared endpoint serves a **minimal, data-only snapshot** — per-card
 
 To revoke access, open the share dialog and click **Revoke**.
 
+### Embedding a shared dashboard
+
+The share dialog's **Embed** tab provides an iframe snippet for dropping a shared dashboard into another page — docs, a wiki, an internal portal:
+
+```html
+<iframe
+  src="https://your-atlas-app.example.com/shared/dashboard/{token}/embed"
+  width="100%"
+  height="600"
+></iframe>
+```
+
+The `/embed` variant renders the **same** shared view (same token, same data-only snapshot, same expiry and revocation) inside a frame — it is not a second surface, so nothing leaks that the standard shared link wouldn't. Add `?theme=dark` for dark host pages. The embed route sets `noindex`, and the standalone `/shared/dashboard/[token]` page stays non-framable; only the `/embed` path is allowed as a frame ancestor. The dialog's copy is share-mode aware — an org-scoped share is described as members-only, not "anyone with the link."
+
 ---
 
 ## Chat as editor

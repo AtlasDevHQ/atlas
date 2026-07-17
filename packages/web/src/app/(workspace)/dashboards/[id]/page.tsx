@@ -40,6 +40,7 @@ import {
   normalizeDrilldownValue,
 } from "./search-params";
 import { activeFilters, incompatibleCardIds } from "./cross-filter";
+import { resolveShowDraftView } from "./draft-view";
 import { renderDashboardCard, renderDashboardCards, isRenderableCard } from "./dashboard-card-render";
 import {
   MOUNT_RENDER_CONCURRENCY,
@@ -144,12 +145,24 @@ export default function DashboardViewPage() {
   // when the drawer is opened from "Edit with chat" (a fresh session).
   const [resumeConversationId, setResumeConversationId] = useState<string | null>(null);
 
-  // #4322 — the bound chat drawer edits the DRAFT (every `addCard` lands
-  // there, per #4315), so while it's open the canvas must show the draft too:
-  // that's what makes cards materialize live during a build AND why a
-  // dashboard is non-empty on arrival from `createDashboard` (its cards were
-  // staged into the draft, and the published view is still empty).
-  const showDraftView = editing || chatOpen;
+  // #2521 — draft state. Fetched up here (before the dashboard fetch) so #4556's
+  // draft-view switch can key off the caller's actual draft status. `useAdminFetch`
+  // also powers the badge + baseline-drift detection; we poll on window focus + a
+  // 30s tick so a teammate's publish surfaces quickly without blowing the request
+  // budget.
+  const {
+    data: draftStatus,
+    refetch: refetchDraftStatus,
+  } = useAdminFetch<DraftStatusResponse>(`/api/v1/dashboards/${id}/draft/status`);
+  useVisibilityGatedPoll(refetchDraftStatus, DRAFT_STATUS_POLL_MS);
+
+  // #4556 — the canvas renders the caller's DRAFT whenever they HAVE one (keyed
+  // off `hasDraft`, not just an open editor/drawer), published otherwise. Contract
+  // + the returning-viewer regression it fixes live in `draft-view.ts`. Call-site
+  // specifics: the URL is the fetch cache key below, so the view re-fetches the
+  // moment `hasDraft` resolves; the server overlays the draft only when one exists
+  // (non-forking), so a viewer or a draftless board still gets published — no leak.
+  const showDraftView = resolveShowDraftView({ editing, chatOpen, hasDraft: draftStatus?.hasDraft });
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
     showDraftView ? `/api/v1/dashboards/${id}?view=draft` : `/api/v1/dashboards/${id}`,
   );
@@ -188,18 +201,6 @@ export default function DashboardViewPage() {
   // parameter / mutation errors below.
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  // #2363 — bound chat drawer state (`chatOpen` / `resumeConversationId`
-  // declared above, before the dashboard fetch, so #4322's draft-view switch
-  // can key off the drawer being open).
-
-  // #2521 — draft state. `useAdminFetch` powers the badge + baseline-drift
-  // detection; we poll on window focus + a 30s tick so a teammate's
-  // publish surfaces quickly without blowing the request budget.
-  const {
-    data: draftStatus,
-    refetch: refetchDraftStatus,
-  } = useAdminFetch<DraftStatusResponse>(`/api/v1/dashboards/${id}/draft/status`);
-  useVisibilityGatedPoll(refetchDraftStatus, DRAFT_STATUS_POLL_MS);
 
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
@@ -366,9 +367,11 @@ export default function DashboardViewPage() {
     // #4567 — add THIS card to the in-flight set (never replace it), so a second
     // concurrent refresh doesn't clobber the first tile's spinner.
     setRefreshingCardIds((prev) => withRefreshing(prev, cardId));
-    // #4315 — while editing, a single-card refresh runs the DRAFT SQL (server
-    // returns fresh rows without persisting to the published cache).
-    const viewSuffix = editing ? "?view=draft" : "";
+    // #4315 / #4556 — a single-card refresh runs against the SAME view the canvas
+    // shows (`showDraftView`: the draft whenever the caller has one, published
+    // otherwise), so a refreshed tile can't disagree with the board around it. The
+    // server returns fresh rows without persisting to the published cache.
+    const viewSuffix = showDraftView ? "?view=draft" : "";
     try {
       await mutate({ path: `/api/v1/dashboards/${id}/cards/${cardId}/refresh${viewSuffix}`, method: "POST" });
     } finally {
@@ -379,10 +382,14 @@ export default function DashboardViewPage() {
 
   async function handleRefreshAll() {
     setRefreshingAll(true);
-    // #4559 — while editing, Refresh-all runs the DRAFT cards' SQL and writes
-    // the caller's private draft cache; the published cards' cached data is
-    // left untouched (mirrors the single-card draft refresh above).
-    const viewSuffix = editing ? "?view=draft" : "";
+    // #4559 / #4556 — Refresh-all runs against the SAME view the canvas shows
+    // (`showDraftView`: the draft whenever the caller has one, published
+    // otherwise). In the draft view it runs the draft cards' SQL and writes the
+    // caller's private draft cache, leaving the published cards' cached data
+    // untouched (mirrors the single-card draft refresh above). #4559 made the
+    // endpoint draft-aware; #4556 widens the trigger from `editing` to
+    // `showDraftView` so a passive draft viewer's bulk refresh lands too.
+    const viewSuffix = showDraftView ? "?view=draft" : "";
     await mutate({ path: `/api/v1/dashboards/${id}/refresh${viewSuffix}`, method: "POST" });
     setRefreshingAll(false);
   }
@@ -477,8 +484,10 @@ export default function DashboardViewPage() {
     }
 
     try {
-      // #4315 — export the DRAFT card's data while editing (runs the draft SQL).
-      const viewParam = editing ? "&view=draft" : "";
+      // #4315 / #4556 — export the data for the view the canvas shows
+      // (`showDraftView`: draft when the caller has one, published otherwise), so
+      // the CSV matches the tile the user is looking at.
+      const viewParam = showDraftView ? "&view=draft" : "";
       const res = await fetch(
         `${apiUrl}/api/v1/dashboards/${id}/cards/${card.id}/render?format=csv${viewParam}`,
         {
@@ -912,8 +921,10 @@ export default function DashboardViewPage() {
         apiUrl,
         dashboardId: id,
         isCrossOrigin,
-        // #4315 — the canvas shows the draft while editing; render its SQL.
-        view: editing ? "draft" : "published",
+        // #4315 / #4556 — render the SAME view the canvas shows (`showDraftView`:
+        // draft whenever the caller has one, published otherwise) so parameter
+        // overlays land on the same card set the tiles display.
+        view: showDraftView ? "draft" : "published",
       });
       // A newer change superseded this batch — discard its results.
       if (seq !== paramReqSeq.current) return;
@@ -978,7 +989,9 @@ export default function DashboardViewPage() {
         apiUrl,
         dashboardId: id,
         isCrossOrigin,
-        view: editing ? "draft" : "published",
+        // #4315 / #4556 — retry re-renders the visible tile, so it must use the
+        // same view the canvas shows (`showDraftView`).
+        view: showDraftView ? "draft" : "published",
       });
       if (seq !== paramReqSeq.current) return;
       if (entry.ok) {
@@ -1060,8 +1073,10 @@ export default function DashboardViewPage() {
       setComparisons({});
       return;
     }
-    // #4315 — while editing, the KPI comparison runs the draft card's SQL too.
-    const viewParam = editing ? "?view=draft" : "";
+    // #4315 / #4556 — the KPI comparison runs against the view the canvas shows
+    // (`showDraftView`: draft whenever the caller has one), so the delta chip
+    // matches the draft tile's primary value rather than the published copy's.
+    const viewParam = showDraftView ? "?view=draft" : "";
     const entries = await Promise.all(
       kpiCards.map(async (card): Promise<[string, KpiComparisonResult | null]> => {
         try {

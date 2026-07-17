@@ -65,12 +65,12 @@ describe("boundMutationSignature", () => {
     expect(boundMutationSignature(msg)).toBe("");
   });
 
-  test("staged ops (removeCard/updateCardSql → stage_required) count as mutations", () => {
+  test("destructive ops (removeCard → removed / updateCardSql → sql_updated) count as mutations (#4555)", () => {
     const remove = assistant([
-      { name: "removeCard", state: "output-available", callId: "c1", kind: "stage_required" },
+      { name: "removeCard", state: "output-available", callId: "c1", kind: "removed" },
     ]);
     const editSql = assistant([
-      { name: "updateCardSql", state: "output-available", callId: "c2", kind: "stage_required" },
+      { name: "updateCardSql", state: "output-available", callId: "c2", kind: "sql_updated" },
     ]);
     expect(boundMutationSignature(remove)).not.toBe("");
     expect(boundMutationSignature(editSql)).not.toBe("");

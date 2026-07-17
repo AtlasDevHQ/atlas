@@ -15,7 +15,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { DashboardCard, DashboardCardLayout, KpiComparisonResult, StagedChange } from "@/ui/lib/types";
+import type { DashboardCard, DashboardCardLayout, KpiComparisonResult } from "@/ui/lib/types";
 import type { TileRenderPhase } from "./tile-status";
 import { COLS, ROW_H, GAP, MIN_W, MIN_H, MOBILE_BREAKPOINT } from "./grid-constants";
 import { withAutoLayout } from "./auto-layout";
@@ -30,14 +30,6 @@ interface DashboardGridProps {
    * neither clobbers the other. Empty → nothing refreshing.
    */
   refreshingIds: ReadonlySet<string>;
-  /**
-   * #2365 — per-user pending destructive stages. Drives the ghost
-   * overlay: cards with a `remove_card` stage render with a
-   * strikethrough banner; cards with an `edit_sql` stage render a
-   * side-by-side SQL diff overlay. Per-user list comes from
-   * `/api/v1/dashboards/[id]/stage`.
-   */
-  stages?: StagedChange[];
   /**
    * #3137 — per-card KPI comparison query results, keyed by card id. Fed to a
    * `kpi` tile so it can render the delta chip. Non-KPI cards ignore it.
@@ -89,7 +81,6 @@ export function DashboardGrid({
   cards,
   editing,
   refreshingIds,
-  stages,
   comparisons,
   onDrilldown,
   incompatibleCardIds,
@@ -109,22 +100,6 @@ export function DashboardGrid({
   // React Compiler memoizes pure derives; manual useMemo was forbidden
   // by CLAUDE.md for perf-only cases.
   const placed = withAutoLayout(cards);
-  // Index stages by cardId. A single card can have multiple stages in
-  // pathological cases (agent staged delete + the user clarified, agent
-  // restaged a SQL edit). The most-recently-staged pending one wins
-  // for overlay purposes — a definitive resolution flips one specific
-  // stage, the rest stay visible until they're individually accepted
-  // or discarded. The overlay reflects current intent.
-  const stagesByCardId = new Map<string, StagedChange>();
-  for (const s of stages ?? []) {
-    if (s.status !== "pending") continue;
-    const cardId = (s.payload as { cardId?: string }).cardId;
-    if (!cardId) continue;
-    const existing = stagesByCardId.get(cardId);
-    if (!existing || existing.createdAt < s.createdAt) {
-      stagesByCardId.set(cardId, s);
-    }
-  }
 
   // #4323 — the fullscreen tile is now a real modal dialog (focus trap + return,
   // backdrop / click-away, aria-modal via Radix). This capture-phase Esc handler
@@ -207,7 +182,6 @@ export function DashboardGrid({
                 editing={false}
                 fullscreen={false}
                 isRefreshing={refreshingIds.has(card.id)}
-                stage={stagesByCardId.get(card.id) ?? null}
                 comparison={comparisons?.[card.id] ?? null}
                 onDrilldown={onDrilldown}
                 incompatible={incompatibleCardIds?.has(card.id)}
@@ -255,7 +229,6 @@ export function DashboardGrid({
                 editing={editing}
                 fullscreen={false}
                 isRefreshing={refreshingIds.has(card.id)}
-                stage={stagesByCardId.get(card.id) ?? null}
                 comparison={comparisons?.[card.id] ?? null}
                 onDrilldown={onDrilldown}
                 incompatible={incompatibleCardIds?.has(card.id)}
@@ -305,7 +278,6 @@ export function DashboardGrid({
                 editing={false}
                 fullscreen
                 isRefreshing={refreshingIds.has(fullscreenCard.id)}
-                stage={stagesByCardId.get(fullscreenCard.id) ?? null}
                 comparison={comparisons?.[fullscreenCard.id] ?? null}
                 onDrilldown={onDrilldown}
                 incompatible={incompatibleCardIds?.has(fullscreenCard.id)}

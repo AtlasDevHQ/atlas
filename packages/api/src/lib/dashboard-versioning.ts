@@ -35,9 +35,10 @@
  *     wires it into `/api/v1/dashboards/[id]/draft` and the bound editor
  *     tools (`packages/api/src/lib/tools/bound-dashboard.ts`) route
  *     mutations through `applyChangeToDraft` + `saveDraft`.
- *  4. `DraftChange` extended with `removeCard` + `editSql` variants
- *     in #2365 so the stage-tracker can replay accepted destructive
- *     ops through the same `applyChangeToDraft` path.
+ *  4. `DraftChange` carries `removeCard` + `editSql` variants so the
+ *     bound editor's destructive ops apply through the same
+ *     `applyChangeToDraft` path as every other edit (ADR-0034 Decision 2,
+ *     #4555 — the retired #2365 stage tracker used to gate these).
  *  5. `materializeDraftView` powers `GET /:id?view=draft` so the
  *     editor sees their draft state without touching the published
  *     dashboard row that other viewers see.
@@ -176,13 +177,12 @@ export function forkDraftFromPublished(published: DashboardWithCards): Dashboard
  * Each change is a snapshot-in / snapshot-out transformation — the tool
  * layer never mutates the snapshot in place.
  *
- * Destructive ops (`remove_card`, `edit_sql`) were intentionally absent
- * in the foundation slice #2364 and added in #2365 once the stage tracker
- * existed to gate them through accept/discard. The bound tools never
- * call `applyChangeToDraft` with these variants directly — they go
- * through `stageChange` first; `acceptStagedChange` then dispatches
- * them through this union, which is the only path that touches the
- * user's draft snapshot.
+ * Destructive ops (`removeCard`, `editSql`) were intentionally absent in the
+ * foundation slice #2364. As of ADR-0034 Decision 2 (#4555) the bound editor's
+ * `removeCard` / `updateCardSql` tools apply them straight to the caller's draft
+ * through this same union — the single edit mechanism — and surface a
+ * lightweight inline undo (the inverse draft edit), no staging step. The REST
+ * routes (`removeCard`, the SQL branch of `updateCard`) route the same way.
  */
 export type DraftChange =
   | { kind: "addCard"; card: DashboardSnapshotCard }

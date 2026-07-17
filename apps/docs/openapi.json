@@ -6155,144 +6155,14 @@
         "operationId": "postDashboardsByIdDraftRebase"
       }
     },
-    "/api/v1/dashboards/{id}/stage": {
-      "get": {
-        "tags": [
-          "Dashboards",
-          "Stage"
-        ],
-        "summary": "List the caller's pending stages for a dashboard",
-        "description": "Returns the caller's pending stages (per-user — teammates do not appear). Drives the ghost-overlay rendering on the dashboard view. Terminal rows (applied / discarded) are excluded.",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "00000000-0000-0000-0000-000000000000"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Pending stages",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid ID",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Dashboard not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          }
-        },
-        "operationId": "getDashboardsByIdStage"
-      },
+    "/api/v1/dashboards/{id}/draft/undo": {
       "post": {
         "tags": [
           "Dashboards",
-          "Stage"
+          "Drafts"
         ],
-        "summary": "Queue a destructive ghost change for the caller",
-        "description": "Queues a `remove_card` or `edit_sql` stage as a pending row in `dashboard_stage_changes`. Per-user — teammates do not see your stages. Returns the full stage row + an envelope the bound chat UI renders as an inline Accept/Discard affordance. Used by the bound editor tools (`removeCard`, `updateCardSql`); also callable directly for tests.",
+        "summary": "Undo a bound-editor destructive edit in the caller's draft",
+        "description": "Applies the inverse of a bound-editor destructive edit to the caller's draft: `restore_card` re-adds a removed card (verbatim, same id), `revert_sql` restores a card's prior SQL. An ordinary draft edit — nothing touches the published board until publish. Idempotent: restoring a card that already exists in the draft is a no-op.",
         "parameters": [
           {
             "schema": {
@@ -6316,17 +6186,246 @@
                       "kind": {
                         "type": "string",
                         "enum": [
-                          "remove_card"
+                          "restore_card"
                         ]
                       },
-                      "cardId": {
-                        "type": "string",
-                        "minLength": 1
+                      "card": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "position": {
+                            "type": "integer"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "sql": {
+                            "type": "string"
+                          },
+                          "chartConfig": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "bar",
+                                  "line",
+                                  "pie",
+                                  "area",
+                                  "scatter",
+                                  "table",
+                                  "kpi"
+                                ]
+                              },
+                              "categoryColumn": {
+                                "type": "string"
+                              },
+                              "valueColumns": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "minItems": 1
+                              },
+                              "kpi": {
+                                "type": "object",
+                                "properties": {
+                                  "valueFormat": {
+                                    "type": "string",
+                                    "enum": [
+                                      "currency",
+                                      "number",
+                                      "percent",
+                                      "duration"
+                                    ]
+                                  },
+                                  "comparisonSql": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 10000
+                                  },
+                                  "autoComparison": {
+                                    "type": "boolean"
+                                  },
+                                  "comparisonDateParams": {
+                                    "type": "object",
+                                    "properties": {
+                                      "from": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 64,
+                                        "pattern": "^[a-z_][a-z0-9_]*$"
+                                      },
+                                      "to": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 64,
+                                        "pattern": "^[a-z_][a-z0-9_]*$"
+                                      }
+                                    },
+                                    "required": [
+                                      "from",
+                                      "to"
+                                    ]
+                                  },
+                                  "comparisonLabel": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 120
+                                  },
+                                  "inverse": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "drilldown": {
+                                "type": "object",
+                                "properties": {
+                                  "targetParam": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 64,
+                                    "pattern": "^[a-z_][a-z0-9_]*$"
+                                  }
+                                },
+                                "required": [
+                                  "targetParam"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "thresholds": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "value": {
+                                      "type": "number"
+                                    },
+                                    "color": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 40,
+                                      "pattern": "^(#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\\([\\d\\s.,%/]+\\)|[a-zA-Z]+)$"
+                                    },
+                                    "label": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 80
+                                    }
+                                  },
+                                  "required": [
+                                    "value"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "maxItems": 5
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "categoryColumn",
+                              "valueColumns"
+                            ]
+                          },
+                          "content": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "annotations": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "x": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 120
+                                },
+                                "label": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 80
+                                },
+                                "color": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 40,
+                                  "pattern": "^(#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\\([\\d\\s.,%/]+\\)|[a-zA-Z]+)$"
+                                }
+                              },
+                              "required": [
+                                "x",
+                                "label"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "maxItems": 20
+                          },
+                          "connectionGroupId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "layout": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "x": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 23
+                              },
+                              "y": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10000
+                              },
+                              "w": {
+                                "type": "integer",
+                                "minimum": 3,
+                                "maximum": 24
+                              },
+                              "h": {
+                                "type": "integer",
+                                "minimum": 4,
+                                "maximum": 200
+                              }
+                            },
+                            "required": [
+                              "x",
+                              "y",
+                              "w",
+                              "h"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "position",
+                          "title",
+                          "sql",
+                          "chartConfig",
+                          "connectionGroupId",
+                          "layout"
+                        ]
                       }
                     },
                     "required": [
                       "kind",
-                      "cardId"
+                      "card"
                     ]
                   },
                   {
@@ -6335,27 +6434,21 @@
                       "kind": {
                         "type": "string",
                         "enum": [
-                          "edit_sql"
+                          "revert_sql"
                         ]
                       },
                       "cardId": {
                         "type": "string",
                         "minLength": 1
                       },
-                      "newSql": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "currentSql": {
-                        "type": "string",
-                        "minLength": 1
+                      "sql": {
+                        "type": "string"
                       }
                     },
                     "required": [
                       "kind",
                       "cardId",
-                      "newSql",
-                      "currentSql"
+                      "sql"
                     ]
                   }
                 ]
@@ -6364,16 +6457,8 @@
           }
         },
         "responses": {
-          "201": {
-            "description": "Stage queued",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
+          "204": {
+            "description": "Undo applied to the caller's draft (or a no-op)"
           },
           "400": {
             "description": "Invalid ID or payload",
@@ -6423,7 +6508,7 @@
             }
           },
           "404": {
-            "description": "Dashboard not found",
+            "description": "Dashboard or card not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -6502,339 +6587,7 @@
             }
           }
         },
-        "operationId": "postDashboardsByIdStage"
-      }
-    },
-    "/api/v1/dashboards/{id}/stage/{stageId}/accept": {
-      "post": {
-        "tags": [
-          "Dashboards",
-          "Stage"
-        ],
-        "summary": "Accept a pending stage (apply to draft)",
-        "description": "Applies the staged change to the caller's draft (forking if needed) and flips the stage to `applied` transactionally. Idempotent on rows already in `applied`. Returns 409 when the stage was already `discarded` (you cannot un-discard).",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "00000000-0000-0000-0000-000000000000"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "example": "00000000-0000-0000-0000-000000000000"
-            },
-            "required": true,
-            "name": "stageId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Stage accepted (or already accepted)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid ID",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Stage not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Stage was already discarded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          }
-        },
-        "operationId": "postDashboardsByIdStageByStageIdAccept"
-      }
-    },
-    "/api/v1/dashboards/{id}/stage/{stageId}/discard": {
-      "post": {
-        "tags": [
-          "Dashboards",
-          "Stage"
-        ],
-        "summary": "Discard a pending stage (drop without applying)",
-        "description": "Flips the stage to `discarded`. Idempotent on rows already discarded. Returns 409 when the stage was already `applied` — accepted edits cannot be un-applied via this route.",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "example": "00000000-0000-0000-0000-000000000000"
-            },
-            "required": true,
-            "name": "id",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "example": "00000000-0000-0000-0000-000000000000"
-            },
-            "required": true,
-            "name": "stageId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Stage discarded (or already discarded)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid ID",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Stage not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Stage was already applied",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          }
-        },
-        "operationId": "postDashboardsByIdStageByStageIdDiscard"
+        "operationId": "postDashboardsByIdDraftUndo"
       }
     },
     "/api/v1/dashboards/{id}/cards": {
@@ -83067,9 +82820,6 @@
     },
     {
       "name": "Sessions"
-    },
-    {
-      "name": "Stage"
     },
     {
       "name": "Starter Prompts"

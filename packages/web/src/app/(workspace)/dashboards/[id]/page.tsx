@@ -56,8 +56,7 @@ import {
   type SuggestionItem,
 } from "@/ui/components/dashboards/canvas-interactions";
 import { hasKpiComparison, kpiComparisonSignature } from "@/ui/components/dashboards/kpi-card";
-import { StageProvider } from "@/ui/components/dashboards/stage-context";
-import type { StagedChange } from "@/ui/lib/types";
+import { BoundDraftProvider } from "@/ui/components/dashboards/bound-draft-context";
 import { useVisibilityGatedPoll } from "@/ui/hooks/use-visibility-gated-poll";
 import { selectNextAfterDelete } from "../select-recent";
 import type { Density } from "@/ui/components/dashboards/grid-constants";
@@ -145,16 +144,6 @@ export default function DashboardViewPage() {
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
     showDraftView ? `/api/v1/dashboards/${id}?view=draft` : `/api/v1/dashboards/${id}`,
   );
-
-  // #2365 — pending destructive stages for THIS user on THIS dashboard.
-  // Drives the ghost overlay on the grid (strikethrough + side-by-side
-  // diff). Per-user; teammates never see each other's pending stages.
-  // Refetched whenever the chat tool fires a stage or the user accepts /
-  // discards via `<StageChangeCard>`.
-  const { data: stagesData, refetch: refetchStages } = useAdminFetch<{ stages: StagedChange[] }>(
-    `/api/v1/dashboards/${id}/stage`,
-  );
-  const stages: StagedChange[] = stagesData?.stages ?? [];
 
   const { mutate, error: mutationError } = useAdminMutation({ invalidates: refetch });
 
@@ -839,14 +828,11 @@ export default function DashboardViewPage() {
     }
   }
 
-  // The stage handler fires when the user clicks Accept / Discard in the
-  // bound chat drawer. We refetch BOTH the dashboard (the draft cards
-  // changed after an accept) AND the stage list (the row is no longer
-  // pending). Both calls are cheap (org-scoped GETs).
-  function handleStagesChanged() {
-    // fire-and-forget: refresh dashboard + stage list after an accept/discard; UI updates on resolve
+  // Fires after a bound-editor draft edit (a mutation tool completing, or an
+  // inline Undo in the chat drawer). Refetch the dashboard so the canvas
+  // reflects the new draft state. Cheap org-scoped GET; fire-and-forget.
+  function handleDraftChanged() {
     void refetch();
-    void refetchStages();
   }
 
   // #2267 — re-render every card when the parameter bar commits a change.
@@ -1118,7 +1104,7 @@ export default function DashboardViewPage() {
     !loading && !error && Boolean(dashboard) && !paramLoading && (!dparamsActive || paramSettledOnce);
 
   return (
-    <StageProvider value={{ dashboardId: id, onStagesChanged: handleStagesChanged }}>
+    <BoundDraftProvider value={{ dashboardId: id, onDraftChanged: handleDraftChanged }}>
       <div
         className="flex h-full flex-1 flex-col overflow-auto"
         data-dashboard-export-ready={exportReady ? "1" : "0"}
@@ -1330,7 +1316,6 @@ export default function DashboardViewPage() {
                   cards={cardsForGrid}
                   editing={editing}
                   refreshingIds={refreshingCardIds}
-                  stages={stages}
                   comparisons={comparisons}
                   onDrilldown={handleDrilldown}
                   incompatibleCardIds={incompatIds}
@@ -1381,7 +1366,7 @@ export default function DashboardViewPage() {
           onOpenChange={setChatOpen}
           dashboardId={dashboard.id}
           dashboardTitle={dashboard.title}
-          onDashboardMutated={handleStagesChanged}
+          onDashboardMutated={handleDraftChanged}
           resumeConversationId={resumeConversationId}
         />
       )}
@@ -1417,6 +1402,6 @@ export default function DashboardViewPage() {
         viewError={draftViewError}
         onConfirm={handleConfirmPublish}
       />
-    </StageProvider>
+    </BoundDraftProvider>
   );
 }

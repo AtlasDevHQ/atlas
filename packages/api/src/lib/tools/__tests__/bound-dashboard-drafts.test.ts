@@ -138,13 +138,15 @@ describe("bound-dashboard tools — drafts", () => {
       //   1. maybeApplyToDraft.getDashboard → dashboards SELECT + cards SELECT
       //   2. forkOrLoadDraft.loadDraft → empty
       //   3. forkOrLoadDraft INSERT INTO dashboard_user_drafts
-      //   4. forkOrLoadDraft re-load → row with empty draft
-      //   5. saveDraft → UPDATE dashboard_user_drafts returning user_id
+      //   4. draft-cache seed (#4554)
+      //   5. forkOrLoadDraft re-load → row with empty draft
+      //   6. saveDraft → UPDATE dashboard_user_drafts returning user_id
       setResults(
         { rows: [dashboardRow] },
         { rows: [cardRow] },
         { rows: [] }, // loadDraft empty
         { rows: [] }, // INSERT (ON CONFLICT DO NOTHING)
+        { rows: [] }, // draft-cache seed (#4554)
         {
           rows: [
             {
@@ -192,6 +194,7 @@ describe("bound-dashboard tools — drafts", () => {
         { rows: [cardRow] },
         { rows: [] }, // loadDraft empty
         { rows: [] }, // INSERT (ON CONFLICT DO NOTHING)
+        { rows: [] }, // draft-cache seed (#4554)
         {
           rows: [
             {
@@ -241,6 +244,7 @@ describe("bound-dashboard tools — drafts", () => {
         { rows: [cardRow] },
         { rows: [] },
         { rows: [] },
+        { rows: [] }, // draft-cache seed (#4554)
         {
           rows: [
             {
@@ -309,6 +313,7 @@ describe("bound-dashboard tools — drafts", () => {
         { rows: [cardRow] },
         { rows: [] }, // loadDraft empty
         { rows: [] }, // INSERT into drafts
+        { rows: [] }, // draft-cache seed (#4554)
         {
           rows: [
             {

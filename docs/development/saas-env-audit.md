@@ -306,15 +306,22 @@ items and re-baselined the counts:
   nine `STRIPE_*_PRICE_ID`s — the Stripe section points at
   Admin → Settings → Billing instead of enumerating (its stale "six" count
   corrected to nine). New counts: 924 lines, ~312 declared vars.
-- **New reduction-backlog item — #4479**: the sweep surfaced a near-duplicate
-  knob pair with opposite unset defaults (`ATLAS_EMAIL_ALLOWED_DOMAINS`,
-  env-only, fail-open, gating the `sendEmailReport` action vs the registry's
+- **Reduction-backlog item — #4479 (SHIPPED 2026-07-16)**: the sweep surfaced
+  a near-duplicate knob pair with opposite unset defaults
+  (`ATLAS_EMAIL_ALLOWED_DOMAINS`, env-only, fail-open, gating the
+  `sendEmailReport` action vs the registry's
   `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`, fail-closed, gating the `sendEmail`
-  integration tool). #4479 covers consolidating the pair plus a full env-knob
-  consolidation pass (duplicate names, registry-bypass `process.env` reads,
-  env-only knobs that should be registry-backed per the principle, and a
-  possible inverse `check-settings-readers` ratchet). Its findings fold back
-  into this document.
+  integration tool). **Consolidated**: both agent email paths now route
+  through the shared recipient gate (`lib/email/recipient-gate.ts`) keyed on
+  the registry-backed `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`; the unset
+  default is uniformly fail-closed (workspace members only). The retired
+  `ATLAS_EMAIL_ALLOWED_DOMAINS` is honored as a deprecated fallback domain
+  list (warn once per process on first use) only while the survivor is not
+  explicitly configured, then drops in the next release — two-phase
+  discipline, phase 2 tracked in #4663. The
+  repo-wide env-knob consolidation sweep + inverse `check-settings-readers`
+  ratchet decision was split out to #4620 (`ready-for-human`); its findings
+  fold back into this document.
 
 ## Tracked work
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 // ---------------------------------------------------------------------------
 // Mock handler module so we don't hit real DB / auth
@@ -17,13 +17,56 @@ void mock.module("@atlas/api/lib/tools/actions/handler", () => ({
   },
 }));
 
+// All value exports of the real logger module — a partial mock breaks with
+// "Export named X not found" the moment another import in this file's graph
+// reads a missing name.
+const loggerStub = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {},
+};
+
 void mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"],
+  withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+  getRequestContext: () => mockRequestContext,
+  redactPaths: [],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (value: unknown) => value,
+  getLogger: () => loggerStub,
+  createLogger: () => loggerStub,
+  hashShareToken: (token: string) => token,
+  setLogLevel: () => true,
+}));
+
+let mockRequestContext:
+  | { user?: { activeOrganizationId?: string } }
+  | undefined;
+
+// ---------------------------------------------------------------------------
+// Mock the shared recipient gate (#4479) — the gate's own behavior
+// (member/domain boundary, legacy-knob fallback, fail-closed) is unit-tested
+// in lib/email/__tests__/recipient-gate.test.ts; here we verify the action
+// wires recipients through it and honors its verdict.
+// ---------------------------------------------------------------------------
+
+type GateResult =
+  | { allowed: true }
+  | { allowed: false; blocked: string[]; message: string };
+
+let mockGateResult: GateResult = { allowed: true };
+let lastGateCall: { workspaceId: string | undefined; to: readonly string[] } | null = null;
+
+void mock.module("@atlas/api/lib/email/recipient-gate", () => ({
+  EMAIL_RECIPIENT_DOMAINS_SETTING: "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS",
+  LEGACY_EMAIL_DOMAINS_ENV: "ATLAS_EMAIL_ALLOWED_DOMAINS",
+  checkRecipientsAllowed: async (workspaceId: string | undefined, to: readonly string[]) => {
+    lastGateCall = { workspaceId, to };
+    return mockGateResult;
+  },
+  normalizeEmailAddress: (addr: string) => addr,
+  resetRecipientGateWarnsForTests: () => {},
 }));
 
 // Mock the delivery module — sendEmail is now the core of executeEmailSend
@@ -43,29 +86,16 @@ const { executeEmailSend, sendEmailReport } = await import(
 );
 
 // ---------------------------------------------------------------------------
-// Env snapshot
+// Per-test state reset
 // ---------------------------------------------------------------------------
 
-const ENV_KEYS = [
-  "RESEND_API_KEY",
-  "ATLAS_EMAIL_FROM",
-  "ATLAS_EMAIL_ALLOWED_DOMAINS",
-] as const;
-
-const saved: Record<string, string | undefined> = {};
-
 beforeEach(() => {
-  for (const key of ENV_KEYS) saved[key] = process.env[key];
   lastHandleActionCall = null;
   lastSendEmailCall = null;
   mockSendEmailResult = { success: true, provider: "resend", error: undefined };
-});
-
-afterEach(() => {
-  for (const key of ENV_KEYS) {
-    if (saved[key] !== undefined) process.env[key] = saved[key];
-    else delete process.env[key];
-  }
+  mockGateResult = { allowed: true };
+  lastGateCall = null;
+  mockRequestContext = undefined;
 });
 
 // ---------------------------------------------------------------------------
@@ -162,107 +192,73 @@ describe("executeEmailSend", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Domain allowlist
+// Recipient gate wiring (#4479) — the action routes recipients through the
+// shared checkRecipientsAllowed gate from lib/email/recipient-gate.ts
 // ---------------------------------------------------------------------------
 
-describe("sendEmailReport — domain allowlist", () => {
-  it("blocks email to disallowed domain", async () => {
-    process.env.ATLAS_EMAIL_ALLOWED_DOMAINS = "company.com,partner.com";
+describe("sendEmailReport — recipient gate wiring", () => {
+  const aiTool = sendEmailReport.tool as unknown as {
+    execute: (args: unknown, options: unknown) => Promise<unknown>;
+  };
+  const opts = {
+    toolCallId: "test-call",
+    messages: [],
+    abortSignal: undefined as unknown as AbortSignal,
+  };
 
-    const aiTool = sendEmailReport.tool as unknown as {
-      execute: (args: unknown, options: unknown) => Promise<unknown>;
+  it("returns failed with the gate's message when the gate blocks", async () => {
+    mockGateResult = {
+      allowed: false,
+      blocked: ["user@blocked.com"],
+      message: "Recipient(s) not allowed: user@blocked.com. …",
     };
 
     const result = (await aiTool.execute(
       { to: "user@blocked.com", subject: "Test", body: "<p>Hi</p>" },
-      { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
+      opts,
     )) as { status: string; error?: string };
 
     expect(result.status).toBe("failed");
     expect(result.error).toContain("not allowed");
-    expect(result.error).toContain("blocked.com");
+    expect(result.error).toContain("user@blocked.com");
+    // Blocked pre-approval — the action pipeline is never reached
+    expect(lastHandleActionCall).toBeNull();
   });
 
-  it("allows email to permitted domain", async () => {
-    process.env.ATLAS_EMAIL_ALLOWED_DOMAINS = "company.com,partner.com";
-
-    const aiTool = sendEmailReport.tool as unknown as {
-      execute: (args: unknown, options: unknown) => Promise<unknown>;
-    };
+  it("proceeds to the approval pipeline when the gate allows", async () => {
+    mockGateResult = { allowed: true };
 
     const result = (await aiTool.execute(
       { to: "alice@company.com", subject: "Test", body: "<p>Hi</p>" },
-      { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
+      opts,
     )) as { status: string };
 
     expect(result.status).toBe("pending");
   });
 
-  it("allows any domain when ATLAS_EMAIL_ALLOWED_DOMAINS is not set", async () => {
-    delete process.env.ATLAS_EMAIL_ALLOWED_DOMAINS;
+  it("passes all recipients and the active workspaceId to the gate", async () => {
+    mockRequestContext = { user: { activeOrganizationId: "ws-123" } };
 
-    const aiTool = sendEmailReport.tool as unknown as {
-      execute: (args: unknown, options: unknown) => Promise<unknown>;
-    };
+    await aiTool.execute(
+      { to: ["a@corp.example", "b@corp.example"], subject: "Test", body: "<p>Hi</p>" },
+      opts,
+    );
 
-    const result = (await aiTool.execute(
-      { to: "anyone@anywhere.com", subject: "Test", body: "<p>Hi</p>" },
-      { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
-    )) as { status: string };
-
-    expect(result.status).toBe("pending");
+    expect(lastGateCall).not.toBeNull();
+    expect(lastGateCall!.workspaceId).toBe("ws-123");
+    expect(lastGateCall!.to).toEqual(["a@corp.example", "b@corp.example"]);
   });
 
-  it("blocks malformed email addresses without @ sign", async () => {
-    process.env.ATLAS_EMAIL_ALLOWED_DOMAINS = "company.com";
+  it("passes an undefined workspaceId when there is no request context", async () => {
+    mockRequestContext = undefined;
 
-    const aiTool = sendEmailReport.tool as unknown as {
-      execute: (args: unknown, options: unknown) => Promise<unknown>;
-    };
+    await aiTool.execute(
+      { to: "a@corp.example", subject: "Test", body: "<p>Hi</p>" },
+      opts,
+    );
 
-    const result = (await aiTool.execute(
-      { to: "notanemail", subject: "Test", body: "<p>Hi</p>" },
-      { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
-    )) as { status: string; error?: string };
-
-    expect(result.status).toBe("failed");
-    expect(result.error).toContain("not allowed");
-  });
-
-  it("extracts domain from display-name format addresses", async () => {
-    process.env.ATLAS_EMAIL_ALLOWED_DOMAINS = "company.com";
-
-    const aiTool = sendEmailReport.tool as unknown as {
-      execute: (args: unknown, options: unknown) => Promise<unknown>;
-    };
-
-    const result = (await aiTool.execute(
-      { to: "User <user@company.com>", subject: "Test", body: "<p>Hi</p>" },
-      { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
-    )) as { status: string };
-
-    expect(result.status).toBe("pending");
-  });
-
-  it("blocks mixed recipients where some are disallowed", async () => {
-    process.env.ATLAS_EMAIL_ALLOWED_DOMAINS = "company.com";
-
-    const aiTool = sendEmailReport.tool as unknown as {
-      execute: (args: unknown, options: unknown) => Promise<unknown>;
-    };
-
-    const result = (await aiTool.execute(
-      {
-        to: ["good@company.com", "bad@external.com"],
-        subject: "Test",
-        body: "<p>Hi</p>",
-      },
-      { toolCallId: "test-call", messages: [], abortSignal: undefined as unknown as AbortSignal },
-    )) as { status: string; error?: string };
-
-    expect(result.status).toBe("failed");
-    expect(result.error).toContain("bad@external.com");
-    expect(result.error).not.toContain("good@company.com");
+    expect(lastGateCall).not.toBeNull();
+    expect(lastGateCall!.workspaceId).toBeUndefined();
   });
 });
 
@@ -272,8 +268,6 @@ describe("sendEmailReport — domain allowlist", () => {
 
 describe("sendEmailReport — tool execute", () => {
   it("calls handleAction with correct actionType and payload", async () => {
-    delete process.env.ATLAS_EMAIL_ALLOWED_DOMAINS;
-
     const aiTool = sendEmailReport.tool as unknown as {
       execute: (args: unknown, options: unknown) => Promise<unknown>;
     };
@@ -302,8 +296,6 @@ describe("sendEmailReport — tool execute", () => {
 
 describe("sendEmailReport — schema validation", () => {
   it("rejects empty recipient array via Zod min(1)", async () => {
-    delete process.env.ATLAS_EMAIL_ALLOWED_DOMAINS;
-
     const aiTool = sendEmailReport.tool as unknown as {
       execute: (args: unknown, options: unknown) => Promise<unknown>;
       parameters: { parse: (input: unknown) => unknown };

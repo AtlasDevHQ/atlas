@@ -26,7 +26,11 @@ void mock.module("next/link", () => ({
 
 import { render, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { ViewAllDashboardsModal } from "../view-all-modal";
-import { dashboardsWrapper, stubDashboardsFetch } from "./_fixtures";
+import {
+  dashboardsWrapper,
+  stubDashboardsFetch,
+  stubDashboardsFetchWithCreate,
+} from "./_fixtures";
 
 const originalFetch = globalThis.fetch;
 
@@ -80,6 +84,29 @@ describe("ViewAllDashboardsModal", () => {
     fireEvent.click(older);
     await waitFor(() => expect(navigateCalls).toContain("/dashboards/d-2"));
     expect(openState).toBe(false);
+  });
+
+  // #4563 — surface-native creation from the view-all modal follows the same
+  // policy as the switcher / empty state: land on the new canvas with the
+  // bound editor open.
+  test("creating from the modal navigates to the new canvas with the bound editor open", async () => {
+    stubDashboardsFetchWithCreate(
+      [{ id: "d-1", title: "Now", updatedAt: "2026-04-25T10:00:00Z", cardCount: 0 }],
+      { id: "d-new", title: "Fresh", updatedAt: "2026-04-25T11:00:00Z", cardCount: 0 },
+    );
+    render(
+      <ViewAllDashboardsModal open onOpenChange={() => {}} currentId="d-1" />,
+      { wrapper: dashboardsWrapper },
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "New" }));
+    const input = await screen.findByPlaceholderText("Dashboard title");
+    fireEvent.change(input, { target: { value: "Fresh" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() =>
+      expect(navigateCalls).toContain("/dashboards/d-new?openChat=true"),
+    );
   });
 
   test("search input only renders above the threshold", async () => {

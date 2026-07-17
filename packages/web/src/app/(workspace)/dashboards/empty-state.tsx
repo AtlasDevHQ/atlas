@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { LayoutDashboard, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,7 +9,25 @@ import {
   defaultOnDashboardCreated,
 } from "@/ui/components/dashboards/new-dashboard-dialog";
 
-export function DashboardsEmptyState() {
+interface DashboardsEmptyStateProps {
+  /**
+   * Called synchronously before the creation navigation fires, so the parent
+   * redirect-index page can convert its own `router.replace` into the same
+   * intent-preserving `?openChat=true` navigation — the post-creation list
+   * refetch would otherwise race the push and strip the editor-open intent
+   * (#4563).
+   */
+  onCreationNavigate?: () => void;
+}
+
+/**
+ * #4563 — the dashboards surface is a first-class creation origin: the empty
+ * state invites creating right here (the new board opens with the bound
+ * editor ready), instead of bouncing the user to main chat.
+ */
+export function DashboardsEmptyState({
+  onCreationNavigate,
+}: DashboardsEmptyStateProps) {
   const router = useRouter();
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -25,25 +42,23 @@ export function DashboardsEmptyState() {
             No dashboards yet
           </h1>
           <p className="mb-6 max-w-sm text-sm text-zinc-500 dark:text-zinc-400">
-            Ask a question in chat, get a result, and click the Dashboard button
-            to pin it here.
+            Create a dashboard and describe what you want to see — the agent
+            builds the charts right on the canvas.
           </p>
-          <div className="flex flex-wrap justify-center gap-3">
-            <Button variant="outline" size="sm" asChild>
-              <Link href="/">Go to chat</Link>
-            </Button>
-            <Button size="sm" onClick={() => setCreateOpen(true)}>
-              <Plus className="mr-1.5 size-3.5" />
-              Create your first dashboard
-            </Button>
-          </div>
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <Plus className="mr-1.5 size-3.5" />
+            Create your first dashboard
+          </Button>
         </div>
       </div>
 
       <NewDashboardDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        onCreated={defaultOnDashboardCreated(router)}
+        onCreated={(d) => {
+          onCreationNavigate?.();
+          defaultOnDashboardCreated(router)(d);
+        }}
       />
     </>
   );

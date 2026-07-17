@@ -26,7 +26,11 @@ void mock.module("next/link", () => ({
 
 import { render, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { DashboardSwitcher } from "../dashboard-switcher";
-import { dashboardsWrapper, stubDashboardsFetch } from "./_fixtures";
+import {
+  dashboardsWrapper,
+  stubDashboardsFetch,
+  stubDashboardsFetchWithCreate,
+} from "./_fixtures";
 
 const originalFetch = globalThis.fetch;
 
@@ -96,6 +100,28 @@ describe("DashboardSwitcher", () => {
     await waitFor(() => {
       expect(screen.getByRole("dialog", { name: /New dashboard/i })).toBeTruthy();
     });
+  });
+
+  // #4563 — surface-native creation: creating from the switcher lands on the
+  // new board's canvas with the bound editor open (`?openChat=true`, the same
+  // entry the main-chat `createDashboard` handoff uses).
+  test("creating from the switcher navigates to the new canvas with the bound editor open", async () => {
+    stubDashboardsFetchWithCreate(
+      [{ id: "d-1", title: "Now", updatedAt: "2026-04-25T10:00:00Z", cardCount: 0 }],
+      { id: "d-new", title: "Fresh", updatedAt: "2026-04-25T11:00:00Z", cardCount: 0 },
+    );
+
+    render(<DashboardSwitcher currentId="d-1" />, { wrapper: dashboardsWrapper });
+    openSwitcher();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /New dashboard/ }));
+
+    const input = await screen.findByPlaceholderText("Dashboard title");
+    fireEvent.change(input, { target: { value: "Fresh" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() =>
+      expect(navigateCalls).toContain("/dashboards/d-new?openChat=true"),
+    );
   });
 
   test("renders an error + retry when the list fetch fails", async () => {

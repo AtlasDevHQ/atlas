@@ -225,7 +225,9 @@ describe("runMigrations", () => {
     //   Plus 0174 (connection_profile_state.baseline_started_at — in-flight claim
     //   marker collapsing the coverage view's poll-driven baseline backfill to one
     //   running profile per connection, re-storm fix) = 175.
-    expect(count).toBe(175);
+    //   Plus 0175 (dashboard_draft_card_cache — the draft cache: a draft card's
+    //   own cached rows + capture instant, ADR-0034 Decision 1, #4554) = 176.
+    expect(count).toBe(176);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -429,6 +431,7 @@ describe("runMigrations", () => {
         "0172_learned_patterns_identity.sql",
         "0173_learned_pattern_injections.sql",
         "0174_connection_profile_baseline_started_at.sql",
+        "0175_dashboard_draft_card_cache.sql",
       ],
     });
 

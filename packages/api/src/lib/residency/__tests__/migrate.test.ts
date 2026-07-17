@@ -14,7 +14,9 @@ let mockQueryResults: Record<string, unknown[]> = {};
 // Per-SQL injection: when set, internalQuery rejects on the first call whose
 // SQL contains the pattern. Used to exercise transient-failure paths on a
 // specific statement without breaking unrelated queries.
-let mockInternalQueryRejectPattern: { pattern: string; error: Error } | null = null;
+// `times` limits how many matching calls reject (undefined = every match) —
+// lets a test poison only the FIRST of several identical UPDATEs (#4459).
+let mockInternalQueryRejectPattern: { pattern: string; error: Error; times?: number } | null = null;
 let mockPoolQueryResult = { rows: [{ id: "org-1" }] };
 let mockPoolQueryError: Error | null = null;
 const capturedQueries: Array<{ sql: string; params: unknown[] }> = [];
@@ -39,7 +41,12 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: (sql: string, params: unknown[]) => {
     capturedQueries.push({ sql, params });
     if (mockInternalQueryRejectPattern && sql.includes(mockInternalQueryRejectPattern.pattern)) {
-      return Promise.reject(mockInternalQueryRejectPattern.error);
+      const reject = mockInternalQueryRejectPattern;
+      if (reject.times === undefined) return Promise.reject(reject.error);
+      if (reject.times > 0) {
+        reject.times--;
+        return Promise.reject(reject.error);
+      }
     }
     // Match query to result based on SQL pattern
     for (const [key, value] of Object.entries(mockQueryResults)) {
@@ -418,15 +425,29 @@ describe("executeRegionMigration", () => {
 describe("failStaleMigrations", () => {
   beforeEach(resetMocks);
 
-  it("returns 0 when internal DB is not available", async () => {
-    mockHasInternalDB = false;
-    const count = await failStaleMigrations();
-    expect(count).toBe(0);
+  // #4459 — the reaper runs on a periodic fiber (region_migration_stale_reap
+  // in effect/layers.ts). The sweep interval must not exceed the stale
+  // threshold, so a workspace whose migration crashed is unlocked within a
+  // bounded window of at most threshold + one interval (~6 min today) without
+  // operator action.
+  it("exports a reap cadence that bounds the unlock window (#4459)", async () => {
+    const { STALE_MIGRATION_REAP_INTERVAL_MS, STALE_THRESHOLD_MS } =
+      await import("../migrate");
+    expect(STALE_MIGRATION_REAP_INTERVAL_MS).toBeGreaterThan(0);
+    expect(STALE_MIGRATION_REAP_INTERVAL_MS).toBeLessThanOrEqual(
+      STALE_THRESHOLD_MS,
+    );
   });
 
-  it("returns 0 when no stale migrations exist", async () => {
-    const count = await failStaleMigrations();
-    expect(count).toBe(0);
+  it("returns zero counts when internal DB is not available", async () => {
+    mockHasInternalDB = false;
+    const result = await failStaleMigrations();
+    expect(result).toEqual({ found: 0, reaped: 0 });
+  });
+
+  it("returns zero counts when no stale migrations exist", async () => {
+    const result = await failStaleMigrations();
+    expect(result).toEqual({ found: 0, reaped: 0 });
   });
 
   it("fails stale migrations", async () => {
@@ -435,13 +456,62 @@ describe("failStaleMigrations", () => {
     ];
     mockQueryResults["UPDATE region_migrations"] = [];
 
-    const count = await failStaleMigrations();
-    expect(count).toBe(1);
+    const result = await failStaleMigrations();
+    expect(result).toEqual({ found: 1, reaped: 1 });
 
     const failedUpdate = capturedQueries.find(
       (q) => q.sql.includes("UPDATE region_migrations") && q.params.includes("failed"),
     );
     expect(failedUpdate).toBeDefined();
+  });
+
+  // #4459 — one poisoned row must not block reaping the rest: the loop logs
+  // the per-row failure and continues, so one stuck migration can't keep
+  // every OTHER crashed workspace write-locked.
+  it("continues past a row whose UPDATE fails and reaps the rest", async () => {
+    mockQueryResults["status = 'in_progress'"] = [
+      { id: "mig-stale-1", workspace_id: "org-1" },
+      { id: "mig-stale-2", workspace_id: "org-2" },
+    ];
+    mockInternalQueryRejectPattern = {
+      pattern: "UPDATE region_migrations",
+      error: new Error("permission denied"),
+      times: 1,
+    };
+
+    const result = await failStaleMigrations();
+    expect(result).toEqual({ found: 2, reaped: 1 });
+
+    const attemptedUpdates = capturedQueries.filter(
+      (q) => q.sql.includes("UPDATE region_migrations") && q.params.includes("failed"),
+    );
+    expect(attemptedUpdates).toHaveLength(2);
+  });
+
+  // #4459 — stale rows found but NONE reapable is a failure, not a quiet
+  // zero: the periodic fiber's tick must reject so the span records ERROR
+  // and the warn-log recovery path fires (the workspace is still locked).
+  it("throws when stale rows are found but none can be marked failed", async () => {
+    mockQueryResults["status = 'in_progress'"] = [
+      { id: "mig-stale", workspace_id: "org-1" },
+    ];
+    mockInternalQueryRejectPattern = {
+      pattern: "UPDATE region_migrations",
+      error: new Error("permission denied"),
+    };
+
+    await expect(failStaleMigrations()).rejects.toThrow(/remain write-locked/);
+  });
+
+  // The stale SELECT has no catch — a failure there must propagate so the
+  // fiber tick records span ERROR instead of a quiet healthy-looking zero.
+  it("propagates a failure of the stale SELECT itself", async () => {
+    mockInternalQueryRejectPattern = {
+      pattern: "WHERE status = 'in_progress'",
+      error: new Error("connection reset"),
+    };
+
+    await expect(failStaleMigrations()).rejects.toThrow("connection reset");
   });
 });
 
@@ -525,6 +595,11 @@ describe("resetMigrationForRetry", () => {
       (q) => q.sql.includes("status = 'pending'"),
     );
     expect(resetQuery).toBeDefined();
+    // #4459 — the reset must restart the staleness clock: failStaleMigrations
+    // anchors its threshold to requested_at, and the reaper now sweeps every
+    // minute, so a retry that kept the ORIGINAL requested_at would re-enter
+    // in_progress already stale and be killed within one sweep.
+    expect(resetQuery!.sql).toContain("requested_at = NOW()");
   });
 
   // Once Phase 3 has flipped the workspace into the destination region,

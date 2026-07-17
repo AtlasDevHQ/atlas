@@ -5,7 +5,7 @@ description: Assign workspaces to geographic regions and route data to region-sp
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas data residency controls let operators assign workspaces to geographic regions (e.g. `eu-west`, `us-east`). Each region maps to a dedicated database, ensuring tenant data stays in the correct jurisdiction.
+Atlas data residency controls let operators assign workspaces to geographic regions (e.g. `eu-west`, `us-east`). Each region maps to a dedicated database, ensuring tenant data stays in the correct jurisdiction. One documented exception applies: agent sandbox tool execution currently runs in the US regardless of workspace region — see [Sandbox Execution Locality](#sandbox-execution-locality).
 
 <Callout type="info" title="SaaS Feature">
   Data residency is available on all [app.useatlas.dev](https://app.useatlas.dev) paid plans (Starter, Pro, Business) — every workspace picks its region (US/EU/APAC) at signup. Self-hosted deployments manage database routing directly. This feature is part of the Atlas commercial (SaaS) offering — see the [Enterprise (`/ee`) boundary](/architecture/enterprise) for details on the gate and license split.
@@ -146,6 +146,24 @@ When a workspace has a region assigned:
 
 The routing is transparent to the agent and end users — the same API endpoints work regardless of region.
 
+## Sandbox Execution Locality
+
+{/* Carve-out disclosure per #4223 (ADR-0024 amendment 2026-07-16). Remediation tracks: #4665 (BYOC Python), #4666 (per-region platform sandbox provider). */}
+
+<Callout type="warn" title="Known exception: agent tool execution runs in the US">
+  Residency controls where your workspace's databases live and which regional stack serves it. Agent tool execution is a documented exception: the `explore` and (where enabled) `executePython` tools run in the platform sandbox (Vercel Sandbox), which provisions only in the US (`iad1`) — Vercel exposes no region primitive. This applies to every workspace region, including EU and APAC.
+</Callout>
+
+What transits the sandbox:
+
+- **Semantic-layer content** — the entity YAML files copied in for `explore`, including sample values derived from your data
+- **Knowledge Base content** — published collection documents (plus drafts, in developer mode) are mirrored into the same workspace root `explore` browses
+- **Query results** — for Python execution, the SQL result rows the agent passes into the sandbox
+
+The isolation controls still apply: `explore` sandboxes are strictly network-deny-all; Python sandboxes are deny-all by default, with egress opened only to the host(s) of an installed REST datasource — and no credential attached — when one exists. `explore` reuses one sandbox across tool calls; Python creates a fresh sandbox per call. Neither is ever snapshotted (`persistent: false`), so nothing persists at Vercel once a sandbox stops. The US processing is disclosed in the [sub-processor list](https://www.useatlas.dev/sub-processors) referenced by the DPA (Vercel entry).
+
+Workspaces that need in-region tool execution today can connect their own sandbox (BYOC) on a provider account whose execution region they control — see [Sandbox — SaaS Mode](/guides/sandbox). Atlas passes no region parameter to BYOC providers, so locality follows your provider account's own configuration; check your provider's region controls before relying on this. An engaged BYOC sandbox (connected, with complete credentials) takes priority over the platform sandbox for `explore` and fails closed rather than falling back. **Python is not yet covered**: with an E2B or Daytona sandbox connected, `executePython` still runs in the US platform sandbox until Python support lands on those providers — workspaces for which that is unacceptable should keep the Python tool disabled.
+
 ## Misrouting Detection
 
 When running multiple regional API instances, each instance identifies itself via the `ATLAS_API_REGION` env var (or falls back to `residency.defaultRegion` from config). If a request arrives from a workspace assigned to a different region, Atlas logs a warning with the request ID, org ID, expected region, and actual region.
@@ -234,6 +252,10 @@ residency: {
 }
 ```
 
+### Automatic recovery from a crashed migration
+
+A migrating workspace is write-locked while its migration row is `in_progress`. If the API process crashes mid-migration, a background reaper fails the stuck row automatically: any migration still `in_progress` more than **5 minutes** after it was requested is marked `failed` (with a `region_migration_failed` audit event in the service logs, reason `stale_timeout`), which releases the workspace write-lock. The reaper sweeps every minute, so the worst-case lock window after a crash is about 6 minutes — no operator action is required. The failed migration can then be retried with the retry endpoint below; the retry restarts the staleness clock, so a retried migration gets the full window again.
+
 ### Retry and cancel
 
 Failed migrations can be retried. Pending migrations can be cancelled:
@@ -303,3 +325,4 @@ When `executeRegionMigration` fails after Phase 3 succeeded, the row will be `st
 - Requires enterprise license
 - Region configuration changes require server restart
 - One migration per workspace per 30 days
+- Agent sandbox tool execution runs in the US (`iad1`) regardless of workspace region — see [Sandbox Execution Locality](#sandbox-execution-locality)

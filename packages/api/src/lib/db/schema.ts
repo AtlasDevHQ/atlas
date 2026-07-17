@@ -2224,6 +2224,39 @@ export const dashboardUserDrafts = pgTable(
   ],
 );
 
+// 0175 — The draft cache (#4554, ADR-0034 Decision 1): a draft card's own
+// cached data, one row per (user_id, dashboard_id, card_id), private to that
+// user's draft. A SIDE table rather than fields in the draft snapshot JSONB so
+// `saveDraft`'s full-snapshot rewrite never carries data rows and the publish
+// merge's card equality never sees them. Composite FK → dashboard_user_drafts
+// ON DELETE CASCADE: publish/discard/sweep clear the cache by deleting the
+// draft row (dashboard delete is soft — no cascade; the sweep reaps later).
+// `card_id` deliberately has NO FK to dashboard_cards — a draft-only
+// (never-published) card exists only in the draft snapshot.
+export const dashboardDraftCardCache = pgTable(
+  "dashboard_draft_card_cache",
+  {
+    userId: text("user_id").notNull(),
+    dashboardId: uuid("dashboard_id").notNull(),
+    cardId: uuid("card_id").notNull(),
+    cachedColumns: jsonb("cached_columns"),
+    cachedRows: jsonb("cached_rows"),
+    // Capture instant — drives the tile age caption for a draft-holding caller.
+    cachedAt: timestamp("cached_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.dashboardId, t.cardId] }),
+    foreignKey({
+      columns: [t.userId, t.dashboardId],
+      foreignColumns: [dashboardUserDrafts.userId, dashboardUserDrafts.dashboardId],
+      name: "dashboard_draft_card_cache_user_id_dashboard_id_fkey",
+    }).onDelete("cascade"),
+    index("idx_dashboard_draft_card_cache_dashboard").on(t.dashboardId),
+  ],
+);
+
 // 0083 — Per-user staged destructive ops on dashboards (#2365, PRD #2362).
 // The bound chat agent's `removeCard` and `updateCardSql` tools do NOT
 // mutate the draft directly; they queue a row here. Accepting a stage

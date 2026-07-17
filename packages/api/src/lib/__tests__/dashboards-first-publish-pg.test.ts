@@ -25,6 +25,12 @@ import {
   getDashboard,
   listDashboards,
   cleanupAbandonedDashboards,
+  updateDashboard,
+  deleteDashboard,
+  shareDashboard,
+  unshareDashboard,
+  getShareStatus,
+  setRefreshSchedule,
 } from "@atlas/api/lib/dashboards";
 import {
   bindConversationToDashboard,
@@ -266,6 +272,124 @@ describeIfPg("dashboard first-publish visibility gate (real Postgres, #4320)", (
     // Marker is now set to created_at and the board is org-visible.
     expect(await firstPublishedAt(id)).not.toBeNull();
     expect((await getDashboard(id, { orgId: ORG, viewerId: TEAMMATE })).ok).toBe(true);
+  });
+
+  describe("write-side gate (#4537)", () => {
+    // The read gate (#4320) made a never-published board invisible to
+    // teammates — but every mutation/share/delete path scoped by org only, so
+    // a same-org teammate who learned the UUID could still delete it, mint a
+    // share link on it, or leak its share token. These tests pin the write
+    // paths to the SAME visibility semantics as the reads: not_found for a
+    // non-owner while never-published, unchanged once published.
+
+    const nextRun = () => new Date(Date.now() + 60_000);
+
+    async function createPrivateBoard(): Promise<string> {
+      const created = await createDashboard({ ownerId: CREATOR, orgId: ORG, title: "Private board" });
+      expect(created.ok).toBe(true);
+      if (!created.ok) throw new Error("createDashboard failed in fixture");
+      return created.data.id;
+    }
+
+    it("a teammate cannot soft-delete another user's never-published dashboard; the owner can", async () => {
+      const id = await createPrivateBoard();
+
+      const asTeammate = await deleteDashboard(id, { orgId: ORG, viewerId: TEAMMATE });
+      expect(asTeammate).toEqual({ ok: false, reason: "not_found" });
+      // The blind delete must not have landed — the creator still reads it.
+      expect((await getDashboard(id, { orgId: ORG, viewerId: CREATOR })).ok).toBe(true);
+
+      const asCreator = await deleteDashboard(id, { orgId: ORG, viewerId: CREATOR });
+      expect(asCreator).toEqual({ ok: true });
+    });
+
+    it("a teammate cannot mint a share link on a never-published dashboard; the owner can", async () => {
+      const id = await createPrivateBoard();
+
+      const asTeammate = await shareDashboard(id, { orgId: ORG, viewerId: TEAMMATE });
+      expect(asTeammate).toEqual({ ok: false, reason: "not_found" });
+      // The org-scoped share path (separate pre-check query) is gated too.
+      const asTeammateOrg = await shareDashboard(id, { orgId: ORG, viewerId: TEAMMATE }, { shareMode: "org" });
+      expect(asTeammateOrg).toEqual({ ok: false, reason: "not_found" });
+      // No token was written by either attempt.
+      const rows = await pool.query<{ share_token: string | null }>(
+        `SELECT share_token FROM dashboards WHERE id = $1`,
+        [id],
+      );
+      expect(rows.rows[0]?.share_token).toBeNull();
+
+      const asCreator = await shareDashboard(id, { orgId: ORG, viewerId: CREATOR });
+      expect(asCreator.ok).toBe(true);
+    });
+
+    it("a teammate cannot read or revoke the share status of a never-published dashboard", async () => {
+      const id = await createPrivateBoard();
+      const shared = await shareDashboard(id, { orgId: ORG, viewerId: CREATOR });
+      expect(shared.ok).toBe(true);
+
+      // Status (and thereby the token) must not leak to a teammate.
+      const statusAsTeammate = await getShareStatus(id, { orgId: ORG, viewerId: TEAMMATE });
+      expect(statusAsTeammate).toEqual({ ok: false, reason: "not_found" });
+
+      // Nor can the teammate blind-revoke the owner's link.
+      const unshareAsTeammate = await unshareDashboard(id, { orgId: ORG, viewerId: TEAMMATE });
+      expect(unshareAsTeammate).toEqual({ ok: false, reason: "not_found" });
+      const statusAsCreator = await getShareStatus(id, { orgId: ORG, viewerId: CREATOR });
+      expect(statusAsCreator.ok && statusAsCreator.data.shared).toBe(true);
+
+      const unshareAsCreator = await unshareDashboard(id, { orgId: ORG, viewerId: CREATOR });
+      expect(unshareAsCreator).toEqual({ ok: true });
+    });
+
+    it("a teammate cannot write parameters or the refresh schedule of a never-published dashboard", async () => {
+      const id = await createPrivateBoard();
+
+      const paramsAsTeammate = await updateDashboard(
+        id,
+        { orgId: ORG, viewerId: TEAMMATE },
+        { parameters: [{ key: "region", label: "Region", type: "text", default: "us" }] },
+      );
+      expect(paramsAsTeammate).toEqual({ ok: false, reason: "not_found" });
+
+      const schedAsTeammate = await setRefreshSchedule(id, { orgId: ORG, viewerId: TEAMMATE }, "0 * * * *", nextRun);
+      expect(schedAsTeammate).toEqual({ ok: false, reason: "not_found" });
+
+      const paramsAsCreator = await updateDashboard(
+        id,
+        { orgId: ORG, viewerId: CREATOR },
+        { parameters: [{ key: "region", label: "Region", type: "text", default: "us" }] },
+      );
+      expect(paramsAsCreator).toEqual({ ok: true });
+      const schedAsCreator = await setRefreshSchedule(id, { orgId: ORG, viewerId: CREATOR }, "0 * * * *", nextRun);
+      expect(schedAsCreator).toEqual({ ok: true });
+    });
+
+    it("published dashboards accept teammate writes unchanged", async () => {
+      const id = await createPrivateBoard();
+      await firstPublish(id);
+
+      expect((await shareDashboard(id, { orgId: ORG, viewerId: TEAMMATE })).ok).toBe(true);
+      expect((await getShareStatus(id, { orgId: ORG, viewerId: TEAMMATE })).ok).toBe(true);
+      expect((await unshareDashboard(id, { orgId: ORG, viewerId: TEAMMATE })).ok).toBe(true);
+      expect(
+        (await updateDashboard(id, { orgId: ORG, viewerId: TEAMMATE }, { parameters: [] })).ok,
+      ).toBe(true);
+      expect(
+        (await setRefreshSchedule(id, { orgId: ORG, viewerId: TEAMMATE }, "0 * * * *", nextRun)).ok,
+      ).toBe(true);
+      expect((await deleteDashboard(id, { orgId: ORG, viewerId: TEAMMATE })).ok).toBe(true);
+    });
+
+    it("omitting viewerId (system/owner-internal caller) still bypasses the write gate", async () => {
+      // Mirrors the read-path opt-out: an omitted viewerId bypasses the gate.
+      // No production WRITE caller relies on this today (the sweep and the
+      // refresh scheduler run their own SQL; publish internals only read) —
+      // this pins the contract so a future system caller isn't gated by
+      // accident.
+      const id = await createPrivateBoard();
+      expect((await setRefreshSchedule(id, { orgId: ORG }, "0 * * * *", nextRun)).ok).toBe(true);
+      expect((await deleteDashboard(id, { orgId: ORG })).ok).toBe(true);
+    });
   });
 
   describe("abandoned-shell cleanup", () => {

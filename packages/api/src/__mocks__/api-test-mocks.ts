@@ -844,6 +844,7 @@ export function createApiTestMocks(
     deleteSetting: mock(async () => {}),
     getSetting: mock(() => undefined),
     getSettingAuto: mock(() => undefined),
+    getSettingOverride: mock(() => undefined),
     getSettingLive: mock(async () => undefined),
     loadSettings: mock(async () => 0),
     getAllSettingOverrides: mock(async () => []),

@@ -641,15 +641,15 @@ Action framework settings. These can also be configured via [`atlas.config.ts`](
 | `ATLAS_ACTION_APPROVAL` | `manual` | Default approval mode for actions: `auto`, `manual`, or `admin-only` |
 | `ATLAS_ACTION_TIMEOUT` | — | Per-action execution timeout in milliseconds. No default — the action runs until it returns or the request is cancelled. `.env.example` shows `300000` (5 min) as a reasonable starting point |
 | `ATLAS_ACTION_MAX_PER_CONVERSATION` | — | Reserved — not yet enforced. `.env.example` shows `10` as a future default. Currently accepts any value without effect |
-| `ATLAS_EMAIL_ALLOWED_DOMAINS` | — | Comma-separated list of allowed email recipient domains for the email action plugin. When unset, all domains are allowed |
-| `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` | — | Comma-separated domains the **agent's `sendEmail` tool** may deliver to, in addition to workspace-member addresses (e.g. `example.com,partner.example`). Empty = workspace members only. Distinct from `ATLAS_EMAIL_ALLOWED_DOMAINS` (the email *action* plugin allowlist). Workspace-scoped |
+| `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` | — | Comma-separated domains **agent-initiated email** (the `sendEmail` integration tool and the `sendEmailReport` action) may deliver to, in addition to workspace-member addresses (e.g. `example.com,partner.example`). Empty = workspace members only (fail-closed). Workspace-scoped |
+| `ATLAS_EMAIL_ALLOWED_DOMAINS` | — | **Deprecated** (removed in the next release) — honored as a fallback domain list only while `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` is not explicitly configured (no admin-console value and no env var); migrate to that knob |
 
 ```bash
 # Enable actions with admin-only approval
 ATLAS_ACTIONS_ENABLED=true
 ATLAS_ACTION_APPROVAL=admin-only
-# Restrict email recipients to your domain
-ATLAS_EMAIL_ALLOWED_DOMAINS=example.com,trusted-partner.com
+# Allow email to extra recipient domains (workspace members are always allowed)
+ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS=example.com,trusted-partner.com
 ```
 
 ---

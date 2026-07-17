@@ -418,9 +418,10 @@ describe("makeSchedulerLive", () => {
     {
       // Cleanup/sweep fibers. Eight were retrofitted by #2945;
       // `orphan_task_reconcile` (#2944) shipped with its span and attaches
-      // the orphan count as a result attribute (one of the two
-      // `spanResultAttributes` fibers — the other is `unclaimed_grace_reap`
-      // in the work record, #3796).
+      // the orphan count as a result attribute, as does
+      // `region_migration_stale_reap` (#4459, stale-found/reaped counts);
+      // the work record adds `unclaimed_grace_reap` (#3796) and the three
+      // #4195 DB/refresh jobs.
       constName: "SCHEDULER_CLEANUP_SPAN_NAMES",
       record: SCHEDULER_CLEANUP_SPAN_NAMES as Record<string, string>,
       expectedKeys: [
@@ -436,6 +437,7 @@ describe("makeSchedulerLive", () => {
         "share_token_cleanup",
         "orphan_task_reconcile",
         "agent_runs_retention_sweep",
+        "region_migration_stale_reap",
       ],
     },
     {
@@ -533,7 +535,7 @@ describe("makeSchedulerLive", () => {
       expect(layersSource).toMatch(/SCHEDULER_SPAN_NAMES\[spec\.name\]/);
       // The helper has two spanning branches (spanResultAttributes inverts
       // the recovery ordering); de-spanning either one — e.g. the default
-      // branch that serves 19 of 21 fibers — must fail here, not just the
+      // branch that serves most fibers — must fail here, not just the
       // rarely-exercised attribute branch.
       expect(layersSource.match(/withEffectSpan\s*\(\s*span\b/g) ?? []).toHaveLength(2);
     });
@@ -728,6 +730,47 @@ describe("makeSchedulerLive", () => {
       // ...and the memory sweep must come first in source order (the tick runs
       // its yields sequentially, so source order is execution order).
       expect(memoryIdx).toBeLessThan(terminalIdx);
+    });
+  });
+
+  // ── region_migration_stale_reap tick body (#4459) ─────────────────────────
+  // The registration wiring guard above proves a `name:
+  // "region_migration_stale_reap"` registration exists, but not that its tick
+  // actually invokes the reaper — a refactor could leave the fiber ticking a
+  // no-op while a crashed migration keeps the workspace write-locked forever
+  // (the exact regression #4459 fixed: the reaper used to run ONLY when an
+  // admin happened to request another migration). Same structural source-scan
+  // pattern as the #3757 sweep-order guard.
+  describe("region_migration_stale_reap tick invokes failStaleMigrations (#4459)", () => {
+    test("the tick body references failStaleMigrations", () => {
+      const registrationIdx = layersSource.indexOf(
+        'name: "region_migration_stale_reap"',
+      );
+      expect(registrationIdx).toBeGreaterThan(-1);
+      // The reaper call must appear inside the registration block (the spec
+      // literal runs ~1,900 chars from the anchor; 3000 leaves headroom for
+      // comment growth without reaching the next registration).
+      const registrationBlock = layersSource.slice(
+        registrationIdx,
+        registrationIdx + 3000,
+      );
+      expect(registrationBlock).toContain("failStaleMigrations");
+    });
+
+    test("the cadence is wired to STALE_MIGRATION_REAP_INTERVAL_MS", () => {
+      // The bounded-window guarantee (unlock ≤ threshold + one interval) is
+      // pinned in migrate.test.ts against the CONSTANT — this ties the fiber
+      // to that constant, so a re-hardcoded interval (e.g. hourly) can't
+      // silently void the guarantee while the invariant test stays green.
+      // Same shape as the #4130 settings-backed cadence guard above.
+      const registrationIdx = layersSource.indexOf(
+        'name: "region_migration_stale_reap"',
+      );
+      const registrationBlock = layersSource.slice(
+        registrationIdx,
+        registrationIdx + 3000,
+      );
+      expect(registrationBlock).toContain("STALE_MIGRATION_REAP_INTERVAL_MS");
     });
   });
 });

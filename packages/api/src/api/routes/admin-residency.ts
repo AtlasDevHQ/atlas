@@ -758,7 +758,10 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
       // Trigger background execution (Phase 2)
       scheduleMigrationExecution(migrationId, requestId);
 
-      // Also check for stale migrations while we're here
+      // Opportunistic stale-migration check for instant recovery at request
+      // time. The bounded-window guarantee lives on the
+      // `region_migration_stale_reap` periodic fiber (#4459, effect/layers.ts)
+      // — this call is belt-and-braces, not the recovery path.
       failStaleMigrations().catch((err) => {
         log.warn({ err: err instanceof Error ? err.message : String(err) }, "Stale migration check failed");
       });

@@ -26,9 +26,9 @@ Dashboards let you pin query results from chat and organize them into persistent
 
 The card is saved with its SQL, chart configuration, and current result data.
 
-### From the Dashboard List
+### From the Dashboards Surface
 
-Navigate to `/dashboards` to see all dashboards. Click **New Dashboard** to create an empty one, then add cards from chat.
+Navigate to `/dashboards` and create a board from any surface origin: **New dashboard** in the dashboard switcher, **New** in the **View all** modal, or **Create your first dashboard** on the empty state. Enter a title and the new board opens on its canvas with the [bound editor](#chat-as-editor) already open — describe what you want to see and the agent builds the charts right there. Prefer an empty board? Close the drawer: the dashboard stays a normal empty canvas you can fill by pinning results from chat.
 
 ---
 
@@ -357,6 +357,8 @@ A dashboard opens **read-only** — you can't nudge a live board by accident. En
 ### Per-user drafts
 
 **Every** edit — direct manipulation (drag, resize, rename, delete, schedule) and bound-chat/agent edits alike — lands in your **personal draft** of the dashboard, never directly on the published copy your teammates see. (Drafts are the model, not a toggle: the old `ATLAS_DASHBOARD_DRAFTS_ENABLED` flag was retired in favor of unconditional drafts.) The draft is exact-three-way merged against the persisted baseline on publish, so a teammate publishing a non-overlapping change while you draft does **not** stomp your work; an overlapping change surfaces a "baseline changed" banner with a one-click rebase. Draft cards are executable — parameter render, single-card refresh, and CSV export run the **draft's** SQL, so you can validate a change before publishing it.
+
+Each draft card carries its own **draft cache** — private cached rows plus the instant they were captured. Forking a draft copies the published cards' cached data, so your draft opens showing the same numbers the board showed; from then on, refreshing a card while editing runs the draft's SQL and persists the result to *your* draft cache only (it survives a page reload, and never touches the published data your teammates see). A card that has never been published is fully operable inside the draft — refresh, parameter render, retry, and CSV export all work before its first publish — and its tile status and age caption reflect the draft cache's capture instant. Publishing or discarding the draft clears its cache.
 
 <Callout type="info" title="Private until first publish">
 A brand-new dashboard is **visible only to its creator until its first publish**. It joins your organization's dashboard list the moment you publish it the first time — so a half-built or abandoned never-published dashboard never clutters a teammate's list.

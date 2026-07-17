@@ -417,9 +417,44 @@ describe("createBoundDashboardTools", () => {
       results: { cardId: string; ok: boolean; reason?: string }[];
     }>(tools.updateLayout, {
       layouts: [
-        // x+w = 30, exceeds 24-col grid → rejected by CardLayoutSchema.refine
+        // x+w = 30, exceeds 24-col grid → rejected by TextCardLayoutSchema.refine
         { cardId: "card-1", x: 12, y: 0, w: 18, h: 8 },
       ],
+    });
+    expect(result.kind).toBe("partial");
+    expect(result.results[0].ok).toBe(false);
+    expect(queryCalls).toHaveLength(0);
+  });
+
+  // #4687 — this kind-blind agent seam floors at the absolute TEXT_MIN_H (2), so
+  // a short banner placement is well-formed (it reaches the draft path rather
+  // than failing the geometry pre-pass), while a height below the floor (h=1) is
+  // rejected as malformed before touching the DB.
+  it("updateLayout accepts a short banner height (h=2) as well-formed (#4687)", async () => {
+    enableInternalDB();
+    const tools = createBoundDashboardTools(ctx);
+    const result = await runTool<{
+      kind: "ok" | "partial";
+      results: { cardId: string; ok: boolean; reason?: string }[];
+    }>(tools.updateLayout, {
+      layouts: [{ cardId: "card-1", x: 0, y: 0, w: 24, h: 2 }],
+    });
+    // Well-formed → owned by the draft path, which rejects this anonymous edit
+    // with a sign-in reason (NOT a geometry-validation message), proving h=2
+    // passed the layout schema rather than being dropped in the malformed pass.
+    expect(result.kind).toBe("partial");
+    expect(result.results.some((r) => !r.ok && /sign in/i.test(r.reason ?? ""))).toBe(true);
+    expect(queryCalls.map((c) => c.sql).join("\n")).not.toContain("UPDATE dashboard_cards");
+  });
+
+  it("updateLayout rejects a height below TEXT_MIN_H (h=1) without hitting the DB (#4687)", async () => {
+    enableInternalDB();
+    const tools = createBoundDashboardTools(ctx);
+    const result = await runTool<{
+      kind: "ok" | "partial";
+      results: { cardId: string; ok: boolean; reason?: string }[];
+    }>(tools.updateLayout, {
+      layouts: [{ cardId: "card-1", x: 0, y: 0, w: 24, h: 1 }],
     });
     expect(result.kind).toBe("partial");
     expect(result.results[0].ok).toBe(false);

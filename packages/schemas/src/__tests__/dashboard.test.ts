@@ -17,6 +17,7 @@ import {
   DASHBOARD_ANNOTATIONS_MAX,
   DASHBOARD_GRID,
   dashboardCardLayoutInputSchema,
+  dashboardTextCardLayoutInputSchema,
   dashboardCardInputSchema,
   dashboardCreateCardInputSchema,
   sharedDashboardCardSchema,
@@ -464,6 +465,40 @@ describe("dashboardCardLayoutInputSchema (#4562)", () => {
       dashboardCardLayoutInputSchema.safeParse({ x: 0, y: 0, w: DASHBOARD_GRID.MIN_W - 1, h: 8 }).success,
     ).toBe(false);
   });
+
+  // #4687 — a chart / KPI / table card floors at MIN_H (4); a text /
+  // section-header card floors at the shorter TEXT_MIN_H (2) so a one-line
+  // header reads as a banner, not an empty box.
+  test("TEXT_MIN_H is a shorter floor than the chart MIN_H", () => {
+    expect(DASHBOARD_GRID.TEXT_MIN_H).toBe(2);
+    expect(DASHBOARD_GRID.TEXT_MIN_H).toBeLessThan(DASHBOARD_GRID.MIN_H);
+  });
+
+  test("chart layout rejects a height below MIN_H", () => {
+    expect(
+      dashboardCardLayoutInputSchema.safeParse({ x: 0, y: 0, w: 24, h: DASHBOARD_GRID.MIN_H - 1 }).success,
+    ).toBe(false);
+    expect(
+      dashboardCardLayoutInputSchema.safeParse({ x: 0, y: 0, w: 24, h: DASHBOARD_GRID.MIN_H }).success,
+    ).toBe(true);
+  });
+
+  test("text layout accepts the shorter TEXT_MIN_H height a chart layout rejects", () => {
+    const banner = { x: 0, y: 0, w: 24, h: DASHBOARD_GRID.TEXT_MIN_H };
+    expect(dashboardTextCardLayoutInputSchema.safeParse(banner).success).toBe(true);
+    expect(dashboardCardLayoutInputSchema.safeParse(banner).success).toBe(false);
+  });
+
+  test("text layout still enforces the shared width / column bounds", () => {
+    // Below TEXT_MIN_H is still rejected.
+    expect(
+      dashboardTextCardLayoutInputSchema.safeParse({ x: 0, y: 0, w: 24, h: DASHBOARD_GRID.TEXT_MIN_H - 1 }).success,
+    ).toBe(false);
+    // x + w overflow is still rejected.
+    expect(
+      dashboardTextCardLayoutInputSchema.safeParse({ x: 20, y: 0, w: 12, h: DASHBOARD_GRID.TEXT_MIN_H }).success,
+    ).toBe(false);
+  });
 });
 
 describe("dashboardCardInputSchema (#4562 — shared card union)", () => {
@@ -500,6 +535,26 @@ describe("dashboardCardInputSchema (#4562 — shared card union)", () => {
     });
     expect(parsed.kind).toBe("text");
     expect("content" in parsed && parsed.content).toBe("## Top of funnel");
+  });
+
+  // #4687 — the text arm floors at the shorter TEXT_MIN_H; the chart arm keeps
+  // MIN_H, so the same banner height is accepted for text and rejected for chart.
+  test("a text card accepts a short banner height the chart arm rejects", () => {
+    const parsed = dashboardCardInputSchema.parse({
+      kind: "text",
+      content: "## Top of funnel",
+      layout: { x: 0, y: 0, w: 24, h: DASHBOARD_GRID.TEXT_MIN_H },
+    });
+    expect(parsed.kind).toBe("text");
+
+    expect(
+      dashboardCardInputSchema.safeParse({
+        title: "Signups",
+        sql: "SELECT 1",
+        chartConfig,
+        layout: { x: 0, y: 0, w: 24, h: DASHBOARD_GRID.TEXT_MIN_H },
+      }).success,
+    ).toBe(false);
   });
 
   test("rejects a chart card carrying a text card's content (strict)", () => {

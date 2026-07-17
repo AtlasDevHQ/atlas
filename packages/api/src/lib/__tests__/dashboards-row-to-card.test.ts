@@ -59,6 +59,33 @@ describe("rowToCard layout parsing", () => {
   });
 });
 
+// #4687 — read-time layout validation is a kind-BLIND geometry guard flooring
+// at the absolute TEXT_MIN_H (2), so a short layout that the kind-blind write
+// seams (drag-to-save PATCH, bound-editor tools) legitimately accepted is never
+// silently discarded on read-back. The per-kind chart floor (MIN_H, 4) is an
+// authoring/UI concern, NOT re-litigated here — a short chart renders short
+// (valid geometry) rather than losing its placement.
+describe("rowToCard kind-blind layout geometry floor (#4687)", () => {
+  const bannerLayout = { x: 0, y: 0, w: 24, h: 2 };
+
+  test("preserves a short banner height on a text card", () => {
+    const card = rowToCard({ ...baseRow, content: "## Top of funnel", sql: "", layout: bannerLayout });
+    expect(card.kind).toBe("text");
+    expect(card.layout).toEqual(bannerLayout);
+  });
+
+  test("preserves the same short height on a chart card (read never silently discards accepted geometry)", () => {
+    const card = rowToCard({ ...baseRow, layout: bannerLayout });
+    expect(card.kind).toBe("chart");
+    expect(card.layout).toEqual(bannerLayout);
+  });
+
+  test("still discards a height below the absolute TEXT_MIN_H floor", () => {
+    expect(rowToCard({ ...baseRow, content: "## H", sql: "", layout: { x: 0, y: 0, w: 24, h: 1 } }).layout).toBeNull();
+    expect(rowToCard({ ...baseRow, layout: { x: 0, y: 0, w: 24, h: 1 } }).layout).toBeNull();
+  });
+});
+
 describe("rowToCard chart_config / KPI round-trip (#3137, #3207)", () => {
   test("round-trips a KPI auto-comparison config (object form)", () => {
     const chartConfig: DashboardChartConfig = {

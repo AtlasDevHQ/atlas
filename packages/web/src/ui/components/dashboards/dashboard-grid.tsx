@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import type { DashboardCard, DashboardCardLayout, KpiComparisonResult } from "@/ui/lib/types";
 import type { TileRenderPhase } from "./tile-status";
-import { COLS, ROW_H, GAP, MIN_W, MIN_H, MOBILE_BREAKPOINT } from "./grid-constants";
+import { COLS, ROW_H, GAP, MIN_W, MIN_H, TEXT_MIN_H, MOBILE_BREAKPOINT } from "./grid-constants";
 import { withAutoLayout } from "./auto-layout";
 import { DashboardTile } from "./dashboard-tile";
 
@@ -154,7 +154,9 @@ export function DashboardGrid({
     w: p.resolvedLayout.w,
     h: p.resolvedLayout.h,
     minW: MIN_W,
-    minH: MIN_H,
+    // #4687 — a text / section-header card resizes down to the shorter
+    // TEXT_MIN_H so it reads as a banner; chart cards keep the taller MIN_H.
+    minH: p.kind === "text" ? TEXT_MIN_H : MIN_H,
     maxW: COLS,
   }));
 

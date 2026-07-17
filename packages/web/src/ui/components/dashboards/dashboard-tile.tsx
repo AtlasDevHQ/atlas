@@ -36,6 +36,7 @@ import { DataTable } from "@/ui/components/chat/data-table";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { KpiCard } from "./kpi-card";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
+import { useNow } from "@/ui/hooks/use-now";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "./time-ago";
 import {
@@ -288,6 +289,10 @@ function ChartTile({
   onExportCsv,
 }: DashboardTileProps) {
   const dark = useDarkMode();
+  // #4567 — a ticking clock drives the age caption LIVE: it advances "just now"
+  // → "1m ago" → … on its own, with no external re-render. The same `now` feeds
+  // the caption label and its colour tone so they never disagree.
+  const now = useNow();
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState(card.title);
 
@@ -309,7 +314,7 @@ function ChartTile({
   // (never had data) — never a silent revert, never a page banner.
   const everRun = card.cachedAt != null || renderPhase === "ok";
   const status: TileStatus = resolveTileStatus({ renderPhase, hasData, everRun, pendingRefresh });
-  const captionTone = tileCaptionTone(status, card.cachedAt);
+  const captionTone = tileCaptionTone(status, card.cachedAt, now);
   // `stale`/`loading` keep rendering the retained data body, but dimmed so the
   // viewer reads it as "not the current filtered result".
   const showData = hasData && (statusShowsData(status) || status === "loading");
@@ -644,7 +649,7 @@ function ChartTile({
           <Clock className="size-2.5" aria-hidden="true" />
           {status === "stale" && <span className="font-medium">Stale · </span>}
           {status === "errored" && <span className="font-medium">Failed</span>}
-          {status !== "errored" && timeAgo(card.cachedAt)}
+          {status !== "errored" && timeAgo(card.cachedAt, now)}
         </span>
         <span className="flex items-center gap-2">
           {footerRetry && (

@@ -48,6 +48,13 @@ import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banne
 import { PublishDiffModal } from "@/ui/components/dashboards/publish-diff-modal";
 import { diffDashboards, type DashboardDiff } from "@/ui/components/dashboards/dashboard-diff";
 import { nextTileLayout, withAutoLayout } from "@/ui/components/dashboards/auto-layout";
+import {
+  withRefreshing,
+  withoutRefreshing,
+  attachSuggestionIds,
+  dropSuggestion,
+  type SuggestionItem,
+} from "@/ui/components/dashboards/canvas-interactions";
 import { hasKpiComparison, kpiComparisonSignature } from "@/ui/components/dashboards/kpi-card";
 import { StageProvider } from "@/ui/components/dashboards/stage-context";
 import type { StagedChange } from "@/ui/lib/types";
@@ -151,14 +158,21 @@ export default function DashboardViewPage() {
 
   const { mutate, error: mutationError } = useAdminMutation({ invalidates: refetch });
 
-  const [refreshingCardId, setRefreshingCardId] = useState<string | null>(null);
+  // #4567 — ids of tiles whose single-card refresh is in flight. A SET (not one
+  // id) so two concurrent refreshes each keep their own spinner; a slower one
+  // finishing never clears a faster one that's still running.
+  const [refreshingCardIds, setRefreshingCardIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [deleteCardTarget, setDeleteCardTarget] = useState<DashboardCard | null>(null);
   const [deleteDashboard, setDeleteDashboard] = useState(false);
-  const [suggestions, setSuggestions] = useState<DashboardSuggestion[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [suggestingCards, setSuggestingCards] = useState(false);
   const [suggestError, setSuggestError] = useState<string | null>(null);
-  const [addingSuggestion, setAddingSuggestion] = useState<number | null>(null);
+  // #4567 — the clientId of the suggestion whose "Add" is in flight (not its
+  // index): the array can reindex under it while the add is running.
+  const [addingSuggestion, setAddingSuggestion] = useState<string | null>(null);
 
   const [density, setDensity] = useState<Density>("comfortable");
   // #3211 — whole-dashboard export state. `exportError` surfaces a failed
@@ -341,12 +355,18 @@ export default function DashboardViewPage() {
   }, []);
 
   async function handleRefreshCard(cardId: string) {
-    setRefreshingCardId(cardId);
+    // #4567 — add THIS card to the in-flight set (never replace it), so a second
+    // concurrent refresh doesn't clobber the first tile's spinner.
+    setRefreshingCardIds((prev) => withRefreshing(prev, cardId));
     // #4315 — while editing, a single-card refresh runs the DRAFT SQL (server
     // returns fresh rows without persisting to the published cache).
     const viewSuffix = editing ? "?view=draft" : "";
-    await mutate({ path: `/api/v1/dashboards/${id}/cards/${cardId}/refresh${viewSuffix}`, method: "POST" });
-    setRefreshingCardId(null);
+    try {
+      await mutate({ path: `/api/v1/dashboards/${id}/cards/${cardId}/refresh${viewSuffix}`, method: "POST" });
+    } finally {
+      // Remove only THIS card — the others may still be refreshing.
+      setRefreshingCardIds((prev) => withoutRefreshing(prev, cardId));
+    }
   }
 
   async function handleRefreshAll() {
@@ -594,7 +614,9 @@ export default function DashboardViewPage() {
       const result = await mutate({ path: `/api/v1/dashboards/${id}/suggest`, method: "POST" });
       if (result.ok && result.data) {
         const data = result.data as { suggestions?: DashboardSuggestion[] };
-        setSuggestions(data.suggestions ?? []);
+        // #4567 — mint a stable client id per suggestion up front so every
+        // later accept / dismiss keys on identity rather than array position.
+        setSuggestions(attachSuggestionIds(data.suggestions ?? []));
       } else {
         setSuggestError("Failed to generate suggestions. Please try again.");
       }
@@ -607,10 +629,10 @@ export default function DashboardViewPage() {
     }
   }
 
-  async function handleAcceptSuggestion(index: number) {
-    const suggestion = suggestions[index];
+  async function handleAcceptSuggestion(clientId: string) {
+    const suggestion = suggestions.find((s) => s.clientId === clientId);
     if (!suggestion || !dashboard) return;
-    setAddingSuggestion(index);
+    setAddingSuggestion(clientId);
     try {
       const placed = withAutoLayout(dashboard.cards).map((c) => c.resolvedLayout);
       const result = await mutate({
@@ -623,14 +645,16 @@ export default function DashboardViewPage() {
           layout: nextTileLayout(placed),
         },
       });
-      if (result.ok) setSuggestions((prev) => prev.filter((_, i) => i !== index));
+      // #4567 — remove the ACCEPTED suggestion by id, so a concurrent dismiss /
+      // add that reindexed the list can't drop the wrong one.
+      if (result.ok) setSuggestions((prev) => dropSuggestion(prev, clientId));
     } finally {
       setAddingSuggestion(null);
     }
   }
 
-  function handleDismissSuggestion(index: number) {
-    setSuggestions((prev) => prev.filter((_, i) => i !== index));
+  function handleDismissSuggestion(clientId: string) {
+    setSuggestions((prev) => dropSuggestion(prev, clientId));
   }
 
   async function handleTitleChange(next: string) {
@@ -1231,9 +1255,9 @@ export default function DashboardViewPage() {
                   </Button>
                 </div>
                 <div className="space-y-2">
-                  {suggestions.map((suggestion, idx) => (
+                  {suggestions.map((suggestion) => (
                     <Card
-                      key={`suggestion-${idx}`}
+                      key={suggestion.clientId}
                       className="border-dashed border-primary/40 bg-primary/5 dark:border-primary/30 dark:bg-primary/5"
                     >
                       <div className="flex items-start gap-3 px-4 py-3">
@@ -1256,18 +1280,18 @@ export default function DashboardViewPage() {
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => handleAcceptSuggestion(idx)}
-                            disabled={addingSuggestion === idx}
+                            onClick={() => handleAcceptSuggestion(suggestion.clientId)}
+                            disabled={addingSuggestion === suggestion.clientId}
                             className="h-7 border-primary/40 text-primary hover:bg-primary/10"
                           >
                             <Plus className="mr-1 size-3" />
-                            {addingSuggestion === idx ? "Adding..." : "Add"}
+                            {addingSuggestion === suggestion.clientId ? "Adding..." : "Add"}
                           </Button>
                           <Button
                             variant="ghost"
                             size="icon"
                             className="size-7 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
-                            onClick={() => handleDismissSuggestion(idx)}
+                            onClick={() => handleDismissSuggestion(suggestion.clientId)}
                             title="Dismiss suggestion"
                           >
                             <XCircle className="size-3.5" />
@@ -1305,7 +1329,7 @@ export default function DashboardViewPage() {
                 <DashboardGrid
                   cards={cardsForGrid}
                   editing={editing}
-                  refreshingId={refreshingCardId}
+                  refreshingIds={refreshingCardIds}
                   stages={stages}
                   comparisons={comparisons}
                   onDrilldown={handleDrilldown}

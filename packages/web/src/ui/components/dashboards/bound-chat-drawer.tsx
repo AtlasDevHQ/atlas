@@ -24,7 +24,7 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, type UIMessage, isToolUIPart } from "ai";
+import { DefaultChatTransport, type UIMessage } from "ai";
 import {
   Sheet,
   SheetContent,
@@ -44,6 +44,7 @@ import { AgentTurn } from "@/ui/components/chat/agent-turn";
 import { WorkingActivity, showPreStreamActivity } from "@/ui/components/chat/working-activity";
 import { FollowUpChips } from "@/ui/components/chat/follow-up-chips";
 import { StageProvider } from "@/ui/components/dashboards/stage-context";
+import { boundMutationSignature } from "@/ui/components/dashboards/bound-tool-invalidation";
 import { parseSuggestions } from "@/ui/lib/helpers";
 import { transformMessages } from "@useatlas/types/conversation";
 import type { Message } from "@useatlas/types/conversation";
@@ -74,11 +75,12 @@ interface BoundChatDrawerProps {
   dashboardId: string;
   dashboardTitle: string;
   /**
-   * Called whenever a tool completes — the dashboard view re-fetches so
-   * the new card / updated title / new layout shows up immediately. The
-   * drawer doesn't try to be surgical about which tools warrant
-   * a refetch; every tool result triggers one. Plenty of room for
-   * smarter invalidation in a follow-up.
+   * #4567 — called when a bound MUTATION tool completes SUCCESSFULLY (a new
+   * card / updated title / new layout / staged change), so the dashboard view
+   * re-fetches and the change shows up immediately. Surgical by design: a pure
+   * read (`getDashboardState`, …) or a failed mutation does NOT fire this, so a
+   * plain question in the drawer never flash-reloads the board. The read-vs-
+   * write decision lives in `boundMutationSignature`.
    */
   onDashboardMutated?: () => void;
   /**
@@ -288,34 +290,25 @@ export function BoundChatDrawer({
     seededConversationRef.current = resumeConversationId;
   }, [open, resumeConversationId, resumeQuery.data, resumeQuery.error, setMessages]);
 
-  // Refetch the dashboard whenever a tool result lands. The bound editor
-  // tools mutate cards/title/layout — viewers expect the canvas to
-  // update without a manual reload. We watch the tool-part status on
-  // the latest assistant message rather than running on every render
-  // (cheap, but explicit).
-  const lastMsg = messages[messages.length - 1];
-  const lastMsgId = lastMsg?.id;
-  // Pure derived string. React Compiler memoizes; manual useMemo
-  // was forbidden by CLAUDE.md for perf-only cases.
-  let lastMsgToolFingerprint = "";
-  if (lastMsg && lastMsg.role === "assistant") {
-    for (const part of lastMsg.parts ?? []) {
-      if (!isToolUIPart(part)) continue;
-      const p = part as { state?: string; toolCallId?: string };
-      lastMsgToolFingerprint += `${p.toolCallId ?? ""}:${p.state ?? ""};`;
-    }
-  }
+  // #4567 — refetch the board surgically: only when a MUTATION tool on the
+  // latest assistant turn completed successfully. A pure read
+  // (`getDashboardState`, `explore`, …) or a failed mutation changes nothing on
+  // the canvas, so it must not flash-reload every tile. The signature is a pure
+  // derived string (React Compiler memoizes; manual useMemo is forbidden by
+  // CLAUDE.md for perf-only cases) that changes exactly when a new successful
+  // mutation lands — see `boundMutationSignature`.
+  const mutationSignature = boundMutationSignature(messages[messages.length - 1]);
 
+  // Fire at most once per DISTINCT signature: without this, an `onDashboardMutated`
+  // that changes identity between renders would re-run the effect and refetch the
+  // board again for a mutation already handled.
+  const lastFiredSignatureRef = useRef("");
   useEffect(() => {
-    if (!onDashboardMutated || !lastMsgToolFingerprint) return;
-    // The fingerprint changes when a tool transitions to a terminal
-    // state ("output-available" / "output-error"). Treat any change as
-    // potential dashboard mutation — false positives are cheap (an
-    // extra GET) and false negatives leave the canvas stale.
-    if (lastMsgToolFingerprint.includes("output-available")) {
-      onDashboardMutated();
-    }
-  }, [lastMsgToolFingerprint, lastMsgId, onDashboardMutated]);
+    if (!onDashboardMutated || !mutationSignature) return;
+    if (lastFiredSignatureRef.current === mutationSignature) return;
+    lastFiredSignatureRef.current = mutationSignature;
+    onDashboardMutated();
+  }, [mutationSignature, onDashboardMutated]);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();

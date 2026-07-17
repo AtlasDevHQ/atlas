@@ -24,7 +24,12 @@ import { DashboardTile } from "./dashboard-tile";
 interface DashboardGridProps {
   cards: DashboardCard[];
   editing: boolean;
-  refreshingId: string | null;
+  /**
+   * #4567 — ids of tiles whose single-card refresh is CURRENTLY in flight. A set
+   * (not one id) so two concurrent refreshes each keep their own spinner —
+   * neither clobbers the other. Empty → nothing refreshing.
+   */
+  refreshingIds: ReadonlySet<string>;
   /**
    * #2365 — per-user pending destructive stages. Drives the ghost
    * overlay: cards with a `remove_card` stage render with a
@@ -83,7 +88,7 @@ interface DashboardGridProps {
 export function DashboardGrid({
   cards,
   editing,
-  refreshingId,
+  refreshingIds,
   stages,
   comparisons,
   onDrilldown,
@@ -201,7 +206,7 @@ export function DashboardGrid({
                 card={card}
                 editing={false}
                 fullscreen={false}
-                isRefreshing={refreshingId === card.id}
+                isRefreshing={refreshingIds.has(card.id)}
                 stage={stagesByCardId.get(card.id) ?? null}
                 comparison={comparisons?.[card.id] ?? null}
                 onDrilldown={onDrilldown}
@@ -249,7 +254,7 @@ export function DashboardGrid({
                 card={card}
                 editing={editing}
                 fullscreen={false}
-                isRefreshing={refreshingId === card.id}
+                isRefreshing={refreshingIds.has(card.id)}
                 stage={stagesByCardId.get(card.id) ?? null}
                 comparison={comparisons?.[card.id] ?? null}
                 onDrilldown={onDrilldown}
@@ -299,7 +304,7 @@ export function DashboardGrid({
                 card={fullscreenCard}
                 editing={false}
                 fullscreen
-                isRefreshing={refreshingId === fullscreenCard.id}
+                isRefreshing={refreshingIds.has(fullscreenCard.id)}
                 stage={stagesByCardId.get(fullscreenCard.id) ?? null}
                 comparison={comparisons?.[fullscreenCard.id] ?? null}
                 onDrilldown={onDrilldown}

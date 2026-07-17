@@ -215,6 +215,50 @@ describe("seedDraftCards", () => {
     expect(saveCalls.map((s) => s.cardId)).toEqual(["c1"]);
   });
 
+  it("runs the batch concurrently, not serially (both cards clear one shared budget)", async () => {
+    // Pin the load-bearing concurrency contract (ADR-0034 Decision 1 / #4558):
+    // the wall-clock budget bounds the WHOLE batch, because cards execute
+    // concurrently. The existing budget test (one fast + one 200ms-slow card
+    // under a 10ms budget) resolves identically whether execution is concurrent
+    // or serial, so it does NOT pin this — a refactor from
+    // `Promise.all(cards.map(...))` to a `for/await` loop would pass it while
+    // silently serializing the batch, making a wide board arrive as a grid of
+    // `unseeded` tiles (the exact regression the ADR exists to prevent).
+    //
+    // A shared barrier makes the two execution shapes DIVERGE deterministically,
+    // with no timing dependence: each card's pipeline only resolves once BOTH
+    // cards have started. Concurrent → both start → barrier releases → both
+    // `rows`. Serial → card 1 blocks forever waiting for card 2 to start, the
+    // budget elapses, and the assertion below fails (both would be `unseeded`).
+    let started = 0;
+    let releaseBarrier!: () => void;
+    const bothStarted = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    const gated = (): Promise<UserQueryOutcome> => {
+      if (++started === 2) releaseBarrier();
+      return bothStarted.then(() => okOutcome([{ a: 1 }]));
+    };
+    pipelineBySql.set("SELECT one", gated);
+    pipelineBySql.set("SELECT two", gated);
+
+    const outcomes = await seedDraftCards({
+      // Generous budget: concurrent execution clears the barrier immediately, so
+      // this only bounds how long the FAILING (serialized) case takes to surface
+      // as `unseeded` rather than hanging the suite.
+      ...BASE,
+      budgetMs: 500,
+      cards: [
+        { cardId: "c1", title: "One", sql: "SELECT one", connectionId: null },
+        { cardId: "c2", title: "Two", sql: "SELECT two", connectionId: null },
+      ],
+    });
+
+    expect(outcomes[0]).toEqual({ cardId: "c1", title: "One", status: "rows", rowCount: 1 });
+    expect(outcomes[1]).toEqual({ cardId: "c2", title: "Two", status: "rows", rowCount: 1 });
+    expect(saveCalls.map((s) => s.cardId).toSorted()).toEqual(["c1", "c2"]);
+  });
+
   it("reports unseeded (never a false rows) when the cache write fails", async () => {
     registerOk("SELECT a", [{ a: 1 }]);
     saveResult = { ok: false, reason: "no_draft" };

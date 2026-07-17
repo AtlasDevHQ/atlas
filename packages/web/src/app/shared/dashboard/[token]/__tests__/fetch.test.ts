@@ -150,7 +150,7 @@ describe("fetchSharedDashboardRaw (#4317)", () => {
         json: async () => {
           throw new Error("not json");
         },
-      } as Response;
+      } as unknown as Response;
     });
     globalThis.fetch = throwingBody as unknown as typeof fetch;
     expect(await fetchSharedDashboardRaw("abc123def456ghi789jkl")).toEqual({

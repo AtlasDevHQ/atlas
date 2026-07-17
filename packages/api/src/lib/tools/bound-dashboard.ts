@@ -227,6 +227,17 @@ export function createBoundDashboardTools(
 ): ToolSet {
   const { dashboardId, orgId, userId, cookieHeader } = ctx;
 
+  // #4566 — the screenshot's base64 PNG must never ride in the tool result's
+  // JSON envelope (audit L11): that envelope is streamed to the client and
+  // persisted in the message history, so a ~1-2 MB image string bloats every
+  // subsequent turn and leaks bytes the UI has no use for. Instead, `execute`
+  // stashes the bytes in this per-request closure map under a short nonce and
+  // returns only the nonce; `toModelOutput` (which runs in-process, same
+  // closure, right after execute) reads and deletes them to assemble the real
+  // multimodal image part. The wire envelope carries metadata only — the strip
+  // is structural, not a prompt instruction.
+  const screenshotPayloads = new Map<string, { data: string; mediaType: string }>();
+
   const getDashboardState = tool({
     description: `Read the current state of the dashboard you are editing. Returns the title, description, and a compact summary of every card (id, title, chart type, position, layout). Call this when you need a fresh read after several mutations. Card SQL is NOT returned — use \`getCardDetail\` for that.`,
     inputSchema: z.object({}).describe("No arguments"),
@@ -600,41 +611,69 @@ On success the result includes \`seed\` — the card's data outcome: \`rows\` (w
       if (!result.ok) {
         return { kind: "err" as const, error: result.message };
       }
-      // Compact JSON envelope alongside the image — the image-data part
-      // is attached by `toModelOutput` below so the LLM sees a real
-      // multimodal turn instead of a base64 string buried in JSON.
+      // #4566 — structurally keep the base64 PNG OUT of the JSON envelope.
+      // Stash the bytes in the closure map under a nonce; the envelope carries
+      // only the nonce (`screenshotRef`) + metadata. `toModelOutput` reads the
+      // bytes back and attaches them as a real multimodal image part, so the
+      // LLM still sees the image but the wire result never contains it.
+      const mediaType = "image/png" as const;
+      const screenshotRef = crypto.randomUUID();
+      screenshotPayloads.set(screenshotRef, {
+        data: result.png.toString("base64"),
+        mediaType,
+      });
       return {
         kind: "ok" as const,
-        mediaType: "image/png" as const,
+        mediaType,
         sizeBytes: result.png.length,
         cached: result.cached,
         durationMs: result.durationMs,
-        // Base64 payload — pulled out by toModelOutput. Not exposed to
-        // anything else (system prompt rules tell the agent not to
-        // echo it back to the user).
-        _base64: result.png.toString("base64"),
+        // Opaque handle the same-request `toModelOutput` resolves the image
+        // bytes from. NOT the bytes themselves — those never enter the envelope.
+        screenshotRef,
       };
     },
     toModelOutput: ({ output }) => {
       const typed = output as {
         kind: "ok" | "err";
-        _base64?: string;
-        mediaType?: string;
+        screenshotRef?: string;
         error?: string;
       };
-      if (typed.kind !== "ok" || !typed._base64) {
+      // A genuine screenshot failure — the tool already sanitized the message.
+      if (typed.kind !== "ok") {
         return {
           type: "error-text",
           value: typed.error ?? "screenshotDashboard failed",
         };
       }
+      const ref = typed.screenshotRef;
+      const payload = ref ? screenshotPayloads.get(ref) : undefined;
+      if (!ref || !payload) {
+        // Success envelope, but the side-channel bytes are gone: a re-conversion
+        // of a persisted result (fresh, empty map on a later request) or a
+        // duplicate `toModelOutput` after the one-shot delete. Don't misreport a
+        // successful screenshot as failed — log so the drop is debuggable and
+        // give the model an actionable re-shoot instruction.
+        log.warn(
+          { dashboardId, screenshotRef: ref },
+          "screenshot payload missing from side-channel — image dropped from model turn (#4566)",
+        );
+        return {
+          type: "error-text",
+          value:
+            "The dashboard screenshot could not be attached this turn. Call screenshotDashboard again.",
+        };
+      }
+      // One-shot: drop the bytes once assembled into the model turn so the
+      // closure map can't accumulate images across a long bound session.
+      screenshotPayloads.delete(ref);
       return {
         type: "content",
         value: [
           {
             type: "image-data",
-            data: typed._base64,
-            mediaType: typed.mediaType ?? "image/png",
+            data: payload.data,
+            mediaType: payload.mediaType,
           },
           {
             type: "text",

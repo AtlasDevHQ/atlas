@@ -19,9 +19,15 @@ import { describe, it, expect, mock } from "bun:test";
 import type { RequestActor } from "@atlas/api/lib/logger";
 
 const observedContexts: { requestId?: string; user?: { id: string; activeOrganizationId?: string } | undefined; actor?: RequestActor | undefined }[] = [];
+// #4566 — capture the tool names runAgent was handed so a test can assert the
+// non-web surface never receives createDashboard.
+const observedToolNames: string[][] = [];
 
 void mock.module("@atlas/api/lib/agent", () => ({
-  runAgent: mock(async () => {
+  runAgent: mock(async (arg?: { tools?: { getAll?: () => Record<string, unknown> } }) => {
+    observedToolNames.push(
+      arg?.tools?.getAll ? Object.keys(arg.tools.getAll()) : [],
+    );
     const { getRequestContext } = await import("@atlas/api/lib/logger");
     const ctx = getRequestContext();
     observedContexts.push({
@@ -140,5 +146,21 @@ describe("executeAgentQuery actor binding", () => {
     const result = await executeAgentQuery("no-conversation query", "req-4", { actor });
     expect(result.runId).toBe("run-mock-1");
     expect(result.conversationId).toBeUndefined();
+  });
+
+  // #4566 — the surface-gating enforcement point. executeAgentQuery serves the
+  // non-web surfaces (SDK / Slack / MCP / scheduler), none of which own a
+  // dashboards route, so runAgent must never be handed createDashboard. This
+  // pins the call-site wiring (`dashboardUrlResolver: null` + always passing an
+  // explicit registry) so a regression that reverts it fails here.
+  it("#4566: never offers createDashboard to the non-web surface, but keeps the core query tools", async () => {
+    observedToolNames.length = 0;
+    await executeAgentQuery("build me a dashboard", "req-nodash");
+    expect(observedToolNames).toHaveLength(1);
+    const names = observedToolNames[0];
+    expect(names).not.toContain("createDashboard");
+    // The core query capability is untouched — the surface stays useful.
+    expect(names).toContain("executeSQL");
+    expect(names).toContain("explore");
   });
 });

@@ -65,4 +65,65 @@ describe("CreateDashboardCard — continuity handoff link", () => {
     );
     expect(hrefOf(container)).toContain(`conversationId=${encodeURIComponent("a/b?c")}`);
   });
+
+  // #4566 — the link base comes from the tool's host-resolved `dashboardUrl`,
+  // not a hard-coded workspace path.
+  test("uses the tool's resolved dashboardUrl as the handoff base", () => {
+    const hostPart = {
+      ...(okPart as Record<string, unknown>),
+      output: {
+        kind: "ok",
+        dashboardId: "dash-9",
+        title: "Sales",
+        description: null,
+        cardCount: 2,
+        draft: true,
+        dashboardUrl: "/analytics/boards/dash-9",
+      },
+    } as unknown;
+    const { container } = render(
+      <ChatConversationProvider conversationId="conv-42">
+        <CreateDashboardCard part={hostPart} />
+      </ChatConversationProvider>,
+    );
+    expect(hrefOf(container)).toBe(
+      "/analytics/boards/dash-9?openChat=true&conversationId=conv-42",
+    );
+  });
+
+  test("appends to a resolved dashboardUrl that already carries a query string", () => {
+    const hostPart = {
+      ...(okPart as Record<string, unknown>),
+      output: {
+        kind: "ok",
+        dashboardId: "dash-9",
+        title: "Sales",
+        description: null,
+        cardCount: 2,
+        draft: true,
+        dashboardUrl: "/analytics/boards/dash-9?embed=1",
+      },
+    } as unknown;
+    const { container } = render(<CreateDashboardCard part={hostPart} />);
+    expect(hrefOf(container)).toBe("/analytics/boards/dash-9?embed=1&openChat=true");
+  });
+
+  test("falls back to the workspace path when dashboardUrl is a non-string malformed value", () => {
+    const badPart = {
+      ...(okPart as Record<string, unknown>),
+      output: {
+        kind: "ok",
+        dashboardId: "dash-9",
+        title: "Sales",
+        description: null,
+        cardCount: 2,
+        draft: true,
+        // A malformed payload — the card narrows only kind/dashboardId/title, so
+        // this reaches the render guard, which must reject a non-string.
+        dashboardUrl: 123,
+      },
+    } as unknown;
+    const { container } = render(<CreateDashboardCard part={badPart} />);
+    expect(hrefOf(container)).toBe("/dashboards/dash-9?openChat=true");
+  });
 });

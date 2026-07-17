@@ -80,7 +80,9 @@ void mock.module("@atlas/api/lib/dashboard-draft-cache", () => ({
   EMPTY_DRAFT_CARD_CACHE: new Map(),
 }));
 
-const { createDashboard, deriveTextCardTitle } = await import("@atlas/api/lib/tools/create-dashboard");
+const { createDashboard, makeCreateDashboardTool, deriveTextCardTitle } = await import(
+  "@atlas/api/lib/tools/create-dashboard"
+);
 
 // ---------------------------------------------------------------------------
 // Mock Postgres pool — distinguishes pool.query() from client.query() so the
@@ -173,6 +175,7 @@ async function run(args: ExecuteParams) {
           description: string | null;
           cardCount: number;
           draft: boolean;
+          dashboardUrl: string;
           cardOutcomes: {
             cardId: string;
             title: string;
@@ -263,6 +266,9 @@ describe("createDashboard tool", () => {
       expect(result.title).toBe("Revenue");
       expect(result.cardCount).toBe(2);
       expect(result.draft).toBe(true);
+      // #4566 — the default (workspace-bound) instance resolves the handoff to
+      // the workspace `/dashboards/[id]` route.
+      expect(result.dashboardUrl).toBe("/dashboards/dash-new");
     }
 
     // Validation ran per card.
@@ -305,6 +311,53 @@ describe("createDashboard tool", () => {
     expect(baseline.cards).toEqual([]);
     // No parameters declared → INSERT persists an empty array (#2267).
     expect(JSON.parse(dashParams[4] as string)).toEqual([]);
+  });
+
+  it("resolves the handoff URL via a custom host resolver (#4566)", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] }, // BEGIN
+      {
+        rows: [
+          {
+            id: "dash-host",
+            title: "Revenue",
+            description: null,
+            updated_at: "2026-05-17T12:00:00Z",
+          },
+        ],
+      }, // INSERT dashboards RETURNING
+      { rows: [] }, // INSERT dashboard_user_drafts
+      { rows: [] }, // COMMIT
+    );
+
+    // A host that owns a DIFFERENT dashboards route opts in with its own
+    // resolver; the tool's handoff link must point at that host's route, not
+    // the workspace path.
+    const hostTool = makeCreateDashboardTool((id) => `https://host.example/boards/${id}`);
+    const fn = hostTool.execute as ExecuteFn;
+    const args: ExecuteParams = {
+      title: "Revenue",
+      cards: [
+        {
+          title: "Total revenue",
+          sql: "SELECT SUM(amount) AS total FROM orders",
+          chartConfig: { type: "table", categoryColumn: "total", valueColumns: ["total"] },
+        },
+      ],
+    };
+    const result = await runInCtx(async () => {
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+      const out = (await fn(args, undefined as any)) as
+        | { kind: "ok"; dashboardUrl: string }
+        | { kind: "err"; error: string };
+      return out;
+    });
+
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.dashboardUrl).toBe("https://host.example/boards/dash-host");
+    }
   });
 
   // -------------------------------------------------------------------

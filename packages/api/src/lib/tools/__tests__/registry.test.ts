@@ -39,7 +39,9 @@ void mock.module("@atlas/api/lib/tools/actions", () => ({
 const {
   ToolRegistry,
   defaultRegistry,
+  nonDashboardRegistry,
   buildRegistry,
+  WORKSPACE_DASHBOARD_URL_RESOLVER,
   INTENTIONAL_TOOL_SHADOWS,
   TOOL_SHADOW_REMEDIATIONS,
 } = await import("@atlas/api/lib/tools/registry");
@@ -286,6 +288,60 @@ describe("buildRegistry", () => {
     expect(() =>
       registry.register({ name: "extra", description: "X", tool: makeTool("x") })
     ).toThrow("Cannot register tools on a frozen registry");
+  });
+
+  // #4566 — createDashboard is surface-gated on the dashboard-URL resolver.
+  // Three registration states, covering every surface class the seam serves.
+  describe("createDashboard surface gating (#4566)", () => {
+    it("registers createDashboard when no resolver is given (workspace default)", async () => {
+      // Omitting the option means the built-in workspace resolver — the
+      // dashboards-owning surface (self-hosted / SaaS web) keeps the tool.
+      const { registry } = await buildRegistry();
+      expect(registry.get("createDashboard")).toBeDefined();
+    });
+
+    it("registers createDashboard when the workspace resolver is passed explicitly", async () => {
+      const { registry } = await buildRegistry({
+        dashboardUrlResolver: WORKSPACE_DASHBOARD_URL_RESOLVER,
+      });
+      expect(registry.get("createDashboard")).toBeDefined();
+    });
+
+    it("registers createDashboard when a custom host resolver is supplied", async () => {
+      const { registry } = await buildRegistry({
+        dashboardUrlResolver: (id) => `https://host.example/boards/${id}`,
+      });
+      expect(registry.get("createDashboard")).toBeDefined();
+    });
+
+    it("OMITS createDashboard when the surface owns no dashboards route (resolver: null)", async () => {
+      // An embed / SDK / Slack / scheduler surface passes null — the tool is
+      // never registered, so the agent can't propose an unreachable draft.
+      const { registry } = await buildRegistry({ dashboardUrlResolver: null });
+      expect(registry.get("createDashboard")).toBeUndefined();
+      const names = Object.keys(registry.getAll());
+      // Only createDashboard is dropped — the rest of the core set is intact.
+      // (Assert the delta, not an exact list: querySalesforce / executePython
+      // are env-gated and would break an exact-equality check on a dev box.)
+      expect(names).not.toContain("createDashboard");
+      for (const core of ["explore", "executeSQL", "searchKnowledge", "sendEmail", "createLinearIssue"]) {
+        expect(names).toContain(core);
+      }
+    });
+
+    it("the workspace resolver produces the workspace dashboards route", () => {
+      expect(WORKSPACE_DASHBOARD_URL_RESOLVER("abc-123")).toBe("/dashboards/abc-123");
+    });
+
+    // The exported fallback the non-web surfaces (and the buildRegistry error
+    // path in agent-query) land on — it must never carry createDashboard, so a
+    // build failure can't silently reintroduce the tool.
+    it("nonDashboardRegistry omits createDashboard but keeps the core query tools", () => {
+      expect(nonDashboardRegistry.get("createDashboard")).toBeUndefined();
+      expect(nonDashboardRegistry.get("executeSQL")).toBeDefined();
+      expect(nonDashboardRegistry.get("explore")).toBeDefined();
+      expect(nonDashboardRegistry.get("searchKnowledge")).toBeDefined();
+    });
   });
 
   it("getActions returns action tools with correct metadata", async () => {

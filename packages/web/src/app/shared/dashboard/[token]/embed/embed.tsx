@@ -9,19 +9,37 @@ import type { FailReason } from "../fetch";
 export type EmbedTheme = "light" | "dark";
 
 /**
- * Resolve the optional `?theme=` query param. An iframe on a foreign origin has
- * no reliable system-theme signal, so the host picks via the URL (mirrors the
- * shared-conversation embed). Anything unrecognized falls back to "light" with a
- * warning rather than silently guessing.
+ * Resolve the optional `?theme=` query param into an explicit forced theme, or
+ * `undefined` when the host wants the embed to follow the visitor's own system
+ * preference. An iframe on a foreign origin has no reliable system-theme signal,
+ * so the host opts into a fixed theme via the URL; omitting the param (the
+ * default snippet) lets the visitor's `prefers-color-scheme` drive both chrome
+ * and charts. Anything unrecognized follows the system with a warning rather
+ * than silently forcing a guess.
  */
-export function resolveEmbedTheme(raw: string | string[] | undefined): EmbedTheme {
+export function resolveEmbedTheme(raw: string | string[] | undefined): EmbedTheme | undefined {
   const value = Array.isArray(raw) ? raw[0] : raw;
   if (value === "dark") return "dark";
-  if (value == null || value === "" || value === "light") return "light";
+  if (value === "light") return "light";
+  if (value == null || value === "") return undefined;
   console.warn(
-    `[shared-dashboard/embed] Unrecognized ?theme= value (got ${JSON.stringify(value)}); falling back to "light".`,
+    `[shared-dashboard/embed] Unrecognized ?theme= value (got ${JSON.stringify(value)}); following the visitor's system theme.`,
   );
-  return "light";
+  return undefined;
+}
+
+/**
+ * Pre-paint inline script for a forced-theme embed. It toggles `documentElement`'s
+ * `.dark` to the resolved theme so a `?theme=` param OVERRIDES the visitor's own
+ * system/localStorage preference — which the root `theme-init` script would
+ * otherwise stamp onto `documentElement`. Without this, the project's
+ * `&:is(.dark *)` dark variant fires off any `.dark` ancestor, so a forced
+ * `?theme=light` embed loaded by a dark-OS visitor would still render dark chrome.
+ * Emitted only when a theme is forced; a no-param embed keeps following the
+ * visitor. Runs before the framed content paints, so there is no theme flash.
+ */
+export function buildEmbedThemeForceScript(dark: boolean): string {
+  return `try{document.documentElement.classList.toggle("dark",${dark})}catch(e){}`;
 }
 
 /**

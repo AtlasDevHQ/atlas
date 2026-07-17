@@ -10,7 +10,19 @@ import { SharedTile } from "./tile";
 import { isoOrUndefined, mostRecentCachedAt, tileSpanClass, timeAgo } from "./helpers";
 import type { SharedDashboard } from "./types";
 
-export function SharedDashboardView({ dashboard }: { dashboard: SharedDashboard }) {
+export function SharedDashboardView({
+  dashboard,
+  forcedDark,
+}: {
+  dashboard: SharedDashboard;
+  /**
+   * Forced theme for the embed surface: the tile charts (`useDarkMode()` reads
+   * the visitor's own system pref, not the embed's `.dark` wrapper) render dark
+   * iff this is `true`. `undefined` on the standalone shared page → each tile
+   * follows the visitor's system theme.
+   */
+  forcedDark?: boolean;
+}) {
   // The single instant every temporal label on this page derives from (#4565):
   // the data's capture instant. Prefer the server-resolved `dataAsOf` (the SAME
   // frozen instant the parameter summary was resolved against); fall back to the
@@ -142,6 +154,7 @@ export function SharedDashboardView({ dashboard }: { dashboard: SharedDashboard 
                     spanClass={spanClass}
                     cachedLabel={timeAgo(card.cachedAt)}
                     cachedIso={isoOrUndefined(card.cachedAt)}
+                    forcedDark={forcedDark}
                   />
                 </ResultCardErrorBoundary>
               );

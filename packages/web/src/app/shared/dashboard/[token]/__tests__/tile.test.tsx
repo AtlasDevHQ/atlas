@@ -5,14 +5,24 @@ import type { SharedCard } from "../types";
 
 // The text branch never mounts a chart, but `dynamic(...)` + `useDarkMode` run
 // at import — stub them so jsdom doesn't try to evaluate recharts. The ResultChart
-// stub surfaces `embedded` / `chartType` (#4688) via data-attrs so a chart-card
-// test can assert the shared tile suppresses ResultChart's chrome + pins the type.
-// The next/dynamic stub invokes the loader (so the real mocked ResultChart is what
-// renders) and falls back until it resolves — the test `rerender`s past that.
+// stub surfaces `dark` (#4686 forced-theme threading), plus `embedded` /
+// `chartType` (#4688 chrome-in-chrome) via data-attrs so the chart-card tests can
+// assert both the resolved theme and the suppressed chrome / pinned type. The
+// next/dynamic stub invokes the loader (so the real mocked ResultChart renders)
+// and falls back until it resolves — the tests `rerender` past that.
 void mock.module("@/ui/components/chart/result-chart", () => ({
-  ResultChart: ({ embedded, chartType }: { embedded?: boolean; chartType?: string }) => (
+  ResultChart: ({
+    dark,
+    embedded,
+    chartType,
+  }: {
+    dark?: boolean;
+    embedded?: boolean;
+    chartType?: string;
+  }) => (
     <div
       data-testid="result-chart"
+      data-dark={String(dark)}
       data-embedded={embedded ? "true" : "false"}
       data-chart-type={chartType ?? ""}
     >
@@ -31,7 +41,19 @@ void mock.module("next/dynamic", () => ({
     };
   },
 }));
-void mock.module("@/ui/hooks/use-dark-mode", () => ({ useDarkMode: () => false }));
+// The VISITOR's system theme. Mutable so the unforced test can flip it and prove
+// the tile actually READS it (a forced theme must win over it — the #4686
+// threading contract). Mock ALL exports (mock-all-exports discipline) so a future
+// importer of another symbol doesn't silently get `undefined`.
+let mockSystemDark = false;
+void mock.module("@/ui/hooks/use-dark-mode", () => ({
+  useDarkMode: () => mockSystemDark,
+  useThemeMode: () => "system",
+  setTheme: () => {},
+  applyBrandColor: () => {},
+  DEFAULT_BRAND_COLOR: "oklch(0.4 0.115 158)",
+  OKLCH_RE: /^oklch\(/,
+}));
 
 import { SharedTile } from "../tile";
 
@@ -48,6 +70,35 @@ const textCard: SharedCard = {
   position: 0,
   layout: null,
 };
+
+const chartCard: SharedCard = {
+  id: "c1",
+  title: "Signups by week",
+  kind: "chart",
+  chartConfig: { type: "bar", categoryColumn: "week", valueColumns: ["signups"] },
+  content: null,
+  annotations: [],
+  cachedColumns: ["week", "signups"],
+  cachedRows: [
+    { week: "2026-06-01", signups: 12 },
+    { week: "2026-06-08", signups: 18 },
+  ],
+  cachedAt: "2026-06-08T00:00:00.000Z",
+  position: 0,
+  layout: null,
+};
+
+// Render the tile and flush the dynamic loader's promise chain (import() → .then),
+// then re-render so DynStub swaps its fallback for the resolved (mocked) ResultChart.
+async function renderResolvedTile(props: React.ComponentProps<typeof SharedTile>) {
+  const utils = render(<SharedTile {...props} />);
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  utils.rerender(<SharedTile {...props} />);
+  return utils;
+}
 
 describe("SharedTile — text cards (#3138)", () => {
   afterEach(cleanup);
@@ -85,38 +136,66 @@ describe("SharedTile — text cards (#3138)", () => {
 describe("SharedTile — chart cards (#4688 chrome-in-chrome)", () => {
   afterEach(cleanup);
 
-  const chartCard: SharedCard = {
-    id: "c1",
-    title: "Signups by week",
-    kind: "chart",
-    chartConfig: { type: "bar", categoryColumn: "week", valueColumns: ["signups"] },
-    content: null,
-    annotations: [],
-    cachedColumns: ["week", "signups"],
-    cachedRows: [
-      { week: "2026-01-05", signups: 10 },
-      { week: "2026-01-12", signups: 24 },
-    ],
-    cachedAt: "2026-04-25T12:00:00Z",
-    position: 0,
-    layout: null,
-  };
-
   test("renders ResultChart in embedded mode and pins it to the card's chart type", async () => {
     // The card is saved `type: "bar"`; the shared tile owns the title/frame, so
     // ResultChart renders the plot only (embedded) pinned to bar — not the data's
     // auto-detected line.
-    const props = { card: chartCard, spanClass: "col-span-2", cachedLabel: null, cachedIso: undefined };
-    const { rerender } = render(<SharedTile {...props} />);
-    // Flush the dynamic loader's promise chain (import() → .then), then re-render
-    // so DynStub swaps its fallback for the resolved (mocked) ResultChart.
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
+    await renderResolvedTile({
+      card: chartCard,
+      spanClass: "col-span-2",
+      cachedLabel: null,
+      cachedIso: undefined,
     });
-    rerender(<SharedTile {...props} />);
     const chart = screen.getByTestId("result-chart");
     expect(chart.getAttribute("data-embedded")).toBe("true");
     expect(chart.getAttribute("data-chart-type")).toBe("bar");
+  });
+});
+
+describe("SharedTile — forced embed theme threads into the chart (#4686)", () => {
+  afterEach(cleanup);
+
+  // The chart mounts through `next/dynamic`; renderResolvedTile flushes the loader
+  // and re-renders so the stub resolves. `data-dark` echoes the `dark` prop the
+  // tile hands the chart.
+  test("forcedDark=true renders a dark chart even though the visitor's system is light", async () => {
+    // useDarkMode() is mocked to `false` (light visitor); the forced embed theme
+    // must override it so the JS-themed chart agrees with the dark chrome.
+    await renderResolvedTile({
+      card: chartCard,
+      spanClass: "col-span-1",
+      cachedLabel: null,
+      cachedIso: undefined,
+      forcedDark: true,
+    });
+    expect(screen.getByTestId("result-chart").getAttribute("data-dark")).toBe("true");
+  });
+
+  test("forcedDark=false renders a light chart regardless of the visitor's own theme", async () => {
+    await renderResolvedTile({
+      card: chartCard,
+      spanClass: "col-span-1",
+      cachedLabel: null,
+      cachedIso: undefined,
+      forcedDark: false,
+    });
+    expect(screen.getByTestId("result-chart").getAttribute("data-dark")).toBe("false");
+  });
+
+  test("no forcedDark (standalone shared page) follows the visitor's system theme", async () => {
+    // Flip the mocked visitor system to DARK so this asserts the tile actually
+    // READS systemDark on the unforced path (not just a hardcoded default).
+    mockSystemDark = true;
+    try {
+      await renderResolvedTile({
+        card: chartCard,
+        spanClass: "col-span-1",
+        cachedLabel: null,
+        cachedIso: undefined,
+      });
+      expect(screen.getByTestId("result-chart").getAttribute("data-dark")).toBe("true");
+    } finally {
+      mockSystemDark = false;
+    }
   });
 });

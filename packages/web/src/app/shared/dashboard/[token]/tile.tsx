@@ -34,10 +34,20 @@ export interface SharedTileProps {
   /** Pre-computed on the server so SSR text matches client text exactly (no `Date.now()` drift). */
   cachedLabel: string | null;
   cachedIso: string | undefined;
+  /**
+   * Forced chart theme for the embed surface. The chrome themes off the embed's
+   * `.dark` wrapper, but the chart is JS-themed (`useDarkMode()` resolves from
+   * the visitor's OWN preference — localStorage mode + `prefers-color-scheme` —
+   * never the wrapper's `.dark` class), so a forced `?theme=` embed must pass its
+   * resolved theme here or the chart would disagree with the chrome. `undefined`
+   * → follow the visitor's system theme.
+   */
+  forcedDark?: boolean;
 }
 
-export function SharedTile({ card, spanClass, cachedLabel, cachedIso }: SharedTileProps) {
-  const dark = useDarkMode();
+export function SharedTile({ card, spanClass, cachedLabel, cachedIso, forcedDark }: SharedTileProps) {
+  const systemDark = useDarkMode();
+  const dark = forcedDark ?? systemDark;
 
   // #3138 — a text / section-block card renders sanitized markdown (no data, no
   // chart, no cached-at footer) so a shared-link viewer sees the same headers

@@ -197,6 +197,11 @@ export type DraftChange =
          *  through the full SQL pipeline, not on store — same as `editSql`. */
         sql?: string;
         chartConfig?: DashboardChartConfig | null;
+        /** #4562 — replace a TEXT / section card's markdown body in place (the
+         *  bound editor's text-content edit). Undefined leaves it unchanged.
+         *  Only meaningful for a text card; the tool layer rejects a `content`
+         *  edit on a chart card before reaching here. */
+        content?: string;
         /** #3209 — replace the card's event markers. Undefined leaves them
          *  unchanged (the draft card keeps its current annotations). */
         annotations?: DashboardCardAnnotation[];
@@ -246,6 +251,8 @@ export function applyChangeToDraft(
               // the `editSql` change the stage tracker dispatches.
               ...(change.updates.sql !== undefined && { sql: change.updates.sql }),
               ...(change.updates.chartConfig !== undefined && { chartConfig: change.updates.chartConfig }),
+              // #4562 — a text-content edit replaces the section card's markdown.
+              ...(change.updates.content !== undefined && { content: change.updates.content }),
               ...(change.updates.annotations !== undefined && { annotations: change.updates.annotations }),
               ...(change.updates.layout !== undefined && { layout: change.updates.layout }),
               ...(change.updates.position !== undefined && { position: change.updates.position }),

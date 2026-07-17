@@ -164,9 +164,11 @@ describe("bound addCard — tool-side seeding (#4558)", () => {
 
     const tools = createBoundDashboardTools({ dashboardId: "dash-1", orgId: "org-1", userId: "user-1" });
     const result = await runTool<AddCardResult>(tools.addCard, {
-      title: "New",
-      sql: "SELECT a",
-      chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] },
+      card: {
+        title: "New",
+        sql: "SELECT a",
+        chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] },
+      },
     });
 
     expect(result.kind).toBe("ok");
@@ -193,9 +195,11 @@ describe("bound addCard — tool-side seeding (#4558)", () => {
 
     const tools = createBoundDashboardTools({ dashboardId: "dash-1", orgId: "org-1", userId: "user-1" });
     const result = await runTool<AddCardResult>(tools.addCard, {
-      title: "Broken",
-      sql: "SELECT a",
-      chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] },
+      card: {
+        title: "Broken",
+        sql: "SELECT a",
+        chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] },
+      },
     });
 
     // The card was still added (kind ok); only the seed reports the failure.
@@ -226,9 +230,11 @@ describe("bound addCard — tool-side seeding (#4558)", () => {
       connectionGroupId: "grp-empty",
     });
     const result = await runTool<AddCardResult>(tools.addCard, {
-      title: "Orphan",
-      sql: "SELECT a",
-      chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] },
+      card: {
+        title: "Orphan",
+        sql: "SELECT a",
+        chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] },
+      },
     });
 
     // The card is added; seeding degrades to unseeded (canvas-mount render fills

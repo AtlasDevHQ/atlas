@@ -302,9 +302,11 @@ describe("createBoundDashboardTools", () => {
     enableInternalDB();
     const tools = createBoundDashboardTools(ctx);
     const result = await runTool<{ kind: string; error?: string }>(tools.addCard, {
-      title: "Weekly signups",
-      sql: "SELECT COUNT(*) FROM users",
-      chartConfig: { type: "line", categoryColumn: "week", valueColumns: ["count"] },
+      card: {
+        title: "Weekly signups",
+        sql: "SELECT COUNT(*) FROM users",
+        chartConfig: { type: "line", categoryColumn: "week", valueColumns: ["count"] },
+      },
     });
     // SQL still validated up front, but the edit can't be attributed to a user
     // → drafts have no home for it → rejected, nothing persisted.
@@ -320,9 +322,11 @@ describe("createBoundDashboardTools", () => {
     enableInternalDB();
     const tools = createBoundDashboardTools(ctx);
     const result = await runTool<{ kind: "err"; error: string }>(tools.addCard, {
-      title: "Bad",
-      sql: "DROP TABLE users",
-      chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["x"] },
+      card: {
+        title: "Bad",
+        sql: "DROP TABLE users",
+        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["x"] },
+      },
     });
     expect(result.kind).toBe("err");
     expect(result.error).toMatch(/validation failed/i);
@@ -334,13 +338,15 @@ describe("createBoundDashboardTools", () => {
     enableInternalDB();
     const tools = createBoundDashboardTools(ctx);
     const result = await runTool<{ kind: "err"; error: string }>(tools.addCard, {
-      title: "Revenue",
-      sql: "SELECT SUM(amount) AS total FROM orders",
-      chartConfig: {
-        type: "kpi",
-        categoryColumn: "total",
-        valueColumns: ["total"],
-        kpi: { comparisonSql: "DROP TABLE orders" },
+      card: {
+        title: "Revenue",
+        sql: "SELECT SUM(amount) AS total FROM orders",
+        chartConfig: {
+          type: "kpi",
+          categoryColumn: "total",
+          valueColumns: ["total"],
+          kpi: { comparisonSql: "DROP TABLE orders" },
+        },
       },
     });
     expect(result.kind).toBe("err");
@@ -517,9 +523,11 @@ describe("createBoundDashboardTools", () => {
       setResults(...draftWriteResults([])); // fork empty draft, addCard appends
       const tools = createBoundDashboardTools(ctxWithUser);
       const result = await runTool<{ kind: "ok" }>(tools.addCard, {
-        title: "From-tool card",
-        sql: "SELECT 1",
-        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["x"] },
+        card: {
+          title: "From-tool card",
+          sql: "SELECT 1",
+          chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["x"] },
+        },
       });
       expect(result.kind).toBe("ok");
       expect(invalidateScreenshotMock).toHaveBeenCalledWith("dash-1");
@@ -589,6 +597,95 @@ describe("createBoundDashboardTools", () => {
         title: "Conversion",
       });
       expect(result.kind).toBe("ok");
+    });
+
+    // #4562 — the bound editor reaches the shared card union: addCard can stage a
+    // text / section card, and updateCard can edit its markdown content. A text
+    // card has no SQL, so it skips validation + seeding entirely.
+    it("addCard stages a text / section card (with layout) — no SQL validation, no seed", async () => {
+      enableInternalDB();
+      setResults(...draftWriteResults([])); // fork empty draft, addCard appends
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{
+        kind: "ok";
+        card: { id: string; title: string; chartType: string };
+        seed?: unknown;
+      }>(tools.addCard, {
+        card: {
+          kind: "text",
+          content: "## Cohorts",
+          layout: { x: 0, y: 8, w: 24, h: 4 },
+        },
+      });
+      expect(result.kind).toBe("ok");
+      expect(result.card.chartType).toBe("text");
+      // Title derived from the markdown when none was supplied.
+      expect(result.card.title).toBe("Cohorts");
+      // A text card never runs SQL → validateSQL untouched, no seed reported.
+      expect(validateSQLMock).not.toHaveBeenCalled();
+      expect(result.seed).toBeUndefined();
+      // The staged draft carries the text card's content + null chart config.
+      const saved = queryCalls.find((c) => c.sql.includes("UPDATE dashboard_user_drafts"));
+      expect(saved).toBeTruthy();
+      expect(JSON.stringify(saved?.params)).toContain("## Cohorts");
+      expect(invalidateScreenshotMock).toHaveBeenCalledWith("dash-1");
+    });
+
+    it("updateCard edits a text / section card's markdown content", async () => {
+      enableInternalDB();
+      // readCurrentCard (draft read) confirms kind=text, then the draft write lands.
+      setResults(...draftReadResults([textSnapshotCard]), ...draftWriteResults([textSnapshotCard]));
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{ kind: string; updated?: string[] }>(tools.updateCard, {
+        cardId: "card-1",
+        content: "## Top of funnel — updated",
+      });
+      expect(result.kind).toBe("ok");
+      expect(result.updated).toContain("content");
+      const saved = queryCalls.find((c) => c.sql.includes("UPDATE dashboard_user_drafts"));
+      expect(JSON.stringify(saved?.params)).toContain("Top of funnel — updated");
+    });
+
+    it("updateCard rejects a content edit on a chart card", async () => {
+      enableInternalDB();
+      setResults(...draftReadResults([chartSnapshotCard]));
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{ kind: string; error?: string }>(tools.updateCard, {
+        cardId: "card-1",
+        content: "## not allowed on a chart",
+      });
+      expect(result.kind).toBe("err");
+      expect(result.error).toMatch(/chart card|no text content/i);
+    });
+
+    it("updateCard refuses a content edit when the card can't be read (never risks cross-kind corruption)", async () => {
+      enableInternalDB();
+      // Draft read finds NO card with this id → readCurrentCard fails → the
+      // content edit is refused rather than staged onto an unknown/chart card.
+      setResults(...draftReadResults([chartSnapshotCard]));
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{ kind: string; error?: string }>(tools.updateCard, {
+        cardId: "missing-card",
+        content: "## header",
+      });
+      expect(result.kind).toBe("err");
+      // No draft write landed — the content mutation never reached apply.
+      const saved = queryCalls.find((c) => c.sql.includes("UPDATE dashboard_user_drafts"));
+      expect(saved).toBeFalsy();
+    });
+
+    it("updateCard rejects a payload carrying both content and chartConfig", async () => {
+      enableInternalDB();
+      // A text card: the content guard passes, then the chartConfig guard rejects
+      // (a text card has no chart) — the two fields are per-kind, never both.
+      setResults(...draftReadResults([textSnapshotCard]));
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{ kind: string; error?: string }>(tools.updateCard, {
+        cardId: "card-1",
+        content: "## still text",
+        chartConfig: { type: "bar", categoryColumn: "x", valueColumns: ["y"] },
+      });
+      expect(result.kind).toBe("err");
     });
 
     it("emits a multimodal image-data part via toModelOutput without leaking bytes into the envelope", async () => {

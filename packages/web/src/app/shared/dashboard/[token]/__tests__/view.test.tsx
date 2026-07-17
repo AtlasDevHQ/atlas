@@ -112,7 +112,7 @@ describe("SharedDashboardView — as-of caption (#4565)", () => {
           id: "c1",
           position: 0,
           title: "T",
-          kind: "table",
+          kind: "chart",
           chartConfig: null,
           content: null,
           annotations: [],

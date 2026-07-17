@@ -16,7 +16,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
@@ -92,18 +92,24 @@ adminCache.openapi(flushCacheRoute, async (c) => runHandler(c, "flush cache", as
     return c.json({ ok: false, flushed: 0, message: "Cache is disabled" }, 200);
   }
   const count = getCache().stats().entryCount;
-  flushCache();
-  log.info({ requestId, userId: authResult.user?.id, flushed: count }, "Cache flushed via admin API");
-  // Fire-and-forget audit row — process-global blast radius makes
-  // attribution the security control here. See header docblock.
-  // Cache is a process-singleton so `targetId: "default"` mirrors the
-  // SLA / backup-config pattern for non-row-keyed admin surfaces.
-  logAdminAction({
+  // Attribution IS the security control here: flush is process-global (clears
+  // every workspace's entries on this runtime), so a fleet-wide invalidation
+  // must always be attributable to a specific admin. Commit the audit row
+  // BEFORE the flush takes effect — via `logAdminActionAwait` (not
+  // fire-and-forget `logAdminAction`, whose insert is swallowed by a
+  // circuit breaker) — so a circuit-open / DB-down window can never leave a
+  // successful flush with no committed record. A rejection propagates to
+  // runHandler as a 500 (with requestId) rather than a silent 200; the flush
+  // never runs. Cache is a process-singleton so `targetId: "default"` mirrors
+  // the SLA / backup-config pattern for non-row-keyed admin surfaces.
+  await logAdminActionAwait({
     actionType: ADMIN_ACTIONS.cache.flush,
     targetType: "cache",
     targetId: "default",
     metadata: { flushed: count },
   });
+  flushCache();
+  log.info({ requestId, userId: authResult.user?.id, flushed: count }, "Cache flushed via admin API");
   return c.json({ ok: true, flushed: count, message: "Cache flushed" }, 200);
 }));
 

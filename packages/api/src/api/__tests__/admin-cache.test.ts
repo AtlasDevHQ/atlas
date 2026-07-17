@@ -19,10 +19,33 @@ import {
   mock,
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
+import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
+import {
+  errorMessage as realErrorMessage,
+  causeToError as realCauseToError,
+} from "@atlas/api/lib/audit/error-scrub";
 
 // --- Unified mocks ---
 
 let mockCacheEnabled = true;
+
+// Audit mock — override only the two log entry points so a test can drive the
+// audit write into failure (#4533: flush attribution IS the security control,
+// so the row must commit before the flush takes effect). ADMIN_ACTIONS and the
+// error-scrub helpers stay real (imported from their own, un-mocked modules) so
+// the rest of the app behaves identically.
+const mockLogAdminAction = mock(() => {});
+const mockLogAdminActionAwait = mock((): Promise<void> => Promise.resolve());
+
+const auditMockFactory = () => ({
+  ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
+  logAdminAction: mockLogAdminAction,
+  logAdminActionAwait: mockLogAdminActionAwait,
+  errorMessage: realErrorMessage,
+  causeToError: realCauseToError,
+});
+
+void mock.module("@atlas/api/lib/audit", auditMockFactory);
 const mockCacheStats = mock(() => ({ hits: 42, misses: 8, entryCount: 15, maxSize: 1000, ttl: 300000 }));
 const mockFlushCache = mock(() => {});
 const mockGetCache = mock(() => ({
@@ -143,6 +166,10 @@ describe("admin cache routes", () => {
     mockCacheEnabled = true;
     mockCacheStats.mockClear();
     mockFlushCache.mockClear();
+    mockFlushCache.mockImplementation(() => {});
+    mockLogAdminAction.mockClear();
+    mockLogAdminActionAwait.mockClear();
+    mockLogAdminActionAwait.mockImplementation(() => Promise.resolve());
     mockGetCache.mockImplementation(() => ({
       get: () => null,
       set: () => {},
@@ -305,6 +332,38 @@ describe("admin cache routes", () => {
       const body = await res.json() as Record<string, unknown>;
       expect(body.error).toBe("internal_error");
       expect(body.requestId).toBeDefined();
+    });
+
+    // #4533 — attribution IS the security control on this process-global surface.
+    it("commits the audit row before the flush takes effect", async () => {
+      let flushHappenedDuringAudit = false;
+      mockLogAdminActionAwait.mockImplementation(() => {
+        flushHappenedDuringAudit = mockFlushCache.mock.calls.length > 0;
+        return Promise.resolve();
+      });
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
+      expect(res.status).toBe(200);
+      // The audit row is awaited BEFORE flushCache() runs.
+      expect(flushHappenedDuringAudit).toBe(false);
+      expect(mockLogAdminActionAwait).toHaveBeenCalledTimes(1);
+      expect(mockFlushCache).toHaveBeenCalledTimes(1);
+    });
+
+    // #4533 — a flush must NOT silently succeed when its attribution row can't
+    // commit (e.g. audit circuit-breaker open / internal DB down). The audit
+    // write is awaited first, so its rejection surfaces a 500 (with requestId)
+    // and the flush never runs.
+    it("does not silently succeed when the audit write fails", async () => {
+      mockLogAdminActionAwait.mockImplementation(() =>
+        Promise.reject(new Error("admin_action_log insert failed")),
+      );
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
+      expect(res.status).toBe(500);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+      expect(body.requestId).toBeDefined();
+      // The flush is gated on the committed audit row — it never took effect.
+      expect(mockFlushCache).not.toHaveBeenCalled();
     });
   });
 });

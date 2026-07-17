@@ -11,12 +11,13 @@ function ChartStub({ dark }: { dark?: boolean }) {
 }
 void mock.module("@/ui/components/chart/result-chart", () => ({ ResultChart: ChartStub }));
 void mock.module("next/dynamic", () => ({ default: () => ChartStub }));
-// The VISITOR's system theme resolves light here; a forced embed theme must win
-// over it, which is exactly what the #4686 threading test pins. Mock ALL exports
-// (mock-all-exports discipline) so a future importer of another symbol doesn't
-// silently get `undefined`.
+// The VISITOR's system theme. Mutable so the unforced test can flip it and prove
+// the tile actually READS it (a forced theme must win over it — the #4686
+// threading contract). Mock ALL exports (mock-all-exports discipline) so a future
+// importer of another symbol doesn't silently get `undefined`.
+let mockSystemDark = false;
 void mock.module("@/ui/hooks/use-dark-mode", () => ({
-  useDarkMode: () => false,
+  useDarkMode: () => mockSystemDark,
   useThemeMode: () => "system",
   setTheme: () => {},
   applyBrandColor: () => {},
@@ -120,12 +121,18 @@ describe("SharedTile — forced embed theme threads into the chart (#4686)", () 
     expect(chart.getAttribute("data-dark")).toBe("false");
   });
 
-  test("no forcedDark (standalone shared page) falls back to the visitor's system theme", async () => {
-    render(
-      <SharedTile card={chartCard} spanClass="col-span-1" cachedLabel={null} cachedIso={undefined} />,
-    );
-    // Mocked visitor system = light → the chart follows it when unforced.
-    const chart = await screen.findByTestId("result-chart");
-    expect(chart.getAttribute("data-dark")).toBe("false");
+  test("no forcedDark (standalone shared page) follows the visitor's system theme", async () => {
+    // Flip the mocked visitor system to DARK so this asserts the tile actually
+    // READS systemDark on the unforced path (not just a hardcoded default).
+    mockSystemDark = true;
+    try {
+      render(
+        <SharedTile card={chartCard} spanClass="col-span-1" cachedLabel={null} cachedIso={undefined} />,
+      );
+      const chart = await screen.findByTestId("result-chart");
+      expect(chart.getAttribute("data-dark")).toBe("true");
+    } finally {
+      mockSystemDark = false;
+    }
   });
 });

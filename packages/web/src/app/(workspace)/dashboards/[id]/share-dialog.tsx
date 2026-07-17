@@ -33,9 +33,10 @@ import { buildEmbedSnippet, type EmbedThemeParam } from "./share-embed";
 
 /** Embed-tab theme control: "system" emits no `?theme=` param (visitor's own
  *  preference drives the frame); "light"/"dark" force a fixed appearance. The
- *  tuple is the SSOT for both the rendered toggle items and the `onValueChange`
- *  narrowing, so an added/renamed choice can't silently drift; `satisfies` pins
- *  every member to a valid `"system" | EmbedThemeParam`. */
+ *  tuple is the SSOT for the `EmbedThemeChoice` type and the `onValueChange`
+ *  narrowing (`asEmbedThemeChoice`); the rendered `<ToggleGroupItem>` values are
+ *  authored to match by hand. `satisfies` pins every member to a valid
+ *  `"system" | EmbedThemeParam`. */
 const EMBED_THEME_CHOICES = ["system", "light", "dark"] as const satisfies readonly (
   | "system"
   | EmbedThemeParam
@@ -399,9 +400,7 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
                       variant="outline"
                       size="sm"
                       value={embedTheme}
-                      // Radix emits "" when the active item is re-clicked (deselect);
-                      // asEmbedThemeChoice returns undefined there, so a theme stays
-                      // selected and the snippet never carries an empty ?theme=.
+                      // Empty deselect value is ignored — see asEmbedThemeChoice.
                       onValueChange={(v) => {
                         const next = asEmbedThemeChoice(v);
                         if (next) setEmbedTheme(next);

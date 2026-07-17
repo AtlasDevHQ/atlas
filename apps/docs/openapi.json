@@ -8580,7 +8580,7 @@
           "Dashboards"
         ],
         "summary": "Refresh all cards",
-        "description": "Re-executes SQL for all cards in a dashboard. Requires admin role.",
+        "description": "Re-executes SQL for all cards in a dashboard. Requires admin role. Pass `?view=draft` (#4559) to run the caller's DRAFT cards' SQL and persist each result to the caller's private draft cache — the published cards' cached data is left untouched. Omitted/`published` runs the published definitions and writes the shared published cache as before; a caller with no draft always falls back to published.",
         "parameters": [
           {
             "schema": {
@@ -8590,6 +8590,18 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "published",
+                "draft"
+              ]
+            },
+            "required": false,
+            "name": "view",
+            "in": "query"
           }
         ],
         "responses": {
@@ -8676,8 +8688,58 @@
               }
             }
           },
+          "409": {
+            "description": "The draft was published or discarded mid-refresh (`draft_gone`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Draft cache unavailable — internal database not configured",
             "content": {
               "application/json": {
                 "schema": {

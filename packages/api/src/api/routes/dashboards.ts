@@ -844,9 +844,12 @@ const refreshAllCardsRoute = createRoute({
   path: "/{id}/refresh",
   tags: ["Dashboards"],
   summary: "Refresh all cards",
-  description: "Re-executes SQL for all cards in a dashboard. Requires admin role.",
+  description:
+    "Re-executes SQL for all cards in a dashboard. Requires admin role. " +
+    "Pass `?view=draft` (#4559) to run the caller's DRAFT cards' SQL and persist each result to the caller's private draft cache — the published cards' cached data is left untouched. Omitted/`published` runs the published definitions and writes the shared published cache as before; a caller with no draft always falls back to published.",
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
+    query: refreshCardQuerySchema,
   },
   responses: {
     200: { description: "All cards refreshed", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -854,7 +857,9 @@ const refreshAllCardsRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "The draft was published or discarded mid-refresh (`draft_gone`)", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Draft cache unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -2609,11 +2614,32 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
     }
+    const { view } = c.req.valid("query");
 
     const dashResult = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
     if (!dashResult.ok) {
       const fail = crudFailResponse(dashResult.reason, requestId);
       return c.json(fail.body, fail.status);
+    }
+
+    // #4559 — draft-aware bulk refresh. When the caller runs Refresh-all while
+    // viewing their draft, execute the DRAFT cards' SQL/config (their private
+    // working copies) and persist each result to the caller's DRAFT CACHE —
+    // never the published cards' shared cache. Mirrors the single-card refresh's
+    // draft branch (#4554). `loadDraft` returning null (no draft, or a
+    // swallowed load error) falls back to the published cards exactly as a
+    // published-view refresh does — never another user's draft. The draft view
+    // is materialized WITHOUT the draft cache (`EMPTY_DRAFT_CARD_CACHE`) because
+    // execution needs only each card's definition, not its cached rows.
+    const uid = user?.id;
+    let draftHolderId: string | null = null;
+    let cards = dashResult.data.cards;
+    if (view === "draft" && shouldRouteToDraft(uid)) {
+      const draft = yield* Effect.promise(() => loadDraft(uid, id));
+      if (draft) {
+        draftHolderId = uid;
+        cards = materializeDraftView(dashResult.data, draft.snapshot, EMPTY_DRAFT_CARD_CACHE).cards;
+      }
     }
 
     // Bulk refresh persists each card's snapshot with the parameters' DEFAULT
@@ -2634,7 +2660,6 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
     }
 
     const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
-    const cards = dashResult.data.cards;
     let refreshed = 0;
     let failed = 0;
     const errors: Array<{ cardId: string; cardTitle: string; reason: string; message: string }> = [];
@@ -2687,6 +2712,59 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
           cardTitle: card.title,
           reason: outcome.kind,
           message: outcome.message,
+        });
+        continue;
+      }
+
+      // #4559 — a draft bulk-refresh writes the caller's DRAFT CACHE, never the
+      // published card cache (which would leak un-published rows to teammates
+      // and violate "only publish writes published"). A `no_db`/`no_draft`
+      // failure means the draft is structurally gone for EVERY remaining card,
+      // so bail the whole operation with the same typed codes the single-card
+      // refresh returns rather than churning per-card failures — never silently
+      // return unpersisted rows as saved.
+      if (draftHolderId) {
+        const saveResult = yield* Effect.promise(() =>
+          saveDraftCardCache(draftHolderId, id, card.id, {
+            columns: outcome.columns,
+            rows: outcome.rows,
+          }),
+        );
+        if (saveResult.ok) {
+          refreshed++;
+          continue;
+        }
+        if (saveResult.reason === "no_db") {
+          return c.json(
+            {
+              error: "drafts_unavailable",
+              message:
+                "Draft refreshes persist to your private draft, which needs the internal database. It is not configured on this deployment.",
+              requestId,
+            },
+            503,
+          );
+        }
+        if (saveResult.reason === "no_draft") {
+          return c.json(
+            {
+              error: "draft_gone",
+              message:
+                "Your draft was published or discarded while this refresh ran. Reload the dashboard and retry.",
+              requestId,
+            },
+            409,
+          );
+        }
+        // A genuine transient DB write error for THIS card — count it as a
+        // per-card failure and keep draining the rest (the published branch
+        // treats a persist failure the same way).
+        failed++;
+        errors.push({
+          cardId: card.id,
+          cardTitle: card.title,
+          reason: "persist_failed",
+          message: saveResult.reason,
         });
         continue;
       }

@@ -30,6 +30,7 @@ import {
   transformData,
   categoryFromChartClick,
   categoryFromPieClick,
+  pickChartRecommendation,
   resolveThresholdLines,
   resolveAnnotationLines,
   CHART_COLORS_LIGHT,
@@ -765,6 +766,8 @@ export function ResultChart({
   selectedCategory,
   thresholds,
   annotations,
+  embedded = false,
+  chartType,
 }: {
   headers: string[];
   rows: string[][];
@@ -799,6 +802,25 @@ export function ResultChart({
    * chat surface and on cards with none, so the chart renders exactly as before.
    */
   annotations?: AnnotationInput[];
+  /**
+   * #4688 — dashboard-tile mode. When true, ResultChart renders the PLOT ONLY:
+   * its own caption bar ("Time-series: …"), the Line/Area/Bar type toggle, and
+   * its border frame are suppressed. A dashboard tile already owns the title +
+   * border and the card config pins the chart type, so ResultChart's own chrome
+   * would be chrome-in-chrome. The chat surface omits this → keeps toggle +
+   * caption. Defaults to false (unchanged chat behaviour).
+   */
+  embedded?: boolean;
+  /**
+   * #4688 — pin the rendered chart to the card's configured type instead of the
+   * data's auto-detected default. Pass a card's `chartConfig.type` (narrowed via
+   * `asEmbeddedChartType`); when the current data has no recommendation for that
+   * type the top auto-detected one is used instead (a divergent tile still draws
+   * a chart). Omitted → auto-detect (the chat surface). Intended to be paired with
+   * `embedded`: passing it alone still pins the chart but leaves the (now inert)
+   * in-chart toggle visible, which is not a supported combination.
+   */
+  chartType?: ChartType;
 }) {
   const result = useMemo(
     () => detectionResult ?? detectCharts(headers, rows),
@@ -809,8 +831,43 @@ export function ResultChart({
 
   if (!result.chartable) return null;
 
-  const currentType = activeType ?? result.recommendations[0].type;
-  const currentRec = result.recommendations.find((r) => r.type === currentType) ?? result.recommendations[0];
+  // #4688 — a pinned `chartType` (a dashboard tile) fixes the rendered chart to
+  // the card's configured type and takes precedence over the in-chart toggle
+  // (`activeType`, chat-surface only). No pin → the toggle / auto-detect path.
+  const pinnedRec = chartType ? pickChartRecommendation(result.recommendations, chartType) : null;
+  const currentType = pinnedRec?.type ?? activeType ?? result.recommendations[0].type;
+  const currentRec =
+    pinnedRec ?? result.recommendations.find((r) => r.type === currentType) ?? result.recommendations[0];
+
+  const chartBody = (
+    <ErrorBoundary
+      key={currentType}
+      fallback={
+        <div className="rounded-lg border border-yellow-300 bg-yellow-50 px-3 py-2 text-xs text-yellow-700 dark:border-yellow-900/50 dark:bg-yellow-950/20 dark:text-yellow-400">
+          Unable to render chart. Switch to Table view to see your data.
+        </div>
+      }
+    >
+      <ChartRenderer
+        rows={rows}
+        rec={currentRec}
+        defaultData={result.data}
+        defaultRec={result.recommendations[0]}
+        dark={dark}
+        onCategoryClick={onCategoryClick}
+        selectedCategory={selectedCategory}
+        thresholds={thresholds}
+        annotations={annotations}
+      />
+    </ErrorBoundary>
+  );
+
+  // #4688 — dashboard tiles render the plot only: no caption bar, no type toggle,
+  // no frame (the tile already provides all three). The single wrapping div keeps
+  // the height target the tile's ChartSlot `[&>div]:h-full` selector expects.
+  if (embedded) {
+    return <div className="h-full">{chartBody}</div>;
+  }
 
   return (
     <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-700">
@@ -822,26 +879,7 @@ export function ResultChart({
           onChange={setActiveType}
         />
       </div>
-      <ErrorBoundary
-        key={currentType}
-        fallback={
-          <div className="rounded-lg border border-yellow-300 bg-yellow-50 px-3 py-2 text-xs text-yellow-700 dark:border-yellow-900/50 dark:bg-yellow-950/20 dark:text-yellow-400">
-            Unable to render chart. Switch to Table view to see your data.
-          </div>
-        }
-      >
-        <ChartRenderer
-          rows={rows}
-          rec={currentRec}
-          defaultData={result.data}
-          defaultRec={result.recommendations[0]}
-          dark={dark}
-          onCategoryClick={onCategoryClick}
-          selectedCategory={selectedCategory}
-          thresholds={thresholds}
-          annotations={annotations}
-        />
-      </ErrorBoundary>
+      {chartBody}
     </div>
   );
 }

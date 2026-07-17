@@ -65,6 +65,14 @@ interface DashboardGridProps {
   pendingRefreshIds?: ReadonlySet<string>;
   /** #4321 — retry a single tile's parameter-bound render (stale / errored). */
   onRetryCard?: (cardId: string) => void;
+  /**
+   * #4689 — reports whether the grid is CURRENTLY in its non-draggable, single-
+   * column stacked layout (measured width < `MOBILE_BREAKPOINT`). The grid is the
+   * sole owner of that width measurement, so the topbar subscribes to this rather
+   * than re-deriving "narrow" from a different signal (pointer / viewport media
+   * query) that could disagree with where the grid actually stacks.
+   */
+  onStackedChange?: (stacked: boolean) => void;
   onLayoutChange: (cardId: string, layout: DashboardCardLayout) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
@@ -88,6 +96,7 @@ export function DashboardGrid({
   renderPhases,
   pendingRefreshIds,
   onRetryCard,
+  onStackedChange,
   onLayoutChange,
   onRefresh,
   onDuplicate,
@@ -97,6 +106,19 @@ export function DashboardGrid({
 }: DashboardGridProps) {
   const { width, containerRef, mounted } = useContainerWidth();
   const [fullscreenId, setFullscreenId] = useState<string | null>(null);
+
+  // Below MOBILE_BREAKPOINT the freeform RGL grid degrades into a read-only,
+  // single-column stack (no drag handles / no resize). This one measured signal
+  // is the single source of truth for whether the grid is in its non-draggable
+  // stacked LAYOUT (distinct from the separate `editing` gate on draggability).
+  const isMobile = mounted && width > 0 && width < MOBILE_BREAKPOINT;
+
+  // #4689 — surface the stacked state to the parent so the topbar suppresses its
+  // Edit affordances on the exact same signal the grid stacks on (not a pointer /
+  // viewport proxy that disagrees in the narrow-desktop-window band).
+  useEffect(() => {
+    onStackedChange?.(isMobile);
+  }, [isMobile, onStackedChange]);
   // React Compiler memoizes pure derives; manual useMemo was forbidden
   // by CLAUDE.md for perf-only cases.
   const placed = withAutoLayout(cards);
@@ -161,8 +183,6 @@ export function DashboardGrid({
   }
 
   if (placed.length === 0) return null;
-
-  const isMobile = mounted && width > 0 && width < MOBILE_BREAKPOINT;
 
   return (
     <div

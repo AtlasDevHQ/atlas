@@ -35,6 +35,8 @@ import {
 import { DataTable } from "@/ui/components/chat/data-table";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { KpiCard } from "./kpi-card";
+import { asEmbeddedChartType } from "@/ui/components/chart/chart-detection";
+import type { ChartType as RenderChartType } from "@/ui/components/chart/chart-detection";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { useNow } from "@/ui/hooks/use-now";
 import { cn } from "@/lib/utils";
@@ -604,6 +606,7 @@ function ChartTile({
               columns={columns}
               stringRows={stringRows}
               dark={dark}
+              chartType={asEmbeddedChartType(card.chartConfig?.type)}
               onCategoryClick={onCategoryClick}
               selectedCategory={selectedValue}
               thresholds={card.chartConfig?.thresholds}
@@ -726,6 +729,7 @@ function ChartSlot({
   columns,
   stringRows,
   dark,
+  chartType,
   onCategoryClick,
   selectedCategory,
   thresholds,
@@ -735,6 +739,12 @@ function ChartSlot({
   columns: string[];
   stringRows: string[][];
   dark: boolean;
+  /**
+   * #4688 — the card's configured chart type (narrowed to the render union),
+   * pinning the tile's chart so it honors its saved type instead of ResultChart's
+   * data auto-detection. Undefined → auto-detect.
+   */
+  chartType?: RenderChartType;
   /** #3212 — forwarded to ResultChart; undefined → chart is inert on click. */
   onCategoryClick?: (value: string, categoryKey: string) => void;
   /** #3213 — forwarded to ResultChart; the active cross-filter's category value. */
@@ -781,6 +791,8 @@ function ChartSlot({
           headers={columns}
           rows={stringRows}
           dark={dark}
+          embedded
+          chartType={chartType}
           onCategoryClick={onCategoryClick}
           selectedCategory={selectedCategory}
           thresholds={thresholds}

@@ -373,6 +373,17 @@ export interface SharedDashboardView {
    * client must tolerate its absence (`?? []`) across a deploy-overlap window.
    */
   parameterSummary?: SharedDashboardParameterSummaryItem[];
+  /**
+   * The instant the shown data was frozen (#4565) — the newest of the
+   * dashboard's `lastRefreshAt` and every card's `cachedAt`, i.e. the SAME
+   * capture instant the {@link parameterSummary} is resolved against, so every
+   * temporal framing on the shared page derives from one instant. `null` when
+   * the snapshot carries no cached data at all (a never-refreshed board), so the
+   * caption is omitted rather than mislabelling the creation date as data time.
+   * Optional for wire forward-compat only — a pre-#4565 API build omits it, so a
+   * newer web client must tolerate its absence across a deploy-overlap window.
+   */
+  dataAsOf?: string | null;
   createdAt: string;
   updatedAt: string;
   lastRefreshAt: string | null;

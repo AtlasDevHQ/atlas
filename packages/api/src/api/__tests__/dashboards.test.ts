@@ -277,6 +277,7 @@ void mock.module("@atlas/api/lib/dashboards", () => ({
   projectSharedDashboardView: realDashboards.projectSharedDashboardView,
   buildSharedParameterSummary: realDashboards.buildSharedParameterSummary,
   resolveSharedSnapshotInstant: realDashboards.resolveSharedSnapshotInstant,
+  resolveSharedDataInstant: realDashboards.resolveSharedDataInstant,
   setRefreshSchedule: mockSetRefreshSchedule,
   getDashboardsDueForRefresh: mock(() => Promise.resolve([])),
   lockDashboardForRefresh: mock(() => Promise.resolve(false)),

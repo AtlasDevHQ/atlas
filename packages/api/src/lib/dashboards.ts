@@ -1036,17 +1036,16 @@ export function buildSharedParameterSummary(
 }
 
 /**
- * The instant a shared snapshot's data was frozen (#4538): the newest of the
+ * The instant the shown data itself was captured (#4565): the newest of the
  * dashboard-level `lastRefreshAt` and every card's `cachedAt` (a manual
  * per-card refresh stamps `cachedAt` without touching `lastRefreshAt`, so
- * neither alone is authoritative). Relative-date parameter summaries resolve
- * against this instant — never the view request's clock — so the summary
- * frame stays exactly as frozen as the `cachedRows` it labels. A
- * never-refreshed dashboard (no cached data to drift from) falls back to
- * `updatedAt`, then `createdAt` — any stable instant labels an empty snapshot
- * correctly.
+ * neither alone is authoritative), or `null` when the snapshot carries no
+ * cached data at all. Distinct from {@link resolveSharedSnapshotInstant} in
+ * that it does NOT fall back to `updatedAt`/`createdAt`: a never-refreshed
+ * board has no data instant to report, so the shared caption must be omitted
+ * rather than mislabelling the creation date as data time.
  */
-export function resolveSharedSnapshotInstant(dashboard: DashboardWithCards): Date {
+export function resolveSharedDataInstant(dashboard: DashboardWithCards): Date | null {
   const candidates = [
     dashboard.lastRefreshAt,
     ...dashboard.cards.map((card) => card.cachedAt),
@@ -1058,7 +1057,22 @@ export function resolveSharedSnapshotInstant(dashboard: DashboardWithCards): Dat
     if (Number.isNaN(parsed.getTime())) continue;
     if (newest === null || parsed > newest) newest = parsed;
   }
-  if (newest) return newest;
+  return newest;
+}
+
+/**
+ * The instant a shared snapshot's data was frozen (#4538): the data-capture
+ * instant ({@link resolveSharedDataInstant}) when present, else a stable
+ * fallback of `updatedAt`, then `createdAt`. Relative-date parameter summaries
+ * resolve against this instant — never the view request's clock — so the
+ * summary frame stays exactly as frozen as the `cachedRows` it labels. A
+ * never-refreshed dashboard (no cached data to drift from) falls back to
+ * `updatedAt`/`createdAt` — any stable instant labels an empty snapshot
+ * correctly.
+ */
+export function resolveSharedSnapshotInstant(dashboard: DashboardWithCards): Date {
+  const dataInstant = resolveSharedDataInstant(dashboard);
+  if (dataInstant) return dataInstant;
   const updated = new Date(dashboard.updatedAt);
   return Number.isNaN(updated.getTime()) ? new Date(dashboard.createdAt) : updated;
 }
@@ -1104,6 +1118,11 @@ export function projectSharedDashboardView(
     shareMode: dashboard.shareMode,
     cards: dashboard.cards.map(projectSharedCard),
     parameterSummary: buildSharedParameterSummary(dashboard.parameters, frozenAt),
+    // The data-capture instant the caption renders as "Data as of …" (#4565) —
+    // the SAME frozen instant the summary above resolves against whenever the
+    // snapshot carries data, so every temporal label on the page shares one
+    // instant. `null` (caption omitted) for a never-refreshed board.
+    dataAsOf: resolveSharedDataInstant(dashboard)?.toISOString() ?? null,
     createdAt: dashboard.createdAt,
     updatedAt: dashboard.updatedAt,
     lastRefreshAt: dashboard.lastRefreshAt,

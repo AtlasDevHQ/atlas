@@ -11,16 +11,20 @@ import { isoOrUndefined, mostRecentCachedAt, tileSpanClass, timeAgo } from "./he
 import type { SharedDashboard } from "./types";
 
 export function SharedDashboardView({ dashboard }: { dashboard: SharedDashboard }) {
-  // `lastRefreshAt` (server-stamped) wins; fall back to the freshest card cache
-  // so older API builds still surface a freshness signal. If both are absent
-  // (no refresh has ever run), the chip is omitted.
-  const lastRefreshed = dashboard.lastRefreshAt ?? mostRecentCachedAt(dashboard.cards);
-  const lastRefreshedIso = isoOrUndefined(lastRefreshed);
-  const lastRefreshedLabel = timeAgo(lastRefreshed);
-  const capturedIso = isoOrUndefined(dashboard.createdAt);
-  const capturedDate = capturedIso
-    ? new Date(capturedIso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+  // The single instant every temporal label on this page derives from (#4565):
+  // the data's capture instant. Prefer the server-resolved `dataAsOf` (the SAME
+  // frozen instant the parameter summary was resolved against); fall back to the
+  // freshest client-visible cache stamp for pre-#4565 API builds that omit it.
+  // NEVER the creation date — a board created months ago but refreshed today is
+  // "as of" today. `null` (both the caption and the relative chip omitted) when
+  // no refresh has ever run and no card carries cached data.
+  const dataAsOf =
+    dashboard.dataAsOf ?? dashboard.lastRefreshAt ?? mostRecentCachedAt(dashboard.cards);
+  const dataAsOfIso = isoOrUndefined(dataAsOf);
+  const dataAsOfDate = dataAsOfIso
+    ? new Date(dataAsOfIso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
     : null;
+  const dataAsOfAgoLabel = timeAgo(dataAsOf);
   const tileCount = dashboard.cards.length;
   // #4316 — the frozen, display-only parameter summary. Older API builds that
   // predate the projection may omit `parameterSummary`; default to `[]` so the
@@ -46,10 +50,10 @@ export function SharedDashboardView({ dashboard }: { dashboard: SharedDashboard 
               >
                 Read-only
               </span>
-              {capturedDate && capturedIso && (
+              {dataAsOfDate && dataAsOfIso && (
                 <>
                   <span aria-hidden="true">&middot;</span>
-                  <time dateTime={capturedIso}>Captured {capturedDate}</time>
+                  <time dateTime={dataAsOfIso}>Data as of {dataAsOfDate}</time>
                 </>
               )}
             </div>
@@ -73,13 +77,13 @@ export function SharedDashboardView({ dashboard }: { dashboard: SharedDashboard 
             <span>
               {tileCount} tile{tileCount === 1 ? "" : "s"}
             </span>
-            {lastRefreshedLabel && lastRefreshedIso && (
+            {dataAsOfAgoLabel && dataAsOfIso && (
               <>
                 <span aria-hidden="true">&middot;</span>
                 <span className="inline-flex items-center gap-1">
                   <Clock className="size-3" aria-hidden="true" />
                   Last refreshed{" "}
-                  <time dateTime={lastRefreshedIso}>{lastRefreshedLabel}</time>
+                  <time dateTime={dataAsOfIso}>{dataAsOfAgoLabel}</time>
                 </span>
               </>
             )}

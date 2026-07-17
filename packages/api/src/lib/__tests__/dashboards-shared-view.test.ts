@@ -13,6 +13,7 @@ import {
   projectSharedDashboardView,
   buildSharedParameterSummary,
   resolveSharedSnapshotInstant,
+  resolveSharedDataInstant,
 } from "../dashboards";
 import { sharedDashboardViewSchema } from "@useatlas/schemas";
 import type { DashboardWithCards, DashboardCard } from "../dashboard-types";
@@ -214,6 +215,77 @@ describe("projectSharedDashboardView (#4316)", () => {
         cards: [{ ...fullCard, cachedAt: null }],
       });
       expect(instant.toISOString()).toBe("2026-04-03T00:00:00.000Z");
+    });
+  });
+
+  // #4565 — the data-capture instant that drives the "Data as of …" caption.
+  // Unlike resolveSharedSnapshotInstant it has NO updatedAt/createdAt fallback:
+  // a never-refreshed board reports `null` so the caption is omitted rather
+  // than mislabelling creation time as data time.
+  describe("resolveSharedDataInstant (#4565)", () => {
+    it("uses the newest of lastRefreshAt and every card's cachedAt", () => {
+      const instant = resolveSharedDataInstant({
+        ...fullDashboard,
+        lastRefreshAt: "2026-04-04T01:00:00.000Z",
+        cards: [
+          fullCard,
+          { ...fullCard, id: "card-2", cachedAt: "2026-05-10T12:00:00.000Z" },
+        ],
+      });
+      expect(instant?.toISOString()).toBe("2026-05-10T12:00:00.000Z");
+    });
+
+    it("returns null for a never-refreshed board with no cached cards (never creation time)", () => {
+      const instant = resolveSharedDataInstant({
+        ...fullDashboard,
+        lastRefreshAt: null,
+        cards: [{ ...fullCard, cachedAt: null }],
+      });
+      expect(instant).toBeNull();
+    });
+  });
+
+  describe("dataAsOf projection (#4565)", () => {
+    it("emits the data-capture instant, not the creation date", () => {
+      // A board created in Jan but refreshed in Apr must read as-of Apr.
+      const view = projectSharedDashboardView({
+        ...fullDashboard,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        lastRefreshAt: "2026-04-04T01:00:00.000Z",
+      });
+      expect(view.dataAsOf).toBe("2026-04-04T01:00:00.000Z");
+      expect(view.dataAsOf).not.toBe(view.createdAt);
+    });
+
+    it("moves with a fresher per-card cachedAt (the caption tracks the data)", () => {
+      const view = projectSharedDashboardView({
+        ...fullDashboard,
+        lastRefreshAt: "2026-04-04T01:00:00.000Z",
+        cards: [{ ...fullCard, cachedAt: "2026-06-15T09:00:00.000Z" }],
+      });
+      expect(view.dataAsOf).toBe("2026-06-15T09:00:00.000Z");
+    });
+
+    it("equals the instant the parameter summary was frozen against", () => {
+      // The single as-of contract: caption instant === summary frozen instant.
+      const view = projectSharedDashboardView({
+        ...fullDashboard,
+        lastRefreshAt: "2026-04-04T01:00:00.000Z",
+        cards: [{ ...fullCard, cachedAt: null }],
+        parameters: [{ key: "since", type: "date", default: "now - 30 days", label: "Since" }],
+      });
+      // 2026-04-04 − 30 days = 2026-03-05, resolved against dataAsOf.
+      expect(view.dataAsOf).toBe("2026-04-04T01:00:00.000Z");
+      expect(view.parameterSummary).toEqual([{ label: "Since", displayValue: "2026-03-05" }]);
+    });
+
+    it("is null for a never-refreshed board so the caption is omitted", () => {
+      const view = projectSharedDashboardView({
+        ...fullDashboard,
+        lastRefreshAt: null,
+        cards: [{ ...fullCard, cachedAt: null }],
+      });
+      expect(view.dataAsOf).toBeNull();
     });
   });
 

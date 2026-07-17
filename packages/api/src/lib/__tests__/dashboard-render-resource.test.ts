@@ -73,6 +73,7 @@ void mock.module("@atlas/api/lib/dashboards", () => ({
   buildSharedParameterSummary: undefined as never,
   projectSharedDashboardView: undefined as never,
   resolveSharedSnapshotInstant: undefined as never,
+  resolveSharedDataInstant: undefined as never,
   getDashboardsDueForRefresh: undefined as never,
   lockDashboardForRefresh: undefined as never,
   refreshDashboardCards: undefined as never,

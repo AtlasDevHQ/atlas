@@ -45,6 +45,7 @@ void mock.module("@atlas/api/lib/dashboards", () => ({
   getSharedDashboard: undefined as never,
   setRefreshSchedule: undefined as never,
   CardLayoutSchema: { safeParse: () => ({ success: false }) },
+  TextCardLayoutSchema: { safeParse: () => ({ success: false }) },
   resolveCardConnectionId: undefined as never,
   NoGroupMembersError: class {},
 }));

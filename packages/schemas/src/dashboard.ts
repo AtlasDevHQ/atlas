@@ -521,11 +521,13 @@ export type DashboardCardLayoutInputWire = z.infer<typeof dashboardCardLayoutInp
  * Authoring tile layout for a text / section-header card (#4687) — identical to
  * {@link dashboardCardLayoutInputSchema} except the height floors at the shorter
  * `TEXT_MIN_H` (2). Used by the text arm of the card union, and (as the absolute
- * geometry floor) by every KIND-BLIND backend seam that must accept a text
- * card's shorter height without knowing the card's kind: `rowToCard` read-back,
- * the REST add-card + drag-to-save layout paths, and the bound-editor
- * `updateCard` / `updateLayout` tools. The taller per-kind chart floor (`MIN_H`)
- * is enforced by the chart arm below + the add-card `superRefine`, never here.
+ * geometry floor) by every KIND-BLIND backend seam that accepts a layout without
+ * a card `kind` on the wire: `rowToCard` read-back, the REST drag-to-save PATCH,
+ * the draft-undo restore, and the bound-editor `updateCard` / `updateLayout`
+ * tools. The taller per-kind chart floor (`MIN_H`) is enforced only where the
+ * kind is known — the chart arm below, plus the REST add-card path's
+ * `superRefine` (whose layout *field* still uses this schema so a text banner
+ * passes) — never here.
  */
 export const dashboardTextCardLayoutInputSchema = makeCardLayoutInputSchema(DASHBOARD_GRID.TEXT_MIN_H);
 export type DashboardTextCardLayoutInputWire = z.infer<typeof dashboardTextCardLayoutInputSchema>;

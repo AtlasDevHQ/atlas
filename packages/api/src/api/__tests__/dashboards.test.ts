@@ -4415,6 +4415,39 @@ describe("dashboard routes", () => {
       expect(change.card?.annotations).toEqual([]);
     });
 
+    // #4687 — the restore body is kind-blind, so its layout floors at the
+    // absolute TEXT_MIN_H (2); a text card's short banner restores rather than
+    // being rejected by the chart floor. Proves DraftUndoCardSchema.layout uses
+    // the text schema (a chart-floored schema would 422 on h=2).
+    it("restore_card accepts a text card's short banner layout (h=2) (#4687)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft/undo`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "restore_card",
+            card: {
+              id: VALID_CARD_ID,
+              position: 0,
+              title: "Section",
+              sql: "",
+              chartConfig: null,
+              content: "## Top of funnel",
+              connectionGroupId: null,
+              layout: { x: 0, y: 0, w: 24, h: 2 },
+            },
+          }),
+        }),
+      );
+      expect(response.status).toBe(204);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { card?: { layout?: { h: number } } },
+      ];
+      expect(change.card?.layout?.h).toBe(2);
+    });
+
     it("restore_card is idempotent — a card already in the draft is a no-op (no re-add)", async () => {
       mockLoadDraft.mockResolvedValue({
         snapshot: { dashboardId: VALID_ID, title: "x", description: null, cards: [{ id: VALID_CARD_ID }] },

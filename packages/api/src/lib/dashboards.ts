@@ -63,14 +63,18 @@ export const CardLayoutSchema = dashboardCardLayoutInputSchema;
  * so a one-line banner validates at a tight height.
  *
  * This is also the ABSOLUTE geometry floor used by every KIND-BLIND layout seam
- * (there is no card `kind` on the wire to pick a stricter floor): `rowToCard`
- * read-back, the REST drag-to-save PATCH (`UpdateCardSchema`), the REST add-card
- * layout field, and the bound-editor `updateCard` / `updateLayout` tools. On
- * those seams a chart card is NOT floored at `MIN_H` (4) — that per-kind floor
- * is a KIND-AWARE concern held by the create / add-card authoring paths (the
- * schema chart arm + the add-card `superRefine`) and the UI's per-kind resize
- * `minH`. A chart written short through a kind-blind seam therefore renders
- * short (valid geometry) rather than being silently discarded on read-back.
+ * (no card `kind` on the wire to pick a stricter floor, so a chart card is NOT
+ * floored at `MIN_H` here): `rowToCard` read-back, the REST drag-to-save PATCH
+ * (`UpdateCardSchema`), the draft-undo restore (`DraftUndoCardSchema`), and the
+ * bound-editor `updateCard` / `updateLayout` tools. A chart written short through
+ * one of those renders short (valid geometry) rather than being silently
+ * discarded on read-back.
+ *
+ * The taller per-kind chart floor (`MIN_H`, 4) is enforced only where `kind` is
+ * KIND-AWARE: the create path (via its chart-arm schema directly), the REST
+ * add-card path (whose layout *field* uses this base schema so a text banner
+ * passes, but whose `superRefine` re-asserts `MIN_H` for a chart card), and the
+ * UI's per-kind resize `minH`.
  */
 export const TextCardLayoutSchema = dashboardTextCardLayoutInputSchema;
 

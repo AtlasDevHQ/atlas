@@ -49,6 +49,20 @@ describe("resolveShowDraftView (#4556)", () => {
     ).toBe(true);
   });
 
+  test("editing keeps showing the draft even once status resolves to no-draft", () => {
+    // Opening the editor forks a draft server-side; the canvas must show it even
+    // in the window where the status still reports hasDraft: false.
+    expect(
+      resolveShowDraftView({ editing: true, chatOpen: false, hasDraft: false }),
+    ).toBe(true);
+  });
+
+  test("open chat drawer keeps showing the draft even once status resolves to no-draft", () => {
+    expect(
+      resolveShowDraftView({ editing: false, chatOpen: true, hasDraft: false }),
+    ).toBe(true);
+  });
+
   test("the banner and the canvas can never disagree: both read the same hasDraft", () => {
     // The banner shows "Draft" iff hasDraft; the canvas shows the draft iff this
     // returns true. For a passive viewer (no editor/drawer) the two are exactly

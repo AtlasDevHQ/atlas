@@ -6,8 +6,9 @@
  * that rule — the page keys its dashboard fetch (`?view=draft` vs. published) off
  * it, and the draft-status banner reads the SAME `hasDraft`, so the two can never
  * disagree (the bug this fixed: a returning viewer of a never-published,
- * agent-built board saw an empty published copy underneath a "Draft — unpublished
- * changes" banner — two elements contradicting each other on one screen).
+ * agent-built board saw an empty published copy while the draft-status banner
+ * announced unpublished changes — two elements contradicting each other on one
+ * screen).
  *
  * `editing` and `chatOpen` remain in the OR because both edit the draft and must
  * show it even in the brief window before the async draft-status fetch lands —

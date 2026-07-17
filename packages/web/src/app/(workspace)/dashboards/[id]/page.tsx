@@ -382,10 +382,14 @@ export default function DashboardViewPage() {
 
   async function handleRefreshAll() {
     setRefreshingAll(true);
-    // #4559 — while editing, Refresh-all runs the DRAFT cards' SQL and writes
-    // the caller's private draft cache; the published cards' cached data is
-    // left untouched (mirrors the single-card draft refresh above).
-    const viewSuffix = editing ? "?view=draft" : "";
+    // #4559 / #4556 — Refresh-all runs against the SAME view the canvas shows
+    // (`showDraftView`: the draft whenever the caller has one, published
+    // otherwise). In the draft view it runs the draft cards' SQL and writes the
+    // caller's private draft cache, leaving the published cards' cached data
+    // untouched (mirrors the single-card draft refresh above). #4559 made the
+    // endpoint draft-aware; #4556 widens the trigger from `editing` to
+    // `showDraftView` so a passive draft viewer's bulk refresh lands too.
+    const viewSuffix = showDraftView ? "?view=draft" : "";
     await mutate({ path: `/api/v1/dashboards/${id}/refresh${viewSuffix}`, method: "POST" });
     setRefreshingAll(false);
   }

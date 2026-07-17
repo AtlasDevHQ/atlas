@@ -40,6 +40,7 @@ import {
   normalizeDrilldownValue,
 } from "./search-params";
 import { activeFilters, incompatibleCardIds } from "./cross-filter";
+import { resolveShowDraftView } from "./draft-view";
 import { renderDashboardCard, renderDashboardCards, isRenderableCard } from "./dashboard-card-render";
 import {
   MOUNT_RENDER_CONCURRENCY,
@@ -144,12 +145,31 @@ export default function DashboardViewPage() {
   // when the drawer is opened from "Edit with chat" (a fresh session).
   const [resumeConversationId, setResumeConversationId] = useState<string | null>(null);
 
-  // #4322 — the bound chat drawer edits the DRAFT (every `addCard` lands
-  // there, per #4315), so while it's open the canvas must show the draft too:
-  // that's what makes cards materialize live during a build AND why a
-  // dashboard is non-empty on arrival from `createDashboard` (its cards were
-  // staged into the draft, and the published view is still empty).
-  const showDraftView = editing || chatOpen;
+  // #2521 — draft state. Fetched up here (before the dashboard fetch) so #4556's
+  // draft-view switch can key off the caller's actual draft status. `useAdminFetch`
+  // also powers the badge + baseline-drift detection; we poll on window focus + a
+  // 30s tick so a teammate's publish surfaces quickly without blowing the request
+  // budget.
+  const {
+    data: draftStatus,
+    refetch: refetchDraftStatus,
+  } = useAdminFetch<DraftStatusResponse>(`/api/v1/dashboards/${id}/draft/status`);
+  useVisibilityGatedPoll(refetchDraftStatus, DRAFT_STATUS_POLL_MS);
+
+  // #4315 / #4322 / #4556 — the canvas renders the caller's DRAFT whenever they
+  // have one, the published state otherwise. The switch is driven off the caller's
+  // actual draft status (`hasDraft`), NOT just an open editor/drawer: a user
+  // returning to a never-published agent-built board via bookmark/switcher (no
+  // editor open, View mode) must see the draft's cards, not an empty published
+  // copy underneath a "Draft — unpublished changes" banner. Driving both the
+  // banner and the canvas off the same `hasDraft` means they can never disagree.
+  // `editing` / `chatOpen` stay in the OR because both edit the draft and must
+  // show it even in the brief window before the status fetch lands (e.g. a fresh
+  // `createDashboard` handoff whose cards were just staged into the draft). The
+  // URL is the fetch cache key, so the view re-fetches the moment `hasDraft`
+  // resolves; the server overlays the draft only when one exists (non-forking),
+  // so a viewer or a board with no draft still gets published — this never leaks.
+  const showDraftView = resolveShowDraftView({ editing, chatOpen, hasDraft: draftStatus?.hasDraft });
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
     showDraftView ? `/api/v1/dashboards/${id}?view=draft` : `/api/v1/dashboards/${id}`,
   );
@@ -188,18 +208,10 @@ export default function DashboardViewPage() {
   // parameter / mutation errors below.
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  // #2363 — bound chat drawer state (`chatOpen` / `resumeConversationId`
-  // declared above, before the dashboard fetch, so #4322's draft-view switch
-  // can key off the drawer being open).
-
-  // #2521 — draft state. `useAdminFetch` powers the badge + baseline-drift
-  // detection; we poll on window focus + a 30s tick so a teammate's
-  // publish surfaces quickly without blowing the request budget.
-  const {
-    data: draftStatus,
-    refetch: refetchDraftStatus,
-  } = useAdminFetch<DraftStatusResponse>(`/api/v1/dashboards/${id}/draft/status`);
-  useVisibilityGatedPoll(refetchDraftStatus, DRAFT_STATUS_POLL_MS);
+  // #2363 — bound chat drawer state (`chatOpen` / `resumeConversationId`)
+  // and #2521 draft state (`draftStatus` / `refetchDraftStatus`) are declared
+  // above, before the dashboard fetch, so #4322's + #4556's draft-view switch
+  // can key off the drawer being open and the caller's draft status.
 
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [publishModalOpen, setPublishModalOpen] = useState(false);

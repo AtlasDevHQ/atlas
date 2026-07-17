@@ -37,10 +37,41 @@ const validateSQLMock = mock(async (sql: string, _connectionId?: string) => {
   return { valid: true as const, classification: { tablesAccessed: [], columnsAccessed: [] } };
 });
 
+// #4558 — createDashboard now seeds each staged card via runUserQueryPipeline
+// (through the shared dashboard-seeding module). Give the test a controllable
+// pipeline keyed by SQL so seeding outcomes can be asserted, plus a stub for
+// the draft-cache write so seeding never touches the mock transaction pool.
+type PipeOutcome =
+  | { kind: "ok"; columns: string[]; rows: Record<string, unknown>[]; rowCount: number; executionMs: number; truncated: boolean; maskingApplied: boolean }
+  | { kind: "query_failed"; message: string };
+
+const pipelineBySql = new Map<string, PipeOutcome>();
+function pipelineOk(rows: Record<string, unknown>[]): PipeOutcome {
+  return {
+    kind: "ok",
+    columns: rows.length > 0 ? Object.keys(rows[0]) : ["n"],
+    rows,
+    rowCount: rows.length,
+    executionMs: 1,
+    truncated: false,
+    maskingApplied: false,
+  };
+}
+const runUserQueryPipelineMock = mock((opts: { sql: string }) =>
+  Promise.resolve(pipelineBySql.get(opts.sql) ?? pipelineOk([{ n: 1 }])),
+);
+
 void mock.module("@atlas/api/lib/tools/sql", () => ({
   validateSQL: validateSQLMock,
   executeSQL: undefined as never,
-  runUserQueryPipeline: undefined as never,
+  runUserQueryPipeline: runUserQueryPipelineMock,
+}));
+
+const saveDraftCardCacheMock = mock(() =>
+  Promise.resolve({ ok: true as const, cachedAt: "2026-07-17T00:00:00.000Z" }),
+);
+void mock.module("@atlas/api/lib/dashboard-draft-cache", () => ({
+  saveDraftCardCache: saveDraftCardCacheMock,
 }));
 
 const { createDashboard, deriveTextCardTitle } = await import("@atlas/api/lib/tools/create-dashboard");
@@ -136,6 +167,13 @@ async function run(args: ExecuteParams) {
           description: string | null;
           cardCount: number;
           draft: boolean;
+          cardOutcomes: {
+            cardId: string;
+            title: string;
+            status: "rows" | "empty" | "error" | "unseeded";
+            rowCount?: number;
+            message?: string;
+          }[];
         }
       | {
           kind: "err";
@@ -162,6 +200,9 @@ describe("createDashboard tool", () => {
     clientThrowOnCall = new Map();
     clientQueryCount = 0;
     validateSQLMock.mockClear();
+    runUserQueryPipelineMock.mockClear();
+    saveDraftCardCacheMock.mockClear();
+    pipelineBySql.clear();
     delete process.env.DATABASE_URL;
     _resetPool(null);
   });
@@ -258,6 +299,103 @@ describe("createDashboard tool", () => {
     expect(baseline.cards).toEqual([]);
     // No parameters declared → INSERT persists an empty array (#2267).
     expect(JSON.parse(dashParams[4] as string)).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------
+  // Tool-side seeding (#4558, ADR-0034 Decision 1)
+  // -------------------------------------------------------------------
+
+  it("seeds each chart card and reports per-card outcomes (rows / empty)", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "dash-seed", title: "Board", description: null, updated_at: "2026-07-17" }] },
+      { rows: [] }, // INSERT drafts
+      { rows: [] }, // COMMIT
+    );
+    pipelineBySql.set("SELECT a", pipelineOk([{ a: 1 }, { a: 2 }, { a: 3 }]));
+    pipelineBySql.set("SELECT b", pipelineOk([])); // empty
+
+    const result = await run({
+      title: "Board",
+      cards: [
+        { title: "A", sql: "SELECT a", chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] } },
+        { title: "B", sql: "SELECT b", chartConfig: { type: "table", categoryColumn: "b", valueColumns: ["b"] } },
+      ],
+    });
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.cardOutcomes).toEqual([
+      { cardId: expect.any(String), title: "A", status: "rows", rowCount: 3 },
+      { cardId: expect.any(String), title: "B", status: "empty" },
+    ]);
+    // Each card ran through the pipeline and was cached.
+    expect(runUserQueryPipelineMock).toHaveBeenCalledTimes(2);
+    expect(saveDraftCardCacheMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("is fail-soft: a card whose seed execution fails is still staged and the build succeeds", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] },
+      { rows: [{ id: "dash-fs", title: "Board", description: null, updated_at: "2026-07-17" }] },
+      { rows: [] },
+      { rows: [] },
+    );
+    pipelineBySql.set("SELECT ok", pipelineOk([{ a: 1 }]));
+    pipelineBySql.set("SELECT boom", { kind: "query_failed", message: 'column "x" does not exist' });
+
+    const result = await run({
+      title: "Board",
+      cards: [
+        { title: "Good", sql: "SELECT ok", chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] } },
+        { title: "Bad", sql: "SELECT boom", chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] } },
+      ],
+    });
+
+    // The build committed (transaction ran, COMMIT fired) despite the bad card.
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.cardCount).toBe(2);
+    expect(clientQueryCalls.at(-1)?.sql).toBe("COMMIT");
+    expect(result.cardOutcomes[0]).toEqual({ cardId: expect.any(String), title: "Good", status: "rows", rowCount: 1 });
+    expect(result.cardOutcomes[1]).toEqual({
+      cardId: expect.any(String),
+      title: "Bad",
+      status: "error",
+      message: 'column "x" does not exist',
+    });
+    // The failing card was never cached.
+    expect(saveDraftCardCacheMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not seed text / section cards (no data to fetch)", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] },
+      { rows: [{ id: "dash-mix", title: "Board", description: null, updated_at: "2026-07-17" }] },
+      { rows: [] },
+      { rows: [] },
+    );
+    pipelineBySql.set("SELECT a", pipelineOk([{ a: 1 }]));
+
+    const result = await run({
+      title: "Board",
+      cards: [
+        { kind: "text", content: "## Section" },
+        { title: "A", sql: "SELECT a", chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] } },
+      ],
+    });
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    // Two cards staged, but only the chart card is seeded / reported.
+    expect(result.cardCount).toBe(2);
+    expect(result.cardOutcomes).toEqual([
+      { cardId: expect.any(String), title: "A", status: "rows", rowCount: 1 },
+    ]);
+    expect(runUserQueryPipelineMock).toHaveBeenCalledTimes(1);
   });
 
   // -------------------------------------------------------------------

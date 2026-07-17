@@ -1,8 +1,9 @@
 /**
- * Web-side grid constants. Must mirror `DASHBOARD_GRID` in
- * `packages/api/src/lib/dashboard-types.ts` (the Zod schema there gates persisted
- * layouts). They aren't in `@useatlas/types` because that would require an npm
- * publish + template ref bump for every change.
+ * Web-side grid constants. Must mirror `DASHBOARD_GRID` in `@useatlas/schemas`
+ * (#4562 — the SSOT, beside the `dashboardCardLayoutInputSchema` that gates
+ * persisted layouts; re-exported through `@atlas/api/lib/dashboard-types`). They
+ * aren't in `@useatlas/types` because that would require an npm publish +
+ * template ref bump for every change; `@useatlas/schemas` is source-bundled.
  */
 
 export const COLS = 24;

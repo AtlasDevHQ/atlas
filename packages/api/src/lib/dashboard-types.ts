@@ -24,16 +24,12 @@ export type {
 export { CHART_TYPES } from "@useatlas/types";
 
 /**
- * Bounds of the dashboard tile grid (#1867). Lives in the api package — not
- * `@useatlas/types` — so a bump doesn't require an npm publish + template
- * version bump. Must mirror the constants in
+ * Bounds of the dashboard tile grid (#1867). The SSOT now lives in
+ * `@useatlas/schemas` (#4562) — beside the `dashboardCardLayoutInputSchema` that
+ * validates against it — and is re-exported here so existing
+ * `@atlas/api/lib/dashboard-types` importers are unchanged. Schemas is
+ * source-bundled (never npm-published), so this move keeps the "a bump needs no
+ * npm publish" property. Must mirror the constants in
  * `packages/web/src/ui/components/dashboards/grid-constants.ts`.
  */
-export const DASHBOARD_GRID = {
-  COLS: 24,
-  MIN_W: 3,
-  MAX_W: 24,
-  MIN_H: 4,
-  MAX_H: 200,
-  MAX_Y: 10_000,
-} as const;
+export { DASHBOARD_GRID } from "@useatlas/schemas";

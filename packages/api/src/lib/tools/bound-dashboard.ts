@@ -22,10 +22,16 @@
 import * as crypto from "crypto";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
-import { dashboardChartConfigSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
+import {
+  dashboardChartConfigSchema,
+  dashboardCardAnnotationsSchema,
+  dashboardCardInputSchema,
+  dashboardTextCardContentSchema,
+} from "@useatlas/schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
+import { deriveTextCardTitle } from "@atlas/api/lib/dashboard-text-card";
 import {
   validateAutoComparison,
   resolveDashboardParameterValues,
@@ -321,22 +327,57 @@ export function createBoundDashboardTools(
   });
 
   const addCardTool = tool({
-    description: `Add a new card to the dashboard. Validates the SQL against the analytics datasource before persisting; if validation fails the card is NOT added and the error is returned so you can fix it and retry. Use AFTER \`executeSQL\` has confirmed the column names — \`chartConfig.categoryColumn\` and \`valueColumns\` must match the SQL output. The grid is 24 columns wide. Layout is optional — when omitted the card stages with no placement and the grid renderer auto-arranges it at view time. Pass a layout if you want a specific {x, y, w, h} on the 24-column grid.
+    description: `Add a new card to the dashboard — a SQL-backed chart card or a markdown text / section card.
 
-On success the result includes \`seed\` — the card's data outcome: \`rows\` (with a rowCount), \`empty\` (the query ran but returned nothing), \`error\` (the card WAS added but its query failed — \`message\` says why), or \`unseeded\` (added; data loads when the dashboard opens). If \`seed\` is \`empty\` or \`error\`, say so plainly and offer to fix it rather than claiming the card shows data.`,
+CHART CARD ({ title, sql, chartConfig }): validates the SQL against the analytics datasource before persisting; if validation fails the card is NOT added and the error is returned so you can fix it and retry. Use AFTER \`executeSQL\` has confirmed the column names — \`chartConfig.categoryColumn\` and \`valueColumns\` must match the SQL output. On success the result includes \`seed\` — the card's data outcome: \`rows\` (with a rowCount), \`empty\` (the query ran but returned nothing), \`error\` (the card WAS added but its query failed — \`message\` says why), or \`unseeded\` (added; data loads when the dashboard opens). If \`seed\` is \`empty\` or \`error\`, say so plainly and offer to fix it rather than claiming the card shows data.
+
+TEXT / SECTION CARD ({ kind: "text", content: "## ..." }): a markdown header / explainer that organizes the grid — no SQL, no chart, no data. Use it to group related charts under a heading ("Top of funnel", "Cohorts"): add a full-width text card (w: 24) above a cluster of charts. Keep content short — a heading and at most a sentence. A text card is never seeded (nothing to run), so its result carries no \`seed\`.
+
+The grid is 24 columns wide. Layout is optional — when omitted the card stages with no placement and the grid renderer auto-arranges it at view time. Pass a layout if you want a specific {x, y, w, h}.`,
     inputSchema: z.object({
-      title: z.string().min(1).max(200).describe("Card title (visible to the user)"),
-      sql: z.string().min(1).describe("Read-only SELECT query"),
-      chartConfig: ChartConfigSchema.describe("Chart type + column mapping"),
-      annotations: dashboardCardAnnotationsSchema
-        .optional()
-        .describe(
-          "Optional dated event markers ({ x, label, color? }) — vertical reference lines on a line/area card (e.g. a product launch). `x` must match a value on the card's time/category axis.",
-        ),
-      layout: CardLayoutSchema.optional().describe("Optional grid placement {x, y, w, h}"),
+      // #4562 — the shared card-input union (chart | text, + layout), declared
+      // once in @useatlas/schemas and consumed verbatim by createDashboard too.
+      // Nested under `card` (not a root union) so the tool's JSON schema keeps a
+      // `type: object` root, which the Anthropic tool-calling API requires.
+      card: dashboardCardInputSchema.describe(
+        'The card to add — a chart card { title, sql, chartConfig, layout? } or a text / section card { kind: "text", content, layout? }.',
+      ),
     }),
-    execute: async ({ title, sql, chartConfig, annotations, layout }) => {
+    execute: async ({ card }) => {
       try {
+        // ---- text / section card (#4562) — no SQL, no chart, never seeded ----
+        // A text card fetches no data, so it skips SQL validation and seeding
+        // entirely; it stages with `sql: ""`, `chartConfig: null`, its markdown
+        // in `content`, and no connection group (it never queries).
+        if (card.kind === "text") {
+          const textDraftCard: DashboardSnapshotCard = {
+            id: crypto.randomUUID(),
+            position: 0,
+            title: card.title?.trim() || deriveTextCardTitle(card.content),
+            sql: "",
+            chartConfig: null,
+            content: card.content,
+            annotations: [],
+            connectionGroupId: null,
+            layout: card.layout ?? null,
+          };
+          const appliedText = await maybeApplyToDraft(ctx, { kind: "addCard", card: textDraftCard });
+          if (!appliedText.ok) return { kind: "err" as const, error: appliedText.error };
+          // #2367 — user's draft view shifted, drop cached screenshots.
+          invalidateDashboardScreenshot(dashboardId);
+          return {
+            kind: "ok" as const,
+            card: {
+              id: textDraftCard.id,
+              title: textDraftCard.title,
+              chartType: "text" as const,
+              position: textDraftCard.position,
+            },
+          };
+        }
+
+        // ---- chart card (behavior unchanged) ----
+        const { title, sql, chartConfig, annotations, layout } = card;
         // #3137 — a KPI card's comparisonSql runs through the SAME guard at
         // render time; validate it up front alongside the primary so the bound
         // editor rejects a bad comparison query the same way createDashboard
@@ -420,11 +461,16 @@ On success the result includes \`seed\` — the card's data outcome: \`rows\` (w
   });
 
   const updateCardTool = tool({
-    description: `Update a card's title, chart type, layout, or event annotations. Pass only the fields you want to change. Does NOT support changing the SQL — that is a destructive op and arrives as a staged ghost change in a later slice. To change the SQL today, ask the user to remove and re-add the card.`,
+    description: `Update a card's title, chart type, layout, event annotations, or a text / section card's markdown content. Pass only the fields you want to change. \`content\` edits a TEXT card's markdown ("change the Cohorts header to say ..."); \`chartConfig\` edits a CHART card — the two are mutually exclusive per card kind. Does NOT support changing a chart card's SQL — that is a destructive op that arrives as a staged ghost change. To change a chart's SQL today, ask the user to remove and re-add the card.`,
     inputSchema: z.object({
       cardId: z.string().min(1).describe("Card id"),
       title: z.string().min(1).max(200).optional(),
       chartConfig: ChartConfigSchema.nullable().optional(),
+      content: dashboardTextCardContentSchema
+        .optional()
+        .describe(
+          'New markdown body for a TEXT / section card (e.g. "## Cohorts"). Only valid on a text card — rejected on a chart card. Rendered sanitized, no raw HTML.',
+        ),
       annotations: dashboardCardAnnotationsSchema
         .optional()
         .describe(
@@ -433,56 +479,80 @@ On success the result includes \`seed\` — the card's data outcome: \`rows\` (w
       layout: CardLayoutSchema.nullable().optional(),
       position: z.number().int().min(0).optional(),
     }),
-    execute: async ({ cardId, title, chartConfig, annotations, layout, position }) => {
+    execute: async ({ cardId, title, chartConfig, content, annotations, layout, position }) => {
       try {
         const updates: {
           title?: string;
           chartConfig?: z.infer<typeof ChartConfigSchema> | null;
+          content?: string;
           annotations?: z.infer<typeof dashboardCardAnnotationsSchema>;
           layout?: DashboardCardLayout | null;
           position?: number;
         } = {};
         if (title !== undefined) updates.title = title;
         if (chartConfig !== undefined) updates.chartConfig = chartConfig;
+        if (content !== undefined) updates.content = content;
         if (annotations !== undefined) updates.annotations = annotations;
         if (layout !== undefined) updates.layout = layout;
         if (position !== undefined) updates.position = position;
 
         if (Object.keys(updates).length === 0) {
-          return { kind: "err" as const, error: "No fields supplied — pass at least one of title, chartConfig, annotations, layout, position." };
+          return { kind: "err" as const, error: "No fields supplied — pass at least one of title, chartConfig, content, annotations, layout, position." };
         }
 
-        // #3138: a text / section-block card has no chart. Reject a chartConfig
-        // change on one rather than mutate the draft into a state publish would
-        // silently discard (text-card equality ignores chartConfig). Title /
-        // layout / position edits remain valid for text cards.
-        if (updates.chartConfig !== undefined) {
+        // #3138 / #4562 — chart config and text content are kind-specific: a
+        // text / section card has no chart to configure, and a chart card has no
+        // markdown body to edit. Reject a cross-kind edit rather than mutate the
+        // draft into a state publish would silently discard (card equality
+        // ignores the field that doesn't belong to the kind). Title / layout /
+        // position / annotations edits remain valid for both kinds. Read the
+        // current card once when either kind-specific field is being changed.
+        if (updates.chartConfig !== undefined || updates.content !== undefined) {
           const current = await readCurrentCard(cardId);
-          if (current.ok && current.kind === "text") {
-            return {
-              kind: "err" as const,
-              error: `Card ${cardId} is a text / section card — it has no chart to configure.`,
-            };
-          }
-          // #3137 — validate a new/changed KPI comparisonSql through the same
-          // guard before persisting (parity with addCard / createDashboard).
-          const comparisonSql = updates.chartConfig?.kpi?.comparisonSql;
-          if (comparisonSql) {
-            const comparisonValidation = await validateSQL(comparisonSql, undefined);
-            if (!comparisonValidation.valid) {
+          if (updates.content !== undefined) {
+            // A `content` edit must land ONLY on a CONFIRMED text card: writing
+            // content onto a chart card would flip its kind at publish (a card
+            // with non-null content reads as text). If the card can't be read,
+            // refuse rather than risk that cross-kind corruption — stricter than
+            // the chartConfig guard below, which can proceed on an unread card
+            // because a stray chartConfig on a text card is dropped at publish.
+            if (!current.ok) {
+              return { kind: "err" as const, error: current.error };
+            }
+            if (current.kind !== "text") {
               return {
                 kind: "err" as const,
-                error: `KPI comparison SQL validation failed: ${comparisonValidation.error}. Fix the query and retry.`,
+                error: `Card ${cardId} is a chart card — it has no text content to edit. Use chartConfig / annotations to change a chart.`,
               };
             }
           }
-          // #3207 — turning on autoComparison must agree with the card's
-          // EXISTING sql (updateCard never changes the query): it has to filter
-          // by both window params.
-          if (updates.chartConfig?.kpi?.autoComparison && current.ok) {
-            const updateAutoErr = validateAutoComparison(current.sql, updates.chartConfig.kpi);
-            if (updateAutoErr) {
-              return { kind: "err" as const, error: updateAutoErr };
+          if (updates.chartConfig !== undefined) {
+            if (current.ok && current.kind === "text") {
+              return {
+                kind: "err" as const,
+                error: `Card ${cardId} is a text / section card — it has no chart to configure.`,
+              };
+            }
+            // #3137 — validate a new/changed KPI comparisonSql through the same
+            // guard before persisting (parity with addCard / createDashboard).
+            const comparisonSql = updates.chartConfig?.kpi?.comparisonSql;
+            if (comparisonSql) {
+              const comparisonValidation = await validateSQL(comparisonSql, undefined);
+              if (!comparisonValidation.valid) {
+                return {
+                  kind: "err" as const,
+                  error: `KPI comparison SQL validation failed: ${comparisonValidation.error}. Fix the query and retry.`,
+                };
+              }
+            }
+            // #3207 — turning on autoComparison must agree with the card's
+            // EXISTING sql (updateCard never changes the query): it has to filter
+            // by both window params.
+            if (updates.chartConfig?.kpi?.autoComparison && current.ok) {
+              const updateAutoErr = validateAutoComparison(current.sql, updates.chartConfig.kpi);
+              if (updateAutoErr) {
+                return { kind: "err" as const, error: updateAutoErr };
+              }
             }
           }
         }
@@ -884,16 +954,19 @@ Use \`getDashboardState\` for a fresh read of the dashboard's title/description 
   getCardDetail: `### Inspect a card in detail
 Use \`getCardDetail(cardId)\` to fetch a card's full SQL, chartConfig, layout, and cached columns. The compact card summary in your system prompt only shows id/title/chart-type/position — call \`getCardDetail\` whenever you need the SQL or chartConfig to reason about, explain, or change a card.`,
 
-  addCard: `### Add a card
-Use \`addCard\` to create a new card. Always:
+  addCard: `### Add a card (chart or text / section)
+Use \`addCard\` to create a new card — either a SQL-backed chart card or a markdown text / section header.
+
+CHART card — always:
 1. Call \`explore\` + \`executeSQL\` first to confirm the SQL shape and column names.
 2. Build a chartConfig whose \`categoryColumn\` and \`valueColumns\` match the SQL output exactly.
 3. Optionally specify a layout {x, y, w, h} in the 24-col grid.
+The tool validates the SQL against the analytics datasource before persisting; if validation fails the card is NOT created.
 
-The tool validates the SQL against the analytics datasource before persisting; if validation fails the card is NOT created.`,
+TEXT / SECTION card — pass \`{ kind: "text", content: "## Cohorts" }\` (optionally a layout). It has no SQL or chart and fetches no data; use it to group related charts under a heading. Emit a full-width text card (w: 24) above each cluster of charts and keep the copy short.`,
 
-  updateCard: `### Rename / re-chart / re-place a card
-Use \`updateCard\` to change a card's title, chartConfig, layout, or position. Pass only the fields you want to change. Does NOT support SQL changes — those are destructive ops that arrive as staged ghost changes in a later slice.`,
+  updateCard: `### Rename / re-chart / re-place a card, or edit a section header
+Use \`updateCard\` to change a card's title, chartConfig, layout, position, or a text / section card's markdown \`content\`. Pass only the fields you want to change. \`content\` edits a TEXT card's markdown; \`chartConfig\` edits a CHART card — the two are per-kind and mutually exclusive. Does NOT support changing a chart card's SQL — those are destructive ops that arrive as staged ghost changes.`,
 
   updateLayout: `### Rearrange the grid
 Use \`updateLayout\` to move multiple cards at once. Supply the layouts array with one entry per card you want to place. Cards not listed stay where they are. Grid is 24 columns wide; (x + w) must be <= 24.`,

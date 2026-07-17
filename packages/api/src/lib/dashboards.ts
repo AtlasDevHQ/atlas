@@ -6,7 +6,6 @@
  */
 
 import * as crypto from "crypto";
-import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
@@ -27,10 +26,13 @@ import type {
   SharedDashboardParameterSummaryItem,
   SharedDashboardView,
 } from "@atlas/api/lib/dashboard-types";
-import { DASHBOARD_GRID } from "@atlas/api/lib/dashboard-types";
 import { getSetting } from "@atlas/api/lib/settings";
 import { resolveDateExpression, DashboardParameterError } from "@atlas/api/lib/dashboard-parameters";
-import { dashboardParametersSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
+import {
+  dashboardParametersSchema,
+  dashboardCardAnnotationsSchema,
+  dashboardCardLayoutInputSchema,
+} from "@useatlas/schemas";
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
 import type { CrudResult, CrudDataResult, CrudFailReason } from "@atlas/api/lib/conversations";
@@ -47,16 +49,12 @@ const log = createLogger("dashboards");
 
 /**
  * Tile layout in the 24-col freeform grid. Single source for both write-time
- * Zod validation (route) and read-time DB-row validation (`rowToCard`).
+ * Zod validation (route) and read-time DB-row validation (`rowToCard`). The
+ * SSOT now lives in `@useatlas/schemas` as `dashboardCardLayoutInputSchema`
+ * (#4562, beside the shared card-input union that composes it); re-exported here
+ * under the historical name so every `CardLayoutSchema` import site is unchanged.
  */
-export const CardLayoutSchema = z.object({
-  x: z.number().int().min(0).max(DASHBOARD_GRID.COLS - 1),
-  y: z.number().int().min(0).max(DASHBOARD_GRID.MAX_Y),
-  w: z.number().int().min(DASHBOARD_GRID.MIN_W).max(DASHBOARD_GRID.MAX_W),
-  h: z.number().int().min(DASHBOARD_GRID.MIN_H).max(DASHBOARD_GRID.MAX_H),
-}).refine((l) => l.x + l.w <= DASHBOARD_GRID.COLS, {
-  message: `Tile extends past column ${DASHBOARD_GRID.COLS}`,
-});
+export const CardLayoutSchema = dashboardCardLayoutInputSchema;
 
 // ---------------------------------------------------------------------------
 // Helpers

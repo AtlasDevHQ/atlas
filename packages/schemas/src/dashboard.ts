@@ -447,6 +447,147 @@ export const dashboardChartConfigSchema = z.object({
 export type DashboardChartConfigWire = z.infer<typeof dashboardChartConfigSchema>;
 
 // ---------------------------------------------------------------------------
+// Tile layout + the shared CARD INPUT UNION (#4562, PRD #4553 audit H3)
+//
+// ONE declaration of "a card the agent can author" — a SQL-backed chart card or
+// a markdown text / section card, each carrying an optional grid layout —
+// consumed by BOTH the `createDashboard` creation tool and the bound editor's
+// `addCard` (the bound `updateCard` reuses the text arm's `content` sub-schema
+// for its partial-update field, not the whole union). Before #4562 each tool
+// declared its own card schema, so the bound editor silently lacked the
+// text-card kind the creation tool had (audit H3): a future card kind could
+// reach one tool and not the other. Declaring the arms + union here once
+// structurally prevents that asymmetry — a new kind added to an arm reaches
+// every consumer.
+//
+// The authoring grid bounds (`DASHBOARD_GRID`) live here (the SSOT) rather than
+// in `@atlas/api` so the layout schema can validate against them without the
+// schemas package importing the api package. `@atlas/api/lib/dashboard-types`
+// re-exports `DASHBOARD_GRID` and `@atlas/api/lib/dashboards` re-exports the
+// layout schema as `CardLayoutSchema`, so existing import sites are unchanged.
+// Must mirror the web renderer's `grid-constants.ts`; schemas is source-bundled
+// (never npm-published), so a bump here needs no version bump.
+// ---------------------------------------------------------------------------
+
+/** Bounds of the dashboard tile grid (#1867). */
+export const DASHBOARD_GRID = {
+  COLS: 24,
+  MIN_W: 3,
+  MAX_W: 24,
+  MIN_H: 4,
+  MAX_H: 200,
+  MAX_Y: 10_000,
+} as const;
+
+/**
+ * Authoring tile layout in the 24-col freeform grid. Single source for both
+ * write-time Zod validation (the agent tools + REST route) and read-time DB-row
+ * validation (`rowToCard`). `x + w` may not exceed the column count.
+ */
+export const dashboardCardLayoutInputSchema = z
+  .object({
+    x: z.number().int().min(0).max(DASHBOARD_GRID.COLS - 1),
+    y: z.number().int().min(0).max(DASHBOARD_GRID.MAX_Y),
+    w: z.number().int().min(DASHBOARD_GRID.MIN_W).max(DASHBOARD_GRID.MAX_W),
+    h: z.number().int().min(DASHBOARD_GRID.MIN_H).max(DASHBOARD_GRID.MAX_H),
+  })
+  .refine((l) => l.x + l.w <= DASHBOARD_GRID.COLS, {
+    message: `Tile extends past column ${DASHBOARD_GRID.COLS}`,
+  });
+export type DashboardCardLayoutInputWire = z.infer<typeof dashboardCardLayoutInputSchema>;
+
+/**
+ * A SQL-backed chart / table / KPI card — the original card kind. `kind` is
+ * optional and defaults to a chart so the long-standing
+ * `{ title, sql, chartConfig }` shape keeps working; only a text card must name
+ * its kind. `.strict()` so a text card's `content` (or any stray key) can't ride
+ * along on a chart card and be silently dropped — fail fast instead.
+ */
+export const dashboardChartCardInputSchema = z
+  .object({
+    kind: z.literal("chart").optional(),
+    title: z.string().min(1).max(200).describe("Card title (visible to the user)"),
+    sql: z.string().min(1).describe("Read-only SELECT query backing the card"),
+    chartConfig: dashboardChartConfigSchema.describe("Chart type + column mapping"),
+    annotations: dashboardCardAnnotationsSchema
+      .optional()
+      .describe(
+        "Optional dated event markers ({ x, label, color? }) drawn as vertical reference lines on a line/area card (e.g. a product launch). `x` must match a value on the card's time/category axis.",
+      ),
+    layout: dashboardCardLayoutInputSchema
+      .optional()
+      .describe("Optional grid placement { x, y, w, h } on the 24-column grid."),
+  })
+  .strict();
+export type DashboardChartCardInputWire = z.infer<typeof dashboardChartCardInputSchema>;
+
+/**
+ * A markdown text / section-block card (#3138). No SQL, no chart — a header /
+ * explainer that groups the charts around it. `title` is optional (the heading
+ * usually lives in `content`); when omitted a short row title is derived from
+ * the markdown for list/diff surfaces. `.strict()` so a text card can't smuggle
+ * a `sql` / `chartConfig` past the validation it skips — a mixed payload is a
+ * caller bug, reject it.
+ */
+export const dashboardTextCardInputSchema = z
+  .object({
+    kind: z.literal("text"),
+    title: z.string().min(1).max(200).optional(),
+    content: dashboardTextCardContentSchema.describe(
+      'Markdown section header / explainer, e.g. "## Top of funnel". Rendered sanitized — no raw HTML.',
+    ),
+    layout: dashboardCardLayoutInputSchema
+      .optional()
+      .describe("Optional grid placement { x, y, w, h } on the 24-column grid."),
+  })
+  .strict();
+export type DashboardTextCardInputWire = z.infer<typeof dashboardTextCardInputSchema>;
+
+/**
+ * The shared card-input union. A card is EITHER a chart or a text block. A plain
+ * (non-discriminated) union because a chart card may omit `kind` entirely — a
+ * card with `content` and no `sql` is a text card, everything else is a chart.
+ * Consumed VERBATIM by the bound editor's `addCard`; the creation tool consumes
+ * the connection-aware {@link dashboardCreateCardInputSchema} variant below.
+ */
+export const dashboardCardInputSchema = z.union([
+  dashboardChartCardInputSchema,
+  dashboardTextCardInputSchema,
+]);
+export type DashboardCardInputWire = z.infer<typeof dashboardCardInputSchema>;
+
+/**
+ * Creation-tool chart arm — the base chart card plus the optional source
+ * `connectionId` the `createDashboard` tool validates each card's SQL against.
+ * A NAMED export (rather than an inline `.extend`) so consumers can derive the
+ * chart-card type directly (`z.infer`) instead of shape-matching the union.
+ * `.extend()` preserves the base arm's `.strict()` in Zod 4, so a stray key is
+ * still rejected.
+ */
+export const dashboardCreateChartCardInputSchema = dashboardChartCardInputSchema.extend({
+  connectionId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Source connection — omit for the default datasource."),
+});
+export type DashboardCreateChartCardInputWire = z.infer<typeof dashboardCreateChartCardInputSchema>;
+
+/**
+ * Creation-tool variant of the card union. Identical to
+ * {@link dashboardCardInputSchema} except a chart card may name the source
+ * `connectionId` it was authored against. The bound editor infers the connection
+ * from the conversation's group instead, so it has no such field. Declared here
+ * beside the base union so a future card kind is added in ONE place and reaches
+ * both tools.
+ */
+export const dashboardCreateCardInputSchema = z.union([
+  dashboardCreateChartCardInputSchema,
+  dashboardTextCardInputSchema,
+]);
+export type DashboardCreateCardInputWire = z.infer<typeof dashboardCreateCardInputSchema>;
+
+// ---------------------------------------------------------------------------
 // Shared-view projection (#4316 — data-only snapshot)
 //
 // SSOT for the payload the public / org share endpoint serializes. Mirrors

@@ -45,12 +45,12 @@ import { z } from "zod";
 import { CHART_TYPES } from "@useatlas/types";
 import {
   dashboardParametersSchema,
-  dashboardTextCardContentSchema,
-  dashboardChartConfigSchema,
-  dashboardCardAnnotationsSchema,
+  dashboardCreateCardInputSchema,
+  type DashboardCreateChartCardInputWire,
 } from "@useatlas/schemas";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { deriveTextCardTitle } from "@atlas/api/lib/dashboard-text-card";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
 import {
   extractPlaceholderNames,
@@ -58,7 +58,6 @@ import {
   resolveDashboardParameterValues,
 } from "@atlas/api/lib/dashboard-parameters";
 import {
-  CardLayoutSchema,
   resolveCardConnectionId,
   NoGroupMembersError,
 } from "@atlas/api/lib/dashboards";
@@ -94,77 +93,27 @@ export type DashboardUrlResolver = (dashboardId: string) => string;
 export const WORKSPACE_DASHBOARD_URL_RESOLVER: DashboardUrlResolver = (dashboardId) =>
   `/dashboards/${dashboardId}`;
 
-/** Chart/table/KPI config. The canonical schema lives in @useatlas/schemas so
- *  the optional `kpi` block (#3137) round-trips through every persist path
- *  instead of being stripped at one boundary. */
-const ChartConfigSchema = dashboardChartConfigSchema;
-
-/** A SQL-backed chart/table card (the original kind). `kind` is optional and
- *  defaults to a chart so the long-standing `{ title, sql, chartConfig }` shape
- *  keeps working — only a text card has to name its kind. */
-const ChartCardSchema = z
-  .object({
-    kind: z.literal("chart").optional(),
-    title: z.string().min(1).max(200),
-    sql: z.string().min(1),
-    chartConfig: ChartConfigSchema,
-    annotations: dashboardCardAnnotationsSchema
-      .optional()
-      .describe(
-        "Optional dated event markers ({ x, label, color? }) drawn as vertical reference lines on a line/area card (e.g. a product launch). `x` must match a value on the card's time/category axis.",
-      ),
-    layout: CardLayoutSchema.optional(),
-    connectionId: z
-      .string()
-      .min(1)
-      .optional()
-      .describe("Source connection — omit for the default datasource."),
-  })
-  // Strict so a text card's `content` (or any stray key) can't ride along on a
-  // chart card and be silently dropped — fail fast instead.
-  .strict();
-
 /**
- * A markdown text / section-block card (#3138). No SQL, no chart — just a
- * header/explainer that groups the charts below it. `title` is optional (the
- * header usually lives in `content`); when omitted we derive a short row title
- * from the markdown for list/diff surfaces.
+ * The card-input union is declared ONCE in `@useatlas/schemas` (#4562, audit
+ * H3) and consumed by both this creation tool and the bound editor's `addCard`
+ * (the bound `updateCard` reuses only the text arm's `content` sub-schema), so a
+ * future card kind can never reach one tool and not the other.
+ * `createDashboard` takes the connection-aware variant — a chart card may name
+ * the `connectionId` it was authored against (validated against that
+ * connection's dialect); the bound editor infers its connection from the
+ * conversation group, so it consumes the plain `dashboardCardInputSchema`.
  */
-const TextCardSchema = z
-  .object({
-    kind: z.literal("text"),
-    title: z.string().min(1).max(200).optional(),
-    content: dashboardTextCardContentSchema.describe(
-      'Markdown section header / explainer, e.g. "## Top of funnel". Rendered sanitized — no raw HTML.',
-    ),
-    layout: CardLayoutSchema.optional(),
-  })
-  // Strict so a text card can't smuggle a `sql`/`chartConfig` past the
-  // validation it skips — a mixed payload is a caller bug, reject it.
-  .strict();
+const CardSchema = dashboardCreateCardInputSchema;
 
-/**
- * A card is either a chart or a text block. We use a plain union (not a
- * discriminated one) because a chart card may omit `kind` entirely — a card
- * with `content` and no `sql` is a text card, everything else is a chart.
- */
-const CardSchema = z.union([ChartCardSchema, TextCardSchema]);
+/** The chart arm of the creation-tool card union (carries `sql` + `connectionId`;
+ *  the text arm has neither) — the named schema's inferred type, so it stays in
+ *  lockstep with the union arm rather than shape-matching it. */
+type ChartCardInput = DashboardCreateChartCardInputWire;
 
-type ChartCardInput = z.infer<typeof ChartCardSchema>;
-
-/**
- * Derive a short row title for a text card whose `title` the agent left blank.
- * Takes the first non-empty line, strips a leading markdown block marker
- * (heading, list bullet, or blockquote), and caps the length. Used only for
- * list/diff surfaces — the tile renders the full markdown, not this label.
- */
-export function deriveTextCardTitle(content: string): string {
-  for (const rawLine of content.split("\n")) {
-    const line = rawLine.replace(/^\s*(?:#{1,6}\s+|[-*+]\s+|>\s+)/, "").trim();
-    if (line.length > 0) return line.slice(0, 120);
-  }
-  return "Section";
-}
+// Re-exported for back-compat with existing importers (create-dashboard.test).
+// The SSOT is the standalone `dashboard-text-card` module (#4562) so the bound
+// editor's `addCard` shares it without importing this tool.
+export { deriveTextCardTitle };
 
 export type CreateDashboardCardValidationError = {
   cardIndex: number;

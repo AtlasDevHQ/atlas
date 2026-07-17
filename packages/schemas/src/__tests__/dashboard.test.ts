@@ -15,6 +15,10 @@ import {
   dashboardCardAnnotationSchema,
   dashboardCardAnnotationsSchema,
   DASHBOARD_ANNOTATIONS_MAX,
+  DASHBOARD_GRID,
+  dashboardCardLayoutInputSchema,
+  dashboardCardInputSchema,
+  dashboardCreateCardInputSchema,
   sharedDashboardCardSchema,
   sharedDashboardParameterSummaryItemSchema,
   sharedDashboardViewSchema,
@@ -433,6 +437,133 @@ describe("dashboardDrilldownConfigSchema", () => {
   test("rejects unknown keys (strict — no stray config rides along)", () => {
     expect(
       dashboardDrilldownConfigSchema.safeParse({ targetParam: "region", crossFilter: true }).success,
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Card input union (#4562 — one shared union for both authoring tools)
+// ---------------------------------------------------------------------------
+
+describe("dashboardCardLayoutInputSchema (#4562)", () => {
+  test("DASHBOARD_GRID is a 24-column grid", () => {
+    expect(DASHBOARD_GRID.COLS).toBe(24);
+  });
+
+  test("accepts an in-bounds placement", () => {
+    expect(dashboardCardLayoutInputSchema.safeParse({ x: 0, y: 0, w: 24, h: 8 }).success).toBe(true);
+    expect(dashboardCardLayoutInputSchema.safeParse({ x: 12, y: 3, w: 12, h: 8 }).success).toBe(true);
+  });
+
+  test("rejects a tile that overflows the column count (x + w > COLS)", () => {
+    expect(dashboardCardLayoutInputSchema.safeParse({ x: 20, y: 0, w: 12, h: 8 }).success).toBe(false);
+  });
+
+  test("rejects a width below the minimum", () => {
+    expect(
+      dashboardCardLayoutInputSchema.safeParse({ x: 0, y: 0, w: DASHBOARD_GRID.MIN_W - 1, h: 8 }).success,
+    ).toBe(false);
+  });
+});
+
+describe("dashboardCardInputSchema (#4562 — shared card union)", () => {
+  const chartConfig = { type: "line" as const, categoryColumn: "week", valueColumns: ["count"] };
+
+  test("round-trips a chart card without an explicit kind", () => {
+    const parsed = dashboardCardInputSchema.parse({
+      title: "Signups",
+      sql: "SELECT week, count(*) FROM users GROUP BY 1",
+      chartConfig,
+    });
+    // A card with sql + no content is a chart.
+    expect("sql" in parsed && parsed.sql.length > 0).toBe(true);
+    expect("content" in parsed).toBe(false);
+  });
+
+  test("round-trips a chart card with an explicit kind + layout + annotations", () => {
+    const parsed = dashboardCardInputSchema.parse({
+      kind: "chart",
+      title: "Signups",
+      sql: "SELECT 1",
+      chartConfig,
+      annotations: [{ x: "2026-01", label: "Launch" }],
+      layout: { x: 0, y: 0, w: 12, h: 8 },
+    });
+    expect(parsed.kind).toBe("chart");
+  });
+
+  test("round-trips a text / section card with layout", () => {
+    const parsed = dashboardCardInputSchema.parse({
+      kind: "text",
+      content: "## Top of funnel",
+      layout: { x: 0, y: 0, w: 24, h: 4 },
+    });
+    expect(parsed.kind).toBe("text");
+    expect("content" in parsed && parsed.content).toBe("## Top of funnel");
+  });
+
+  test("rejects a chart card carrying a text card's content (strict)", () => {
+    expect(
+      dashboardCardInputSchema.safeParse({ title: "X", sql: "SELECT 1", chartConfig, content: "## nope" })
+        .success,
+    ).toBe(false);
+  });
+
+  test("rejects a text card smuggling sql (strict)", () => {
+    expect(
+      dashboardCardInputSchema.safeParse({ kind: "text", content: "## h", sql: "SELECT 1" }).success,
+    ).toBe(false);
+  });
+
+  test("rejects a text card with empty content", () => {
+    expect(dashboardCardInputSchema.safeParse({ kind: "text", content: "   " }).success).toBe(false);
+  });
+
+  test("rejects a chart card's connectionId (creation-only field)", () => {
+    // The base union has no connectionId — only the creation variant does.
+    expect(
+      dashboardCardInputSchema.safeParse({ title: "X", sql: "SELECT 1", chartConfig, connectionId: "c1" })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe("dashboardCreateCardInputSchema (#4562 — creation variant)", () => {
+  const chartConfig = { type: "table" as const, categoryColumn: "x", valueColumns: ["y"] };
+
+  test("accepts a chart card naming a connectionId", () => {
+    const parsed = dashboardCreateCardInputSchema.parse({
+      title: "Orders",
+      sql: "SELECT 1",
+      chartConfig,
+      connectionId: "conn-prod",
+    });
+    expect("connectionId" in parsed && parsed.connectionId).toBe("conn-prod");
+  });
+
+  test("still round-trips a text card (no connectionId on the text arm)", () => {
+    const parsed = dashboardCreateCardInputSchema.parse({ kind: "text", content: "## Cohorts" });
+    expect(parsed.kind).toBe("text");
+  });
+
+  test("a text card cannot carry a connectionId (strict)", () => {
+    expect(
+      dashboardCreateCardInputSchema.safeParse({ kind: "text", content: "## h", connectionId: "c1" })
+        .success,
+    ).toBe(false);
+  });
+
+  test("the chart arm stays strict through .extend — rejects an unknown key", () => {
+    // Pins the Zod-4 behavior that `.extend()` preserves the base arm's
+    // `.strict()`, so a future bump can't silently start allowing stray keys.
+    expect(
+      dashboardCreateCardInputSchema.safeParse({
+        title: "X",
+        sql: "SELECT 1",
+        chartConfig,
+        connectionId: "c1",
+        bogus: true,
+      }).success,
     ).toBe(false);
   });
 });

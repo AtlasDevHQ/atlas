@@ -170,9 +170,11 @@ describe("bound-dashboard tools — drafts", () => {
       });
 
       const result = await runTool<{ kind: string }>(tools.addCard, {
-        title: "Test",
-        sql: "SELECT 1",
-        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        card: {
+          title: "Test",
+          sql: "SELECT 1",
+          chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        },
       });
       expect(result.kind).toBe("ok");
 
@@ -219,9 +221,11 @@ describe("bound-dashboard tools — drafts", () => {
       });
 
       const result = await runTool<{ kind: string }>(tools.addCard, {
-        title: "Scoped card",
-        sql: "SELECT 1",
-        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        card: {
+          title: "Scoped card",
+          sql: "SELECT 1",
+          chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        },
       });
       expect(result.kind).toBe("ok");
 
@@ -269,9 +273,11 @@ describe("bound-dashboard tools — drafts", () => {
       });
 
       await runTool(tools.addCard, {
-        title: "Unscoped card",
-        sql: "SELECT 1",
-        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        card: {
+          title: "Unscoped card",
+          sql: "SELECT 1",
+          chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        },
       });
 
       const saveCall = queryCalls.find((c) => c.sql.includes("UPDATE dashboard_user_drafts"));
@@ -294,9 +300,11 @@ describe("bound-dashboard tools — drafts", () => {
         // userId intentionally omitted.
       });
       const result = await runTool<{ kind: string; error?: string }>(tools.addCard, {
-        title: "Anon",
-        sql: "SELECT 1",
-        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        card: {
+          title: "Anon",
+          sql: "SELECT 1",
+          chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        },
       });
       expect(result.kind).toBe("err");
       expect(result.error).toMatch(/sign/i);
@@ -388,14 +396,18 @@ describe("bound-dashboard tools — drafts", () => {
         userId: "user-1",
       });
       const tabA = await runTool<{ kind: string }>(tools.addCard, {
-        title: "Tab A",
-        sql: "SELECT 1",
-        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        card: {
+          title: "Tab A",
+          sql: "SELECT 1",
+          chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        },
       });
       const tabB = await runTool<{ kind: string }>(tools.addCard, {
-        title: "Tab B",
-        sql: "SELECT 1",
-        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        card: {
+          title: "Tab B",
+          sql: "SELECT 1",
+          chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+        },
       });
       expect(tabA.kind).toBe("ok");
       expect(tabB.kind).toBe("ok");

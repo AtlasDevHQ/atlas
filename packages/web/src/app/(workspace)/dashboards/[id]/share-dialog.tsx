@@ -221,7 +221,7 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
           Share
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Share Dashboard</DialogTitle>
           <DialogDescription>
@@ -249,8 +249,14 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
                 <TabsContent value="link" className="mt-4 grid gap-4">
                 <div className="flex gap-2">
                   <Input value={shareUrl} readOnly className="font-mono text-xs" />
-                  <Button variant="outline" size="icon" onClick={handleCopy} title="Copy link">
-                    {copied ? <Check className="size-4 text-green-500" /> : <Copy className="size-4" />}
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={handleCopy}
+                    title="Copy link"
+                    aria-label={copied ? "Link copied" : "Copy link"}
+                  >
+                    {copied ? <Check className="size-4 text-emerald-600 dark:text-emerald-400" /> : <Copy className="size-4" />}
                   </Button>
                 </div>
 
@@ -261,7 +267,7 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1">
-                      <Lock className="size-3" /> Org only
+                      <Lock className="size-3" /> Organization
                     </span>
                   )}
                   {expiresAt ? (
@@ -271,7 +277,7 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
                       })}
                     </span>
                   ) : (
-                    <span>No expiry</span>
+                    <span>Never expires</span>
                   )}
                 </div>
 
@@ -376,7 +382,7 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
                   />
                   <Button variant="outline" size="sm" onClick={handleCopyEmbed} className="justify-self-start">
                     {copiedEmbed ? (
-                      <Check className="mr-1.5 size-3.5 text-green-500" />
+                      <Check className="mr-1.5 size-3.5 text-emerald-600 dark:text-emerald-400" />
                     ) : (
                       <Code className="mr-1.5 size-3.5" />
                     )}

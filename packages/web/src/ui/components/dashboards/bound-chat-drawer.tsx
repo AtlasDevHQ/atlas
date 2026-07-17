@@ -15,11 +15,13 @@
  *     transcript panel rendering messages with the same Markdown +
  *     ToolPart components used in the live drawer.
  *
- * Safe mutations (addCard, updateCard title/chartConfig/layout,
- * updateDashboardMeta) commit immediately to the user's draft. The
- * Publish UI on the dashboard page promotes the draft to published
- * via a diff-confirm modal. Destructive ops (removeCard, updateCardSql)
- * stage as ghost overlays the user accepts or discards inline.
+ * Every bound edit — safe (addCard, updateCard title/chartConfig/layout,
+ * updateDashboardMeta) AND destructive (removeCard, updateCardSql) — commits
+ * immediately to the user's draft; the Publish UI on the dashboard page promotes
+ * the draft to published via a diff-confirm modal. Destructive ops surface a
+ * one-click inline Undo (the inverse draft edit) via `<DraftEditUndoCard>` — the
+ * old accept/discard ghost-overlay staging model was retired in ADR-0034
+ * (Decision 2), which made the draft the single edit mechanism.
  */
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";

@@ -125,11 +125,11 @@ export function DraftStatusBanner({
       {hasDraft && (
         <div
           data-testid="draft-status-banner"
-          className="flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200"
+          className="flex flex-col gap-2 rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-900 sm:flex-row sm:flex-wrap sm:items-center dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200"
         >
           <Badge
             variant="outline"
-            className="border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-100"
+            className="self-start border-amber-300 bg-amber-100 text-amber-900 sm:self-auto dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-100"
             data-testid="draft-badge"
           >
             <Pencil className="mr-1 size-3" aria-hidden="true" />
@@ -139,7 +139,7 @@ export function DraftStatusBanner({
             Editing your draft — unpublished changes only you can see until you
             Publish.
           </span>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 self-end sm:self-auto">
             <Button
               size="sm"
               variant="outline"

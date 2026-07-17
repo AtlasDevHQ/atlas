@@ -627,7 +627,7 @@ let mockResetThrow: Error | null = null;
 
 void mock.module("@atlas/api/lib/residency/migrate", () => ({
   triggerMigrationExecution: () => {},
-  failStaleMigrations: () => Promise.resolve(0),
+  failStaleMigrations: () => Promise.resolve({ found: 0, reaped: 0 }),
   resetMigrationForRetry: () => {
     if (mockResetThrow) return Promise.reject(mockResetThrow);
     return Promise.resolve(mockResetResult);

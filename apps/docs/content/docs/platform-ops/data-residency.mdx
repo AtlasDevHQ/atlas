@@ -236,7 +236,7 @@ residency: {
 
 ### Automatic recovery from a crashed migration
 
-A migrating workspace is write-locked while its migration row is `in_progress`. If the API process crashes mid-migration, a background reaper fails the stuck row automatically: any migration `in_progress` for longer than **5 minutes** is marked `failed` (with a `stale_timeout` audit event), which releases the workspace write-lock. The reaper sweeps every minute, so the worst-case lock window after a crash is about 6 minutes — no operator action is required. The failed migration can then be retried with the retry endpoint below.
+A migrating workspace is write-locked while its migration row is `in_progress`. If the API process crashes mid-migration, a background reaper fails the stuck row automatically: any migration still `in_progress` more than **5 minutes** after it was requested is marked `failed` (with a `region_migration_failed` audit log entry, reason `stale_timeout`), which releases the workspace write-lock. The reaper sweeps every minute, so the worst-case lock window after a crash is about 6 minutes — no operator action is required. The failed migration can then be retried with the retry endpoint below; the retry restarts the staleness clock, so a retried migration gets the full window again.
 
 ### Retry and cancel
 

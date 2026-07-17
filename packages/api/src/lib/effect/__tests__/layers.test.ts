@@ -418,9 +418,10 @@ describe("makeSchedulerLive", () => {
     {
       // Cleanup/sweep fibers. Eight were retrofitted by #2945;
       // `orphan_task_reconcile` (#2944) shipped with its span and attaches
-      // the orphan count as a result attribute (one of the two
-      // `spanResultAttributes` fibers — the other is `unclaimed_grace_reap`
-      // in the work record, #3796).
+      // the orphan count as a result attribute, as does
+      // `region_migration_stale_reap` (#4459, stale-found/reaped counts);
+      // the work record adds `unclaimed_grace_reap` (#3796) and the three
+      // #4195 DB/refresh jobs.
       constName: "SCHEDULER_CLEANUP_SPAN_NAMES",
       record: SCHEDULER_CLEANUP_SPAN_NAMES as Record<string, string>,
       expectedKeys: [
@@ -753,6 +754,22 @@ describe("makeSchedulerLive", () => {
         registrationIdx + 2000,
       );
       expect(registrationBlock).toContain("failStaleMigrations");
+    });
+
+    test("the cadence is wired to STALE_MIGRATION_REAP_INTERVAL_MS", () => {
+      // The bounded-window guarantee (unlock ≤ threshold + one interval) is
+      // pinned in migrate.test.ts against the CONSTANT — this ties the fiber
+      // to that constant, so a re-hardcoded interval (e.g. hourly) can't
+      // silently void the guarantee while the invariant test stays green.
+      // Same shape as the #4130 settings-backed cadence guard above.
+      const registrationIdx = layersSource.indexOf(
+        'name: "region_migration_stale_reap"',
+      );
+      const registrationBlock = layersSource.slice(
+        registrationIdx,
+        registrationIdx + 2000,
+      );
+      expect(registrationBlock).toContain("STALE_MIGRATION_REAP_INTERVAL_MS");
     });
   });
 });

@@ -169,7 +169,8 @@ function withFiberDeathLog<A, E, R>(
 // error itself goes to `log.warn`). These spans answer "is the fiber still
 // ticking?" via presence/absence + cadence, NOT "did this tick error?". The
 // exceptions are the `spanResultAttributes` fibers — `orphan_task_reconcile`
-// (#2944), `unclaimed_grace_reap` (#3796), and the three #4195 DB/refresh jobs
+// (#2944), `unclaimed_grace_reap` (#3796), `region_migration_stale_reap`
+// (#4459), and the three #4195 DB/refresh jobs
 // (`byot_catalog_refresh`, `openapi_spec_refresh`, `openapi_install_rediscover`)
 // — which deliberately invert the ordering (raw tick spanned, recovery applied
 // OUTSIDE) to keep their result attributes truthful; see `registerPeriodicFiber`
@@ -181,8 +182,9 @@ function withFiberDeathLog<A, E, R>(
 //     expired in-memory or DB state). Eight were retrofitted with a span by
 //     #2945 (the TTL/ratelimit/state sweeps below); the ninth,
 //     `orphan_task_reconcile` (#2944), shipped with its span from day one and
-//     additionally attaches the orphan count as a result attribute (the sole
-//     `spanResultAttributes` fiber in THIS record — the work record adds
+//     additionally attaches the orphan count as a result attribute (one of
+//     two `spanResultAttributes` fibers in THIS record, with
+//     `region_migration_stale_reap` — the work record adds
 //     `unclaimed_grace_reap` plus the three #4195 DB/refresh jobs; the
 //     scheduler engine uses that 4th arg elsewhere, inside its own module).
 //     The tenth,
@@ -195,8 +197,8 @@ function withFiberDeathLog<A, E, R>(
 //     The thirteenth, `region_migration_stale_reap` (#4459, ADR-0024), fails
 //     region migrations stuck `in_progress` past the stale threshold so a
 //     crashed migration releases its workspace write-lock without waiting for
-//     an admin to request another migration (it attaches the reaped count as
-//     a result attribute, like `orphan_task_reconcile`).
+//     an admin to request another migration (it attaches the stale-found and
+//     reaped counts as result attributes, like `orphan_task_reconcile`).
 //
 //   • SCHEDULER_WORK_SPAN_NAMES — background-work fibers (they perform
 //     recurring side-effecting work rather than evicting state):
@@ -2536,7 +2538,9 @@ export function makeSchedulerLive(
 
       // ── Periodic fiber: stale region-migration reaper (#4459, ADR-0024) ──
       // Fails `region_migrations` rows stuck `in_progress` past the stale
-      // threshold. A migrating workspace is write-locked
+      // threshold (anchored to `requested_at` — no started_at column — so the
+      // retry reset refreshes it; see `resetMigrationForRetry`). A migrating
+      // workspace is write-locked
       // (`isWorkspaceMigrating`), so if the API process crashes mid-migration
       // the lock would otherwise persist until an admin happened to request
       // ANOTHER migration — previously the only call site of
@@ -2568,6 +2572,8 @@ export function makeSchedulerLive(
             };
             return hasInternalDB();
           },
+          failLog:
+            "Stale region-migration reaper gate check failed — crashed migrations will NOT auto-unlock",
           skipLog: "No internal database — stale region-migration reaper not started",
         },
         tick: Effect.tryPromise({
@@ -2575,12 +2581,15 @@ export function makeSchedulerLive(
             const { failStaleMigrations } = await import(
               "@atlas/api/lib/residency/migrate"
             );
+            // Throws when stale rows were found but NONE could be reaped —
+            // that tick must surface as span ERROR + warn, not a quiet zero.
             return failStaleMigrations();
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
         }),
-        spanResultAttributes: (failedCount) => ({
-          "atlas.region_migration.stale_failed": failedCount,
+        spanResultAttributes: (result) => ({
+          "atlas.region_migration.stale_found": result.found,
+          "atlas.region_migration.stale_reaped": result.reaped,
         }),
         onTickFailure: {
           level: "warn",
@@ -2593,8 +2602,8 @@ export function makeSchedulerLive(
       // Counts `scheduled_tasks` whose `plugin_id` has no live
       // `workspace_plugins` row — the residue a non-atomic plugin uninstall
       // leaves when the post-DELETE task cleanup fails. The count rides the
-      // per-tick span as a result attribute (the only one of these cleanup
-      // fibers that attaches one), so an operator querying traces sees orphan
+      // per-tick span as a result attribute (one of two cleanup fibers that
+      // attach one — see `region_migration_stale_reap` above), so an operator querying traces sees orphan
       // accumulation; a `log.warn` fires on the same tick when > 0. The
       // destructive sweep is gated behind `ATLAS_ORPHAN_TASK_RECONCILE`
       // (default off — measure-only); the module no-ops when the internal DB

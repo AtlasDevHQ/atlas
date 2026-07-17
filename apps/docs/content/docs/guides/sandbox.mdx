@@ -33,7 +33,7 @@ In SaaS mode the page is titled **Execution Environment** and presents a card gr
 
 Managed Firecracker microVM with network isolation (the `vercel-sandbox` backend, pinned by the SaaS platform). No credentials needed and no setup required. This is the default for all workspaces and is marked **(Recommended)**.
 
-Atlas Cloud sandboxes execute in the US (Vercel's `iad1` region) regardless of the workspace's data-residency region — connect your own provider below for region-controlled `explore` execution (Python coverage is per-provider; see [Python Tool Coverage](#python-tool-coverage)). See [Sandbox Execution Locality](/platform-ops/data-residency#sandbox-execution-locality) for what transits and the isolation controls.
+Atlas Cloud sandboxes execute in the US (Vercel's `iad1` region) regardless of the workspace's data-residency region — connect your own provider below to control where `explore` executes (locality follows your provider account's region configuration; Python coverage is per-provider, see [Python Tool Coverage](#python-tool-coverage)). See [Sandbox Execution Locality](/platform-ops/data-residency#sandbox-execution-locality) for what transits and the isolation controls.
 
 - **Active state** — highlighted border with "Active" badge
 - **Inactive state** — click **Select** to make it active

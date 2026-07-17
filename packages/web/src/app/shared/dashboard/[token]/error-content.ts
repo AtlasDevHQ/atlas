@@ -20,7 +20,8 @@ export interface ErrorContent {
   readonly heading: string;
   readonly message: string;
   readonly primaryAction: PrimaryAction;
-  /** Whether to also offer the "Try again" outline link (transient failures only). */
+  /** Whether to also offer the "Try again" outline link — for non-terminal
+   *  failures (expired, network-error, server-error), not not-found or the auth wall. */
   readonly showTryAgain: boolean;
 }
 

@@ -122,6 +122,16 @@ describe("fetchSharedDashboardRaw (#4317)", () => {
     expect(result).toEqual({ ok: false, reason: "login-required" });
   });
 
+  test("a 401 is login-required regardless of body — never reclassified as wrong-org", async () => {
+    // Locks the status===401 short-circuit: even a (contradictory) forbidden body
+    // can't turn a no-session 401 into membership-required.
+    stubFetch(401, { error: "forbidden" });
+    expect(await fetchSharedDashboardRaw("abc123def456ghi789jkl")).toEqual({
+      ok: false,
+      reason: "login-required",
+    });
+  });
+
   test("defaults an unrecognized/malformed 403 body to login-required (never dead-ends a no-session viewer)", async () => {
     // A 403 whose body carries no `forbidden` code must not be misclassified as
     // wrong-org — the safe default keeps a login path open (#4690).

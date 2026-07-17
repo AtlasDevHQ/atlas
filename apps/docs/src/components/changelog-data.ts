@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.55",
+    title: "Dashboard Second Elevation",
+    date: "2026-07-17",
+    summary:
+      "The dashboard draft becomes the single home for your in-progress work — its data and its edits — so private changes stay private until you publish. Draft cards carry their own cached results (never-run tiles load themselves), edits apply through one consistent mechanism with inline undo, and the canvas splits into a read-only View and an Edit mode where the mutating controls live. You can start a new dashboard directly on the canvas, and share a live dashboard as a framable embed whose snapshot and expiry track the underlying share. Includes a round of triaged dashboard fixes and a design-review polish pass across the share dialog, embed, and shared-view error states.",
+    highlights: [
+      "Drafts are self-contained: draft cards carry their own cached data, and never-run tiles render and refresh without touching the published dashboard",
+      "One edit mechanism with inline undo — destructive changes land in the draft and are reversible, replacing the old staging model",
+      "View is read-only; editing controls move to a dedicated Edit mode on the canvas",
+      "Start a new dashboard directly on the canvas via the bound editor, and let the agent seed cards as it creates them",
+      "Share a dashboard as a framable embed with a light/dark theme control — same snapshot, revocation, and expiry as the shared link",
+    ],
+  },
+  {
     version: "v0.0.54",
     title: "Improve Chat CORS Hotfix",
     date: "2026-07-13",

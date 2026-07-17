@@ -66,6 +66,18 @@ describe("matchError", () => {
     expect(isRetryableError(result.code)).toBe(true);
   });
 
+  test("maps pg pool acquire timeout to rate_limited, not provider_timeout (#4463)", () => {
+    // The exact message pg throws when a bounded `connectionTimeoutMillis`
+    // fires (saturated pool or unreachable-but-routable host). Must take the
+    // pool-exhausted branch, not the generic timeout branch that follows it.
+    const err = new Error("timeout exceeded when trying to connect");
+    const result = matchError(err) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("rate_limited");
+    expect(result.message).toContain("pool exhausted");
+    expect(isRetryableError(result.code)).toBe(true);
+  });
+
   // --- ECONNREFUSED ---
 
   test("matches ECONNREFUSED with host:port", () => {

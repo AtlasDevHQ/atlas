@@ -67,3 +67,44 @@ describe("SharedDashboardView — frozen parameter summary (#4316)", () => {
     expect(screen.queryByLabelText("Snapshot parameters")).toBeNull();
   });
 });
+
+describe("SharedDashboardView — as-of caption (#4565)", () => {
+  afterEach(cleanup);
+
+  test("shows 'Data as of' from dataAsOf, never 'Captured' / the creation date", () => {
+    render(
+      <SharedDashboardView
+        dashboard={dashboard({
+          // Created months ago, but the data was refreshed today.
+          createdAt: "2026-01-01T00:00:00.000Z",
+          dataAsOf: "2026-04-04T01:00:00.000Z",
+        })}
+      />,
+    );
+    const caption = screen.getByText(/Data as of/);
+    // Absolute date derives from dataAsOf (2026-04), not createdAt (2026-01).
+    expect(caption.getAttribute("datetime")).toBe("2026-04-04T01:00:00.000Z");
+    // The old creation-date caption is gone entirely.
+    expect(screen.queryByText(/Captured/)).toBeNull();
+  });
+
+  test("falls back to the freshest cache stamp when dataAsOf is absent (deploy overlap)", () => {
+    const legacy = dashboard({
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastRefreshAt: "2026-03-02T00:00:00.000Z",
+    });
+    delete (legacy as { dataAsOf?: unknown }).dataAsOf;
+    render(<SharedDashboardView dashboard={legacy} />);
+    // Resolves against lastRefreshAt (data time), never the Jan creation date.
+    expect(screen.getByText(/Data as of/).getAttribute("datetime")).toBe(
+      "2026-03-02T00:00:00.000Z",
+    );
+  });
+
+  test("omits the caption when the snapshot carries no data instant", () => {
+    // No dataAsOf, no lastRefreshAt, no cached cards — never falls back to createdAt.
+    render(<SharedDashboardView dashboard={dashboard({ dataAsOf: null })} />);
+    expect(screen.queryByText(/Data as of/)).toBeNull();
+    expect(screen.queryByText(/Captured/)).toBeNull();
+  });
+});

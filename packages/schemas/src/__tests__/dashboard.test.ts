@@ -518,6 +518,15 @@ describe("sharedDashboardViewSchema (#4316)", () => {
     expect(sharedDashboardViewSchema.safeParse({ ...validView, shareMode: "org" }).success).toBe(true);
   });
 
+  test("accepts an optional dataAsOf capture instant, string or null (#4565)", () => {
+    expect(
+      sharedDashboardViewSchema.safeParse({ ...validView, dataAsOf: "2026-04-04T01:00:00.000Z" }).success,
+    ).toBe(true);
+    expect(sharedDashboardViewSchema.safeParse({ ...validView, dataAsOf: null }).success).toBe(true);
+    // Optional — a pre-#4565 payload that omits it still parses (validView itself).
+    expect(sharedDashboardViewSchema.safeParse(validView).success).toBe(true);
+  });
+
   test("rejects a snapshot that leaks orgId / ownerId / shareToken / refreshSchedule / parameters", () => {
     for (const stray of [
       { orgId: "org-1" },

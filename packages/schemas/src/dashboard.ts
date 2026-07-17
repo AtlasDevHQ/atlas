@@ -524,6 +524,10 @@ export const sharedDashboardViewSchema = z
     // Optional for wire forward-compat only — the server projection always
     // emits it (see `SharedDashboardView.parameterSummary`).
     parameterSummary: z.array(sharedDashboardParameterSummaryItemSchema).optional(),
+    // The snapshot's data-capture instant (#4565) — nullable when the board
+    // carries no cached data. Optional for the same deploy-overlap fwd-compat as
+    // `parameterSummary` (see `SharedDashboardView.dataAsOf`).
+    dataAsOf: z.string().nullable().optional(),
     createdAt: z.string(),
     updatedAt: z.string(),
     lastRefreshAt: z.string().nullable(),

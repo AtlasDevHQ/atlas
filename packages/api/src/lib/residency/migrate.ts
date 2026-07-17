@@ -26,8 +26,24 @@ const CLEANUP_GRACE_PERIOD_DAYS = 7;
 
 const log = createLogger("region-migration");
 
-/** Stale migration threshold: 5 minutes. */
-const STALE_THRESHOLD_MS = 5 * 60 * 1000;
+/**
+ * Stale migration threshold: 5 minutes.
+ *
+ * Exported for the `region_migration_stale_reap` periodic fiber (#4459) and
+ * its bounded-window contract test. Keep the operator-facing copy in
+ * `data-residency.mdx` in sync if this changes.
+ */
+export const STALE_THRESHOLD_MS = 5 * 60 * 1000;
+
+/**
+ * Cadence of the `region_migration_stale_reap` periodic fiber (#4459).
+ *
+ * Must not exceed {@link STALE_THRESHOLD_MS}: a workspace whose migration
+ * crashed mid-flight stays write-locked (`isWorkspaceMigrating`) until the
+ * reaper fails the row, so the sweep interval bounds the worst-case unlock
+ * window at threshold + one interval (~6 min today) with no operator action.
+ */
+export const STALE_MIGRATION_REAP_INTERVAL_MS = 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Migration steps (for logging)
@@ -411,11 +427,23 @@ export function triggerMigrationExecution(migrationId: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Find and fail migrations stuck in "in_progress" for longer than the threshold.
- * Returns the number of migrations marked as failed.
+ * Find and fail migrations stuck in "in_progress" past the stale threshold.
+ * Staleness is anchored to `requested_at` (there is no started_at column), so
+ * the retry reset MUST refresh `requested_at` — see `resetMigrationForRetry`.
+ *
+ * Returns `found` (stale rows detected) and `reaped` (rows successfully marked
+ * failed) separately so the `region_migration_stale_reap` fiber's span can
+ * distinguish "nothing stale" from "stale but couldn't reap" (#4459). Throws
+ * when rows were found but NONE could be reaped — the workspace write-lock is
+ * still stuck, which callers must surface as a failure (span ERROR + warn),
+ * not a quiet zero. Partial success stays non-throwing: the per-row error is
+ * already logged and the next sweep retries the stragglers.
  */
-export async function failStaleMigrations(): Promise<number> {
-  if (!hasInternalDB()) return 0;
+export async function failStaleMigrations(): Promise<{
+  found: number;
+  reaped: number;
+}> {
+  if (!hasInternalDB()) return { found: 0, reaped: 0 };
 
   const staleThresholdSec = STALE_THRESHOLD_MS / 1000;
   const staleRows = await internalQuery<{ id: string; workspace_id: string }>(
@@ -425,18 +453,18 @@ export async function failStaleMigrations(): Promise<number> {
     [staleThresholdSec],
   );
 
-  let failedCount = 0;
+  let reaped = 0;
   for (const row of staleRows) {
     try {
       await updateMigrationStatus(row.id, "failed", {
-        errorMessage: "Migration timed out — stuck in progress for over 5 minutes",
+        errorMessage: `Migration timed out — stuck in progress for over ${STALE_THRESHOLD_MS / 60_000} minutes`,
         completedAt: new Date().toISOString(),
       });
       logMigrationEvent("region_migration_failed", row.id, {
         workspaceId: row.workspace_id,
         reason: "stale_timeout",
       });
-      failedCount++;
+      reaped++;
       log.warn({ migrationId: row.id, workspaceId: row.workspace_id }, "Stale migration marked as failed");
     } catch (err) {
       log.error(
@@ -446,7 +474,13 @@ export async function failStaleMigrations(): Promise<number> {
     }
   }
 
-  return failedCount;
+  if (staleRows.length > 0 && reaped === 0) {
+    throw new Error(
+      `Found ${staleRows.length} stale region migration(s) but could not mark any as failed — affected workspaces remain write-locked`,
+    );
+  }
+
+  return { found: staleRows.length, reaped };
 }
 
 // ---------------------------------------------------------------------------
@@ -568,8 +602,15 @@ export async function resetMigrationForRetry(
   }
 
   try {
+    // `requested_at = NOW()` restarts the staleness clock: the reaper
+    // (`failStaleMigrations`, swept every minute by the
+    // `region_migration_stale_reap` fiber) anchors its threshold to
+    // `requested_at`, so without this reset a retry started more than
+    // STALE_THRESHOLD_MS after the original request would re-enter
+    // `in_progress` already "stale" and be killed within one sweep (#4459).
     await internalQuery(
-      `UPDATE region_migrations SET status = 'pending', error_message = NULL, completed_at = NULL
+      `UPDATE region_migrations SET status = 'pending', error_message = NULL, completed_at = NULL,
+              requested_at = NOW()
        WHERE id = $1`,
       [migrationId],
     );

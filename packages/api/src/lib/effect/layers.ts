@@ -177,7 +177,7 @@ function withFiberDeathLog<A, E, R>(
 //
 // Membership splits into two single-source records, by fiber kind:
 //
-//   • SCHEDULER_CLEANUP_SPAN_NAMES — 12 cleanup/sweep fibers (they evict
+//   • SCHEDULER_CLEANUP_SPAN_NAMES — 13 cleanup/sweep fibers (they evict
 //     expired in-memory or DB state). Eight were retrofitted with a span by
 //     #2945 (the TTL/ratelimit/state sweeps below); the ninth,
 //     `orphan_task_reconcile` (#2944), shipped with its span from day one and
@@ -192,6 +192,11 @@ function withFiberDeathLog<A, E, R>(
 //     durable-session runs past the retention window. The twelfth,
 //     `region_probe_rate_sweep` (#3973, ADR-0024 §3), evicts expired per-IP
 //     buckets from the login front-door's hashed-email existence-probe limiter.
+//     The thirteenth, `region_migration_stale_reap` (#4459, ADR-0024), fails
+//     region migrations stuck `in_progress` past the stale threshold so a
+//     crashed migration releases its workspace write-lock without waiting for
+//     an admin to request another migration (it attaches the reaped count as
+//     a result attribute, like `orphan_task_reconcile`).
 //
 //   • SCHEDULER_WORK_SPAN_NAMES — background-work fibers (they perform
 //     recurring side-effecting work rather than evicting state):
@@ -249,6 +254,7 @@ export const SCHEDULER_CLEANUP_SPAN_NAMES = {
   share_token_cleanup: "atlas.scheduler.share_token_cleanup",
   orphan_task_reconcile: "atlas.scheduler.orphan_task_reconcile",
   agent_runs_retention_sweep: "atlas.scheduler.agent_runs_retention_sweep",
+  region_migration_stale_reap: "atlas.scheduler.region_migration_stale_reap",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // Per-tick spans for the background-work fibers (#2987). Same wrap shape and
@@ -2526,6 +2532,61 @@ export function makeSchedulerLive(
           message: "agent_runs retention sweep tick failed",
           viaCause: true,
         },
+      });
+
+      // ── Periodic fiber: stale region-migration reaper (#4459, ADR-0024) ──
+      // Fails `region_migrations` rows stuck `in_progress` past the stale
+      // threshold. A migrating workspace is write-locked
+      // (`isWorkspaceMigrating`), so if the API process crashes mid-migration
+      // the lock would otherwise persist until an admin happened to request
+      // ANOTHER migration — previously the only call site of
+      // `failStaleMigrations` (the request route still calls it
+      // opportunistically for instant recovery at request time; this fiber is
+      // the bounded-window guarantee). Cadence ≤ threshold, pinned by
+      // `migrate.test.ts`, so the worst-case unlock window is threshold + one
+      // interval (~6 min) with no operator action. Gated on an internal DB —
+      // without one there are no `region_migrations` rows to reap.
+      //
+      // Error ordering: `spanResultAttributes` attaches the reaped count, so
+      // the span wraps the RAW tick (a failed tick records ERROR, not a
+      // status-OK span with a fabricated zero) and loop-liveness recovery is
+      // applied OUTSIDE it — the orphan_task_reconcile pattern.
+      yield* registerPeriodicFiber({
+        name: "region_migration_stale_reap",
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as orphan_task_reconcile)
+          const { STALE_MIGRATION_REAP_INTERVAL_MS } = require("@atlas/api/lib/residency/migrate") as {
+            STALE_MIGRATION_REAP_INTERVAL_MS: number;
+          };
+          return STALE_MIGRATION_REAP_INTERVAL_MS;
+        },
+        gate: {
+          check: () => {
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            return hasInternalDB();
+          },
+          skipLog: "No internal database — stale region-migration reaper not started",
+        },
+        tick: Effect.tryPromise({
+          try: async () => {
+            const { failStaleMigrations } = await import(
+              "@atlas/api/lib/residency/migrate"
+            );
+            return failStaleMigrations();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        spanResultAttributes: (failedCount) => ({
+          "atlas.region_migration.stale_failed": failedCount,
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Stale region-migration reap tick failed — will retry next interval",
+        },
+        startLog: "Stale region-migration reaper started",
       });
 
       // ── Periodic fiber: orphan plugin-task reconcile (#2944) — hourly ──

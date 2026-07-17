@@ -26,8 +26,24 @@ const CLEANUP_GRACE_PERIOD_DAYS = 7;
 
 const log = createLogger("region-migration");
 
-/** Stale migration threshold: 5 minutes. */
-const STALE_THRESHOLD_MS = 5 * 60 * 1000;
+/**
+ * Stale migration threshold: 5 minutes.
+ *
+ * Exported for the `region_migration_stale_reap` periodic fiber (#4459) and
+ * its bounded-window contract test. Keep the operator-facing copy in
+ * `data-residency.mdx` in sync if this changes.
+ */
+export const STALE_THRESHOLD_MS = 5 * 60 * 1000;
+
+/**
+ * Cadence of the `region_migration_stale_reap` periodic fiber (#4459).
+ *
+ * Must not exceed {@link STALE_THRESHOLD_MS}: a workspace whose migration
+ * crashed mid-flight stays write-locked (`isWorkspaceMigrating`) until the
+ * reaper fails the row, so the sweep interval bounds the worst-case unlock
+ * window at threshold + one interval (~6 min today) with no operator action.
+ */
+export const STALE_MIGRATION_REAP_INTERVAL_MS = 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Migration steps (for logging)

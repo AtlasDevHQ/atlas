@@ -436,6 +436,7 @@ describe("makeSchedulerLive", () => {
         "share_token_cleanup",
         "orphan_task_reconcile",
         "agent_runs_retention_sweep",
+        "region_migration_stale_reap",
       ],
     },
     {
@@ -728,6 +729,30 @@ describe("makeSchedulerLive", () => {
       // ...and the memory sweep must come first in source order (the tick runs
       // its yields sequentially, so source order is execution order).
       expect(memoryIdx).toBeLessThan(terminalIdx);
+    });
+  });
+
+  // ── region_migration_stale_reap tick body (#4459) ─────────────────────────
+  // The registration wiring guard above proves a `name:
+  // "region_migration_stale_reap"` registration exists, but not that its tick
+  // actually invokes the reaper — a refactor could leave the fiber ticking a
+  // no-op while a crashed migration keeps the workspace write-locked forever
+  // (the exact regression #4459 fixed: the reaper used to run ONLY when an
+  // admin happened to request another migration). Same structural source-scan
+  // pattern as the #3757 sweep-order guard.
+  describe("region_migration_stale_reap tick invokes failStaleMigrations (#4459)", () => {
+    test("the tick body references failStaleMigrations", () => {
+      const registrationIdx = layersSource.indexOf(
+        'name: "region_migration_stale_reap"',
+      );
+      expect(registrationIdx).toBeGreaterThan(-1);
+      // The reaper call must appear inside the registration block (the next
+      // ~2000 chars is generous for one registerPeriodicFiber spec literal).
+      const registrationBlock = layersSource.slice(
+        registrationIdx,
+        registrationIdx + 2000,
+      );
+      expect(registrationBlock).toContain("failStaleMigrations");
     });
   });
 });

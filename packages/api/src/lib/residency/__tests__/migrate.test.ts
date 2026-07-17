@@ -418,6 +418,20 @@ describe("executeRegionMigration", () => {
 describe("failStaleMigrations", () => {
   beforeEach(resetMocks);
 
+  // #4459 — the reaper runs on a periodic fiber (region_migration_stale_reap
+  // in effect/layers.ts). The sweep interval must not exceed the stale
+  // threshold, so a workspace whose migration crashed is unlocked within a
+  // bounded window of at most threshold + one interval (~6 min today) without
+  // operator action.
+  it("exports a reap cadence that bounds the unlock window (#4459)", async () => {
+    const { STALE_MIGRATION_REAP_INTERVAL_MS, STALE_THRESHOLD_MS } =
+      await import("../migrate");
+    expect(STALE_MIGRATION_REAP_INTERVAL_MS).toBeGreaterThan(0);
+    expect(STALE_MIGRATION_REAP_INTERVAL_MS).toBeLessThanOrEqual(
+      STALE_THRESHOLD_MS,
+    );
+  });
+
   it("returns 0 when internal DB is not available", async () => {
     mockHasInternalDB = false;
     const count = await failStaleMigrations();

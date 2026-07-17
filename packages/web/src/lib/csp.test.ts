@@ -70,6 +70,11 @@ describe("frameAncestorsFor", () => {
     expect(frameAncestorsFor("/shared/abc123/embed/")).toBe("*");
   });
 
+  it("widens to '*' on the shared-dashboard embed sub-route (#4564)", () => {
+    expect(frameAncestorsFor("/shared/dashboard/abc123/embed")).toBe("*");
+    expect(frameAncestorsFor("/shared/dashboard/abc123/embed/")).toBe("*");
+  });
+
   it("keeps 'self' for the app/admin shell — guards the clickjacking boundary (the security decision under test)", () => {
     // A regression returning "*" here would make every admin page embeddable
     // from any origin. This is the assertion that catches an inverted ternary.
@@ -77,6 +82,9 @@ describe("frameAncestorsFor", () => {
     expect(frameAncestorsFor("/")).toBe("'self'");
     expect(frameAncestorsFor("/shared/abc123")).toBe("'self'");
     expect(frameAncestorsFor("/admin/abc123/embed")).toBe("'self'");
+    // The standalone shared-dashboard PAGE stays non-framable — only its /embed
+    // sub-route widens. (AC: "the standard share page remains non-framable".)
+    expect(frameAncestorsFor("/shared/dashboard/abc123")).toBe("'self'");
   });
 });
 
@@ -86,14 +94,24 @@ describe("isEmbedRoute", () => {
     expect(isEmbedRoute("/shared/abc123/embed/")).toBe(true);
   });
 
-  it("does NOT match the shared conversation page itself (only the embed sub-route widens frame-ancestors)", () => {
+  it("matches the shared-dashboard embed view with and without a trailing slash (#4564)", () => {
+    expect(isEmbedRoute("/shared/dashboard/abc123/embed")).toBe(true);
+    expect(isEmbedRoute("/shared/dashboard/abc123/embed/")).toBe(true);
+  });
+
+  it("does NOT match the shared conversation or dashboard page itself (only the embed sub-route widens frame-ancestors)", () => {
     expect(isEmbedRoute("/shared/abc123")).toBe(false);
     expect(isEmbedRoute("/shared/abc123/")).toBe(false);
+    expect(isEmbedRoute("/shared/dashboard/abc123")).toBe(false);
+    expect(isEmbedRoute("/shared/dashboard/abc123/")).toBe(false);
   });
 
   it("does not match deeper paths or token segments containing slashes", () => {
     expect(isEmbedRoute("/shared/abc123/embed/extra")).toBe(false);
     expect(isEmbedRoute("/shared/a/b/embed")).toBe(false);
+    // `dashboard/` is the ONLY extra segment admitted — no deeper nesting.
+    expect(isEmbedRoute("/shared/dashboard/abc123/embed/extra")).toBe(false);
+    expect(isEmbedRoute("/shared/dashboard/a/b/embed")).toBe(false);
   });
 
   it("does not match unrelated or look-alike routes (no frame-ancestors widening leak)", () => {

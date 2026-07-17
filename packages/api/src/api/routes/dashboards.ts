@@ -39,13 +39,13 @@ import {
   getShareStatus,
   getSharedDashboard,
   setRefreshSchedule,
-  CardLayoutSchema,
+  TextCardLayoutSchema,
   resolveCardConnectionId,
   NoGroupMembersError,
   type CrudFailReason,
   type SharedDashboardFailReason,
 } from "@atlas/api/lib/dashboards";
-import { CHART_TYPES } from "@atlas/api/lib/dashboard-types";
+import { CHART_TYPES, DASHBOARD_GRID } from "@atlas/api/lib/dashboard-types";
 import type { DashboardCard, DashboardWithCards } from "@atlas/api/lib/dashboard-types";
 import {
   forkOrLoadDraft,
@@ -135,7 +135,11 @@ const AddCardSchema = z
     /** Group-scoped execution target (1.4.4). Resolved to a physical
      * connection at view time via the group's primary member. */
     connectionGroupId: z.string().nullable().optional(),
-    layout: CardLayoutSchema.nullable().optional(),
+    // #4687 — validate against the SHORTER text-card height floor here (this
+    // schema carries `kind`), then re-assert the taller chart floor for a chart
+    // card in the superRefine below. A text card's one-line banner (h=2) passes;
+    // a chart card still floors at `MIN_H` (4).
+    layout: TextCardLayoutSchema.nullable().optional(),
   })
   .superRefine((v, ctx) => {
     const kind = v.kind ?? "chart";
@@ -156,6 +160,15 @@ const AddCardSchema = z
       }
       if (v.content !== undefined) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: "`content` is only valid on a text card.", path: ["content"] });
+      }
+      // #4687 — the layout field is validated against the shorter text floor;
+      // a chart card keeps the taller MIN_H (4) floor.
+      if (v.layout != null && v.layout.h < DASHBOARD_GRID.MIN_H) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `A chart card's height must be at least ${DASHBOARD_GRID.MIN_H} rows.`,
+          path: ["layout", "h"],
+        });
       }
     }
   });
@@ -181,7 +194,14 @@ const UpdateCardSchema = z.object({
    *  explicit array (including `[]` to clear) replaces them. */
   annotations: dashboardCardAnnotationsSchema.optional(),
   position: z.number().int().min(0).optional(),
-  layout: CardLayoutSchema.nullable().optional(),
+  // #4687 — the drag-to-save path carries no card `kind` (same reason `sql` on a
+  // text card isn't rejected here — no kind context without an extra read), so
+  // the layout floors at the absolute minimum (`TEXT_MIN_H`, 2) to accept a text
+  // card's shorter banner. This does NOT re-assert the chart floor server-side:
+  // the UI's per-kind resize `minH` keeps a *dragged* chart at >= `MIN_H` (4),
+  // but a direct PATCH could persist a short chart — which then renders short
+  // (valid geometry, matched by `rowToCard`'s kind-blind read), never lost.
+  layout: TextCardLayoutSchema.nullable().optional(),
 });
 
 const ShareSchema = z.object({
@@ -548,7 +568,9 @@ const DraftUndoCardSchema = z.object({
   content: z.string().nullable().optional(),
   annotations: dashboardCardAnnotationsSchema.optional(),
   connectionGroupId: z.string().nullable(),
-  layout: CardLayoutSchema.nullable(),
+  // #4687 — re-materializes a previously-valid card (chart or text); floors at
+  // the shorter text height so a text card's h=2 undo restores correctly.
+  layout: TextCardLayoutSchema.nullable(),
 });
 
 const DraftUndoBodySchema = z.discriminatedUnion("kind", [

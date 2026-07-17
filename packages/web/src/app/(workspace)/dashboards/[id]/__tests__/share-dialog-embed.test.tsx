@@ -98,6 +98,52 @@ describe("DashboardShareDialog — Embed tab (#4564)", () => {
     expect(clipboardText).toContain("<iframe");
   });
 
+  test("the appearance control defaults to System (no ?theme=) and regenerates the snippet per choice (#4686)", async () => {
+    await openDialogWithStatus({ shared: true, token: "tok_live", expiresAt: null, shareMode: "public" });
+    await act(async () => {
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "Embed" }));
+    });
+
+    const snippet = (await screen.findByLabelText("Embed snippet")) as HTMLTextAreaElement;
+    // Default = System → no forced theme param.
+    expect(snippet.value).toContain("/shared/dashboard/tok_live/embed\"");
+    expect(snippet.value).not.toContain("?theme=");
+
+    // Selecting Dark bakes ?theme=dark into the snippet.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: /Dark/ }));
+    });
+    await waitFor(() => expect(snippet.value).toContain("/embed?theme=dark"));
+
+    // Selecting Light swaps it to ?theme=light.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: /Light/ }));
+    });
+    await waitFor(() => expect(snippet.value).toContain("/embed?theme=light"));
+  });
+
+  test("re-clicking the active appearance keeps the selection (Radix deselect guard) (#4686)", async () => {
+    await openDialogWithStatus({ shared: true, token: "tok_live", expiresAt: null, shareMode: "public" });
+    await act(async () => {
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "Embed" }));
+    });
+    const snippet = (await screen.findByLabelText("Embed snippet")) as HTMLTextAreaElement;
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: /Dark/ }));
+    });
+    await waitFor(() => expect(snippet.value).toContain("/embed?theme=dark"));
+
+    // Re-click the active item — Radix emits "" (deselect). The guard must keep
+    // "dark" selected so the snippet never carries an empty/blank ?theme=.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: /Dark/ }));
+    });
+    expect(snippet.value).toContain("/embed?theme=dark");
+    expect(snippet.value).not.toContain("?theme=\"");
+    expect(snippet.value).not.toContain("?theme=&");
+  });
+
   test("the embed caption is shareMode-aware — an org share warns viewers must sign in", async () => {
     await openDialogWithStatus({ shared: true, token: "tok_live", expiresAt: null, shareMode: "org" });
 

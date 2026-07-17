@@ -44,7 +44,7 @@ import {
   getDashboard,
   resolveCardConnectionId,
   NoGroupMembersError,
-  CardLayoutSchema,
+  TextCardLayoutSchema,
 } from "@atlas/api/lib/dashboards";
 import type { DashboardWithCards } from "@atlas/api/lib/dashboard-types";
 import { seedDraftCards, type CardSeedOutcome } from "@atlas/api/lib/dashboard-seeding";
@@ -478,7 +478,13 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
         .describe(
           "Replace the card's dated event markers ({ x, label, color? }). Pass [] to clear them. Vertical reference lines on a line/area card.",
         ),
-      layout: CardLayoutSchema.nullable().optional(),
+      // #4687 — the bound editor addresses cards by id (no kind on the tool
+      // input), so this seam is kind-blind; floor at the absolute TEXT_MIN_H (2)
+      // so a text / section card validates as a banner. The taller chart floor
+      // (MIN_H, 4) is NOT enforced here — it's a kind-aware authoring/UI concern
+      // (the create/add-card paths + the grid's resize `minH`); a chart set
+      // short via this agent tool renders short (valid geometry), never lost.
+      layout: TextCardLayoutSchema.nullable().optional(),
       position: z.number().int().min(0).optional(),
     }),
     execute: async ({ cardId, title, chartConfig, content, annotations, layout, position }) => {
@@ -601,7 +607,11 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
       const malformed: { cardId: string; reason: string }[] = [];
       for (const placement of layouts) {
         const { cardId, x, y, w, h } = placement;
-        const v = CardLayoutSchema.safeParse({ x, y, w, h });
+        // #4687 — kind-blind (cards addressed by id); floors at the absolute
+        // TEXT_MIN_H (2) so a text / section card can be placed as a banner. The
+        // chart floor (MIN_H, 4) is not enforced on this kind-blind agent seam;
+        // a chart placed short renders short (valid geometry), never discarded.
+        const v = TextCardLayoutSchema.safeParse({ x, y, w, h });
         if (!v.success) {
           malformed.push({ cardId, reason: v.error.issues[0]?.message ?? "invalid layout" });
           continue;

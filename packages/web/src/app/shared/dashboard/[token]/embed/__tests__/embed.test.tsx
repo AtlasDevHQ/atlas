@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
-import { EmbedErrorView, resolveEmbedTheme } from "../embed";
+import { EmbedErrorView, buildEmbedThemeForceScript, resolveEmbedTheme } from "../embed";
 
 describe("resolveEmbedTheme", () => {
   test("resolves 'dark' and 'light' verbatim", () => {
@@ -8,10 +8,12 @@ describe("resolveEmbedTheme", () => {
     expect(resolveEmbedTheme("light")).toBe("light");
   });
 
-  test("defaults to 'light' for empty/absent values without warning", () => {
+  test("returns undefined (follow visitor system) for empty/absent values without warning", () => {
+    // No `?theme=` param → the embed follows the visitor's own system preference
+    // rather than forcing a theme (#4686). Absence is expected, not an error.
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-    expect(resolveEmbedTheme(undefined)).toBe("light");
-    expect(resolveEmbedTheme("")).toBe("light");
+    expect(resolveEmbedTheme(undefined)).toBeUndefined();
+    expect(resolveEmbedTheme("")).toBeUndefined();
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
@@ -20,11 +22,26 @@ describe("resolveEmbedTheme", () => {
     expect(resolveEmbedTheme(["dark", "light"])).toBe("dark");
   });
 
-  test("warns and falls back to 'light' on an unrecognized value", () => {
+  test("warns and follows the visitor system on an unrecognized value", () => {
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-    expect(resolveEmbedTheme("neon")).toBe("light");
+    expect(resolveEmbedTheme("neon")).toBeUndefined();
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+});
+
+describe("buildEmbedThemeForceScript", () => {
+  // The forced-theme override script pushes the resolved theme onto
+  // `documentElement` so a `?theme=` param wins over the visitor's own
+  // system/localStorage preference (the root theme-init would otherwise stamp it).
+  test("toggles the .dark class to the forced boolean", () => {
+    expect(buildEmbedThemeForceScript(true)).toContain('classList.toggle("dark",true)');
+    expect(buildEmbedThemeForceScript(false)).toContain('classList.toggle("dark",false)');
+  });
+
+  test("is wrapped in a try/catch so a locked-down document can't throw", () => {
+    expect(buildEmbedThemeForceScript(true)).toStartWith("try{");
+    expect(buildEmbedThemeForceScript(true)).toContain("catch");
   });
 });
 
@@ -36,7 +53,9 @@ describe("EmbedErrorView", () => {
   const cases: Array<[Parameters<typeof EmbedErrorView>[0]["reason"], RegExp]> = [
     ["expired", /expired/i],
     ["not-found", /could not be found/i],
-    ["auth-required", /organization/i],
+    // #4690: 401 vs 403 keep distinct copy — the wrong-org viewer isn't told to sign in.
+    ["login-required", /sign in to atlas/i],
+    ["membership-required", /not a member/i],
     ["network-error", /reach Atlas/i],
     ["server-error", /Could not load/i],
   ];
@@ -47,11 +66,17 @@ describe("EmbedErrorView", () => {
     cleanup();
   });
 
-  test("never renders a login/retry link inside the frame (partner-safe chrome)", () => {
-    render(<EmbedErrorView reason="auth-required" />);
-    // Only the 'Powered by Atlas' attribution anchor is allowed; no in-frame nav.
-    const links = screen.getAllByRole("link");
-    expect(links).toHaveLength(1);
-    expect(links[0]?.getAttribute("href")).toBe("https://www.useatlas.dev");
-  });
+  // Both auth reasons must stay navigation-free — `login-required` is the one most
+  // likely to tempt a future edit into adding an in-frame "Sign in" CTA (#4690).
+  test.each(["login-required", "membership-required"] as const)(
+    "reason %s never renders a login/retry link inside the frame (partner-safe chrome)",
+    (reason) => {
+      render(<EmbedErrorView reason={reason} />);
+      // Only the 'Powered by Atlas' attribution anchor is allowed; no in-frame nav.
+      const links = screen.getAllByRole("link");
+      expect(links).toHaveLength(1);
+      expect(links[0]?.getAttribute("href")).toBe("https://www.useatlas.dev");
+      cleanup();
+    },
+  );
 });

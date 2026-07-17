@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Share2, Copy, Check, Link2Off, Globe, Lock, Loader2, RefreshCw, Code } from "lucide-react";
+import { Share2, Copy, Check, Link2Off, Globe, Lock, Loader2, RefreshCw, Code, Monitor, Sun, Moon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Select,
   SelectContent,
@@ -28,7 +29,28 @@ import type { ShareMode, ShareExpiryKey } from "@/ui/lib/types";
 import { SHARE_EXPIRY_OPTIONS } from "@/ui/lib/types";
 import { useAtlasConfig } from "@/ui/context";
 import { deriveExpiryKey } from "./share-expiry";
-import { buildEmbedSnippet } from "./share-embed";
+import { buildEmbedSnippet, type EmbedThemeParam } from "./share-embed";
+
+/** Embed-tab theme control: "system" emits no `?theme=` param (visitor's own
+ *  preference drives the frame); "light"/"dark" force a fixed appearance. The
+ *  tuple is the SSOT for the `EmbedThemeChoice` type and the `onValueChange`
+ *  narrowing (`asEmbedThemeChoice`); the rendered `<ToggleGroupItem>` values are
+ *  authored to match by hand. `satisfies` pins every member to a valid
+ *  `"system" | EmbedThemeParam`. */
+const EMBED_THEME_CHOICES = ["system", "light", "dark"] as const satisfies readonly (
+  | "system"
+  | EmbedThemeParam
+)[];
+type EmbedThemeChoice = (typeof EMBED_THEME_CHOICES)[number];
+
+/** Narrow Radix's `string` back onto the choice union. Radix emits `""` when the
+ *  active item is re-clicked (deselect); returning `undefined` there lets the
+ *  caller keep the current selection rather than blanking it. */
+function asEmbedThemeChoice(value: string): EmbedThemeChoice | undefined {
+  return (EMBED_THEME_CHOICES as readonly string[]).includes(value)
+    ? (value as EmbedThemeChoice)
+    : undefined;
+}
 
 const EXPIRY_LABELS: Record<ShareExpiryKey, string> = {
   "1h": "1 hour",
@@ -55,6 +77,9 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
   const [shared, setShared] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedEmbed, setCopiedEmbed] = useState(false);
+  // Embed appearance the snippet bakes in. Default "system" = no `?theme=` param
+  // so the frame follows the visitor's own light/dark preference (#4686).
+  const [embedTheme, setEmbedTheme] = useState<EmbedThemeChoice>("system");
   const [error, setError] = useState<string | null>(null);
   const [expiresIn, setExpiresIn] = useState<ShareExpiryKey>("7d");
   const [shareMode, setShareMode] = useState<ShareMode>("public");
@@ -175,7 +200,9 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
   // The iframe snippet for the Embed tab — points at the SAME share token's
   // framable `/embed` route (#4564), so revoking the link kills the embed too.
   // Built by the pure `buildEmbedSnippet` helper (escaping pinned in its test).
-  const embedCode = shareUrl ? buildEmbedSnippet(shareUrl) : "";
+  const embedCode = shareUrl
+    ? buildEmbedSnippet(shareUrl, embedTheme === "system" ? undefined : embedTheme)
+    : "";
 
   async function copyText(text: string, flash: (v: boolean) => void) {
     try {
@@ -371,6 +398,38 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
                 </TabsContent>
 
                 <TabsContent value="embed" className="mt-4 grid gap-3">
+                  <div className="grid gap-2">
+                    <Label htmlFor="dashboard-embed-theme">Appearance</Label>
+                    <ToggleGroup
+                      id="dashboard-embed-theme"
+                      type="single"
+                      variant="outline"
+                      size="sm"
+                      value={embedTheme}
+                      // Empty deselect value is ignored — see asEmbedThemeChoice.
+                      onValueChange={(v) => {
+                        const next = asEmbedThemeChoice(v);
+                        if (next) setEmbedTheme(next);
+                      }}
+                      className="w-full"
+                      aria-label="Embed appearance"
+                    >
+                      <ToggleGroupItem value="system" className="flex-1 gap-1.5">
+                        <Monitor className="size-3.5" /> System
+                      </ToggleGroupItem>
+                      <ToggleGroupItem value="light" className="flex-1 gap-1.5">
+                        <Sun className="size-3.5" /> Light
+                      </ToggleGroupItem>
+                      <ToggleGroupItem value="dark" className="flex-1 gap-1.5">
+                        <Moon className="size-3.5" /> Dark
+                      </ToggleGroupItem>
+                    </ToggleGroup>
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                      {embedTheme === "system"
+                        ? "Follows each viewer's own light/dark setting."
+                        : `Always renders in ${embedTheme} mode, regardless of the viewer's setting.`}
+                    </p>
+                  </div>
                   <Label htmlFor="dashboard-embed-code">Embed snippet</Label>
                   <Textarea
                     id="dashboard-embed-code"

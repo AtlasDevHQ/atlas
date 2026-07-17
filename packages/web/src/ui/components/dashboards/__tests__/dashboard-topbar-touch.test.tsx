@@ -111,3 +111,45 @@ describe("DashboardTopBar — touch (#4323)", () => {
     expect(hint.textContent).toContain("Editing is desktop-only");
   });
 });
+
+describe("DashboardTopBar — stacked (narrow) grid (#4689)", () => {
+  afterEach(() => {
+    cleanup();
+    coarse = false;
+  });
+
+  test("a fine-pointer narrow window (grid stacked) hides the toggle and reads 'widen the window', NOT 'desktop-only'", () => {
+    coarse = false;
+    render(<DashboardTopBar {...baseProps} stacked={true} />, { wrapper });
+    // The drag/resize toggle is gone — the stacked grid can't honor a drag.
+    expect(screen.queryByRole("group", { name: "Mode" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Edit/ })).toBeNull();
+    // Reason tracks the signal: a resized DESKTOP browser is not "desktop-only".
+    expect(screen.queryByTestId("edit-desktop-only-hint")).toBeNull();
+    const hint = screen.getByTestId("edit-too-narrow-hint");
+    expect(hint.textContent).toContain("Widen the window to edit");
+  });
+
+  test("stacked suppresses the 'drag tiles' help even when editing is still true (held from a prior wide session)", () => {
+    coarse = false;
+    render(<DashboardTopBar {...baseProps} stacked={true} editing={true} />, { wrapper });
+    expect(screen.queryByText(/drag tiles to rearrange/)).toBeNull();
+    expect(screen.queryByText("Add from chat")).toBeNull();
+  });
+
+  test("a coarse pointer wins the hint copy even when also stacked", () => {
+    coarse = true;
+    render(<DashboardTopBar {...baseProps} stacked={true} />, { wrapper });
+    const hint = screen.getByTestId("edit-desktop-only-hint");
+    expect(hint.textContent).toContain("Editing is desktop-only");
+    expect(screen.queryByTestId("edit-too-narrow-hint")).toBeNull();
+  });
+
+  test("a fine pointer with a wide (non-stacked) grid keeps the View/Edit toggle", () => {
+    coarse = false;
+    render(<DashboardTopBar {...baseProps} stacked={false} />, { wrapper });
+    expect(screen.getByRole("group", { name: "Mode" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Edit/ })).toBeTruthy();
+    expect(screen.queryByTestId("edit-too-narrow-hint")).toBeNull();
+  });
+});

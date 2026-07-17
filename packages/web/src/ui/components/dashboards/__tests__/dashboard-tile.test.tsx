@@ -14,18 +14,26 @@ void mock.module("@/ui/components/chart/result-chart", () => ({
     onCategoryClick,
     thresholds,
     annotations,
+    embedded,
+    chartType,
   }: {
     onCategoryClick?: (value: string, categoryKey: string) => void;
     thresholds?: { value: number; color?: string; label?: string }[];
     annotations?: { x: string; label: string; color?: string }[];
+    embedded?: boolean;
+    chartType?: string;
   }) => (
     <>
-      {/* Fires with the card's configured category column ("stage") — matches. */}
+      {/* Fires with the card's configured category column ("stage") — matches.
+          #4688 — `embedded` / `chartType` surface via data-attrs so a test can
+          assert the tile suppresses ResultChart's chrome + pins the type. */}
       <button
         type="button"
         data-testid="result-chart"
         data-thresholds={JSON.stringify(thresholds ?? null)}
         data-annotations={JSON.stringify(annotations ?? null)}
+        data-embedded={embedded ? "true" : "false"}
+        data-chart-type={chartType ?? ""}
         onClick={() => onCategoryClick?.("Discovery", "stage")}
       >
         chart
@@ -171,6 +179,22 @@ describe("DashboardTile", () => {
     });
     const chart = screen.getByTestId("result-chart");
     expect(JSON.parse(chart.getAttribute("data-annotations") ?? "null")).toEqual(annotations);
+    restore();
+  });
+
+  test("renders ResultChart in embedded mode and pins it to the card's chart type (#4688)", async () => {
+    const restore = setBoundingRect(600, 300);
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    // baseCard is configured `type: "bar"` — the tile must pin ResultChart to it
+    // (not the data's auto-detect) AND suppress ResultChart's own caption/toggle
+    // chrome via `embedded`.
+    render(<DashboardTile {...baseProps} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const chart = screen.getByTestId("result-chart");
+    expect(chart.getAttribute("data-embedded")).toBe("true");
+    expect(chart.getAttribute("data-chart-type")).toBe("bar");
     restore();
   });
 

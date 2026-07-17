@@ -989,13 +989,15 @@ export interface SharedDashboardAccess {
  * built with) to a human string — never the `key`, `type`, or raw default
  * expression. A `null` default reads as "All" (an unfiltered dimension, e.g.
  * "Region: All"). A relative-date default (`now - 30 days`) is resolved to a
- * concrete ISO date via the same server-side resolver the render path uses.
+ * concrete ISO date via the same server-side resolver the render path uses —
+ * against `frozenAt`, the snapshot's capture instant, never the view request's
+ * clock (#4538).
  */
-function formatParameterDisplayValue(param: DashboardParameter, now: Date): string {
+function formatParameterDisplayValue(param: DashboardParameter, frozenAt: Date): string {
   if (param.default === null || param.default === undefined) return "All";
   if (param.type === "date") {
     try {
-      return resolveDateExpression(String(param.default), now);
+      return resolveDateExpression(String(param.default), frozenAt);
     } catch (err) {
       // `resolveDateExpression` throws ONLY `DashboardParameterError` on a
       // malformed default. Narrow to it and re-throw anything else, so a future
@@ -1019,15 +1021,46 @@ function formatParameterDisplayValue(param: DashboardParameter, now: Date): stri
  * Build the frozen `{ label, displayValue }` parameter summary for a shared
  * snapshot (#4316) — one entry per declared parameter, in declaration order.
  * Display-only: no keys, no definitions, no controls. Exported for unit tests.
+ * `frozenAt` is the snapshot's capture instant (see
+ * {@link resolveSharedSnapshotInstant}); the wall-clock default only serves
+ * callers with no snapshot to anchor to.
  */
 export function buildSharedParameterSummary(
   parameters: DashboardParameter[] | null | undefined,
-  now: Date = new Date(),
+  frozenAt: Date = new Date(),
 ): SharedDashboardParameterSummaryItem[] {
   return (parameters ?? []).map((param) => ({
     label: param.label,
-    displayValue: formatParameterDisplayValue(param, now),
+    displayValue: formatParameterDisplayValue(param, frozenAt),
   }));
+}
+
+/**
+ * The instant a shared snapshot's data was frozen (#4538): the newest of the
+ * dashboard-level `lastRefreshAt` and every card's `cachedAt` (a manual
+ * per-card refresh stamps `cachedAt` without touching `lastRefreshAt`, so
+ * neither alone is authoritative). Relative-date parameter summaries resolve
+ * against this instant — never the view request's clock — so the summary
+ * frame stays exactly as frozen as the `cachedRows` it labels. A
+ * never-refreshed dashboard (no cached data to drift from) falls back to
+ * `updatedAt`, then `createdAt` — any stable instant labels an empty snapshot
+ * correctly.
+ */
+export function resolveSharedSnapshotInstant(dashboard: DashboardWithCards): Date {
+  const candidates = [
+    dashboard.lastRefreshAt,
+    ...dashboard.cards.map((card) => card.cachedAt),
+  ];
+  let newest: Date | null = null;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const parsed = new Date(candidate);
+    if (Number.isNaN(parsed.getTime())) continue;
+    if (newest === null || parsed > newest) newest = parsed;
+  }
+  if (newest) return newest;
+  const updated = new Date(dashboard.updatedAt);
+  return Number.isNaN(updated.getTime()) ? new Date(dashboard.createdAt) : updated;
 }
 
 /** Project one full {@link DashboardCard} down to the data-only shared shape
@@ -1056,18 +1089,21 @@ function projectSharedCard(card: DashboardCard): SharedDashboardCard {
  * {@link SharedDashboardView} the share endpoint serializes (#4316). The
  * projection is the single place the shared payload is constructed for BOTH
  * public and org share modes — one shape, no per-mode divergence. Exported for
- * unit tests. `now` is injectable for deterministic parameter-summary dates.
+ * unit tests. `frozenAt` defaults to the snapshot's own capture instant
+ * (#4538) and is injectable only for tests — passing a request-time `new
+ * Date()` here reintroduces the summary-vs-data drift the default exists to
+ * prevent.
  */
 export function projectSharedDashboardView(
   dashboard: DashboardWithCards,
-  now: Date = new Date(),
+  frozenAt: Date = resolveSharedSnapshotInstant(dashboard),
 ): SharedDashboardView {
   return {
     title: dashboard.title,
     description: dashboard.description,
     shareMode: dashboard.shareMode,
     cards: dashboard.cards.map(projectSharedCard),
-    parameterSummary: buildSharedParameterSummary(dashboard.parameters, now),
+    parameterSummary: buildSharedParameterSummary(dashboard.parameters, frozenAt),
     createdAt: dashboard.createdAt,
     updatedAt: dashboard.updatedAt,
     lastRefreshAt: dashboard.lastRefreshAt,
@@ -1103,10 +1139,9 @@ export async function getSharedDashboard(
     );
 
     const dashboard = rowToDashboard(dash);
-    const view = projectSharedDashboardView(
-      { ...dashboard, cards: cardRows.map(rowToCard) },
-      new Date(),
-    );
+    // No explicit instant: the projection anchors relative-date parameter
+    // summaries to the snapshot's own capture instant, not this request (#4538).
+    const view = projectSharedDashboardView({ ...dashboard, cards: cardRows.map(rowToCard) });
     // `orgId` rides in `access`, not `view` — the route gates org membership on
     // it but can only serialize `view`, so the internal id can't leak (#4316).
     return {

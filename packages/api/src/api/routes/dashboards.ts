@@ -1745,26 +1745,32 @@ authed.openapi(
       // the set that render/refresh actually execute.
       if (parsed.parameters !== undefined) {
         const existing = yield* Effect.promise(() => getDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }));
-        if (existing.ok) {
-          const declared = new Set(parsed.parameters.map((p) => p.key));
-          const orphaned = new Set<string>();
-          for (const card of existing.data.cards) {
-            for (const name of extractPlaceholderNames(card.sql)) {
-              if (!declared.has(name)) orphaned.add(name);
-            }
+        if (!existing.ok) {
+          // A failed pre-read means this guard CANNOT run — fail the PATCH
+          // rather than writing parameters blind, which could drop a
+          // :placeholder a card still references (#4539). This single
+          // pre-read is what authorizes the parameter write further down.
+          const fail = crudFailResponse(existing.reason, requestId);
+          return c.json(fail.body, fail.status);
+        }
+        const declared = new Set(parsed.parameters.map((p) => p.key));
+        const orphaned = new Set<string>();
+        for (const card of existing.data.cards) {
+          for (const name of extractPlaceholderNames(card.sql)) {
+            if (!declared.has(name)) orphaned.add(name);
           }
-          if (orphaned.size > 0) {
-            return c.json(
-              {
-                error: "invalid_parameters",
-                message: `Cannot remove parameter(s) still referenced by cards: ${[...orphaned]
-                  .map((n) => `:${n}`)
-                  .join(", ")}. Update or remove those cards first.`,
-                requestId,
-              },
-              400,
-            );
-          }
+        }
+        if (orphaned.size > 0) {
+          return c.json(
+            {
+              error: "invalid_parameters",
+              message: `Cannot remove parameter(s) still referenced by cards: ${[...orphaned]
+                .map((n) => `:${n}`)
+                .join(", ")}. Update or remove those cards first.`,
+              requestId,
+            },
+            400,
+          );
         }
       }
 
@@ -1797,7 +1803,9 @@ authed.openapi(
       // per-user draft snapshot (which owns title/description/cards). ADR-0029
       // keeps share/refresh/parameter metadata on the live row, so apply a
       // parameter replacement directly (it is workspace-shared config, not a
-      // private content edit).
+      // private content edit). Reaching here with parameters set means the
+      // orphan-guard pre-read above succeeded — a failed pre-read already
+      // failed the whole PATCH (#4539).
       if (parsed.parameters !== undefined) {
         const result = yield* Effect.promise(() =>
           updateDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }, { parameters: parsed.parameters }),

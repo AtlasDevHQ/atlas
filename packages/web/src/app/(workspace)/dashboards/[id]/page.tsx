@@ -379,7 +379,11 @@ export default function DashboardViewPage() {
 
   async function handleRefreshAll() {
     setRefreshingAll(true);
-    await mutate({ path: `/api/v1/dashboards/${id}/refresh`, method: "POST" });
+    // #4559 — while editing, Refresh-all runs the DRAFT cards' SQL and writes
+    // the caller's private draft cache; the published cards' cached data is
+    // left untouched (mirrors the single-card draft refresh above).
+    const viewSuffix = editing ? "?view=draft" : "";
+    await mutate({ path: `/api/v1/dashboards/${id}/refresh${viewSuffix}`, method: "POST" });
     setRefreshingAll(false);
   }
 

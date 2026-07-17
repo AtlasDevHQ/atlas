@@ -2151,6 +2151,198 @@ describe("dashboard routes", () => {
       expect(body.errors[0].cardTitle).toBe("Bad card");
       expect(body.errors[0].reason).toBe("validation_failed");
     });
+
+    // ---------------------------------------------------------------------
+    // #4559 — draft-aware Refresh-all. The default auth carries a real userId
+    // (u1), so `?view=draft` routes to the draft branch. A draft bulk refresh
+    // runs the DRAFT cards' SQL and persists each result to the caller's
+    // private DRAFT CACHE — the published cards' cache is never touched.
+    // ---------------------------------------------------------------------
+
+    // A one-chart-card draft, shaped like the single-card draft tests below.
+    // `cards` is typed as the real `DashboardSnapshotCard[]` so a text card
+    // (which sets the optional `content`) can be pushed without a blunt cast.
+    type SnapshotCardT = import("@atlas/api/lib/dashboard-versioning").DashboardSnapshotCard;
+    function refreshAllDraftRow(sql = "SELECT draft_refresh_all_sql") {
+      const cards: SnapshotCardT[] = [
+        {
+          id: VALID_CARD_ID,
+          position: 0,
+          title: "Total Revenue",
+          sql,
+          chartConfig: null,
+          connectionGroupId: null,
+          layout: null,
+        },
+      ];
+      return {
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards,
+        },
+        baseline: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      };
+    }
+
+    it("refresh?view=draft runs the DRAFT cards' SQL and writes the DRAFT CACHE, never the published cache (#4559)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockRefreshCard.mockClear();
+      mockSaveDraftCardCache.mockClear();
+      mockLoadDraft.mockResolvedValue(refreshAllDraftRow());
+      // Published dashboard has NO cards — the cards refreshed come entirely
+      // from the materialized draft view (a draft-only card is refreshable).
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [] } });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh?view=draft`, { method: "POST" }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { refreshed: number; failed: number; total: number };
+      expect(body.total).toBe(1);
+      expect(body.refreshed).toBe(1);
+      expect(body.failed).toBe(0);
+      // Ran the DRAFT SQL, not the published SQL.
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+      expect(mockRunUserQueryPipeline.mock.calls[0][0].sql).toBe("SELECT draft_refresh_all_sql");
+      // Persisted to the caller's DRAFT CACHE, keyed by holder + dashboard + card.
+      expect(mockSaveDraftCardCache).toHaveBeenCalledTimes(1);
+      expect(mockSaveDraftCardCache).toHaveBeenCalledWith("u1", VALID_ID, VALID_CARD_ID, {
+        columns: ["month", "total"],
+        rows: [{ month: "Jan", total: 1000 }],
+      });
+      // The route-seam invariant: a mid-edit bulk refresh NEVER writes the
+      // published card cache.
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+    });
+
+    it("refresh?view=draft with NO draft falls back to the published cache — behaves as today (#4559)", async () => {
+      mockRefreshCard.mockClear();
+      mockSaveDraftCardCache.mockClear();
+      // view=draft requested, but the caller has no draft row → published path.
+      mockLoadDraft.mockResolvedValue(null);
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [mockCardData] } });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh?view=draft`, { method: "POST" }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { refreshed: number; total: number };
+      expect(body.total).toBe(1);
+      expect(body.refreshed).toBe(1);
+      // Published persist ran; the draft cache was never touched.
+      expect(mockRefreshCard).toHaveBeenCalledTimes(1);
+      expect(mockSaveDraftCardCache).not.toHaveBeenCalled();
+    });
+
+    it("refresh?view=draft skips text cards — draft-cache writes only the chart cards (#4559)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockSaveDraftCardCache.mockClear();
+      const row = refreshAllDraftRow();
+      // Add a text card to the draft snapshot — it has no SQL to run.
+      // A snapshot card has no `kind` field: `materializeDraftView` derives
+      // `kind: "text"` from `content != null`, so setting `content` is what
+      // makes the bulk loop skip it.
+      row.snapshot.cards.push({
+        id: "00000000-0000-0000-0000-0000000000bb",
+        position: 1,
+        title: "Section header",
+        content: "## Header",
+        sql: "",
+        chartConfig: null,
+        connectionGroupId: null,
+        layout: null,
+      });
+      mockLoadDraft.mockResolvedValue(row);
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [] } });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh?view=draft`, { method: "POST" }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { refreshed: number; total: number };
+      expect(body.total).toBe(2);
+      expect(body.refreshed).toBe(1);
+      // Only the chart card hit the pipeline + the draft cache.
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+      expect(mockSaveDraftCardCache).toHaveBeenCalledTimes(1);
+    });
+
+    it("refresh?view=draft returns 409 draft_gone when the draft vanished mid-refresh (#4559)", async () => {
+      mockRefreshCard.mockClear();
+      mockLoadDraft.mockResolvedValue(refreshAllDraftRow());
+      // The draft was published/discarded while the bulk refresh ran — the
+      // save's `WHERE EXISTS` guard reports `no_draft` for every remaining card.
+      mockSaveDraftCardCache.mockResolvedValue({ ok: false, reason: "no_draft" });
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [] } });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh?view=draft`, { method: "POST" }),
+      );
+      expect(response.status).toBe(409);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("draft_gone");
+      expect(typeof body.requestId).toBe("string");
+      // Never falls back to the published cache on a client-state race.
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+    });
+
+    it("refresh?view=draft returns 503 when the draft cache is unavailable — never writes published (#4559)", async () => {
+      mockRefreshCard.mockClear();
+      mockLoadDraft.mockResolvedValue(refreshAllDraftRow());
+      mockSaveDraftCardCache.mockResolvedValue({ ok: false, reason: "no_db" });
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [] } });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh?view=draft`, { method: "POST" }),
+      );
+      expect(response.status).toBe(503);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("drafts_unavailable");
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+    });
+
+    it("refresh?view=draft counts a transient draft-cache write error as a per-card failure and keeps draining (#4559)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockRefreshCard.mockClear();
+      mockSaveDraftCardCache.mockReset();
+      // Two draft cards: the first persists, the second hits a transient write
+      // error. Unlike no_db/no_draft (which bail the whole op), a transient
+      // `error` is per-card — the loop counts it as failed and keeps draining,
+      // and STILL never falls back to the published cache.
+      const row = refreshAllDraftRow();
+      row.snapshot.cards.push({
+        id: "00000000-0000-0000-0000-0000000000cc",
+        position: 1,
+        title: "Second card",
+        sql: "SELECT second_card_sql",
+        chartConfig: null,
+        connectionGroupId: null,
+        layout: null,
+      });
+      mockLoadDraft.mockResolvedValue(row);
+      mockSaveDraftCardCache.mockResolvedValueOnce({ ok: true, cachedAt: "2026-07-16T00:00:00.000Z" });
+      mockSaveDraftCardCache.mockResolvedValueOnce({ ok: false, reason: "error" });
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [] } });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh?view=draft`, { method: "POST" }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        refreshed: number; failed: number; total: number;
+        errors: { cardId: string; reason: string }[];
+      };
+      expect(body.total).toBe(2);
+      expect(body.refreshed).toBe(1);
+      expect(body.failed).toBe(1);
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0].reason).toBe("persist_failed");
+      // The transient failure kept draining (both cards hit the pipeline) and
+      // the published cache was never written.
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(2);
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -3929,6 +4121,57 @@ describe("dashboard routes", () => {
       // The CSV ran the DRAFT SQL, not the published SQL.
       const runArg = mockRunUserQueryPipeline.mock.calls[0][0];
       expect(runArg.sql).toBe("SELECT draft_csv_sql");
+    });
+
+    // #4559 — a KPI card's comparison query is sourced from the DRAFT card's
+    // config, so the delta chip reflects the in-progress edit rather than the
+    // last-published comparison. Both queries run through the same pipeline.
+    it("render?view=draft runs the KPI comparison from the DRAFT card's config (#4559)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockLoadDraft.mockResolvedValue({
+        userId: "u1",
+        dashboardId: VALID_ID,
+        snapshot: {
+          dashboardId: VALID_ID,
+          title: "Revenue Dashboard",
+          description: null,
+          cards: [
+            {
+              id: VALID_CARD_ID,
+              position: 0,
+              title: "Total Revenue",
+              sql: "SELECT draft_primary_sql",
+              chartConfig: {
+                type: "kpi",
+                categoryColumn: "",
+                valueColumns: ["total"],
+                kpi: { comparisonSql: "SELECT draft_comparison_sql" },
+              },
+              connectionGroupId: null,
+              layout: null,
+            },
+          ],
+        },
+        baseline: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        publishedBaselineAt: mockDashboardData.updatedAt,
+        createdAt: mockDashboardData.updatedAt,
+        updatedAt: mockDashboardData.updatedAt,
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?view=draft`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parameters: {} }),
+          },
+        ),
+      );
+      expect(response.status).toBe(200);
+      // Both the headline and the comparison ran the DRAFT card's queries.
+      const sqls = mockRunUserQueryPipeline.mock.calls.map((call) => call[0].sql);
+      expect(sqls).toContain("SELECT draft_primary_sql");
+      expect(sqls).toContain("SELECT draft_comparison_sql");
     });
 
     it("PATCH /:id with ONLY parameters writes the live row (never the draft)", async () => {

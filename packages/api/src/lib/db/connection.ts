@@ -23,6 +23,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { getConnectTimeoutMs } from "@atlas/api/lib/db/pool-config";
 import { getConfig } from "@atlas/api/lib/config";
 import type { HealthStatus } from "@atlas/api/lib/connection-types";
 
@@ -204,6 +205,13 @@ export interface ConnectionConfig {
   maxConnections?: number;
   /** Idle timeout in milliseconds before a connection is closed. Default 30000. Only applies to PostgreSQL pools. */
   idleTimeoutMs?: number;
+  /**
+   * Bound (ms) on acquiring a pooled connection — `connectionTimeoutMillis` for
+   * pg, `connectTimeout` for mysql2. Defaults to {@link getConnectTimeoutMs}
+   * (env `ATLAS_CONNECT_TIMEOUT`, bounded) so a saturated pool or an
+   * unreachable-but-routable datasource fails fast instead of hanging (#4463).
+   */
+  connectTimeoutMs?: number;
 }
 
 /** Regex for valid SQL identifiers (used for schema name validation). */
@@ -316,6 +324,10 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
     connectionString: connString,
     max: config.maxConnections ?? 10,
     idleTimeoutMillis: config.idleTimeoutMs ?? 30000,
+    // Fail fast on a saturated pool or an unreachable-but-routable host instead
+    // of queueing pool.connect() forever — the statement timeout only starts
+    // AFTER a client is acquired, so it can't cap a hung acquire (#4463).
+    connectionTimeoutMillis: config.connectTimeoutMs ?? getConnectTimeoutMs(),
   });
   pool.on("error", (err: Error) => {
     log.error({ err }, "Analytics pool idle client error");
@@ -436,6 +448,9 @@ function createMySQLDB(config: ConnectionConfig): DBConnection {
     uri: config.url,
     connectionLimit: config.maxConnections ?? 10,
     idleTimeout: config.idleTimeoutMs ?? 30000,
+    // mysql2's equivalent of pg's connectionTimeoutMillis: bounds the TCP+
+    // handshake so an unreachable-but-routable host fails fast (#4463).
+    connectTimeout: config.connectTimeoutMs ?? getConnectTimeoutMs(),
     supportBigNumbers: true,
     bigNumberStrings: true,
   });

@@ -410,11 +410,11 @@ type SSOEnforceableMode = Exclude<AuthMode, "none" | "simple-key">;
  * Bound on how long the audit-row write may block the auth path.
  *
  * The audit row is the security control (see `checkSSOEnforcement`),
- * so we await its commit before returning the 403 — but the internal
- * Postgres pool has no `connectionTimeoutMillis` / `statement_timeout`
- * defaults, which means an unreachable-but-routable DB or a stuck pool
- * could otherwise stall every blocked SSO login for the full TCP
- * keepalive window. Cap it: if the write hasn't committed within this
+ * so we await its commit before returning the 403. The internal Postgres
+ * pool now sets a bounded `connectionTimeoutMillis` (#4463), so an
+ * unreachable-but-routable DB or a stuck pool fails the acquire within that
+ * bound rather than stalling for the full TCP keepalive window — but this
+ * cap is tighter and independent: if the write hasn't committed within this
  * deadline, throw and let the surrounding catch fail closed with 500.
  */
 const AUDIT_WRITE_TIMEOUT_MS = 5_000;

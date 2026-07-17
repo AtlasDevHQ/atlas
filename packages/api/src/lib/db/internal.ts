@@ -24,6 +24,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
 import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
+import { getConnectTimeoutMs } from "@atlas/api/lib/db/pool-config";
 import { foldRollingMean } from "@atlas/api/lib/learn/rolling-mean";
 import { REPEATED_PATTERN_MIN_REPETITIONS } from "@atlas/api/lib/learn/pattern-tiers";
 import {
@@ -370,6 +371,9 @@ export function makeInternalDBLive(): Layer.Layer<InternalDB> {
         connectionString: connString,
         max: 5,
         idleTimeoutMillis: 30000,
+        // Fail fast when the internal DB is unreachable-but-routable instead of
+        // stalling every login for the OS TCP keepalive window (#4463).
+        connectionTimeoutMillis: getConnectTimeoutMs(),
       });
       pool.on("error", (err: unknown) => {
         log.error(
@@ -565,6 +569,8 @@ export function getInternalDB(): InternalPool {
     connectionString: connString,
     max: 5,
     idleTimeoutMillis: 30000,
+    // Fail fast when the internal DB is unreachable-but-routable (#4463).
+    connectionTimeoutMillis: getConnectTimeoutMs(),
   }) as InternalPool;
   _pool.on("error", (err: unknown) => {
     log.error(
@@ -609,6 +615,8 @@ function getStripeLockPool(): InternalPool {
     connectionString: connString,
     max: 5,
     idleTimeoutMillis: 30000,
+    // Fail fast when the internal DB is unreachable-but-routable (#4463).
+    connectionTimeoutMillis: getConnectTimeoutMs(),
   }) as InternalPool;
   _lockPool.on("error", (err: unknown) => {
     log.error(

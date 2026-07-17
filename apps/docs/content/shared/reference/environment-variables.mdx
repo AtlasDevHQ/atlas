@@ -225,6 +225,7 @@ Query safety, SQL validation, and security-disclosure settings. See <AudienceLin
 | `ATLAS_STRICT_PLUGIN_SECRETS` | `false` | F-42 / #1835: when `true`, plugin admin write paths reject PUTs whose catalog schema is corrupt or carries per-key secret/passthrough drift. SaaS regions opt in; self-hosted defaults to off. Tolerant idempotent passthrough is the baseline |
 | `ATLAS_POOL_WARMUP` | `2` | Number of warmup probes per connection at startup. Set to `0` to disable warmup |
 | `ATLAS_POOL_DRAIN_THRESHOLD` | `5` | Consecutive query errors before the pool is automatically drained and recreated |
+| `ATLAS_CONNECT_TIMEOUT` | `10000` | Bound (ms, clamped `1000`–`60000`) on acquiring a pooled database connection — pg `connectionTimeoutMillis` / mysql2 `connectTimeout`, applied to analytics **and** internal pools. Without it a saturated pool or an unreachable-but-routable database hangs requests instead of failing fast with a structured `rate_limited` error |
 | `ATLAS_CACHE_ENABLED` | `true` | Enable query result caching. Set to `false` to disable |
 | `ATLAS_CACHE_TTL` | `300000` | Cache TTL in milliseconds (default: 5 minutes) |
 | `ATLAS_CACHE_MAX_SIZE` | `1000` | Maximum number of cached query results |

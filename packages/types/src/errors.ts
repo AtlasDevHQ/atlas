@@ -405,8 +405,14 @@ export function matchError(
   const msg = error instanceof Error ? error.message : String(error);
   const subsystem = opts?.subsystem ?? "datasource";
 
-  // Pool exhaustion — too many active database connections (transient)
-  if (/too many (clients already|connections)|connection pool exhausted|remaining connection slots are reserved/i.test(msg)) {
+  // Pool exhaustion — too many active database connections (transient).
+  // "timeout exceeded when trying to connect" is pg's message when a bounded
+  // `connectionTimeoutMillis` fires: the pool is saturated (no free client
+  // within the bound) or the host is unreachable-but-routable. Either way it is
+  // a capacity/backpressure signal — surface it as retryable `rate_limited`,
+  // BEFORE the generic timeout branch below would mislabel it `provider_timeout`
+  // (#4463). Kept ahead of that branch by ordering.
+  if (/too many (clients already|connections)|connection pool exhausted|remaining connection slots are reserved|timeout exceeded when trying to connect/i.test(msg)) {
     return {
       code: "rate_limited",
       message: "Database connection pool exhausted — try again in a few seconds, or reduce concurrent queries",

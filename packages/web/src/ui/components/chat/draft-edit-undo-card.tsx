@@ -28,26 +28,24 @@ import { useAtlasConfig } from "@/ui/context";
 import { useBoundDraftContext } from "@/ui/components/dashboards/bound-draft-context";
 import { getToolResult } from "@/ui/lib/helpers";
 
-interface DestructiveEditPayload {
-  kind: "removed" | "sql_updated";
-  cardId: string;
-  title: string;
-  previousSql?: string;
-  newSql?: string;
-  /** The inverse draft edit the undo endpoint applies. Opaque here — echoed back. */
-  undo: unknown;
-}
+// Mirrors the two server envelopes as a discriminated union so a `removed`
+// payload can't carry SQL and a `sql_updated` one can't be missing it. `undo`
+// is deliberately opaque (the inverse draft edit) — the client echoes it back
+// to the server, which is the authority that validates its shape.
+type DestructiveEditPayload =
+  | { kind: "removed"; cardId: string; title: string; undo: unknown }
+  | { kind: "sql_updated"; cardId: string; title: string; previousSql: string; newSql: string; undo: unknown };
 
 function isDestructiveEdit(output: unknown): output is DestructiveEditPayload {
   if (output == null || typeof output !== "object") return false;
   const o = output as Record<string, unknown>;
-  return (
-    (o.kind === "removed" || o.kind === "sql_updated")
-    && typeof o.cardId === "string"
-    && typeof o.title === "string"
-    && o.undo != null
-    && typeof o.undo === "object"
-  );
+  if (typeof o.cardId !== "string" || typeof o.title !== "string") return false;
+  if (o.undo == null || typeof o.undo !== "object") return false;
+  if (o.kind === "removed") return true;
+  if (o.kind === "sql_updated") {
+    return typeof o.previousSql === "string" && typeof o.newSql === "string";
+  }
+  return false;
 }
 
 export function DraftEditUndoCard({ part }: { part: unknown }) {
@@ -96,8 +94,12 @@ function DraftEditUndoCardInner({ edit }: { edit: DestructiveEditPayload }) {
       setState("undone");
       onDraftChanged();
     } catch (err) {
+      // A thrown fetch (network / CORS / abort) — log a devtools breadcrumb so
+      // the failure is debuggable, then surface a friendly retry message.
+      const detail = err instanceof Error ? err.message : String(err);
+      console.debug("[draft-edit-undo-card] undo request failed:", detail);
       setState("error");
-      setErrMessage(err instanceof Error ? err.message : String(err));
+      setErrMessage("Could not undo the edit. Check your connection and retry.");
     }
   }
 
@@ -134,7 +136,7 @@ function DraftEditUndoCardInner({ edit }: { edit: DestructiveEditPayload }) {
               ? <>The card is gone from your draft. Undo to restore it.</>
               : <>The card now runs the new query in your draft. Undo to restore the previous SQL.</>}
           </div>
-          {!isRemove && edit.previousSql && edit.newSql && (
+          {edit.kind === "sql_updated" && (
             <div className="mt-2 grid gap-2 sm:grid-cols-2">
               <div>
                 <div className="mb-1 text-[10px] uppercase tracking-wide text-zinc-500">Previous</div>

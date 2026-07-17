@@ -4017,4 +4017,117 @@ describe("dashboard routes", () => {
     });
 
   });
+
+  // #4555 — the single-edit-mechanism undo route. Destructive bound-editor ops
+  // apply straight to the draft; the UI POSTs the inverse edit here.
+  describe("POST /:id/draft/undo (#4555)", () => {
+    const DASH_WITH_CARD = { ...mockDashboardData, cards: [mockCardData] };
+    const draftView = {
+      ...mockDashboardData,
+      lastRefreshAt: null,
+      nextRefreshAt: null,
+      cards: [],
+    };
+    const restoreCard = {
+      id: VALID_CARD_ID,
+      position: 0,
+      title: "Total Revenue",
+      sql: "SELECT SUM(amount) FROM orders",
+      chartConfig: { type: "bar", categoryColumn: "month", valueColumns: ["total"] },
+      connectionGroupId: null,
+      layout: null,
+    };
+
+    beforeEach(() => {
+      mockGetDashboard.mockResolvedValue({ ok: true, data: DASH_WITH_CARD });
+      mockLoadDraft.mockResolvedValue(null);
+      mockApplyEditToDraft.mockResolvedValue({
+        ok: true,
+        snapshot: { dashboardId: VALID_ID, title: "Revenue Dashboard", description: null, cards: [] },
+        view: draftView as unknown as Extract<ApplyEditResult, { ok: true }>["view"],
+      });
+    });
+
+    it("restore_card re-adds the removed card via an addCard draft edit (204)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft/undo`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "restore_card", card: restoreCard }),
+        }),
+      );
+      expect(response.status).toBe(204);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; card?: { id: string; sql: string; content: unknown; annotations: unknown } },
+      ];
+      expect(change.kind).toBe("addCard");
+      // Same id → the card's lingering draft-cache rows are revived on restore.
+      expect(change.card).toMatchObject({ id: VALID_CARD_ID, sql: "SELECT SUM(amount) FROM orders" });
+      // Optional fields defaulted so the snapshot card is well-formed.
+      expect(change.card?.content).toBeNull();
+      expect(change.card?.annotations).toEqual([]);
+    });
+
+    it("restore_card is idempotent — a card already in the draft is a no-op (no re-add)", async () => {
+      mockLoadDraft.mockResolvedValue({
+        snapshot: { dashboardId: VALID_ID, title: "x", description: null, cards: [{ id: VALID_CARD_ID }] },
+      } as unknown as Awaited<ReturnType<typeof mockLoadDraft>>);
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft/undo`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "restore_card", card: restoreCard }),
+        }),
+      );
+      expect(response.status).toBe(204);
+      // The card was already present → no duplicate-id addCard.
+      expect(mockApplyEditToDraft).not.toHaveBeenCalled();
+    });
+
+    it("revert_sql restores the prior SQL via an updateCard draft edit (204)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft/undo`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "revert_sql", cardId: VALID_CARD_ID, sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(204);
+      expect(mockApplyEditToDraft).toHaveBeenCalledTimes(1);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { kind: string; cardId: string; updates: { sql?: string } },
+      ];
+      expect(change).toMatchObject({ kind: "updateCard", cardId: VALID_CARD_ID });
+      expect(change.updates).toMatchObject({ sql: "SELECT 1" });
+    });
+
+    it("rejects an invalid dashboard id (400) without touching the draft", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/not-a-uuid/draft/undo`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "revert_sql", cardId: VALID_CARD_ID, sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(mockApplyEditToDraft).not.toHaveBeenCalled();
+    });
+
+    it("maps an applyEditToDraft unknown_card failure to 404", async () => {
+      mockApplyEditToDraft.mockResolvedValue({ ok: false, reason: "unknown_card", cardId: VALID_CARD_ID });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft/undo`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: "revert_sql", cardId: VALID_CARD_ID, sql: "SELECT 1" }),
+        }),
+      );
+      expect(response.status).toBe(404);
+    });
+  });
 });

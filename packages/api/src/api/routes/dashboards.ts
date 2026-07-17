@@ -556,6 +556,17 @@ const DraftUndoBodySchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("revert_sql"), cardId: z.string().min(1), sql: z.string() }),
 ]);
 
+// Drift guard: `DraftUndoCardSchema` is a hand-mirror of the internal
+// `DashboardSnapshotCard`, and the restore path re-materializes the card from
+// it. A field added to the snapshot but NOT to the schema would be silently
+// dropped on restore (data loss). The addCard mapping below catches a new
+// *required* field at compile time; this covers a new *optional* one too — if
+// it errors, add the field to `DraftUndoCardSchema` above.
+type _Expect<T extends true> = T;
+export type _DraftUndoCardCoversSnapshot = _Expect<
+  keyof DashboardSnapshotCard extends keyof z.infer<typeof DraftUndoCardSchema> ? true : false
+>;
+
 const undoDraftRoute = createRoute({
   method: "post",
   path: "/{id}/draft/undo",

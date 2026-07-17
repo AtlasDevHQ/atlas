@@ -766,8 +766,9 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
 
   /**
    * Read the current card by id, preferring the draft view when a userId
-   * is present. Used by the destructive tools to snapshot `currentTitle` /
-   * `currentSql` for the response + the inverse-undo payload.
+   * is present. Used by `updateCardSql` (for the card's title + prior SQL, which
+   * feed the response and the `revert_sql` undo payload) and by `updateCard`'s
+   * kind-specific guard (to confirm a card is text vs chart before editing).
    */
   async function readCurrentCard(cardId: string): Promise<
     | { ok: true; title: string; sql: string; kind: DashboardCardKind }

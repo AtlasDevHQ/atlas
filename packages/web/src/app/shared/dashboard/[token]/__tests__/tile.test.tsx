@@ -108,9 +108,10 @@ describe("SharedTile — chart cards (#4688 chrome-in-chrome)", () => {
     // auto-detected line.
     const props = { card: chartCard, spanClass: "col-span-2", cachedLabel: null, cachedIso: undefined };
     const { rerender } = render(<SharedTile {...props} />);
-    // Flush the dynamic loader promise, then re-render so DynStub swaps its
-    // fallback for the resolved (mocked) ResultChart.
+    // Flush the dynamic loader's promise chain (import() → .then), then re-render
+    // so DynStub swaps its fallback for the resolved (mocked) ResultChart.
     await act(async () => {
+      await Promise.resolve();
       await Promise.resolve();
     });
     rerender(<SharedTile {...props} />);

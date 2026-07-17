@@ -43,27 +43,37 @@ export type ChartDetectionResult = NonChartableResult | ChartableResult;
 /*  Tile chart-type pinning (#4688)                                     */
 /* ------------------------------------------------------------------ */
 
-/** The render-union chart types a dashboard tile can PIN itself to. */
-const RENDER_CHART_TYPES: ReadonlySet<ChartType> = new Set([
+/**
+ * The render-union chart types a dashboard tile can PIN itself to. `satisfies
+ * readonly ChartType[]` makes a typo'd member a compile error (so the pin set
+ * can't silently list a type the renderer doesn't know); the Set is typed
+ * `ReadonlySet<string>` so its `.has()` accepts a raw string with no cast.
+ */
+const RENDER_CHART_TYPES_LIST = [
   "bar",
   "line",
   "pie",
   "area",
   "stacked-bar",
   "scatter",
-]);
+] as const satisfies readonly ChartType[];
+const RENDER_CHART_TYPES: ReadonlySet<string> = new Set(RENDER_CHART_TYPES_LIST);
 
 /**
  * #4688 — narrow a persisted `chartConfig.type` (the `@useatlas/types` ChartType:
  * bar/line/pie/area/scatter/table/kpi) down to the render-union {@link ChartType}
- * used to PIN a dashboard tile's chart to its configured type. `table`/`kpi` never
+ * used to PIN a dashboard tile's chart to its configured type. The render union is
+ * intentionally broader than the persisted one (it also carries the detection-only
+ * `stacked-bar`), so this is a narrowing on the persisted side: `table`/`kpi` never
  * reach a chart body (the tile renders a DataTable / KpiCard instead), so they —
  * and any value outside the render set — map to `undefined`, meaning "no pin,
  * auto-detect". Pure + string-tolerant so a loosely-parsed cached config (the
- * un-Zod'd `rowToCard` read path) can't force a bogus type onto the chart.
+ * un-Zod'd `rowToCard` read path) can't force a bogus type onto the chart. The
+ * return cast is sound: it only runs after the Set-membership check confirms the
+ * string IS a render `ChartType`.
  */
 export function asEmbeddedChartType(type: string | null | undefined): ChartType | undefined {
-  return type != null && RENDER_CHART_TYPES.has(type as ChartType) ? (type as ChartType) : undefined;
+  return type != null && RENDER_CHART_TYPES.has(type) ? (type as ChartType) : undefined;
 }
 
 /**

@@ -816,8 +816,9 @@ export function ResultChart({
    * data's auto-detected default. Pass a card's `chartConfig.type` (narrowed via
    * `asEmbeddedChartType`); when the current data has no recommendation for that
    * type the top auto-detected one is used instead (a divergent tile still draws
-   * a chart). Omitted → auto-detect (the chat surface). Only meaningful with
-   * `embedded`, since the in-chart toggle it would otherwise fight is suppressed.
+   * a chart). Omitted → auto-detect (the chat surface). Intended to be paired with
+   * `embedded`: passing it alone still pins the chart but leaves the (now inert)
+   * in-chart toggle visible, which is not a supported combination.
    */
   chartType?: ChartType;
 }) {

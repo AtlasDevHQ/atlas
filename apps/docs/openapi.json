@@ -6400,7 +6400,7 @@
                               },
                               "h": {
                                 "type": "integer",
-                                "minimum": 4,
+                                "minimum": 2,
                                 "maximum": 200
                               }
                             },
@@ -6843,7 +6843,7 @@
                       },
                       "h": {
                         "type": "integer",
-                        "minimum": 4,
+                        "minimum": 2,
                         "maximum": 200
                       }
                     },
@@ -7259,7 +7259,7 @@
                       },
                       "h": {
                         "type": "integer",
-                        "minimum": 4,
+                        "minimum": 2,
                         "maximum": 200
                       }
                     },

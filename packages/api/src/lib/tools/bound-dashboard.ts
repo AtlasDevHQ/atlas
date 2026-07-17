@@ -12,11 +12,14 @@
  * `updateCard`, `updateLayout`, `updateDashboardMeta`) commit immediately
  * to the caller's private draft (unconditional as of #4324; a mutating tool
  * with no userId is rejected — an unattributable edit never touches
- * published). The two NEW destructive tools (`removeCard` and
- * `updateCardSql`, added in #2365) do NOT mutate. They write a row to
- * `dashboard_stage_changes` and return a `stage_required` envelope; the
- * UI surfaces inline Accept / Discard affordances that hit the
- * `/dashboards/[id]/stage/[stageId]/accept|discard` routes.
+ * published). The two destructive tools (`removeCard` and `updateCardSql`)
+ * now land in the caller's draft through the SAME apply path as every other
+ * edit (ADR-0034 Decision 2, #4555 — reverses the #2365 stage tracker): no
+ * staging, no accept/discard step. Each returns a lightweight inline-undo
+ * envelope (`removed` / `sql_updated`) carrying the inverse draft edit; the
+ * UI surfaces an Undo affordance that POSTs the inverse to
+ * `/dashboards/[id]/draft/undo`. Nothing reads or writes
+ * `dashboard_stage_changes` anymore — the draft is the single edit mechanism.
  */
 
 import * as crypto from "crypto";
@@ -62,7 +65,6 @@ import {
   loadDraftCardCache,
   EMPTY_DRAFT_CARD_CACHE,
 } from "@atlas/api/lib/dashboard-draft-cache";
-import { stageChange } from "@atlas/api/lib/stage-tracker";
 
 const log = createLogger("tool:bound-dashboard");
 
@@ -461,7 +463,7 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
   });
 
   const updateCardTool = tool({
-    description: `Update a card's title, chart type, layout, event annotations, or a text / section card's markdown content. Pass only the fields you want to change. \`content\` edits a TEXT card's markdown ("change the Cohorts header to say ..."); \`chartConfig\` edits a CHART card — the two are mutually exclusive per card kind. Does NOT support changing a chart card's SQL — that is a destructive op that arrives as a staged ghost change. To change a chart's SQL today, ask the user to remove and re-add the card.`,
+    description: `Update a card's title, chart type, layout, event annotations, or a text / section card's markdown content. Pass only the fields you want to change. \`content\` edits a TEXT card's markdown ("change the Cohorts header to say ..."); \`chartConfig\` edits a CHART card — the two are mutually exclusive per card kind. Does NOT change a chart card's SQL — use \`updateCardSql\` for that.`,
     inputSchema: z.object({
       cardId: z.string().min(1).describe("Card id"),
       title: z.string().min(1).max(200).optional(),
@@ -755,18 +757,18 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
   });
 
   // -------------------------------------------------------------------------
-  // Destructive ops (#2365) — stage rather than mutate. Both tools return
-  // `stage_required` envelopes the UI surfaces as inline ghost overlays.
-  // The agent NEVER sees a direct mutation result for these — accept /
-  // discard is the user's call.
+  // Destructive ops (ADR-0034 Decision 2, #4555) — apply directly to the
+  // caller's draft like every other edit, then return a lightweight inline
+  // undo (the inverse draft edit). No staging, no accept/discard: the draft
+  // is the single edit mechanism, and publish promotes the removal / SQL edit
+  // with everything else. The agent sees the edit as done; the user can Undo.
   // -------------------------------------------------------------------------
 
   /**
    * Read the current card by id, preferring the draft view when a userId
-   * is present. Used by the destructive tools to
-   * snapshot `currentTitle` / `currentSql` into the stage payload so the
-   * UI diff overlay doesn't drift if the card mutates between stage and
-   * accept.
+   * is present. Used by `updateCardSql` (for the card's title + prior SQL, which
+   * feed the response and the `revert_sql` undo payload) and by `updateCard`'s
+   * kind-specific guard (to confirm a card is text vs chart before editing).
    */
   async function readCurrentCard(cardId: string): Promise<
     | { ok: true; title: string; sql: string; kind: DashboardCardKind }
@@ -792,10 +794,40 @@ The grid is 24 columns wide. Layout is optional — when omitted the card stages
     return { ok: true, title: card.data.title, sql: card.data.sql, kind: card.data.kind };
   }
 
-  const removeCardTool = tool({
-    description: `Stage removal of a card from the dashboard. This is a DESTRUCTIVE operation — it does NOT mutate immediately. Instead it queues a ghost change the user accepts or discards inline. Use this when the user asks to delete / remove / drop a card. The dashboard view renders the targeted card with a strikethrough overlay until the user resolves the stage.
+  /**
+   * Read the FULL draft snapshot card by id (#4555). `removeCard` captures
+   * this before dropping the card so its inline-undo can restore the card
+   * verbatim — same id, SQL, chartConfig, layout, content, annotations, and
+   * connection group. Requires a userId (removeCard already enforces it): the
+   * fork guarantees the draft snapshot mirrors every published card, so a card
+   * the user can see is always found here.
+   */
+  async function readCurrentSnapshotCard(cardId: string): Promise<
+    | { ok: true; card: DashboardSnapshotCard }
+    | { ok: false; error: string }
+  > {
+    if (!ctx.userId) {
+      return { ok: false, error: "removeCard requires an authenticated user — edits are per-user." };
+    }
+    const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined, viewerId: userId ?? undefined });
+    if (!dash.ok) {
+      return { ok: false, error: `Could not read dashboard: ${dash.reason}` };
+    }
+    const draftRow = await forkOrLoadDraft(ctx.userId, dash.data);
+    if (!draftRow) {
+      return { ok: false, error: "Could not load or create a draft for this dashboard. Internal DB unavailable." };
+    }
+    const sc = draftRow.snapshot.cards.find((c) => c.id === cardId);
+    if (!sc) {
+      return { ok: false, error: `Card ${cardId} not found on this dashboard.` };
+    }
+    return { ok: true, card: sc };
+  }
 
-Returns a \`stage_required\` envelope with the stage id; the chat UI renders Accept / Discard affordances alongside your message. Do NOT call \`removeCard\` and then try to verify the card is gone via \`getDashboardState\` in the same turn — the stage is still pending until the user acts.`,
+  const removeCardTool = tool({
+    description: `Remove a card from the dashboard. This applies immediately to the caller's private draft — the card disappears from the canvas at once (publish later promotes the removal to the live board). Use this when the user asks to delete / remove / drop a card.
+
+The result is a \`removed\` envelope; the chat UI shows a one-click Undo that restores the card in the draft. Say plainly that you removed the card (and that the user can undo). After removing, you MAY call \`getDashboardState\` in the same turn to confirm the new card set — the removal is already applied, not pending.`,
     inputSchema: z.object({
       cardId: z.string().min(1).describe("Card id (from the compact summary)"),
     }),
@@ -804,32 +836,26 @@ Returns a \`stage_required\` envelope with the stage id; the chat UI renders Acc
         if (!ctx.userId) {
           return {
             kind: "err" as const,
-            error: "removeCard requires an authenticated user — stages are per-user.",
+            error: "removeCard requires an authenticated user — edits are per-user.",
           };
         }
-        const current = await readCurrentCard(cardId);
-        if (!current.ok) {
-          return { kind: "err" as const, error: current.error };
+        // Capture the full card BEFORE dropping it so the inline undo can
+        // restore it verbatim (same id → its lingering draft-cache rows are
+        // revived on restore, so undo brings the data back too).
+        const snapshot = await readCurrentSnapshotCard(cardId);
+        if (!snapshot.ok) {
+          return { kind: "err" as const, error: snapshot.error };
         }
-        const result = await stageChange({
-          dashboardId,
-          userId: ctx.userId,
-          payload: { kind: "remove_card", cardId },
-        });
-        if (!result.ok) {
-          return {
-            kind: "err" as const,
-            error:
-              result.reason === "no_db"
-                ? "Stage tracker requires an internal database."
-                : "Could not queue the stage. Try again.",
-          };
-        }
+        const applied = await maybeApplyToDraft(ctx, { kind: "removeCard", cardId });
+        if (!applied.ok) return { kind: "err" as const, error: applied.error };
+        // #2367 — the user's draft view shifted, drop cached screenshots.
+        invalidateDashboardScreenshot(dashboardId);
         return {
-          kind: "stage_required" as const,
-          stageId: result.stage.id,
-          stageKind: "remove_card" as const,
-          target: { cardId, currentTitle: current.title },
+          kind: "removed" as const,
+          cardId,
+          title: snapshot.card.title,
+          // The inverse draft edit the UI POSTs to `/draft/undo` on Undo.
+          undo: { kind: "restore_card" as const, card: snapshot.card },
         };
       } catch (err) {
         log.warn(
@@ -845,14 +871,14 @@ Returns a \`stage_required\` envelope with the stage id; the chat UI renders Acc
   });
 
   const updateCardSqlTool = tool({
-    description: `Stage a SQL rewrite for a card. This is a DESTRUCTIVE operation — it does NOT mutate immediately. Instead it queues a ghost change with a side-by-side SQL diff overlay the user accepts or discards inline. Use this when the user asks to change a card's query or rewrite its SQL.
+    description: `Rewrite a card's SQL. This applies immediately to the caller's private draft — the card keeps its existing cached data until it next refreshes / re-renders against the new query (publish later promotes the edit to the live board). Use this when the user asks to change a card's query or rewrite its SQL.
 
 ALWAYS:
 1. Call \`getCardDetail(cardId)\` first to read the current SQL.
 2. Call \`executeSQL\` on the proposed new SQL to verify shape + correctness.
 3. Then call \`updateCardSql(cardId, newSql)\` with the validated query.
 
-The tool validates the new SQL against the analytics datasource before staging; if validation fails the stage is NOT created and the error is returned so you can fix it and retry. Returns a \`stage_required\` envelope; the chat UI renders the diff + Accept / Discard.`,
+The tool validates the new SQL against the analytics datasource before applying; if validation fails the draft is NOT changed and the error is returned so you can fix it and retry. Returns a \`sql_updated\` envelope; the chat UI shows a one-click Undo that restores the prior SQL in the draft.`,
     inputSchema: z.object({
       cardId: z.string().min(1).describe("Card id (from the compact summary)"),
       newSql: z.string().min(1).describe("Proposed replacement SELECT query"),
@@ -862,7 +888,7 @@ The tool validates the new SQL against the analytics datasource before staging; 
         if (!ctx.userId) {
           return {
             kind: "err" as const,
-            error: "updateCardSql requires an authenticated user — stages are per-user.",
+            error: "updateCardSql requires an authenticated user — edits are per-user.",
           };
         }
         const validation = await validateSQL(newSql, undefined);
@@ -877,7 +903,7 @@ The tool validates the new SQL against the analytics datasource before staging; 
           return { kind: "err" as const, error: current.error };
         }
         // #3138: a text / section-block card has no SQL. Reject rather than
-        // stage an edit_sql change that publish would silently discard (a text
+        // apply an editSql change that publish would silently discard (a text
         // card's draft↔baseline equality ignores sql). To change a header, edit
         // its markdown / remove + re-add.
         if (current.kind === "text") {
@@ -886,35 +912,18 @@ The tool validates the new SQL against the analytics datasource before staging; 
             error: `Card ${cardId} is a text / section card — it has no SQL to edit.`,
           };
         }
-        const result = await stageChange({
-          dashboardId,
-          userId: ctx.userId,
-          payload: {
-            kind: "edit_sql",
-            cardId,
-            newSql,
-            currentSql: current.sql,
-          },
-        });
-        if (!result.ok) {
-          return {
-            kind: "err" as const,
-            error:
-              result.reason === "no_db"
-                ? "Stage tracker requires an internal database."
-                : "Could not queue the stage. Try again.",
-          };
-        }
+        const applied = await maybeApplyToDraft(ctx, { kind: "editSql", cardId, newSql });
+        if (!applied.ok) return { kind: "err" as const, error: applied.error };
+        // #2367 — the user's draft view shifted, drop cached screenshots.
+        invalidateDashboardScreenshot(dashboardId);
         return {
-          kind: "stage_required" as const,
-          stageId: result.stage.id,
-          stageKind: "edit_sql" as const,
-          target: {
-            cardId,
-            currentTitle: current.title,
-            currentSql: current.sql,
-            newSql,
-          },
+          kind: "sql_updated" as const,
+          cardId,
+          title: current.title,
+          previousSql: current.sql,
+          newSql,
+          // The inverse draft edit the UI POSTs to `/draft/undo` on Undo.
+          undo: { kind: "revert_sql" as const, cardId, sql: current.sql },
         };
       } catch (err) {
         log.warn(
@@ -966,7 +975,7 @@ The tool validates the SQL against the analytics datasource before persisting; i
 TEXT / SECTION card — pass \`{ kind: "text", content: "## Cohorts" }\` (optionally a layout). It has no SQL or chart and fetches no data; use it to group related charts under a heading. Emit a full-width text card (w: 24) above each cluster of charts and keep the copy short.`,
 
   updateCard: `### Rename / re-chart / re-place a card, or edit a section header
-Use \`updateCard\` to change a card's title, chartConfig, layout, position, or a text / section card's markdown \`content\`. Pass only the fields you want to change. \`content\` edits a TEXT card's markdown; \`chartConfig\` edits a CHART card — the two are per-kind and mutually exclusive. Does NOT support changing a chart card's SQL — those are destructive ops that arrive as staged ghost changes.`,
+Use \`updateCard\` to change a card's title, chartConfig, layout, position, or a text / section card's markdown \`content\`. Pass only the fields you want to change. \`content\` edits a TEXT card's markdown; \`chartConfig\` edits a CHART card — the two are per-kind and mutually exclusive. Does NOT change a chart card's SQL — use \`updateCardSql\` for that.`,
 
   updateLayout: `### Rearrange the grid
 Use \`updateLayout\` to move multiple cards at once. Supply the layouts array with one entry per card you want to place. Cards not listed stay where they are. Grid is 24 columns wide; (x + w) must be <= 24.`,
@@ -981,16 +990,16 @@ Use \`screenshotDashboard()\` to capture the dashboard as the user currently see
 - Card mutations (\`addCard\`, \`updateCard\`, \`updateLayout\`, \`updateDashboardMeta\`) invalidate the cache automatically — you'll get a fresh shot on the next call.
 - Don't echo the base64 payload back to the user. The shot is for your eyes only.`,
 
-  removeCard: `### Stage card removal (destructive — requires user accept)
-Use \`removeCard(cardId)\` when the user asks to delete / remove / drop a card. This does NOT mutate immediately — it queues a ghost change the user accepts or discards inline. The dashboard renders the staged card with a strikethrough overlay. After calling \`removeCard\`, surface a short confirmation to the user ("Staged removal of <title> — accept to confirm or discard to keep it"). Do NOT loop back to \`getDashboardState\` to verify removal in the same turn; the stage is still pending until the user resolves it.`,
+  removeCard: `### Remove a card (applies to the draft; undoable)
+Use \`removeCard(cardId)\` when the user asks to delete / remove / drop a card. This applies immediately to the caller's private draft — the card leaves the canvas at once. The chat shows a one-click Undo that restores it. Tell the user plainly that you removed the card (and that they can undo). The removal is already applied, so you MAY call \`getDashboardState\` in the same turn to confirm the new card set.`,
 
-  updateCardSql: `### Stage a SQL rewrite (destructive — requires user accept)
-Use \`updateCardSql(cardId, newSql)\` when the user asks to change a card's query. This does NOT mutate immediately — it queues a ghost change with a side-by-side SQL diff overlay the user accepts or discards inline.
+  updateCardSql: `### Rewrite a card's SQL (applies to the draft; undoable)
+Use \`updateCardSql(cardId, newSql)\` when the user asks to change a card's query. This applies immediately to the caller's private draft; the chat shows a one-click Undo that restores the prior SQL.
 
 ALWAYS:
 1. Call \`getCardDetail(cardId)\` first to read the current SQL.
 2. Call \`executeSQL\` on the new SQL to verify shape + correctness against the analytics datasource.
 3. Then call \`updateCardSql\` with the validated query.
 
-The tool re-validates the SQL before staging; invalid queries are rejected without queueing.`,
+The tool re-validates the SQL before applying; invalid queries are rejected and the draft is left unchanged.`,
 };

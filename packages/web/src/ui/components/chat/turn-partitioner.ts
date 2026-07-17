@@ -141,13 +141,13 @@ export function partitionTurn(parts: readonly TurnPart[] | undefined): Partition
 
 /**
  * True when `output` is one of the interactive tool envelopes that waits on a
- * user decision: a pending action approval, a staged dashboard change
- * (#2365 `stage_required` — the card validates the full payload, the kind
- * alone identifies the envelope family), or a REST write confirmation (#2929).
+ * user decision: a pending action approval, or a REST write confirmation
+ * (#2929). A bound-editor destructive edit (#4555 `removed` / `sql_updated`) is
+ * NOT pending — it already applied to the draft and merely OFFERS an undo, so it
+ * partitions as a normal completed tool receipt, not an awaiting-decision card.
  */
 function isPendingInteractiveResult(output: unknown): boolean {
   if (output == null || typeof output !== "object") return false;
-  if ((output as { kind?: unknown }).kind === "stage_required") return true;
   if (isRestWriteConfirmResult(output)) return true;
   return isActionToolResult(output) && output.status === "pending";
 }

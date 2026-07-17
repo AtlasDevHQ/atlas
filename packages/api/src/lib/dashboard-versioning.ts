@@ -35,9 +35,10 @@
  *     wires it into `/api/v1/dashboards/[id]/draft` and the bound editor
  *     tools (`packages/api/src/lib/tools/bound-dashboard.ts`) route
  *     mutations through `applyChangeToDraft` + `saveDraft`.
- *  4. `DraftChange` extended with `removeCard` + `editSql` variants
- *     in #2365 so the stage-tracker can replay accepted destructive
- *     ops through the same `applyChangeToDraft` path.
+ *  4. `DraftChange` carries `removeCard` + `editSql` variants so the
+ *     bound editor's destructive ops apply through the same
+ *     `applyChangeToDraft` path as every other edit (ADR-0034 Decision 2,
+ *     #4555 — the retired #2365 stage tracker used to gate these).
  *  5. `materializeDraftView` powers `GET /:id?view=draft` so the
  *     editor sees their draft state without touching the published
  *     dashboard row that other viewers see.
@@ -176,13 +177,12 @@ export function forkDraftFromPublished(published: DashboardWithCards): Dashboard
  * Each change is a snapshot-in / snapshot-out transformation — the tool
  * layer never mutates the snapshot in place.
  *
- * Destructive ops (`remove_card`, `edit_sql`) were intentionally absent
- * in the foundation slice #2364 and added in #2365 once the stage tracker
- * existed to gate them through accept/discard. The bound tools never
- * call `applyChangeToDraft` with these variants directly — they go
- * through `stageChange` first; `acceptStagedChange` then dispatches
- * them through this union, which is the only path that touches the
- * user's draft snapshot.
+ * Destructive ops (`removeCard`, `editSql`) were intentionally absent in the
+ * foundation slice #2364. As of ADR-0034 Decision 2 (#4555) the bound editor's
+ * `removeCard` / `updateCardSql` tools apply them straight to the caller's draft
+ * through this same union — the single edit mechanism — and surface a
+ * lightweight inline undo (the inverse draft edit), no staging step. The REST
+ * routes (`removeCard`, the SQL branch of `updateCard`) route the same way.
  */
 export type DraftChange =
   | { kind: "addCard"; card: DashboardSnapshotCard }
@@ -211,12 +211,12 @@ export type DraftChange =
     }
   | { kind: "updateLayout"; layouts: { cardId: string; layout: DashboardCardLayout }[] }
   | { kind: "updateMeta"; title?: string; description?: string | null }
-  // #2365 — destructive ops. Routed via the stage tracker; never called
-  // directly from a tool's `execute`. `remove_card` drops the card from
-  // the draft snapshot; `edit_sql` replaces the card's SQL in place. Any
-  // collateral (e.g. clearing the cached column metadata) is the
-  // publish-side renderer's problem — the draft snapshot doesn't carry
-  // cached rows.
+  // #4555 — destructive ops applied directly from the bound editor tools
+  // (via `maybeApplyToDraft`) and the `/draft/undo` route, like every other
+  // edit. `removeCard` drops the card from the draft snapshot; `editSql`
+  // replaces the card's SQL in place. Any collateral (e.g. clearing the cached
+  // column metadata) is the publish-side renderer's problem — the draft
+  // snapshot doesn't carry cached rows.
   | { kind: "removeCard"; cardId: string }
   | { kind: "editSql"; cardId: string; newSql: string };
 
@@ -248,7 +248,7 @@ export function applyChangeToDraft(
               ...c,
               ...(change.updates.title !== undefined && { title: change.updates.title }),
               // #4318 — a card-SQL edit replaces the query in place, matching
-              // the `editSql` change the stage tracker dispatches.
+              // the bound editor's `editSql` change.
               ...(change.updates.sql !== undefined && { sql: change.updates.sql }),
               ...(change.updates.chartConfig !== undefined && { chartConfig: change.updates.chartConfig }),
               // #4562 — a text-content edit replaces the section card's markdown.
@@ -282,10 +282,10 @@ export function applyChangeToDraft(
       return { ok: true, snapshot: next };
     }
     case "removeCard": {
-      // Drop the card from the snapshot. `unknown_card` surfaces when
-      // the stage was queued against a card that has since been removed
-      // by another safe-op (last-write-wins behavior — the stage was
-      // pointing at a card the draft no longer knows about).
+      // Drop the card from the snapshot. `unknown_card` surfaces when the
+      // edit targets a card the draft no longer knows about — e.g. a
+      // `restore_card` undo racing a concurrent removal, or a card already
+      // removed by an earlier edit (last-write-wins behavior).
       const idx = draft.cards.findIndex((c) => c.id === change.cardId);
       if (idx === -1) return { ok: false, reason: "unknown_card", cardId: change.cardId };
       const cards = draft.cards.filter((c) => c.id !== change.cardId);
@@ -358,8 +358,8 @@ export type PublishMergeResult =
  *      changed → update published.
  *
  *   5. Card in baseline + published but absent from draft → translates
- *      to a `deleteCard` op (the user removed the card via #2365's
- *      `removeCard` stage; the snapshot reflects the post-accept state).
+ *      to a `deleteCard` op (the user removed the card via the bound editor's
+ *      `removeCard`; the draft snapshot already reflects the removal).
  *
  *   6. Meta (title / description) — overwrite whenever the draft's value
  *      differs from published's current value. No baseline check because
@@ -386,8 +386,8 @@ export function publishDraftMerge(
   const publishedById = new Map(published.cards.map((c) => [c.id, c] as const));
 
   // Find cards present in baseline but absent from the draft — that's
-  // the destructive-op path (#2365). When the user staged + accepted a
-  // `removeCard`, the card disappears from the draft snapshot; publish
+  // the destructive-op path (#4555). When the user runs `removeCard`, the
+  // card disappears from the draft snapshot; publish
   // must translate that absence into a `deleteCard` op against the live
   // dashboard. We only emit the delete when the card still exists in
   // published — if another publisher already removed it, the draft +
@@ -1166,7 +1166,7 @@ export async function publishDraft(opts: {
               WHERE id = $8 AND dashboard_id = $9`,
             [
               op.card.title,
-              // An accepted `editSql` stage rewrites the draft card's SQL
+              // A bound-editor `updateCardSql` rewrites the draft card's SQL
               // (applyChangeToDraft → `editSql`), which `cardEquals` then
               // surfaces as this updateCard op — so the new query MUST be
               // persisted here or the publish silently drops it. A text card

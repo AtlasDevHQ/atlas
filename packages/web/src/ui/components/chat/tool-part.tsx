@@ -10,7 +10,7 @@ import { ActionApprovalCard } from "../actions/action-approval-card";
 import { PythonResultCard, type PythonProgressData } from "./python-result-card";
 import { CreateDashboardCard } from "./create-dashboard-card";
 import { DashboardEditCard, DASHBOARD_EDIT_TOOL_NAMES } from "./dashboard-edit-card";
-import { StageChangeCard } from "./stage-change-card";
+import { DraftEditUndoCard } from "./draft-edit-undo-card";
 import { RestWriteConfirmCard } from "./rest-write-confirm-card";
 import type { PreviousExecution } from "./result-card-types";
 
@@ -57,11 +57,12 @@ export const ToolPart = memo(function ToolPart({
     }
     case "createDashboard":
       return <CreateDashboardCard part={part} />;
-    // #2365 — bound editor destructive tools return `stage_required`
-    // envelopes; both render via the same accept/discard card.
+    // #4555 — bound editor destructive tools apply straight to the draft and
+    // return a `removed` / `sql_updated` envelope; both render via the same
+    // inline-undo card.
     case "removeCard":
     case "updateCardSql":
-      return <StageChangeCard part={part} />;
+      return <DraftEditUndoCard part={part} />;
     // #2929 — REST writes stage a `needs_confirmation` result; the card renders
     // the confirm-before-write banner (and a compact line for read results).
     case "executeRestOperation":

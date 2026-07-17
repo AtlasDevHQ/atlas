@@ -211,10 +211,6 @@ export type {
   PreviewCardResponse,
   RenderCardResponse,
   KpiComparisonResult,
-  StagedChange,
-  StageKind,
-  StageStatus,
-  StagePayload,
 } from "@useatlas/types";
 export { CHART_TYPES } from "@useatlas/types";
 export { DOMAIN_STATUSES, CERTIFICATE_STATUSES } from "@useatlas/types";

@@ -43,7 +43,7 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { AgentTurn } from "@/ui/components/chat/agent-turn";
 import { WorkingActivity, showPreStreamActivity } from "@/ui/components/chat/working-activity";
 import { FollowUpChips } from "@/ui/components/chat/follow-up-chips";
-import { StageProvider } from "@/ui/components/dashboards/stage-context";
+import { BoundDraftProvider } from "@/ui/components/dashboards/bound-draft-context";
 import { boundMutationSignature } from "@/ui/components/dashboards/bound-tool-invalidation";
 import { parseSuggestions } from "@/ui/lib/helpers";
 import { transformMessages } from "@useatlas/types/conversation";
@@ -659,13 +659,14 @@ function HistoryTranscriptPanel({
           </div>
         )}
 
-        {/* #4322 — the transcript is INERT history. The read-only stage
-            context makes any replayed `stage_required` card drop its live
-            Accept / Discard (a finished session has nothing to resolve), and
-            `BoundChatTurn` renders every turn as finished (receipt → answer)
-            with its suggestion chips shown but non-interactive. */}
-        <StageProvider
-          value={{ dashboardId, onStagesChanged: () => {}, readOnly: true }}
+        {/* #4322 — the transcript is INERT history. The read-only bound-draft
+            context makes any replayed destructive-edit card drop its live Undo
+            (a finished session's undo would act on the current draft, not this
+            stale receipt), and `BoundChatTurn` renders every turn as finished
+            (receipt → answer) with its suggestion chips shown but
+            non-interactive. */}
+        <BoundDraftProvider
+          value={{ dashboardId, onDraftChanged: () => {}, readOnly: true }}
         >
           {transformed.map((m, i) => (
             <BoundChatTurn
@@ -677,7 +678,7 @@ function HistoryTranscriptPanel({
               readOnly
             />
           ))}
-        </StageProvider>
+        </BoundDraftProvider>
 
         {data && !loading && (
           <div className="mt-6 border-t border-dashed border-zinc-200 pt-3 text-[10px] uppercase tracking-wide text-zinc-400 dark:border-zinc-800">

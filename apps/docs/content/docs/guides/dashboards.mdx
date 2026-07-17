@@ -368,9 +368,9 @@ Publish returns as soon as the new definitions are promoted and then **asynchron
 
 The draft badge in the dashboard header shows your pending change count. Click **Publish** to promote the draft via `POST /api/v1/dashboards/:id/draft/publish`; the diff modal previews every staged change before you confirm. Discard with **Discard draft** to revert to the published view.
 
-### Stage tracker
+### Destructive edits + inline undo
 
-Destructive operations (card removal, SQL rewrites) return a `stage_required` envelope rather than applying immediately. The UI overlays a ghost on affected cards until you confirm — `Keep` discards the staged change, `Apply` commits it to your draft. The stage tracker is idempotent: applying or discarding a pending change twice is a no-op.
+Destructive operations (card removal, SQL rewrites) apply to your draft immediately, just like every other edit — the canvas reflects the change at once (publish later promotes it to the live board). The chat surfaces a one-click **Undo** alongside the edit: undoing a removal restores the card verbatim (same data), and undoing a SQL rewrite puts the previous query back. There is no accept/discard step and no ghost overlay — the draft is the single edit mechanism, and undo is just the inverse draft edit.
 
 ### History tab
 
@@ -409,7 +409,7 @@ All dashboard operations are available via the REST API:
 | `POST /api/v1/dashboards/:id/draft/publish` | Publish the draft (three-way merge; 409 on stale baseline) |
 | `POST /api/v1/dashboards/:id/draft/discard` | Discard the draft, revert to published |
 | `POST /api/v1/dashboards/:id/draft/rebase` | Rebase the draft onto a changed baseline |
-| `POST /api/v1/dashboards/:id/stage` | Stage a destructive change for confirm (`stage_required` flow) |
+| `POST /api/v1/dashboards/:id/draft/undo` | Undo a bound-editor destructive edit (restore a removed card / prior SQL) |
 | `POST /api/v1/dashboards/:id/share` | Generate share link |
 | `DELETE /api/v1/dashboards/:id/share` | Revoke share link |
 

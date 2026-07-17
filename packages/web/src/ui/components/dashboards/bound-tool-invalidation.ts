@@ -10,19 +10,19 @@ import { isToolUIPart, getToolName, type UIMessage } from "ai";
  * mutation that FAILED refetches even though nothing changed.
  *
  * The rule: refetch only when a mutation tool completes SUCCESSFULLY. That
- * includes the staged ops (`removeCard` / `updateCardSql`) whose success is a
- * `stage_required` envelope — staging doesn't alter the published board but it
- * does update the pending/ghost view the canvas renders, so it warrants a
- * refetch just like a direct draft edit. This module is the single pure
- * statement of that rule so the drawer effect stays a one-liner and the
- * decision is unit-testable without mounting a chat.
+ * includes the destructive ops (`removeCard` / `updateCardSql`, #4555) whose
+ * success is a `removed` / `sql_updated` envelope — they apply straight to the
+ * caller's draft, so the canvas needs to refetch just like any direct draft
+ * edit. This module is the single pure statement of that rule so the drawer
+ * effect stays a one-liner and the decision is unit-testable without mounting a
+ * chat.
  */
 
 /**
- * Bound-editor tools that change dashboard state — they either commit to the
- * caller's draft (`addCard` / `updateCard` / `updateLayout` /
- * `updateDashboardMeta`) or stage a destructive change (`removeCard` /
- * `updateCardSql`). These are the MUTATING SAFE-ops plus the two staged ops from
+ * Bound-editor tools that change dashboard state — they all commit to the
+ * caller's draft: the safe ops (`addCard` / `updateCard` / `updateLayout` /
+ * `updateDashboardMeta`) and the destructive ops (`removeCard` /
+ * `updateCardSql`, #4555). These are the MUTATING tools from
  * `packages/api/src/lib/tools/bound-dashboard.ts`; the read SAFE-ops
  * (`getDashboardState`, `getCardDetail`) and the base `explore` / `executeSQL`
  * are intentionally excluded — a read never warrants a board refetch.

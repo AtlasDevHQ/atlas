@@ -123,9 +123,10 @@ function cacheSet(key: string, png: Buffer): void {
 
 /**
  * Drop every cache entry for a dashboard. Called by:
- *   - safe-op mutations through the bound editor tools (`addCard` /
- *     `updateCard` / `updateLayout` / `updateDashboardMeta`).
- *   - destructive-op stage acceptance via `acceptStagedChange` (#2365).
+ *   - mutations through the bound editor tools — safe ops (`addCard` /
+ *     `updateCard` / `updateLayout` / `updateDashboardMeta`) and the
+ *     destructive ops (`removeCard` / `updateCardSql`, #4555) that now apply
+ *     straight to the caller's draft.
  *   - publish via the `/draft/publish` route — published moved, every
  *     editor's cached view is stale.
  *

@@ -80,9 +80,6 @@ async function installMocks(page: Page, state: MockState): Promise<void> {
   await page.route(`**/api/v1/dashboards/${DASH_ID}/draft/status`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hasDraft: false }) });
   });
-  await page.route(`**/api/v1/dashboards/${DASH_ID}/stage`, async (route: Route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ stages: [] }) });
-  });
   await page.route(`**/api/v1/dashboards/${DASH_ID}/sessions`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sessions: [] }) });
   });

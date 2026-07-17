@@ -743,4 +743,102 @@ describe("createBoundDashboardTools", () => {
       expect(second.value).toMatch(/call screenshotdashboard again/i);
     });
   });
+
+  // -------------------------------------------------------------------
+  // Destructive ops (#4555, ADR-0034 Decision 2) — apply to the draft
+  // directly + return an inline-undo envelope. No staging.
+  // -------------------------------------------------------------------
+  describe("destructive ops apply to the draft + surface inline undo", () => {
+    const ctxWithUser = {
+      dashboardId: "dash-1",
+      orgId: "org-1" as string | null | undefined,
+      userId: "user-1" as string | null,
+    };
+
+    it("removeCard drops the card from the draft and returns a restore_card undo", async () => {
+      enableInternalDB();
+      // readCurrentSnapshotCard (draft read) then maybeApplyToDraft (draft write).
+      setResults(...draftReadResults([chartSnapshotCard]), ...draftWriteResults([chartSnapshotCard]));
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{
+        kind: string;
+        cardId: string;
+        title: string;
+        undo: { kind: string; card: { id: string; sql: string } };
+      }>(tools.removeCard, { cardId: "card-1" });
+      expect(result.kind).toBe("removed");
+      expect(result.cardId).toBe("card-1");
+      expect(result.title).toBe("Signups");
+      // The inline undo carries the full card so restore is verbatim (same id).
+      expect(result.undo.kind).toBe("restore_card");
+      expect(result.undo.card.id).toBe("card-1");
+      expect(result.undo.card.sql).toBe("SELECT 1");
+      // A draft write landed with the card gone (the only card removed → no
+      // card id survives in the persisted snapshot).
+      const saved = queryCalls.find((c) => c.sql.includes("UPDATE dashboard_user_drafts"));
+      expect(saved).toBeTruthy();
+      expect(JSON.stringify(saved?.params)).not.toContain("card-1");
+      expect(invalidateScreenshotMock).toHaveBeenCalledWith("dash-1");
+    });
+
+    it("removeCard rejects an anonymous (no-userId) edit and never writes", async () => {
+      enableInternalDB();
+      const tools = createBoundDashboardTools(ctx);
+      const result = await runTool<{ kind: string; error?: string }>(tools.removeCard, {
+        cardId: "card-1",
+      });
+      expect(result.kind).toBe("err");
+      expect(result.error).toMatch(/authenticated user/i);
+      const sqls = queryCalls.map((c) => c.sql).join("\n");
+      expect(sqls).not.toContain("dashboard_user_drafts");
+    });
+
+    it("removeCard surfaces an error for an unknown card without writing", async () => {
+      enableInternalDB();
+      setResults(...draftReadResults([chartSnapshotCard]));
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{ kind: string; error?: string }>(tools.removeCard, {
+        cardId: "missing-card",
+      });
+      expect(result.kind).toBe("err");
+      expect(result.error).toMatch(/not found/i);
+      const saved = queryCalls.find((c) => c.sql.includes("UPDATE dashboard_user_drafts"));
+      expect(saved).toBeFalsy();
+    });
+
+    it("updateCardSql rewrites the draft card's SQL and returns a revert_sql undo", async () => {
+      enableInternalDB();
+      // readCurrentCard (draft read) then maybeApplyToDraft (draft write).
+      setResults(...draftReadResults([chartSnapshotCard]), ...draftWriteResults([chartSnapshotCard]));
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{
+        kind: string;
+        cardId: string;
+        previousSql: string;
+        newSql: string;
+        undo: { kind: string; cardId: string; sql: string };
+      }>(tools.updateCardSql, { cardId: "card-1", newSql: "SELECT 2" });
+      expect(result.kind).toBe("sql_updated");
+      expect(result.previousSql).toBe("SELECT 1");
+      expect(result.newSql).toBe("SELECT 2");
+      expect(result.undo).toEqual({ kind: "revert_sql", cardId: "card-1", sql: "SELECT 1" });
+      // The persisted draft snapshot carries the new query.
+      const saved = queryCalls.find((c) => c.sql.includes("UPDATE dashboard_user_drafts"));
+      expect(JSON.stringify(saved?.params)).toContain("SELECT 2");
+      expect(invalidateScreenshotMock).toHaveBeenCalledWith("dash-1");
+    });
+
+    it("updateCardSql refuses invalid SQL without touching the draft", async () => {
+      enableInternalDB();
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{ kind: string; error?: string }>(tools.updateCardSql, {
+        cardId: "card-1",
+        newSql: "DROP TABLE users",
+      });
+      expect(result.kind).toBe("err");
+      expect(result.error).toMatch(/validation failed/i);
+      const saved = queryCalls.find((c) => c.sql.includes("UPDATE dashboard_user_drafts"));
+      expect(saved).toBeFalsy();
+    });
+  });
 });

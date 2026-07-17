@@ -276,15 +276,15 @@ describe("activityAwaitsUser", () => {
     expect(activityAwaitsUser(activity)).toBe(false);
   });
 
-  test("staged dashboard change (#2365) awaits the user", () => {
-    const staged = toolWithOutput({
-      kind: "stage_required",
-      stageId: "s1",
-      stageKind: "remove_card",
-      target: { cardId: "c1", currentTitle: "T" },
+  test("a destructive draft edit (#4555 removed) does NOT await the user — it already applied + offers undo", () => {
+    const removed = toolWithOutput({
+      kind: "removed",
+      cardId: "c1",
+      title: "T",
+      undo: { kind: "restore_card", card: { id: "c1" } },
     });
-    const { activity } = partitionTurn([staged, text("Confirm the removal?")]);
-    expect(activityAwaitsUser(activity)).toBe(true);
+    const { activity } = partitionTurn([removed, text("Removed the card.")]);
+    expect(activityAwaitsUser(activity)).toBe(false);
   });
 
   test("REST write confirmation (#2929) awaits the user", () => {

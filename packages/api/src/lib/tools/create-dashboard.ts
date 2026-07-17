@@ -52,10 +52,23 @@ import {
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
-import { extractPlaceholderNames, validateAutoComparison } from "@atlas/api/lib/dashboard-parameters";
-import { CardLayoutSchema } from "@atlas/api/lib/dashboards";
+import {
+  extractPlaceholderNames,
+  validateAutoComparison,
+  resolveDashboardParameterValues,
+} from "@atlas/api/lib/dashboard-parameters";
+import {
+  CardLayoutSchema,
+  resolveCardConnectionId,
+  NoGroupMembersError,
+} from "@atlas/api/lib/dashboards";
 import { hasInternalDB, getInternalDB } from "@atlas/api/lib/db/internal";
 import type { DashboardSnapshot, DashboardSnapshotCard } from "@atlas/api/lib/dashboard-versioning";
+import {
+  seedDraftCards,
+  type CardSeedOutcome,
+  type SeedCardInput,
+} from "@atlas/api/lib/dashboard-seeding";
 
 const log = createLogger("tool:create-dashboard");
 
@@ -146,6 +159,15 @@ export type CreateDashboardResult =
       cardCount: number;
       /** Always `true` for this slice — cards are staged in the user's draft. */
       draft: true;
+      /**
+       * Per-card seeding outcomes (#4558) — one entry per CHART card (text /
+       * section cards fetch no data and are omitted), in card order. Each staged
+       * card's SQL is executed once inside this tool call and its result cached
+       * as the draft card's initial data; a card that errored or hit the
+       * wall-clock budget is still staged (the build succeeds) and reported here
+       * so the agent can self-correct instead of announcing a broken board.
+       */
+      cardOutcomes: CardSeedOutcome[];
     }
   | {
       kind: "err";
@@ -153,6 +175,78 @@ export type CreateDashboardResult =
       /** Populated only when the failure was per-card SQL validation; empty otherwise. */
       validationErrors?: CreateDashboardCardValidationError[];
     };
+
+/**
+ * Seed the just-staged chart cards (#4558). Resolves the batch's physical
+ * connection from the conversation's group and the dashboard's parameter
+ * DEFAULTS once (both shared by every card — every seed card carries the same
+ * group), then runs the batch through {@link seedDraftCards}. Never throws — a
+ * seeding failure must not turn a committed dashboard into an error envelope,
+ * so a connection-resolution, parameter-resolution, or batch-level fault
+ * degrades to "every card unseeded" (the canvas-mount render fills them in)
+ * rather than propagating.
+ */
+async function seedStagedCards(
+  ctx: {
+    ownerId: string;
+    dashboardId: string;
+    orgId: string | null;
+    connectionGroupId: string | null;
+  },
+  seedCards: SeedCardInput[],
+  parameters: z.infer<typeof dashboardParametersSchema> | undefined,
+  title: string,
+): Promise<CardSeedOutcome[]> {
+  const { ownerId, dashboardId, orgId, connectionGroupId } = ctx;
+  if (seedCards.length === 0) return [];
+  const unseeded = (): CardSeedOutcome[] =>
+    seedCards.map((s) => ({ cardId: s.cardId, title: s.title, status: "unseeded" as const }));
+  try {
+    // Resolve the group's primary member — the exact connection a later refresh
+    // runs against, so the seeded rows and the first refresh agree. A group
+    // with no members can't be seeded (the same fault a refresh would hit).
+    let connectionId: string | null;
+    try {
+      connectionId = await resolveCardConnectionId({ connectionGroupId }, orgId);
+    } catch (err) {
+      if (err instanceof NoGroupMembersError) {
+        log.warn(
+          { groupId: err.groupId, dashboardId, title },
+          "createDashboard: card connection group has no members — cards left unseeded",
+        );
+        return unseeded();
+      }
+      throw err;
+    }
+
+    let paramValues: Record<string, string | number | null>;
+    try {
+      paramValues = resolveDashboardParameterValues(parameters ?? null, undefined);
+    } catch (err) {
+      // A malformed parameter default (rare — the render path resolves the same
+      // way) can't be seeded against; leave the cards for the canvas render
+      // rather than reporting spurious per-card binding errors.
+      log.warn(
+        { err: errorMessage(err), dashboardId, title },
+        "createDashboard: could not resolve parameter defaults for seeding",
+      );
+      return unseeded();
+    }
+
+    return await seedDraftCards({
+      userId: ownerId,
+      dashboardId,
+      cards: seedCards.map((s) => ({ ...s, connectionId })),
+      parameters: paramValues,
+    });
+  } catch (err) {
+    log.warn(
+      { err: errorMessage(err), dashboardId, title },
+      "createDashboard: seeding batch failed — cards left for canvas-mount render",
+    );
+    return unseeded();
+  }
+}
 
 export const createDashboard = tool({
   description: `Create a dashboard the user can keep editing in chat.
@@ -180,7 +274,9 @@ GOAL LINES (thresholds): for any GOAL-BEARING metric — one with a target, budg
 
 PARAMETERS (date ranges + filters): pass a \`parameters\` array to give the dashboard a top-level filter bar that every card binds to. Each parameter is { key, type, default, label } where type is "date" | "text" | "number". In card SQL, reference a parameter as \`:<key>\` (e.g. \`:date_from\`, \`:date_to\`, \`:region\`). For ANY "last N days" / "this quarter" / "year to date" query, declare \`date_from\` + \`date_to\` parameters and write \`WHERE created_at >= :date_from AND created_at < :date_to\` instead of hardcoding the dates — that keeps the dashboard useful for months instead of ageing in days. Date defaults accept ISO dates or relative expressions like "now - 30 days" / "now - 1 month" / "now". Every \`:placeholder\` a card uses MUST be declared in \`parameters\` (values are bound server-side as real query parameters, never interpolated).
 
-If any card has invalid SQL or references an undeclared parameter, the whole call is rejected — no dashboard row is created. Fix the failing card and call again.`,
+If any card has invalid SQL or references an undeclared parameter, the whole call is rejected — no dashboard row is created. Fix the failing card and call again.
+
+The tool EXECUTES each chart card once as it builds the dashboard and returns \`cardOutcomes\` — a per-card result of \`rows\` (with a rowCount), \`empty\` (zero rows), \`error\` (the card is still created, but its query failed — the \`message\` says why), or \`unseeded\` (the card is created; its data loads when the dashboard opens). Read \`cardOutcomes\` after a successful call: if a card came back \`empty\` or \`error\`, tell the user plainly and offer to fix it — don't describe a card as showing data it didn't return.`,
 
   inputSchema: z.object({
     title: z.string().min(1).max(200).describe("Dashboard title"),
@@ -380,10 +476,18 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
         // `sql: ""`, `chartConfig: null`, and its markdown in `content`. It
         // carries no connection group (it never queries). Chart cards keep
         // the conversation's environment scope.
+        // Collected alongside the snapshot so tool-side seeding (#4558) can run
+        // each chart card's SQL once after COMMIT and cache the result as the
+        // card's initial draft data. Text / section cards fetch no data, so
+        // they never become seed specs. Every chart card is stamped with the
+        // conversation's group, so the batch resolves one physical connection
+        // (below) — the SAME resolution a later refresh uses.
+        const seedCards: SeedCardInput[] = [];
         const snapshotCards: DashboardSnapshotCard[] = cards.map((card, position) => {
+          const id = crypto.randomUUID();
           if (card.kind === "text") {
             return {
-              id: crypto.randomUUID(),
+              id,
               position,
               title: card.title?.trim() || deriveTextCardTitle(card.content),
               sql: "",
@@ -393,8 +497,9 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
               layout: card.layout ?? null,
             };
           }
+          seedCards.push({ cardId: id, title: card.title, sql: card.sql });
           return {
-            id: crypto.randomUUID(),
+            id,
             position,
             title: card.title,
             sql: card.sql,
@@ -452,6 +557,21 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
           "createDashboard committed — cards staged in user draft",
         );
 
+        // ---- tool-side seeding (#4558, ADR-0034 Decision 1) ----
+        // The cards are now staged in the user's draft (the FK anchor the
+        // draft-cache write needs). Execute each chart card once, concurrently,
+        // bounded by a wall clock, fail-soft per card — persisting each result
+        // as the card's initial draft cache and reporting per-card outcomes so
+        // the agent sees rows / empty / error / unseeded instead of announcing a
+        // board it never validated. Seeding runs AFTER COMMIT so a failing card
+        // can never roll the committed dashboard back.
+        const cardOutcomes = await seedStagedCards(
+          { ownerId, dashboardId, orgId, connectionGroupId: conversationGroupId },
+          seedCards,
+          parameters,
+          title,
+        );
+
         return {
           kind: "ok",
           dashboardId,
@@ -459,6 +579,7 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
           description: description ?? null,
           cardCount: snapshotCards.length,
           draft: true,
+          cardOutcomes,
         };
       } catch (txErr) {
         // Best-effort rollback. A rollback failure is logged but doesn't

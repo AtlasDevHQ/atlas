@@ -26,12 +26,19 @@ import { dashboardChartConfigSchema, dashboardCardAnnotationsSchema } from "@use
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
-import { validateAutoComparison } from "@atlas/api/lib/dashboard-parameters";
+import {
+  validateAutoComparison,
+  resolveDashboardParameterValues,
+} from "@atlas/api/lib/dashboard-parameters";
 import {
   getCard,
   getDashboard,
+  resolveCardConnectionId,
+  NoGroupMembersError,
   CardLayoutSchema,
 } from "@atlas/api/lib/dashboards";
+import type { DashboardWithCards } from "@atlas/api/lib/dashboard-types";
+import { seedDraftCards, type CardSeedOutcome } from "@atlas/api/lib/dashboard-seeding";
 import type { DashboardCard, DashboardCardKind, DashboardCardLayout } from "@atlas/api/lib/dashboard-types";
 import { buildCardSummary } from "@atlas/api/lib/bound-chat-context";
 import {
@@ -107,7 +114,7 @@ export interface BoundDashboardToolContext {
 async function maybeApplyToDraft(
   ctx: BoundDashboardToolContext,
   change: import("@atlas/api/lib/dashboard-versioning").DraftChange,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; dashboard: DashboardWithCards } | { ok: false; error: string }> {
   // #4315 — close the anonymous-bound bypass. An edit that can't be attributed
   // to a user can't land in a private draft, so we REJECT rather than write to
   // published (there is no direct-published fall-through anymore, #4324).
@@ -145,7 +152,68 @@ async function maybeApplyToDraft(
   if (!saved) {
     return { ok: false, error: "Could not persist draft update." };
   }
-  return { ok: true };
+  // Return the dashboard the fork read consumed so a caller that immediately
+  // seeds the new card (#4558 `addCard`) reuses it — its `orgId` (to scope
+  // connection resolution) + parameter defaults — instead of a second
+  // getDashboard round-trip.
+  return { ok: true, dashboard: published.data };
+}
+
+/**
+ * Seed a single card `addCard` just staged into the draft (#4558, ADR-0034
+ * Decision 1) — the bound-editor twin of `createDashboard`'s batch seeding.
+ * Executes the card once through the full SQL pipeline and caches the result as
+ * the card's draft data, returning a per-card outcome. NEVER throws: `addCard`
+ * has already succeeded (the card is staged), so a seeding fault degrades to
+ * `unseeded` (the canvas-mount render fills it in) rather than turning a
+ * committed add into an error.
+ */
+async function seedAddedCard(
+  ctx: BoundDashboardToolContext,
+  cardId: string,
+  title: string,
+  sql: string,
+  dashboard: DashboardWithCards,
+): Promise<CardSeedOutcome> {
+  const unseeded: CardSeedOutcome = { cardId, title, status: "unseeded" };
+  // Unattributed edits never reach here (maybeApplyToDraft rejects a missing
+  // userId first), but guard so seeding can't run without a draft owner.
+  if (!ctx.userId) return unseeded;
+  try {
+    let connectionId: string | null;
+    try {
+      connectionId = await resolveCardConnectionId(
+        { connectionGroupId: ctx.connectionGroupId ?? null },
+        dashboard.orgId,
+      );
+    } catch (err) {
+      // A group with zero members can't be seeded (the same fault a refresh
+      // would hit) — leave the card staged-unseeded rather than failing.
+      if (err instanceof NoGroupMembersError) {
+        log.warn(
+          { groupId: err.groupId, dashboardId: ctx.dashboardId, cardId },
+          "addCard seeding: card's connection group has no members",
+        );
+        return unseeded;
+      }
+      throw err;
+    }
+
+    const parameters = resolveDashboardParameterValues(dashboard.parameters, undefined);
+    const [outcome] = await seedDraftCards({
+      userId: ctx.userId,
+      dashboardId: ctx.dashboardId,
+      cards: [{ cardId, title, sql, connectionId }],
+      parameters,
+    });
+    return outcome ?? unseeded;
+  } catch (err) {
+    log.warn(
+      { err: errorMessage(err), dashboardId: ctx.dashboardId, cardId },
+      "addCard seeding failed — card left for canvas-mount render",
+    );
+    return unseeded;
+  }
 }
 
 /**
@@ -242,7 +310,9 @@ export function createBoundDashboardTools(
   });
 
   const addCardTool = tool({
-    description: `Add a new card to the dashboard. Validates the SQL against the analytics datasource before persisting; if validation fails the card is NOT added and the error is returned so you can fix it and retry. Use AFTER \`executeSQL\` has confirmed the column names — \`chartConfig.categoryColumn\` and \`valueColumns\` must match the SQL output. The grid is 24 columns wide. Layout is optional — when omitted the card stages with no placement and the grid renderer auto-arranges it at view time. Pass a layout if you want a specific {x, y, w, h} on the 24-column grid.`,
+    description: `Add a new card to the dashboard. Validates the SQL against the analytics datasource before persisting; if validation fails the card is NOT added and the error is returned so you can fix it and retry. Use AFTER \`executeSQL\` has confirmed the column names — \`chartConfig.categoryColumn\` and \`valueColumns\` must match the SQL output. The grid is 24 columns wide. Layout is optional — when omitted the card stages with no placement and the grid renderer auto-arranges it at view time. Pass a layout if you want a specific {x, y, w, h} on the 24-column grid.
+
+On success the result includes \`seed\` — the card's data outcome: \`rows\` (with a rowCount), \`empty\` (the query ran but returned nothing), \`error\` (the card WAS added but its query failed — \`message\` says why), or \`unseeded\` (added; data loads when the dashboard opens). If \`seed\` is \`empty\` or \`error\`, say so plainly and offer to fix it rather than claiming the card shows data.`,
     inputSchema: z.object({
       title: z.string().min(1).max(200).describe("Card title (visible to the user)"),
       sql: z.string().min(1).describe("Read-only SELECT query"),
@@ -316,6 +386,11 @@ export function createBoundDashboardTools(
         if (!applied.ok) return { kind: "err" as const, error: applied.error };
         // #2367 — user's draft view shifted, drop cached screenshots.
         invalidateDashboardScreenshot(dashboardId);
+        // #4558 — the card is now staged in the draft; seed its draft cache so
+        // the tile shows real data the moment the user looks, and report the
+        // outcome (rows / empty / error / unseeded) so the agent self-corrects
+        // instead of claiming a card works when its query returned nothing.
+        const seed = await seedAddedCard(ctx, draftCard.id, title, sql, applied.dashboard);
         return {
           kind: "ok" as const,
           card: {
@@ -324,6 +399,7 @@ export function createBoundDashboardTools(
             chartType: draftCard.chartConfig?.type ?? "table",
             position: draftCard.position,
           },
+          seed,
         };
       } catch (err) {
         log.warn({ err: errorMessage(err), dashboardId }, "addCard tool failed unexpectedly");

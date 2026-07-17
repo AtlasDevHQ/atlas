@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Share2, Copy, Check, Link2Off, Globe, Lock, Loader2, RefreshCw } from "lucide-react";
+import { Share2, Copy, Check, Link2Off, Globe, Lock, Loader2, RefreshCw, Code } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -26,6 +28,7 @@ import type { ShareMode, ShareExpiryKey } from "@/ui/lib/types";
 import { SHARE_EXPIRY_OPTIONS } from "@/ui/lib/types";
 import { useAtlasConfig } from "@/ui/context";
 import { deriveExpiryKey } from "./share-expiry";
+import { buildEmbedSnippet } from "./share-embed";
 
 const EXPIRY_LABELS: Record<ShareExpiryKey, string> = {
   "1h": "1 hour",
@@ -51,6 +54,7 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shared, setShared] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedEmbed, setCopiedEmbed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expiresIn, setExpiresIn] = useState<ShareExpiryKey>("7d");
   const [shareMode, setShareMode] = useState<ShareMode>("public");
@@ -106,6 +110,7 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
     if (open) {
       setError(null);
       setCopied(false);
+      setCopiedEmbed(false);
       setConfirmingRotate(false);
       // fire-and-forget: refresh share status on dialog open; component state updates on resolve
       void fetchShareStatus();
@@ -167,29 +172,46 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
     }
   }
 
-  async function handleCopy() {
-    if (!shareUrl) return;
+  // The iframe snippet for the Embed tab — points at the SAME share token's
+  // framable `/embed` route (#4564), so revoking the link kills the embed too.
+  // Built by the pure `buildEmbedSnippet` helper (escaping pinned in its test).
+  const embedCode = shareUrl ? buildEmbedSnippet(shareUrl) : "";
+
+  async function copyText(text: string, flash: (v: boolean) => void) {
     try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback for insecure contexts (non-HTTPS iframes, embedded widgets)
+      await navigator.clipboard.writeText(text);
+      flash(true);
+      setTimeout(() => flash(false), 2000);
+    } catch (err) {
+      // Fallback for insecure contexts (non-HTTPS iframes, embedded widgets).
+      // Log why the primary path failed so a "copy doesn't work" report has a
+      // signal (permissions-policy vs insecure-context vs focus).
+      console.debug(
+        "[dashboard-share] clipboard.writeText failed, falling back to execCommand:",
+        err instanceof Error ? err.message : String(err),
+      );
       try {
-        const input = document.createElement("input");
-        input.value = shareUrl;
+        const input = document.createElement("textarea");
+        input.value = text;
         document.body.appendChild(input);
         input.select();
-        document.execCommand("copy");
+        // execCommand signals failure by returning false WITHOUT throwing — so a
+        // silent false here would flash a false "Copied". Route it to the same
+        // manual-copy hint as a thrown error.
+        const ok = document.execCommand("copy");
         document.body.removeChild(input);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        if (!ok) throw new Error("execCommand('copy') returned false");
+        flash(true);
+        setTimeout(() => flash(false), 2000);
       } catch {
-        // intentionally ignored: clipboard unavailable — user can select and copy manually
-        setError("Could not copy to clipboard. Please select and copy the link manually.");
+        // clipboard unavailable — surface a manual-copy hint (not a silent swallow)
+        setError("Could not copy to clipboard. Please select and copy it manually.");
       }
     }
   }
+
+  const handleCopy = () => (shareUrl ? copyText(shareUrl, setCopied) : undefined);
+  const handleCopyEmbed = () => (embedCode ? copyText(embedCode, setCopiedEmbed) : undefined);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -204,8 +226,10 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
           <DialogTitle>Share Dashboard</DialogTitle>
           <DialogDescription>
             {shared
-              ? "Anyone with the link can view this dashboard's cached results."
-              : "Create a public link to share this dashboard."}
+              ? shareMode === "org"
+                ? "Only authenticated members of your organization can view this dashboard's cached results."
+                : "Anyone with the link can view this dashboard's cached results."
+              : "Create a link to share this dashboard."}
           </DialogDescription>
         </DialogHeader>
 
@@ -217,7 +241,12 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
         ) : (
           <div className="grid gap-4 py-2">
             {shared && shareUrl ? (
-              <>
+              <Tabs defaultValue="link">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="link">Link</TabsTrigger>
+                  <TabsTrigger value="embed">Embed</TabsTrigger>
+                </TabsList>
+                <TabsContent value="link" className="mt-4 grid gap-4">
                 <div className="flex gap-2">
                   <Input value={shareUrl} readOnly className="font-mono text-xs" />
                   <Button variant="outline" size="icon" onClick={handleCopy} title="Copy link">
@@ -333,7 +362,33 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
                     </div>
                   </div>
                 )}
-              </>
+                </TabsContent>
+
+                <TabsContent value="embed" className="mt-4 grid gap-3">
+                  <Label htmlFor="dashboard-embed-code">Embed snippet</Label>
+                  <Textarea
+                    id="dashboard-embed-code"
+                    value={embedCode}
+                    readOnly
+                    rows={3}
+                    className="resize-none font-mono text-xs"
+                    onFocus={(e) => e.currentTarget.select()}
+                  />
+                  <Button variant="outline" size="sm" onClick={handleCopyEmbed} className="justify-self-start">
+                    {copiedEmbed ? (
+                      <Check className="mr-1.5 size-3.5 text-green-500" />
+                    ) : (
+                      <Code className="mr-1.5 size-3.5" />
+                    )}
+                    {copiedEmbed ? "Copied" : "Copy embed code"}
+                  </Button>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    {shareMode === "org"
+                      ? "Viewers must be signed in to your organization for this embed to load."
+                      : "Anyone who can load the host page can view this embedded dashboard."}
+                  </p>
+                </TabsContent>
+              </Tabs>
             ) : (
               <>
                 <div className="grid gap-2">

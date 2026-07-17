@@ -56,6 +56,26 @@ const nextConfig: NextConfig = {
       "worker-src 'self' blob:",
     ].join("; ");
 
+    // The embed CSP is the global CSP with `frame-ancestors` widened to `*`.
+    // The `csp.replace(...)` is brittle: if the global directive
+    // `frame-ancestors 'self'` is reworded or reordered, this becomes a silent
+    // no-op and the embed regresses to the global frame-ancestors. The runtime
+    // check fails the Next build if that happens. Computed once and shared by
+    // every embed route below so the conversation and dashboard embeds can never
+    // drift apart.
+    const embedCsp = (() => {
+      const replaced = csp.replace(
+        "frame-ancestors 'self'",
+        "frame-ancestors *",
+      );
+      if (replaced === csp) {
+        throw new Error(
+          "next.config.ts: embed CSP override no-op'd — `frame-ancestors 'self'` not found in global CSP. Update the replace() target.",
+        );
+      }
+      return replaced;
+    })();
+
     return [
       {
         source: "/:path*",
@@ -71,32 +91,19 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        // Embed view must remain framable from any origin. CSP frame-ancestors
-        // takes precedence over X-Frame-Options per the W3C CSP spec, so the
-        // global X-Frame-Options DENY is harmlessly ignored on this path.
-        //
-        // The `csp.replace(...)` below is brittle: if the global directive
-        // `frame-ancestors 'self'` is reworded or reordered, this becomes a
-        // silent no-op and the embed regresses to the global frame-ancestors.
-        // The runtime check below fails the Next build if that happens.
+        // Shared-conversation embed view must remain framable from any origin.
+        // CSP frame-ancestors takes precedence over X-Frame-Options per the W3C
+        // CSP spec, so the global X-Frame-Options DENY is harmlessly ignored on
+        // this path.
         source: "/shared/:token/embed",
-        headers: [
-          {
-            key: "Content-Security-Policy",
-            value: (() => {
-              const replaced = csp.replace(
-                "frame-ancestors 'self'",
-                "frame-ancestors *",
-              );
-              if (replaced === csp) {
-                throw new Error(
-                  "next.config.ts: embed CSP override no-op'd — `frame-ancestors 'self'` not found in global CSP. Update the replace() target.",
-                );
-              }
-              return replaced;
-            })(),
-          },
-        ],
+        headers: [{ key: "Content-Security-Policy", value: embedCsp }],
+      },
+      {
+        // Shared-dashboard embed view — same any-origin framing posture as the
+        // conversation embed above (decided 2026-07-10; the embed is a frame
+        // around the shared dashboard view, never a second sharing surface).
+        source: "/shared/dashboard/:token/embed",
+        headers: [{ key: "Content-Security-Policy", value: embedCsp }],
       },
       {
         // App shell HTML (issue #2488): force revalidation so a new deploy

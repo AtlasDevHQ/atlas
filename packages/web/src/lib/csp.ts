@@ -34,11 +34,12 @@ export type CspEnv = "dev" | "prod";
  * `style-src` keeps `'unsafe-inline'` (Tailwind + Next inline critical CSS);
  * nonce'ing styles is deliberately out of scope for this change.
  *
- * `frameAncestors` is `*` for the `/shared/:token/embed` view (must frame from
- * any origin so customers can embed shared conversations) and `'self'`
- * everywhere else (clickjacking protection for the app/admin shell). Browsers
- * honor CSP `frame-ancestors` over the `X-Frame-Options: DENY` set in
- * next.config.ts, so the embed path frames while every other path stays denied.
+ * `frameAncestors` is `*` for the embed views (`/shared/:token/embed` for shared
+ * conversations and `/shared/dashboard/:token/embed` for shared dashboards — both
+ * must frame from any origin so customers can embed them) and `'self'` everywhere
+ * else (clickjacking protection for the app/admin shell). Browsers honor CSP
+ * `frame-ancestors` over the `X-Frame-Options: DENY` set in next.config.ts, so
+ * the embed paths frame while every other path stays denied.
  */
 export function buildCsp(
   nonce: string,
@@ -68,12 +69,16 @@ export function buildCsp(
 }
 
 /**
- * The embed view (`/shared/<token>/embed`, optional trailing slash) inherits
- * the global CSP but widens `frame-ancestors` to `*`. Matched on the resolved
- * pathname only — query/hash are not part of `nextUrl.pathname`.
+ * The embed views inherit the global CSP but widen `frame-ancestors` to `*`.
+ * Two shapes qualify, both with an optional trailing slash:
+ *   - `/shared/<token>/embed`            — shared conversation embed
+ *   - `/shared/dashboard/<token>/embed`  — shared dashboard embed
+ * The optional `dashboard/` segment is the ONLY extra depth admitted; a token
+ * cannot itself contain a slash, so no deeper path widens. Matched on the
+ * resolved pathname only — query/hash are not part of `nextUrl.pathname`.
  */
 export function isEmbedRoute(pathname: string): boolean {
-  return /^\/shared\/[^/]+\/embed\/?$/.test(pathname);
+  return /^\/shared\/(?:dashboard\/)?[^/]+\/embed\/?$/.test(pathname);
 }
 
 /**

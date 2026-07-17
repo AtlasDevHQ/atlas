@@ -138,6 +138,11 @@ export default function DashboardViewPage() {
   // server overlays the draft only when one exists (non-forking); a viewer or
   // a board with no draft still gets published, so this never leaks.
   const [editing, setEditing] = useState(false);
+  // #4689 — true while the grid is in its narrow, non-draggable stacked layout.
+  // Reported up by `DashboardGrid` (the sole owner of the width measurement) and
+  // handed to the topbar so its Edit affordances gate on the same signal the
+  // grid stacks on, never a pointer/viewport proxy that disagrees at <640px.
+  const [gridStacked, setGridStacked] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   // #4322 — creation-to-bound continuity. The `createDashboard` handoff link
   // carries the originating conversation id; the drawer resumes that
@@ -1264,6 +1269,7 @@ export default function DashboardViewPage() {
               }
               editing={editing}
               onEditingChange={setEditing}
+              stacked={gridStacked}
               density={density}
               onDensityChange={setDensity}
             />
@@ -1436,6 +1442,7 @@ export default function DashboardViewPage() {
                   renderPhases={renderPhases}
                   pendingRefreshIds={pendingRefreshIds}
                   onRetryCard={handleRetryCard}
+                  onStackedChange={setGridStacked}
                   onLayoutChange={handleLayoutChange}
                   onRefresh={handleRefreshCard}
                   onDuplicate={handleDuplicate}

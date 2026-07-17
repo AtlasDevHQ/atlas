@@ -97,6 +97,28 @@ describe("DashboardGrid", () => {
     expect(container.querySelector(".dash-drag-handle")).toBeNull();
   });
 
+  test("#4689 — reports stacked=true up to the parent when measured width is below MOBILE_BREAKPOINT", () => {
+    widthOverride = 500;
+    let stacked: boolean | null = null;
+    render(<DashboardGrid {...baseProps} onStackedChange={(v) => { stacked = v; }} />);
+    expect<boolean | null>(stacked).toBe(true);
+  });
+
+  test("#4689 — reports stacked=false up to the parent when measured width is at or above MOBILE_BREAKPOINT", () => {
+    widthOverride = 1024;
+    let stacked: boolean | null = null;
+    render(<DashboardGrid {...baseProps} onStackedChange={(v) => { stacked = v; }} />);
+    expect<boolean | null>(stacked).toBe(false);
+  });
+
+  test("#4689 — the breakpoint is exclusive: exactly MOBILE_BREAKPOINT (640) is NOT stacked (off-by-one guard)", () => {
+    widthOverride = 640;
+    let stacked: boolean | null = null;
+    render(<DashboardGrid {...baseProps} onStackedChange={(v) => { stacked = v; }} />);
+    // `width < MOBILE_BREAKPOINT` — 640 is the freeform grid, 639 would stack.
+    expect<boolean | null>(stacked).toBe(false);
+  });
+
   test("renders the RGL freeform grid when measured width is at or above MOBILE_BREAKPOINT", () => {
     widthOverride = 1024;
     render(<DashboardGrid {...baseProps} />);

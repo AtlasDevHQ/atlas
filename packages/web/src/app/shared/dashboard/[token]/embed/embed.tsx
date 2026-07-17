@@ -4,7 +4,7 @@
 // view (`../view.tsx`) — this file adds only the framable chrome (theme wrapper
 // + iframe-appropriate error states), never a second data surface.
 
-import type { FetchResult } from "../fetch";
+import type { FailReason } from "../fetch";
 
 export type EmbedTheme = "light" | "dark";
 
@@ -23,8 +23,6 @@ export function resolveEmbedTheme(raw: string | string[] | undefined): EmbedThem
   );
   return "light";
 }
-
-type FailReason = Extract<FetchResult, { ok: false }>["reason"];
 
 /**
  * Compact, navigation-free error state for the embed. Unlike the standalone

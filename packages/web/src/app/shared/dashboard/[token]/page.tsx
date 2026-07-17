@@ -1,10 +1,9 @@
 import type { Metadata } from "next";
-import Link from "next/link";
-import { buttonVariants } from "@/components/ui/button";
 import { truncate } from "../../lib";
 import { SharedDashboardView } from "./view";
 import { fetchSharedDashboard } from "./fetch";
-import { resolveErrorContent, type ErrorContent } from "./error-content";
+import { resolveErrorContent } from "./error-content";
+import { ErrorShell } from "./error-shell";
 
 // ---------------------------------------------------------------------------
 // Metadata (OG tags)
@@ -48,59 +47,6 @@ export async function generateMetadata({
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
-
-function ErrorShell({
-  token,
-  content,
-}: {
-  token: string;
-  content: ErrorContent;
-}) {
-  return (
-    <div className="flex min-h-screen flex-col bg-white dark:bg-zinc-950 print:bg-white print:text-black">
-      <main
-        id="main"
-        tabIndex={-1}
-        className="flex flex-1 items-center justify-center px-4 focus:outline-none"
-      >
-        <div className="text-center">
-          <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">{content.heading}</h1>
-          <p className="mt-2 text-zinc-600 dark:text-zinc-400">{content.message}</p>
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
-            {content.primaryAction === "login" ? (
-              <Link
-                href={`/login?redirect=${encodeURIComponent(`/shared/dashboard/${token}`)}`}
-                className={buttonVariants()}
-              >
-                Log in
-              </Link>
-            ) : (
-              <Link href="/" className={buttonVariants()}>Go to Atlas</Link>
-            )}
-            {content.showTryAgain && (
-              <Link
-                href={`/shared/dashboard/${token}`}
-                className={buttonVariants({ variant: "outline" })}
-              >
-                Try again
-              </Link>
-            )}
-          </div>
-        </div>
-      </main>
-      <footer className="border-t border-zinc-200 px-4 py-4 text-center dark:border-zinc-800 print:hidden">
-        <a
-          href="https://www.useatlas.dev"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs text-zinc-600 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
-        >
-          Powered by Atlas
-        </a>
-      </footer>
-    </div>
-  );
-}
 
 export default async function SharedDashboardPage({
   params,

@@ -10,22 +10,22 @@ import { sharedDashboardViewSchema } from "@useatlas/schemas";
 import { getApiBaseUrl } from "../../lib";
 import type { SharedDashboard } from "./types";
 
-export type FetchResult =
-  | { ok: true; data: SharedDashboard }
-  | {
-      ok: false;
-      reason:
-        | "not-found"
-        | "expired"
-        // 401 vs 403 are kept DISTINCT (not one `auth-required`): a viewer with no
-        // session (`login-required`) is offered a login redirect, while a viewer who
-        // is signed in but not a member of the sharing org (`membership-required`)
-        // must not be dead-ended on a "Log in" CTA they've already satisfied (#4690).
-        | "login-required"
-        | "membership-required"
-        | "server-error"
-        | "network-error";
-    };
+/** One of the {@link FetchResult} failure reasons — the discriminant the page
+ *  and embed error shells switch on. Exported so both surfaces derive it from
+ *  this single source rather than re-deriving the `Extract<…>` in each file. */
+export type FailReason =
+  | "not-found"
+  | "expired"
+  // The org-share auth wall is kept DISTINCT (not one `auth-required`): a viewer
+  // with no session (`login-required`) is offered a login redirect, while a viewer
+  // who is signed in but not a member of the sharing org (`membership-required`)
+  // must not be dead-ended on a "Log in" CTA they've already satisfied (#4690).
+  | "login-required"
+  | "membership-required"
+  | "server-error"
+  | "network-error";
+
+export type FetchResult = { ok: true; data: SharedDashboard } | { ok: false; reason: FailReason };
 
 /**
  * Short, non-reversible fingerprint of a share token for log correlation.
@@ -64,6 +64,35 @@ export function buildForwardHeaders(input: {
   return out;
 }
 
+/**
+ * Disambiguate an org-share auth failure (HTTP 401/403) into the exact reason.
+ *
+ * The API returns 403 for BOTH the unauthenticated viewer (`error: "auth_required"`)
+ * and the authenticated-but-wrong-org viewer (`error: "forbidden"`), so the status
+ * code alone is insufficient — we read the body's `error` code. Only an explicit
+ * `"forbidden"` is treated as `membership-required`; every other signal (an explicit
+ * `auth_required`, a 401, or a missing/malformed body) defaults to `login-required`
+ * so a no-session viewer is never dead-ended without a login path (#4690). Exported
+ * for unit tests.
+ */
+export async function resolveAuthReason(res: Response): Promise<"login-required" | "membership-required"> {
+  // A 401 is unambiguously "no session" regardless of body.
+  if (res.status === 401) return "login-required";
+  let errorCode: string | undefined;
+  try {
+    const body: unknown = await res.json();
+    if (body && typeof body === "object" && "error" in body) {
+      const code = (body as { error?: unknown }).error;
+      if (typeof code === "string") errorCode = code;
+    }
+  } catch {
+    // Malformed/empty body — fall through to the safe `login-required` default
+    // below rather than misclassifying a no-session viewer as wrong-org.
+    // intentionally ignored: absence of a parseable error code is itself the signal.
+  }
+  return errorCode === "forbidden" ? "membership-required" : "login-required";
+}
+
 /** Uncached fetch. Exported for unit tests; production callers use the
  *  `cache()`-wrapped {@link fetchSharedDashboard} so the fetch runs once. */
 export async function fetchSharedDashboardRaw(token: string): Promise<FetchResult> {
@@ -85,10 +114,14 @@ export async function fetchSharedDashboardRaw(token: string): Promise<FetchResul
     if (!res.ok) {
       if (res.status === 404) return { ok: false, reason: "not-found" };
       if (res.status === 410) return { ok: false, reason: "expired" };
-      // 401 = no session (offer login); 403 = authenticated but not a member of the
-      // sharing org (explain membership, don't force a redundant login). See #4690.
-      if (res.status === 401) return { ok: false, reason: "login-required" };
-      if (res.status === 403) return { ok: false, reason: "membership-required" };
+      // The org-share auth wall. The API (`dashboards.ts`) returns 403 for BOTH the
+      // no-session and the wrong-org viewer, distinguished only by the response
+      // body's `error` code — NOT by the status. So a 403 alone can't tell them
+      // apart; we read the body. (A future 401 is also honored, so this stays
+      // correct if the API ever adopts stricter HTTP semantics.) See #4690.
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, reason: await resolveAuthReason(res) };
+      }
       console.error(
         `[shared-dashboard] API returned ${res.status} for tokenHash=${hashShareToken(token)}`,
       );

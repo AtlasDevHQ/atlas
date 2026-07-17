@@ -100,19 +100,53 @@ describe("fetchSharedDashboardRaw (#4317)", () => {
     expect(headers["x-forwarded-for"]).toBe("9.9.9.9");
   });
 
-  // #4690: 401 (no session) and 403 (authenticated, wrong org) are DISTINCT
-  // reasons — not one `auth-required` — so the page can offer a login redirect
-  // only when there's genuinely no session.
-  test("maps a 401 (no viewer session) to login-required", async () => {
+  // #4690: the no-session viewer and the wrong-org viewer are DISTINCT reasons —
+  // not one `auth-required` — so the page offers a login redirect only when
+  // there's genuinely no session. The API (`dashboards.ts`) returns 403 for BOTH,
+  // distinguished by the body `error` code, so the fetch layer reads the body.
+  test("maps a 403 with error:auth_required (no session) to login-required", async () => {
+    stubFetch(403, { error: "auth_required" });
+    const result = await fetchSharedDashboardRaw("abc123def456ghi789jkl");
+    expect(result).toEqual({ ok: false, reason: "login-required" });
+  });
+
+  test("maps a 403 with error:forbidden (authenticated, wrong org) to membership-required", async () => {
+    stubFetch(403, { error: "forbidden" });
+    const result = await fetchSharedDashboardRaw("abc123def456ghi789jkl");
+    expect(result).toEqual({ ok: false, reason: "membership-required" });
+  });
+
+  test("maps a bare 401 (no session, stricter HTTP semantics) to login-required", async () => {
     stubFetch(401, { error: "auth_required" });
     const result = await fetchSharedDashboardRaw("abc123def456ghi789jkl");
     expect(result).toEqual({ ok: false, reason: "login-required" });
   });
 
-  test("maps a 403 (authenticated, not a member of the sharing org) to membership-required", async () => {
-    stubFetch(403, { error: "forbidden" });
-    const result = await fetchSharedDashboardRaw("abc123def456ghi789jkl");
-    expect(result).toEqual({ ok: false, reason: "membership-required" });
+  test("defaults an unrecognized/malformed 403 body to login-required (never dead-ends a no-session viewer)", async () => {
+    // A 403 whose body carries no `forbidden` code must not be misclassified as
+    // wrong-org — the safe default keeps a login path open (#4690).
+    stubFetch(403, { unexpected: true });
+    expect(await fetchSharedDashboardRaw("abc123def456ghi789jkl")).toEqual({
+      ok: false,
+      reason: "login-required",
+    });
+    // Body that isn't even JSON (res.json() throws) → same safe default.
+    const throwingBody = mock(async (url: string, init?: RequestInit) => {
+      void url;
+      void init;
+      return {
+        ok: false,
+        status: 403,
+        json: async () => {
+          throw new Error("not json");
+        },
+      } as Response;
+    });
+    globalThis.fetch = throwingBody as unknown as typeof fetch;
+    expect(await fetchSharedDashboardRaw("abc123def456ghi789jkl")).toEqual({
+      ok: false,
+      reason: "login-required",
+    });
   });
 
   test("maps a 410 to expired and a 404 to not-found", async () => {

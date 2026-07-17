@@ -1,39 +1,36 @@
 // Pure resolver mapping a shared-dashboard fetch failure to the standalone
 // page's error-shell content (heading, message, and which actions to offer).
-// Extracted from `page.tsx` so the copy + CTA choice per reason is unit-testable
-// without rendering the async RSC — same testability seam as `fetch.ts` and
-// `embed.ts`. The embed surface (`embed.tsx`) keeps its own navigation-free copy
-// and does not consume this.
+// Extracted from `page.tsx` for the same extract-for-testability motive as
+// `fetch.ts`: the copy + CTA choice per reason is unit-tested directly, without
+// rendering the async RSC. The embed surface (`embed.tsx`) keeps its own
+// navigation-free copy and does not consume this.
 
-import type { FetchResult } from "./fetch";
-
-type FailReason = Extract<FetchResult, { ok: false }>["reason"];
+import type { FailReason } from "./fetch";
 
 /** Which primary CTA the error shell offers. */
 export type PrimaryAction =
-  // Login redirect back to the shared view — ONLY for `login-required` (401),
-  // where the viewer genuinely has no session. Never for `membership-required`.
+  // Login redirect back to the shared view — ONLY for `login-required`, where the
+  // viewer genuinely has no session. Never for `membership-required`.
   | "login"
   // Neutral "Go to Atlas" home link — the safe default for every other reason,
-  // including the signed-in wrong-org viewer (#4690).
+  // including the signed-in wrong-org viewer.
   | "home";
 
 export interface ErrorContent {
-  heading: string;
-  message: string;
-  primaryAction: PrimaryAction;
+  readonly heading: string;
+  readonly message: string;
+  readonly primaryAction: PrimaryAction;
   /** Whether to also offer the "Try again" outline link (transient failures only). */
-  showTryAgain: boolean;
+  readonly showTryAgain: boolean;
 }
 
 /**
  * Resolve the error shell's content for a failed shared-dashboard fetch.
  *
  * The `login-required` / `membership-required` split is the crux of #4690: a
- * logged-in viewer who is not a member of the sharing org (403) is told about the
+ * logged-in viewer who is not a member of the sharing org is told about the
  * membership requirement and pointed at Atlas, NOT dead-ended on a "Log in" CTA
- * they already satisfy. A viewer with no session at all (401) still gets the login
- * redirect.
+ * they already satisfy. A viewer with no session still gets the login redirect.
  */
 export function resolveErrorContent(reason: FailReason): ErrorContent {
   switch (reason) {

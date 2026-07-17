@@ -107,6 +107,11 @@ const KEY_META: Record<SaasEnvKey, KeyMeta> = {
     purpose:
       "Strict mode: fail boot on a missing plugin secret rather than silently dropping the plugin. `PluginConfigGuardLive`.",
   },
+  VERCEL_TOKEN: {
+    category: "Sandbox",
+    purpose:
+      "Vercel Sandbox API token (per-service secret; Railway shared vars don't auto-inherit). `SandboxCredsGuardLive` refuses to boot a SaaS region whose `sandbox.priority` pins vercel-sandbox without it — otherwise every explore/executePython call hard-fails at first use. Team + project IDs are non-secret `sandbox.vercel` config in atlas.config.ts.",
+  },
   ATLAS_SMTP_URL: {
     category: "Platform email (DPA)",
     purpose:

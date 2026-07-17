@@ -58,6 +58,7 @@ import {
   InternalDbGuardLive,
   RateLimitGuardLive,
   TurnstileGuardLive,
+  SandboxCredsGuardLive,
   ProviderKeyGuardLive,
   ProactiveProviderKeyGuardLive,
   RegionGuardLive,
@@ -3663,6 +3664,14 @@ export function buildAppLayer(
   // outage that boots green. `Config`-only and reads env directly, so it fails
   // fast as a peer of the other env-checking guards.
   const turnstileGuardLayer = TurnstileGuardLive.pipe(Layer.provide(configLayer));
+  // #4461 — fails boot when sandbox.priority pins vercel-sandbox (the SaaS
+  // deny-all posture) but the Vercel Sandbox credentials are absent/partial.
+  // A missing/mis-stamped per-service VERCEL_TOKEN otherwise boots green while
+  // every explore/executePython call hard-fails at first use. `Config`-only
+  // (reads the resolved priority + env creds directly), so it fails fast as a
+  // peer of the other env-checking guards; inert unless the priority pins
+  // vercel-sandbox (self-hosted / differently-configured deploys pass).
+  const sandboxCredsGuardLayer = SandboxCredsGuardLive.pipe(Layer.provide(configLayer));
   // #3178/#3200 — fails boot when the env-only MAIN-CHAT provider's required
   // config is incomplete in SaaS (boot-green-then-503 otherwise). Validates
   // required env as a SET (`getMissingProviderConfig`). `Config`-only and reads
@@ -3763,6 +3772,7 @@ export function buildAppLayer(
     internalDbGuardLayer,
     rateLimitGuardLayer,
     turnstileGuardLayer,
+    sandboxCredsGuardLayer,
     providerKeyGuardLayer,
     proactiveProviderKeyGuardLayer,
     regionGuardLayer,

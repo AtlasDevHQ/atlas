@@ -50,6 +50,7 @@ describe("SAAS_ENV_KEYS", () => {
       ATLAS_REGION_EU_DB_URL: undefined,
       ATLAS_REGION_APAC_DB_URL: undefined,
       ATLAS_STRICT_PLUGIN_SECRETS: undefined,
+      VERCEL_TOKEN: undefined,
       ATLAS_SMTP_URL: undefined,
       RESEND_API_KEY: undefined,
       TURNSTILE_SECRET_KEY: undefined,

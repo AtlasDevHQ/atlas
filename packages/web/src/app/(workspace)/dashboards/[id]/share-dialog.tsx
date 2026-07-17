@@ -25,6 +25,7 @@ import { friendlyError } from "@/ui/lib/fetch-error";
 import type { ShareMode, ShareExpiryKey } from "@/ui/lib/types";
 import { SHARE_EXPIRY_OPTIONS } from "@/ui/lib/types";
 import { useAtlasConfig } from "@/ui/context";
+import { deriveExpiryKey } from "./share-expiry";
 
 const EXPIRY_LABELS: Record<ShareExpiryKey, string> = {
   "1h": "1 hour",
@@ -86,6 +87,10 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
         setShareUrl(`${window.location.origin}/shared/dashboard/${status.token}`);
         setExpiresAt(status.expiresAt);
         setShareMode(status.shareMode);
+        // Sync the "Link expires" control to the share's real lifetime so a
+        // visibility-only edit can't reset expiry (#4536). See deriveExpiryKey
+        // (share-expiry.ts) for the bucket-rounding rationale.
+        setExpiresIn(deriveExpiryKey(status.expiresAt));
       } else {
         setShareUrl(null);
         setExpiresAt(null);

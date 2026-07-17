@@ -15,10 +15,10 @@
   },
   {
     "name": "Vercel",
-    "purpose": "AI Gateway — routes hosted model requests to upstream providers; Vercel Sandbox — isolated microVM execution of agent explore/Python tools over semantic-layer content and query results",
+    "purpose": "AI Gateway — routes hosted model requests to upstream providers; Vercel Sandbox — isolated microVM execution of agent explore/Python tools over semantic-layer content, knowledge-base documents, and query results",
     "region": "United States",
     "since": "2026-01",
-    "changed_at": "2026-07-10"
+    "changed_at": "2026-07-16"
   },
   {
     "name": "Anthropic",

@@ -157,11 +157,12 @@ The routing is transparent to the agent and end users — the same API endpoints
 What transits the sandbox:
 
 - **Semantic-layer content** — the entity YAML files copied in for `explore`, including sample values derived from your data
+- **Knowledge Base content** — published collection documents (plus drafts, in developer mode) are mirrored into the same workspace root `explore` browses
 - **Query results** — for Python execution, the SQL result rows the agent passes into the sandbox
 
-The isolation controls still apply in full: the sandbox's network policy is deny-all (code inside cannot make outbound connections) and its filesystem is ephemeral — nothing persists at Vercel after the tool call completes. The US processing is disclosed in the [sub-processor list](https://www.useatlas.dev/sub-processors) referenced by the DPA (Vercel entry: semantic-layer content and query results).
+The isolation controls still apply: `explore` sandboxes are strictly network-deny-all; Python sandboxes are deny-all by default, with egress opened only to the host(s) of an installed REST datasource — and no credential attached — when one exists. Sandboxes are reused across tool calls but never snapshotted (`persistent: false`), so nothing persists at Vercel once a sandbox stops. The US processing is disclosed in the [sub-processor list](https://www.useatlas.dev/sub-processors) referenced by the DPA (Vercel entry).
 
-Workspaces that need in-region tool execution today can connect their own sandbox on a region-controlled provider — see [Sandbox — SaaS Mode](/guides/sandbox). A workspace-connected (BYOC) sandbox always takes priority over the platform sandbox and fails closed rather than falling back to it. BYOC currently covers `explore` fully; Python support on the BYOC providers is in progress.
+Workspaces that need in-region tool execution today can connect their own sandbox on a region-controlled provider — see [Sandbox — SaaS Mode](/guides/sandbox). An engaged BYOC sandbox (connected, with complete credentials) takes priority over the platform sandbox for `explore` and fails closed rather than falling back. **Python is not yet covered**: with an E2B or Daytona sandbox connected, `executePython` still runs in the US platform sandbox until Python support lands on those providers — workspaces for which that is unacceptable should keep the Python tool disabled.
 
 ## Misrouting Detection
 

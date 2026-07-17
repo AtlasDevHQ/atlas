@@ -43,7 +43,7 @@ const log = createLogger("dashboard-seeding");
  * Wall-clock budget (ms) for one seeding batch. Cards execute concurrently, so
  * this bounds the whole batch, not each card. A card still running when it
  * elapses is left staged-unseeded (the canvas-mount render fills it in later),
- * never failed. Chosen a touch below the default per-statement timeout
+ * never failed. Chosen well below (half of) the default per-statement timeout
  * (`ATLAS_QUERY_TIMEOUT`, 30s) so a single pathological card can't hold the
  * tool call open for the full statement timeout while the rest of the board
  * waits.
@@ -62,6 +62,12 @@ export interface SeedCardSpec {
   readonly sql: string;
   readonly connectionId: string | null;
 }
+
+/** A seed card before its connection is resolved. Callers that resolve one
+ *  connection for the whole batch (createDashboard) build these, then stamp the
+ *  resolved `connectionId` on each — so the field set can't drift from
+ *  {@link SeedCardSpec}. */
+export type SeedCardInput = Omit<SeedCardSpec, "connectionId">;
 
 export interface SeedDraftCardsOptions {
   readonly userId: string;
@@ -84,10 +90,11 @@ export interface SeedDraftCardsOptions {
  * rather than sniffing `rowCount`:
  *   - `rows`     — executed and cached; `rowCount` rows.
  *   - `empty`    — executed and cached; zero rows (an honest empty tile).
- *   - `error`    — execution (or the cache write) failed; the card is still
- *                  staged. `message` is a scrubbed, agent-actionable reason.
- *   - `unseeded` — the wall-clock budget elapsed before this card finished; it
- *                  is staged-not-seeded and the canvas-mount render will fill it.
+ *   - `error`    — execution / validation failed; the card is still staged.
+ *                  `message` is a scrubbed, agent-actionable reason.
+ *   - `unseeded` — the wall-clock budget elapsed before this card finished, OR
+ *                  it executed but its draft-cache write failed; either way the
+ *                  card is staged-not-seeded and the canvas-mount render fills it.
  */
 export type CardSeedOutcome = {
   readonly cardId: string;
@@ -121,9 +128,11 @@ function createDeadline(ms: number): Deadline {
   };
 }
 
-/** Map a non-ok pipeline outcome to a compact, agent-actionable message. */
+/** Map a non-ok pipeline outcome to a compact, agent-actionable message. Every
+ *  non-ok variant carries a `message`, so it's read directly (fall back to the
+ *  `kind` only on the degenerate empty-string case). */
 function outcomeErrorMessage(outcome: Exclude<UserQueryOutcome, { kind: "ok" }>): string {
-  const message = "message" in outcome && outcome.message ? outcome.message : outcome.kind;
+  const message = outcome.message || outcome.kind;
   return message.length > MAX_SEED_ERROR_LEN
     ? `${message.slice(0, MAX_SEED_ERROR_LEN)}…`
     : message;
@@ -136,27 +145,28 @@ async function seedOneCard(
 ): Promise<CardSeedOutcome> {
   const base = { cardId: card.cardId, title: card.title } as const;
 
-  let raced: UserQueryOutcome | typeof TIMEOUT;
-  try {
-    raced = await Promise.race([
-      runUserQueryPipeline({
-        sql: card.sql,
-        ...(card.connectionId ? { connectionId: card.connectionId } : {}),
-        explanation: `Dashboard seed: ${card.title}`,
-        parameters: opts.parameters,
-      }),
-      deadline,
-    ]);
-  } catch (err) {
-    // runUserQueryPipeline maps its errors onto the outcome union, so a
-    // rejection here is unexpected — treat it as a fail-soft per-card error,
-    // never letting it bubble up and fail the whole build.
+  // Attach the failure handler to the pipeline promise BEFORE racing it: if the
+  // deadline wins and this card is reported `unseeded`, the still-running
+  // pipeline can later reject with a defect (an unexpected throw not covered by
+  // its own `catchAll`). Without a handler on the losing promise that becomes a
+  // process-level unhandledRejection; here it is logged and folded into a
+  // benign outcome, so a timed-out card can never crash the tool call.
+  const exec: Promise<UserQueryOutcome> = runUserQueryPipeline({
+    sql: card.sql,
+    ...(card.connectionId ? { connectionId: card.connectionId } : {}),
+    explanation: `Dashboard seed: ${card.title}`,
+    parameters: opts.parameters,
+  }).catch((err) => {
     log.warn(
       { err: errorMessage(err), dashboardId: opts.dashboardId, cardId: card.cardId },
-      "seedDraftCards: card execution threw unexpectedly",
+      "seedDraftCards: pipeline rejected (defect)",
     );
-    return { ...base, status: "error", message: "Execution failed unexpectedly." };
-  }
+    return { kind: "query_failed", message: "Execution failed unexpectedly." } as const;
+  });
+
+  // Neither `exec` (its rejections are absorbed above) nor `deadline` rejects,
+  // so this race resolves rather than throws.
+  const raced: UserQueryOutcome | typeof TIMEOUT = await Promise.race([exec, deadline]);
 
   if (raced === TIMEOUT) {
     return { ...base, status: "unseeded" };

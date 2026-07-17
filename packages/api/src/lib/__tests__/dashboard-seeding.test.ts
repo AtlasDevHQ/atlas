@@ -64,8 +64,14 @@ const saveDraftCardCacheMock = mock(
   },
 );
 
+// Mock ALL runtime exports (mock-all-exports discipline) so a future loaded
+// graph that reaches another export doesn't fail with "Export named X not
+// found". seedDraftCards only calls saveDraftCardCache; the rest are inert.
 void mock.module("@atlas/api/lib/dashboard-draft-cache", () => ({
   saveDraftCardCache: saveDraftCardCacheMock,
+  loadDraftCardCache: mock(() => Promise.resolve(new Map())),
+  seedDraftCardCacheFromPublished: mock(() => Promise.resolve()),
+  EMPTY_DRAFT_CARD_CACHE: new Map(),
 }));
 
 const { seedDraftCards, SEED_WALL_CLOCK_BUDGET_MS } = await import(

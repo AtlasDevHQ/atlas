@@ -64,7 +64,11 @@ import {
 } from "@atlas/api/lib/dashboards";
 import { hasInternalDB, getInternalDB } from "@atlas/api/lib/db/internal";
 import type { DashboardSnapshot, DashboardSnapshotCard } from "@atlas/api/lib/dashboard-versioning";
-import { seedDraftCards, type CardSeedOutcome } from "@atlas/api/lib/dashboard-seeding";
+import {
+  seedDraftCards,
+  type CardSeedOutcome,
+  type SeedCardInput,
+} from "@atlas/api/lib/dashboard-seeding";
 
 const log = createLogger("tool:create-dashboard");
 
@@ -189,7 +193,7 @@ async function seedStagedCards(
     orgId: string | null;
     connectionGroupId: string | null;
   },
-  seedCards: { cardId: string; title: string; sql: string }[],
+  seedCards: SeedCardInput[],
   parameters: z.infer<typeof dashboardParametersSchema> | undefined,
   title: string,
 ): Promise<CardSeedOutcome[]> {
@@ -478,7 +482,7 @@ The tool EXECUTES each chart card once as it builds the dashboard and returns \`
         // they never become seed specs. Every chart card is stamped with the
         // conversation's group, so the batch resolves one physical connection
         // (below) — the SAME resolution a later refresh uses.
-        const seedCards: { cardId: string; title: string; sql: string }[] = [];
+        const seedCards: SeedCardInput[] = [];
         const snapshotCards: DashboardSnapshotCard[] = cards.map((card, position) => {
           const id = crypto.randomUUID();
           if (card.kind === "text") {

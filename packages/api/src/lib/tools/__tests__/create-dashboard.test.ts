@@ -70,8 +70,14 @@ void mock.module("@atlas/api/lib/tools/sql", () => ({
 const saveDraftCardCacheMock = mock(() =>
   Promise.resolve({ ok: true as const, cachedAt: "2026-07-17T00:00:00.000Z" }),
 );
+// Mock ALL runtime exports (mock-all-exports discipline) even though seeding
+// only calls saveDraftCardCache — a future loaded graph reaching another export
+// must not fail with "Export named X not found".
 void mock.module("@atlas/api/lib/dashboard-draft-cache", () => ({
   saveDraftCardCache: saveDraftCardCacheMock,
+  loadDraftCardCache: mock(() => Promise.resolve(new Map())),
+  seedDraftCardCacheFromPublished: mock(() => Promise.resolve()),
+  EMPTY_DRAFT_CARD_CACHE: new Map(),
 }));
 
 const { createDashboard, deriveTextCardTitle } = await import("@atlas/api/lib/tools/create-dashboard");
@@ -368,6 +374,52 @@ describe("createDashboard tool", () => {
     });
     // The failing card was never cached.
     expect(saveDraftCardCacheMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("degrades to all-unseeded (never fails the committed build) when the connection group has no members", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] },
+      { rows: [{ id: "dash-ng", title: "Board", description: null, updated_at: "2026-07-17" }] },
+      { rows: [] },
+      { rows: [] },
+    );
+    // The default mock pool.query returns { rows: [] }, so the group-member
+    // lookup finds no members → resolveCardConnectionId throws
+    // NoGroupMembersError → seeding degrades to unseeded (the build still ok).
+    pipelineBySql.set("SELECT a", pipelineOk([{ a: 1 }]));
+
+    const result = await withRequestContext(
+      { requestId: "test-req", user: TEST_USER, connectionGroupId: "grp-empty" },
+      async () => {
+        const fn = createDashboard.execute as ExecuteFn;
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+        return (await fn(
+          {
+            title: "Board",
+            cards: [
+              { title: "A", sql: "SELECT a", chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] } },
+            ],
+            // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any,
+          // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+          undefined as any,
+        )) as {
+          kind: string;
+          cardCount?: number;
+          cardOutcomes?: { cardId: string; title: string; status: string; rowCount?: number }[];
+        };
+      },
+    );
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    // The dashboard committed …
+    expect(clientQueryCalls.at(-1)?.sql).toBe("COMMIT");
+    // … but no card was seeded (group can't resolve) — the pipeline never ran.
+    expect(result.cardOutcomes).toEqual([{ cardId: expect.any(String), title: "A", status: "unseeded" }]);
+    expect(runUserQueryPipelineMock).toHaveBeenCalledTimes(0);
+    expect(saveDraftCardCacheMock).toHaveBeenCalledTimes(0);
   });
 
   it("does not seed text / section cards (no data to fetch)", async () => {

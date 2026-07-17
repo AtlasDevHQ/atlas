@@ -206,4 +206,36 @@ describe("bound addCard — tool-side seeding (#4558)", () => {
     // A failed seed never writes the draft cache.
     expect(queryCalls.some((q) => /INSERT INTO dashboard_draft_card_cache/.test(q.sql))).toBe(false);
   });
+
+  it("degrades to unseeded (never fails the add) when the card's connection group has no members", async () => {
+    enableInternalDB();
+    // getDashboard (dash + cards), loadDraft, saveDraft, then the group snapshot
+    // read for connection resolution returns NO members → NoGroupMembersError.
+    setResults(
+      { rows: [dashboardRow] },
+      { rows: [] },
+      { rows: [existingDraftRow] },
+      { rows: [{ user_id: "user-1" }] },
+      { rows: [] }, // workspace_plugins group-member lookup → empty
+    );
+
+    const tools = createBoundDashboardTools({
+      dashboardId: "dash-1",
+      orgId: "org-1",
+      userId: "user-1",
+      connectionGroupId: "grp-empty",
+    });
+    const result = await runTool<AddCardResult>(tools.addCard, {
+      title: "Orphan",
+      sql: "SELECT a",
+      chartConfig: { type: "table", categoryColumn: "a", valueColumns: ["a"] },
+    });
+
+    // The card is added; seeding degrades to unseeded (canvas-mount render fills
+    // it), and the pipeline is never reached because the connection can't resolve.
+    expect(result.kind).toBe("ok");
+    expect(result.seed?.status).toBe("unseeded");
+    expect(runUserQueryPipelineMock).toHaveBeenCalledTimes(0);
+    expect(queryCalls.some((q) => /INSERT INTO dashboard_draft_card_cache/.test(q.sql))).toBe(false);
+  });
 });

@@ -153,8 +153,9 @@ async function maybeApplyToDraft(
     return { ok: false, error: "Could not persist draft update." };
   }
   // Return the dashboard the fork read consumed so a caller that immediately
-  // seeds the new card (#4558 `addCard`) reuses it — its parameters +
-  // connection group — instead of a second getDashboard round-trip.
+  // seeds the new card (#4558 `addCard`) reuses it — its `orgId` (to scope
+  // connection resolution) + parameter defaults — instead of a second
+  // getDashboard round-trip.
   return { ok: true, dashboard: published.data };
 }
 

@@ -83,7 +83,7 @@ The platform's default region is pre-selected. Users can choose a different regi
 
 ### Why It Matters
 
-- **Data residency** — All workspace data stays in the selected region. This is critical for organizations subject to GDPR, CCPA, or other data sovereignty regulations
+- **Data residency** — Workspace databases (identity included) live in the selected region. This is critical for organizations subject to GDPR, CCPA, or other data sovereignty regulations. One documented exception: agent sandbox tool execution runs in the US regardless of region — see [Sandbox Execution Locality](/platform-ops/data-residency#sandbox-execution-locality)
 - **Latency** — Choosing a region close to your users and database reduces round-trip time
 - **Permanence** — Region assignment is permanent at signup. To change regions later, workspace admins can request a migration from the [Data Residency](/guides/admin-console#data-residency) page in the admin console
 

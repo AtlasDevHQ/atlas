@@ -103,13 +103,16 @@ const SECTIONS: LegalSectionData[] = [
   {
     id: "sandbox",
     title: "Sandboxed tool execution",
+    // Execution-region disclosure per #4223 (ADR-0024 amendment 2026-07-16).
+    // Remediation tracks: #4665 (BYOC Python), #4666 (per-region platform sandbox provider).
     legal: [
       "Beyond writing SQL, the agent can explore your semantic layer (ls, cat, grep, find) and, where enabled, run Python. These tools execute in an isolated sandbox — never directly on the host.",
       "On Atlas Cloud, the sandbox is a Vercel Sandbox: a Firecracker microVM with its network policy set to deny-all, so sandboxed code cannot make outbound connections. Self-hosted deployments get the same isolation through nsjail (Linux namespaces) or an isolated sidecar service, selected by a documented priority chain.",
+      "One locality note: Vercel Sandbox provisions only in the United States (iad1), so on Atlas Cloud sandbox execution runs in the US regardless of your workspace's data-residency region. What transits is semantic-layer content — including sampled values — and, for Python, query-result rows, under the same deny-all networking and an ephemeral filesystem that persists nothing. This is disclosed in our sub-processor list; workspaces that need in-region execution can connect their own sandbox on a region-controlled provider, which always takes priority over the platform sandbox.",
       "Inside the sandbox, the explore tool has read-only access scoped to your semantic-layer directory and nothing else. There are no writes, no shell escapes, and path-traversal attempts outside the semantic directory are blocked. The agent's tools can read the map of your data — never your filesystem, your environment, or your database credentials.",
     ],
     plain:
-      "The agent's file and Python tools run in a locked-down sandbox — a network-denied microVM on Cloud, nsjail or a sidecar when self-hosted — with read-only access to your semantic layer and nothing else.",
+      "The agent's file and Python tools run in a locked-down sandbox — a network-denied microVM on Cloud, nsjail or a sidecar when self-hosted — with read-only access to your semantic layer and nothing else. On Cloud, sandbox execution runs in the US (iad1) regardless of workspace region; bring your own sandbox for in-region execution.",
   },
   {
     id: "credentials",

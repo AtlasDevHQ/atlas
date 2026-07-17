@@ -177,7 +177,9 @@ describe("DashboardTile", () => {
   test("tile-head action buttons expose accessible names so screen readers can reach them", () => {
     const restore = setBoundingRect(600, 300);
     (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
-    render(<DashboardTile {...baseProps} />);
+    // onExportCsv is wired (as the page always does) so the tile-actions menu
+    // renders in View — the export is a non-mutating affordance.
+    render(<DashboardTile {...baseProps} onExportCsv={noop} />);
     expect(screen.getByRole("button", { name: "Refresh tile" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Fullscreen" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Tile actions" })).toBeTruthy();
@@ -307,7 +309,7 @@ describe("DashboardTile — KPI cards", () => {
   });
 
   test("keeps the tile chrome — refresh / fullscreen / actions reachable", () => {
-    render(<DashboardTile {...baseProps} card={kpiCard} />);
+    render(<DashboardTile {...baseProps} card={kpiCard} onExportCsv={noop} />);
     expect(screen.getByRole("button", { name: "Refresh tile" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Fullscreen" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Tile actions" })).toBeTruthy();
@@ -519,9 +521,10 @@ describe("DashboardTile — CSV export (#3210)", () => {
 
   test("the item is hidden when no onExportCsv handler is wired", async () => {
     (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
-    render(<DashboardTile {...baseProps} card={baseCard} />);
+    // In Edit mode the menu still opens (Rename is present) — only the CSV item
+    // is gone. (In View with no export handler the menu wouldn't render at all.)
+    render(<DashboardTile {...baseProps} card={baseCard} editing />);
     openTileMenu();
-    // The menu still opens (Rename is always present) — only the CSV item is gone.
     await screen.findByRole("menuitem", { name: /Rename/ });
     expect(screen.queryByRole("menuitem", { name: /Download CSV/ })).toBeNull();
   });
@@ -532,5 +535,66 @@ describe("DashboardTile — CSV export (#3210)", () => {
     // Text tiles render no tile-actions menu at all — the affordance can't appear.
     expect(screen.queryByRole("button", { name: "Tile actions" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: /Download CSV/ })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// View is read-only for the DEFINITION — mutating cluster moves to Edit (#4560)
+// ---------------------------------------------------------------------------
+
+describe("DashboardTile — View/Edit affordance gating (#4560)", () => {
+  afterEach(cleanup);
+
+  function openTileMenu() {
+    const trigger = screen.getByRole("button", { name: "Tile actions" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  }
+
+  test("View mode hides the mutating cluster (Rename / Duplicate / Remove); CSV stays", async () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    render(<DashboardTile {...baseProps} card={baseCard} editing={false} onExportCsv={noop} />);
+    // The non-mutating affordances (refresh, fullscreen) are always reachable.
+    expect(screen.getByRole("button", { name: "Refresh tile" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Fullscreen" })).toBeTruthy();
+    // The actions menu opens for the non-mutating CSV export only.
+    openTileMenu();
+    expect(await screen.findByRole("menuitem", { name: /Download CSV/ })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /Rename/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Duplicate/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Remove/ })).toBeNull();
+  });
+
+  test("View mode with no export handler renders no actions menu at all (never an empty dropdown)", () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    render(<DashboardTile {...baseProps} card={baseCard} editing={false} />);
+    expect(screen.queryByRole("button", { name: "Tile actions" })).toBeNull();
+  });
+
+  test("Edit mode exposes the full mutating cluster (Rename / Duplicate / Remove)", async () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    render(<DashboardTile {...baseProps} card={baseCard} editing onExportCsv={noop} />);
+    openTileMenu();
+    expect(await screen.findByRole("menuitem", { name: /Rename/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /Duplicate/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /Remove/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /Download CSV/ })).toBeTruthy();
+  });
+
+  test("Remove / Duplicate fire their handlers when selected in Edit mode", async () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const onDelete = mock((_card: DashboardCard) => {});
+    const onDuplicate = mock((_id: string) => {});
+    render(
+      <DashboardTile {...baseProps} card={baseCard} editing onDelete={onDelete} onDuplicate={onDuplicate} />,
+    );
+    openTileMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Duplicate/ }));
+    expect(onDuplicate).toHaveBeenCalledTimes(1);
+    expect(onDuplicate.mock.calls[0][0]).toBe(baseCard.id);
+    openTileMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Remove/ }));
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(onDelete.mock.calls[0][0].id).toBe(baseCard.id);
   });
 });

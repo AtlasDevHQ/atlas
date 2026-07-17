@@ -533,39 +533,54 @@ function ChartTile({
             >
               {fullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
             </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-7" aria-label="Tile actions">
-                  <MoreHorizontal className="size-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="text-xs">
-                <DropdownMenuItem onSelect={() => { setTitleDraft(card.title); setTitleEditing(true); }}>
-                  <Pencil className="mr-2 size-3.5" />
-                  Rename
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => onDuplicate(card.id)}>
-                  <Copy className="mr-2 size-3.5" />
-                  Duplicate
-                </DropdownMenuItem>
-                {/* #3210 — export the card's current parameter-bound result as
-                    CSV. Disabled until the tile has rendered rows to export. */}
-                {onExportCsv && (
-                  <DropdownMenuItem onSelect={() => onExportCsv(card)} disabled={!hasData}>
-                    <Download className="mr-2 size-3.5" />
-                    Download CSV
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onSelect={() => onDelete(card)}
-                  className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
-                >
-                  <Trash2 className="mr-2 size-3.5" />
-                  Remove
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {/* #4560 — View is read-only for the card DEFINITION: the mutating
+                cluster (Rename / Duplicate / Remove) lives only in Edit mode.
+                Download CSV is a non-mutating export, so it stays in both. The
+                menu itself is rendered only when it would hold at least one item
+                (editing, or an export handler) — never an empty dropdown. */}
+            {(editing || onExportCsv) && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="size-7" aria-label="Tile actions">
+                    <MoreHorizontal className="size-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="text-xs">
+                  {editing && (
+                    <DropdownMenuItem onSelect={() => { setTitleDraft(card.title); setTitleEditing(true); }}>
+                      <Pencil className="mr-2 size-3.5" />
+                      Rename
+                    </DropdownMenuItem>
+                  )}
+                  {editing && (
+                    <DropdownMenuItem onSelect={() => onDuplicate(card.id)}>
+                      <Copy className="mr-2 size-3.5" />
+                      Duplicate
+                    </DropdownMenuItem>
+                  )}
+                  {/* #3210 — export the card's current parameter-bound result as
+                      CSV. Disabled until the tile has rendered rows to export. */}
+                  {onExportCsv && (
+                    <DropdownMenuItem onSelect={() => onExportCsv(card)} disabled={!hasData}>
+                      <Download className="mr-2 size-3.5" />
+                      Download CSV
+                    </DropdownMenuItem>
+                  )}
+                  {editing && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onSelect={() => onDelete(card)}
+                        className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
+                      >
+                        <Trash2 className="mr-2 size-3.5" />
+                        Remove
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
         )}
       </div>

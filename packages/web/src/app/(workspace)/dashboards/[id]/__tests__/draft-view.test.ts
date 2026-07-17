@@ -1,5 +1,5 @@
 /**
- * Canvas draft-view decision (#4556). Pins the pinned Canvas contract: the canvas
+ * Canvas draft-view decision (#4556). Pins the Canvas contract: the canvas
  * renders the caller's draft whenever they HAVE one, the published state
  * otherwise — driven off the caller's actual draft status, not just an open
  * editor/drawer. The regression this locks: arriving at a never-published,

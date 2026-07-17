@@ -156,19 +156,12 @@ export default function DashboardViewPage() {
   } = useAdminFetch<DraftStatusResponse>(`/api/v1/dashboards/${id}/draft/status`);
   useVisibilityGatedPoll(refetchDraftStatus, DRAFT_STATUS_POLL_MS);
 
-  // #4315 / #4322 / #4556 — the canvas renders the caller's DRAFT whenever they
-  // have one, the published state otherwise. The switch is driven off the caller's
-  // actual draft status (`hasDraft`), NOT just an open editor/drawer: a user
-  // returning to a never-published agent-built board via bookmark/switcher (no
-  // editor open, View mode) must see the draft's cards, not an empty published
-  // copy underneath a "Draft — unpublished changes" banner. Driving both the
-  // banner and the canvas off the same `hasDraft` means they can never disagree.
-  // `editing` / `chatOpen` stay in the OR because both edit the draft and must
-  // show it even in the brief window before the status fetch lands (e.g. a fresh
-  // `createDashboard` handoff whose cards were just staged into the draft). The
-  // URL is the fetch cache key, so the view re-fetches the moment `hasDraft`
-  // resolves; the server overlays the draft only when one exists (non-forking),
-  // so a viewer or a board with no draft still gets published — this never leaks.
+  // #4556 — the canvas renders the caller's DRAFT whenever they HAVE one (keyed
+  // off `hasDraft`, not just an open editor/drawer), published otherwise. Contract
+  // + the returning-viewer regression it fixes live in `draft-view.ts`. Call-site
+  // specifics: the URL is the fetch cache key below, so the view re-fetches the
+  // moment `hasDraft` resolves; the server overlays the draft only when one exists
+  // (non-forking), so a viewer or a draftless board still gets published — no leak.
   const showDraftView = resolveShowDraftView({ editing, chatOpen, hasDraft: draftStatus?.hasDraft });
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
     showDraftView ? `/api/v1/dashboards/${id}?view=draft` : `/api/v1/dashboards/${id}`,
@@ -208,10 +201,6 @@ export default function DashboardViewPage() {
   // parameter / mutation errors below.
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  // #2363 — bound chat drawer state (`chatOpen` / `resumeConversationId`)
-  // and #2521 draft state (`draftStatus` / `refetchDraftStatus`) are declared
-  // above, before the dashboard fetch, so #4322's + #4556's draft-view switch
-  // can key off the drawer being open and the caller's draft status.
 
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
@@ -378,9 +367,11 @@ export default function DashboardViewPage() {
     // #4567 — add THIS card to the in-flight set (never replace it), so a second
     // concurrent refresh doesn't clobber the first tile's spinner.
     setRefreshingCardIds((prev) => withRefreshing(prev, cardId));
-    // #4315 — while editing, a single-card refresh runs the DRAFT SQL (server
-    // returns fresh rows without persisting to the published cache).
-    const viewSuffix = editing ? "?view=draft" : "";
+    // #4315 / #4556 — a single-card refresh runs against the SAME view the canvas
+    // shows (`showDraftView`: the draft whenever the caller has one, published
+    // otherwise), so a refreshed tile can't disagree with the board around it. The
+    // server returns fresh rows without persisting to the published cache.
+    const viewSuffix = showDraftView ? "?view=draft" : "";
     try {
       await mutate({ path: `/api/v1/dashboards/${id}/cards/${cardId}/refresh${viewSuffix}`, method: "POST" });
     } finally {
@@ -489,8 +480,10 @@ export default function DashboardViewPage() {
     }
 
     try {
-      // #4315 — export the DRAFT card's data while editing (runs the draft SQL).
-      const viewParam = editing ? "&view=draft" : "";
+      // #4315 / #4556 — export the data for the view the canvas shows
+      // (`showDraftView`: draft when the caller has one, published otherwise), so
+      // the CSV matches the tile the user is looking at.
+      const viewParam = showDraftView ? "&view=draft" : "";
       const res = await fetch(
         `${apiUrl}/api/v1/dashboards/${id}/cards/${card.id}/render?format=csv${viewParam}`,
         {
@@ -924,8 +917,10 @@ export default function DashboardViewPage() {
         apiUrl,
         dashboardId: id,
         isCrossOrigin,
-        // #4315 — the canvas shows the draft while editing; render its SQL.
-        view: editing ? "draft" : "published",
+        // #4315 / #4556 — render the SAME view the canvas shows (`showDraftView`:
+        // draft whenever the caller has one, published otherwise) so parameter
+        // overlays land on the same card set the tiles display.
+        view: showDraftView ? "draft" : "published",
       });
       // A newer change superseded this batch — discard its results.
       if (seq !== paramReqSeq.current) return;
@@ -990,7 +985,9 @@ export default function DashboardViewPage() {
         apiUrl,
         dashboardId: id,
         isCrossOrigin,
-        view: editing ? "draft" : "published",
+        // #4315 / #4556 — retry re-renders the visible tile, so it must use the
+        // same view the canvas shows (`showDraftView`).
+        view: showDraftView ? "draft" : "published",
       });
       if (seq !== paramReqSeq.current) return;
       if (entry.ok) {
@@ -1072,8 +1069,10 @@ export default function DashboardViewPage() {
       setComparisons({});
       return;
     }
-    // #4315 — while editing, the KPI comparison runs the draft card's SQL too.
-    const viewParam = editing ? "?view=draft" : "";
+    // #4315 / #4556 — the KPI comparison runs against the view the canvas shows
+    // (`showDraftView`: draft whenever the caller has one), so the delta chip
+    // matches the draft tile's primary value rather than the published copy's.
+    const viewParam = showDraftView ? "?view=draft" : "";
     const entries = await Promise.all(
       kpiCards.map(async (card): Promise<[string, KpiComparisonResult | null]> => {
         try {

@@ -4,7 +4,7 @@
 // view (`../view.tsx`) — this file adds only the framable chrome (theme wrapper
 // + iframe-appropriate error states), never a second data surface.
 
-import type { FetchResult } from "../fetch";
+import type { FailReason } from "../fetch";
 
 export type EmbedTheme = "light" | "dark";
 
@@ -24,8 +24,6 @@ export function resolveEmbedTheme(raw: string | string[] | undefined): EmbedThem
   return "light";
 }
 
-type FailReason = Extract<FetchResult, { ok: false }>["reason"];
-
 /**
  * Compact, navigation-free error state for the embed. Unlike the standalone
  * page's `ErrorShell`, it never renders login/retry links — a link inside a
@@ -37,8 +35,15 @@ export function EmbedErrorView({ reason }: { reason: FailReason }) {
   // fails the build here instead of silently rendering the generic message.
   let message: string;
   switch (reason) {
-    case "auth-required":
+    // The embed is navigation-free (no in-frame login), so both auth reasons
+    // resolve to explanatory copy rather than a CTA — but they stay DISTINCT so a
+    // signed-in wrong-org viewer isn't told to "sign in" (#4690).
+    case "login-required":
       message = "This dashboard is shared within an organization. Sign in to Atlas to view it.";
+      break;
+    case "membership-required":
+      message =
+        "This dashboard is shared within an organization you’re not a member of. Open it in Atlas with an account that has access.";
       break;
     case "expired":
       message = "This dashboard share link has expired.";

@@ -439,6 +439,7 @@ describe("isRetryableError", () => {
     "org_not_found",
     "plan_limit_exceeded",
     "trial_expired",
+    "subscription_required",
     "workspace_suspended",
     "workspace_deleted",
     "conversation_budget_exceeded",
@@ -480,7 +481,7 @@ describe("parseChatError retryable", () => {
   });
 
   test("retryable is false for all permanent error codes", () => {
-    for (const code of ["auth_error", "session_expired", "configuration_error", "no_datasource", "invalid_request", "provider_model_not_found", "provider_auth_error", "validation_error", "not_found", "forbidden", "forbidden_role", "org_not_found", "plan_limit_exceeded", "trial_expired", "workspace_suspended", "workspace_deleted"] as const) {
+    for (const code of ["auth_error", "session_expired", "configuration_error", "no_datasource", "invalid_request", "provider_model_not_found", "provider_auth_error", "validation_error", "not_found", "forbidden", "forbidden_role", "org_not_found", "plan_limit_exceeded", "trial_expired", "subscription_required", "workspace_suspended", "workspace_deleted"] as const) {
       const err = new Error(JSON.stringify({ error: code, message: "fail" }));
       const info = parseChatError(err, authMode);
       expect(info.retryable).toBe(false);

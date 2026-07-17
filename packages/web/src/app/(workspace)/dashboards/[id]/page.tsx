@@ -41,6 +41,14 @@ import {
 } from "./search-params";
 import { activeFilters, incompatibleCardIds } from "./cross-filter";
 import { renderDashboardCard, renderDashboardCards, isRenderableCard } from "./dashboard-card-render";
+import {
+  MOUNT_RENDER_CONCURRENCY,
+  flipLoadingToError,
+  mountRenderPhaseFor,
+  runBounded,
+  selectMountRenderCards,
+  shouldRunMountRender,
+} from "./mount-render";
 import { foldRenderEntries, mergeOverlays, phaseTag, type TileOverlay } from "./tile-phases";
 import type { TileRenderPhase } from "@/ui/components/dashboards/tile-status";
 import { pendingRefreshesRemaining } from "@/ui/components/dashboards/tile-status";
@@ -1116,6 +1124,91 @@ export default function DashboardViewPage() {
   const dparamsActive = (dashboard?.parameters.length ?? 0) > 0 && Boolean(searchParams.get("dparams"));
   const exportReady =
     !loading && !error && Boolean(dashboard) && !paramLoading && (!dparamsActive || paramSettledOnce);
+
+  // #4557 — canvas-mount draft render (ADR-0034 Decision 1, the lazy half of the
+  // seeding decision). Cards this session already fired a mount render for,
+  // keyed by dashboard id so switching boards resets the set. A ref (not state)
+  // — mutating it must not re-render, and the effect below reads its latest
+  // value synchronously.
+  const mountRenderState = useRef<{ dashboardId: string; attempted: Set<string> }>({
+    dashboardId: id,
+    attempted: new Set<string>(),
+  });
+
+  // #4557 — when the draft holder's canvas shows the draft view, any never-run
+  // draft card (unseeded by tool-side seeding #4558 — budget hit, transient
+  // failure, or a legacy draft) fires its OWN draft render, so arrival after an
+  // agent build shows data (or an honest errored/empty tile) rather than a wall
+  // of "Never run". Bounded concurrency (no datasource stampede); a failed
+  // render lands in the tile's `errored` state with the existing one-click retry
+  // (`handleRetryCard`), never a page banner. Gated on `showDraftView`, so a
+  // published-only view is untouched. Skipped when active parameter overrides
+  // are in the URL — the parameter bar's mount batch already renders every card
+  // (including the never-run ones), so firing here too would double-execute.
+  const overridesActive = Object.keys(overrides).length > 0;
+  useEffect(() => {
+    if (!shouldRunMountRender({ showDraftView, hasDashboard: !!dashboard, overridesActive })) return;
+    if (!dashboard) return; // narrowing — guaranteed by hasDashboard above
+    // Reset the attempted set when we've switched to a different board.
+    if (mountRenderState.current.dashboardId !== dashboard.id) {
+      mountRenderState.current = { dashboardId: dashboard.id, attempted: new Set<string>() };
+    }
+    const attempted = mountRenderState.current.attempted;
+    const targets = selectMountRenderCards(dashboard.cards, attempted);
+    if (targets.length === 0) return;
+
+    // Mark every target attempted up front so a refetch mid-flight can't re-fire
+    // an in-flight card, and a failed render isn't auto-retried into a loop.
+    for (const card of targets) attempted.add(card.id);
+    // Share the parameter batch's sequence guard: if a parameter change / clear
+    // lands while these renders are in flight, discard the results rather than
+    // overlaying a superseded window.
+    const seq = paramReqSeq.current;
+    const currentOverrides = parseOverrides(dparamsRaw);
+
+    setRenderPhases((prev) => {
+      const next = { ...prev };
+      for (const card of targets) next[card.id] = "loading";
+      return next;
+    });
+
+    void runBounded(targets, MOUNT_RENDER_CONCURRENCY, async (card) => {
+      const entry = await renderDashboardCard(card, currentOverrides, {
+        apiUrl,
+        dashboardId: id,
+        isCrossOrigin,
+        view: "draft",
+      });
+      if (seq !== paramReqSeq.current) return;
+      // ok → the tile flips fresh/empty from the overlaid rows; error → a
+      // never-run card with no prior data reads `errored` (+ one-click retry),
+      // never a silent blank. The mapping is the pure `mountRenderPhaseFor`.
+      if (entry.ok) {
+        const renderedAt = new Date().toISOString();
+        setParamResults((prev) => ({
+          ...prev,
+          [card.id]: { columns: entry.columns, rows: entry.rows, renderedAt },
+        }));
+        if (entry.comparison !== undefined) {
+          setComparisons((prev) => ({ ...prev, [card.id]: entry.comparison ?? null }));
+        }
+      }
+      setRenderPhases((prev) => ({ ...prev, [card.id]: mountRenderPhaseFor(entry) }));
+    }).catch((err) => {
+      // `renderDashboardCard` is contractually no-throw, so this is defensive.
+      // Never swallow: log and flip the in-flight tiles to `error` (→ errored +
+      // retry) rather than stranding them on the loading placeholder.
+      console.debug("[dashboard] mount draft render failed", {
+        dashboardId: id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      setRenderPhases((prev) => flipLoadingToError(prev, targets.map((card) => card.id)));
+    });
+    // Re-runs on dashboard refetch (new never-run cards) and on entering the
+    // draft view; the attempted set makes each fire at most once. apiUrl / id /
+    // isCrossOrigin / dparamsRaw are read at fire time and must not re-trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboard, showDraftView, overridesActive]);
 
   return (
     <StageProvider value={{ dashboardId: id, onStagesChanged: handleStagesChanged }}>

@@ -32,6 +32,7 @@ import {
   dashboardParametersSchema,
   dashboardCardAnnotationsSchema,
   dashboardCardLayoutInputSchema,
+  dashboardTextCardLayoutInputSchema,
 } from "@useatlas/schemas";
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
@@ -55,6 +56,27 @@ const log = createLogger("dashboards");
  * under the historical name so every `CardLayoutSchema` import site is unchanged.
  */
 export const CardLayoutSchema = dashboardCardLayoutInputSchema;
+
+/**
+ * Text / section-header card layout (#4687) — the same bounds as
+ * {@link CardLayoutSchema} but with the shorter `TEXT_MIN_H` (2) height floor,
+ * so a one-line banner validates at a tight height.
+ *
+ * This is also the ABSOLUTE geometry floor used by every KIND-BLIND layout seam
+ * (no card `kind` on the wire to pick a stricter floor, so a chart card is NOT
+ * floored at `MIN_H` here): `rowToCard` read-back, the REST drag-to-save PATCH
+ * (`UpdateCardSchema`), the draft-undo restore (`DraftUndoCardSchema`), and the
+ * bound-editor `updateCard` / `updateLayout` tools. A chart written short through
+ * one of those renders short (valid geometry) rather than being silently
+ * discarded on read-back.
+ *
+ * The taller per-kind chart floor (`MIN_H`, 4) is enforced only where `kind` is
+ * KIND-AWARE: the create path (via its chart-arm schema directly), the REST
+ * add-card path (whose layout *field* uses this base schema so a text banner
+ * passes, but whose `superRefine` re-asserts `MIN_H` for a chart card), and the
+ * UI's per-kind resize `minH`.
+ */
+export const TextCardLayoutSchema = dashboardTextCardLayoutInputSchema;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -160,11 +182,20 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
     }
   }
 
+  // #4687 — read-time layout validation is a GEOMETRY guard (bounds + shape),
+  // NOT the per-kind height policy. It floors at the ABSOLUTE minimum any card
+  // can occupy (`TextCardLayoutSchema`, TEXT_MIN_H) so a layout the kind-blind
+  // write seams (REST drag-to-save PATCH, the bound-editor tools) legitimately
+  // accepted is never silently discarded here on read-back. The per-kind chart
+  // floor (`MIN_H`, 4) is enforced where `kind` is authoritative — the create /
+  // add-card authoring paths and the UI's per-kind resize `minH` — not
+  // re-litigated on read. Discards only structurally-malformed layouts (missing
+  // fields, NaN, out-of-bounds x/y/w, `x + w` overflow, `h` below TEXT_MIN_H).
   let layout: DashboardCardLayout | null = null;
   if (r.layout) {
     try {
       const raw = typeof r.layout === "string" ? JSON.parse(r.layout) : r.layout;
-      const parsed = CardLayoutSchema.safeParse(raw);
+      const parsed = TextCardLayoutSchema.safeParse(raw);
       if (parsed.success) {
         layout = parsed.data;
       } else {

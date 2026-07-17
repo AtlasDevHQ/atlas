@@ -469,32 +469,68 @@ export type DashboardChartConfigWire = z.infer<typeof dashboardChartConfigSchema
 // (never npm-published), so a bump here needs no version bump.
 // ---------------------------------------------------------------------------
 
-/** Bounds of the dashboard tile grid (#1867). */
+/**
+ * Bounds of the dashboard tile grid (#1867).
+ *
+ * `MIN_H` (4) is the height floor for a SQL-backed chart / KPI / table card.
+ * `TEXT_MIN_H` (2, #4687) is the shorter floor for a markdown text /
+ * section-header card, so a one-line `## Section` header reads as a tight banner
+ * over the charts grouped beneath it instead of a ~180px empty box. Every other
+ * bound (columns, widths, max height) is shared across both kinds.
+ */
 export const DASHBOARD_GRID = {
   COLS: 24,
   MIN_W: 3,
   MAX_W: 24,
   MIN_H: 4,
+  TEXT_MIN_H: 2,
   MAX_H: 200,
   MAX_Y: 10_000,
 } as const;
 
 /**
- * Authoring tile layout in the 24-col freeform grid. Single source for both
- * write-time Zod validation (the agent tools + REST route) and read-time DB-row
- * validation (`rowToCard`). `x + w` may not exceed the column count.
+ * Build a tile-layout schema whose only per-kind knob is the height floor
+ * `minH`. `x + w` may not exceed the column count; every other bound is shared.
+ * Two instances are exported below — a chart floor (`MIN_H`) and a shorter text
+ * floor (`TEXT_MIN_H`) — so a text card's shorter height validates while chart
+ * cards keep the taller floor, with no duplicated bounds to drift.
  */
-export const dashboardCardLayoutInputSchema = z
-  .object({
-    x: z.number().int().min(0).max(DASHBOARD_GRID.COLS - 1),
-    y: z.number().int().min(0).max(DASHBOARD_GRID.MAX_Y),
-    w: z.number().int().min(DASHBOARD_GRID.MIN_W).max(DASHBOARD_GRID.MAX_W),
-    h: z.number().int().min(DASHBOARD_GRID.MIN_H).max(DASHBOARD_GRID.MAX_H),
-  })
-  .refine((l) => l.x + l.w <= DASHBOARD_GRID.COLS, {
-    message: `Tile extends past column ${DASHBOARD_GRID.COLS}`,
-  });
+function makeCardLayoutInputSchema(minH: number) {
+  return z
+    .object({
+      x: z.number().int().min(0).max(DASHBOARD_GRID.COLS - 1),
+      y: z.number().int().min(0).max(DASHBOARD_GRID.MAX_Y),
+      w: z.number().int().min(DASHBOARD_GRID.MIN_W).max(DASHBOARD_GRID.MAX_W),
+      h: z.number().int().min(minH).max(DASHBOARD_GRID.MAX_H),
+    })
+    .refine((l) => l.x + l.w <= DASHBOARD_GRID.COLS, {
+      message: `Tile extends past column ${DASHBOARD_GRID.COLS}`,
+    });
+}
+
+/**
+ * Authoring tile layout for a chart / KPI / table card — floors at `MIN_H` (4).
+ * Single source for both write-time Zod validation (the agent tools + REST
+ * route) and read-time DB-row validation (`rowToCard`). Re-exported through
+ * `@atlas/api/lib/dashboards` as the historical `CardLayoutSchema`.
+ */
+export const dashboardCardLayoutInputSchema = makeCardLayoutInputSchema(DASHBOARD_GRID.MIN_H);
 export type DashboardCardLayoutInputWire = z.infer<typeof dashboardCardLayoutInputSchema>;
+
+/**
+ * Authoring tile layout for a text / section-header card (#4687) — identical to
+ * {@link dashboardCardLayoutInputSchema} except the height floors at the shorter
+ * `TEXT_MIN_H` (2). Used by the text arm of the card union, and (as the absolute
+ * geometry floor) by every KIND-BLIND backend seam that accepts a layout without
+ * a card `kind` on the wire: `rowToCard` read-back, the REST drag-to-save PATCH,
+ * the draft-undo restore, and the bound-editor `updateCard` / `updateLayout`
+ * tools. The taller per-kind chart floor (`MIN_H`) is enforced only where the
+ * kind is known — the chart arm below, plus the REST add-card path's
+ * `superRefine` (whose layout *field* still uses this schema so a text banner
+ * passes) — never here.
+ */
+export const dashboardTextCardLayoutInputSchema = makeCardLayoutInputSchema(DASHBOARD_GRID.TEXT_MIN_H);
+export type DashboardTextCardLayoutInputWire = z.infer<typeof dashboardTextCardLayoutInputSchema>;
 
 /**
  * A SQL-backed chart / table / KPI card — the original card kind. `kind` is
@@ -536,7 +572,9 @@ export const dashboardTextCardInputSchema = z
     content: dashboardTextCardContentSchema.describe(
       'Markdown section header / explainer, e.g. "## Top of funnel". Rendered sanitized — no raw HTML.',
     ),
-    layout: dashboardCardLayoutInputSchema
+    // #4687 — a text card floors at the shorter `TEXT_MIN_H` (2) so a one-line
+    // header reads as a banner, not an empty box; chart cards keep `MIN_H` (4).
+    layout: dashboardTextCardLayoutInputSchema
       .optional()
       .describe("Optional grid placement { x, y, w, h } on the 24-column grid."),
   })

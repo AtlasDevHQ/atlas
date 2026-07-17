@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { DashboardCard } from "@/ui/lib/types";
 import { nextTileLayout, withAutoLayout } from "../auto-layout";
-import { COLS, DEFAULT_TEXT_TILE_H, DEFAULT_TILE_H } from "../grid-constants";
+import { COLS, DEFAULT_TEXT_TILE_H, DEFAULT_TILE_H, TEXT_MIN_H } from "../grid-constants";
 
 const DEFAULT_CARD: Omit<DashboardCard, "id" | "position" | "layout"> = {
   dashboardId: "d1",
@@ -69,6 +69,15 @@ describe("withAutoLayout", () => {
   test("an unplaced text card lays out full-width", () => {
     const [placed] = withAutoLayout([textCard({ id: "t1", position: 0 })]);
     expect(placed.resolvedLayout).toEqual({ x: 0, y: 0, w: COLS, h: DEFAULT_TEXT_TILE_H });
+  });
+
+  // #4687 — the default text-tile band is a SHORT banner (TEXT_MIN_H), not a
+  // full chart-height box, so a one-line header doesn't render as an empty box.
+  test("an unplaced text card defaults to the short banner height", () => {
+    const [placed] = withAutoLayout([textCard({ id: "t1", position: 0 })]);
+    expect(DEFAULT_TEXT_TILE_H).toBe(TEXT_MIN_H);
+    expect(placed.resolvedLayout.h).toBe(TEXT_MIN_H);
+    expect(placed.resolvedLayout.h).toBeLessThan(DEFAULT_TILE_H);
   });
 
   test("a text card breaks the 2-col chart pairing into a fresh row beneath it", () => {

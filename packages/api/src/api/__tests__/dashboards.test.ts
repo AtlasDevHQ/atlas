@@ -1132,6 +1132,43 @@ describe("dashboard routes", () => {
       expect(addArgs[0].sql).toBe("");
     });
 
+    it("accepts a text card at the short banner height (h=2) via REST (#4687)", async () => {
+      mockAddCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "Section",
+            kind: "text",
+            content: "## Top of funnel",
+            layout: { x: 0, y: 0, w: 24, h: 2 },
+          }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      const addArgs = mockAddCard.mock.calls[0] as unknown as [{ layout?: { h: number } }];
+      expect(addArgs[0].layout?.h).toBe(2);
+    });
+
+    it("returns 422 for a chart card below MIN_H (h=2) and never calls addCard (#4687)", async () => {
+      mockAddCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "Signups",
+            sql: "SELECT 1",
+            chartConfig: { type: "line", categoryColumn: "week", valueColumns: ["count"] },
+            layout: { x: 0, y: 0, w: 24, h: 2 },
+          }),
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
     it("returns 422 for a text card with no content and never calls addCard (#4318)", async () => {
       mockAddCard.mockClear();
       const response = await app.fetch(
@@ -1241,6 +1278,36 @@ describe("dashboard routes", () => {
       expect(response.status).toBe(200);
       const args = mockUpdateCard.mock.calls[0] as unknown as [string, string, { sql?: string }];
       expect(args[2].sql).toBe("SELECT COUNT(*) FROM orders");
+    });
+
+    // #4687 — the drag-to-save path is kind-blind and floors at the absolute
+    // TEXT_MIN_H (2), so a text card's short banner saves; a layout below the
+    // floor (h=1) is still rejected before ever reaching updateCard.
+    it("forwards a short banner layout (h=2) to updateCard (#4687)", async () => {
+      mockUpdateCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ layout: { x: 0, y: 0, w: 24, h: 2 } }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const args = mockUpdateCard.mock.calls[0] as unknown as [string, string, { layout?: { h: number } }];
+      expect(args[2].layout?.h).toBe(2);
+    });
+
+    it("returns 422 for a layout below the absolute floor (h=1) and never calls updateCard (#4687)", async () => {
+      mockUpdateCard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ layout: { x: 0, y: 0, w: 24, h: 1 } }),
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect(mockUpdateCard).not.toHaveBeenCalled();
     });
   });
 
@@ -4346,6 +4413,39 @@ describe("dashboard routes", () => {
       // Optional fields defaulted so the snapshot card is well-formed.
       expect(change.card?.content).toBeNull();
       expect(change.card?.annotations).toEqual([]);
+    });
+
+    // #4687 — the restore body is kind-blind, so its layout floors at the
+    // absolute TEXT_MIN_H (2); a text card's short banner restores rather than
+    // being rejected by the chart floor. Proves DraftUndoCardSchema.layout uses
+    // the text schema (a chart-floored schema would 422 on h=2).
+    it("restore_card accepts a text card's short banner layout (h=2) (#4687)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/draft/undo`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: "restore_card",
+            card: {
+              id: VALID_CARD_ID,
+              position: 0,
+              title: "Section",
+              sql: "",
+              chartConfig: null,
+              content: "## Top of funnel",
+              connectionGroupId: null,
+              layout: { x: 0, y: 0, w: 24, h: 2 },
+            },
+          }),
+        }),
+      );
+      expect(response.status).toBe(204);
+      const [, , change] = mockApplyEditToDraft.mock.calls[0] as unknown as [
+        string,
+        unknown,
+        { card?: { layout?: { h: number } } },
+      ];
+      expect(change.card?.layout?.h).toBe(2);
     });
 
     it("restore_card is idempotent — a card already in the draft is a no-op (no re-add)", async () => {

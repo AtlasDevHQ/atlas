@@ -49,13 +49,15 @@ const card: DashboardCard = {
 const baseProps = {
   cards: [card],
   editing: false,
-  refreshingId: null,
+  refreshingIds: new Set<string>(),
   onLayoutChange: noop,
   onRefresh: noop,
   onDuplicate: noop,
   onDelete: noop,
   onUpdateTitle: noop,
 };
+
+const secondCard: DashboardCard = { ...card, id: "card-2", title: "Revenue by month" };
 
 describe("DashboardGrid", () => {
   afterEach(cleanup);
@@ -83,6 +85,35 @@ describe("DashboardGrid", () => {
     widthOverride = 1024;
     render(<DashboardGrid {...baseProps} />);
     expect(screen.getByTestId("rgl-root")).toBeTruthy();
+  });
+
+  test("#4567 — two concurrent tile refreshes both spin; neither clobbers the other", () => {
+    widthOverride = 1024;
+    render(
+      <DashboardGrid
+        {...baseProps}
+        cards={[card, secondCard]}
+        refreshingIds={new Set(["card-1", "card-2"])}
+      />,
+    );
+    // Both tiles' refresh buttons reflect their own in-flight state (a single
+    // `refreshingId` could only mark one). `disabled` is the tile's refresh gate.
+    const refreshButtons = screen.getAllByRole("button", { name: "Refresh tile" });
+    expect(refreshButtons).toHaveLength(2);
+    for (const btn of refreshButtons) expect((btn as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test("#4567 — a refresh in flight on one tile leaves the other's refresh idle", () => {
+    widthOverride = 1024;
+    render(
+      <DashboardGrid
+        {...baseProps}
+        cards={[card, secondCard]}
+        refreshingIds={new Set(["card-1"])}
+      />,
+    );
+    const refreshButtons = screen.getAllByRole("button", { name: "Refresh tile" });
+    expect(refreshButtons.filter((b) => (b as HTMLButtonElement).disabled)).toHaveLength(1);
   });
 
   test("fullscreen opens a real modal dialog (focus trap / backdrop / aria-modal), not a CSS overlay", () => {

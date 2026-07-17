@@ -167,3 +167,61 @@ describe("BoundChatDrawer — conversation continuity", () => {
     expect(queryByText(/Tell the agent what to change/i)).toBeNull();
   });
 });
+
+describe("BoundChatDrawer — surgical board invalidation (#4567)", () => {
+  const toolMsg = (name: string, kind: string): FakeMsg =>
+    ({
+      id: "a1",
+      role: "assistant",
+      parts: [{ type: `tool-${name}`, state: "output-available", toolCallId: "call-1", output: { kind } }],
+    }) as unknown as FakeMsg;
+
+  test("a successful mutation tool fires onDashboardMutated once", async () => {
+    chatMessages = [toolMsg("addCard", "ok")];
+    const spy = mock(() => {});
+    renderDrawer({ onDashboardMutated: spy });
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+  });
+
+  test("a pure read tool does NOT fire onDashboardMutated (no flash-reload)", () => {
+    chatMessages = [toolMsg("getDashboardState", "ok")];
+    const spy = mock(() => {});
+    renderDrawer({ onDashboardMutated: spy });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("a failed mutation (kind: err) does NOT fire onDashboardMutated", () => {
+    chatMessages = [toolMsg("addCard", "err")];
+    const spy = mock(() => {});
+    renderDrawer({ onDashboardMutated: spy });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("a re-render with a NEW callback identity does not refire for the same mutation", async () => {
+    chatMessages = [toolMsg("addCard", "ok")];
+    const spy1 = mock(() => {});
+    const { rerender } = render(
+      <BoundChatDrawer
+        open
+        onOpenChange={() => {}}
+        dashboardId="dash-1"
+        dashboardTitle="Sales"
+        onDashboardMutated={spy1}
+      />,
+    );
+    await waitFor(() => expect(spy1).toHaveBeenCalledTimes(1));
+    // Same messages (same signature), fresh callback identity — the ref-guard
+    // must suppress a second refetch for a mutation already handled.
+    const spy2 = mock(() => {});
+    rerender(
+      <BoundChatDrawer
+        open
+        onOpenChange={() => {}}
+        dashboardId="dash-1"
+        dashboardTitle="Sales"
+        onDashboardMutated={spy2}
+      />,
+    );
+    expect(spy2).not.toHaveBeenCalled();
+  });
+});

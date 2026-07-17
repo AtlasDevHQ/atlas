@@ -65,6 +65,15 @@ interface DashboardTopBarProps {
   chatSlot?: React.ReactNode;
   editing: boolean;
   onEditingChange: (next: boolean) => void;
+  /**
+   * #4689 — true when the grid has collapsed to its non-draggable, single-column
+   * stacked layout (measured container width < `MOBILE_BREAKPOINT`). Reported up
+   * from `DashboardGrid`, the sole owner of that width measurement, so the topbar
+   * gates its layout-Edit affordances on the SAME signal the grid stacks on —
+   * never the width-vs-pointer mismatch that let a narrow-but-mouse-driven window
+   * advertise drag/resize over a stack that can't deliver it.
+   */
+  stacked?: boolean;
   density: Density;
   onDensityChange: (next: Density) => void;
 }
@@ -88,6 +97,7 @@ export function DashboardTopBar({
   chatSlot,
   editing,
   onEditingChange,
+  stacked = false,
   density,
   onDensityChange,
 }: DashboardTopBarProps) {
@@ -100,6 +110,13 @@ export function DashboardTopBar({
   // explain in one line where to edit. (Tracks the INPUT, not the viewport — a
   // wide touch tablet still can't usefully drag-arrange.)
   const coarsePointer = useCoarsePointer();
+
+  // #4689 — the layout-Edit affordances (View/Edit toggle + the "drag tiles"
+  // help footer) are drag/resize interactions the grid only delivers in its
+  // freeform mode. Suppress them whenever the grid can't: a coarse pointer OR a
+  // stacked (narrow) grid. `stacked` tracks the grid's measured width, so a
+  // narrow-but-mouse-driven window no longer promises a drag the stack can't do.
+  const suppressEditing = coarsePointer || stacked;
 
   // Resync the draft when the canonical title changes (e.g. after a server save
   // resolves) so a subsequent edit starts from the up-to-date value.
@@ -171,15 +188,18 @@ export function DashboardTopBar({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        {coarsePointer ? (
-          // #4323 — viewing-first on touch: the Edit affordance is hidden (not
-          // shown-and-inert) with a one-line explanation of where to edit.
+        {suppressEditing ? (
+          // #4323 / #4689 — the Edit affordance is hidden (not shown-and-inert)
+          // with a one-line explanation of why. The reason follows the signal
+          // that suppressed it: a coarse pointer reads "desktop-only"; a
+          // fine-pointer-but-narrow window (grid stacked) reads "widen to edit"
+          // — never "desktop-only", which is false on a resized desktop browser.
           <span
-            data-testid="edit-desktop-only-hint"
+            data-testid={coarsePointer ? "edit-desktop-only-hint" : "edit-too-narrow-hint"}
             className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-zinc-100/60 px-2 py-1 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
           >
             <Eye className="size-3.5" aria-hidden="true" />
-            Editing is desktop-only
+            {coarsePointer ? "Editing is desktop-only" : "Widen the window to edit"}
           </span>
         ) : (
           <div
@@ -307,7 +327,7 @@ export function DashboardTopBar({
           Delete
         </Button>
 
-        {editing && (
+        {editing && !suppressEditing && (
           <Button variant="outline" size="sm" asChild>
             <Link href="/">
               <Plus className="mr-1.5 size-3.5" />
@@ -317,7 +337,12 @@ export function DashboardTopBar({
         )}
       </div>
 
-      {editing && (
+      {/* #4689 — the drag/resize help is gated on `!suppressEditing`, not just
+          `editing`: the grid can be stacked (or on a coarse pointer) while the
+          page still holds `editing=true` from a prior wide session, and the
+          stacked grid delivers no drag. Suppressing here keeps the chrome from
+          promising an interaction the grid can't honor. */}
+      {editing && !suppressEditing && (
         <div className="basis-full pt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
           Editing — drag tiles to rearrange, drag the bottom-right corner to resize. Press{" "}
           <kbd className="rounded border border-zinc-300 bg-zinc-100 px-1 font-mono text-[10px] dark:border-zinc-700 dark:bg-zinc-900">

@@ -2,7 +2,12 @@ import type { ToolSet } from "ai";
 import { type AtlasAction, isAction } from "@atlas/api/lib/action-types";
 import { explore } from "./explore";
 import { executeSQL } from "./sql";
-import { createDashboard } from "./create-dashboard";
+import {
+  createDashboard,
+  makeCreateDashboardTool,
+  WORKSPACE_DASHBOARD_URL_RESOLVER,
+  type DashboardUrlResolver,
+} from "./create-dashboard";
 import { sendEmailTool, SEND_EMAIL_DESCRIPTION } from "@atlas/api/lib/integrations/email-tool";
 import {
   createLinearIssueTool,
@@ -15,8 +20,8 @@ import {
 } from "@atlas/api/lib/integrations/salesforce-tool";
 import { searchKnowledge, SEARCH_KNOWLEDGE_DESCRIPTION } from "./search-knowledge";
 
-export type { AtlasAction };
-export { isAction };
+export type { AtlasAction, DashboardUrlResolver };
+export { isAction, WORKSPACE_DASHBOARD_URL_RESOLVER };
 
 export interface AtlasTool {
   readonly name: string;
@@ -177,85 +182,127 @@ Use the createDashboard tool when the user wants a dashboard, not just a single 
 - The tool COMMITS a real dashboard owned by the calling user and stages the initial cards in the user's draft (not yet visible to other org members). The chat surfaces a "Continue editing on the dashboard" link to the new id; the same conversation resumes there in bound mode for further edits
 - If any card has invalid SQL the whole call is rejected — fix the failing card and call again with the full set`;
 
-// --- Default registry ---
+// --- Core tool registration ---
 
-const defaultRegistry = new ToolRegistry();
-
-defaultRegistry.register({
-  name: "explore",
-  description: EXPLORE_DESCRIPTION,
-  tool: explore,
-});
-
-defaultRegistry.register({
-  name: "executeSQL",
-  description: EXECUTE_SQL_DESCRIPTION,
-  tool: executeSQL,
-});
-
-defaultRegistry.register({
-  name: "createDashboard",
-  description: CREATE_DASHBOARD_DESCRIPTION,
-  tool: createDashboard,
-});
-
-// #4210 — layered knowledge-base search (frontmatter filter + Postgres FTS +
-// 1-hop graph expansion). Registered globally like the other execute-time-gated
-// tools: it reads the workspace + mode from request context inside execute — so
-// it stays discoverable everywhere without a boot-time gate. The two degraded
-// paths have deliberately different shapes: no active workspace returns an empty
-// result set (`{ results: [], neighbors: [] }`), while a deployment with no
-// internal DB returns a user-facing `{ error }`.
-defaultRegistry.register({
-  name: "searchKnowledge",
-  description: SEARCH_KNOWLEDGE_DESCRIPTION,
-  tool: searchKnowledge,
-});
-
-// First per-Workspace lazy-plugin tool (#2698). Registered globally
-// because the workspace + install check happens at execute time inside
-// the tool — keeping the tool discoverable across all Workspaces while
-// the "is the Email integration installed for this workspace" gate
-// runs in the loader.
-defaultRegistry.register({
-  name: "sendEmail",
-  description: SEND_EMAIL_DESCRIPTION,
-  tool: sendEmailTool,
-});
-
-// #2750 — Linear action target. Registered globally for the same reason
-// as `sendEmail` above: workspace + install check happens at execute
-// time, tool stays discoverable across all Workspaces, and the dual-
-// catalog (`catalog:linear` OAuth + `catalog:linear-apikey` form) dispatch
-// lives inside the tool's execute path.
-defaultRegistry.register({
-  name: "createLinearIssue",
-  description: CREATE_LINEAR_ISSUE_DESCRIPTION,
-  tool: createLinearIssueTool,
-});
-
-// #3311 — OAuth per-Workspace Salesforce query tool. Registered ONLY when the
-// Salesforce OAuth Connected App env is wired. The static-config `querySalesforce`
-// tool (`@useatlas/salesforce`, registered via the plugin context in self-host
-// static-url mode) needs a `salesforce://` url but NOT the OAuth env, so the two
-// modes don't normally coexist and this env gate keeps them apart.
-// KNOWN EDGE (#3326): if an operator sets BOTH a static url AND the OAuth env,
-// both register name `querySalesforce`; `ToolRegistry.merge(base, plugin)` gives
-// this base entry precedence, so the OAuth tool shadows the static one (and in
-// single-tenant self-host returns `no_workspace` on every call). The expected
-// deployments are mutually exclusive, so the conflict is surfaced — not
-// resolved: `api/server.ts` detects it at boot via `ToolRegistry.shadowedNames`
-// and logs an operator-facing error naming the remediation. Like sendEmail /
-// createLinearIssue, the workspace + install gate runs at execute time.
-if (isSalesforceOAuthConfigured()) {
-  defaultRegistry.register({
-    name: "querySalesforce",
-    description: QUERY_SALESFORCE_DESCRIPTION,
-    tool: querySalesforceTool,
+/**
+ * Register the always-on core tools into `registry`. Shared by every registry
+ * builder (`defaultRegistry`, `nonDashboardRegistry`, `buildRegistry`) so the
+ * core set is stated exactly once.
+ *
+ * `createDashboard` is surface-gated (#4566): a non-null `dashboardUrlResolver`
+ * registers it bound to that resolver's handoff route; `null` omits it because
+ * the surface owns no dashboards route and a handoff link would be unreachable.
+ * The other core tools are registered unconditionally and gated at execute time
+ * (workspace/install/context checks inside `execute`) — except `querySalesforce`,
+ * which is additionally env-gated on the Salesforce OAuth config (see its inline
+ * note below).
+ */
+function registerCoreTools(
+  registry: ToolRegistry,
+  dashboardUrlResolver: DashboardUrlResolver | null,
+): void {
+  registry.register({
+    name: "explore",
+    description: EXPLORE_DESCRIPTION,
+    tool: explore,
   });
+
+  registry.register({
+    name: "executeSQL",
+    description: EXECUTE_SQL_DESCRIPTION,
+    tool: executeSQL,
+  });
+
+  // #4566 — surface-gated. A resolver means this surface owns a dashboards
+  // route and can reach the handoff link; `null` means it can't, so the tool is
+  // left out rather than handing the agent a dead-end draft. The workspace
+  // resolver reuses the prebuilt singleton; a custom host resolver mints a
+  // fresh instance bound to its route.
+  if (dashboardUrlResolver) {
+    registry.register({
+      name: "createDashboard",
+      description: CREATE_DASHBOARD_DESCRIPTION,
+      tool:
+        dashboardUrlResolver === WORKSPACE_DASHBOARD_URL_RESOLVER
+          ? createDashboard
+          : makeCreateDashboardTool(dashboardUrlResolver),
+    });
+  }
+
+  // #4210 — layered knowledge-base search (frontmatter filter + Postgres FTS +
+  // 1-hop graph expansion). Registered globally like the other execute-time-gated
+  // tools: it reads the workspace + mode from request context inside execute — so
+  // it stays discoverable everywhere without a boot-time gate. The two degraded
+  // paths have deliberately different shapes: no active workspace returns an empty
+  // result set (`{ results: [], neighbors: [] }`), while a deployment with no
+  // internal DB returns a user-facing `{ error }`.
+  registry.register({
+    name: "searchKnowledge",
+    description: SEARCH_KNOWLEDGE_DESCRIPTION,
+    tool: searchKnowledge,
+  });
+
+  // First per-Workspace lazy-plugin tool (#2698). Registered globally
+  // because the workspace + install check happens at execute time inside
+  // the tool — keeping the tool discoverable across all Workspaces while
+  // the "is the Email integration installed for this workspace" gate
+  // runs in the loader.
+  registry.register({
+    name: "sendEmail",
+    description: SEND_EMAIL_DESCRIPTION,
+    tool: sendEmailTool,
+  });
+
+  // #2750 — Linear action target. Registered globally for the same reason
+  // as `sendEmail` above: workspace + install check happens at execute
+  // time, tool stays discoverable across all Workspaces, and the dual-
+  // catalog (`catalog:linear` OAuth + `catalog:linear-apikey` form) dispatch
+  // lives inside the tool's execute path.
+  registry.register({
+    name: "createLinearIssue",
+    description: CREATE_LINEAR_ISSUE_DESCRIPTION,
+    tool: createLinearIssueTool,
+  });
+
+  // #3311 — OAuth per-Workspace Salesforce query tool. Registered ONLY when the
+  // Salesforce OAuth Connected App env is wired. The static-config `querySalesforce`
+  // tool (`@useatlas/salesforce`, registered via the plugin context in self-host
+  // static-url mode) needs a `salesforce://` url but NOT the OAuth env, so the two
+  // modes don't normally coexist and this env gate keeps them apart.
+  // KNOWN EDGE (#3326): if an operator sets BOTH a static url AND the OAuth env,
+  // both register name `querySalesforce`; `ToolRegistry.merge(base, plugin)` gives
+  // this base entry precedence, so the OAuth tool shadows the static one (and in
+  // single-tenant self-host returns `no_workspace` on every call). The expected
+  // deployments are mutually exclusive, so the conflict is surfaced — not
+  // resolved: `api/server.ts` detects it at boot via `ToolRegistry.shadowedNames`
+  // and logs an operator-facing error naming the remediation. Like sendEmail /
+  // createLinearIssue, the workspace + install gate runs at execute time.
+  if (isSalesforceOAuthConfigured()) {
+    registry.register({
+      name: "querySalesforce",
+      description: QUERY_SALESFORCE_DESCRIPTION,
+      tool: querySalesforceTool,
+    });
+  }
 }
 
+// --- Default registry ---
+// The workspace surface (self-hosted single-tenant + SaaS web) — it owns
+// `/dashboards/[id]`, so `createDashboard` registers with the workspace resolver.
+
+const defaultRegistry = new ToolRegistry();
+registerCoreTools(defaultRegistry, WORKSPACE_DASHBOARD_URL_RESOLVER);
 defaultRegistry.freeze();
+
+// --- Non-dashboard registry (#4566) ---
+// Core tools MINUS createDashboard, for surfaces that own no dashboards route
+// (SDK / Slack / MCP / scheduler via `executeAgentQuery`). Also the
+// guaranteed-safe fallback when `buildRegistry` throws — so the createDashboard
+// omission holds even on the error path instead of falling through to the
+// dashboards-owning `defaultRegistry`.
+const nonDashboardRegistry = new ToolRegistry();
+registerCoreTools(nonDashboardRegistry, null);
+nonDashboardRegistry.freeze();
 
 // ---------------------------------------------------------------------------
 // Tool-name shadow policy (#3326)
@@ -306,54 +353,30 @@ interface BuildRegistryResult {
  */
 export async function buildRegistry(options?: {
   includeActions?: boolean;
+  /**
+   * Dashboard-URL resolver that gates `createDashboard` (#4566, PRD #4553 L2).
+   * - `undefined` (default) → the built-in {@link WORKSPACE_DASHBOARD_URL_RESOLVER};
+   *   the tool registers with the workspace `/dashboards/[id]` handoff, so
+   *   every dashboards-owning surface keeps `createDashboard` unchanged.
+   * - a custom resolver → the tool registers, and its handoff link points at
+   *   the host's own dashboards route.
+   * - `null` → the surface does NOT own a dashboards route; `createDashboard`
+   *   is omitted entirely so the agent never proposes an unreachable draft
+   *   (embed / SDK / Slack / scheduler).
+   */
+  dashboardUrlResolver?: DashboardUrlResolver | null;
 }): Promise<BuildRegistryResult> {
   const registry = new ToolRegistry();
   const warnings: string[] = [];
 
-  registry.register({
-    name: "explore",
-    description: EXPLORE_DESCRIPTION,
-    tool: explore,
-  });
-
-  registry.register({
-    name: "executeSQL",
-    description: EXECUTE_SQL_DESCRIPTION,
-    tool: executeSQL,
-  });
-
-  registry.register({
-    name: "createDashboard",
-    description: CREATE_DASHBOARD_DESCRIPTION,
-    tool: createDashboard,
-  });
-
-  registry.register({
-    name: "searchKnowledge",
-    description: SEARCH_KNOWLEDGE_DESCRIPTION,
-    tool: searchKnowledge,
-  });
-
-  registry.register({
-    name: "sendEmail",
-    description: SEND_EMAIL_DESCRIPTION,
-    tool: sendEmailTool,
-  });
-
-  registry.register({
-    name: "createLinearIssue",
-    description: CREATE_LINEAR_ISSUE_DESCRIPTION,
-    tool: createLinearIssueTool,
-  });
-
-  // #3311 — OAuth Salesforce query tool, OAuth-env-gated (see defaultRegistry above).
-  if (isSalesforceOAuthConfigured()) {
-    registry.register({
-      name: "querySalesforce",
-      description: QUERY_SALESFORCE_DESCRIPTION,
-      tool: querySalesforceTool,
-    });
-  }
+  // #4566 — surface-gated createDashboard. Omitting the option means the
+  // workspace default (dashboards-owning surface keeps the tool); `null` omits
+  // it (the surface owns no dashboards route).
+  const dashboardUrlResolver =
+    options?.dashboardUrlResolver === undefined
+      ? WORKSPACE_DASHBOARD_URL_RESOLVER
+      : options.dashboardUrlResolver;
+  registerCoreTools(registry, dashboardUrlResolver);
 
   if (process.env.ATLAS_PYTHON_ENABLED === "true") {
     if (!process.env.ATLAS_SANDBOX_URL) {
@@ -410,4 +433,4 @@ export async function buildRegistry(options?: {
   return { registry, warnings };
 }
 
-export { defaultRegistry };
+export { defaultRegistry, nonDashboardRegistry };

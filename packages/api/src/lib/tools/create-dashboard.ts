@@ -72,6 +72,28 @@ import {
 
 const log = createLogger("tool:create-dashboard");
 
+/**
+ * Given a just-committed dashboard id, return the URL the host's UI navigates
+ * to so the "Continue editing" handoff lands on a REACHABLE dashboard route
+ * (#4566, PRD #4553 L2). The workspace web app owns `/dashboards/[id]`; an
+ * embed/SDK host that owns a different route supplies its own resolver, and a
+ * host with no dashboards route opts out explicitly with `null` — in which case
+ * `createDashboard` is never registered (see `buildRegistry` in
+ * `tools/registry.ts`), so an unreachable draft is structurally impossible
+ * rather than a hard-coded workspace path handed to a surface that can't open
+ * it.
+ */
+export type DashboardUrlResolver = (dashboardId: string) => string;
+
+/**
+ * The workspace web app's resolver — the surface that owns `/dashboards/[id]`.
+ * Returns a workspace-relative path; the chat handoff card decorates it with
+ * the bound-editor `openChat` continuation. This is the default resolver for
+ * every dashboards-owning surface (self-hosted single-tenant web + SaaS web).
+ */
+export const WORKSPACE_DASHBOARD_URL_RESOLVER: DashboardUrlResolver = (dashboardId) =>
+  `/dashboards/${dashboardId}`;
+
 /** Chart/table/KPI config. The canonical schema lives in @useatlas/schemas so
  *  the optional `kpi` block (#3137) round-trips through every persist path
  *  instead of being stripped at one boundary. */
@@ -159,6 +181,12 @@ export type CreateDashboardResult =
       cardCount: number;
       /** Always `true` for this slice — cards are staged in the user's draft. */
       draft: true;
+      /**
+       * Host-resolved URL for the "Continue editing" handoff (#4566). Produced
+       * by the surface's {@link DashboardUrlResolver}, so the link always points
+       * at a route the host actually owns — never a hard-coded workspace path.
+       */
+      dashboardUrl: string;
       /**
        * Per-card seeding outcomes (#4558) — one entry per CHART card (text /
        * section cards fetch no data and are omitted), in card order. Each staged
@@ -248,7 +276,15 @@ async function seedStagedCards(
   }
 }
 
-export const createDashboard = tool({
+/**
+ * Build a `createDashboard` tool bound to a host's {@link DashboardUrlResolver}
+ * (#4566). The resolver is the surface's opt-in: only a host that owns a
+ * dashboards route supplies one, and the handoff link the tool returns
+ * (`dashboardUrl`) is that host's route — so the tool is never registered on a
+ * surface where its output would be unreachable.
+ */
+export function makeCreateDashboardTool(resolveDashboardUrl: DashboardUrlResolver) {
+  return tool({
   description: `Create a dashboard the user can keep editing in chat.
 
 Use this AFTER you have used executeSQL to confirm each card's query shape (so you know its column names). The tool commits a real dashboard row owned by the calling user. Initial cards are staged in the user's draft — they're NOT visible to other org members until the user clicks Publish.
@@ -579,6 +615,7 @@ The tool EXECUTES each chart card once as it builds the dashboard and returns \`
           description: description ?? null,
           cardCount: snapshotCards.length,
           draft: true,
+          dashboardUrl: resolveDashboardUrl(dashboardId),
           cardOutcomes,
         };
       } catch (txErr) {
@@ -610,4 +647,13 @@ The tool EXECUTES each chart card once as it builds the dashboard and returns \`
       };
     }
   },
-});
+  });
+}
+
+/**
+ * Workspace-web-bound `createDashboard` instance — the default the
+ * dashboards-owning surface registers. Kept as a named export so the
+ * `defaultRegistry` (and direct-import tests) resolve a ready tool without
+ * re-supplying the built-in resolver each time.
+ */
+export const createDashboard = makeCreateDashboardTool(WORKSPACE_DASHBOARD_URL_RESOLVER);

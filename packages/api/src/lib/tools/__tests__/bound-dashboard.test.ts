@@ -591,20 +591,28 @@ describe("createBoundDashboardTools", () => {
       expect(result.kind).toBe("ok");
     });
 
-    it("emits a multimodal image-data part via toModelOutput", async () => {
+    it("emits a multimodal image-data part via toModelOutput without leaking bytes into the envelope", async () => {
       const tools = createBoundDashboardTools(ctxWithUser);
       // oxlint-disable-next-line @typescript-eslint/no-explicit-any
       const tool = tools.screenshotDashboard as any;
-      const result = await runTool<{ kind: "ok"; _base64: string; mediaType: string }>(
-        tool,
-        {},
-      );
+      const result = await runTool<{
+        kind: "ok";
+        screenshotRef: string;
+        sizeBytes: number;
+      }>(tool, {});
       expect(result.kind).toBe("ok");
-      expect(typeof result._base64).toBe("string");
-      expect(result._base64.length).toBeGreaterThan(0);
+      // #4566 — the base64 PNG must be STRUCTURALLY absent from the JSON
+      // envelope (the wire result streamed + persisted). Only a nonce handle
+      // and metadata may ride along.
+      expect(result).not.toHaveProperty("_base64");
+      const envelope = JSON.stringify(result);
+      // A base64 PNG is long; the envelope stays tiny (nonce + metadata only).
+      expect(envelope.length).toBeLessThan(500);
+      expect(typeof result.screenshotRef).toBe("string");
+      expect(result.sizeBytes).toBeGreaterThan(0);
       // toModelOutput is what the AI SDK calls to assemble the multimodal turn.
-      // We assert the shape so a future SDK bump that changes the contract
-      // breaks this test loudly rather than silently degrading to text-only.
+      // It resolves the bytes from the closure side-channel — so the LLM still
+      // gets a real image part even though the envelope carried none.
       const modelOutput = tool.toModelOutput({
         toolCallId: "call-1",
         input: {},
@@ -615,7 +623,27 @@ describe("createBoundDashboardTools", () => {
       const imagePart = modelOutput.value[0];
       expect(imagePart.type).toBe("image-data");
       expect(imagePart.mediaType).toBe("image/png");
-      expect(imagePart.data).toBe(result._base64);
+      // Pin the EXACT bytes: the nonce round-trip must resolve the real PNG the
+      // side-channel stashed, not a placeholder — so a wrong-payload resolve
+      // fails loudly. (mock returns Buffer.from("FAKE-PNG").)
+      expect(imagePart.data).toBe(Buffer.from("FAKE-PNG").toString("base64"));
+    });
+
+    it("toModelOutput is one-shot — a second call degrades to error-text, never re-serves bytes", async () => {
+      const tools = createBoundDashboardTools(ctxWithUser);
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+      const tool = tools.screenshotDashboard as any;
+      const result = await runTool<{ kind: "ok"; screenshotRef: string }>(tool, {});
+      const args = { toolCallId: "call-1", input: {}, output: result };
+      // First conversion emits the image from the side-channel.
+      expect(tool.toModelOutput(args).type).toBe("content");
+      // The nonce was deleted; a re-conversion (or a persisted-result replay on a
+      // later request with a fresh empty map) can't find the bytes. It must NOT
+      // misreport success as a hard failure with a generic message — it returns
+      // an actionable error-text asking for a re-shoot.
+      const second = tool.toModelOutput(args);
+      expect(second.type).toBe("error-text");
+      expect(second.value).toMatch(/call screenshotdashboard again/i);
     });
   });
 });

@@ -255,27 +255,38 @@ export async function executeAgentQuery(
       },
     ];
 
-    // Optionally include action tools
-    let toolRegistry;
+    // Build the tool registry for this surface. `executeAgentQuery` serves the
+    // non-web programmatic surfaces — the SDK query route, chat-platform
+    // adapters (Slack), the MCP query tool, and the scheduler. None of them own
+    // a dashboards route, so we pass `dashboardUrlResolver: null` to omit
+    // `createDashboard` entirely (#4566, PRD #4553 L2): a handoff link to
+    // `/dashboards/[id]` is unreachable from Slack or a scheduled digest, so the
+    // agent must never be offered the tool here. Action tools stay opt-in via
+    // ATLAS_ACTIONS_ENABLED. On a build failure we fall back to
+    // `nonDashboardRegistry` (NOT the dashboards-owning `defaultRegistry`) so the
+    // createDashboard omission holds on the error path too — and we always pass
+    // `tools` so `runAgent` never defaults to `defaultRegistry`.
+    const { buildRegistry, nonDashboardRegistry } = await import(
+      "@atlas/api/lib/tools/registry"
+    );
+    let toolRegistry = nonDashboardRegistry;
     const includeActions = process.env.ATLAS_ACTIONS_ENABLED === "true";
-    if (includeActions) {
-      try {
-        const { buildRegistry } = await import(
-          "@atlas/api/lib/tools/registry"
-        );
-        const result = await buildRegistry({ includeActions });
-        toolRegistry = result.registry;
-      } catch (err) {
-        log.error(
-          { err: err instanceof Error ? err : new Error(String(err)) },
-          "Failed to build tool registry — falling back to default tools",
-        );
-      }
+    try {
+      const result = await buildRegistry({
+        includeActions,
+        dashboardUrlResolver: null,
+      });
+      toolRegistry = result.registry;
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "Failed to build tool registry — falling back to the non-dashboard core registry",
+      );
     }
 
     const result = await runAgent({
       messages,
-      ...(toolRegistry && { tools: toolRegistry }),
+      tools: toolRegistry,
       ...(options?.conversationId && { conversationId: options.conversationId }),
       ...(options?.answerStyle && { answerStyle: options.answerStyle }),
     });

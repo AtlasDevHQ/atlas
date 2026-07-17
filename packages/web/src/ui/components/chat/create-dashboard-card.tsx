@@ -27,6 +27,14 @@ interface CreateDashboardResultOk {
   description: string | null;
   cardCount: number;
   draft: boolean;
+  /**
+   * Host-resolved handoff URL (#4566). The tool computes it from the surface's
+   * dashboard-URL resolver, so the link points at the route this host actually
+   * owns instead of a hard-coded workspace path. Optional so a tool result
+   * streamed by an older API build (no `dashboardUrl`) still renders — the
+   * fallback below reconstructs the workspace path.
+   */
+  dashboardUrl?: string;
 }
 
 interface CreateDashboardResultErr {
@@ -113,6 +121,22 @@ export function CreateDashboardCard({ part }: { part: unknown }) {
 
   const cardLabel = `${result.cardCount} card${result.cardCount === 1 ? "" : "s"}`;
 
+  // #4566 — the handoff link comes from the tool's host-resolved `dashboardUrl`
+  // (the surface's dashboard-URL resolver), not a hard-coded workspace path.
+  // We decorate it with the bound-editor `openChat` continuation so the same
+  // conversation resumes on the dashboard. Fallback keeps an older API build's
+  // result (no `dashboardUrl`) working.
+  // Guard the type, not just presence: `asCreateDashboardResult` narrows only
+  // kind/dashboardId/title, so a malformed payload could carry a non-string
+  // `dashboardUrl`. Fall back to the workspace path unless it's a real string.
+  const baseUrl =
+    typeof result.dashboardUrl === "string"
+      ? result.dashboardUrl
+      : `/dashboards/${result.dashboardId}`;
+  const handoffParams = new URLSearchParams({ openChat: "true" });
+  if (conversationId) handoffParams.set("conversationId", conversationId);
+  const handoffHref = `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}${handoffParams.toString()}`;
+
   return (
     <div className="my-2 flex flex-col gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs dark:border-emerald-900/40 dark:bg-emerald-950/20">
       <div className="flex flex-wrap items-center gap-3 text-emerald-800 dark:text-emerald-300">
@@ -131,11 +155,7 @@ export function CreateDashboardCard({ part }: { part: unknown }) {
           className="ml-auto h-7 border-emerald-300 text-xs text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:text-emerald-200 dark:hover:bg-emerald-900/40"
         >
           <Link
-            href={
-              conversationId
-                ? `/dashboards/${result.dashboardId}?openChat=true&conversationId=${encodeURIComponent(conversationId)}`
-                : `/dashboards/${result.dashboardId}?openChat=true`
-            }
+            href={handoffHref}
             aria-label={`Continue editing dashboard ${result.title}`}
           >
             Continue editing

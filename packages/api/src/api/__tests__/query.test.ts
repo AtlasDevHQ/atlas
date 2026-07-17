@@ -112,9 +112,22 @@ void mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
+// Mock ALL runtime exports (mock-all-exports discipline). #4566 made
+// `executeAgentQuery` always import the tool registry (to omit createDashboard
+// on this non-web surface), which pulls `tools/explore` into the load graph
+// even though `runAgent` is mocked — so this mock must cover every export the
+// registry touches, not just the two the route reads directly.
 void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
+  snapshotExploreSandboxEnv: () => ({}),
+  invalidateExploreBackend: () => {},
+  invalidateOrgExploreBackends: (_orgId: string) => {},
+  markNsjailFailed: () => {},
+  markSidecarFailed: () => {},
+  _formatSandboxPriorityFailureForTest: () => "",
+  // Registered by name in the registry but never executed (runAgent is mocked).
+  explore: {},
 }));
 
 void mock.module("@atlas/api/lib/auth/detect", () => ({

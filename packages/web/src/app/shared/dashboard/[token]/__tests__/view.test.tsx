@@ -88,7 +88,7 @@ describe("SharedDashboardView — as-of caption (#4565)", () => {
     expect(screen.queryByText(/Captured/)).toBeNull();
   });
 
-  test("falls back to the freshest cache stamp when dataAsOf is absent (deploy overlap)", () => {
+  test("falls back to lastRefreshAt when dataAsOf is absent (deploy overlap)", () => {
     const legacy = dashboard({
       createdAt: "2026-01-01T00:00:00.000Z",
       lastRefreshAt: "2026-03-02T00:00:00.000Z",
@@ -99,6 +99,48 @@ describe("SharedDashboardView — as-of caption (#4565)", () => {
     expect(screen.getByText(/Data as of/).getAttribute("datetime")).toBe(
       "2026-03-02T00:00:00.000Z",
     );
+  });
+
+  test("falls back to the freshest card cache stamp when dataAsOf and lastRefreshAt are both absent", () => {
+    // Oldest deploy-overlap case: no dataAsOf, no lastRefreshAt — the caption
+    // must still resolve against a card's cachedAt (data time), never createdAt.
+    const legacy = dashboard({
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastRefreshAt: null,
+      cards: [
+        {
+          id: "c1",
+          position: 0,
+          title: "T",
+          kind: "table",
+          chartConfig: null,
+          content: null,
+          annotations: [],
+          cachedColumns: ["a"],
+          cachedRows: [{ a: 1 }],
+          cachedAt: "2026-02-09T00:00:00.000Z",
+          layout: null,
+        },
+      ],
+    });
+    delete (legacy as { dataAsOf?: unknown }).dataAsOf;
+    render(<SharedDashboardView dashboard={legacy} />);
+    expect(screen.getByText(/Data as of/).getAttribute("datetime")).toBe(
+      "2026-02-09T00:00:00.000Z",
+    );
+  });
+
+  test("the 'Last refreshed' chip shares the caption's instant (one instant per page)", () => {
+    // No cards → the only <time> elements in the header are the caption and the
+    // "Last refreshed" chip; both must carry dataAsOf as their datetime.
+    const { container } = render(
+      <SharedDashboardView
+        dashboard={dashboard({ dataAsOf: "2026-04-04T01:00:00.000Z" })}
+      />,
+    );
+    const times = Array.from(container.querySelectorAll("time"));
+    expect(times.length).toBe(2);
+    for (const t of times) expect(t.getAttribute("datetime")).toBe("2026-04-04T01:00:00.000Z");
   });
 
   test("omits the caption when the snapshot carries no data instant", () => {

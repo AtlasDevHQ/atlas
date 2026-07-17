@@ -36,7 +36,9 @@ describe("EmbedErrorView", () => {
   const cases: Array<[Parameters<typeof EmbedErrorView>[0]["reason"], RegExp]> = [
     ["expired", /expired/i],
     ["not-found", /could not be found/i],
-    ["auth-required", /organization/i],
+    // #4690: 401 vs 403 keep distinct copy — the wrong-org viewer isn't told to sign in.
+    ["login-required", /sign in to atlas/i],
+    ["membership-required", /not a member/i],
     ["network-error", /reach Atlas/i],
     ["server-error", /Could not load/i],
   ];
@@ -47,11 +49,17 @@ describe("EmbedErrorView", () => {
     cleanup();
   });
 
-  test("never renders a login/retry link inside the frame (partner-safe chrome)", () => {
-    render(<EmbedErrorView reason="auth-required" />);
-    // Only the 'Powered by Atlas' attribution anchor is allowed; no in-frame nav.
-    const links = screen.getAllByRole("link");
-    expect(links).toHaveLength(1);
-    expect(links[0]?.getAttribute("href")).toBe("https://www.useatlas.dev");
-  });
+  // Both auth reasons must stay navigation-free — `login-required` is the one most
+  // likely to tempt a future edit into adding an in-frame "Sign in" CTA (#4690).
+  test.each(["login-required", "membership-required"] as const)(
+    "reason %s never renders a login/retry link inside the frame (partner-safe chrome)",
+    (reason) => {
+      render(<EmbedErrorView reason={reason} />);
+      // Only the 'Powered by Atlas' attribution anchor is allowed; no in-frame nav.
+      const links = screen.getAllByRole("link");
+      expect(links).toHaveLength(1);
+      expect(links[0]?.getAttribute("href")).toBe("https://www.useatlas.dev");
+      cleanup();
+    },
+  );
 });

@@ -502,6 +502,17 @@ describe("failStaleMigrations", () => {
 
     await expect(failStaleMigrations()).rejects.toThrow(/remain write-locked/);
   });
+
+  // The stale SELECT has no catch — a failure there must propagate so the
+  // fiber tick records span ERROR instead of a quiet healthy-looking zero.
+  it("propagates a failure of the stale SELECT itself", async () => {
+    mockInternalQueryRejectPattern = {
+      pattern: "WHERE status = 'in_progress'",
+      error: new Error("connection reset"),
+    };
+
+    await expect(failStaleMigrations()).rejects.toThrow("connection reset");
+  });
 });
 
 describe("getCleanupDueMigrations", () => {

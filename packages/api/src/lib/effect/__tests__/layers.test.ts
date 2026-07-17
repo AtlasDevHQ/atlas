@@ -535,7 +535,7 @@ describe("makeSchedulerLive", () => {
       expect(layersSource).toMatch(/SCHEDULER_SPAN_NAMES\[spec\.name\]/);
       // The helper has two spanning branches (spanResultAttributes inverts
       // the recovery ordering); de-spanning either one — e.g. the default
-      // branch that serves 19 of 21 fibers — must fail here, not just the
+      // branch that serves most fibers — must fail here, not just the
       // rarely-exercised attribute branch.
       expect(layersSource.match(/withEffectSpan\s*\(\s*span\b/g) ?? []).toHaveLength(2);
     });
@@ -747,11 +747,12 @@ describe("makeSchedulerLive", () => {
         'name: "region_migration_stale_reap"',
       );
       expect(registrationIdx).toBeGreaterThan(-1);
-      // The reaper call must appear inside the registration block (the next
-      // ~2000 chars is generous for one registerPeriodicFiber spec literal).
+      // The reaper call must appear inside the registration block (the spec
+      // literal runs ~1,900 chars from the anchor; 3000 leaves headroom for
+      // comment growth without reaching the next registration).
       const registrationBlock = layersSource.slice(
         registrationIdx,
-        registrationIdx + 2000,
+        registrationIdx + 3000,
       );
       expect(registrationBlock).toContain("failStaleMigrations");
     });
@@ -767,7 +768,7 @@ describe("makeSchedulerLive", () => {
       );
       const registrationBlock = layersSource.slice(
         registrationIdx,
-        registrationIdx + 2000,
+        registrationIdx + 3000,
       );
       expect(registrationBlock).toContain("STALE_MIGRATION_REAP_INTERVAL_MS");
     });

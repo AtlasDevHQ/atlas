@@ -628,6 +628,13 @@ let mockResetThrow: Error | null = null;
 void mock.module("@atlas/api/lib/residency/migrate", () => ({
   triggerMigrationExecution: () => {},
   failStaleMigrations: () => Promise.resolve({ found: 0, reaped: 0 }),
+  // Mock ALL named exports — an unmocked name throws "Export named X not
+  // found" the moment a new import lands (known partial-mock failure class).
+  executeRegionMigration: () =>
+    Promise.resolve({ success: true, migrationId: "mig-mock" }),
+  getCleanupDueMigrations: () => Promise.resolve([]),
+  STALE_THRESHOLD_MS: 5 * 60 * 1000,
+  STALE_MIGRATION_REAP_INTERVAL_MS: 60 * 1000,
   resetMigrationForRetry: () => {
     if (mockResetThrow) return Promise.reject(mockResetThrow);
     return Promise.resolve(mockResetResult);

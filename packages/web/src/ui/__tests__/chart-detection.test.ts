@@ -5,6 +5,8 @@ import {
   transformData,
   categoryFromChartClick,
   categoryFromPieClick,
+  asEmbeddedChartType,
+  pickChartRecommendation,
   type ChartRecommendation,
   type ClassifiedColumn,
 } from "../components/chart/chart-detection";
@@ -603,5 +605,75 @@ describe("categoryFromPieClick", () => {
     expect(categoryFromPieClick({}, "region")).toBeNull();
     expect(categoryFromPieClick({ payload: { region: "" } }, "region")).toBeNull();
     expect(categoryFromPieClick({ payload: { region: null } }, "region")).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  asEmbeddedChartType (#4688 — dashboard tile chart-type pinning)     */
+/* ------------------------------------------------------------------ */
+
+describe("asEmbeddedChartType", () => {
+  test("passes through the render-union chart types a tile can pin", () => {
+    expect(asEmbeddedChartType("bar")).toBe("bar");
+    expect(asEmbeddedChartType("line")).toBe("line");
+    expect(asEmbeddedChartType("pie")).toBe("pie");
+    expect(asEmbeddedChartType("area")).toBe("area");
+    expect(asEmbeddedChartType("scatter")).toBe("scatter");
+    expect(asEmbeddedChartType("stacked-bar")).toBe("stacked-bar");
+  });
+
+  test("maps non-chart-body persisted types (table / kpi) to undefined", () => {
+    // table/kpi cards never mount a ResultChart body (DataTable / KpiCard instead).
+    expect(asEmbeddedChartType("table")).toBeUndefined();
+    expect(asEmbeddedChartType("kpi")).toBeUndefined();
+  });
+
+  test("maps absent / bogus values to undefined (auto-detect)", () => {
+    expect(asEmbeddedChartType(null)).toBeUndefined();
+    expect(asEmbeddedChartType(undefined)).toBeUndefined();
+    expect(asEmbeddedChartType("")).toBeUndefined();
+    expect(asEmbeddedChartType("donut")).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  pickChartRecommendation (#4688 — honor the card's configured type)  */
+/* ------------------------------------------------------------------ */
+
+describe("pickChartRecommendation", () => {
+  // date + numeric data auto-detects to `line` first, with `bar` also available.
+  const headers = ["week", "signups"];
+  const rows = [
+    ["2026-01-05", "10"],
+    ["2026-01-12", "24"],
+    ["2026-01-19", "31"],
+  ];
+
+  function recs() {
+    const result = detectCharts(headers, rows);
+    if (!result.chartable) throw new Error("expected chartable data");
+    return result.recommendations;
+  }
+
+  test("undefined chartType returns the top auto-detected recommendation", () => {
+    const recommendations = recs();
+    expect(pickChartRecommendation(recommendations, undefined)).toBe(recommendations[0]);
+    // The auto-detected default for date+numeric is a time-series line.
+    expect(recommendations[0].type).toBe("line");
+  });
+
+  test("honors a pinned type over the auto-detected default", () => {
+    const recommendations = recs();
+    const picked = pickChartRecommendation(recommendations, "bar");
+    expect(picked.type).toBe("bar");
+    // ...and it is NOT the auto-detected default (which is line).
+    expect(picked).not.toBe(recommendations[0]);
+  });
+
+  test("falls back to the top recommendation when the pinned type has no match", () => {
+    const recommendations = recs();
+    // `pie` is never recommended for this date+numeric data.
+    expect(recommendations.some((r) => r.type === "pie")).toBe(false);
+    expect(pickChartRecommendation(recommendations, "pie")).toBe(recommendations[0]);
   });
 });

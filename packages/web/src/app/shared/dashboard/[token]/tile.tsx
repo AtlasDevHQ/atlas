@@ -7,6 +7,7 @@ import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { DataTable } from "@/ui/components/chat/data-table";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { KpiCard } from "@/ui/components/dashboards/kpi-card";
+import { asEmbeddedChartType } from "@/ui/components/chart/chart-detection";
 import { ResultCardErrorBoundary } from "@/ui/components/chat/result-card-base";
 import type { SharedCard } from "./types";
 
@@ -99,6 +100,8 @@ export function SharedTile({ card, spanClass, cachedLabel, cachedIso }: SharedTi
                     headers={columns}
                     rows={stringRows}
                     dark={dark}
+                    embedded
+                    chartType={asEmbeddedChartType(chartType)}
                     thresholds={card.chartConfig?.thresholds}
                     annotations={card.annotations}
                   />

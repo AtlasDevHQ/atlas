@@ -69,10 +69,13 @@ export default async function SharedDashboardEmbedPage({ params, searchParams }:
         {result.ok ? (
           <SharedDashboardView dashboard={result.data} forcedDark={forcedDark} />
         ) : isAuthWallReason(result.reason) ? (
-          // Same client-side org-share hand-off as the standalone page (#4718):
-          // the iframe viewer's session is host-only on the API domain, so only
-          // a browser fetch with credentials can resolve an org share here. The
-          // embed variant keeps the navigation-free error surface.
+          // Same client-side org-share hand-off as the standalone page (#4718).
+          // Scope caveat: the session cookie is host-only AND SameSite=Lax
+          // (ADR-0024 §5), so the credentialed retry only helps when the embed
+          // is framed same-site (e.g. inside Atlas itself). In a third-party
+          // iframe the browser withholds the cookie and the resolver lands on
+          // the same navigation-free auth copy as before — the intended
+          // terminal state for an org share on a foreign page, not a bug.
           <OrgShareResolver token={token} variant="embed" forcedDark={forcedDark} />
         ) : (
           <EmbedErrorView reason={result.reason} />

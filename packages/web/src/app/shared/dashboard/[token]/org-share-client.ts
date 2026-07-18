@@ -5,15 +5,15 @@
 // `fetch.ts` is structurally empty cross-origin and every org share hit the
 // auth wall regardless of the viewer's real session. When SSR lands on that
 // wall, the page mounts `OrgShareResolver`, which calls this module: a browser
-// fetch with `credentials: "include"` (the same pattern the share-status fetch
-// in `share-dialog.tsx` uses), so the API sees the viewer's REAL session and
-// the login-required / membership-required split (#4690) is evaluated
-// truthfully. A client fetch is inherently per-viewer, so the SSR path's
-// `x-forwarded-for` rate-limit forwarding has no analogue here.
+// fetch with credentials (the same pattern the dashboard share-status fetch in
+// `(workspace)/dashboards/[id]/share-dialog.tsx` uses), so the API sees the
+// viewer's REAL session and the login-required / membership-required split
+// (#4690) is evaluated truthfully. A client fetch is inherently per-viewer, so
+// the SSR path's `x-forwarded-for` rate-limit forwarding has no analogue here.
 //
 // This module must stay importable from client components — no `next/headers`,
-// no `node:crypto`. The shared-conversation parity issue (#4719) adopts this
-// same resolution pattern.
+// no `node:crypto`. The shared-conversation parity issue (#4719) is expected
+// to adopt this same resolution pattern.
 
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { mapSharedDashboardResponse } from "./share-result";
@@ -45,8 +45,19 @@ export async function hashShareTokenClient(token: string): Promise<string> {
  * self-hosted). The response mapping is `mapSharedDashboardResponse`, the
  * exact function the SSR path uses, so both paths return identical
  * {@link FetchResult}s for identical API responses.
+ *
+ * NEVER rejects — thrown fetches map to `network-error` — which is what lets
+ * `OrgShareResolver` model resolution as just "in flight | FetchResult".
  */
 export async function resolveOrgShareClient(token: string): Promise<FetchResult> {
+  // Fingerprint once, up front, so the catch below can never itself throw
+  // (a rejecting `subtle.digest` in an exotic iframe context must not mask the
+  // real fetch error or break the never-rejects contract).
+  const tokenHash = await hashShareTokenClient(token).catch(
+    // intentionally ignored: a failed fingerprint must never block resolving
+    // the share; the placeholder is the documented degraded mode.
+    () => "unavailable(hash-failed)",
+  );
   try {
     const res = await fetch(`${getApiUrl()}/api/public/dashboards/${encodeURIComponent(token)}`, {
       // No cache — same rationale as the SSR fetch: revoked links must die
@@ -54,11 +65,11 @@ export async function resolveOrgShareClient(token: string): Promise<FetchResult>
       cache: "no-store",
       credentials: isCrossOrigin() ? "include" : "same-origin",
     });
-    return await mapSharedDashboardResponse(res, await hashShareTokenClient(token), LOG_LABEL);
+    return await mapSharedDashboardResponse(res, tokenHash, LOG_LABEL);
   } catch (err) {
     console.error(
-      `${LOG_LABEL} Failed to fetch tokenHash=${await hashShareTokenClient(token)}:`,
-      err instanceof Error ? err.message : err,
+      `${LOG_LABEL} Failed to fetch tokenHash=${tokenHash}:`,
+      err instanceof Error ? err.message : String(err),
     );
     return { ok: false, reason: "network-error" };
   }

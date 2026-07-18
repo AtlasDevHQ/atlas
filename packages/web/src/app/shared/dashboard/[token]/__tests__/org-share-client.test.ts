@@ -75,6 +75,7 @@ describe("resolveOrgShareClient (#4718)", () => {
 
     await resolveOrgShareClient(TOKEN);
 
+    expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(
       `https://api-eu.example.test/api/public/dashboards/${TOKEN}`,
     );
@@ -141,6 +142,31 @@ describe("resolveOrgShareClient (#4718)", () => {
     stubFetch(200, { totally: "wrong" });
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
     expect(await resolveOrgShareClient(TOKEN)).toEqual({ ok: false, reason: "server-error" });
+    // The #4317 fingerprint-only discipline holds on this logging branch too.
+    for (const call of errSpy.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain(TOKEN);
+    }
+    errSpy.mockRestore();
+  });
+
+  test("a 200 whose body isn't JSON resolves to server-error — never a rejection", async () => {
+    // Locks the never-rejects contract `OrgShareResolver` builds its two-state
+    // model on, through the client seam (mapper totality is pinned directly in
+    // share-result.test.ts).
+    globalThis.fetch = mock(async () => {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new Error("not json");
+        },
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    await expect(resolveOrgShareClient(TOKEN)).resolves.toEqual({
+      ok: false,
+      reason: "server-error",
+    });
     errSpy.mockRestore();
   });
 });

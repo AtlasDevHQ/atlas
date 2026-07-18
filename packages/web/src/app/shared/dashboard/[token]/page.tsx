@@ -63,10 +63,10 @@ export default async function SharedDashboardPage({
     // session cookie is host-only on the per-region API domain, so the RSC
     // fetch's cookie forward is structurally empty cross-origin and this SSR
     // verdict may be a false negative for a logged-in viewer. Hand off to the
-    // client resolver, which retries with `credentials: "include"` and renders
-    // the same view — the #4690 login/membership split re-evaluated against
-    // the viewer's REAL session (#4718). Every other failure (and the public-
-    // share success path) stays pure SSR, unchanged.
+    // client resolver, which retries with the viewer's browser credentials and
+    // renders the same view — the #4690 login/membership split re-evaluated
+    // against the viewer's REAL session (#4718). Every other failure (and the
+    // public-share success path) stays pure SSR, unchanged.
     if (isAuthWallReason(result.reason)) {
       return <OrgShareResolver token={token} />;
     }

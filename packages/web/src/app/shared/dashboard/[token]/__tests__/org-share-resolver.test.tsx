@@ -17,7 +17,16 @@ void mock.module("@/ui/components/chart/result-chart", () => ({
 void mock.module("next/dynamic", () => ({
   default: () => () => <div data-testid="result-chart">chart</div>,
 }));
-void mock.module("@/ui/hooks/use-dark-mode", () => ({ useDarkMode: () => false }));
+// Mock ALL exports (repo testing rule) so a future import of any sibling
+// export under view.tsx's graph can't hit "Export named X not found".
+void mock.module("@/ui/hooks/use-dark-mode", () => ({
+  DEFAULT_BRAND_COLOR: "oklch(0.4 0.115 158)",
+  OKLCH_RE: /^oklch\(/,
+  setTheme: () => {},
+  applyBrandColor: () => {},
+  useDarkMode: () => false,
+  useThemeMode: () => "system",
+}));
 
 // Drive the client resolution from a module-level mutable. Factory stays sync
 // (async mock.module factories deadlock under bun:test) and mocks ALL exports.
@@ -53,7 +62,12 @@ function dashboard(over: Partial<SharedDashboard> = {}): SharedDashboard {
 // the resolver must render the SAME success/error surfaces the SSR path does,
 // with the #4690 login/membership split now driven by the viewer's real session.
 describe("OrgShareResolver (#4718)", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    // Restore the default resolver so a never-resolving pin (the loading-state
+    // test) can't leak into later tests.
+    setResult({ ok: false, reason: "login-required" });
+  });
 
   test("success: renders the shared dashboard view for an authenticated org member", async () => {
     setResult({ ok: true, data: dashboard() });
@@ -81,6 +95,19 @@ describe("OrgShareResolver (#4718)", () => {
       .map((a) => a.getAttribute("href") ?? "")
       .filter((h) => h.startsWith("/login"));
     expect(loginHrefs).toEqual([]);
+  });
+
+  test("embed variant keeps the #4690 split: login-required gets the sign-in copy, no links", async () => {
+    setResult({ ok: false, reason: "login-required" });
+    render(<OrgShareResolver token={TOKEN} variant="embed" />);
+    expect(
+      await screen.findByText(/sign in to atlas to view it/i),
+    ).toBeDefined();
+    const internalLinks = screen
+      .queryAllByRole("link")
+      .map((a) => a.getAttribute("href") ?? "")
+      .filter((h) => !h.startsWith("https://www.useatlas.dev"));
+    expect(internalLinks).toEqual([]);
   });
 
   test("embed variant renders the navigation-free embed error surface", async () => {

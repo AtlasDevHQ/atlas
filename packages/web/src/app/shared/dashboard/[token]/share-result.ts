@@ -25,15 +25,17 @@ export type FailReason =
 
 export type FetchResult = { ok: true; data: SharedDashboard } | { ok: false; reason: FailReason };
 
+/** The two org-share auth-wall reasons (#4690). Single statement of the pair so
+ *  {@link isAuthWallReason} and {@link resolveAuthReason} can never disagree. */
+export type AuthWallReason = Extract<FailReason, "login-required" | "membership-required">;
+
 /**
  * Whether a failure is the org-share auth wall — the branch the page hands off
  * to the client-side resolver (#4718), since under the SaaS cookie topology
  * (ADR-0024) an SSR auth-wall verdict may be a false negative for a viewer
  * whose session cookie is host-only on the API domain.
  */
-export function isAuthWallReason(
-  reason: FailReason,
-): reason is "login-required" | "membership-required" {
+export function isAuthWallReason(reason: FailReason): reason is AuthWallReason {
   return reason === "login-required" || reason === "membership-required";
 }
 
@@ -48,15 +50,14 @@ export function isAuthWallReason(
  * so a no-session viewer is never dead-ended without a login path (#4690). Exported
  * for unit tests.
  */
-export async function resolveAuthReason(res: Response): Promise<"login-required" | "membership-required"> {
+export async function resolveAuthReason(res: Response): Promise<AuthWallReason> {
   // A 401 is unambiguously "no session" regardless of body.
   if (res.status === 401) return "login-required";
   let errorCode: string | undefined;
   try {
     const body: unknown = await res.json();
-    if (body && typeof body === "object" && "error" in body) {
-      const code = (body as { error?: unknown }).error;
-      if (typeof code === "string") errorCode = code;
+    if (body && typeof body === "object" && "error" in body && typeof body.error === "string") {
+      errorCode = body.error;
     }
   } catch {
     // Malformed/empty body — fall through to the safe `login-required` default
@@ -76,8 +77,10 @@ export async function resolveAuthReason(res: Response): Promise<"login-required"
  * than computed here) because the server and client hash via different crypto
  * APIs (`node:crypto` vs WebCrypto), and this module may import neither.
  *
- * May reject (e.g. a success response whose body isn't JSON); callers wrap in
- * their own try/catch and map to `network-error`, exactly as before extraction.
+ * TOTAL over its inputs: every branch — including a success response whose
+ * body isn't JSON — resolves to a {@link FetchResult}, never a rejection.
+ * `OrgShareResolver`'s two-state model and any future adopter (#4719) rely on
+ * that; callers still keep their own try/catch for the `fetch()` call itself.
  */
 export async function mapSharedDashboardResponse(
   res: Response,
@@ -98,12 +101,29 @@ export async function mapSharedDashboardResponse(
     console.error(`${logLabel} API returned ${res.status} for tokenHash=${tokenHash}`);
     return { ok: false, reason: "server-error" };
   }
+  // A 200 whose body isn't JSON is the API's fault, not the network's — map it
+  // to server-error here rather than rejecting into the caller's catch.
+  let raw: unknown;
+  try {
+    raw = await res.json();
+  } catch (err) {
+    console.error(
+      `${logLabel} Non-JSON success body for tokenHash=${tokenHash}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return { ok: false, reason: "server-error" };
+  }
   // Validate against the shared-view SSOT schema (`@useatlas/schemas`) rather
   // than trust-casting the raw JSON — the `.strict()` schema also rejects any
   // stray field the API projection might leak.
-  const parsed = sharedDashboardViewSchema.safeParse(await res.json());
+  const parsed = sharedDashboardViewSchema.safeParse(raw);
   if (!parsed.success) {
-    console.error(`${logLabel} Unexpected response shape for tokenHash=${tokenHash}`);
+    // Log issue paths + codes only — never the response values, which are the
+    // dashboard's data — so a projection drift is diagnosable from the log line.
+    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}:${i.code}`).join(", ");
+    console.error(
+      `${logLabel} Unexpected response shape for tokenHash=${tokenHash}: ${issues}`,
+    );
     return { ok: false, reason: "server-error" };
   }
   // No cast: `parsed.data` (SharedDashboardViewWire) is structurally the

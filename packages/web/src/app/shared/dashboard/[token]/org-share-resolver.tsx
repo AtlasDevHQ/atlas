@@ -38,9 +38,19 @@ export function OrgShareResolver({
 
   useEffect(() => {
     let cancelled = false;
-    void resolveOrgShareClient(token).then((r) => {
-      if (!cancelled) setResult(r);
-    });
+    resolveOrgShareClient(token)
+      .then((r) => {
+        if (!cancelled) setResult(r);
+      })
+      .catch((err: unknown) => {
+        // Belt to the never-rejects suspenders above: an unexpected rejection
+        // must surface as an error page, never strand the viewer on the spinner.
+        console.error(
+          "[shared-dashboard/client] org-share resolution rejected unexpectedly:",
+          err instanceof Error ? err.message : String(err),
+        );
+        if (!cancelled) setResult({ ok: false, reason: "network-error" });
+      });
     return () => {
       cancelled = true;
     };

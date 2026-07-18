@@ -6,8 +6,10 @@
 // The response→result mapping (status codes, #4690 auth-reason split, schema
 // validation) lives in `share-result.ts`, shared verbatim with the client-side
 // org-share resolution (`org-share-client.ts`, #4718) so the SSR and client
-// paths can never drift. This file adds only the server-side concerns:
-// `next/headers` forwarding and the `node:crypto` token hash.
+// paths can never drift. This module is SERVER-ONLY (it imports `next/headers`
+// + `node:crypto`) and adds the server-side concerns: header forwarding, the
+// `node:crypto` token hash, and the `cache()`-deduped fetch itself. Client
+// code imports the mapping/types from `share-result.ts`, never from here.
 
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
@@ -15,12 +17,6 @@ import { createHash } from "node:crypto";
 import { getApiBaseUrl } from "../../lib";
 import { mapSharedDashboardResponse } from "./share-result";
 import type { FetchResult } from "./share-result";
-
-// Historical import surface — the types + auth-reason resolver moved to
-// `share-result.ts` (#4718) but remain re-exported here so existing consumers
-// and tests keep importing from `./fetch`.
-export { isAuthWallReason, resolveAuthReason } from "./share-result";
-export type { FailReason, FetchResult } from "./share-result";
 
 /**
  * Short, non-reversible fingerprint of a share token for log correlation.
@@ -83,7 +79,7 @@ export async function fetchSharedDashboardRaw(token: string): Promise<FetchResul
   } catch (err) {
     console.error(
       `[shared-dashboard] Failed to fetch tokenHash=${hashShareToken(token)}:`,
-      err instanceof Error ? err.message : err,
+      err instanceof Error ? err.message : String(err),
     );
     return { ok: false, reason: "network-error" };
   }

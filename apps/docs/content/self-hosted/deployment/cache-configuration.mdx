@@ -53,23 +53,30 @@ See [Configuration](/reference/config#query-cache) for full details.
 
 ## External Cache Backend (Redis)
 
-Plugins can replace the default in-memory LRU cache with an external backend (e.g., Redis) by implementing the `PluginCacheBackend` interface from `@useatlas/plugin-sdk`:
+Plugins can replace the default in-memory LRU cache with an external backend (e.g., Redis) by implementing the `PluginCacheBackend` interface from `@useatlas/plugin-sdk`. Every method is **`Promise`-returning**, so an out-of-process backend is actually implementable:
 
 ```typescript
-import type { PluginCacheBackend, PluginCacheEntry } from "@useatlas/plugin-sdk";
+import type {
+  PluginCacheBackend,
+  PluginCacheEntry,
+  PluginCacheScope,
+} from "@useatlas/plugin-sdk";
 
 const redisCacheBackend: PluginCacheBackend = {
-  get(key: string): PluginCacheEntry | null { /* ... */ },
-  set(key: string, entry: PluginCacheEntry): void { /* ... */ },
-  delete(key: string): boolean { /* ... */ },
-  flush(): void { /* ... */ },
-  stats() { /* return { hits, misses, entryCount, maxSize, ttl } */ },
+  async get(key: string): Promise<PluginCacheEntry | null> { /* ... */ },
+  // `scope` carries the owning org + connection so entries can be
+  // invalidated per-workspace, not just fleet-wide.
+  async set(key: string, entry: PluginCacheEntry, scope: PluginCacheScope): Promise<void> { /* ... */ },
+  async delete(key: string): Promise<boolean> { /* ... */ },
+  async flush(): Promise<void> { /* every workspace's entries */ },
+  async flushByOrg(orgId: string): Promise<number> { /* one org's entries; returns count removed */ },
+  async stats() { /* return { hits, misses, entryCount, maxSize, ttl } */ },
 };
 ```
 
 Return `cacheBackend` from your plugin object and Atlas will use it instead of the built-in LRU. Only one plugin cache backend is supported per server — the first plugin with a `cacheBackend` wins.
 
-If the plugin backend fails to initialize at startup, Atlas logs the error and continues with the built-in LRU cache.
+The backend is **shape-validated at registration** (required methods present, plus a bounded `stats()` probe that must resolve promptly with the documented numeric shape). A backend that fails validation is never swapped in: the offending plugin fails its init and goes red in plugin health, while the cache degrades to the built-in LRU so queries keep working.
 
 See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugins.
 
@@ -87,7 +94,7 @@ See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugi
 
 **Cause:** The Redis (or other external) cache backend is unreachable.
 
-**Fix:** Atlas falls back to the built-in LRU cache when the plugin backend fails to initialize. Check your Redis connection string and network connectivity. Review server logs for cache backend initialization errors.
+**Fix:** Atlas degrades to the built-in LRU cache when the plugin backend fails registration validation, and the plugin shows red in plugin health. Check your Redis connection string and network connectivity. Review server logs for cache backend validation/initialization errors.
 
 ---
 

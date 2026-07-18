@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import { truncate } from "../../lib";
 import { SharedDashboardView } from "./view";
 import { fetchSharedDashboard } from "./fetch";
+import { isAuthWallReason } from "./share-result";
 import { resolveErrorContent } from "./error-content";
 import { ErrorShell } from "./error-shell";
+import { OrgShareResolver } from "./org-share-resolver";
 
 // ---------------------------------------------------------------------------
 // Metadata (OG tags)
@@ -57,6 +59,17 @@ export default async function SharedDashboardPage({
   const result = await fetchSharedDashboard(token);
 
   if (!result.ok) {
+    // The org-share auth wall. Under the SaaS cookie topology (ADR-0024) the
+    // session cookie is host-only on the per-region API domain, so the RSC
+    // fetch's cookie forward is structurally empty cross-origin and this SSR
+    // verdict may be a false negative for a logged-in viewer. Hand off to the
+    // client resolver, which retries with the viewer's browser credentials and
+    // renders the same view — the #4690 login/membership split re-evaluated
+    // against the viewer's REAL session (#4718). Every other failure (and the
+    // public-share success path) stays pure SSR, unchanged.
+    if (isAuthWallReason(result.reason)) {
+      return <OrgShareResolver token={token} />;
+    }
     return <ErrorShell token={token} content={resolveErrorContent(result.reason)} />;
   }
 

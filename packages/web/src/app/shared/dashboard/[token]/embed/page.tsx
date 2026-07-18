@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { SharedDashboardView } from "../view";
 import { fetchSharedDashboard } from "../fetch";
+import { isAuthWallReason } from "../share-result";
+import { OrgShareResolver } from "../org-share-resolver";
 import { EmbedErrorView, buildEmbedThemeForceScript, resolveEmbedTheme } from "./embed";
 
 // An embed is an iframe surface, not a page to index. The standalone
@@ -66,6 +68,15 @@ export default async function SharedDashboardEmbedPage({ params, searchParams }:
       <div className={forcedDark ? "dark" : undefined} data-theme={theme ?? "system"}>
         {result.ok ? (
           <SharedDashboardView dashboard={result.data} forcedDark={forcedDark} />
+        ) : isAuthWallReason(result.reason) ? (
+          // Same client-side org-share hand-off as the standalone page (#4718).
+          // Scope caveat: the session cookie is host-only AND SameSite=Lax
+          // (ADR-0024 §5), so the credentialed retry only helps when the embed
+          // is framed same-site (e.g. inside Atlas itself). In a third-party
+          // iframe the browser withholds the cookie and the resolver lands on
+          // the same navigation-free auth copy as before — the intended
+          // terminal state for an org share on a foreign page, not a bug.
+          <OrgShareResolver token={token} variant="embed" forcedDark={forcedDark} />
         ) : (
           <EmbedErrorView reason={result.reason} />
         )}

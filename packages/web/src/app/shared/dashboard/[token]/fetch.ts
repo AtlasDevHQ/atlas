@@ -2,30 +2,21 @@
 // module (not inlined in `page.tsx`) so the header-forwarding + token-hashing
 // logic is unit-testable without rendering the RSC, and so `generateMetadata`
 // and the page component share a SINGLE, de-duplicated fetch per view (#4317).
+//
+// The response→result mapping (status codes, #4690 auth-reason split, schema
+// validation) lives in `share-result.ts`, shared verbatim with the client-side
+// org-share resolution (`org-share-client.ts`, #4718) so the SSR and client
+// paths can never drift. This module is SERVER-ONLY (it imports `next/headers`
+// + `node:crypto`) and adds the server-side concerns: header forwarding, the
+// `node:crypto` token hash, and the `cache()`-deduped fetch itself. Client
+// code imports the mapping/types from `share-result.ts`, never from here.
 
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { createHash } from "node:crypto";
-import { sharedDashboardViewSchema } from "@useatlas/schemas";
 import { getApiBaseUrl } from "../../lib";
-import type { SharedDashboard } from "./types";
-
-/** One of the {@link FetchResult} failure reasons — the discriminant the page
- *  and embed error shells switch on. Exported so both surfaces derive it from
- *  this single source rather than re-deriving the `Extract<…>` in each file. */
-export type FailReason =
-  | "not-found"
-  | "expired"
-  // The org-share auth wall is kept DISTINCT (not one `auth-required`): a viewer
-  // with no session (`login-required`) is offered a login redirect, while a viewer
-  // who is signed in but not a member of the sharing org (`membership-required`)
-  // must not be dead-ended on a "Log in" CTA they've already satisfied (#4690).
-  | "login-required"
-  | "membership-required"
-  | "server-error"
-  | "network-error";
-
-export type FetchResult = { ok: true; data: SharedDashboard } | { ok: false; reason: FailReason };
+import { mapSharedDashboardResponse } from "./share-result";
+import type { FetchResult } from "./share-result";
 
 /**
  * Short, non-reversible fingerprint of a share token for log correlation.
@@ -34,7 +25,8 @@ export type FetchResult = { ok: true; data: SharedDashboard } | { ok: false; rea
  * `hashShareToken` (first 16 hex of SHA-256); duplicated because the web
  * package cannot import from `@atlas/api`. The API copy additionally guards
  * against non-string input — omitted here since callers always pass the
- * route's `token` string param.
+ * route's `token` string param. (`org-share-client.ts` carries the WebCrypto
+ * mirror for the browser, where `node:crypto` doesn't exist.)
  */
 export function hashShareToken(token: string): string {
   return createHash("sha256").update(token).digest("hex").slice(0, 16);
@@ -43,9 +35,10 @@ export function hashShareToken(token: string): string {
 /**
  * Build the headers the shared page forwards to the public dashboard API:
  *   - `cookie`: the viewer's session so ORG-scoped shares authenticate the
- *     viewer (an unauthenticated viewer gets a 403 from the API). Without this
- *     the RSC fetch carried no cookie and `authenticateRequest` 403'd every
- *     viewer — the end-to-end break this issue fixes.
+ *     viewer on a SAME-ORIGIN deploy. Under the SaaS cookie topology (ADR-0024)
+ *     the session cookie is host-only on the per-region API domain, so this jar
+ *     is structurally empty cross-origin — the auth wall then hands off to the
+ *     client-side resolver, which carries the viewer's real session (#4718).
  *   - `x-forwarded-for`: the viewer's REAL client IP so the API rate-limits per
  *     viewer, not per web-server IP (effective only when the API trusts the
  *     proxy header via `ATLAS_TRUST_PROXY`; otherwise `getClientIP` ignores it
@@ -62,35 +55,6 @@ export function buildForwardHeaders(input: {
   const viewerIp = input.forwardedFor ?? input.realIp;
   if (viewerIp) out["x-forwarded-for"] = viewerIp;
   return out;
-}
-
-/**
- * Disambiguate an org-share auth failure (HTTP 401/403) into the exact reason.
- *
- * The API returns 403 for BOTH the unauthenticated viewer (`error: "auth_required"`)
- * and the authenticated-but-wrong-org viewer (`error: "forbidden"`), so the status
- * code alone is insufficient — we read the body's `error` code. Only an explicit
- * `"forbidden"` is treated as `membership-required`; every other signal (an explicit
- * `auth_required`, a 401, or a missing/malformed body) defaults to `login-required`
- * so a no-session viewer is never dead-ended without a login path (#4690). Exported
- * for unit tests.
- */
-export async function resolveAuthReason(res: Response): Promise<"login-required" | "membership-required"> {
-  // A 401 is unambiguously "no session" regardless of body.
-  if (res.status === 401) return "login-required";
-  let errorCode: string | undefined;
-  try {
-    const body: unknown = await res.json();
-    if (body && typeof body === "object" && "error" in body) {
-      const code = (body as { error?: unknown }).error;
-      if (typeof code === "string") errorCode = code;
-    }
-  } catch {
-    // Malformed/empty body — fall through to the safe `login-required` default
-    // below rather than misclassifying a no-session viewer as wrong-org.
-    // intentionally ignored: absence of a parseable error code is itself the signal.
-  }
-  return errorCode === "forbidden" ? "membership-required" : "login-required";
 }
 
 /** Uncached fetch. Exported for unit tests; production callers use the
@@ -111,40 +75,11 @@ export async function fetchSharedDashboardRaw(token: string): Promise<FetchResul
       // would be incorrect regardless.
       { cache: "no-store", headers: forwardHeaders },
     );
-    if (!res.ok) {
-      if (res.status === 404) return { ok: false, reason: "not-found" };
-      if (res.status === 410) return { ok: false, reason: "expired" };
-      // The org-share auth wall. The API (`dashboards.ts`) returns 403 for BOTH the
-      // no-session and the wrong-org viewer, distinguished only by the response
-      // body's `error` code — NOT by the status. So a 403 alone can't tell them
-      // apart; we read the body. (A future 401 is also honored, so this stays
-      // correct if the API ever adopts stricter HTTP semantics.) See #4690.
-      if (res.status === 401 || res.status === 403) {
-        return { ok: false, reason: await resolveAuthReason(res) };
-      }
-      console.error(
-        `[shared-dashboard] API returned ${res.status} for tokenHash=${hashShareToken(token)}`,
-      );
-      return { ok: false, reason: "server-error" };
-    }
-    // Validate against the shared-view SSOT schema (`@useatlas/schemas`) rather
-    // than trust-casting the raw JSON — the `.strict()` schema also rejects any
-    // stray field the API projection might leak.
-    const parsed = sharedDashboardViewSchema.safeParse(await res.json());
-    if (!parsed.success) {
-      console.error(
-        `[shared-dashboard] Unexpected response shape for tokenHash=${hashShareToken(token)}`,
-      );
-      return { ok: false, reason: "server-error" };
-    }
-    // No cast: `parsed.data` (SharedDashboardViewWire) is structurally the
-    // SharedDashboard SSOT type, so any future schema/type drift fails the build
-    // here rather than being papered over.
-    return { ok: true, data: parsed.data };
+    return await mapSharedDashboardResponse(res, hashShareToken(token));
   } catch (err) {
     console.error(
       `[shared-dashboard] Failed to fetch tokenHash=${hashShareToken(token)}:`,
-      err instanceof Error ? err.message : err,
+      err instanceof Error ? err.message : String(err),
     );
     return { ok: false, reason: "network-error" };
   }

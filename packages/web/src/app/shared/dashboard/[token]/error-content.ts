@@ -5,7 +5,7 @@
 // rendering the async RSC. The embed surface (`embed.tsx`) keeps its own
 // navigation-free copy and does not consume this.
 
-import type { FailReason } from "./fetch";
+import type { FailReason } from "./share-result";
 
 /** Which primary CTA the error shell offers. */
 export type PrimaryAction =

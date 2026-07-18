@@ -1,7 +1,12 @@
-// server-only — do not add "use client" to this file. The header's `timeAgo`
-// runs once at request time and per-tile `cachedLabel` strings are pre-computed
-// here and shipped to <SharedTile> as plain props. If this becomes a client
-// component, `Date.now()` will diverge between SSR and CSR for those values.
+// Shared success surface for BOTH render modes: an RSC on the SSR path (public
+// shares) and a client render inside `OrgShareResolver` after the client-side
+// org-share resolution (#4718). Do not add "use client": on the SSR path the
+// header's `timeAgo` and per-tile `cachedLabel` strings must be computed once
+// at request time and shipped to <SharedTile> as plain props — making the whole
+// module a client component would recompute those `Date.now()`-derived values
+// at hydration and diverge between SSR and CSR. The resolver path is safe: the
+// view mounts only AFTER data arrives (client-only, no server pass), so there
+// is no hydration to mismatch.
 
 import Link from "next/link";
 import { ArrowUpRight, Clock, LayoutDashboard } from "lucide-react";

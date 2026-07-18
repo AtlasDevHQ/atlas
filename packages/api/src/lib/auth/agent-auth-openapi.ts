@@ -38,11 +38,12 @@
  *      the every-non-read-safe-write-and-admin set.
  *
  * Net: the only reachable adapter-derived surface is read-only, non-admin,
- * per-org API operations — the `GET`/`HEAD` metadata surface plus the curated
+ * per-org API operations — the `GET`/`HEAD` surface plus the curated
  * read-safe POST allowlist ({@link READ_SAFE_OPERATIONS}, #4707: query /
  * explore / metric run / validate-sql, each verified read-only at the engine)
- * — exactly the analyst-agent surface, and nothing that mutates state or reads
- * the operator console.
+ * — exactly the analyst-agent surface, and nothing that mutates
+ * customer/analytics data or reads the operator console (residual `postQuery`
+ * side-effect avenues are documented at {@link READ_SAFE_OPERATIONS}).
  *
  * ── Pure by construction ────────────────────────────────────────────────────
  *
@@ -68,17 +69,18 @@ export const READ_ONLY_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
  * under a verified read-only execution guarantee at the engine:
  *
  * - `POST /api/v1/query` — runs the analyst agent to answer a question. SQL
- *   executes only through the shared SELECT-only validation pipeline
- *   (`validateSQL` in `lib/tools/sql.ts`: one AST parse, DML/DDL rejected,
- *   table whitelist, auto LIMIT, statement timeout). Consciously accepted
+ *   executes only through the shared SELECT-only pipeline in `lib/tools/sql.ts`
+ *   (`validateSQL`: one AST parse, DML/DDL rejected, table whitelist; auto
+ *   LIMIT + statement timeout applied at execution). Consciously accepted
  *   residual, shared with every other `/query` surface (SDK, MCP, Slack): the
- *   agent loop also reaches workspace-INSTALLED integration action tools
- *   (`sendEmail` / `createLinearIssue` / `querySalesforce`, execute-time
- *   install-gated per workspace — no more power than the granting user's own
- *   API key) and best-effort persists the Q&A as a conversation record when
- *   an internal DB exists. That reachable tool surface is pinned by the
- *   tripwire in `agent-auth-read-safe-engine.test.ts` so it cannot grow
- *   silently.
+ *   agent loop also reaches workspace-installed integration tools (the
+ *   `sendEmail` / `createLinearIssue` actions plus the `querySalesforce` read,
+ *   execute-time gated per workspace — no more power than the granting user's
+ *   own API key) and best-effort persists the Q&A as a conversation record when
+ *   an internal DB exists. The always-registered core tool surface is pinned
+ *   by the tripwire in `agent-auth-read-safe-engine.test.ts` so it cannot
+ *   grow silently; env-gated operator opt-ins (`executePython`, the
+ *   ATLAS_ACTIONS_ENABLED action tools) sit outside that pin by design.
  * - `POST /api/v1/explore` — read-only sandboxed exploration of `semantic/`;
  *   read-only by backend isolation (ephemeral microVM / read-only mounts),
  *   never a write path.
@@ -202,8 +204,8 @@ export function isSensitiveOperation(
  * by {@link isSensitiveOperation}, so its approval strength is moot; leaving
  * it at the default avoids over-claiming a strength it never exercises.
  * `readSafeAllowlist` mirrors {@link isSensitiveOperation}'s injectable
- * (test-only) parameter so the two predicates can never classify the same
- * operation from different allowlists.
+ * (test-only) parameter so both predicates default to the same allowlist;
+ * production call sites never pass it.
  */
 export function isWriteOperation(
   meta: OperationMeta | undefined,

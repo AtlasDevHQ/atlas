@@ -148,13 +148,14 @@ describe("agent-auth read-safe allowlist — read-only engine guarantee (#4707)"
     // `executeAgentQuery` (the /api/v1/query engine) builds its registry from
     // `registerCoreTools` via `buildRegistry` / the `nonDashboardRegistry`
     // fallback. Pin the ALWAYS-registered core surface: read tools plus the
-    // acknowledged, execute-time install-gated integration actions. Env-gated
-    // additions (`executePython` under ATLAS_PYTHON_ENABLED; `createJiraTicket`
-    // + `sendEmailReport` under ATLAS_ACTIONS_ENABLED; `querySalesforce` when
-    // the Salesforce OAuth env is wired) are operator opt-ins, documented in
-    // ACKNOWLEDGED below so a rename shows up here too. A NEW core tool makes
-    // this go red — forcing a review of whether the #4707 "read-safe" admission
-    // for postQuery still holds.
+    // acknowledged, execute-time install-gated integration actions. Scope note:
+    // the env-gated `buildRegistry` additions (`executePython` under
+    // ATLAS_PYTHON_ENABLED; `createJiraTicket` + `sendEmailReport` under
+    // ATLAS_ACTIONS_ENABLED) are operator opt-ins OUTSIDE this pin — they never
+    // enter `nonDashboardRegistry`; only `querySalesforce` (env-gated inside
+    // `registerCoreTools` itself) can appear here and is acknowledged below. A
+    // NEW core tool makes this go red — forcing a review of whether the #4707
+    // "read-safe" admission for postQuery still holds.
     const { nonDashboardRegistry } = await import("@atlas/api/lib/tools/registry");
     const names = [...nonDashboardRegistry.entries()].map(([name]) => name).sort();
     const ACKNOWLEDGED = new Set([

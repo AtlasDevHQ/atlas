@@ -703,20 +703,41 @@ function rowToDraft(r: Record<string, unknown>): DraftRow {
 }
 
 /**
+ * Discriminated result for draft loads that must tell "no draft exists"
+ * apart from "the load THREW" (#4685). `ok: true, draft: null` means the
+ * draft is genuinely absent (no row, or no internal DB on this deployment
+ * — drafts structurally don't exist without one); `ok: false` means the
+ * read failed (already logged) and the caller must NOT treat the draft as
+ * absent — on a write path that conflation silently redirects the work to
+ * the published data instead.
+ */
+export type LoadDraftResult =
+  | { readonly ok: true; readonly draft: DraftRow | null }
+  | { readonly ok: false; readonly reason: "load_failed" };
+
+/**
  * Load the current draft row (snapshot + baseline timestamp) for a
- * user+dashboard pair. Returns `null` when no draft exists or when
- * the internal DB is unavailable.
+ * user+dashboard pair, distinguishing "absent" from "load threw" (#4685).
+ * WRITE paths where "absent" redirects the operation at published state
+ * (e.g. the bulk draft Refresh-all) must use this instead of `loadDraft`,
+ * so a transient DB error surfaces instead of quietly falling back to
+ * mutating published state. Sole sanctioned lenient write path: the
+ * single-card refresh via `resolveDraftExecCard` — its fallback write is
+ * the one published-cache row a plain published refresh would write anyway
+ * (see the note there).
  *
  * Org-scoping happens at the route layer (the route loads the dashboard
  * scoped to the caller's orgId BEFORE touching drafts). This helper
  * doesn't take an orgId because the FK + the route gate already make
  * cross-org reads impossible.
  */
-export async function loadDraft(
+export async function loadDraftChecked(
   userId: string,
   dashboardId: string,
-): Promise<DraftRow | null> {
-  if (!hasInternalDB()) return null;
+): Promise<LoadDraftResult> {
+  // No internal DB = drafts don't exist on this deployment — genuinely
+  // absent, not a failure.
+  if (!hasInternalDB()) return { ok: true, draft: null };
   try {
     // #4325 — read `published_baseline_at` as text so it keeps the stored
     // microseconds. `rowToDraft`'s `String(...)` on a JS `Date` truncates to
@@ -729,12 +750,31 @@ export async function loadDraft(
         WHERE user_id = $1 AND dashboard_id = $2`,
       [userId, dashboardId],
     );
-    if (rows.length === 0) return null;
-    return rowToDraft(rows[0]);
+    if (rows.length === 0) return { ok: true, draft: null };
+    return { ok: true, draft: rowToDraft(rows[0]) };
   } catch (err) {
-    log.error({ err: errorMessage(err), userId, dashboardId }, "loadDraft failed");
-    return null;
+    log.error({ err: errorMessage(err), userId, dashboardId }, "dashboard draft load failed");
+    return { ok: false, reason: "load_failed" };
   }
+}
+
+/**
+ * Lenient variant of `loadDraftChecked`: collapses BOTH "no draft exists"
+ * and "the load threw" (logged inside) to `null`. Fine for READ paths,
+ * where the worst case of the conflation is rendering published data under
+ * a draft view, and for write paths where a conflated "absent" fails
+ * closed later (`publishDraft`/`rebaseDraft` report `no_draft` rather than
+ * touching published state). Write paths where "absent" redirects the
+ * operation at published state must use `loadDraftChecked` (#4685) — the
+ * single-card refresh is the one documented exception (see
+ * `resolveDraftExecCard`).
+ */
+export async function loadDraft(
+  userId: string,
+  dashboardId: string,
+): Promise<DraftRow | null> {
+  const result = await loadDraftChecked(userId, dashboardId);
+  return result.ok ? result.draft : null;
 }
 
 /**

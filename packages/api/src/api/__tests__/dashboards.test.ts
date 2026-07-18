@@ -307,6 +307,14 @@ const mockApplyEditToDraft = mock(
 const mockLoadDraft = mock(
   (..._args: unknown[]): Promise<DraftRowT | null> => Promise.resolve(null),
 );
+// #4685 — the bulk Refresh-all draft branch uses the checked loader so a
+// thrown load is distinguishable from an absent draft. Controllable so the
+// route tests can simulate both outcomes.
+type LoadDraftResultT = import("@atlas/api/lib/dashboard-versioning").LoadDraftResult;
+const mockLoadDraftChecked = mock(
+  (..._args: unknown[]): Promise<LoadDraftResultT> =>
+    Promise.resolve({ ok: true, draft: null }),
+);
 // #4554 — controllable fork for the GET /:id/draft route test (the real one
 // opens a pg pool; a route-wiring test only needs the returned row).
 const mockForkOrLoadDraft = mock(
@@ -324,6 +332,7 @@ void mock.module("@atlas/api/lib/dashboard-versioning", () => ({
   ...realVersioning,
   applyEditToDraft: mockApplyEditToDraft,
   loadDraft: mockLoadDraft,
+  loadDraftChecked: mockLoadDraftChecked,
   forkOrLoadDraft: mockForkOrLoadDraft,
   publishDraft: mockPublishDraft,
 }));
@@ -618,6 +627,8 @@ describe("dashboard routes", () => {
     mockApplyEditToDraft.mockResolvedValue({ ok: false, reason: "no_db" });
     mockLoadDraft.mockReset();
     mockLoadDraft.mockResolvedValue(null);
+    mockLoadDraftChecked.mockReset();
+    mockLoadDraftChecked.mockResolvedValue({ ok: true, draft: null });
     mockForkOrLoadDraft.mockReset();
     mockForkOrLoadDraft.mockResolvedValue(null);
     mockLoadDraftCardCache.mockReset();
@@ -2262,7 +2273,7 @@ describe("dashboard routes", () => {
       mockRunUserQueryPipeline.mockClear();
       mockRefreshCard.mockClear();
       mockSaveDraftCardCache.mockClear();
-      mockLoadDraft.mockResolvedValue(refreshAllDraftRow());
+      mockLoadDraftChecked.mockResolvedValue({ ok: true, draft: refreshAllDraftRow() });
       // Published dashboard has NO cards — the cards refreshed come entirely
       // from the materialized draft view (a draft-only card is refreshable).
       mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [] } });
@@ -2292,7 +2303,7 @@ describe("dashboard routes", () => {
       mockRefreshCard.mockClear();
       mockSaveDraftCardCache.mockClear();
       // view=draft requested, but the caller has no draft row → published path.
-      mockLoadDraft.mockResolvedValue(null);
+      mockLoadDraftChecked.mockResolvedValue({ ok: true, draft: null });
       mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [mockCardData] } });
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh?view=draft`, { method: "POST" }),
@@ -2324,7 +2335,7 @@ describe("dashboard routes", () => {
         connectionGroupId: null,
         layout: null,
       });
-      mockLoadDraft.mockResolvedValue(row);
+      mockLoadDraftChecked.mockResolvedValue({ ok: true, draft: row });
       mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [] } });
       const response = await app.fetch(
         new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh?view=draft`, { method: "POST" }),
@@ -2340,7 +2351,7 @@ describe("dashboard routes", () => {
 
     it("refresh?view=draft returns 409 draft_gone when the draft vanished mid-refresh (#4559)", async () => {
       mockRefreshCard.mockClear();
-      mockLoadDraft.mockResolvedValue(refreshAllDraftRow());
+      mockLoadDraftChecked.mockResolvedValue({ ok: true, draft: refreshAllDraftRow() });
       // The draft was published/discarded while the bulk refresh ran — the
       // save's `WHERE EXISTS` guard reports `no_draft` for every remaining card.
       mockSaveDraftCardCache.mockResolvedValue({ ok: false, reason: "no_draft" });
@@ -2358,7 +2369,7 @@ describe("dashboard routes", () => {
 
     it("refresh?view=draft returns 503 when the draft cache is unavailable — never writes published (#4559)", async () => {
       mockRefreshCard.mockClear();
-      mockLoadDraft.mockResolvedValue(refreshAllDraftRow());
+      mockLoadDraftChecked.mockResolvedValue({ ok: true, draft: refreshAllDraftRow() });
       mockSaveDraftCardCache.mockResolvedValue({ ok: false, reason: "no_db" });
       mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [] } });
       const response = await app.fetch(
@@ -2388,7 +2399,7 @@ describe("dashboard routes", () => {
         connectionGroupId: null,
         layout: null,
       });
-      mockLoadDraft.mockResolvedValue(row);
+      mockLoadDraftChecked.mockResolvedValue({ ok: true, draft: row });
       mockSaveDraftCardCache.mockResolvedValueOnce({ ok: true, cachedAt: "2026-07-16T00:00:00.000Z" });
       mockSaveDraftCardCache.mockResolvedValueOnce({ ok: false, reason: "error" });
       mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [] } });
@@ -2409,6 +2420,30 @@ describe("dashboard routes", () => {
       // the published cache was never written.
       expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(2);
       expect(mockRefreshCard).not.toHaveBeenCalled();
+    });
+
+    it("refresh?view=draft returns 503 when the draft LOAD throws — never executes or writes the published cache (#4685)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockRefreshCard.mockClear();
+      mockSaveDraftCardCache.mockClear();
+      // The threw-vs-absent distinction: a TRANSIENT draft-load error is not
+      // "no draft". Falling back to published here would execute the
+      // published cards and persist the SHARED published cache with a 200
+      // while the caller's draft tiles stay stale.
+      mockLoadDraftChecked.mockResolvedValue({ ok: false, reason: "load_failed" });
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [mockCardData] } });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh?view=draft`, { method: "POST" }),
+      );
+      expect(response.status).toBe(503);
+      expect(mockLoadDraftChecked).toHaveBeenCalledWith("u1", VALID_ID);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("drafts_unavailable");
+      expect(typeof body.requestId).toBe("string");
+      // Nothing ran and nothing was persisted — neither cache was touched.
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+      expect(mockSaveDraftCardCache).not.toHaveBeenCalled();
     });
   });
 

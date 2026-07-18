@@ -50,6 +50,7 @@ import type { DashboardCard, DashboardWithCards } from "@atlas/api/lib/dashboard
 import {
   forkOrLoadDraft,
   loadDraft,
+  loadDraftChecked,
   discardDraft,
   publishDraft,
   rebaseDraft,
@@ -1157,14 +1158,16 @@ async function resolveDraftExecCard(
   cardId: string,
 ): Promise<DraftExecResolution> {
   if (view !== "draft" || !shouldRouteToDraft(userId)) return { kind: "published" };
-  // Note: `loadDraft` returns null for BOTH "no draft" and "load threw" (it
-  // logs + swallows). Both resolve to `{ kind: "published" }` here, so the
-  // caller runs the PUBLISHED card exactly as a plain published-view request
-  // would (the render path stays read-only; the refresh path still persists the
-  // published cache — the same write any published refresh does, never a draft
-  // write). The draft-first invariant is safe either way, but a transient
-  // draft-load error will quietly fall back to published under the draft view
-  // rather than surfacing to the user.
+  // Note: the lenient `loadDraft` collapses BOTH "no draft" and "load threw"
+  // (it logs + swallows) to null. Both resolve to `{ kind: "published" }`
+  // here — a DELIBERATE per-card trade-off: the caller runs the PUBLISHED
+  // card exactly as a plain published-view request would (the render path
+  // stays read-only; the refresh path still persists the published cache —
+  // the same write any published refresh does, never a draft write). The
+  // draft-first invariant is safe either way; the worst case is one card
+  // quietly showing published data under the draft view. The BULK Refresh-all
+  // branch must NOT take this shortcut — it uses `loadDraftChecked` and fails
+  // the whole operation on a load error (#4685).
   const draft = await loadDraft(userId, published.id);
   if (!draft) return { kind: "published" };
   // Resolution only needs the card's DEFINITION (sql/config/target) — cached
@@ -2501,19 +2504,36 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
     // viewing their draft, execute the DRAFT cards' SQL/config (their private
     // working copies) and persist each result to the caller's DRAFT CACHE —
     // never the published cards' shared cache. Mirrors the single-card refresh's
-    // draft branch (#4554). `loadDraft` returning null (no draft, or a
-    // swallowed load error) falls back to the published cards exactly as a
-    // published-view refresh does — never another user's draft. The draft view
-    // is materialized WITHOUT the draft cache (`EMPTY_DRAFT_CARD_CACHE`) because
-    // execution needs only each card's definition, not its cached rows.
+    // draft branch (#4554). A genuinely ABSENT draft falls back to the
+    // published cards exactly as a published-view refresh does — never another
+    // user's draft. The draft view is materialized WITHOUT the draft cache
+    // (`EMPTY_DRAFT_CARD_CACHE`) because execution needs only each card's
+    // definition, not its cached rows.
     const uid = user?.id;
     let draftHolderId: string | null = null;
     let cards = dashResult.data.cards;
     if (view === "draft" && shouldRouteToDraft(uid)) {
-      const draft = yield* Effect.promise(() => loadDraft(uid, id));
-      if (draft) {
+      // #4685 — this is a WRITE path, so it must tell "no draft" apart from
+      // "the draft load THREW". Folding a transient load error into the
+      // published fallback would execute the published cards, rewrite the
+      // SHARED published cache under teammates, and report 200 while the
+      // caller's draft tiles stay stale. Fail the whole operation instead;
+      // nothing has been executed or persisted yet.
+      const draftResult = yield* Effect.promise(() => loadDraftChecked(uid, id));
+      if (!draftResult.ok) {
+        return c.json(
+          {
+            error: "drafts_unavailable",
+            message:
+              "Your draft could not be loaded, so nothing was refreshed. Retry in a moment.",
+            requestId,
+          },
+          503,
+        );
+      }
+      if (draftResult.draft) {
         draftHolderId = uid;
-        cards = materializeDraftView(dashResult.data, draft.snapshot, EMPTY_DRAFT_CARD_CACHE).cards;
+        cards = materializeDraftView(dashResult.data, draftResult.draft.snapshot, EMPTY_DRAFT_CARD_CACHE).cards;
       }
     }
 

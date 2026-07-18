@@ -848,7 +848,34 @@ describe("settings module", () => {
         .toSorted();
       // Append here ONLY when a dedicated SaaS admin page is the writer
       // for the key (parity contract Rule 4, enterprise-gating.md).
-      expect(splitKeys).toEqual(["ATLAS_SANDBOX_BACKEND"]);
+      // ATLAS_CACHE_ENABLED / ATLAS_CACHE_TTL: the /admin/cache page writes
+      // them inline (#4545). ATLAS_SANDBOX_BACKEND: the /admin/sandbox page.
+      expect(splitKeys).toEqual([
+        "ATLAS_CACHE_ENABLED",
+        "ATLAS_CACHE_TTL",
+        "ATLAS_SANDBOX_BACKEND",
+      ]);
+    });
+
+    // #4545 — the three Query Cache knobs. Scope is load-bearing: it decides
+    // who can tune each knob. ENABLED/TTL are per-workspace; MAX_SIZE is
+    // platform-wide (one process-global LRU) and must never become
+    // workspace-scoped (which would let a tenant resize the shared backend).
+    it("ATLAS_CACHE_ENABLED / ATLAS_CACHE_TTL are workspace-scoped", () => {
+      for (const key of ["ATLAS_CACHE_ENABLED", "ATLAS_CACHE_TTL"]) {
+        const def = getSettingDefinition(key);
+        expect(def).toBeDefined();
+        expect(def!.scope).toBe("workspace");
+      }
+    });
+
+    it("ATLAS_CACHE_MAX_SIZE is platform-scoped, hidden, and not workspace-writable", () => {
+      const def = getSettingDefinition("ATLAS_CACHE_MAX_SIZE");
+      expect(def).toBeDefined();
+      expect(def!.scope).toBe("platform");
+      expect(def!.saasVisible).toBe(false);
+      // No explicit saasWritable — a platform key is never workspace-writable.
+      expect(def!.saasWritable).toBeUndefined();
     });
   });
 

@@ -7,6 +7,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Atlas caches query results in-memory so that identical queries return instantly within the TTL. Cache keys are scoped by SQL, connection, organization, and user claims — so RLS-filtered queries and multi-tenant deployments never leak cached data across boundaries.
 
+Only the agent's `executeSQL` path reads and writes this cache — dashboard tiles, metrics, and REST/OpenAPI datasource calls never cache — so the hit-rate stats below reflect agent query traffic only.
+
 <Callout title="Prerequisites">
 - Atlas server running (`bun run dev`)
 - Caching is **enabled by default** — no configuration needed to start
@@ -94,9 +96,9 @@ Clears all cached entries. Returns the count of flushed entries. The cache is al
 
 ### Hit rate is very low
 
-**Cause:** The `maxSize` may be too small for your query diversity, or the TTL is too short.
+**Cause:** A structurally low hit rate is expected, not a fault — cache keys are exact hashes of the (trim-normalized) SQL, and the agent regenerates SQL nondeterministically, so repeat hits are largely incidental rather than guaranteed. Beyond that, the `maxSize` may be too small for your query diversity, or the TTL too short.
 
-**Fix:** Increase `ATLAS_CACHE_MAX_SIZE` and/or `ATLAS_CACHE_TTL`. Monitor stats via `GET /api/v1/admin/cache/stats`.
+**Fix:** Tune the cache from **Admin → the Cache page** — the enable toggle and TTL apply to your workspace at runtime with no redeploy; max entries is a platform-wide setting. Self-hosted deployments can also set the `ATLAS_CACHE_*` env vars (see [Cache Configuration](/self-hosted/deployment/cache-configuration)). Monitor stats via `GET /api/v1/admin/cache/stats`.
 
 ---
 

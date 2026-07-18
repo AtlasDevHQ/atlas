@@ -18,7 +18,22 @@ For cache monitoring, stats, and flush operations, see [Cache Monitoring](/guide
 
 ## Configuration
 
+The three cache knobs live in the **settings registry**, so they are tuned at
+runtime with no restart:
+
+- `ATLAS_CACHE_ENABLED` and `ATLAS_CACHE_TTL` are **workspace-scoped**
+  (`workspace override > platform override > env var > default`) — each
+  workspace tunes them from **Admin → the Cache page**.
+- `ATLAS_CACHE_MAX_SIZE` is **platform-scoped** (the LRU is one process-wide
+  backend shared by every workspace in the region) — a platform admin sets it.
+
+A change to the TTL or max size is reconciled onto the running backend
+immediately; the hit/miss counters survive.
+
 ### Environment Variables
+
+On self-hosted, the env vars set the boot default for each knob (Admin
+overrides still take precedence at runtime):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -26,18 +41,11 @@ For cache monitoring, stats, and flush operations, see [Cache Monitoring](/guide
 | `ATLAS_CACHE_TTL` | `300000` | Cache TTL in milliseconds (default: 5 minutes) |
 | `ATLAS_CACHE_MAX_SIZE` | `1000` | Maximum cached entries. LRU eviction when full |
 
-### Config File
-
-```typescript
-// atlas.config.ts
-export default defineConfig({
-  cache: {
-    enabled: true,       // default: true
-    ttl: 300_000,        // 5 minutes in ms
-    maxSize: 1000,       // max cached entries
-  },
-});
-```
+<Callout type="warn" title="The `atlas.config.ts` `cache:` block is deprecated">
+A `cache:` block in `atlas.config.ts` is **ignored** and logs a boot warning —
+migrate to **Admin → Settings** or the `ATLAS_CACHE_*` env vars above. The
+block will be removed entirely in a future release.
+</Callout>
 
 See [Configuration](/reference/config#query-cache) for full details.
 

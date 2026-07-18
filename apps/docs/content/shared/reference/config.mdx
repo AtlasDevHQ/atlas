@@ -340,23 +340,19 @@ Per-org pooling requires multi-tenancy (Better Auth organization plugin). When n
 
 Identical queries return cached results within the TTL. Cache keys include the org ID, connection ID, and user claims for tenant isolation.
 
-```typescript
-export default defineConfig({
-  cache: {
-    enabled: true,       // default: true
-    ttl: 300_000,        // 5 minutes (milliseconds)
-    maxSize: 1000,       // max cached entries
-  },
-});
-```
+The cache knobs are **runtime settings**, not `atlas.config.ts` fields — tune them from **Admin → the Cache page** (or the `ATLAS_CACHE_*` env vars) with no redeploy:
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `boolean` | `true` | Enable/disable query result caching |
-| `ttl` | `number` | `300000` | Time-to-live in milliseconds |
-| `maxSize` | `number` | `1000` | Maximum cached entries (LRU eviction) |
+| Setting | Env var | Scope | Default | Description |
+|---------|---------|-------|---------|-------------|
+| Query Cache | `ATLAS_CACHE_ENABLED` | Workspace | `true` | Enable/disable query result caching |
+| Cache TTL | `ATLAS_CACHE_TTL` | Workspace | `300000` | Time-to-live in milliseconds |
+| Cache Max Entries | `ATLAS_CACHE_MAX_SIZE` | Platform | `1000` | Maximum cached entries (LRU eviction), process-wide |
 
-The cache is automatically flushed on config reload. Manual flush is available via `POST /api/v1/admin/cache/flush`. Plugins can provide an external cache backend (e.g. Redis) via the `cacheBackend` field on the plugin object.
+A TTL or max-size change takes effect on the running backend immediately (hit/miss counters survive). Manual flush is available via `POST /api/v1/admin/cache/flush`. Plugins can provide an external cache backend (e.g. Redis) via the `cacheBackend` field on the plugin object.
+
+<Callout type="warn" title="Deprecated: the `cache:` config block">
+A `cache:` block in `atlas.config.ts` is **ignored** and logs a boot warning. Its values no longer apply — use the settings above. The block is scheduled for removal in a future release.
+</Callout>
 
 ---
 

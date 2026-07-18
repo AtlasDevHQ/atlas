@@ -119,6 +119,52 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
 
+  // Cache — managed via the dedicated /admin/cache page (#4545). Enable/TTL
+  // are per-workspace and hidden from the generic settings page but written
+  // through the cache page's inline controls (saasVisible:false,
+  // saasWritable:true — the sandbox-key dedicated-surface pattern). Max size
+  // is platform-scoped (the LRU is one process-wide backend) so only platform
+  // admins tune it. Readers in lib/cache/index.ts: cacheEnabled() /
+  // getDefaultTtl() (exported), and getCache() (via getCacheMaxSize()).
+  {
+    key: "ATLAS_CACHE_ENABLED",
+    section: "Cache",
+    label: "Query Cache",
+    description:
+      "Cache identical query results within the TTL. Managed from the Cache admin page.",
+    type: "boolean",
+    default: "true",
+    envVar: "ATLAS_CACHE_ENABLED",
+    scope: "workspace",
+    saasVisible: false,
+    saasWritable: true,
+  },
+  {
+    key: "ATLAS_CACHE_TTL",
+    section: "Cache",
+    label: "Cache TTL",
+    description:
+      "How long a cached query result stays fresh, in milliseconds (default 300000 = 5 minutes). Managed from the Cache admin page.",
+    type: "number",
+    default: "300000",
+    envVar: "ATLAS_CACHE_TTL",
+    scope: "workspace",
+    saasVisible: false,
+    saasWritable: true,
+  },
+  {
+    key: "ATLAS_CACHE_MAX_SIZE",
+    section: "Cache",
+    label: "Cache Max Entries",
+    description:
+      "Maximum cached query results before LRU eviction. Applies process-wide across every workspace in the region (platform-scoped).",
+    type: "number",
+    default: "1000",
+    envVar: "ATLAS_CACHE_MAX_SIZE",
+    scope: "platform",
+    saasVisible: false,
+  },
+
   // Rate Limiting
   {
     key: "ATLAS_RATE_LIMIT_RPM",

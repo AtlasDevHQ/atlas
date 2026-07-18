@@ -75,7 +75,10 @@ const cacheMockFactory = () => ({
   setCacheBackend: mock(async () => {}),
   flushCache: mockFlushCache,
   flushCacheByOrg: mock(async () => 0),
-  getDefaultTtl: mock(() => 300000),
+  // Distinct from mockCacheStats.ttl (300000) so a test can prove the route
+  // reports the RESOLVED TTL (getDefaultTtl, #4545) — not the backend's
+  // constructor-frozen stats().ttl.
+  getDefaultTtl: mock(() => 77777),
   _resetCache: mock(() => {}),
   buildCacheKey: mock(() => "mock-key"),
   validateCacheBackend: mock(async () => ({ ok: true })),
@@ -230,6 +233,9 @@ describe("admin cache routes", () => {
       // missRate should be 8/(42+8) = 0.16
       expect(body.missRate).toBeCloseTo(0.16, 2);
       expect(body.entryCount).toBe(15);
+      // #4545 — `ttl` derives from the RESOLVED workspace setting
+      // (getDefaultTtl → 77777), NOT the backend's stats().ttl (300000).
+      expect(body.ttl).toBe(77777);
     });
 
     it("returns hitRate/missRate of 0 when cache is enabled but empty", async () => {
@@ -253,6 +259,10 @@ describe("admin cache routes", () => {
       expect(body.hitRate).toBe(0);
       expect(body.missRate).toBe(0);
       expect(body.entryCount).toBe(0);
+      // #4545 — the disabled branch now reports the RESOLVED TTL (77777),
+      // not the old hardcoded `ttl: 0`, so an admin still sees what TTL
+      // would apply once caching is re-enabled.
+      expect(body.ttl).toBe(77777);
     });
 
     it("returns 500 with requestId when stats() throws", async () => {

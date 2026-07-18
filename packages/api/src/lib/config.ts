@@ -948,19 +948,10 @@ export function configFromEnv(): ResolvedConfig {
     ...(process.env.ATLAS_SEMANTIC_INDEX_ENABLED === "false"
       ? { semanticIndex: { enabled: false } }
       : {}),
-    // Cache config from env vars
-    ...((() => {
-      const enabled = process.env.ATLAS_CACHE_ENABLED !== "false" && process.env.ATLAS_CACHE_ENABLED !== "0";
-      const ttl = parseInt(process.env.ATLAS_CACHE_TTL ?? "", 10);
-      const maxSize = parseInt(process.env.ATLAS_CACHE_MAX_SIZE ?? "", 10);
-      return {
-        cache: {
-          enabled,
-          ttl: Number.isFinite(ttl) && ttl > 0 ? ttl : 300_000,
-          maxSize: Number.isFinite(maxSize) && maxSize > 0 ? maxSize : 1000,
-        },
-      };
-    })()),
+    // Cache knobs (ATLAS_CACHE_*) are NOT synthesized into config anymore —
+    // they live in the settings registry (lib/settings.ts) and read env as
+    // their Tier-3 fallback directly. The config-file `cache:` block is
+    // deprecated (see validateAndResolve — #4545, phase 1 of #4551).
     // Starter prompt config from env vars
     ...((() => {
       const coldWindow = parseInt(process.env.ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS ?? "", 10);
@@ -1325,6 +1316,18 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     validatePlugins(config.plugins);
   }
 
+  // Config-block deprecation, phase 1 (#4545, schema removal is #4551): a
+  // config-file `cache:` block is IGNORED — the Query Cache's knobs now live
+  // in the settings registry (ATLAS_CACHE_*, Admin → Settings / the Cache
+  // page). Warn loudly so an operator who set it knows it is a no-op, then
+  // drop it below (never spread into ResolvedConfig).
+  if (config.cache) {
+    log.warn(
+      { reason: "cache-config-deprecated" },
+      "atlas.config.ts `cache:` block is deprecated and IGNORED — migrate to Admin → Settings or the ATLAS_CACHE_* env vars (ATLAS_CACHE_ENABLED / ATLAS_CACHE_TTL / ATLAS_CACHE_MAX_SIZE). The Query Cache is now tuned at runtime via the settings registry.",
+    );
+  }
+
   return {
     datasources: config.datasources ?? {},
     tools: config.tools ?? ["explore", "executeSQL"],
@@ -1340,7 +1343,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.session ? { session: config.session } : {}),
     ...(config.semanticIndex ? { semanticIndex: config.semanticIndex } : {}),
     ...(config.pool ? { pool: config.pool } : {}),
-    ...(config.cache ? { cache: config.cache } : {}),
+    // config.cache intentionally dropped — deprecated & ignored (see warning above)
     ...(config.starterPrompts ? { starterPrompts: config.starterPrompts } : {}),
     ...(config.enterprise ? { enterprise: config.enterprise } : {}),
     ...(config.residency ? { residency: config.residency } : {}),

@@ -1109,11 +1109,10 @@ export default defineConfig({
   },
 
   // ── Cache ───────────────────────────────────────────────────────
-  cache: {
-    enabled: true,
-    ttl: 300_000, // 5 minutes
-    maxSize: 1000,
-  },
+  // Query Cache knobs (ATLAS_CACHE_*) moved to the settings registry (#4545)
+  // — tuned at runtime via Admin → the Cache page, no redeploy. The old
+  // `cache:` config-block pin is removed; if re-added it is ignored with a
+  // loud boot warning (config-block deprecation phase 1).
 
   // ── Data Residency ──────────────────────────────────────────────
   residency: {

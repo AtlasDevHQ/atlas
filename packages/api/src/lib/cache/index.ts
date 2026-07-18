@@ -21,9 +21,9 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting, getSettingAuto } from "@atlas/api/lib/settings";
 import { LRUCacheBackend } from "./lru";
-import type { CacheBackend } from "./types";
+import type { CacheBackend, CacheEntryMeta } from "./types";
 
-export type { CacheBackend, CacheEntry, CacheScope, CacheStats } from "./types";
+export type { CacheBackend, CacheEntry, CacheEntryMeta, CacheScope, CacheStats } from "./types";
 export { buildCacheKey } from "./keys";
 export { validateCacheBackend, type CacheBackendValidation } from "./validate";
 export {
@@ -206,6 +206,38 @@ export async function cacheOrgEntryCount(orgId: string): Promise<number | null> 
   if (_state.kind === "unset") return 0;
   if (_state.kind === "plugin") return null;
   return _state.backend.entryCountByOrg(orgId);
+}
+
+/**
+ * List one Workspace's LIVE cached entries as metadata rows (#4550), or every
+ * live entry when `orgId` is undefined (single-tenant / auth mode "none",
+ * where the whole cache belongs to the one tenant). Returns `null` when the
+ * listing is structurally unavailable: the LRU's org index is what makes a
+ * TRUSTWORTHY org-scoped listing possible, so a plugin backend degrades to
+ * "unavailable" rather than trusting an external store's scoping.
+ */
+export async function cacheListByOrg(orgId: string | undefined): Promise<CacheEntryMeta[] | null> {
+  if (_state.kind === "unset") return [];
+  if (_state.kind === "plugin") return null;
+  return orgId !== undefined ? _state.backend.listByOrg(orgId) : _state.backend.listAll();
+}
+
+/**
+ * Delete one cached entry, authorized org-scoped (#4550): with an `orgId`,
+ * the delete lands only when the key belongs to that org (a workspace admin
+ * deleting by raw key can never reach a co-tenant's entry); with no org
+ * (single-tenant), it is a plain delete. Returns whether an entry was
+ * removed; `null` when structurally unavailable (plugin backend — no
+ * trustworthy org index to authorize against).
+ */
+export async function cacheDeleteEntry(orgId: string | undefined, key: string): Promise<boolean | null> {
+  if (_state.kind === "unset") return false;
+  if (_state.kind === "plugin") return null;
+  const removed = orgId !== undefined
+    ? await _state.backend.deleteForOrg(orgId, key)
+    : await _state.backend.delete(key);
+  if (removed) log.info({ orgId, key: key.slice(0, 12) }, "Cache entry deleted");
+  return removed;
 }
 
 /** Reset the cache module to its uninitialized state. For test isolation only. */

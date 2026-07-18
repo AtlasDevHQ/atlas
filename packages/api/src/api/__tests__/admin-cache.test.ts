@@ -104,6 +104,15 @@ const cacheMockFactory = () => ({
   flushCacheByOrg: async (orgId: string) => backend.flushByOrg(orgId),
   cacheOrgEntryCount: async (orgId: string) =>
     backend instanceof LRUCacheBackend ? backend.entryCountByOrg(orgId) : null,
+  // #4550 — same owned-vs-plugin branching as the real index.ts glue.
+  cacheListByOrg: async (orgId: string | undefined) =>
+    backend instanceof LRUCacheBackend
+      ? orgId !== undefined ? backend.listByOrg(orgId) : backend.listAll()
+      : null,
+  cacheDeleteEntry: async (orgId: string | undefined, key: string) =>
+    backend instanceof LRUCacheBackend
+      ? orgId !== undefined ? backend.deleteForOrg(orgId, key) : backend.delete(key)
+      : null,
   recordCacheAccess: realRecordCacheAccess,
   getOrgCacheStats: realGetOrgCacheStats,
   getFleetCacheStats: realGetFleetCacheStats,
@@ -664,6 +673,183 @@ describe("admin cache routes", () => {
       const body = await res.json() as Record<string, unknown>;
       expect(body.error).toBe("internal_error");
       expect(body.requestId).toBeDefined();
+    });
+  });
+
+  // ── #4550 — entry inspection + per-entry delete ─────────────────────────
+
+  describe("GET /cache/entries", () => {
+    it("lists ONLY the caller's org's live entries, metadata-only (no rows blob)", async () => {
+      const backend = cacheApi.getCache();
+      await backend.set("key-a1", makeEntry({ sqlPreview: "SELECT * FROM companies", rows: [{ id: 1 }, { id: 2 }] }), { orgId: "org-test", connectionId: "conn-1" });
+      await backend.set("key-b1", makeEntry({ sqlPreview: "SELECT secret FROM cotenant" }), { orgId: "org-other", connectionId: "conn-2" });
+
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/entries"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as { entries: Array<Record<string, unknown>> };
+      expect(body.entries).toHaveLength(1);
+      const entry = body.entries[0]!;
+      expect(entry.key).toBe("key-a1");
+      expect(entry.sqlPreview).toBe("SELECT * FROM companies");
+      expect(entry.connectionId).toBe("conn-1");
+      expect(entry.rowCount).toBe(2);
+      expect(typeof entry.ageMs).toBe("number");
+      // The cached rows themselves never cross this surface.
+      expect(entry.rows).toBeUndefined();
+      expect(entry.columns).toBeUndefined();
+      // The co-tenant's SQL never appears anywhere in the payload.
+      expect(JSON.stringify(body)).not.toContain("cotenant");
+    });
+
+    it("expired entries never appear in the list", async () => {
+      const backend = cacheApi.getCache();
+      await backend.set("live", makeEntry({ sqlPreview: "SELECT 1" }), { orgId: "org-test", connectionId: "default" });
+      await backend.set("dead", makeEntry({ sqlPreview: "SELECT 2", cachedAt: Date.now() - 400_000, ttl: 300_000 }), { orgId: "org-test", connectionId: "default" });
+
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/entries"));
+      const body = await res.json() as { entries: Array<{ key: string }> };
+      expect(body.entries.map((e) => e.key)).toEqual(["live"]);
+    });
+
+    it("a workspace admin may NOT inspect another org via ?orgId= (403)", async () => {
+      await seedEntries();
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/entries?orgId=org-other"));
+      expect(res.status).toBe(403);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("forbidden_scope");
+    });
+
+    it("a platform admin MAY inspect a specific org via ?orgId=", async () => {
+      await seedEntries();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/entries?orgId=org-other"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as { entries: Array<{ key: string }> };
+      expect(body.entries.map((e) => e.key)).toEqual(["key-b1"]);
+    });
+
+    it("a workspace admin naming their OWN org via ?orgId= is fine", async () => {
+      await seedEntries();
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/entries?orgId=org-test"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as { entries: unknown[] };
+      expect(body.entries).toHaveLength(2);
+    });
+
+    it("no-org admin (single-tenant): lists every live entry", async () => {
+      await seedEntries();
+      setNoOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/entries"));
+      const body = await res.json() as { entries: unknown[] };
+      expect(body.entries).toHaveLength(3);
+    });
+
+    it("disabled cache lists as empty (read-only surface — no 409)", async () => {
+      await seedEntries();
+      settingsStore.set("ATLAS_CACHE_ENABLED", "false");
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/entries"));
+      const body = await res.json() as { entries: unknown[] };
+      expect(body.entries).toEqual([]);
+    });
+
+    it("plugin backend: entries is null (unavailable), never a confident empty table", async () => {
+      await cacheApi.setCacheBackend(pluginBackend());
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/entries"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as { entries: unknown };
+      expect(body.entries).toBeNull();
+    });
+
+    it("returns 403 for non-admin members", async () => {
+      setMember();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/entries"));
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe("DELETE /cache/entries/:key", () => {
+    const del = (key: string) =>
+      new Request(`http://localhost/api/v1/admin/cache/entries/${encodeURIComponent(key)}`, {
+        method: "DELETE",
+        headers: { Authorization: "Bearer test-key" },
+      });
+
+    it("removes exactly the caller's org's entry and keeps the index consistent", async () => {
+      await seedEntries();
+      setOrgAdmin();
+      const res = await app.fetch(del("key-a1"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.deleted).toBe(true);
+      // Exactly one entry gone; sibling + co-tenant intact.
+      expect(await cacheApi.getCache().get("key-a1")).toBeNull();
+      expect(await cacheApi.getCache().get("key-a2")).not.toBeNull();
+      expect(await cacheApi.getCache().get("key-b1")).not.toBeNull();
+      // Org index stays consistent: the org's live count reflects the delete.
+      expect(await cacheApi.cacheOrgEntryCount("org-test")).toBe(1);
+      // Audit row: deleteEntry action, truncated key, org target.
+      expect(mockLogAdminActionAwait).toHaveBeenCalledTimes(1);
+      const audit = mockLogAdminActionAwait.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(audit.actionType).toBe("cache.delete_entry");
+      expect(audit.targetId).toBe("org-test");
+      expect(audit.metadata).toEqual({ orgId: "org-test", key: "key-a1".slice(0, 12) });
+    });
+
+    it("a co-tenant's key 404s and the entry survives (indistinguishable from missing)", async () => {
+      await seedEntries();
+      setOrgAdmin();
+      const res = await app.fetch(del("key-b1"));
+      expect(res.status).toBe(404);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("not_found");
+      expect(await cacheApi.getCache().get("key-b1")).not.toBeNull();
+    });
+
+    it("a missing key 404s with the same shape as a co-tenant's key", async () => {
+      await seedEntries();
+      setOrgAdmin();
+      const res = await app.fetch(del("no-such-key"));
+      expect(res.status).toBe(404);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("not_found");
+    });
+
+    it("no-org admin (single-tenant): plain delete of any entry", async () => {
+      await seedEntries();
+      setNoOrgAdmin();
+      const res = await app.fetch(del("key-b1"));
+      expect(res.status).toBe(200);
+      expect(await liveEntryCount()).toBe(2);
+    });
+
+    it("disabled cache refuses with 409", async () => {
+      await seedEntries();
+      settingsStore.set("ATLAS_CACHE_ENABLED", "false");
+      setOrgAdmin();
+      const res = await app.fetch(del("key-a1"));
+      expect(res.status).toBe(409);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("cache_disabled");
+      expect(await liveEntryCount()).toBe(3);
+    });
+
+    it("plugin backend: 409 unsupported_backend (no trustworthy org index to authorize against)", async () => {
+      await cacheApi.setCacheBackend(pluginBackend());
+      setOrgAdmin();
+      const res = await app.fetch(del("some-key"));
+      expect(res.status).toBe(409);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("unsupported_backend");
+    });
+
+    it("returns 403 for non-admin members", async () => {
+      setMember();
+      const res = await app.fetch(del("key-a1"));
+      expect(res.status).toBe(403);
     });
   });
 });

@@ -621,6 +621,88 @@ describe("LRUCacheBackend — entryCountByOrg + pruneExpired", () => {
 });
 
 // ---------------------------------------------------------------------------
+// listByOrg / listAll / deleteForOrg (#4550)
+// ---------------------------------------------------------------------------
+
+describe("LRUCacheBackend — entry listing + org-scoped delete", () => {
+  it("listByOrg returns metadata rows for the org's live entries only — never the rows blob", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    const now = Date.now();
+    await cache.set("a1", makeEntry({ sqlPreview: "SELECT 1", rows: [{ id: 1 }, { id: 2 }], cachedAt: now - 5_000, ttl: 60_000 }), scope("org-a", "conn-1"));
+    await cache.set("b1", makeEntry(), scope("org-b"));
+
+    const list = await cache.listByOrg("org-a");
+    expect(list).toHaveLength(1);
+    const meta = list[0]!;
+    expect(meta.key).toBe("a1");
+    expect(meta.sqlPreview).toBe("SELECT 1");
+    expect(meta.connectionId).toBe("conn-1");
+    expect(meta.rowCount).toBe(2);
+    expect(meta.ttl).toBe(60_000);
+    expect(meta.ageMs).toBeGreaterThanOrEqual(4_000);
+    expect(meta.ageMs).toBeLessThan(60_000);
+    expect("rows" in meta).toBe(false);
+    expect("columns" in meta).toBe(false);
+  });
+
+  it("listByOrg omits sqlPreview for legacy entries (absent, not undefined-serialized)", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    await cache.set("legacy", makeEntry(), scope("org-a"));
+    const [meta] = await cache.listByOrg("org-a");
+    expect("sqlPreview" in meta!).toBe(false);
+  });
+
+  it("listByOrg lazily drops expired entries — corpses never appear, index stays consistent", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    await cache.set("live", makeEntry(), scope("org-a"));
+    await cache.set("dead", makeEntry({ cachedAt: Date.now() - 400_000, ttl: 300_000 }), scope("org-a"));
+
+    const list = await cache.listByOrg("org-a");
+    expect(list.map((m) => m.key)).toEqual(["live"]);
+    const idx = indexState(cache);
+    expect(idx.orgKeys.get("org-a")).toEqual(new Set(["live"]));
+    expect(idx.keyScopeSize).toBe(1);
+  });
+
+  it("listByOrg on an unknown org returns []", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    expect(await cache.listByOrg("org-missing")).toEqual([]);
+  });
+
+  it("listAll returns every live entry (single-tenant view), pruning corpses", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    await cache.set("k1", makeEntry(), scope("org-a"));
+    await cache.set("k2", makeEntry(), { connectionId: "default" }); // no-org entry included
+    await cache.set("dead", makeEntry({ cachedAt: Date.now() - 400_000, ttl: 300_000 }), scope("org-a"));
+    expect(cache.listAll().map((m) => m.key).toSorted()).toEqual(["k1", "k2"]);
+  });
+
+  it("deleteForOrg removes only a key the org owns; a co-tenant's or missing key is untouched", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    await cache.set("a1", makeEntry(), scope("org-a"));
+    await cache.set("b1", makeEntry(), scope("org-b"));
+
+    // Co-tenant's key: refused, entry survives.
+    expect(await cache.deleteForOrg("org-a", "b1")).toBe(false);
+    expect(await cache.get("b1")).not.toBeNull();
+    // Missing key: refused.
+    expect(await cache.deleteForOrg("org-a", "nope")).toBe(false);
+    // Own key: removed, index consistent.
+    expect(await cache.deleteForOrg("org-a", "a1")).toBe(true);
+    expect(await cache.get("a1")).toBeNull();
+    expect(indexState(cache).orgKeys.has("org-a")).toBe(false);
+    expect(indexState(cache).keyScopeSize).toBe(1); // b1 only
+  });
+
+  it("a no-org entry is not reachable via deleteForOrg (it belongs to no org's set)", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    await cache.set("shared", makeEntry(), { connectionId: "default" });
+    expect(await cache.deleteForOrg("org-a", "shared")).toBe(false);
+    expect(await cache.get("shared")).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Backend shape validation
 // ---------------------------------------------------------------------------
 

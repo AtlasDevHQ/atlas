@@ -672,6 +672,9 @@ export function createApiTestMocks(
     getFleetCacheStats: mock(() => ({ since: null, hits: 0, misses: 0, hitRate: null, windowHitRate: null, windowTotal: 0 })),
     resetCacheStatsRegistry: mock(() => {}),
     cacheOrgEntryCount: mock(async () => 0),
+    // #4550 — entry inspection + per-entry delete.
+    cacheListByOrg: mock(async () => []),
+    cacheDeleteEntry: mock(async () => false),
     ...overrides?.cache,
   });
 

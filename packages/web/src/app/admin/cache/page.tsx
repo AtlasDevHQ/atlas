@@ -25,6 +25,14 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -32,7 +40,7 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { HardDrive, Trash2, Activity, Database, Clock, Target, Settings2 } from "lucide-react";
+import { HardDrive, Trash2, Activity, Database, Clock, Target, Settings2, ListX } from "lucide-react";
 
 // ── Schemas ───────────────────────────────────────────────────────
 
@@ -56,6 +64,24 @@ const CacheStatsResponseSchema = z.object({
   maxSize: z.number().nullable(),
 });
 
+// Entry-inspection rows (#4550): metadata only — the cached rows blob never
+// reaches this surface. `entries: null` = listing unavailable on the current
+// cache backend (plugin), mirroring the nullable-entryCount pattern.
+const CacheEntriesResponseSchema = z.object({
+  entries: z
+    .array(
+      z.object({
+        key: z.string(),
+        sqlPreview: z.string().optional(),
+        connectionId: z.string(),
+        rowCount: z.number(),
+        ageMs: z.number(),
+        ttl: z.number(),
+      }),
+    )
+    .nullable(),
+});
+
 // ── Helpers ───────────────────────────────────────────────────────
 
 function formatTtl(ms: number): string {
@@ -74,6 +100,15 @@ function formatPercent(rate: number): string {
 
 function formatSince(sinceMs: number): string {
   return new Date(sinceMs).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function formatAge(ageMs: number): string {
+  const seconds = Math.floor(ageMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
 }
 
 // ── Stat Card ─────────────────────────────────────────────────────
@@ -216,6 +251,104 @@ function CacheConfigCard({
               " You can also set ATLAS_CACHE_ENABLED / ATLAS_CACHE_TTL via environment variables."}
           </p>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Cached Entries Card (#4550) ───────────────────────────────────
+// The "management" the page title promises: each row is one live cached
+// entry with a per-row delete, so fixing "one dashboard number is stale"
+// costs one entry instead of the org's whole cache. Ships functional and
+// plain — the "entries bubbling by heat" treatment is a later design pass.
+function CacheEntriesCard({ onChanged }: { onChanged: () => void }) {
+  const { data, loading, error, refetch } = useAdminFetch(
+    "/api/v1/admin/cache/entries",
+    { schema: CacheEntriesResponseSchema },
+  );
+
+  const del = useAdminMutation<{ ok: boolean; deleted: boolean }>({
+    method: "DELETE",
+    invalidates: [refetch, onChanged],
+  });
+
+  const entries = data?.entries;
+
+  return (
+    <Card className="shadow-none">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ListX className="size-4" />
+          Cached Entries
+        </CardTitle>
+        <CardDescription>
+          Your workspace&apos;s live cached results. Delete one entry to force a
+          single query fresh without flushing everything.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <MutationErrorSurface error={del.error} feature="Cache" onRetry={del.clearError} />
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Loading entries...</p>
+        ) : error ? (
+          <p className="text-sm text-muted-foreground">
+            Couldn&apos;t load entries: {error.message}
+          </p>
+        ) : entries === null || entries === undefined ? (
+          <p className="text-sm text-muted-foreground">
+            Entry inspection isn&apos;t available on the current cache backend.
+          </p>
+        ) : entries.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No cached entries yet — results appear here as queries run.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Query</TableHead>
+                  <TableHead>Connection</TableHead>
+                  <TableHead className="text-right">Rows</TableHead>
+                  <TableHead className="text-right">Age</TableHead>
+                  <TableHead className="w-10">
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {entries.map((entry) => (
+                  <TableRow key={entry.key}>
+                    <TableCell className="max-w-[420px]">
+                      <span className="block truncate font-mono text-xs" title={entry.sqlPreview}>
+                        {entry.sqlPreview ?? "(no preview)"}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{entry.connectionId}</TableCell>
+                    <TableCell className="text-right text-sm">{entry.rowCount.toLocaleString()}</TableCell>
+                    <TableCell className="text-right text-sm text-muted-foreground">{formatAge(entry.ageMs)}</TableCell>
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Delete cached entry ${entry.sqlPreview ?? entry.key.slice(0, 12)}`}
+                        disabled={del.isMutating(entry.key)}
+                        onClick={() =>
+                          void del.mutate({
+                            path: `/api/v1/admin/cache/entries/${encodeURIComponent(entry.key)}`,
+                            itemId: entry.key,
+                          })
+                        }
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -451,6 +584,9 @@ export default function CachePage() {
                   )}
                 </CardContent>
               </Card>
+
+              {/* Entry inspection table (#4550) */}
+              <CacheEntriesCard onChanged={refetch} />
 
               {/* Flush Card */}
               <Card className="shadow-none">

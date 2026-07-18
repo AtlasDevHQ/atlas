@@ -214,6 +214,24 @@ describe("executeSQL cache elevation — age on hit + bypassCache (#4546)", () =
     expect(cacheSets[0].scope.connectionId.length).toBeGreaterThan(0);
   });
 
+  it("stamps a capped sqlPreview on the written entry (#4550)", async () => {
+    cachedEntry = null; // miss → executes live → writes back
+    const longSql = `SELECT id, name FROM companies WHERE name IN (${Array.from({ length: 60 }, (_, i) => `'company-number-${i}'`).join(", ")})`;
+    expect(longSql.length).toBeGreaterThan(200);
+
+    await exec(longSql);
+
+    expect(cacheSets).toHaveLength(1);
+    const preview = cacheSets[0].entry.sqlPreview;
+    expect(typeof preview).toBe("string");
+    // Capped at 200 chars — a preview, never full-SQL retention. Asserted
+    // via cap + prefix content (not exact equality) so pipeline SQL
+    // normalization can't make this brittle.
+    expect(preview!.length).toBeLessThanOrEqual(200);
+    expect(preview).toContain("SELECT id, name FROM companies");
+    expect(preview!.length).toBeGreaterThanOrEqual(190);
+  });
+
   it("after a bypass write, a subsequent identical query hits the refreshed entry", async () => {
     // Start with a stale entry.
     cachedEntry = {

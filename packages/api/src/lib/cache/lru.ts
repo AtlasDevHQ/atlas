@@ -16,7 +16,7 @@
  * org's key set in one pass.
  */
 
-import type { CacheBackend, CacheEntry, CacheScope, CacheStats } from "./types";
+import type { CacheBackend, CacheEntry, CacheEntryMeta, CacheScope, CacheStats } from "./types";
 
 export class LRUCacheBackend implements CacheBackend {
   private cache = new Map<string, CacheEntry>();
@@ -188,6 +188,67 @@ export class LRUCacheBackend implements CacheBackend {
       live++;
     }
     return live;
+  }
+
+  /** Map one live entry to its metadata row. Never includes the rows blob. */
+  private toMeta(key: string, entry: CacheEntry, now: number): CacheEntryMeta {
+    return {
+      key,
+      // Spread-with-conditional keeps the field absent (not `undefined`) for
+      // legacy entries, so JSON serialization matches the optional wire shape.
+      ...(entry.sqlPreview !== undefined ? { sqlPreview: entry.sqlPreview } : {}),
+      connectionId: this.keyScope.get(key)?.connectionId ?? "unknown",
+      rowCount: entry.rows.length,
+      ageMs: Math.max(0, now - entry.cachedAt),
+      ttl: entry.ttl,
+    };
+  }
+
+  async listByOrg(orgId: string, now: number = Date.now()): Promise<CacheEntryMeta[]> {
+    const keys = this.orgKeys.get(orgId);
+    if (!keys) return [];
+    const out: CacheEntryMeta[] = [];
+    // Snapshot-iterate: expiry routes through `unindex`, which mutates the
+    // live set (same gotcha as `flushByOrg`/`entryCountByOrg`).
+    for (const key of [...keys]) {
+      const entry = this.cache.get(key);
+      if (!entry) {
+        console.debug(`LRUCacheBackend: healed org-index drift for key ${key.slice(0, 12)}…`);
+        this.unindex(key);
+        continue;
+      }
+      if (now - entry.cachedAt > entry.ttl) {
+        this.cache.delete(key);
+        this.unindex(key);
+        continue;
+      }
+      out.push(this.toMeta(key, entry, now));
+    }
+    return out;
+  }
+
+  /**
+   * List EVERY live entry — the single-tenant (no-org) admin view, where the
+   * whole cache belongs to the one tenant. Concrete on the LRU (not part of
+   * the `CacheBackend` contract): a multi-tenant caller must always go
+   * through `listByOrg`.
+   */
+  listAll(now: number = Date.now()): CacheEntryMeta[] {
+    this.pruneExpired(now);
+    return [...this.cache].map(([key, entry]) => this.toMeta(key, entry, now));
+  }
+
+  /**
+   * Delete `key` ONLY if it belongs to `orgId` (#4550) — the org-scoped
+   * authorization for per-entry delete. A workspace admin deleting by raw
+   * key must never reach a co-tenant's entry, so membership is checked
+   * against the org index before the delete. Returns whether an entry was
+   * removed. Concrete on the LRU (reached via the `owned` state variant).
+   */
+  async deleteForOrg(orgId: string, key: string): Promise<boolean> {
+    const keys = this.orgKeys.get(orgId);
+    if (!keys?.has(key)) return false;
+    return this.delete(key);
   }
 
   /**

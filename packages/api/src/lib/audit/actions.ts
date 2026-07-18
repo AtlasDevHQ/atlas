@@ -869,10 +869,14 @@ export const ADMIN_ACTIONS = {
    * sharing the runtime, so a forensic row is the only way to attribute
    * a fleet-wide cache invalidation to a specific admin once #2167 widened
    * the gate from `platform_admin` to `admin/owner/platform_admin`.
-   * Metadata: `{ flushed }` — count of entries cleared.
+   * Metadata: `{ scope, flushed }` (+ `orgId` for a workspace-scoped flush;
+   * `flushed: null` = count unknown on a plugin backend). `deleteEntry`
+   * covers the per-entry delete from the entry-inspection table (#4550);
+   * metadata: `{ orgId, key }`.
    */
   cache: {
     flush: "cache.flush",
+    deleteEntry: "cache.delete_entry",
   },
   /**
    * Platform-operator CRM outbox actions (#2735). The outbox table

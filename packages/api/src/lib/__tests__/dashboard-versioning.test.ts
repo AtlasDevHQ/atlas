@@ -24,6 +24,7 @@ import {
   type PublishOp,
   toSnapshot,
   loadDraft,
+  loadDraftChecked,
   forkOrLoadDraft,
   saveDraft,
   applyEditToDraft,
@@ -1006,6 +1007,42 @@ describe("dashboard-versioning DB helpers", () => {
       queryThrow = new Error("connection refused");
       const result = await loadDraft("u1", "dash-1");
       expect(result).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // loadDraftChecked (#4685 — threw vs absent is observable)
+  // -------------------------------------------------------------------------
+
+  describe("loadDraftChecked", () => {
+    it("treats a missing internal DB as ABSENT, not an error", async () => {
+      const result = await loadDraftChecked("u1", "dash-1");
+      expect(result).toEqual({ ok: true, draft: null });
+    });
+
+    it("returns ok with a null draft when no row exists (absent)", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+      const result = await loadDraftChecked("u1", "dash-1");
+      expect(result).toEqual({ ok: true, draft: null });
+    });
+
+    it("returns ok with the parsed draft row when one exists", async () => {
+      enableInternalDB();
+      const snap = snapshot([card("c1")]);
+      setResults({ rows: [draftRow({ draft: snap })] });
+      const result = await loadDraftChecked("u1", "dash-1");
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("unreachable");
+      expect(result.draft?.userId).toBe("u1");
+      expect(result.draft?.snapshot.cards[0].id).toBe("c1");
+    });
+
+    it("returns ok:false on a DB error — never conflated with absent (#4685)", async () => {
+      enableInternalDB();
+      queryThrow = new Error("connection refused");
+      const result = await loadDraftChecked("u1", "dash-1");
+      expect(result).toEqual({ ok: false, reason: "load_failed" });
     });
   });
 

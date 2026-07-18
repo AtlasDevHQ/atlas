@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.57",
+    title: "Two-Phase Drop Cleanup",
+    date: "2026-07-18",
+    summary:
+      "Completes two scheduled removals whose deprecation windows closed with the last two releases. The `cache:` config block — deprecated and ignored with a boot warning since v0.0.56 — is now removed entirely: a config file still carrying it fails validation at startup with a message pointing at the runtime cache settings (Admin → Cache, or the ATLAS_CACHE_* environment variables) instead of being silently ignored. And the legacy dashboard stage-tracking table, retired by the v0.0.55 editing model, is dropped from the internal database.",
+    highlights: [
+      "Config files still carrying the cache: block now fail fast at startup with pointed guidance, rather than having it silently ignored",
+      "Query Cache configuration lives solely in the settings registry — runtime-editable from Admin → Cache with no redeploy",
+      "Internal cleanup: the retired dashboard stage-tracking table is dropped, finishing the v0.0.55 two-phase removal",
+    ],
+  },
+  {
     version: "v0.0.56",
     title: "Admin Cache Elevation",
     date: "2026-07-18",

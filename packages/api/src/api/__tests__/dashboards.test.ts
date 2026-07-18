@@ -2426,7 +2426,7 @@ describe("dashboard routes", () => {
       mockRunUserQueryPipeline.mockClear();
       mockRefreshCard.mockClear();
       mockSaveDraftCardCache.mockClear();
-      // The threw-vs-absent distinction: a TRANSIENT loadDraft error is not
+      // The threw-vs-absent distinction: a TRANSIENT draft-load error is not
       // "no draft". Falling back to published here would execute the
       // published cards and persist the SHARED published cache with a 200
       // while the caller's draft tiles stay stale.
@@ -2436,6 +2436,7 @@ describe("dashboard routes", () => {
         new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh?view=draft`, { method: "POST" }),
       );
       expect(response.status).toBe(503);
+      expect(mockLoadDraftChecked).toHaveBeenCalledWith("u1", VALID_ID);
       const body = (await response.json()) as { error: string; requestId?: string };
       expect(body.error).toBe("drafts_unavailable");
       expect(typeof body.requestId).toBe("string");

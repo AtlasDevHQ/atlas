@@ -8,6 +8,7 @@ let mockHeaders: Record<string, string> = {};
 void mock.module("next/headers", () => ({
   cookies: async () => ({ toString: () => mockCookie }),
   headers: async () => ({ get: (k: string) => mockHeaders[k.toLowerCase()] ?? null }),
+  draftMode: async () => ({ isEnabled: false }),
 }));
 
 import {

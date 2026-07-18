@@ -1,9 +1,16 @@
 // ---------------------------------------------------------------------------
-// Shared utilities for the public conversation route (/shared/[token] + embed)
+// Shared utilities for the public conversation route (/shared/[token] + embed).
+// The data fetch lives in `[token]/fetch.ts` (server-only, #4719); this module
+// stays free of server-only imports so client components (e.g. the org-share
+// resolver) can import the types + text helpers.
 // ---------------------------------------------------------------------------
 
 export interface SharedMessage {
-  role: "user" | "assistant" | "system" | "tool";
+  /** Message author role. Kept as `string` (not a closed union): the views
+   *  only branch on "user"/"assistant" and hide everything else, and the
+   *  boundary validation (`[token]/share-result.ts`) checks string-ness only —
+   *  a narrower type here would assert an invariant nothing enforces. */
+  role: string;
   content: unknown;
   createdAt: string;
 }
@@ -15,51 +22,12 @@ export interface SharedConversation {
   messages: SharedMessage[];
 }
 
-type FetchResult =
-  | { ok: true; data: SharedConversation }
-  | { ok: false; reason: "not-found" | "server-error" | "network-error" };
-
 export function getApiBaseUrl(): string {
   return (
     process.env.NEXT_PUBLIC_ATLAS_API_URL ||
     process.env.ATLAS_API_URL ||
     "http://localhost:3001"
   ).replace(/\/+$/, "");
-}
-
-export async function fetchSharedConversation(
-  token: string,
-): Promise<FetchResult> {
-  try {
-    const res = await fetch(
-      `${getApiBaseUrl()}/api/public/conversations/${encodeURIComponent(token)}`,
-      // Cache for 60s — balances load vs. freshness when a share link is revoked.
-      // Next.js revalidate also deduplicates multiple fetches within a single
-      // render pass (e.g. generateMetadata + page component on the full page).
-      { next: { revalidate: 60 } },
-    );
-    if (!res.ok) {
-      if (res.status === 404) return { ok: false, reason: "not-found" };
-      console.error(
-        `[shared-conversation] API returned ${res.status} for token=${token}`,
-      );
-      return { ok: false, reason: "server-error" };
-    }
-    const data = await res.json();
-    if (!data || !Array.isArray(data.messages)) {
-      console.error(
-        `[shared-conversation] Unexpected response shape for token=${token}`,
-      );
-      return { ok: false, reason: "server-error" };
-    }
-    return { ok: true, data: data as SharedConversation };
-  } catch (err) {
-    console.error(
-      `[shared-conversation] Failed to fetch token=${token}:`,
-      err instanceof Error ? err.message : err,
-    );
-    return { ok: false, reason: "network-error" };
-  }
 }
 
 /**

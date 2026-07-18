@@ -6,68 +6,37 @@
 // The response→result mapping (status codes, #4690 auth-reason split, schema
 // validation) lives in `share-result.ts`, shared verbatim with the client-side
 // org-share resolution (`org-share-client.ts`, #4718) so the SSR and client
-// paths can never drift. This module is SERVER-ONLY (it imports `next/headers`
-// + `node:crypto`) and adds the server-side concerns: header forwarding, the
-// `node:crypto` token hash, and the `cache()`-deduped fetch itself. Client
+// paths can never drift. The server-side concerns — viewer header forwarding
+// and the `node:crypto` token hash — live in `../../server-share.ts`, shared
+// with the conversation surface's fetch (#4719) and re-exported here for this
+// surface's consumers/tests. This module is SERVER-ONLY (it imports
+// `next/headers` directly and `node:crypto` via `../../server-share`). Client
 // code imports the mapping/types from `share-result.ts`, never from here.
 
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
-import { createHash } from "node:crypto";
 import { getApiBaseUrl } from "../../lib";
+import { redactShareToken } from "../../share-result";
+import { buildForwardHeaders, hashShareToken } from "../../server-share";
 import { mapSharedDashboardResponse } from "./share-result";
 import type { FetchResult } from "./share-result";
 
-/**
- * Short, non-reversible fingerprint of a share token for log correlation.
- * Share tokens are bearer credentials — logs on this surface must carry this
- * hash, NEVER the cleartext token (#4317). Algorithm-mirror of the API's
- * `hashShareToken` (first 16 hex of SHA-256); duplicated because the web
- * package cannot import from `@atlas/api`. The API copy additionally guards
- * against non-string input — omitted here since callers always pass the
- * route's `token` string param. (`org-share-client.ts` carries the WebCrypto
- * mirror for the browser, where `node:crypto` doesn't exist.)
- */
-export function hashShareToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex").slice(0, 16);
-}
-
-/**
- * Build the headers the shared page forwards to the public dashboard API:
- *   - `cookie`: the viewer's session so ORG-scoped shares authenticate the
- *     viewer on a SAME-ORIGIN deploy. Under the SaaS cookie topology (ADR-0024)
- *     the session cookie is host-only on the per-region API domain, so this jar
- *     is structurally empty cross-origin — the auth wall then hands off to the
- *     client-side resolver, which carries the viewer's real session (#4718).
- *   - `x-forwarded-for`: the viewer's REAL client IP so the API rate-limits per
- *     viewer, not per web-server IP (effective only when the API trusts the
- *     proxy header via `ATLAS_TRUST_PROXY`; otherwise `getClientIP` ignores it
- *     and all viewers share the anonymous ceiling — see F-73).
- * Pure + exported for unit tests. (#4317)
- */
-export function buildForwardHeaders(input: {
-  cookie: string | null;
-  forwardedFor: string | null;
-  realIp: string | null;
-}): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (input.cookie) out.cookie = input.cookie;
-  const viewerIp = input.forwardedFor ?? input.realIp;
-  if (viewerIp) out["x-forwarded-for"] = viewerIp;
-  return out;
-}
+export { buildForwardHeaders, hashShareToken };
 
 /** Uncached fetch. Exported for unit tests; production callers use the
  *  `cache()`-wrapped {@link fetchSharedDashboard} so the fetch runs once. */
 export async function fetchSharedDashboardRaw(token: string): Promise<FetchResult> {
-  try {
-    const [cookieStore, headerStore] = await Promise.all([cookies(), headers()]);
-    const forwardHeaders = buildForwardHeaders({
-      cookie: cookieStore.toString() || null,
-      forwardedFor: headerStore.get("x-forwarded-for"),
-      realIp: headerStore.get("x-real-ip"),
-    });
+  // Header collection stays OUTSIDE the try: a throw from `cookies()`/
+  // `headers()` is a request-scope programming error, not the viewer's
+  // connection — surfacing it beats misreporting it as `network-error`.
+  const [cookieStore, headerStore] = await Promise.all([cookies(), headers()]);
+  const forwardHeaders = buildForwardHeaders({
+    cookie: cookieStore.toString() || null,
+    forwardedFor: headerStore.get("x-forwarded-for"),
+    realIp: headerStore.get("x-real-ip"),
+  });
 
+  try {
     const res = await fetch(
       `${getApiBaseUrl()}/api/public/dashboards/${encodeURIComponent(token)}`,
       // No cache — dashboard data may be sensitive and revoked links must die
@@ -79,7 +48,9 @@ export async function fetchSharedDashboardRaw(token: string): Promise<FetchResul
   } catch (err) {
     console.error(
       `[shared-dashboard] Failed to fetch tokenHash=${hashShareToken(token)}:`,
-      err instanceof Error ? err.message : String(err),
+      // A thrown fetch can echo the request URL — token included — in its
+      // message; redact it so the #4317 hash-only discipline holds here too.
+      redactShareToken(err instanceof Error ? err.message : String(err), token),
     );
     return { ok: false, reason: "network-error" };
   }

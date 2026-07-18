@@ -4,6 +4,7 @@ import {
   extractTextContent,
   truncate,
 } from "../../lib";
+import type { FailReason } from "../share-result";
 
 export type EmbedTheme = "light" | "dark";
 
@@ -89,17 +90,47 @@ export function EmbedView({ data, theme }: EmbedViewProps) {
 }
 
 interface EmbedErrorViewProps {
-  reason: "not-found" | "server-error" | "network-error";
+  reason: FailReason;
   theme: EmbedTheme;
 }
 
+/**
+ * Compact, navigation-free error state for the embed. It never renders
+ * login/retry links — a link inside a partner's iframe would either dead-end
+ * or hijack their frame. Revoked/expired shares surface here, which is how the
+ * embed "dies" when the link does.
+ */
 export function EmbedErrorView({ reason, theme }: EmbedErrorViewProps) {
-  const message =
-    reason === "not-found"
-      ? "Conversation not found."
-      : reason === "network-error"
-        ? "Could not reach the server."
-        : "Could not load conversation. Please try again later.";
+  // Exhaustive switch (not a ternary chain) so a future `FailReason` fails the
+  // build here instead of silently rendering the generic message.
+  let message: string;
+  switch (reason) {
+    // The embed is navigation-free (no in-frame login), so both auth reasons
+    // resolve to explanatory copy rather than a CTA — but they stay DISTINCT so a
+    // signed-in wrong-org viewer isn't told to "sign in" (#4690).
+    case "login-required":
+      message = "This conversation is shared within an organization. Sign in to Atlas to view it.";
+      break;
+    case "membership-required":
+      message =
+        "This conversation is shared within an organization you’re not a member of. Open it in Atlas with an account that has access.";
+      break;
+    case "expired":
+      message = "This conversation share link has expired.";
+      break;
+    case "not-found":
+      message = "Conversation not found.";
+      break;
+    case "network-error":
+      message = "Could not reach the server.";
+      break;
+    case "server-error":
+      message = "Could not load conversation. Please try again later.";
+      break;
+    default:
+      reason satisfies never;
+      message = "Could not load conversation. Please try again later.";
+  }
 
   return (
     <EmbedShell theme={theme}>

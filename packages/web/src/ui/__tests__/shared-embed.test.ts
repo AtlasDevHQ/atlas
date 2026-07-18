@@ -1,36 +1,9 @@
-import { describe, expect, test, mock, beforeEach, spyOn } from "bun:test";
+import { describe, expect, test, spyOn } from "bun:test";
+import { extractTextContent, truncate, getApiBaseUrl } from "../../app/shared/lib";
 
-// Mock fetch before importing the module
-const mockFetch = mock(() => Promise.resolve(new Response("", { status: 404 })));
-globalThis.fetch = mockFetch as unknown as typeof fetch;
-
-const {
-  extractTextContent,
-  truncate,
-  getApiBaseUrl,
-  fetchSharedConversation,
-} = await import("../../app/shared/lib");
-
-function jsonResponse(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-const sampleConversation = {
-  title: "Revenue Analysis",
-  surface: "web",
-  createdAt: "2026-03-12T00:00:00Z",
-  messages: [
-    { role: "user", content: "What were our top customers?", createdAt: "2026-03-12T00:00:00Z" },
-    { role: "assistant", content: "Here are the results.", createdAt: "2026-03-12T00:00:01Z" },
-  ],
-};
-
-beforeEach(() => {
-  mockFetch.mockReset();
-});
+// The data fetch moved to `app/shared/[token]/fetch.ts` (#4719) — its behavior
+// (no-store, header forwarding, token-hash logging, org-share auth split) is
+// covered by the colocated `app/shared/[token]/__tests__/fetch.test.ts`.
 
 describe("shared/lib utilities", () => {
   describe("extractTextContent", () => {
@@ -152,77 +125,4 @@ describe("shared/lib utilities", () => {
     });
   });
 
-  describe("fetchSharedConversation", () => {
-    test("returns conversation data on success", async () => {
-      mockFetch.mockResolvedValueOnce(jsonResponse(sampleConversation));
-
-      const result = await fetchSharedConversation("valid-token");
-
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.data.title).toBe("Revenue Analysis");
-        expect(result.data.messages).toHaveLength(2);
-      }
-    });
-
-    test("returns not-found for 404", async () => {
-      mockFetch.mockResolvedValueOnce(new Response("", { status: 404 }));
-
-      const result = await fetchSharedConversation("missing-token");
-
-      expect(result).toEqual({ ok: false, reason: "not-found" });
-    });
-
-    test("returns server-error for 500", async () => {
-      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-      mockFetch.mockResolvedValueOnce(new Response("", { status: 500 }));
-
-      const result = await fetchSharedConversation("error-token");
-
-      expect(result).toEqual({ ok: false, reason: "server-error" });
-      expect(errorSpy).toHaveBeenCalled();
-      errorSpy.mockRestore();
-    });
-
-    test("returns server-error for malformed response shape", async () => {
-      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-      mockFetch.mockResolvedValueOnce(jsonResponse({ error: "bad" }));
-
-      const result = await fetchSharedConversation("malformed-token");
-
-      expect(result).toEqual({ ok: false, reason: "server-error" });
-      expect(errorSpy).toHaveBeenCalled();
-      errorSpy.mockRestore();
-    });
-
-    test("returns network-error when fetch throws", async () => {
-      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-      mockFetch.mockRejectedValueOnce(new Error("DNS resolution failed"));
-
-      const result = await fetchSharedConversation("network-fail");
-
-      expect(result).toEqual({ ok: false, reason: "network-error" });
-      expect(errorSpy).toHaveBeenCalled();
-      errorSpy.mockRestore();
-    });
-
-    test("encodes token in fetch URL", async () => {
-      mockFetch.mockResolvedValueOnce(new Response("", { status: 404 }));
-
-      await fetchSharedConversation("tok/en+special");
-
-      const firstCall = mockFetch.mock.calls[0] as unknown as [string, ...unknown[]];
-      expect(firstCall[0]).toContain("tok%2Fen%2Bspecial");
-    });
-
-    test("does not log for 404 responses", async () => {
-      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-      mockFetch.mockResolvedValueOnce(new Response("", { status: 404 }));
-
-      await fetchSharedConversation("not-found");
-
-      expect(errorSpy).not.toHaveBeenCalled();
-      errorSpy.mockRestore();
-    });
-  });
 });

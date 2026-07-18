@@ -4,6 +4,15 @@ import { describe, expect, test, mock, beforeEach } from "bun:test";
 const mockFetch = mock(() => Promise.resolve(new Response("", { status: 404 })));
 globalThis.fetch = mockFetch as unknown as typeof fetch;
 
+// The page's data fetch (`[token]/fetch.ts`, #4719) reads the request-scoped
+// cookie/header stores to forward the viewer's session + IP; stub them so the
+// module renders outside a Next request scope.
+void mock.module("next/headers", () => ({
+  cookies: async () => ({ toString: () => "" }),
+  headers: async () => ({ get: () => null }),
+  draftMode: async () => ({ isEnabled: false }),
+}));
+
 // Import generateMetadata from the page module
 const { generateMetadata } = await import("../../app/shared/[token]/page");
 

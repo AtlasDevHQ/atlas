@@ -233,11 +233,11 @@ curl -X POST https://your-atlas.com/api/v1/admin/cache/flush \
   -H "Cookie: atlas.session_token=<session>"
 ```
 
-Cache behavior is tuned at runtime via the settings registry — **Admin → the
-Cache page** or the `ATLAS_CACHE_*` env vars (`ATLAS_CACHE_ENABLED`,
-`ATLAS_CACHE_TTL`, `ATLAS_CACHE_MAX_SIZE`) — with no redeploy. A `cache:`
-block in `atlas.config.ts` is no longer supported and fails validation at
-boot. See <AudienceLink selfHosted="/self-hosted/deployment/cache-configuration">Cache Configuration</AudienceLink> for details.
+Cache behavior is tuned at runtime from **Admin → the Cache page** — no
+redeploy needed. Self-hosted deployments can also set boot defaults via the
+`ATLAS_CACHE_*` env vars (`ATLAS_CACHE_ENABLED`, `ATLAS_CACHE_TTL`,
+`ATLAS_CACHE_MAX_SIZE`); a `cache:` block in `atlas.config.ts` is no longer
+supported and fails validation at boot. See <AudienceLink selfHosted="/self-hosted/deployment/cache-configuration">Cache Configuration</AudienceLink> for details.
 
 ---
 

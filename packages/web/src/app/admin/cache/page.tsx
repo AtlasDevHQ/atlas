@@ -286,7 +286,7 @@ function CacheEntriesCard({ onChanged }: { onChanged: () => void }) {
     // the user on a retry that can only ever 404 again.
     if (!result.ok && result.error.status === 404) {
       del.clearErrorFor(key);
-      refetch();
+      void refetch();
     }
   }
 

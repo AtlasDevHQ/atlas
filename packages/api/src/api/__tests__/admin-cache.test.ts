@@ -46,13 +46,14 @@ const auditMockFactory = () => ({
 });
 
 void mock.module("@atlas/api/lib/audit", auditMockFactory);
-const mockCacheStats = mock(() => ({ hits: 42, misses: 8, entryCount: 15, maxSize: 1000, ttl: 300000 }));
-const mockFlushCache = mock(() => {});
+const mockCacheStats = mock(async () => ({ hits: 42, misses: 8, entryCount: 15, maxSize: 1000, ttl: 300000 }));
+const mockFlushCache = mock(async () => {});
 const mockGetCache = mock(() => ({
-  get: () => null,
-  set: () => {},
-  delete: () => false,
-  flush: () => {},
+  get: async () => null,
+  set: async () => {},
+  delete: async () => false,
+  flush: async () => {},
+  flushByOrg: async () => 0,
   stats: mockCacheStats,
 }));
 
@@ -71,11 +72,13 @@ const mocks = createApiTestMocks({
 const cacheMockFactory = () => ({
   getCache: mockGetCache,
   cacheEnabled: () => mockCacheEnabled,
-  setCacheBackend: mock(() => {}),
+  setCacheBackend: mock(async () => {}),
   flushCache: mockFlushCache,
+  flushCacheByOrg: mock(async () => 0),
   getDefaultTtl: mock(() => 300000),
   _resetCache: mock(() => {}),
   buildCacheKey: mock(() => "mock-key"),
+  validateCacheBackend: mock(async () => ({ ok: true })),
 });
 
 void mock.module("@atlas/api/lib/cache", cacheMockFactory);
@@ -166,15 +169,16 @@ describe("admin cache routes", () => {
     mockCacheEnabled = true;
     mockCacheStats.mockClear();
     mockFlushCache.mockClear();
-    mockFlushCache.mockImplementation(() => {});
+    mockFlushCache.mockImplementation(async () => {});
     mockLogAdminAction.mockClear();
     mockLogAdminActionAwait.mockClear();
     mockLogAdminActionAwait.mockImplementation(() => Promise.resolve());
     mockGetCache.mockImplementation(() => ({
-      get: () => null,
-      set: () => {},
-      delete: () => false,
-      flush: () => {},
+      get: async () => null,
+      set: async () => {},
+      delete: async () => false,
+      flush: async () => {},
+      flushByOrg: async () => 0,
       stats: mockCacheStats,
     }));
     setPlatformAdmin();
@@ -229,7 +233,7 @@ describe("admin cache routes", () => {
     });
 
     it("returns hitRate/missRate of 0 when cache is enabled but empty", async () => {
-      mockCacheStats.mockReturnValueOnce({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 });
+      mockCacheStats.mockResolvedValueOnce({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 });
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
       expect(res.status).toBe(200);
       const body = await res.json() as Record<string, unknown>;
@@ -253,11 +257,12 @@ describe("admin cache routes", () => {
 
     it("returns 500 with requestId when stats() throws", async () => {
       mockGetCache.mockImplementation(() => ({
-        get: () => null,
-        set: () => {},
-        delete: () => false,
-        flush: () => {},
-        stats: (() => { throw new Error("Redis connection refused"); }) as unknown as typeof mockCacheStats,
+        get: async () => null,
+        set: async () => {},
+        delete: async () => false,
+        flush: async () => {},
+        flushByOrg: async () => 0,
+        stats: (async () => { throw new Error("Redis connection refused"); }) as unknown as typeof mockCacheStats,
       }));
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
       expect(res.status).toBe(500);

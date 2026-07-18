@@ -36,6 +36,7 @@ import {
 } from "@atlas/api/lib/dashboard-parameters";
 import { getSetting, getSettingAuto } from "@atlas/api/lib/settings";
 import { getCache, buildCacheKey, cacheEnabled, getDefaultTtl } from "@atlas/api/lib/cache/index";
+import type { CacheScope } from "@atlas/api/lib/cache/index";
 import { proposePatternIfNovel } from "@atlas/api/lib/learn/pattern-proposer";
 import {
   ConnectionNotFoundError, PoolExhaustedError, NoDatasourceError,
@@ -1292,7 +1293,13 @@ function executeAndAuditEffect(opts: {
   rowLimit: number;
   explanation: string;
   classification: SQLClassification | undefined;
-  cacheKey: string | null;
+  /**
+   * The cache write: key + scope tags, or `null` for "don't cache". One object
+   * so key-without-scope is unrepresentable. `scope.orgId` MUST be the same org
+   * folded into `key` so a later `flushByOrg` targets exactly the entries this
+   * write produced.
+   */
+  cacheWrite: { key: string; scope: CacheScope } | null;
   hookMetadata: Record<string, unknown>;
   dispatchHook: (event: "afterQuery", ctx: Record<string, unknown>) => Promise<void>;
   /** Positional bind values for parameterized queries (#2267) — forwarded to
@@ -1309,7 +1316,7 @@ function executeAndAuditEffect(opts: {
 }): Effect.Effect<ExecutedSqlResult, QueryExecutionError | EnterpriseUnavailableError> {
   const {
     db, dbType, connId, orgId, poolOrgId, targetHost, querySql, queryTimeout,
-    rowLimit, explanation, classification, cacheKey, hookMetadata, dispatchHook,
+    rowLimit, explanation, classification, cacheWrite, hookMetadata, dispatchHook,
     bindParams, parentAuditId, routingMode, connectionGroupId, routingReason,
   } = opts;
   // Pool metrics key off the served pool; SLA + masking stay on `orgId`.
@@ -1397,16 +1404,18 @@ function executeAndAuditEffect(opts: {
             });
           }
 
-          // Cache write (fail open)
-          if (cacheKey) {
+          // Cache write (fail open). Awaited so an async backend's write
+          // actually completes (and its rejection is caught here) rather than
+          // escaping as an unhandled rejection.
+          if (cacheWrite) {
             try {
-              getCache().set(cacheKey, {
+              await getCache().set(cacheWrite.key, {
                 columns: result.columns, rows: result.rows,
                 cachedAt: Date.now(), ttl: getDefaultTtl(),
                 // #3616 — stamp the real execution cost so the cache-hit
                 // audit row replays it instead of logging duration_ms=0.
                 executionMs: durationMs,
-              });
+              }, cacheWrite.scope);
             } catch (cacheErr) {
               log.error({ err: cacheErr, connectionId: connId }, "Cache write failed — result not cached");
             }
@@ -1896,14 +1905,35 @@ export function runSqlPipelineEffect(
     // Pre-step (agent path): result-cache check (short-circuit on hit).
     // Deliberately AFTER the approval gate so a cache hit can never bypass
     // governance, and masking + the CURRENT row limit apply before serving.
-    let cacheKey: string | null = null;
+    // The cache write (key + scope), or null for "don't cache". `scope.orgId`
+    // is the SAME org that goes into `key`, so a later `flushByOrg(orgId)`
+    // targets exactly this entry. One object so key-without-scope can't happen.
+    let cacheWrite: { key: string; scope: CacheScope } | null = null;
     if (preStep?.kind === "check-cache" && cacheEnabled()) {
       try {
         const ctx = getRequestContext();
         const cacheOrgId = ctx?.user?.activeOrganizationId;
         const claims = ctx?.user?.claims;
-        cacheKey = buildCacheKey(normalizedSql, connId, cacheOrgId, claims);
-        const cached = getCache().get(cacheKey);
+        const cacheKey = buildCacheKey(normalizedSql, connId, cacheOrgId, claims);
+        cacheWrite = { key: cacheKey, scope: { orgId: cacheOrgId, connectionId: connId } };
+        // Awaited via Effect so an async backend's read actually resolves
+        // before we branch — an unawaited Promise is truthy and would read as a
+        // phantom hit, serving `undefined` rows for every query. Fail open: a
+        // read rejection logs, drops the write (so we don't try to write back to
+        // a broken backend), and falls through to a live execution.
+        const cached = yield* Effect.tryPromise({
+          // `async () =>` (not a bare arrow) so the try always yields a
+          // Promise — tolerating a backend (or test mock) whose `get` is
+          // sync-shaped, while still awaiting a real async backend's result.
+          try: async () => getCache().get(cacheKey),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.catchAll((readErr) => {
+            log.error({ err: readErr, connectionId: connId }, "Cache read failed — executing query against database");
+            cacheWrite = null;
+            return Effect.succeed(null);
+          }),
+        );
         if (cached) {
           // Wrapped locally (mirrors the live-path audit in
           // `executeAndAuditEffect`) so an audit-write failure on a hit
@@ -1991,7 +2021,7 @@ export function runSqlPipelineEffect(
         }
       } catch (cacheErr) {
         log.error({ err: cacheErr, connectionId: connId }, "Cache read failed — executing query against database");
-        cacheKey = null;
+        cacheWrite = null;
       }
     }
 
@@ -2076,7 +2106,7 @@ export function runSqlPipelineEffect(
         // Execute the query
         const result = yield* executeAndAuditEffect({
           db, dbType, connId, orgId, poolOrgId, targetHost, querySql, queryTimeout,
-          rowLimit, explanation, classification, cacheKey,
+          rowLimit, explanation, classification, cacheWrite,
           hookMetadata, dispatchHook, bindParams, parentAuditId, routingMode, routingReason,
         });
         return { kind: "executed" as const, result };

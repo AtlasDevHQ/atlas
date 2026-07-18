@@ -27,14 +27,53 @@ export interface CacheStats {
 }
 
 /**
+ * Scope tags carried on every `set()`. They let the cache purge exactly the
+ * entries a governance event affects, instead of nuking the whole region's
+ * cache (a workspace deletion or region migration must not evict a co-tenant's
+ * warm entries).
+ *
+ * - `orgId` — the owning Workspace. Drives {@link CacheBackend.flushByOrg}. May
+ *   be `undefined` in auth mode "none" (no tenant), in which case the entry is
+ *   simply not reachable by `flushByOrg` — there is no org to target.
+ * - `connectionId` — the Datasource connection the entry's rows came from.
+ *   Always present. Retained on the tag so a future per-connection invalidation
+ *   can filter an org's entries by connection, and so external backends (Redis,
+ *   Memcached) can tag entries by connection. No in-process reader filters by it
+ *   yet — the LRU indexes by `orgId` only.
+ */
+export interface CacheScope {
+  orgId?: string;
+  connectionId: string;
+}
+
+/**
  * Abstract cache backend. The default in-memory LRU implements this.
  * Plugins can provide external backends (Redis, Memcached) via this interface.
+ *
+ * Every method is `Promise`-returning so an out-of-process backend (Redis,
+ * Memcached) is actually implementable against this contract. The in-process
+ * LRU satisfies it trivially (its bodies are synchronous, wrapped in `async`).
+ * Awaiting at the call sites is what kills the phantom-hit failure mode — a raw
+ * Promise is truthy, so a sync-shaped `get()` returning an unawaited Promise
+ * would read as a cache HIT for every query and serve `undefined` rows.
  */
 export interface CacheBackend {
-  get(key: string): CacheEntry | null;
-  set(key: string, entry: CacheEntry): void;
-  delete(key: string): boolean;
-  /** Flush all entries. */
-  flush(): void;
-  stats(): CacheStats;
+  get(key: string): Promise<CacheEntry | null>;
+  /** Store an entry under `key`, tagged with `scope` for scoped invalidation. */
+  set(key: string, entry: CacheEntry, scope: CacheScope): Promise<void>;
+  delete(key: string): Promise<boolean>;
+  /** Flush all entries (fleet-wide — every Workspace's entries in this process). */
+  flush(): Promise<void>;
+  /**
+   * Purge exactly the entries owned by `orgId`. Returns the number removed.
+   * Used by org deletion + residency migration so one Workspace's teardown
+   * never evicts another's warm entries.
+   */
+  flushByOrg(orgId: string): Promise<number>;
+  /**
+   * Return live counters. Must be cheap + side-effect-free: it is invoked on
+   * every admin stats poll and — for a plugin-supplied backend — as the
+   * shape probe during registration validation.
+   */
+  stats(): Promise<CacheStats>;
 }

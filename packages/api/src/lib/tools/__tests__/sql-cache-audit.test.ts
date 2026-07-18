@@ -17,7 +17,7 @@
 import { describe, expect, it, beforeEach, afterEach, mock, type Mock } from "bun:test";
 import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 import { createConnectionMock } from "@atlas/api/testing/connection";
-import type { CacheEntry } from "@atlas/api/lib/cache/types";
+import type { CacheEntry, CacheScope } from "@atlas/api/lib/cache/types";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyResult = any;
@@ -68,24 +68,35 @@ void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
 
 // Cache mock — ENABLED, returning whatever `cachedEntry` is set to. A null
 // entry is a miss (executes); a populated entry is a hit (short-circuits).
-// `cacheSets` captures every write so the miss path's `executionMs` stamp is
-// assertable (the WRITE side of #3616, not just the replay).
+// `cacheSets` captures every write (key + entry + scope) so the miss path's
+// `executionMs` stamp AND the scope tags are assertable.
+//
+// `get`/`set` are async on purpose: they mirror the real async CacheBackend
+// contract, and — load-bearing — an async `get` is what turns these tests into
+// a phantom-hit guard. If the pipeline ever stops awaiting the read, the
+// unawaited Promise is truthy and a MISS reads as a HIT; the miss test below
+// then fails (it would serve a phantom hit instead of executing).
 let cachedEntry: CacheEntry | null = null;
-let cacheSets: Array<{ key: string; entry: CacheEntry }> = [];
+let cacheSets: Array<{ key: string; entry: CacheEntry; scope: CacheScope }> = [];
 
 void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({
-    get: () => cachedEntry,
-    set: (key: string, entry: CacheEntry) => {
-      cacheSets.push({ key, entry });
+    get: async () => cachedEntry,
+    set: async (key: string, entry: CacheEntry, scope: CacheScope) => {
+      cacheSets.push({ key, entry, scope });
     },
-    stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }),
+    delete: async () => false,
+    flush: async () => {},
+    flushByOrg: async () => 0,
+    stats: async () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }),
   }),
   buildCacheKey: () => "mock-key",
   cacheEnabled: () => true,
   getDefaultTtl: () => 300000,
-  flushCache: () => {},
-  setCacheBackend: () => {},
+  flushCache: async () => {},
+  flushCacheByOrg: async () => 0,
+  setCacheBackend: async () => {},
+  validateCacheBackend: async () => ({ ok: true }),
   _resetCache: () => {},
 }));
 
@@ -217,10 +228,32 @@ describe("executeSQL cache-hit audit duration (#3616)", () => {
     const stamped = cacheSets[0].entry.executionMs ?? 0;
     expect(stamped).toBeGreaterThan(0);
 
+    // The write carries scope tags (#4548): the connection the rows came from,
+    // so a later flushByOrg can target exactly these entries. connectionId is
+    // always present; orgId rides the request context (unset here → undefined).
+    expect(cacheSets[0].scope).toBeDefined();
+    expect(typeof cacheSets[0].scope.connectionId).toBe("string");
+    expect(cacheSets[0].scope.connectionId.length).toBeGreaterThan(0);
+
     // …and it equals the duration logged on the same execution's audit row,
     // proving the stamp is wired to the real measured duration, not a literal.
     const inserts = getAuditInserts();
     expect(inserts).toHaveLength(1);
     expect(extractAuditParams(inserts[0].params!).durationMs).toBe(stamped);
+  });
+
+  // #4548 — the async-read phantom-hit guard, stated explicitly. With an async
+  // `get()`, a MISS returns `Promise<null>`. If the pipeline stops awaiting the
+  // read, that Promise is truthy and the query reads as a HIT that serves
+  // `undefined` rows for EVERY query. Here a miss must execute live: the
+  // datasource is queried and the fresh (uncached) rows are served.
+  it("awaits the async cache read so a miss executes live (no phantom hit)", async () => {
+    cachedEntry = null; // async get resolves to null → a genuine miss
+    const result = await exec("SELECT id, name FROM companies");
+
+    expect(result.success).toBe(true);
+    expect(result.cached).toBe(false); // NOT a phantom hit
+    expect(queryFn).toHaveBeenCalled(); // the datasource was actually hit
+    expect(result.rows).toEqual([{ id: 1, name: "Acme" }]); // real rows, not undefined
   });
 });

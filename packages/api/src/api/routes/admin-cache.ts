@@ -75,7 +75,7 @@ adminCache.openapi(getCacheStatsRoute, async (c) => runHandler(c, "retrieve cach
   if (!cacheEnabled()) {
     return c.json({ enabled: false, hits: 0, misses: 0, hitRate: 0, missRate: 0, entryCount: 0, maxSize: 0, ttl: 0 }, 200);
   }
-  const stats = getCache().stats();
+  const stats = await getCache().stats();
   const total = stats.hits + stats.misses;
   const hitRate = total > 0 ? stats.hits / total : 0;
   const missRate = total > 0 ? stats.misses / total : 0;
@@ -91,7 +91,7 @@ adminCache.openapi(flushCacheRoute, async (c) => runHandler(c, "flush cache", as
   if (!cacheEnabled()) {
     return c.json({ ok: false, flushed: 0, message: "Cache is disabled" }, 200);
   }
-  const count = getCache().stats().entryCount;
+  const count = (await getCache().stats()).entryCount;
   // Attribution IS the security control here: flush is process-global (clears
   // every workspace's entries on this runtime), so a fleet-wide invalidation
   // must always be attributable to a specific admin. Commit the audit row
@@ -108,7 +108,7 @@ adminCache.openapi(flushCacheRoute, async (c) => runHandler(c, "flush cache", as
     targetId: "default",
     metadata: { flushed: count },
   });
-  flushCache();
+  await flushCache();
   log.info({ requestId, userId: authResult.user?.id, flushed: count }, "Cache flushed via admin API");
   return c.json({ ok: true, flushed: count, message: "Cache flushed" }, 200);
 }));

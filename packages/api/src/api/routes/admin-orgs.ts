@@ -23,7 +23,6 @@ import {
   type PlanTier,
 } from "@atlas/api/lib/db/internal";
 import { connections } from "@atlas/api/lib/db/connection";
-import { flushCache } from "@atlas/api/lib/cache/index";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 import { PLAN_OVERRIDE_DAYS } from "@atlas/api/lib/billing/plans";
 import {
@@ -743,7 +742,25 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
         warnings.push(`pool_drain_failed: ${drainResult.left.message}`);
       }
     }
-    flushCache();
+    // Purge exactly this org's cached entries — not the whole region's. A
+    // co-tenant's warm entries must survive one Workspace's deletion.
+    // Best-effort: a purge failure joins `warnings` and does not abort the
+    // one-shot destructive delete cascade (same stance as pool drain above).
+    // Dynamic import mirrors the residency-migration / config-reload cache
+    // callers and keeps the Query Cache off admin-orgs' static import graph.
+    yield* Effect.tryPromise({
+      try: async () => {
+        const { flushCacheByOrg } = await import("@atlas/api/lib/cache/index");
+        return flushCacheByOrg(orgId);
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.catchAll((err) => {
+        log.error({ orgId, requestId, err: err.message }, "Cache purge for deleted org failed — continuing with cascade");
+        warnings.push(`cache_purge_failed: ${err.message}`);
+        return Effect.succeed(0);
+      }),
+    );
 
     // Cancel Stripe billing BEFORE the cascade (#3425, wired here by
     // #3459): a deleted org must stop invoicing even if the cascade below

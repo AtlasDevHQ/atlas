@@ -651,18 +651,21 @@ export function createApiTestMocks(
 
   const cacheMock = () => ({
     getCache: mock(() => ({
-      get: () => null,
-      set: () => {},
-      delete: () => false,
-      flush: () => {},
-      stats: () => ({}),
+      get: async () => null,
+      set: async () => {},
+      delete: async () => false,
+      flush: async () => {},
+      flushByOrg: async () => 0,
+      stats: async () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 0, ttl: 0 }),
     })),
     cacheEnabled: mock(() => true),
-    setCacheBackend: mock(() => {}),
-    flushCache: mock(() => {}),
+    setCacheBackend: mock(async () => {}),
+    flushCache: mock(async () => {}),
+    flushCacheByOrg: mock(async () => 0),
     getDefaultTtl: mock(() => 300000),
     _resetCache: mock(() => {}),
     buildCacheKey: mock(() => "mock-key"),
+    validateCacheBackend: mock(async () => ({ ok: true })),
     ...overrides?.cache,
   });
 

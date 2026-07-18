@@ -54,6 +54,7 @@ context (which are secrets, which are derived, what changes at runtime).
 | `ATLAS_REGION_EU_DB_URL` | Region routing | EU region internal Postgres URL for residency routing. |
 | `ATLAS_REGION_APAC_DB_URL` | Region routing | APAC region internal Postgres URL for residency routing. |
 | `ATLAS_STRICT_PLUGIN_SECRETS` | Plugin config | Strict mode: fail boot on a missing plugin secret rather than silently dropping the plugin. `PluginConfigGuardLive`. |
+| `VERCEL_TOKEN` | Sandbox | Vercel Sandbox API token (per-service secret; Railway shared vars don't auto-inherit). `SandboxCredsGuardLive` refuses to boot a SaaS region whose `sandbox.priority` pins vercel-sandbox without it — otherwise every explore/executePython call hard-fails at first use. Team + project IDs are non-secret `sandbox.vercel` config in atlas.config.ts. |
 | `ATLAS_SMTP_URL` | Platform email (DPA) | SMTP URL for platform transactional email — alternative to `RESEND_API_KEY`. DPA-gated by `DpaGuardLive`. |
 | `RESEND_API_KEY` | Platform email (DPA) | Resend API key for platform transactional email. SaaS platform email must be Resend (DPA). |
 | `TURNSTILE_SECRET_KEY` | Abuse protection | Cloudflare Turnstile secret for the contact form + `start_trial` MCP onboarding. `TurnstileGuardLive` refuses to boot a SaaS region without it (fail-closed verify would silently 403 every signup otherwise). |

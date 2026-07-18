@@ -93,6 +93,7 @@ import type {
   InternalDatabaseRequiredError as TInternalDatabaseRequiredError,
   RateLimitRequiredError as TRateLimitRequiredError,
   TurnstileSecretRequiredError as TTurnstileSecretRequiredError,
+  SandboxCredentialsMissingError as TSandboxCredentialsMissingError,
   ProviderKeyMissingError as TProviderKeyMissingError,
   ProviderUnsupportedError as TProviderUnsupportedError,
   RegionMisconfiguredError as TRegionMisconfiguredError,
@@ -159,6 +160,8 @@ const {
   RateLimitRequiredError,
   TurnstileGuardLive,
   TurnstileSecretRequiredError,
+  SandboxCredsGuardLive,
+  SandboxCredentialsMissingError,
   ProviderKeyGuardLive,
   ProactiveProviderKeyGuardLive,
   ProviderKeyMissingError,
@@ -805,6 +808,178 @@ describe("TurnstileGuardLive", () => {
       );
       expect(Exit.isSuccess(exit)).toBe(true);
     });
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  SandboxCredsGuardLive (#4461)
+// ══════════════════════════════════════════════════════════════════════
+
+describe("SandboxCredsGuardLive", () => {
+  // `VERCEL_TOKEN` is a SAAS_ENV_KEY (so `withCleanEnv` clears it), but the
+  // team + project IDs are NOT — they resolve from `sandbox.vercel` in
+  // atlas.config.ts (#3706) and env only as an override. Clear + optionally set
+  // them here so a dev machine's stray Vercel creds can't make a "fails when
+  // token missing" case pass for the wrong reason, and restore afterward.
+  function withVercelIds<T>(
+    ids: { teamId?: string; projectId?: string },
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const saved = {
+      teamId: process.env.VERCEL_TEAM_ID,
+      projectId: process.env.VERCEL_PROJECT_ID,
+    };
+    if (ids.teamId !== undefined) process.env.VERCEL_TEAM_ID = ids.teamId;
+    else delete process.env.VERCEL_TEAM_ID;
+    if (ids.projectId !== undefined) process.env.VERCEL_PROJECT_ID = ids.projectId;
+    else delete process.env.VERCEL_PROJECT_ID;
+    return run().finally(() => {
+      if (saved.teamId !== undefined) process.env.VERCEL_TEAM_ID = saved.teamId;
+      else delete process.env.VERCEL_TEAM_ID;
+      if (saved.projectId !== undefined) process.env.VERCEL_PROJECT_ID = saved.projectId;
+      else delete process.env.VERCEL_PROJECT_ID;
+    });
+  }
+
+  const VERCEL_PINNED = { deployMode: "saas", sandbox: { priority: ["vercel-sandbox"] } };
+
+  test("fails boot in SaaS when priority pins vercel-sandbox and VERCEL_TOKEN is unset", async () => {
+    await withCleanEnv(() =>
+      withVercelIds({ teamId: "team_x", projectId: "prj_x" }, async () => {
+        // team + project present via env, token absent → partial → fail.
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              SandboxCredsGuardLive.pipe(Layer.provide(makeTestConfigLayer(VERCEL_PINNED))),
+            ),
+          ),
+        );
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        expect(failure).toBeInstanceOf(SandboxCredentialsMissingError);
+        expect((failure as TSandboxCredentialsMissingError)._tag).toBe("SandboxCredentialsMissingError");
+        expect((failure as TSandboxCredentialsMissingError).message).toContain("#4461");
+        expect((failure as TSandboxCredentialsMissingError).message).toContain("VERCEL_TOKEN");
+        expect((failure as TSandboxCredentialsMissingError).missing).toEqual(["VERCEL_TOKEN"]);
+      }),
+    );
+  });
+
+  test("fails boot in SaaS when all three credentials are absent (reports the full set)", async () => {
+    await withCleanEnv(() =>
+      withVercelIds({}, async () => {
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              SandboxCredsGuardLive.pipe(Layer.provide(makeTestConfigLayer(VERCEL_PINNED))),
+            ),
+          ),
+        );
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        expect(failure).toBeInstanceOf(SandboxCredentialsMissingError);
+        expect((failure as TSandboxCredentialsMissingError).missing).toEqual([
+          "VERCEL_TEAM_ID",
+          "VERCEL_PROJECT_ID",
+          "VERCEL_TOKEN",
+        ]);
+      }),
+    );
+  });
+
+  test("succeeds in SaaS when all Vercel credentials are present", async () => {
+    await withCleanEnv(() =>
+      withVercelIds({ teamId: "team_x", projectId: "prj_x" }, async () => {
+        process.env.VERCEL_TOKEN = "vercel-token";
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              SandboxCredsGuardLive.pipe(Layer.provide(makeTestConfigLayer(VERCEL_PINNED))),
+            ),
+          ),
+        );
+        expect(Exit.isSuccess(exit)).toBe(true);
+      }),
+    );
+  });
+
+  test("no-ops in SaaS when priority is not configured (default chain, no pin)", async () => {
+    await withCleanEnv(() =>
+      withVercelIds({}, async () => {
+        // No sandbox config at all → not pinned → guard inert even without creds.
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              SandboxCredsGuardLive.pipe(Layer.provide(makeTestConfigLayer({ deployMode: "saas" }))),
+            ),
+          ),
+        );
+        expect(Exit.isSuccess(exit)).toBe(true);
+      }),
+    );
+  });
+
+  test("no-ops in SaaS when priority includes a just-bash fallback (degrade allowed)", async () => {
+    await withCleanEnv(() =>
+      withVercelIds({}, async () => {
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              SandboxCredsGuardLive.pipe(
+                Layer.provide(
+                  makeTestConfigLayer({
+                    deployMode: "saas",
+                    sandbox: { priority: ["vercel-sandbox", "just-bash"] },
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+        expect(Exit.isSuccess(exit)).toBe(true);
+      }),
+    );
+  });
+
+  test("no-ops in SaaS when priority pins a non-vercel backend", async () => {
+    await withCleanEnv(() =>
+      withVercelIds({}, async () => {
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              SandboxCredsGuardLive.pipe(
+                Layer.provide(
+                  makeTestConfigLayer({ deployMode: "saas", sandbox: { priority: ["sidecar"] } }),
+                ),
+              ),
+            ),
+          ),
+        );
+        expect(Exit.isSuccess(exit)).toBe(true);
+      }),
+    );
+  });
+
+  test("no-ops on self-hosted even when the priority pins vercel-sandbox with no creds", async () => {
+    await withCleanEnv(() =>
+      withVercelIds({}, async () => {
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              SandboxCredsGuardLive.pipe(
+                Layer.provide(
+                  makeTestConfigLayer({
+                    deployMode: "self-hosted",
+                    sandbox: { priority: ["vercel-sandbox"] },
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+        expect(Exit.isSuccess(exit)).toBe(true);
+      }),
+    );
   });
 });
 
@@ -2088,6 +2263,29 @@ describe("relaxSaasGuardForDev (ATLAS_DEPLOY_ENV=development)", () => {
           Effect.provide(
             TurnstileGuardLive.pipe(
               Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("SandboxCredsGuard: relaxes in saas+development when priority pins vercel-sandbox with no creds", async () => {
+    await withCleanEnv(async () => {
+      // The #4461 fail-boot shape: priority pins vercel-sandbox, credentials
+      // absent. `withCleanEnv` clears VERCEL_TOKEN; team/project stay unset.
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            SandboxCredsGuardLive.pipe(
+              Layer.provide(
+                makeTestConfigLayer({
+                  deployMode: "saas",
+                  sandbox: { priority: ["vercel-sandbox"] },
+                }),
+              ),
             ),
           ),
         ),

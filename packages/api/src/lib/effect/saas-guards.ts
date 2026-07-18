@@ -88,6 +88,7 @@
 import { Data, Effect, Layer } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
+import type { SandboxBackendName } from "@atlas/api/lib/config";
 import { Config, Settings } from "./layers";
 import { Migration, PluginRegistry } from "./services";
 import { readSaasEnv, type SaasEnv } from "./saas-env";
@@ -142,6 +143,7 @@ const PROVIDER_KEY_ISSUE_REF = "#3178";
 const BILLING_CONFIG_ISSUE_REF = "#3435";
 const MCP_SPINE_ISSUE_REF = "#3687";
 const TURNSTILE_ISSUE_REF = "#3795";
+const SANDBOX_CREDS_ISSUE_REF = "#4461";
 
 /**
  * Sentinel org id for the boot-time `mcp_action_policy` reachability probe. It
@@ -458,6 +460,33 @@ export class McpSpineIncoherentError extends Data.TaggedError("McpSpineIncoheren
   readonly message: string;
 }> {}
 
+/**
+ * SaaS region booted with `sandbox.priority` pinned to `vercel-sandbox` (the
+ * deny-all posture in `deploy/api/atlas.config.ts` — no `just-bash` fallback)
+ * but the Vercel Sandbox credentials are absent or only partially set (#4461).
+ * Without this guard the api boots green, `/health` stays green, and every
+ * `explore` / `executePython` call hard-fails at first use because the pinned
+ * (and only) sandbox backend can't authenticate — the same boot-green-then-
+ * broken class `ProviderKeyGuardLive` (#3178) and `ChatAdapterEnvGuardLive`
+ * (#2672) close, and `VERCEL_TOKEN` follows the same per-service-secret
+ * stamping pattern (Railway shared vars don't auto-inherit).
+ *
+ * `priority` is the resolved sandbox-priority list that tripped the guard and
+ * `missing` the SET of credential inputs that were absent (any of
+ * `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`, `VERCEL_TOKEN`) — both exposed so the
+ * operator-actionable boot log names the gap without re-parsing `message`. The
+ * presence check is the SAME one the runtime detector uses
+ * (`vercelSandboxCredentialStatus` in `lib/tools/backends/detect.ts`), so the
+ * guard and the detector can't drift on what "credentials present" means.
+ * Self-hosted, and any SaaS deploy whose priority is not pinned to
+ * vercel-sandbox, never construct this.
+ */
+export class SandboxCredentialsMissingError extends Data.TaggedError("SandboxCredentialsMissingError")<{
+  readonly message: string;
+  readonly priority: readonly string[];
+  readonly missing: readonly string[];
+}> {}
+
 // ══════════════════════════════════════════════════════════════════════
 // ██  Helpers
 // ══════════════════════════════════════════════════════════════════════
@@ -736,6 +765,95 @@ export const TurnstileGuardLive: Layer.Layer<never, TurnstileSecretRequiredError
         }),
       );
     }
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  SandboxCredsGuardLive (#4461)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Whether the resolved sandbox priority pins `vercel-sandbox` as a required
+ * backend with no unsandboxed fallback — the SaaS deny-all posture
+ * (`sandbox.priority: ["vercel-sandbox"]` in `deploy/api/atlas.config.ts`).
+ *
+ * Mirrors `planSandboxSelection`'s fail-closed determination
+ * (`lib/tools/backends/selection.ts`): a `just-bash` entry means the deploy
+ * opted into degrade-on-exhaustion, so a missing credential is NOT fatal and
+ * the guard must not fire. Absent `vercel-sandbox` from the list entirely
+ * (self-hosted, a sidecar/nsjail-pinned deploy) → not pinned, so a differently
+ * -configured deploy is never blocked by this guard.
+ */
+function sandboxPriorityPinsVercel(
+  priority: readonly SandboxBackendName[] | undefined,
+): boolean {
+  if (!priority || priority.length === 0) return false;
+  if (!priority.includes("vercel-sandbox")) return false;
+  // `just-bash` in the list ⇒ an unsandboxed fallback is allowed, so a missing
+  // VERCEL_TOKEN degrades rather than hard-fails — don't fail boot.
+  if (priority.includes("just-bash")) return false;
+  return true;
+}
+
+/**
+ * Fail boot in SaaS when `sandbox.priority` pins `vercel-sandbox` (the deny-all
+ * posture, no `just-bash` fallback) but the Vercel Sandbox credentials are
+ * absent or only partially set (#4461).
+ *
+ * `deploy/api/atlas.config.ts` pins `sandbox.priority: ["vercel-sandbox"]` on
+ * SaaS with no fallback (correctly fail-closed), but nothing asserted the
+ * credentials at boot: a region with a missing / mis-stamped `VERCEL_TOKEN`
+ * (a per-service Railway secret — shared vars don't auto-inherit) boots green,
+ * `/health` stays green, and every `explore` / `executePython` call hard-fails
+ * at first use. This guard turns that silent latent outage into a loud boot
+ * failure — the same posture as `ProviderKeyGuardLive` (#3178) and
+ * `ChatAdapterEnvGuardLive` (#2672).
+ *
+ * Depends only on `Config` (reads the resolved priority from the config Tag and
+ * the credential presence from `process.env` / `atlas.config.ts` via the shared
+ * `vercelSandboxCredentialStatus`), so it fails as fast as the other env-only
+ * guards. The detector module is lazy-imported inside the Effect body (same
+ * wall-off rationale as the other guards) — reusing its presence check is what
+ * keeps the guard and the runtime detector from drifting on "credentials
+ * present". Self-hosted is inert (the pin is a SaaS carve-out), and so is any
+ * SaaS deploy whose priority isn't pinned to vercel-sandbox. Dev-relaxable so
+ * the SaaS code path boots locally without the Vercel secret.
+ */
+export const SandboxCredsGuardLive: Layer.Layer<never, SandboxCredentialsMissingError, Config> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { config } = yield* Config;
+    if (config.deployMode !== "saas") return;
+    if (relaxSaasGuardForDev("SandboxCreds")) return;
+
+    const priority = config.sandbox?.priority;
+    if (!sandboxPriorityPinsVercel(priority)) return;
+
+    const { vercelSandboxCredentialStatus } = yield* Effect.promise(
+      () => import("@atlas/api/lib/tools/backends/detect"),
+    );
+    const status = vercelSandboxCredentialStatus();
+    if (status.complete) return;
+
+    const missing: string[] = [];
+    if (!status.hasTeamId) missing.push("VERCEL_TEAM_ID");
+    if (!status.hasProjectId) missing.push("VERCEL_PROJECT_ID");
+    if (!status.hasToken) missing.push("VERCEL_TOKEN");
+
+    yield* Effect.fail(
+      new SandboxCredentialsMissingError({
+        priority: [...(priority ?? [])],
+        missing,
+        message:
+          `SaaS region booted with sandbox.priority pinned to vercel-sandbox (the deny-all posture — ` +
+          `no just-bash fallback) but the Vercel Sandbox credentials are incomplete — missing: ` +
+          `[${missing.join(", ")}]. The api boots green and /health stays green, yet every ` +
+          `explore/executePython call would hard-fail at first use because the pinned (and only) ` +
+          `sandbox backend can't authenticate. VERCEL_TEAM_ID and VERCEL_PROJECT_ID resolve from ` +
+          `sandbox.vercel in atlas.config.ts (non-secret); VERCEL_TOKEN is a per-service env secret ` +
+          `that Railway shared vars do NOT auto-inherit — stamp it on every regional api service. ` +
+          `See ${SANDBOX_CREDS_ISSUE_REF}.`,
+      }),
+    );
   }),
 );
 

@@ -133,6 +133,66 @@ describe("Vercel sandbox detection", () => {
     });
   });
 
+  // The presence breakdown consumed by `SandboxCredsGuardLive` (#4461). Shares
+  // `resolveVercelSandboxCreds` with `vercelSandboxAccess`, so this pins that
+  // they agree on what "present" means and report the same env/config sources.
+  describe("vercelSandboxCredentialStatus", () => {
+    it("reports complete when all three credentials are present", async () => {
+      process.env.VERCEL_TEAM_ID = "team_123";
+      process.env.VERCEL_PROJECT_ID = "prj_123";
+      process.env.VERCEL_TOKEN = "vercel-token";
+
+      const { vercelSandboxCredentialStatus } = await detectModule();
+
+      expect(vercelSandboxCredentialStatus()).toEqual({
+        hasTeamId: true,
+        hasProjectId: true,
+        hasToken: true,
+        complete: true,
+      });
+    });
+
+    it("reports which inputs are missing on a partial (token-only) set", async () => {
+      process.env.VERCEL_TOKEN = "vercel-token";
+
+      const { vercelSandboxCredentialStatus } = await detectModule();
+
+      expect(vercelSandboxCredentialStatus()).toEqual({
+        hasTeamId: false,
+        hasProjectId: false,
+        hasToken: true,
+        complete: false,
+      });
+    });
+
+    it("counts config-sourced team + project IDs as present (token still env-only)", async () => {
+      process.env.VERCEL_TOKEN = "vercel-token";
+      mockConfig = {
+        sandbox: { vercel: { teamId: "team_cfg", projectId: "prj_cfg" } },
+      };
+
+      const { vercelSandboxCredentialStatus } = await detectModule();
+
+      expect(vercelSandboxCredentialStatus()).toEqual({
+        hasTeamId: true,
+        hasProjectId: true,
+        hasToken: true,
+        complete: true,
+      });
+    });
+
+    it("is incomplete when config supplies IDs but the env-only token is missing", async () => {
+      mockConfig = {
+        sandbox: { vercel: { teamId: "team_cfg", projectId: "prj_cfg" } },
+      };
+
+      const { vercelSandboxCredentialStatus } = await detectModule();
+
+      expect(vercelSandboxCredentialStatus().complete).toBe(false);
+      expect(vercelSandboxCredentialStatus().hasToken).toBe(false);
+    });
+  });
+
   describe("useVercelSandbox", () => {
     it("returns true on ATLAS_RUNTIME=vercel", async () => {
       process.env.ATLAS_RUNTIME = "vercel";

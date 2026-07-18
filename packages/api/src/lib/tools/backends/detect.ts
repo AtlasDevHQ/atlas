@@ -37,6 +37,61 @@ export interface VercelSandboxAccess {
 let _partialCredsWarned = false;
 
 /**
+ * Presence breakdown of the three Vercel Sandbox credential inputs, resolved
+ * with the SAME env-or-config precedence {@link vercelSandboxAccess} uses.
+ * `complete` is true iff all three are present. Exists so the SaaS boot guard
+ * (`SandboxCredsGuardLive`, #4461) and the runtime detector agree — by
+ * construction — on what "credentials present" means, rather than duplicating
+ * the resolution and drifting.
+ */
+export interface VercelSandboxCredentialStatus {
+  readonly hasTeamId: boolean;
+  readonly hasProjectId: boolean;
+  readonly hasToken: boolean;
+  readonly complete: boolean;
+}
+
+/**
+ * Resolve the three credential values with env-first, config-second
+ * precedence. The SINGLE statement of "which sources count", shared by
+ * {@link vercelSandboxAccess} and {@link vercelSandboxCredentialStatus} so
+ * neither can drift from the other. `VERCEL_TOKEN` is env-only (the secret);
+ * team + project IDs also fall back to `sandbox.vercel` in `atlas.config.ts`
+ * (#3706 — non-secret, constant across regions). Empty-string env values
+ * collapse to `undefined` (absent) via `||`.
+ */
+function resolveVercelSandboxCreds(): {
+  teamId: string | undefined;
+  projectId: string | undefined;
+  token: string | undefined;
+} {
+  const vercelConfig = getConfig()?.sandbox?.vercel;
+  return {
+    teamId: process.env.VERCEL_TEAM_ID || vercelConfig?.teamId,
+    projectId: process.env.VERCEL_PROJECT_ID || vercelConfig?.projectId,
+    token: process.env.VERCEL_TOKEN || undefined,
+  };
+}
+
+/**
+ * The presence breakdown of the Vercel Sandbox credentials — same resolution
+ * as {@link vercelSandboxAccess}, but reporting WHICH inputs are missing
+ * instead of the redacted access object. Used by `SandboxCredsGuardLive`
+ * (#4461) to fail SaaS boot (rather than the runtime "all backends failed"
+ * message far downstream) when the priority pins vercel-sandbox but a
+ * credential is absent/partial.
+ */
+export function vercelSandboxCredentialStatus(): VercelSandboxCredentialStatus {
+  const { teamId, projectId, token } = resolveVercelSandboxCreds();
+  return {
+    hasTeamId: !!teamId,
+    hasProjectId: !!projectId,
+    hasToken: !!token,
+    complete: !!(teamId && projectId && token),
+  };
+}
+
+/**
  * Returns explicit Vercel Sandbox API credentials when running off-Vercel
  * (e.g. Railway, Fly, bare metal). When unset, `@vercel/sandbox` falls back
  * to `VERCEL_OIDC_TOKEN` which is only present on the Vercel platform.
@@ -53,10 +108,7 @@ let _partialCredsWarned = false;
  * failed" message far downstream.
  */
 export function vercelSandboxAccess(): VercelSandboxAccess | undefined {
-  const vercelConfig = getConfig()?.sandbox?.vercel;
-  const teamId = process.env.VERCEL_TEAM_ID || vercelConfig?.teamId;
-  const projectId = process.env.VERCEL_PROJECT_ID || vercelConfig?.projectId;
-  const token = process.env.VERCEL_TOKEN;
+  const { teamId, projectId, token } = resolveVercelSandboxCreds();
   const allSet = !!(teamId && projectId && token);
   if (!allSet) {
     const anySet = !!(teamId || projectId || token);

@@ -73,6 +73,19 @@ export interface SaasEnv {
   // Plugin config strict mode (PluginConfigGuardLive)
   readonly ATLAS_STRICT_PLUGIN_SECRETS: string | undefined;
 
+  // Vercel Sandbox credential (SandboxCredsGuardLive, #4461). SaaS pins
+  // `sandbox.priority: ["vercel-sandbox"]` in `deploy/api/atlas.config.ts`
+  // (deny-all, no fallback). The team + project IDs are non-secret config
+  // (`sandbox.vercel` in atlas.config.ts, #3706), so only `VERCEL_TOKEN` — the
+  // per-service Railway secret (shared vars don't auto-inherit) — is a boot
+  // input. A missing/mis-stamped token boots green while every
+  // explore/executePython call hard-fails at first use, so `SandboxCredsGuardLive`
+  // fails boot instead. Listed here so the boot-smoke fixture populates it and
+  // the guard reads it via the shared `vercelSandboxCredentialStatus` presence
+  // check (which reads `process.env.VERCEL_TOKEN` straight, same dynamic-read
+  // pattern as the provider/adapter keys).
+  readonly VERCEL_TOKEN: string | undefined;
+
   // Platform email DPA (DpaGuardLive → assertSaasPlatformEmailIsResend)
   readonly ATLAS_SMTP_URL: string | undefined;
   readonly RESEND_API_KEY: string | undefined;
@@ -151,6 +164,7 @@ export const SAAS_ENV_KEYS = [
   "ATLAS_REGION_EU_DB_URL",
   "ATLAS_REGION_APAC_DB_URL",
   "ATLAS_STRICT_PLUGIN_SECRETS",
+  "VERCEL_TOKEN",
   "ATLAS_SMTP_URL",
   "RESEND_API_KEY",
   "TURNSTILE_SECRET_KEY",
@@ -189,6 +203,7 @@ export function readSaasEnv(env: NodeJS.ProcessEnv = process.env): SaasEnv {
     ATLAS_REGION_EU_DB_URL: env.ATLAS_REGION_EU_DB_URL,
     ATLAS_REGION_APAC_DB_URL: env.ATLAS_REGION_APAC_DB_URL,
     ATLAS_STRICT_PLUGIN_SECRETS: env.ATLAS_STRICT_PLUGIN_SECRETS,
+    VERCEL_TOKEN: env.VERCEL_TOKEN,
     ATLAS_SMTP_URL: env.ATLAS_SMTP_URL,
     RESEND_API_KEY: env.RESEND_API_KEY,
     TURNSTILE_SECRET_KEY: env.TURNSTILE_SECRET_KEY,
@@ -266,6 +281,14 @@ export function makeBootSmokeFixture(
     ATLAS_REGION_EU_DB_URL: databaseUrl,
     ATLAS_REGION_APAC_DB_URL: databaseUrl,
     ATLAS_STRICT_PLUGIN_SECRETS: undefined,
+    // SandboxCredsGuardLive (#4461) asserts presence only in SaaS when the
+    // priority pins vercel-sandbox — the Vercel SDK reads the token at
+    // per-request sandbox creation, never at boot, so any non-empty value
+    // satisfies the boot guard. The team + project IDs it pairs with come from
+    // `sandbox.vercel` in atlas.config.ts (non-secret config), so the token is
+    // the only env input. Not a secret — identical every CI run, like the other
+    // fixture placeholders.
+    VERCEL_TOKEN: "ci-fixture-vercel-token-not-a-secret",
     ATLAS_SMTP_URL: undefined,
     RESEND_API_KEY: "ci-fixture-resend-key-not-a-secret",
     // TurnstileGuardLive (#3795) asserts presence only (non-empty) in SaaS —

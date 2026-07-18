@@ -69060,6 +69060,19 @@
                               "workspace-override",
                               "default"
                             ]
+                          },
+                          "platformValue": {
+                            "type": "string",
+                            "description": "#4669 — the platform (global) tier of a workspace-scoped setting, resolved override → env → default with any workspace override excluded. Platform-admin view only."
+                          },
+                          "platformSource": {
+                            "type": "string",
+                            "enum": [
+                              "env",
+                              "override",
+                              "default"
+                            ],
+                            "description": "#4669 — source of platformValue; never workspace-override by construction."
                           }
                         },
                         "required": [
@@ -69169,7 +69182,7 @@
           "Admin — Settings"
         ],
         "summary": "Update setting",
-        "description": "Sets or updates a settings override. Requires internal database.",
+        "description": "Sets or updates a settings override. Requires internal database. Pass tier=platform to write the platform (global) tier of a workspace-scoped setting explicitly — requires the platform_admin role (#4669).",
         "parameters": [
           {
             "schema": {
@@ -69180,6 +69193,19 @@
             "required": true,
             "name": "key",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "platform"
+              ],
+              "description": "#4669 — explicit write tier. \"platform\" targets the global (org_id IS NULL) row regardless of the session's active workspace; platform_admin only. Omitted: workspace-scoped keys write the session workspace's tier."
+            },
+            "required": false,
+            "description": "#4669 — explicit write tier. \"platform\" targets the global (org_id IS NULL) row regardless of the session's active workspace; platform_admin only. Omitted: workspace-scoped keys write the session workspace's tier.",
+            "name": "tier",
+            "in": "query"
           }
         ],
         "responses": {
@@ -69364,7 +69390,7 @@
           "Admin — Settings"
         ],
         "summary": "Delete setting override",
-        "description": "Removes a settings override, reverting to env var or default value.",
+        "description": "Removes a settings override, reverting to env var or default value. Pass tier=platform to clear the platform (global) tier of a workspace-scoped setting explicitly — requires the platform_admin role (#4669).",
         "parameters": [
           {
             "schema": {
@@ -69375,6 +69401,19 @@
             "required": true,
             "name": "key",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "platform"
+              ],
+              "description": "#4669 — explicit delete tier. \"platform\" clears the global (org_id IS NULL) row regardless of the session's active workspace; platform_admin only. Omitted: workspace-scoped keys clear the session workspace's tier."
+            },
+            "required": false,
+            "description": "#4669 — explicit delete tier. \"platform\" clears the global (org_id IS NULL) row regardless of the session's active workspace; platform_admin only. Omitted: workspace-scoped keys clear the session workspace's tier.",
+            "name": "tier",
+            "in": "query"
           }
         ],
         "responses": {

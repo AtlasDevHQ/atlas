@@ -76,6 +76,20 @@ export interface SettingWithValue extends SettingDefinition {
    * clicking Save. Always undefined in self-hosted.
    */
   saasImmutable?: boolean;
+  /**
+   * #4669 — the platform (global, org_id IS NULL) tier of a
+   * workspace-scoped setting, resolved override → env → default with the
+   * caller's workspace override deliberately excluded. This is the value
+   * every workspace inherits unless it sets its own override — the
+   * platform console renders it so an operator can manage the global row
+   * without a no-org session or a direct DB write. Only populated for
+   * workspace-scoped keys in the platform-admin (showAll) view;
+   * platform-scoped keys already resolve at the platform tier via
+   * `currentValue`/`source`.
+   */
+  platformValue?: string;
+  /** #4669 — source of {@link platformValue}: never "workspace-override" by construction. */
+  platformSource?: "env" | "override" | "default";
 }
 
 export interface SettingRow {
@@ -2196,7 +2210,30 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
       // don't see a noisy `false` everywhere.
       const saasImmutable = inSaas && isSaasImmutableKey(def.key) ? true : undefined;
 
-      return { ...def, requiresRestart, saasImmutable, currentValue, source };
+      // #4669 — platform tier of workspace-scoped keys, for the platform
+      // console. Resolved WITHOUT the caller's workspace override (that
+      // override would mask the global row an operator is managing —
+      // e.g. a platform admin whose own workspace enables Agent Auth
+      // must still see the platform tier as off). Platform-admin
+      // (showAll) view only: workspace admins manage their own tier.
+      let platformValue: string | undefined;
+      let platformSource: "env" | "override" | "default" | undefined;
+      if (showAll && def.scope === "workspace") {
+        const platformOverride = _cache.get(cacheKey(def.key));
+        const envVal = process.env[def.envVar];
+        if (platformOverride) {
+          platformValue = def.secret ? maskSecret(platformOverride.value) : platformOverride.value;
+          platformSource = "override";
+        } else if (envVal !== undefined) {
+          platformValue = def.secret ? maskSecret(envVal) : envVal;
+          platformSource = "env";
+        } else {
+          platformValue = def.default;
+          platformSource = "default";
+        }
+      }
+
+      return { ...def, requiresRestart, saasImmutable, currentValue, source, platformValue, platformSource };
     });
 }
 

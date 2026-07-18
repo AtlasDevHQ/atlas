@@ -88,6 +88,7 @@ void mock.module("@atlas/api/lib/cache/index", () => ({
   getDefaultTtl: mock(() => 300000),
   _resetCache: mock(() => {}),
   buildCacheKey: mock(() => "mock-key"),
+  validateCacheBackend: mock(async () => ({ ok: true })),
 }));
 
 // --- Internal DB mock ---
@@ -369,6 +370,8 @@ describe("Workspace Lifecycle", () => {
     mockHasInternalDB = true;
     mockDrainOrg.mockClear();
     mockFlushCache.mockClear();
+    mockFlushCacheByOrg.mockClear();
+    mockFlushCacheByOrg.mockImplementation(async () => 0);
     mockCascadeWorkspaceDelete.mockClear();
   });
 
@@ -468,6 +471,19 @@ describe("Workspace Lifecycle", () => {
       expect(mockFlushCacheByOrg).toHaveBeenCalledWith("org-1");
       expect(mockFlushCache).not.toHaveBeenCalled();
       expect(mockCascadeWorkspaceDelete).toHaveBeenCalledWith("org-1");
+    });
+
+    it("still completes the delete cascade and surfaces a warning when the cache purge fails", async () => {
+      // Fail-open (#4548): a per-org purge failure must NOT abort the one-shot
+      // destructive delete — it joins `warnings` and the cascade proceeds,
+      // mirroring the pool-drain stance.
+      mockFlushCacheByOrg.mockRejectedValueOnce(new Error("redis down"));
+      const res = await app.fetch(adminRequest("DELETE", "/api/v1/admin/organizations/org-1"));
+      expect(res.status).toBe(200);
+      const json = await res.json() as Record<string, unknown>;
+      expect(mockCascadeWorkspaceDelete).toHaveBeenCalledWith("org-1");
+      const warnings = json.warnings as string[] | undefined;
+      expect(warnings?.some((w) => w.startsWith("cache_purge_failed:"))).toBe(true);
     });
 
     it("returns 409 if already deleted", async () => {

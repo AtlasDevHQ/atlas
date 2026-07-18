@@ -604,6 +604,33 @@ describe("validateCacheBackend", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toContain("boom");
   });
+
+  it("rejects a backend whose stats() never resolves (hang → timeout)", async () => {
+    // The boot-safety path: a backend whose stats() hangs (e.g. a Redis client
+    // blocked on a dead connection) must fail validation via the timeout rather
+    // than stalling plugin-registry boot. A tiny injected timeout keeps the
+    // test fast; a late rejection on the abandoned promise must not surface as
+    // an unhandledRejection (a failing test run would flag it).
+    const bad = { ...conforming(), stats: () => new Promise(() => {}) };
+    const r = await validateCacheBackend(bad, 10);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("did not resolve within");
+  });
+
+  it("swallows a late rejection from an abandoned stats() probe (no unhandledRejection)", async () => {
+    // stats() rejects AFTER the timeout has already won the race. The reject
+    // must be swallowed, not escape. We give the reject time to fire and assert
+    // the validation result is still the timeout failure.
+    const bad = {
+      ...conforming(),
+      stats: () => new Promise((_resolve, reject) => setTimeout(() => reject(new Error("late-boom")), 20)),
+    };
+    const r = await validateCacheBackend(bad, 5);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("did not resolve within");
+    // Let the late rejection fire; if it were unhandled the runner would flag it.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
 });
 
 describe("buildCacheKey", () => {

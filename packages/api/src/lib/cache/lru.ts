@@ -129,9 +129,11 @@ export class LRUCacheBackend implements CacheBackend {
     const keys = this.orgKeys.get(orgId);
     if (!keys) return 0;
     let removed = 0;
-    // Copy first: deleting from the cache while iterating the backing set is
-    // fine, but `unindex` mutates `orgKeys.get(orgId)` (this same set) and would
-    // otherwise perturb the live iterator.
+    // Iterate a snapshot and inline the per-key `keyScope` cleanup rather than
+    // calling `unindex(key)` — `unindex` would `delete` from `orgKeys.get(orgId)`,
+    // the very set we're iterating. The `[...keys]` copy plus a single trailing
+    // `orgKeys.delete(orgId)` drops the whole set at once, so the live set is
+    // never mutated mid-iteration.
     for (const key of [...keys]) {
       if (this.cache.delete(key)) removed++;
       this.keyScope.delete(key);

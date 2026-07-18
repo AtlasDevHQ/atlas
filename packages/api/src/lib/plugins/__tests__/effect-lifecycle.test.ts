@@ -683,6 +683,10 @@ describe("PluginRegistry Effect Service", () => {
             // No datasource work — just a broken cache backend.
             types: ["context"],
             cacheBackend: badBackend,
+            // A healthy-returning probe makes the stickiness assertion below
+            // load-bearing: if `markUnhealthy`'s sticky flag were dropped, this
+            // probe would re-promote the plugin to healthy on re-check.
+            healthCheck: async () => ({ healthy: true }),
           } as Partial<PluginLike>),
         ],
         context: minimalCtx,

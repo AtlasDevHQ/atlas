@@ -547,6 +547,67 @@ describe("LRUCacheBackend — scope side index + flushByOrg", () => {
 });
 
 // ---------------------------------------------------------------------------
+// entryCountByOrg + pruneExpired (#4549)
+// ---------------------------------------------------------------------------
+
+describe("LRUCacheBackend — entryCountByOrg + pruneExpired", () => {
+  it("counts only the given org's live entries", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    await cache.set("a1", makeEntry(), scope("org-a"));
+    await cache.set("a2", makeEntry(), scope("org-a"));
+    await cache.set("b1", makeEntry(), scope("org-b"));
+    await cache.set("no-org", makeEntry(), { connectionId: "default" });
+
+    expect(cache.entryCountByOrg("org-a")).toBe(2);
+    expect(cache.entryCountByOrg("org-b")).toBe(1);
+    expect(cache.entryCountByOrg("org-missing")).toBe(0);
+  });
+
+  it("lazily drops an org's expired entries while counting (never counts corpses)", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    await cache.set("live", makeEntry(), scope("org-a"));
+    await cache.set("dead", makeEntry({ cachedAt: Date.now() - 400_000, ttl: 300_000 }), scope("org-a"));
+
+    expect(cache.entryCountByOrg("org-a")).toBe(1);
+    // The expired entry left the Map AND the side index (not just the count).
+    const idx = indexState(cache);
+    expect(idx.orgKeys.get("org-a")).toEqual(new Set(["live"]));
+    expect(idx.keyScopeSize).toBe(1);
+  });
+
+  it("expiring an org's last entry prunes the org from the index", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    await cache.set("dead", makeEntry({ cachedAt: Date.now() - 400_000, ttl: 300_000 }), scope("org-a"));
+    expect(cache.entryCountByOrg("org-a")).toBe(0);
+    expect(indexState(cache).orgKeys.has("org-a")).toBe(false);
+  });
+
+  it("stats() prunes expired entries so the fill gauge never counts corpses", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    await cache.set("live", makeEntry(), scope("org-a"));
+    await cache.set("dead1", makeEntry({ cachedAt: Date.now() - 400_000, ttl: 300_000 }), scope("org-a"));
+    await cache.set("dead2", makeEntry({ cachedAt: Date.now() - 400_000, ttl: 300_000 }), scope("org-b"));
+
+    const stats = await cache.stats();
+    expect(stats.entryCount).toBe(1);
+    // Pruning routed through unindex — the side index stays consistent.
+    const idx = indexState(cache);
+    expect(idx.keyScopeSize).toBe(1);
+    expect(idx.orgKeys.has("org-b")).toBe(false);
+  });
+
+  it("pruneExpired with an injected now expires deterministically", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    const base = 1_000_000_000;
+    await cache.set("k", makeEntry({ cachedAt: base, ttl: 1000 }), scope("org-a"));
+    cache.pruneExpired(base + 500);
+    expect(cache.entryCountByOrg("org-a", base + 500)).toBe(1);
+    cache.pruneExpired(base + 1001);
+    expect(cache.entryCountByOrg("org-a", base + 1001)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Backend shape validation
 // ---------------------------------------------------------------------------
 

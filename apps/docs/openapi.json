@@ -59524,7 +59524,7 @@
           "Admin — Cache"
         ],
         "summary": "Cache statistics",
-        "description": "Returns cache hit/miss statistics.",
+        "description": "Returns per-caller cache statistics: a workspace admin gets their org's hit/miss bucket (lifetime + sliding last-hour rates), a platform admin gets fleet totals plus resolved capacity.",
         "responses": {
           "200": {
             "description": "Cache stats",
@@ -59532,7 +59532,70 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "workspace",
+                        "platform"
+                      ]
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "ttl": {
+                      "type": "number"
+                    },
+                    "since": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "hits": {
+                      "type": "number"
+                    },
+                    "misses": {
+                      "type": "number"
+                    },
+                    "hitRate": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "windowHitRate": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "windowTotal": {
+                      "type": "number"
+                    },
+                    "entryCount": {
+                      "type": "number"
+                    },
+                    "maxSize": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "enabled",
+                    "ttl",
+                    "since",
+                    "hits",
+                    "misses",
+                    "hitRate",
+                    "windowHitRate",
+                    "windowTotal",
+                    "entryCount",
+                    "maxSize"
+                  ]
                 }
               }
             }
@@ -59605,7 +59668,26 @@
           "Admin — Cache"
         ],
         "summary": "Flush cache",
-        "description": "Flushes all cache entries.",
+        "description": "Removes cached query results. Default scope `workspace` purges only the caller's org's entries; scope `fleet` (platform admin only) clears every workspace's entries in this process. Refused with 409 when caching is disabled.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "scope": {
+                    "type": "string",
+                    "enum": [
+                      "workspace",
+                      "fleet"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Cache flushed",
@@ -59645,12 +59727,76 @@
             }
           },
           "403": {
-            "description": "Forbidden — admin/owner role required",
+            "description": "Forbidden — fleet scope requires platform admin",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Cache is disabled — nothing to flush",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request body — rejected by request validation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
                 }
               }
             }

@@ -666,6 +666,12 @@ export function createApiTestMocks(
     _resetCache: mock(() => {}),
     buildCacheKey: mock(() => "mock-key"),
     validateCacheBackend: mock(async () => ({ ok: true })),
+    // #4549 — org-bucketed stats registry + per-org entry count.
+    recordCacheAccess: mock(() => {}),
+    getOrgCacheStats: mock(() => ({ since: null, hits: 0, misses: 0, hitRate: null, windowHitRate: null, windowTotal: 0 })),
+    getFleetCacheStats: mock(() => ({ since: null, hits: 0, misses: 0, hitRate: null, windowHitRate: null, windowTotal: 0 })),
+    resetCacheStatsRegistry: mock(() => {}),
+    cacheOrgEntryCount: mock(async () => 0),
     ...overrides?.cache,
   });
 

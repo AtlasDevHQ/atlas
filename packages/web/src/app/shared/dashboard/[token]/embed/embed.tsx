@@ -1,10 +1,12 @@
-// Server-only helpers for the shared-dashboard EMBED route. Kept out of
-// `page.tsx` so the theme resolver and the compact error view are unit-testable
-// without rendering the async RSC. The embed is a frame around the same shared
-// view (`../view.tsx`) — this file adds only the framable chrome (theme wrapper
-// + iframe-appropriate error states), never a second data surface.
+// Helpers for the shared-dashboard EMBED route. Kept out of `page.tsx` so the
+// theme resolver and the compact error view are unit-testable without rendering
+// the async RSC. The embed is a frame around the same shared view
+// (`../view.tsx`) — this file adds only the framable chrome (theme wrapper +
+// iframe-appropriate error states), never a second data surface. No server-only
+// imports may land here: `EmbedErrorView` also renders client-side via
+// `OrgShareResolver` on the org-share auth-wall branch (#4718).
 
-import type { FailReason } from "../fetch";
+import type { FailReason } from "../share-result";
 
 export type EmbedTheme = "light" | "dark";
 

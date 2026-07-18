@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { SharedDashboardView } from "../view";
 import { fetchSharedDashboard } from "../fetch";
+import { isAuthWallReason } from "../share-result";
+import { OrgShareResolver } from "../org-share-resolver";
 import { EmbedErrorView, buildEmbedThemeForceScript, resolveEmbedTheme } from "./embed";
 
 // An embed is an iframe surface, not a page to index. The standalone
@@ -66,6 +68,12 @@ export default async function SharedDashboardEmbedPage({ params, searchParams }:
       <div className={forcedDark ? "dark" : undefined} data-theme={theme ?? "system"}>
         {result.ok ? (
           <SharedDashboardView dashboard={result.data} forcedDark={forcedDark} />
+        ) : isAuthWallReason(result.reason) ? (
+          // Same client-side org-share hand-off as the standalone page (#4718):
+          // the iframe viewer's session is host-only on the API domain, so only
+          // a browser fetch with credentials can resolve an org share here. The
+          // embed variant keeps the navigation-free error surface.
+          <OrgShareResolver token={token} variant="embed" forcedDark={forcedDark} />
         ) : (
           <EmbedErrorView reason={result.reason} />
         )}

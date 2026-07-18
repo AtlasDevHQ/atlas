@@ -33,6 +33,11 @@ const log = createLogger("admin-cache");
  * activity yet); rates are `null` (not 0) when there is nothing to rate.
  * `entryCount: null` means the count is structurally unavailable (a plugin
  * backend has no per-org count) — never rendered as a confident 0.
+ *
+ * MUST MATCH the client copy in
+ * `packages/web/src/app/admin/cache/page.tsx` (`CacheStatsResponseSchema`)
+ * — the web package can't import from `@atlas/api`, so the two are
+ * hand-synced (same for the entries schema below).
  */
 const CacheStatsResponseSchema = z.object({
   scope: z.enum(["workspace", "platform"]),
@@ -63,6 +68,54 @@ const FlushResponseSchema = z.object({
   message: z.string(),
 });
 
+/**
+ * One live entry's metadata row for the inspection table (#4550). Metadata
+ * ONLY — the cached rows blob never crosses the wire on this surface, and
+ * `sqlPreview` is the ~200-char capped preview stamped at write time
+ * (absent on entries written before #4550).
+ */
+const CacheEntryMetaSchema = z.object({
+  key: z.string(),
+  sqlPreview: z.string().optional(),
+  connectionId: z.string(),
+  rowCount: z.number(),
+  ageMs: z.number(),
+  ttl: z.number(),
+});
+
+/**
+ * `entries: null` = listing structurally unavailable (plugin backend — no
+ * trustworthy org index), mirroring the #4549 nullable-entryCount pattern:
+ * never a confident empty table over a warm cache.
+ */
+const CacheEntriesResponseSchema = z.object({
+  entries: z.array(CacheEntryMetaSchema).nullable(),
+});
+
+// A 200 always means the entry was removed (not-found is a 404, unsupported
+// backend a 409) — literals make the contract self-documenting.
+const DeleteEntryResponseSchema = z.object({
+  ok: z.literal(true),
+  deleted: z.literal(true),
+});
+
+/**
+ * Fail-closed guard for the no-org branches (#4550 review): an absent
+ * `activeOrganizationId` means "single-tenant deployment" ONLY outside
+ * managed auth (mode "none" / simple-key have no org concept). A managed
+ * session without an active org must never widen to whole-cache reach —
+ * that would silently disclose (or delete) co-tenant data. Platform admins
+ * are exempt: cross-tenant reach is their legitimate authority (they can
+ * fleet-flush and inspect any org). Mirrors `requireOrgContext()`'s 400
+ * contract without imposing it router-wide (which would break the
+ * single-tenant modes this page supports).
+ */
+function managedSessionMissingOrg(authResult: { mode: string; user?: { role?: string; activeOrganizationId?: string } | undefined }): boolean {
+  return authResult.mode === "managed"
+    && authResult.user?.activeOrganizationId === undefined
+    && authResult.user?.role !== "platform_admin";
+}
+
 // ---------------------------------------------------------------------------
 // Route definitions
 // ---------------------------------------------------------------------------
@@ -81,6 +134,7 @@ const getCacheStatsRoute = createRoute({
       description: "Cache stats",
       content: { "application/json": { schema: CacheStatsResponseSchema } },
     },
+    400: { description: "Managed session has no active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin/owner role required", content: { "application/json": { schema: AuthErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -109,10 +163,73 @@ const flushCacheRoute = createRoute({
       description: "Cache flushed",
       content: { "application/json": { schema: FlushResponseSchema } },
     },
+    400: { description: "Managed session has no active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin/owner role (and MFA enrollment) required; fleet scope additionally requires platform admin", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Invalid request body — rejected by request validation", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Cache is disabled — nothing to flush", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const listCacheEntriesRoute = createRoute({
+  method: "get",
+  path: "/entries",
+  tags: ["Admin — Cache"],
+  summary: "List cached entries",
+  description:
+    "Lists the caller's org's live cached entries as metadata rows (age, row " +
+    "count, connection, capped SQL preview) — expired entries never appear " +
+    "and the cached rows themselves are never returned. A platform admin may " +
+    "pass ?orgId= to inspect a specific org. `entries: null` means the " +
+    "listing is unavailable on the current cache backend; an empty list may " +
+    "also mean caching is disabled for the listed org.",
+  request: {
+    query: z.object({
+      orgId: z.string().optional().openapi({ param: { name: "orgId", in: "query" } }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Live entry metadata",
+      content: { "application/json": { schema: CacheEntriesResponseSchema } },
+    },
+    400: { description: "Managed session has no active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin/owner role required; ?orgId= inspection requires platform admin", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const deleteCacheEntryRoute = createRoute({
+  method: "delete",
+  path: "/entries/{key}",
+  tags: ["Admin — Cache"],
+  summary: "Delete one cached entry",
+  description:
+    "Removes exactly one cached entry, authorized org-scoped: the delete " +
+    "lands only when the key belongs to the caller's org (404 otherwise — " +
+    "a co-tenant's key is indistinguishable from a missing one). Cross-org " +
+    "delete is deliberately unsupported (inspection via ?orgId= is " +
+    "platform-scoped; mutation stays caller-org-only). Fixing one stale " +
+    "dashboard number costs one entry, not the org's whole cache.",
+  request: {
+    params: z.object({
+      key: z.string().min(1).max(256).openapi({ param: { name: "key", in: "path" } }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Entry deleted",
+      content: { "application/json": { schema: DeleteEntryResponseSchema } },
+    },
+    400: { description: "Managed session has no active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin/owner role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "No such entry in the caller's org", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Cache disabled, or per-entry delete unavailable on the current backend", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -126,9 +243,13 @@ const adminCache = createAdminRouter();
 
 // GET /stats — per-caller cache statistics
 adminCache.openapi(getCacheStatsRoute, async (c) => runHandler(c, "retrieve cache statistics", async () => {
+  const requestId = c.get("requestId") as string;
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   const scope = isPlatformAdmin ? ("platform" as const) : ("workspace" as const);
+  if (managedSessionMissingOrg(authResult)) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+  }
   // Resolve enabled/ttl for the CALLER's workspace so a per-workspace
   // ATLAS_CACHE_ENABLED / ATLAS_CACHE_TTL override is reflected (#4545).
   const orgId = authResult.user?.activeOrganizationId;
@@ -241,8 +362,12 @@ adminCache.openapi(flushCacheRoute, async (c) => runHandler(c, "flush cache", as
   }
 
   if (orgId === undefined) {
-    // Auth mode "none" / single-tenant: the whole cache is this one
-    // tenant's, so a workspace flush degenerates to a full flush.
+    if (managedSessionMissingOrg(authResult)) {
+      return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+    }
+    // Single-tenant deployment (auth mode "none" / simple-key — no org
+    // concept): the whole cache is this one tenant's, so a workspace flush
+    // degenerates to a full flush.
     const count = (await getCache().stats()).entryCount;
     await logAdminActionAwait({
       actionType: ADMIN_ACTIONS.cache.flush,
@@ -269,6 +394,95 @@ adminCache.openapi(flushCacheRoute, async (c) => runHandler(c, "flush cache", as
   const removed = await flushCacheByOrg(orgId);
   log.info({ requestId, userId: authResult.user?.id, orgId, flushed: removed }, "Cache flushed for workspace via admin API");
   return c.json({ ok: true, flushed: removed, message: "Cache flushed" }, 200);
+}));
+
+// GET /entries — org-scoped entry inspection (#4550)
+adminCache.openapi(listCacheEntriesRoute, async (c) => runHandler(c, "list cache entries", async () => {
+  const requestId = c.get("requestId") as string;
+  const authResult = c.get("authResult");
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const callerOrgId = authResult.user?.activeOrganizationId;
+  const { orgId: inspectOrgId } = c.req.valid("query");
+
+  // Strictly org-scoped visibility: a workspace admin may only ever list
+  // their own org; ?orgId= inspection of another org is platform-only.
+  if (inspectOrgId !== undefined && inspectOrgId !== callerOrgId && !isPlatformAdmin) {
+    return c.json({
+      error: "forbidden_scope",
+      message: "Inspecting another workspace's cache entries requires the platform admin role.",
+      requestId,
+    }, 403);
+  }
+  if (managedSessionMissingOrg(authResult)) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+  }
+  const targetOrgId = inspectOrgId ?? callerOrgId;
+
+  const { cacheEnabled, cacheListByOrg } = await import("@atlas/api/lib/cache/index");
+  // Gate on the org being LISTED (not the caller's): `ATLAS_CACHE_ENABLED`
+  // is workspace-scoped, so a platform admin whose own workspace disabled
+  // caching must still see a warm target org's entries — never a confident
+  // empty table over live data. When the target org's cache is off, nothing
+  // is being served, so an empty list is honest (no 409 — read-only).
+  if (!cacheEnabled(targetOrgId)) {
+    return c.json({ entries: [] }, 200);
+  }
+  const entries = await cacheListByOrg(targetOrgId);
+  return c.json({ entries }, 200);
+}));
+
+// DELETE /entries/{key} — org-authorized single-entry removal (#4550)
+adminCache.openapi(deleteCacheEntryRoute, async (c) => runHandler(c, "delete cache entry", async () => {
+  const requestId = c.get("requestId") as string;
+  const authResult = c.get("authResult");
+  const orgId = authResult.user?.activeOrganizationId;
+  const { key } = c.req.valid("param");
+
+  if (managedSessionMissingOrg(authResult)) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+  }
+
+  const { cacheEnabled, cacheDeleteEntry } = await import("@atlas/api/lib/cache/index");
+  if (!cacheEnabled(orgId)) {
+    return c.json({
+      error: "cache_disabled",
+      message: "Caching is disabled for this workspace — there is nothing to delete.",
+      requestId,
+    }, 409);
+  }
+
+  // #4533 discipline carried over: the attribution row commits BEFORE the
+  // delete takes effect, so a removal can never go unrecorded. The row is
+  // written even when the delete then 404s — it records the ATTEMPT, which
+  // is forensically useful in itself (a workspace admin probing raw keys
+  // against a co-tenant's cache shows up here). Key is stored truncated —
+  // it is a lookup hash, and 12 chars is plenty to correlate.
+  await logAdminActionAwait({
+    actionType: ADMIN_ACTIONS.cache.deleteEntry,
+    targetType: "cache",
+    targetId: orgId ?? "default",
+    metadata: { orgId: orgId ?? null, key: key.slice(0, 12) },
+  });
+
+  const removed = await cacheDeleteEntry(orgId, key);
+  if (removed === null) {
+    return c.json({
+      error: "unsupported_backend",
+      message: "Per-entry delete is not available on the current cache backend. Use flush instead.",
+      requestId,
+    }, 409);
+  }
+  if (!removed) {
+    // Not found OR another org's key — deliberately indistinguishable, so a
+    // raw key can't be used to probe a co-tenant's cache contents.
+    return c.json({
+      error: "not_found",
+      message: "No such cache entry in your workspace.",
+      requestId,
+    }, 404);
+  }
+  log.info({ requestId, userId: authResult.user?.id, orgId, key: key.slice(0, 12) }, "Cache entry deleted via admin API");
+  return c.json({ ok: true, deleted: true }, 200);
 }));
 
 export { adminCache };

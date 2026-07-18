@@ -16,6 +16,46 @@ export interface CacheEntry {
    * pre-#3616 entries) that omit it degrade to `0` rather than crashing.
    */
   executionMs?: number;
+  /**
+   * First {@link SQL_PREVIEW_MAX_CHARS} chars of the post-`beforeQuery` SQL
+   * that built this entry's key, stamped at write time for the admin
+   * entry-inspection table (#4550). A capped preview by design — never
+   * full-SQL retention beyond what the entry already holds. Optional so
+   * legacy/plugin-written entries degrade to "no preview" rather than
+   * crashing.
+   */
+  sqlPreview?: string;
+}
+
+/** Cap for {@link CacheEntry.sqlPreview} — the single statement of "~200 chars". */
+export const SQL_PREVIEW_MAX_CHARS = 200;
+
+/**
+ * Row-shaped metadata for one live cache entry, served to the admin
+ * entry-inspection table (#4550). Metadata ONLY — the rows blob never
+ * leaves the backend over this surface.
+ *
+ * Deliberately NOT part of the `CacheBackend` contract: the listing/delete
+ * primitives (`listByOrg`/`listAll`/`deleteForOrg`) are LRU-concrete,
+ * reached via the cache module's `owned` state variant — the org side index
+ * is what makes a TRUSTWORTHY org-scoped listing possible, so a plugin
+ * backend degrades to "unavailable" instead of the contract growing a
+ * method every external backend would have to implement (and existing ones
+ * would fail validation on). Mirrors #4549's `entryCountByOrg` decision.
+ */
+export interface CacheEntryMeta {
+  /** The full cache key (needed by the per-entry delete action). */
+  key: string;
+  /** Capped SQL preview stamped at write time; absent on legacy entries. */
+  sqlPreview?: string;
+  /** The Datasource connection the entry's rows came from. */
+  connectionId: string;
+  /** Number of cached rows. */
+  rowCount: number;
+  /** Age of the entry (ms since it was written). */
+  ageMs: number;
+  /** The entry's TTL (ms). */
+  ttl: number;
 }
 
 export interface CacheStats {

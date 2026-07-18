@@ -36,6 +36,7 @@ import {
 } from "@atlas/api/lib/dashboard-parameters";
 import { getSetting, getSettingAuto } from "@atlas/api/lib/settings";
 import { getCache, buildCacheKey, cacheEnabled, getDefaultTtl } from "@atlas/api/lib/cache/index";
+import { SQL_PREVIEW_MAX_CHARS } from "@atlas/api/lib/cache/types";
 // Imported from the registry submodule (not the barrel) deliberately: the
 // org-stats registry is independent of the backend singleton, and the many
 // suites that partially mock the cache barrel must not each need a
@@ -1400,12 +1401,14 @@ function executeAndAuditEffect(opts: {
   explanation: string;
   classification: SQLClassification | undefined;
   /**
-   * The cache write: key + scope tags, or `null` for "don't cache". One object
-   * so key-without-scope is unrepresentable. `scope.orgId` MUST be the same org
-   * folded into `key` so a later `flushByOrg` targets exactly the entries this
-   * write produced.
+   * The cache write: key + scope tags + capped SQL preview, or `null` for
+   * "don't cache". One object so key-without-scope is unrepresentable.
+   * `scope.orgId` MUST be the same org folded into `key` so a later
+   * `flushByOrg` targets exactly the entries this write produced.
+   * `sqlPreview` is computed where the key is built (the same
+   * post-`beforeQuery` SQL), capped at ~200 chars (#4550).
    */
-  cacheWrite: { key: string; scope: CacheScope } | null;
+  cacheWrite: { key: string; scope: CacheScope; sqlPreview: string } | null;
   /** Per-entry TTL (ms) resolved from the writer's WORKSPACE tier (#4545) —
    *  so a workspace's ATLAS_CACHE_TTL override is stamped on its own entries.
    *  Resolved at the call site where the auth orgId is in scope. */
@@ -1525,6 +1528,8 @@ function executeAndAuditEffect(opts: {
                 // #3616 — stamp the real execution cost so the cache-hit
                 // audit row replays it instead of logging duration_ms=0.
                 executionMs: durationMs,
+                // #4550 — capped preview for the admin entry-inspection table.
+                sqlPreview: cacheWrite.sqlPreview,
               }, cacheWrite.scope);
             } catch (cacheErr) {
               log.error({ err: cacheErr, connectionId: connId }, "Cache write failed — result not cached");
@@ -2123,7 +2128,7 @@ export function runSqlPipelineEffect(
     // The cache write (key + scope), or null for "don't cache". `scope.orgId`
     // is the SAME org that goes into `key`, so a later `flushByOrg(orgId)`
     // targets exactly this entry. One object so key-without-scope can't happen.
-    let cacheWrite: { key: string; scope: CacheScope } | null = null;
+    let cacheWrite: { key: string; scope: CacheScope; sqlPreview: string } | null = null;
     // #4545 — enabled is workspace-resolvable; authOrgId threads the tier
     // (the same org folded into the key + scope below).
     if (preStep?.kind === "check-cache" && cacheEnabled(authOrgId)) {
@@ -2135,7 +2140,14 @@ export function runSqlPipelineEffect(
         // row-determining input for them and never enters their key.
         const rlsFingerprint = customValidator ? undefined : rlsCacheFingerprint(resolvedRls);
         const cacheKey = buildCacheKey(normalizedMutated, connId, cacheOrgId, claims, rlsFingerprint);
-        cacheWrite = { key: cacheKey, scope: { orgId: cacheOrgId, connectionId: connId } };
+        cacheWrite = {
+          key: cacheKey,
+          scope: { orgId: cacheOrgId, connectionId: connId },
+          // #4550 — the SAME post-beforeQuery SQL that built the key, capped:
+          // a preview for the admin entry table, never full-SQL retention
+          // beyond what the entry already holds.
+          sqlPreview: normalizedMutated.slice(0, SQL_PREVIEW_MAX_CHARS),
+        };
         // Bypass (#4546): skip the cache READ (always execute live) but keep
         // `cacheWrite` above, so the fresh result re-freshens the shared entry
         // for everyone on this key. Governance-safe by construction — the live

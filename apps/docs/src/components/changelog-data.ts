@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.56",
+    title: "Admin Cache Elevation",
+    date: "2026-07-18",
+    summary:
+      "The query result cache becomes something you can steer, see, and trust. Workspace admins now toggle caching and tune the TTL from the admin Cache page at runtime — no env vars, no redeploy — and the page shows honest, workspace-scoped statistics: lifetime and last-hour hit rates, live entry counts, and an entry inspection table where a single stale result can be deleted without flushing everything. Cached answers now carry their age, and asking the agent to refresh actually re-runs the query. Under the hood, the cache key incorporates your resolved row-level-security configuration — tightening RLS instantly orphans every pre-change entry — and the plugin cache-backend contract went async with per-workspace invalidation, making external backends like Redis genuinely implementable.",
+    highlights: [
+      "Enable caching and tune the TTL from Admin → Cache at runtime — settings apply with no redeploy",
+      "Workspace-scoped stats: lifetime + last-hour hit rates, honest warming/unavailable states instead of misleading zeros",
+      "Entry inspection table with per-entry delete — fix one stale number without cold-starting the whole cache",
+      "Flush is scoped to your workspace by default; fleet-wide flush is platform-admin-only with an explicit blast-radius confirmation",
+      "Cache hits carry their age, and the agent can bypass the cache when you ask for fresh data",
+      "RLS configuration joins the cache key, so a policy change never serves pre-change rows",
+      "Async plugin CacheBackend contract with org-scoped invalidation; misbehaving backends fail validation instead of breaking queries",
+    ],
+  },
+  {
     version: "v0.0.55",
     title: "Dashboard Second Elevation",
     date: "2026-07-17",

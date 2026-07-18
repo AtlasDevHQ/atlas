@@ -90,6 +90,8 @@ import {
   isSensitiveOperation,
   isSensitivePath,
   isWriteOperation,
+  isReadSafeOperation,
+  READ_SAFE_OPERATIONS,
   buildAgentAuthOpenApiOptions,
 } from "@atlas/api/lib/auth/agent-auth-openapi";
 import type { AtlasOpenApiSpec } from "@atlas/api/lib/auth/atlas-openapi-source";
@@ -101,9 +103,11 @@ const EXECUTE_URL = `${ISSUER}/capability/execute`;
 
 /**
  * A minimal fixture spec exercising every classification branch: a safe read
- * (GET /me), a write (POST /query), a sensitive-path read (GET /admin/audit), a
- * HEAD read, and a platform read. operationIds mirror the auto-generated
- * `<method><Path>` shape.
+ * (GET /me), a read-safe allowlisted POST (POST /query, #4707), a mutating
+ * write (POST /dashboards), a sensitive-path read (GET /admin/audit), a HEAD
+ * read, and a platform read. operationIds mirror the auto-generated
+ * `<method><Path>` shape — `postQuery` is also the REAL spec's operationId for
+ * `POST /api/v1/query`, so the fixture exercises the same allowlist key.
  */
 const FIXTURE_SPEC = {
   info: { title: "Atlas API", description: "fixture" },
@@ -114,6 +118,7 @@ const FIXTURE_SPEC = {
     "/api/v1/dashboards": {
       get: { operationId: "getDashboards", description: "list dashboards" },
       head: { operationId: "headDashboards", description: "dashboards head" },
+      post: { operationId: "postDashboards", description: "create dashboard" },
     },
     "/api/v1/platform/regions": { get: { operationId: "getPlatformRegions", description: "regions" } },
   },
@@ -129,18 +134,63 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
     expect(index.get("getMe")).toEqual({ method: "GET", path: "/api/v1/me" });
     expect(index.get("postQuery")).toEqual({ method: "POST", path: "/api/v1/query" });
     expect(index.get("headDashboards")).toEqual({ method: "HEAD", path: "/api/v1/dashboards" });
-    expect(index.size).toBe(6);
+    expect(index.size).toBe(7);
   });
 
-  it("classifies writes, admin, and platform routes as sensitive; read-only non-admin as safe", () => {
+  it("classifies writes, admin, and platform routes as sensitive; read-only + read-safe non-admin as safe", () => {
     const idx = buildOperationIndex(FIXTURE_SPEC);
     expect(isSensitiveOperation(idx.get("getMe"))).toBe(false); // safe read
     expect(isSensitiveOperation(idx.get("headDashboards"))).toBe(false); // safe HEAD
     expect(isSensitiveOperation(idx.get("getDashboards"))).toBe(false); // safe read
-    expect(isSensitiveOperation(idx.get("postQuery"))).toBe(true); // write
+    expect(isSensitiveOperation(idx.get("postQuery"))).toBe(false); // read-safe allowlisted POST (#4707)
+    expect(isSensitiveOperation(idx.get("postDashboards"))).toBe(true); // mutating write
     expect(isSensitiveOperation(idx.get("getAdminAudit"))).toBe(true); // admin read
     expect(isSensitiveOperation(idx.get("getPlatformRegions"))).toBe(true); // platform read
     expect(isSensitiveOperation(undefined)).toBe(true); // fail closed
+  });
+
+  it("read-safe allowlist (#4707): exactly the four analyst ops, keyed method+path, fail-closed helper", () => {
+    // The curated v1 set — a drive-by addition to this constant must be a
+    // conscious, reviewed decision, so the exact membership is pinned.
+    expect([...READ_SAFE_OPERATIONS].sort()).toEqual(
+      [
+        "POST /api/v1/explore",
+        "POST /api/v1/metrics/{id}/run",
+        "POST /api/v1/query",
+        "POST /api/v1/validate-sql",
+      ].sort(),
+    );
+    // POST /api/v1/chat is deliberately excluded (full interactive chat
+    // surface: streaming run lifecycle + durable-session parking/resume).
+    expect(READ_SAFE_OPERATIONS.has("POST /api/v1/chat")).toBe(false);
+    expect(isReadSafeOperation({ method: "POST", path: "/api/v1/query" })).toBe(true);
+    expect(isReadSafeOperation({ method: "post", path: "/api/v1/query" })).toBe(true); // method normalized
+    expect(isReadSafeOperation({ method: "POST", path: "/api/v1/chat" })).toBe(false);
+    expect(isReadSafeOperation({ method: "PUT", path: "/api/v1/query" })).toBe(false); // method is part of the key
+    expect(isReadSafeOperation(undefined)).toBe(false); // fail closed
+  });
+
+  it("the admin/platform path block is UNCONDITIONAL — a hypothetically allowlisted admin op stays sensitive", () => {
+    // Drive the predicate with an injected allowlist that (wrongly) admits an
+    // /admin and a /platform POST: the path block must still win. This pins the
+    // check ORDER (path before allowlist), not just today's curated membership.
+    const hypothetical = new Set([
+      "POST /api/v1/admin/audit/export",
+      "POST /api/v1/platform/regions/rebalance",
+    ]);
+    expect(
+      isSensitiveOperation({ method: "POST", path: "/api/v1/admin/audit/export" }, hypothetical),
+    ).toBe(true);
+    expect(
+      isSensitiveOperation(
+        { method: "POST", path: "/api/v1/platform/regions/rebalance" },
+        hypothetical,
+      ),
+    ).toBe(true);
+    // Sanity: the same injected allowlist DOES admit a non-admin path, so the
+    // assertions above are not vacuously true.
+    const nonAdmin = new Set(["POST /api/v1/widgets"]);
+    expect(isSensitiveOperation({ method: "POST", path: "/api/v1/widgets" }, nonAdmin)).toBe(false);
   });
 
   it("the operationId join holds against the REAL adapter output (fromOpenAPI)", () => {
@@ -164,7 +214,7 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
     expect(isSensitivePath("/api/v1/me")).toBe(false);
   });
 
-  it("derives capabilities from the spec, limits defaultHostCapabilities to safe reads, blocks the rest", () => {
+  it("derives capabilities from the spec, limits defaultHostCapabilities to the safe set, blocks the rest", () => {
     const opts = buildAgentAuthOpenApiOptions(FIXTURE_SPEC, {
       baseUrl: "http://internal",
       resolveHeaders: async () => ({}),
@@ -172,15 +222,19 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
     const capNames = (opts.capabilities ?? []).map((c) => c.name).sort();
     // Every operation is a capability — no hand-rolled list.
     expect(capNames).toEqual(
-      ["getAdminAudit", "getDashboards", "getMe", "getPlatformRegions", "headDashboards", "postQuery"].sort(),
+      [
+        "getAdminAudit", "getDashboards", "getMe", "getPlatformRegions",
+        "headDashboards", "postDashboards", "postQuery",
+      ].sort(),
     );
-    // Auto-grant only safe reads (GET/HEAD, non-admin) — NOT admin GETs or writes.
+    // Auto-grant safe reads (GET/HEAD, non-admin) + the read-safe allowlisted
+    // POST (#4707) — NOT admin GETs or mutating writes.
     expect([...(opts.defaultHostCapabilities as string[])].sort()).toEqual(
-      ["getDashboards", "getMe", "headDashboards"].sort(),
+      ["getDashboards", "getMe", "headDashboards", "postQuery"].sort(),
     );
     // Hard-block every sensitive cap from being granted/executed.
     expect([...(opts.blockedCapabilities ?? [])].sort()).toEqual(
-      ["getAdminAudit", "getPlatformRegions", "postQuery"].sort(),
+      ["getAdminAudit", "getPlatformRegions", "postDashboards"].sort(),
     );
   });
 
@@ -208,13 +262,14 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
       resolveHeaders: async () => ({}),
     });
 
-    // EVERY auto-grantable default host capability must be a safe read: a
-    // read-only method AND not under a sensitive prefix. One write or admin op
-    // leaking into this set is the exact capability-explosion risk this fails on.
+    // EVERY auto-grantable default host capability must be non-sensitive: a
+    // read-only method or a curated read-safe POST, AND not under a sensitive
+    // prefix. One mutating write or admin op leaking into this set is the exact
+    // capability-explosion risk this fails on.
     for (const name of opts.defaultHostCapabilities as string[]) {
       expect(isSensitiveOperation(index.get(name))).toBe(false);
     }
-    // Symmetrically: every write + every /admin,/platform op is blocked.
+    // Symmetrically: every non-allowlisted write + every /admin,/platform op is blocked.
     const blocked = new Set(opts.blockedCapabilities ?? []);
     for (const [name, meta] of index) {
       if (isSensitiveOperation(meta)) {
@@ -223,6 +278,22 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
     }
     // And the real spec actually contains sensitive ops (so this isn't vacuous).
     expect(blocked.size).toBeGreaterThan(0);
+
+    // #4707 — the four analyst read actions are REACHABLE against the real
+    // spec: present as capabilities, in the auto-granted safe set, and not
+    // blocked. These are the operationIds the companion agents-repo tools
+    // (AtlasDevHQ/agents#204/#205) map to, so a spec regen that renames one
+    // goes red here.
+    const safe = new Set(opts.defaultHostCapabilities as string[]);
+    for (const name of ["postQuery", "postExplore", "postMetricsByIdRun", "postValidateSql"]) {
+      expect(index.has(name)).toBe(true);
+      expect(safe.has(name)).toBe(true);
+      expect(blocked.has(name)).toBe(false);
+    }
+    // POST /api/v1/chat stays excluded: hidden from the safe set and hard-blocked.
+    expect(index.has("postChat")).toBe(true);
+    expect(safe.has("postChat")).toBe(false);
+    expect(blocked.has("postChat")).toBe(true);
   });
 
   it("resolveCapabilities hides sensitive caps from discovery (list/describe)", () => {
@@ -237,8 +308,10 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
       hostSession: null,
     }) as Array<{ name: string }>;
     const names = visible.map((c) => c.name).sort();
-    expect(names).toEqual(["getDashboards", "getMe", "headDashboards"].sort());
-    expect(names).not.toContain("postQuery");
+    // The read-safe allowlisted POST is discoverable (#4707); mutating writes
+    // and admin reads stay hidden.
+    expect(names).toEqual(["getDashboards", "getMe", "headDashboards", "postQuery"].sort());
+    expect(names).not.toContain("postDashboards");
     expect(names).not.toContain("getAdminAudit");
   });
 });
@@ -270,13 +343,17 @@ describe("agent-auth WebAuthn step-up strength gating (#4413)", () => {
     };
   }
 
-  it("isWriteOperation keys off the method — writes true, reads (even admin reads) false, unknown false", () => {
+  it("isWriteOperation — mutating writes true; reads, admin reads, and read-safe POSTs false; unknown false", () => {
     const idx = buildOperationIndex(FIXTURE_SPEC);
-    expect(isWriteOperation(idx.get("postQuery"))).toBe(true); // write
+    expect(isWriteOperation(idx.get("postDashboards"))).toBe(true); // mutating write
+    // A read-safe allowlisted POST is NOT a write (#4707) — the step-up input
+    // and the block/hide predicate stay distinct, and the read-only exemption
+    // is explicit here rather than inherited from the write policy.
+    expect(isWriteOperation(idx.get("postQuery"))).toBe(false);
     expect(isWriteOperation(idx.get("getMe"))).toBe(false); // safe read
     expect(isWriteOperation(idx.get("headDashboards"))).toBe(false); // HEAD read
     // Admin/platform READS are sensitive (blocked) but NOT writes — they keep the
-    // session default; only the METHOD promotes to webauthn.
+    // session default; only a mutating METHOD promotes to webauthn.
     expect(isWriteOperation(idx.get("getAdminAudit"))).toBe(false);
     expect(isWriteOperation(idx.get("getPlatformRegions"))).toBe(false);
     expect(isWriteOperation(undefined)).toBe(false); // unknown → not claimed as a write
@@ -292,15 +369,19 @@ describe("agent-auth WebAuthn step-up strength gating (#4413)", () => {
     }
   });
 
-  it("enterprise adapter (writeApprovalStrength=webauthn): writes stamped webauthn, reads left at session default", () => {
+  it("enterprise adapter (writeApprovalStrength=webauthn): mutating writes stamped webauthn; reads AND read-safe POSTs left at session default", () => {
     const opts = buildAgentAuthOpenApiOptions(FIXTURE_SPEC, {
       baseUrl: "http://internal",
       resolveHeaders: async () => ({}),
       writeApprovalStrength: "webauthn",
     });
     const byName = new Map((opts.capabilities ?? []).map((c) => [c.name, c] as const));
-    // The one write in the fixture is bumped to the strongest step-up.
-    expect(byName.get("postQuery")?.approvalStrength).toBe("webauthn");
+    // The one mutating write in the fixture is bumped to the strongest step-up.
+    expect(byName.get("postDashboards")?.approvalStrength).toBe("webauthn");
+    // #4707 story 11: an allowlisted read-safe POST stays at the session
+    // default EVEN WITH the enterprise write step-up flag on — the read-only
+    // exemption is explicit and does not silently inherit the write policy.
+    expect(byName.get("postQuery")?.approvalStrength).toBeUndefined();
     // Reads — including admin/platform reads — are NOT bumped (GET → session).
     expect(byName.get("getMe")?.approvalStrength).toBeUndefined();
     expect(byName.get("getDashboards")?.approvalStrength).toBeUndefined();
@@ -309,7 +390,10 @@ describe("agent-auth WebAuthn step-up strength gating (#4413)", () => {
     expect(byName.get("getPlatformRegions")?.approvalStrength).toBeUndefined();
     // Stamping the strength does not disturb the containment set — names only.
     expect((opts.capabilities ?? []).map((c) => c.name).sort()).toEqual(
-      ["getAdminAudit", "getDashboards", "getMe", "getPlatformRegions", "headDashboards", "postQuery"].sort(),
+      [
+        "getAdminAudit", "getDashboards", "getMe", "getPlatformRegions",
+        "headDashboards", "postDashboards", "postQuery",
+      ].sort(),
     );
   });
 
@@ -329,8 +413,11 @@ describe("agent-auth WebAuthn step-up strength gating (#4413)", () => {
       rpId: "app.example.com",
       origin: "https://app.example.com",
     });
-    const post = (opts.capabilities ?? []).find((c) => c.name === "postQuery");
+    const post = (opts.capabilities ?? []).find((c) => c.name === "postDashboards");
     expect(post?.approvalStrength).toBe("webauthn");
+    // The read-safe POST stays session-strength through the full plugin options too.
+    const query = (opts.capabilities ?? []).find((c) => c.name === "postQuery");
+    expect(query?.approvalStrength).toBeUndefined();
   });
 
   it("core plugin options (AC2): no proofOfPresence, writes fall back to the core session strength", () => {
@@ -375,10 +462,17 @@ describe("agent-auth WebAuthn step-up strength gating (#4413)", () => {
         expect(cap.approvalStrength).toBe("webauthn");
         stampedWrites++;
       } else {
-        expect(cap.approvalStrength).toBeUndefined(); // reads stay at session default
+        expect(cap.approvalStrength).toBeUndefined(); // reads + read-safe POSTs stay at session default
       }
     }
     expect(stampedWrites).toBeGreaterThan(0); // non-vacuous — the real spec has writes
+    // #4707 pinned against the real spec: the four allowlisted analyst POSTs
+    // report session strength under the enterprise flag; the excluded postChat
+    // carries the webauthn write stamp.
+    for (const name of ["postQuery", "postExplore", "postMetricsByIdRun", "postValidateSql"]) {
+      expect(byName.get(name)?.approvalStrength).toBeUndefined();
+    }
+    expect(byName.get("postChat")?.approvalStrength).toBe("webauthn");
   });
 });
 
@@ -1020,7 +1114,30 @@ describe("agent-auth capability execution (#4410)", () => {
     // (seeded directly into the adapter, exactly how SAFE_CAP grants are seeded)
     // and pins Atlas's own execute-time re-check: the containment set must hold
     // regardless of grant state, or a write/admin op reaches the in-process
-    // proxy under a real per-org key.
+    // proxy under a real per-org key. `postDashboards` is the fixture's
+    // mutating write — NOT on the #4707 read-safe allowlist.
+    workspacesForUser = () => ["wsA"];
+    const instance = makeInstance([
+      { id: "agent_1", workspaceId: "wsA", grantStatus: "active", capability: "postDashboards" },
+    ]);
+    const { status, body } = await execute(
+      instance,
+      await mintJWT({ agentId: "agent_1", capabilities: ["postDashboards"] }),
+      "postDashboards",
+    );
+    expect(status).toBe(403);
+    expect(body.error).toBe("capability_blocked");
+    expect(mintedFor).toEqual([]);
+    expect(lastForwarded).toBeNull();
+  });
+
+  it("read-safe allowlisted POST (#4707): granted postQuery executes through the proxy — 200, per-org key minted + forwarded to /api/v1/query", async () => {
+    // The end-to-end analyst path the allowlist exists for: a delegated agent
+    // with a granted `postQuery` capability clears the plugin's grant check AND
+    // Atlas's execute-time containment re-check (postQuery is no longer in
+    // `blockedCapabilities`), reaching the in-process proxy with a real
+    // per-workspace key — org scoping, RLS, and rate limits then run exactly as
+    // for a GET.
     workspacesForUser = () => ["wsA"];
     const instance = makeInstance([
       { id: "agent_1", workspaceId: "wsA", grantStatus: "active", capability: "postQuery" },
@@ -1030,10 +1147,11 @@ describe("agent-auth capability execution (#4410)", () => {
       await mintJWT({ agentId: "agent_1", capabilities: ["postQuery"] }),
       "postQuery",
     );
-    expect(status).toBe(403);
-    expect(body.error).toBe("capability_blocked");
-    expect(mintedFor).toEqual([]);
-    expect(lastForwarded).toBeNull();
+    expect(status).toBe(200);
+    expect(body.data).toMatchObject({ ok: true, from: "upstream" });
+    expect(mintedFor).toEqual([{ userId: "user_1", workspaceId: "wsA" }]);
+    expect(lastForwarded?.headers["x-api-key"]).toBe("wskey_wsA");
+    expect(lastForwarded?.url).toContain("/api/v1/query");
   });
 
   it("membership lookup FAILURE → retriable 500 with a ref, never a 403 denial (infra ≠ authorization)", async () => {

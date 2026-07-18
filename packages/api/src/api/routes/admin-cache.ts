@@ -5,8 +5,9 @@
  * Org-admin scope: the cache is a per-workspace operational surface
  * (already listed in the org-admin sidebar). Responses are per-caller
  * (#4549): a workspace admin sees their own org's bucket and flushes only
- * their own org's entries; fleet-wide counters and the fleet flush are
- * platform-admin-only, so cross-tenant activity never leaks to a tenant.
+ * their own org's entries (no-org / single-tenant deployments degenerate to
+ * a full flush — see the handler); fleet-wide counters and the fleet flush
+ * are platform-admin-only, so cross-tenant activity never leaks to a tenant.
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -30,6 +31,8 @@ const log = createLogger("admin-cache");
  *   - `platform` — fleet aggregate + resolved backend capacity.
  * `since: null` with `enabled: true` is the "warming" state (no recorded
  * activity yet); rates are `null` (not 0) when there is nothing to rate.
+ * `entryCount: null` means the count is structurally unavailable (a plugin
+ * backend has no per-org count) — never rendered as a confident 0.
  */
 const CacheStatsResponseSchema = z.object({
   scope: z.enum(["workspace", "platform"]),
@@ -41,7 +44,7 @@ const CacheStatsResponseSchema = z.object({
   hitRate: z.number().nullable(),
   windowHitRate: z.number().nullable(),
   windowTotal: z.number(),
-  entryCount: z.number(),
+  entryCount: z.number().nullable(),
   maxSize: z.number().nullable(),
 });
 
@@ -51,7 +54,7 @@ const CacheStatsResponseSchema = z.object({
  * process — the blast radius the page's fleet dialog discloses.
  */
 const FlushRequestSchema = z.object({
-  scope: z.enum(["workspace", "fleet"]).optional(),
+  scope: z.enum(["workspace", "fleet"]).default("workspace"),
 });
 
 const FlushResponseSchema = z.object({
@@ -107,7 +110,7 @@ const flushCacheRoute = createRoute({
       content: { "application/json": { schema: FlushResponseSchema } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Forbidden — fleet scope requires platform admin", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Forbidden — admin/owner role (and MFA enrollment) required; fleet scope additionally requires platform admin", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Invalid request body — rejected by request validation", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Cache is disabled — nothing to flush", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -143,8 +146,9 @@ adminCache.openapi(getCacheStatsRoute, async (c) => runHandler(c, "retrieve cach
   }
   if (isPlatformAdmin) {
     // Fleet view: registry aggregate (app-maintained per-org accounting)
-    // plus the backend's live entry count / capacity. `stats()` prunes
-    // expired entries, so the fill gauge never counts corpses.
+    // plus the backend's live entry count / capacity. The LRU's `stats()`
+    // prunes expired entries (a plugin backend MAY not, per the contract),
+    // so the fill gauge is corpse-free for the owned backend.
     const fleet = getFleetCacheStats();
     const stats = await getCache().stats();
     return c.json({
@@ -155,10 +159,12 @@ adminCache.openapi(getCacheStatsRoute, async (c) => runHandler(c, "retrieve cach
   // Workspace view: the caller's org bucket only — fleet-wide counters
   // (cross-tenant activity) never reach a tenant (closes audit L13). With no
   // org (auth mode "none"), the whole cache belongs to this one tenant, so
-  // the backend's own count is their count.
+  // the backend's own count is their count. `entryCount` stays null when the
+  // count is structurally unavailable (plugin backend) — the page renders
+  // "unavailable", never a confident 0 over a warm cache.
   const bucket = getOrgCacheStats(orgId);
   const entryCount = orgId !== undefined
-    ? (await cacheOrgEntryCount(orgId)) ?? 0
+    ? await cacheOrgEntryCount(orgId)
     : (await getCache().stats()).entryCount;
   return c.json({
     scope, enabled: true, ttl, ...bucket,
@@ -173,15 +179,28 @@ adminCache.openapi(flushCacheRoute, async (c) => runHandler(c, "flush cache", as
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   const orgId = authResult.user?.activeOrganizationId;
 
-  // A declared JSON body is validated by zod-openapi (invalid scope → 422
-  // before this handler). The body is optional, so re-read defensively: a
-  // missing body defaults to a workspace-scoped flush.
-  const rawBody = await c.req.json().catch(() => {
-    // intentionally ignored: body is optional — an absent/non-JSON body means default scope.
-    return {};
-  });
-  const parsed = FlushRequestSchema.safeParse(rawBody ?? {});
-  const scope = (parsed.success ? parsed.data.scope : undefined) ?? "workspace";
+  // A declared `application/json` body is validated by zod-openapi (invalid
+  // scope → 422 before this handler). The body is optional and the framework
+  // skips validation for other content types, so re-read the raw text and
+  // validate here too: an ABSENT body defaults to a workspace-scoped flush,
+  // but a PRESENT-yet-invalid one is a 422 — never a silent downgrade of a
+  // fleet flush the caller thinks they issued.
+  const rawText = await c.req.text();
+  let scope: "workspace" | "fleet" = "workspace";
+  if (rawText.trim() !== "") {
+    let rawBody: unknown;
+    try {
+      rawBody = JSON.parse(rawText);
+    } catch (err) {
+      log.warn({ requestId, err: err instanceof Error ? err.message : String(err) }, "Unparseable cache-flush body rejected");
+      return c.json({ error: "invalid_request", message: "Request body must be JSON.", requestId }, 422);
+    }
+    const parsed = FlushRequestSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request", message: "Invalid request body: scope must be \"workspace\" or \"fleet\".", requestId }, 422);
+    }
+    scope = parsed.data.scope;
+  }
 
   const { getCache, flushCache, flushCacheByOrg, cacheEnabled, cacheOrgEntryCount } =
     await import("@atlas/api/lib/cache/index");
@@ -236,7 +255,11 @@ adminCache.openapi(flushCacheRoute, async (c) => runHandler(c, "flush cache", as
     return c.json({ ok: true, flushed: count, message: "Cache flushed" }, 200);
   }
 
-  const count = (await cacheOrgEntryCount(orgId)) ?? 0;
+  // The audit row commits BEFORE the flush (#4533), so it records the
+  // pre-flush count — honestly: `null` (not a fake 0) when the count is
+  // structurally unavailable on a plugin backend. The response's `flushed`
+  // is the backend's actual removal count either way.
+  const count = await cacheOrgEntryCount(orgId);
   await logAdminActionAwait({
     actionType: ADMIN_ACTIONS.cache.flush,
     targetType: "cache",

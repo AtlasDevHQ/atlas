@@ -596,6 +596,19 @@ describe("LRUCacheBackend — entryCountByOrg + pruneExpired", () => {
     expect(idx.orgKeys.has("org-b")).toBe(false);
   });
 
+  it("self-heals org-index drift (key in the index but not the entry Map)", async () => {
+    const cache = new LRUCacheBackend(10, 300_000);
+    await cache.set("live", makeEntry(), scope("org-a"));
+    await cache.set("ghost", makeEntry(), scope("org-a"));
+    // Simulate drift: remove the entry from the Map WITHOUT unindexing —
+    // the invariant violation the self-heal branch exists for.
+    (cache as unknown as { cache: Map<string, unknown> }).cache.delete("ghost");
+
+    expect(cache.entryCountByOrg("org-a")).toBe(1);
+    // The heal removed the ghost from the side index, not just the count.
+    expect(indexState(cache).orgKeys.get("org-a")).toEqual(new Set(["live"]));
+  });
+
   it("pruneExpired with an injected now expires deterministically", async () => {
     const cache = new LRUCacheBackend(10, 300_000);
     const base = 1_000_000_000;

@@ -21,7 +21,8 @@ const STATS_FIELDS: readonly (keyof CacheStats)[] = ["hits", "misses", "entryCou
 
 /**
  * How long the `stats()` probe may take before validation gives up. `stats()`
- * is documented on the contract as cheap + side-effect-free, so a probe that
+ * is documented on the contract as cheap + idempotent (its only permitted
+ * side effect is lazily dropping already-expired entries), so a probe that
  * doesn't resolve promptly means a misbehaving backend (e.g. a Redis client
  * blocked on a dead connection). Bounding it keeps a hung backend from stalling
  * plugin-registry boot — the whole point of validation is to fail fast and

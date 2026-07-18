@@ -102,6 +102,16 @@ describe("stats registry — two-generation sliding window", () => {
     expect(s.windowHitRate).toBeCloseTo(0.5, 10);
   });
 
+  it("decay tail: when the weighted total rounds to 0, the rate is null too", () => {
+    // One hit in gen 100; read late enough into gen 101 that the weighted
+    // total (1 * weight) is < 0.5. The invariant "windowHitRate === null ⟺
+    // windowTotal === 0" must hold — no non-null rate over a zero total.
+    recordCacheAccess("org-a", true, at(100, 0));
+    const s = getOrgCacheStats("org-a", at(101, WINDOW_MS * 0.9));
+    expect(s.windowTotal).toBe(0); // round(0.1)
+    expect(s.windowHitRate).toBeNull();
+  });
+
   it("a gap of 2+ generations empties the window entirely", () => {
     for (let i = 0; i < 10; i++) recordCacheAccess("org-a", true, at(100, i));
     const s = getOrgCacheStats("org-a", at(102, 0));

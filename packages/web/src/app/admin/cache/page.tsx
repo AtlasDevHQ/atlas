@@ -39,7 +39,9 @@ import { HardDrive, Trash2, Activity, Database, Clock, Target, Settings2 } from 
 // Per-caller payload (#4549): `scope` is self-describing — "workspace" means
 // the caller's org bucket (maxSize null: fleet capacity is platform framing),
 // "platform" means fleet totals + resolved capacity. `since: null` while
-// enabled is the warming state; rates are null when there's nothing to rate.
+// enabled is the warming state; rates are null when there's nothing to rate;
+// `entryCount: null` means the count is structurally unavailable (plugin
+// cache backend) — rendered as "unavailable", never a confident 0.
 const CacheStatsResponseSchema = z.object({
   scope: z.enum(["workspace", "platform"]),
   enabled: z.boolean(),
@@ -50,7 +52,7 @@ const CacheStatsResponseSchema = z.object({
   hitRate: z.number().nullable(),
   windowHitRate: z.number().nullable(),
   windowTotal: z.number(),
-  entryCount: z.number(),
+  entryCount: z.number().nullable(),
   maxSize: z.number().nullable(),
 });
 
@@ -233,7 +235,7 @@ export default function CachePage() {
   );
 
   const { mutate: flush, saving: flushing, error: flushError, clearError: clearFlushError } =
-    useAdminMutation<{ flushed?: number }>({
+    useAdminMutation<{ ok: boolean; flushed: number; message: string }>({
       path: "/api/v1/admin/cache/flush",
       method: "POST",
       invalidates: refetch,
@@ -242,7 +244,7 @@ export default function CachePage() {
   const isPlatform = data?.scope === "platform";
 
   async function handleFlush() {
-    if (flushing) return;
+    if (flushing || !data) return;
     setFlushMessage(null);
     // Workspace admins purge only their org's entries; platform admins clear
     // the whole fleet (the dialog below disclosed the blast radius). A 409
@@ -250,7 +252,7 @@ export default function CachePage() {
     // the success banner only ever renders on a true 200.
     const result = await flush({ body: { scope: isPlatform ? "fleet" : "workspace" } });
     if (result.ok && result.data) {
-      const count = result.data.flushed ?? 0;
+      const count = result.data.flushed;
       setFlushMessage(`Flushed ${count} ${count === 1 ? "entry" : "entries"}`);
     }
   }
@@ -259,12 +261,14 @@ export default function CachePage() {
   // Warming: caching is on but no access has ever been recorded — render an
   // honest "warming up" panel instead of a 0.0% rate that reads as broken.
   const warming = data ? data.enabled && data.since === null : false;
-  const fillPercent = data && data.maxSize !== null && data.maxSize > 0
+  const fillPercent = data && data.maxSize !== null && data.maxSize > 0 && data.entryCount !== null
     ? (data.entryCount / data.maxSize) * 100
     : 0;
   const flushDisabledReason = data
     ? !data.enabled
       ? "Cache is disabled"
+      // null entryCount = count unavailable (plugin backend) — the cache may
+      // well be warm, so flushing stays allowed; only a known-zero disables.
       : data.entryCount === 0
         ? "Cache is empty"
         : null
@@ -411,13 +415,17 @@ export default function CachePage() {
                   <div className={`grid grid-cols-1 gap-6 ${isPlatform ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
                     <StatItem
                       label="Entries"
-                      value={data.maxSize !== null
-                        ? `${data.entryCount.toLocaleString()} / ${data.maxSize.toLocaleString()}`
-                        : data.entryCount.toLocaleString()}
+                      value={data.entryCount === null
+                        ? "—"
+                        : data.maxSize !== null
+                          ? `${data.entryCount.toLocaleString()} / ${data.maxSize.toLocaleString()}`
+                          : data.entryCount.toLocaleString()}
                       icon={HardDrive}
-                      description={data.maxSize !== null
-                        ? "Live entries vs. the configured capacity"
-                        : "Live cached results owned by this workspace"}
+                      description={data.entryCount === null
+                        ? "Entry count unavailable for this cache backend"
+                        : data.maxSize !== null
+                          ? "Live entries vs. the configured capacity"
+                          : "Live cached results owned by this workspace"}
                     />
                     {isPlatform && (
                       <StatItem
@@ -488,15 +496,20 @@ export default function CachePage() {
                         <AlertDialogDescription>
                           {isPlatform ? (
                             <>
-                              This clears EVERY workspace in this region — all{" "}
-                              {data.entryCount.toLocaleString()} cached{" "}
-                              {data.entryCount === 1 ? "entry" : "entries"}, not just your own workspace&apos;s.
+                              This clears EVERY workspace in this region —{" "}
+                              {data.entryCount === null
+                                ? "all cached entries"
+                                : `all ${data.entryCount.toLocaleString()} cached ${data.entryCount === 1 ? "entry" : "entries"}`}
+                              , not just your own workspace&apos;s.
                               Subsequent queries will be slower for every tenant until their caches warm up again.
                             </>
                           ) : (
                             <>
-                              This will remove {data.entryCount.toLocaleString()} of your organization&apos;s cached{" "}
-                              {data.entryCount === 1 ? "entry" : "entries"}. Subsequent queries will be slower until the cache warms up again.
+                              This will remove{" "}
+                              {data.entryCount === null
+                                ? "all of your organization's cached entries"
+                                : `${data.entryCount.toLocaleString()} of your organization's cached ${data.entryCount === 1 ? "entry" : "entries"}`}
+                              . Subsequent queries will be slower until the cache warms up again.
                             </>
                           )}
                         </AlertDialogDescription>

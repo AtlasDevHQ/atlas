@@ -59574,7 +59574,10 @@
                       "type": "number"
                     },
                     "entryCount": {
-                      "type": "number"
+                      "type": [
+                        "number",
+                        "null"
+                      ]
                     },
                     "maxSize": {
                       "type": [
@@ -59681,7 +59684,8 @@
                     "enum": [
                       "workspace",
                       "fleet"
-                    ]
+                    ],
+                    "default": "workspace"
                   }
                 }
               }
@@ -59727,7 +59731,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — fleet scope requires platform admin",
+            "description": "Forbidden — admin/owner role (and MFA enrollment) required; fleet scope additionally requires platform admin",
             "content": {
               "application/json": {
                 "schema": {

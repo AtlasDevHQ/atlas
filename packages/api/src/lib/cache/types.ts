@@ -75,8 +75,9 @@ export interface CacheBackend {
    * every admin stats poll and — for a plugin-supplied backend — as the
    * shape probe during registration validation. It MAY lazily drop
    * already-expired entries (the LRU does, so `entryCount` never counts
-   * corpses; the validation probe runs on an empty candidate, so pruning is
-   * a no-op there) but must have no other side effect.
+   * corpses; pruning during the validation probe is harmless — it only
+   * removes entries that are already dead) but must have no other side
+   * effect.
    */
   stats(): Promise<CacheStats>;
 }

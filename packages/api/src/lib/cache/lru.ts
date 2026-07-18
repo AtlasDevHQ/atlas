@@ -174,7 +174,9 @@ export class LRUCacheBackend implements CacheBackend {
       const entry = this.cache.get(key);
       if (!entry) {
         // Index drift shouldn't happen (every removal path unindexes), but
-        // self-heal rather than overcount if it ever does.
+        // self-heal rather than overcount if it ever does — with a debug
+        // breadcrumb so a recurring drift bug is detectable, not invisible.
+        console.debug(`LRUCacheBackend: healed org-index drift for key ${key.slice(0, 12)}…`);
         this.unindex(key);
         continue;
       }

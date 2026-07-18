@@ -13,6 +13,9 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach, mock, type Mock } from "bun:test";
+// The REAL registry (sql.ts imports it from this submodule, not the mocked
+// barrel), so fanout per-leg accounting is observable here (#4549).
+import { getOrgCacheStats, resetCacheStatsRegistry } from "@atlas/api/lib/cache/stats-registry";
 import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 import type { CacheEntry } from "@atlas/api/lib/cache/types";
@@ -148,6 +151,7 @@ describe("executeSQL fanout — per-leg cache honesty (#4546)", () => {
   beforeEach(() => {
     entriesByConn = new Map();
     failingConns = new Set();
+    resetCacheStatsRegistry();
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/atlas";
     _resetPool(mockPool);
@@ -183,6 +187,13 @@ describe("executeSQL fanout — per-leg cache honesty (#4546)", () => {
     // Masking untouched (no classified tables) but present + honest per leg.
     expect(contribByConn(result, "us-int").maskingApplied).toBe(false);
     expect(contribByConn(result, "eu").maskingApplied).toBe(false);
+    // #4549 — org-stats accounting is PER LEG by design: one fanout query
+    // records one access per member (2 hits here), weighting the window
+    // stats by leg count. Pinned so a change to this weighting is a
+    // deliberate decision, not an accident.
+    const bucket = getOrgCacheStats(undefined);
+    expect(bucket.hits).toBe(2);
+    expect(bucket.misses).toBe(0);
   });
 
   it("a mixed fanout (one hit, one live) reports cached:false top-level and per-leg honestly", async () => {

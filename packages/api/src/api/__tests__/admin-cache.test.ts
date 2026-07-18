@@ -9,11 +9,12 @@
  * stats registry (imported from their un-mocked submodules), not a wholesale
  * stub: org-scoped flush is proven by seeding real entries for two orgs and
  * asserting the co-tenant's survive, and the per-caller stats shape is proven
- * by seeding the registry through its public `recordCacheAccess` seam. Only
- * the thin settings-resolution glue from `lib/cache/index.ts` is a test
- * double (a controllable settings store standing in for the registry reads —
- * that glue's real behavior is covered by `lib/cache/__tests__/index.test.ts`),
- * plus audit (to drive the #4533 ordering contract).
+ * by seeding the registry through its public `recordCacheAccess` seam. The
+ * singleton/settings glue from `lib/cache/index.ts` is re-implemented as
+ * thin wrappers over the real backend (a controllable settings store stands
+ * in for the registry reads — the real glue's behavior is covered by
+ * `lib/cache/__tests__/index.test.ts`), plus audit is mocked (to drive the
+ * #4533 ordering contract).
  *
  * Endpoints:
  * - GET  /cache/stats  — per-caller statistics (workspace bucket vs fleet)
@@ -210,6 +211,49 @@ function cacheRequest(
   });
 }
 
+/**
+ * A POST with a NON-JSON content type — skips zod-openapi's request
+ * validation entirely, so it exercises the handler's own text-based parse
+ * (present-but-invalid body → 422, valid body → honored).
+ */
+function rawBodyRequest(urlPath: string, rawBody: string): Request {
+  return new Request(`http://localhost${urlPath}`, {
+    method: "POST",
+    headers: { Authorization: "Bearer test-key", "Content-Type": "text/plain" },
+    body: rawBody,
+  });
+}
+
+/** An admin with NO active organization (auth mode "none" / single-tenant). */
+function setNoOrgAdmin(): void {
+  mocks.mockAuthenticateRequest.mockImplementation(() =>
+    Promise.resolve({
+      authenticated: true,
+      mode: "managed",
+      user: {
+        id: "no-org-admin-1",
+        mode: "managed",
+        label: "solo@test.com",
+        role: "admin",
+        claims: { twoFactorEnabled: true },
+      },
+    }),
+  );
+}
+
+/** A plugin-style (non-LRU) backend whose per-org count is unavailable. */
+function pluginBackend(overrides?: Partial<CacheBackend>): CacheBackend {
+  return {
+    get: async () => null,
+    set: async () => {},
+    delete: async () => false,
+    flush: async () => {},
+    flushByOrg: async () => 5,
+    stats: async () => ({ hits: 0, misses: 0, entryCount: 7, maxSize: 100, ttl: 1000 }),
+    ...overrides,
+  };
+}
+
 function makeEntry(overrides?: Partial<CacheEntry>): CacheEntry {
   return {
     columns: ["id"],
@@ -366,6 +410,27 @@ describe("admin cache routes", () => {
       expect(body.enabled).toBe(false);
     });
 
+    it("no-org admin (single-tenant): entry count is the whole backend's", async () => {
+      await seedEntries();
+      setNoOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.scope).toBe("workspace");
+      // The whole cache belongs to this one tenant.
+      expect(body.entryCount).toBe(3);
+      expect(body.maxSize).toBeNull();
+    });
+
+    it("plugin backend: workspace entry count is null (unavailable), never a confident 0", async () => {
+      await cacheApi.setCacheBackend(pluginBackend());
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.entryCount).toBeNull();
+    });
+
     it("returns 500 with requestId when the backend's stats() throws", async () => {
       const broken: CacheBackend = {
         get: async () => null,
@@ -489,9 +554,66 @@ describe("admin cache routes", () => {
     });
 
     it("rejects an invalid scope value with 422 (request validation)", async () => {
+      await seedEntries();
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST", { scope: "everything" }));
       expect(res.status).toBe(422);
-      expect(await liveEntryCount()).toBe(0); // rejected before any flush logic
+      expect(await liveEntryCount()).toBe(3); // rejected before any flush logic
+    });
+
+    it("no-org admin (single-tenant): workspace flush degenerates to a full flush", async () => {
+      await seedEntries();
+      setNoOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.flushed).toBe(3);
+      expect(await liveEntryCount()).toBe(0);
+      const audit = mockLogAdminActionAwait.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(audit.targetId).toBe("default");
+      expect(audit.metadata).toEqual({ scope: "workspace", flushed: 3 });
+    });
+
+    it("plugin backend: audit records flushed null (unknown), response reports the real removal count", async () => {
+      await cacheApi.setCacheBackend(pluginBackend());
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      // flushByOrg's actual removal count reaches the caller...
+      expect(body.flushed).toBe(5);
+      // ...while the pre-flush audit row records the count honestly as
+      // unknown, never a fake 0 that reads as a no-op in forensics.
+      const audit = mockLogAdminActionAwait.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(audit.metadata).toEqual({ scope: "workspace", orgId: "org-test", flushed: null });
+    });
+
+    it("a present-but-invalid body with a non-JSON content type is a 422, never a silent workspace downgrade", async () => {
+      await seedEntries();
+      const res = await app.fetch(rawBodyRequest("/api/v1/admin/cache/flush", '{"scope":"Fleet"}'));
+      expect(res.status).toBe(422);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
+      expect(body.requestId).toBeDefined();
+      expect(await liveEntryCount()).toBe(3); // nothing flushed
+    });
+
+    it("unparseable non-JSON-content-type body is a 422", async () => {
+      await seedEntries();
+      const res = await app.fetch(rawBodyRequest("/api/v1/admin/cache/flush", "not json at all"));
+      expect(res.status).toBe(422);
+      expect(await liveEntryCount()).toBe(3);
+    });
+
+    it("a VALID body under a non-JSON content type is still honored (fleet scope enforced)", async () => {
+      await seedEntries();
+      setOrgAdmin();
+      // The handler's own parse must see the fleet scope and 403 it — not
+      // silently downgrade to a workspace flush.
+      const res = await app.fetch(rawBodyRequest("/api/v1/admin/cache/flush", '{"scope":"fleet"}'));
+      expect(res.status).toBe(403);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("forbidden_scope");
+      expect(await liveEntryCount()).toBe(3);
     });
 
     // #4533 — attribution IS the security control on this shared surface.

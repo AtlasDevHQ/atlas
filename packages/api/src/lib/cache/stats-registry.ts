@@ -15,7 +15,8 @@
  * - **Counters survive backend recreation.** The registry sits above the
  *   cache module's `_state`, so a resize, plugin backend swap, or
  *   unset→owned transition never resets the numbers an admin is watching.
- *   Only `_resetCache()` (test isolation) clears it.
+ *   Cleared only via `resetCacheStatsRegistry` (test isolation;
+ *   `_resetCache()` invokes it) — there is no admin-facing reset verb.
  *
  * Each bucket carries a since-labeled lifetime rate plus a last-hour rate via
  * a two-generation sliding window (two integer pairs per bucket — no ring
@@ -128,13 +129,17 @@ function windowCounts(b: Bucket, now: number): { windowHits: number; windowMisse
 function toStats(since: number | null, hits: number, misses: number, windowHits: number, windowMisses: number): OrgCacheStats {
   const total = hits + misses;
   const windowTotal = windowHits + windowMisses;
+  // Rate and rounded total key off the SAME threshold so the invariant
+  // "windowHitRate === null ⟺ windowTotal === 0" holds even at the decay
+  // tail, where the weighted total is in (0, 0.5) and rounds to 0.
+  const windowTotalRounded = Math.round(windowTotal);
   return {
     since,
     hits,
     misses,
     hitRate: total > 0 ? hits / total : null,
-    windowHitRate: windowTotal > 0 ? windowHits / windowTotal : null,
-    windowTotal: Math.round(windowTotal),
+    windowHitRate: windowTotalRounded > 0 ? windowHits / windowTotal : null,
+    windowTotal: windowTotalRounded,
   };
 }
 

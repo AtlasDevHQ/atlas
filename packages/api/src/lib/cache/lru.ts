@@ -8,7 +8,8 @@
  * `key → scope` reverse map) lets {@link LRUCacheBackend.flushByOrg} purge
  * exactly one Workspace's entries in O(entries-for-that-org) rather than
  * scanning the whole cache. Per-entry removal paths — set-overwrite, delete,
- * capacity eviction, TTL expiry on read — all route through a single
+ * capacity eviction, TTL expiry on read and on the lazy-pruning list/count
+ * paths — all route through a single
  * `unindex()` seam so an entry can never linger in the side index after it
  * leaves the entry Map (a leak that would make `flushByOrg` return stale counts
  * and hold key references forever). The two bulk paths clear the index maps
@@ -192,12 +193,21 @@ export class LRUCacheBackend implements CacheBackend {
 
   /** Map one live entry to its metadata row. Never includes the rows blob. */
   private toMeta(key: string, entry: CacheEntry, now: number): CacheEntryMeta {
+    const scope = this.keyScope.get(key);
+    if (!scope) {
+      // Same invariant violation as the org-index drift heals below — every
+      // live key should have a keyScope record. Degrade to "unknown" on the
+      // wire, but leave a breadcrumb so recurring drift is detectable.
+      console.debug(`LRUCacheBackend: keyScope missing for live key ${key.slice(0, 12)}…`);
+    }
     return {
       key,
-      // Spread-with-conditional keeps the field absent (not `undefined`) for
-      // legacy entries, so JSON serialization matches the optional wire shape.
+      // Spread-with-conditional keeps the property ABSENT on the in-memory
+      // object for legacy entries (an own `undefined` prop would serialize
+      // identically, but `"sqlPreview" in meta` checks — and the wire-shape
+      // test pinning them — would see a different shape).
       ...(entry.sqlPreview !== undefined ? { sqlPreview: entry.sqlPreview } : {}),
-      connectionId: this.keyScope.get(key)?.connectionId ?? "unknown",
+      connectionId: scope?.connectionId ?? "unknown",
       rowCount: entry.rows.length,
       ageMs: Math.max(0, now - entry.cachedAt),
       ttl: entry.ttl,
@@ -243,7 +253,8 @@ export class LRUCacheBackend implements CacheBackend {
    * authorization for per-entry delete. A workspace admin deleting by raw
    * key must never reach a co-tenant's entry, so membership is checked
    * against the org index before the delete. Returns whether an entry was
-   * removed. Concrete on the LRU (reached via the `owned` state variant).
+   * removed (an already-expired but unpruned entry still counts as
+   * removed). Concrete on the LRU (reached via the `owned` state variant).
    */
   async deleteForOrg(orgId: string, key: string): Promise<boolean> {
     const keys = this.orgKeys.get(orgId);

@@ -59603,6 +59603,31 @@
               }
             }
           },
+          "400": {
+            "description": "Managed session has no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "401": {
             "description": "Authentication required",
             "content": {
@@ -59713,6 +59738,31 @@
                   "required": [
                     "ok",
                     "flushed",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Managed session has no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
                     "message"
                   ]
                 }
@@ -59851,7 +59901,7 @@
           "Admin — Cache"
         ],
         "summary": "List cached entries",
-        "description": "Lists the caller's org's live cached entries as metadata rows (age, row count, connection, capped SQL preview) — expired entries never appear and the cached rows themselves are never returned. A platform admin may pass ?orgId= to inspect a specific org. `entries: null` means the listing is unavailable on the current cache backend.",
+        "description": "Lists the caller's org's live cached entries as metadata rows (age, row count, connection, capped SQL preview) — expired entries never appear and the cached rows themselves are never returned. A platform admin may pass ?orgId= to inspect a specific org. `entries: null` means the listing is unavailable on the current cache backend; an empty list may also mean caching is disabled for the listed org.",
         "parameters": [
           {
             "schema": {
@@ -59909,6 +59959,31 @@
                   },
                   "required": [
                     "entries"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Managed session has no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
                   ]
                 }
               }
@@ -59996,7 +60071,7 @@
           "Admin — Cache"
         ],
         "summary": "Delete one cached entry",
-        "description": "Removes exactly one cached entry, authorized org-scoped: the delete lands only when the key belongs to the caller's org (404 otherwise — a co-tenant's key is indistinguishable from a missing one). Fixing one stale dashboard number costs one entry, not the org's whole cache.",
+        "description": "Removes exactly one cached entry, authorized org-scoped: the delete lands only when the key belongs to the caller's org (404 otherwise — a co-tenant's key is indistinguishable from a missing one). Cross-org delete is deliberately unsupported (inspection via ?orgId= is platform-scoped; mutation stays caller-org-only). Fixing one stale dashboard number costs one entry, not the org's whole cache.",
         "parameters": [
           {
             "schema": {
@@ -60018,15 +60093,46 @@
                   "type": "object",
                   "properties": {
                     "ok": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
                     },
                     "deleted": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
                     }
                   },
                   "required": [
                     "ok",
                     "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Managed session has no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
                   ]
                 }
               }

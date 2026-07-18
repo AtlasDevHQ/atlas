@@ -36,6 +36,7 @@ import {
 } from "@atlas/api/lib/dashboard-parameters";
 import { getSetting, getSettingAuto } from "@atlas/api/lib/settings";
 import { getCache, buildCacheKey, cacheEnabled, getDefaultTtl } from "@atlas/api/lib/cache/index";
+import { SQL_PREVIEW_MAX_CHARS } from "@atlas/api/lib/cache/types";
 // Imported from the registry submodule (not the barrel) deliberately: the
 // org-stats registry is independent of the backend singleton, and the many
 // suites that partially mock the cache barrel must not each need a
@@ -2142,10 +2143,10 @@ export function runSqlPipelineEffect(
         cacheWrite = {
           key: cacheKey,
           scope: { orgId: cacheOrgId, connectionId: connId },
-          // #4550 — the SAME post-beforeQuery SQL that built the key, capped
-          // at 200 chars: a preview for the admin entry table, never full-SQL
-          // retention beyond what the entry already holds.
-          sqlPreview: normalizedMutated.slice(0, 200),
+          // #4550 — the SAME post-beforeQuery SQL that built the key, capped:
+          // a preview for the admin entry table, never full-SQL retention
+          // beyond what the entry already holds.
+          sqlPreview: normalizedMutated.slice(0, SQL_PREVIEW_MAX_CHARS),
         };
         // Bypass (#4546): skip the cache READ (always execute live) but keep
         // `cacheWrite` above, so the fresh result re-freshens the shared entry

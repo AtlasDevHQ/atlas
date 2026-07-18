@@ -46,6 +46,7 @@ void mock.module("@atlas/api/lib/settings", () => ({
 const {
   getCache, cacheEnabled, getDefaultTtl, setCacheBackend, flushCache, _resetCache,
   cacheOrgEntryCount, recordCacheAccess, getOrgCacheStats,
+  cacheListByOrg, cacheDeleteEntry,
 } = await import("../index");
 const { LRUCacheBackend } = await import("../lru");
 
@@ -241,6 +242,69 @@ describe("cacheOrgEntryCount", () => {
     };
     await setCacheBackend(plugin);
     expect(await cacheOrgEntryCount("org-1")).toBeNull();
+  });
+});
+
+describe("cacheListByOrg / cacheDeleteEntry (#4550)", () => {
+  function pluginBackend(): CacheBackend & { deleteCalls: number } {
+    const b = {
+      deleteCalls: 0,
+      get: async () => null,
+      set: async () => {},
+      delete: async () => {
+        b.deleteCalls++;
+        return true;
+      },
+      flush: async () => {},
+      flushByOrg: async () => 0,
+      stats: async () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 0, ttl: 0 }),
+    };
+    return b;
+  }
+
+  it("uninitialized cache: lists as empty, deletes as not-found — never unavailable", async () => {
+    expect(await cacheListByOrg("org-1")).toEqual([]);
+    expect(await cacheDeleteEntry("org-1", "k")).toBe(false);
+  });
+
+  it("owned LRU: org-scoped listing, undefined orgId lists everything", async () => {
+    const backend = getCache();
+    await backend.set("k1", makeEntry({ sqlPreview: "SELECT 1" }), { orgId: "org-1", connectionId: "conn-1" });
+    await backend.set("k2", makeEntry(), { orgId: "org-2", connectionId: "conn-1" });
+    await backend.set("k3", makeEntry(), { connectionId: "conn-1" }); // no-org entry
+
+    const org1 = await cacheListByOrg("org-1");
+    expect(org1!.map((m) => m.key)).toEqual(["k1"]);
+    expect(org1![0]!.sqlPreview).toBe("SELECT 1");
+
+    const all = await cacheListByOrg(undefined);
+    expect(all!.map((m) => m.key).toSorted()).toEqual(["k1", "k2", "k3"]);
+  });
+
+  it("owned LRU: delete is org-authorized; undefined orgId is a plain delete", async () => {
+    const backend = getCache();
+    await backend.set("k1", makeEntry(), { orgId: "org-1", connectionId: "conn-1" });
+    await backend.set("k2", makeEntry(), { orgId: "org-2", connectionId: "conn-1" });
+
+    // Co-tenant key refused, entry survives.
+    expect(await cacheDeleteEntry("org-1", "k2")).toBe(false);
+    expect(await backend.get("k2")).not.toBeNull();
+    // Own key removed.
+    expect(await cacheDeleteEntry("org-1", "k1")).toBe(true);
+    expect(await backend.get("k1")).toBeNull();
+    // Whole-cache-reach delete (single-tenant / platform).
+    expect(await cacheDeleteEntry(undefined, "k2")).toBe(true);
+  });
+
+  it("plugin backend: both degrade to null and the plugin's delete is NEVER called", async () => {
+    const plugin = pluginBackend();
+    await setCacheBackend(plugin);
+    expect(await cacheListByOrg("org-1")).toBeNull();
+    expect(await cacheDeleteEntry("org-1", "k")).toBeNull();
+    expect(await cacheDeleteEntry(undefined, "k")).toBeNull();
+    // The null degrade is what keeps org authorization trustworthy: an
+    // external store's own scoping is never trusted with the delete.
+    expect(plugin.deleteCalls).toBe(0);
   });
 });
 

@@ -233,16 +233,42 @@ function rawBodyRequest(urlPath: string, rawBody: string): Request {
   });
 }
 
-/** An admin with NO active organization (auth mode "none" / single-tenant). */
+/**
+ * A single-tenant admin: simple-key auth, no org concept at all. This is
+ * the ONLY no-org shape with whole-cache reach — a MANAGED session without
+ * an active org (see setManagedNoOrgAdmin) must fail closed instead.
+ */
 function setNoOrgAdmin(): void {
+  mocks.mockAuthenticateRequest.mockImplementation(() =>
+    Promise.resolve({
+      authenticated: true,
+      mode: "simple-key",
+      user: {
+        id: "no-org-admin-1",
+        mode: "simple-key",
+        label: "solo@test.com",
+        role: "admin",
+        claims: { twoFactorEnabled: true },
+      },
+    }),
+  );
+}
+
+/**
+ * A managed (multi-tenant) admin whose session lacks an active org — the
+ * anomalous shape the #4550 review flagged: it must NEVER widen to
+ * whole-cache reach (that would disclose/delete co-tenant data), so every
+ * cache route fails it closed with 400.
+ */
+function setManagedNoOrgAdmin(): void {
   mocks.mockAuthenticateRequest.mockImplementation(() =>
     Promise.resolve({
       authenticated: true,
       mode: "managed",
       user: {
-        id: "no-org-admin-1",
+        id: "managed-no-org-1",
         mode: "managed",
-        label: "solo@test.com",
+        label: "orgless@test.com",
         role: "admin",
         claims: { twoFactorEnabled: true },
       },
@@ -431,6 +457,16 @@ describe("admin cache routes", () => {
       expect(body.maxSize).toBeNull();
     });
 
+    it("managed session with no active org fails closed (400) — never whole-backend stats", async () => {
+      await seedEntries();
+      setManagedNoOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      expect(res.status).toBe(400);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("bad_request");
+      expect(body.requestId).toBeDefined();
+    });
+
     it("plugin backend: workspace entry count is null (unavailable), never a confident 0", async () => {
       await cacheApi.setCacheBackend(pluginBackend());
       setOrgAdmin();
@@ -548,6 +584,15 @@ describe("admin cache routes", () => {
       // platform-admin-1's activeOrganizationId is org-test → 2 entries.
       expect(body.flushed).toBe(2);
       expect(await liveEntryCount()).toBe(1);
+    });
+
+    it("managed session with no active org fails closed (400) — never a full flush", async () => {
+      await seedEntries();
+      setManagedNoOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
+      expect(res.status).toBe(400);
+      expect(await liveEntryCount()).toBe(3); // nothing flushed
+      expect(mockLogAdminActionAwait).not.toHaveBeenCalled();
     });
 
     it("returns 409 (never a 200 body flag) when caching is disabled", async () => {
@@ -755,6 +800,27 @@ describe("admin cache routes", () => {
       expect(body.entries).toEqual([]);
     });
 
+    it("the enabled gate keys off the LISTED org, not the caller's (#4550 review)", async () => {
+      await seedEntries();
+      // The platform admin's OWN workspace disabled caching; the inspected
+      // org did not — its warm entries must still list, never a confident
+      // empty table over live data.
+      settingsStore.set(settingsKey("ATLAS_CACHE_ENABLED", "org-test"), "false");
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/entries?orgId=org-other"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as { entries: Array<{ key: string }> };
+      expect(body.entries.map((e) => e.key)).toEqual(["key-b1"]);
+    });
+
+    it("managed session with no active org fails closed (400) — never listAll", async () => {
+      await seedEntries();
+      setManagedNoOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/entries"));
+      expect(res.status).toBe(400);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("bad_request");
+    });
+
     it("plugin backend: entries is null (unavailable), never a confident empty table", async () => {
       await cacheApi.setCacheBackend(pluginBackend());
       setOrgAdmin();
@@ -807,6 +873,47 @@ describe("admin cache routes", () => {
       const body = await res.json() as Record<string, unknown>;
       expect(body.error).toBe("not_found");
       expect(await cacheApi.getCache().get("key-b1")).not.toBeNull();
+      // The ATTEMPT is still audited — cross-tenant key probing must show
+      // up in the forensic trail even though the delete never landed.
+      expect(mockLogAdminActionAwait).toHaveBeenCalledTimes(1);
+      const audit = mockLogAdminActionAwait.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(audit.metadata).toEqual({ orgId: "org-test", key: "key-b1".slice(0, 12) });
+    });
+
+    it("commits the audit row before the delete takes effect (#4533 discipline)", async () => {
+      await seedEntries();
+      setOrgAdmin();
+      let entryLiveDuringAudit = false;
+      mockLogAdminActionAwait.mockImplementation(async () => {
+        entryLiveDuringAudit = (await cacheApi.getCache().get("key-a1")) !== null;
+      });
+      const res = await app.fetch(del("key-a1"));
+      expect(res.status).toBe(200);
+      expect(entryLiveDuringAudit).toBe(true); // audit first, then delete
+      expect(await cacheApi.getCache().get("key-a1")).toBeNull();
+    });
+
+    it("does not silently succeed when the audit write fails", async () => {
+      await seedEntries();
+      setOrgAdmin();
+      mockLogAdminActionAwait.mockImplementation(() =>
+        Promise.reject(new Error("admin_action_log insert failed")),
+      );
+      const res = await app.fetch(del("key-a1"));
+      expect(res.status).toBe(500);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.requestId).toBeDefined();
+      // The delete is gated on the committed audit row — entry survives.
+      expect(await cacheApi.getCache().get("key-a1")).not.toBeNull();
+    });
+
+    it("a key with URL-encodable characters round-trips through the path param", async () => {
+      const backend = cacheApi.getCache();
+      await backend.set("key with+chars%40", makeEntry(), { orgId: "org-test", connectionId: "default" });
+      setOrgAdmin();
+      const res = await app.fetch(del("key with+chars%40"));
+      expect(res.status).toBe(200);
+      expect(await backend.get("key with+chars%40")).toBeNull();
     });
 
     it("a missing key 404s with the same shape as a co-tenant's key", async () => {
@@ -824,9 +931,22 @@ describe("admin cache routes", () => {
       const res = await app.fetch(del("key-b1"));
       expect(res.status).toBe(200);
       expect(await liveEntryCount()).toBe(2);
+      // Single-tenant audit shape: default target, orgId null.
+      const audit = mockLogAdminActionAwait.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(audit.targetId).toBe("default");
+      expect(audit.metadata).toEqual({ orgId: null, key: "key-b1".slice(0, 12) });
     });
 
-    it("disabled cache refuses with 409", async () => {
+    it("managed session with no active org fails closed (400) — never an unscoped delete", async () => {
+      await seedEntries();
+      setManagedNoOrgAdmin();
+      const res = await app.fetch(del("key-b1"));
+      expect(res.status).toBe(400);
+      expect(await liveEntryCount()).toBe(3);
+      expect(mockLogAdminActionAwait).not.toHaveBeenCalled();
+    });
+
+    it("disabled cache refuses with 409 before any audit row", async () => {
       await seedEntries();
       settingsStore.set("ATLAS_CACHE_ENABLED", "false");
       setOrgAdmin();
@@ -835,6 +955,8 @@ describe("admin cache routes", () => {
       const body = await res.json() as Record<string, unknown>;
       expect(body.error).toBe("cache_disabled");
       expect(await liveEntryCount()).toBe(3);
+      // Matches flush: a refusal short-circuits before the attribution row.
+      expect(mockLogAdminActionAwait).not.toHaveBeenCalled();
     });
 
     it("plugin backend: 409 unsupported_backend (no trustworthy org index to authorize against)", async () => {

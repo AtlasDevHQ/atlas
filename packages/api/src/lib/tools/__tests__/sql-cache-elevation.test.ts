@@ -19,7 +19,7 @@
 import { describe, expect, it, beforeEach, afterEach, mock, type Mock } from "bun:test";
 import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 import { createConnectionMock } from "@atlas/api/testing/connection";
-import type { CacheEntry, CacheScope } from "@atlas/api/lib/cache/types";
+import { SQL_PREVIEW_MAX_CHARS, type CacheEntry, type CacheScope } from "@atlas/api/lib/cache/types";
 // The REAL registry (sql.ts imports it from this submodule, not the barrel),
 // so the per-org accounting recorded by the pipeline is observable here.
 import { getOrgCacheStats, resetCacheStatsRegistry } from "@atlas/api/lib/cache/stats-registry";
@@ -224,12 +224,13 @@ describe("executeSQL cache elevation — age on hit + bypassCache (#4546)", () =
     expect(cacheSets).toHaveLength(1);
     const preview = cacheSets[0].entry.sqlPreview;
     expect(typeof preview).toBe("string");
-    // Capped at 200 chars — a preview, never full-SQL retention. Asserted
-    // via cap + prefix content (not exact equality) so pipeline SQL
-    // normalization can't make this brittle.
-    expect(preview!.length).toBeLessThanOrEqual(200);
+    // Capped — a preview, never full-SQL retention. Asserted via cap +
+    // prefix content (not exact equality) so pipeline SQL normalization
+    // can't make this brittle; the generous lower bound just proves the cap
+    // actually engaged on an over-length statement.
+    expect(preview!.length).toBeLessThanOrEqual(SQL_PREVIEW_MAX_CHARS);
     expect(preview).toContain("SELECT id, name FROM companies");
-    expect(preview!.length).toBeGreaterThanOrEqual(190);
+    expect(preview!.length).toBeGreaterThanOrEqual(SQL_PREVIEW_MAX_CHARS - 10);
   });
 
   it("after a bypass write, a subsequent identical query hits the refreshed entry", async () => {

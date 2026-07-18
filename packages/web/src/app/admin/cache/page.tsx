@@ -67,6 +67,9 @@ const CacheStatsResponseSchema = z.object({
 // Entry-inspection rows (#4550): metadata only — the cached rows blob never
 // reaches this surface. `entries: null` = listing unavailable on the current
 // cache backend (plugin), mirroring the nullable-entryCount pattern.
+// MUST MATCH the server copy in
+// packages/api/src/api/routes/admin-cache.ts (same for the stats schema
+// above) — this package can't import from @atlas/api, so they're hand-synced.
 const CacheEntriesResponseSchema = z.object({
   entries: z
     .array(
@@ -260,17 +263,32 @@ function CacheConfigCard({
 // The "management" the page title promises: each row is one live cached
 // entry with a per-row delete, so fixing "one dashboard number is stale"
 // costs one entry instead of the org's whole cache. Ships functional and
-// plain — the "entries bubbling by heat" treatment is a later design pass.
+// plain per the PRD (#4544) — a distinctive treatment is explicitly a later
+// design pass, not a gate on this slice.
 function CacheEntriesCard({ onChanged }: { onChanged: () => void }) {
   const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/cache/entries",
     { schema: CacheEntriesResponseSchema },
   );
 
-  const del = useAdminMutation<{ ok: boolean; deleted: boolean }>({
+  const del = useAdminMutation<{ ok: true; deleted: true }>({
     method: "DELETE",
     invalidates: [refetch, onChanged],
   });
+
+  async function handleDelete(key: string) {
+    const result = await del.mutate({
+      path: `/api/v1/admin/cache/entries/${encodeURIComponent(key)}`,
+      itemId: key,
+    });
+    // 404 = the entry expired/was evicted between render and click — it is
+    // already gone, so refetch to drop the ghost row instead of stranding
+    // the user on a retry that can only ever 404 again.
+    if (!result.ok && result.error.status === 404) {
+      del.clearErrorFor(key);
+      refetch();
+    }
+  }
 
   const entries = data?.entries;
 
@@ -294,7 +312,11 @@ function CacheEntriesCard({ onChanged }: { onChanged: () => void }) {
           <p className="text-sm text-muted-foreground">
             Couldn&apos;t load entries: {error.message}
           </p>
-        ) : entries === null || entries === undefined ? (
+        ) : entries === undefined ? (
+          // `undefined` = no parsed payload (transient refetch state) — only
+          // the wire's explicit `null` means backend-unavailable.
+          <p className="text-sm text-muted-foreground">Loading entries...</p>
+        ) : entries === null ? (
           <p className="text-sm text-muted-foreground">
             Entry inspection isn&apos;t available on the current cache backend.
           </p>
@@ -333,12 +355,7 @@ function CacheEntriesCard({ onChanged }: { onChanged: () => void }) {
                         size="icon"
                         aria-label={`Delete cached entry ${entry.sqlPreview ?? entry.key.slice(0, 12)}`}
                         disabled={del.isMutating(entry.key)}
-                        onClick={() =>
-                          void del.mutate({
-                            path: `/api/v1/admin/cache/entries/${encodeURIComponent(entry.key)}`,
-                            itemId: entry.key,
-                          })
-                        }
+                        onClick={() => void handleDelete(entry.key)}
                       >
                         <Trash2 className="size-4" />
                       </Button>

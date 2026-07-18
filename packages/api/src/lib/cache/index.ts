@@ -210,11 +210,15 @@ export async function cacheOrgEntryCount(orgId: string): Promise<number | null> 
 
 /**
  * List one Workspace's LIVE cached entries as metadata rows (#4550), or every
- * live entry when `orgId` is undefined (single-tenant / auth mode "none",
- * where the whole cache belongs to the one tenant). Returns `null` when the
- * listing is structurally unavailable: the LRU's org index is what makes a
- * TRUSTWORTHY org-scoped listing possible, so a plugin backend degrades to
- * "unavailable" rather than trusting an external store's scoping.
+ * live entry when `orgId` is undefined — the same undefined-org ⇒
+ * whole-cache-reach dispatch as the #4549 flush route; CALLERS are
+ * responsible for only passing `undefined` for a principal with legitimate
+ * whole-cache reach (single-tenant deployment or platform admin — the route
+ * fails a managed org-less session closed before reaching here). Returns
+ * `null` when the listing is structurally unavailable: the LRU's org index
+ * is what makes a TRUSTWORTHY org-scoped listing possible, so a plugin
+ * backend degrades to "unavailable" rather than trusting an external
+ * store's scoping. An uninitialized cache lists as empty, not unavailable.
  */
 export async function cacheListByOrg(orgId: string | undefined): Promise<CacheEntryMeta[] | null> {
   if (_state.kind === "unset") return [];
@@ -225,10 +229,12 @@ export async function cacheListByOrg(orgId: string | undefined): Promise<CacheEn
 /**
  * Delete one cached entry, authorized org-scoped (#4550): with an `orgId`,
  * the delete lands only when the key belongs to that org (a workspace admin
- * deleting by raw key can never reach a co-tenant's entry); with no org
- * (single-tenant), it is a plain delete. Returns whether an entry was
- * removed; `null` when structurally unavailable (plugin backend — no
- * trustworthy org index to authorize against).
+ * deleting by raw key can never reach a co-tenant's entry); with no org it
+ * is a plain delete — same caller contract as {@link cacheListByOrg}: pass
+ * `undefined` only for a principal with whole-cache reach. Returns whether
+ * an entry was removed; `null` when structurally unavailable (plugin
+ * backend — no trustworthy org index to authorize against). An
+ * uninitialized cache deletes as not-found (`false`), not as unavailable.
  */
 export async function cacheDeleteEntry(orgId: string | undefined, key: string): Promise<boolean | null> {
   if (_state.kind === "unset") return false;

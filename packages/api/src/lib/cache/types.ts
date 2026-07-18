@@ -17,14 +17,18 @@ export interface CacheEntry {
    */
   executionMs?: number;
   /**
-   * First ~200 chars of the post-`beforeQuery` SQL that built this entry's
-   * key, stamped at write time for the admin entry-inspection table (#4550).
-   * A capped preview by design — never full-SQL retention beyond what the
-   * entry already holds. Optional so legacy/plugin-written entries degrade
-   * to "no preview" rather than crashing.
+   * First {@link SQL_PREVIEW_MAX_CHARS} chars of the post-`beforeQuery` SQL
+   * that built this entry's key, stamped at write time for the admin
+   * entry-inspection table (#4550). A capped preview by design — never
+   * full-SQL retention beyond what the entry already holds. Optional so
+   * legacy/plugin-written entries degrade to "no preview" rather than
+   * crashing.
    */
   sqlPreview?: string;
 }
+
+/** Cap for {@link CacheEntry.sqlPreview} — the single statement of "~200 chars". */
+export const SQL_PREVIEW_MAX_CHARS = 200;
 
 /**
  * Row-shaped metadata for one live cache entry, served to the admin

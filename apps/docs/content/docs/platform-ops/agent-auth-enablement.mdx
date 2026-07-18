@@ -50,11 +50,14 @@ execution.
   defaults** → *Enable Agent Auth Protocol*. This writes the global
   settings row explicitly (the API call is
   `PUT /api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform`,
-  `platform_admin` role required) — no redeploy, no no-org session, no
-  direct DB write. Because the key is hot-reloadable, the HTTP surface
-  follows within the settings refresh TTL (~30 seconds):
-  `/.well-known/agent-configuration` flips between `404` (off) and
-  `200` (on). Workspace overrides are untouched.
+  `platform_admin` role — or, on self-hosted, an admin session with no
+  active workspace) — no redeploy, no no-org session, no direct DB
+  write. Because the key is hot-reloadable, the HTTP surface follows
+  within seconds (the gate's live-read TTL is ~5 seconds per
+  instance): `/.well-known/agent-configuration` flips between `404`
+  (off) and `200` (on — assuming managed auth is configured; without
+  it the discovery document is `404` regardless). Workspace overrides
+  are untouched.
 
 - **Workspace tier (per-workspace opt-out):** Admin console →
   **Settings** (`/admin/settings`), MCP section. A workspace admin's

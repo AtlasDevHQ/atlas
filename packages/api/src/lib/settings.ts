@@ -2137,6 +2137,28 @@ function maskSecret(value: string | undefined): string | undefined {
 }
 
 /**
+ * Resolve a setting at the PLATFORM tier — global override → env → default,
+ * with any workspace override deliberately out of scope. The single copy of
+ * this ladder (#4669): the platform-scoped display branch, the
+ * workspace-scoped fallthrough, and the `platformValue` computation in
+ * {@link getSettingsForAdmin} all read it, so they cannot drift.
+ */
+function resolvePlatformTier(def: SettingDefinition): {
+  value: string | undefined;
+  source: "env" | "override" | "default";
+} {
+  const override = _cache.get(cacheKey(def.key));
+  if (override) {
+    return { value: def.secret ? maskSecret(override.value) : override.value, source: "override" };
+  }
+  const envVal = process.env[def.envVar];
+  if (envVal !== undefined) {
+    return { value: def.secret ? maskSecret(envVal) : envVal, source: "env" };
+  }
+  return { value: def.default, source: "default" };
+}
+
+/**
  * Returns settings with current values and sources for the admin API.
  *
  * When orgId is provided, workspace-scoped settings resolve through the
@@ -2156,39 +2178,20 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
       let source: "env" | "override" | "workspace-override" | "default";
 
       if (orgId && def.scope === "workspace") {
-        // 4-tier resolution for workspace-scoped settings
+        // 4-tier resolution for workspace-scoped settings: the workspace
+        // override wins, then the shared platform-tier ladder.
         const wsOverride = _cache.get(cacheKey(def.key, orgId));
-        const platformOverride = _cache.get(cacheKey(def.key));
-        const envVal = process.env[def.envVar];
-
         if (wsOverride) {
           currentValue = def.secret ? maskSecret(wsOverride.value) : wsOverride.value;
           source = "workspace-override";
-        } else if (platformOverride) {
-          currentValue = def.secret ? maskSecret(platformOverride.value) : platformOverride.value;
-          source = "override";
-        } else if (envVal !== undefined) {
-          currentValue = def.secret ? maskSecret(envVal) : envVal;
-          source = "env";
         } else {
-          currentValue = def.default;
-          source = "default";
+          ({ value: currentValue, source } = resolvePlatformTier(def));
         }
       } else {
-        // Standard 3-tier for platform-scoped settings
-        const override = _cache.get(cacheKey(def.key));
-        const envVal = process.env[def.envVar];
-
-        if (override) {
-          currentValue = def.secret ? maskSecret(override.value) : override.value;
-          source = "override";
-        } else if (envVal !== undefined) {
-          currentValue = def.secret ? maskSecret(envVal) : envVal;
-          source = "env";
-        } else {
-          currentValue = def.default;
-          source = "default";
-        }
+        // Standard 3-tier for platform-scoped settings (and workspace-scoped
+        // keys viewed with no org context, where the platform tier IS the
+        // resolved view).
+        ({ value: currentValue, source } = resolvePlatformTier(def));
       }
 
       // #3399 — the SaaS suppression of the requiresRestart hint is
@@ -2219,18 +2222,7 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
       let platformValue: string | undefined;
       let platformSource: "env" | "override" | "default" | undefined;
       if (showAll && def.scope === "workspace") {
-        const platformOverride = _cache.get(cacheKey(def.key));
-        const envVal = process.env[def.envVar];
-        if (platformOverride) {
-          platformValue = def.secret ? maskSecret(platformOverride.value) : platformOverride.value;
-          platformSource = "override";
-        } else if (envVal !== undefined) {
-          platformValue = def.secret ? maskSecret(envVal) : envVal;
-          platformSource = "env";
-        } else {
-          platformValue = def.default;
-          platformSource = "default";
-        }
+        ({ value: platformValue, source: platformSource } = resolvePlatformTier(def));
       }
 
       return { ...def, requiresRestart, saasImmutable, currentValue, source, platformValue, platformSource };

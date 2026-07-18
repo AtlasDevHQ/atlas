@@ -643,6 +643,7 @@ describe("settings module", () => {
 
         const settings = getSettingsForAdmin("org-1", true);
         const rowLimit = settings.find((s) => s.key === "ATLAS_ROW_LIMIT");
+        expect(rowLimit).toBeDefined();
         // Workspace-resolved view is unchanged...
         expect(rowLimit!.source).toBe("workspace-override");
         expect(rowLimit!.currentValue).toBe("100");
@@ -662,6 +663,23 @@ describe("settings module", () => {
         rowLimit = getSettingsForAdmin("org-1", true).find((s) => s.key === "ATLAS_ROW_LIMIT");
         expect(rowLimit!.platformSource).toBe("default");
         expect(rowLimit!.platformValue).toBe("1000");
+      });
+
+      it("a key with no registry default resolves platformSource 'default' with platformValue undefined", () => {
+        // Pins the wire shape the platform console renders as "not set":
+        // the row still appears (platformSource present) but carries no
+        // value. ATLAS_SANDBOX_URL is workspace-scoped with no default.
+        const origSandboxUrl = process.env.ATLAS_SANDBOX_URL;
+        delete process.env.ATLAS_SANDBOX_URL;
+        try {
+          const sandboxUrl = getSettingsForAdmin("org-1", true).find((s) => s.key === "ATLAS_SANDBOX_URL");
+          expect(sandboxUrl).toBeDefined();
+          expect(sandboxUrl!.platformSource).toBe("default");
+          expect(sandboxUrl!.platformValue).toBeUndefined();
+        } finally {
+          if (origSandboxUrl !== undefined) process.env.ATLAS_SANDBOX_URL = origSandboxUrl;
+          else delete process.env.ATLAS_SANDBOX_URL;
+        }
       });
 
       it("platform fields are omitted from the non-platform-admin view", () => {

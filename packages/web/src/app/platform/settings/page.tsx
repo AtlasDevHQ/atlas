@@ -436,11 +436,18 @@ export default function PlatformSettingsPage() {
   );
 }
 
-// #4669 — a workspace-scoped setting reshaped to display its PLATFORM tier:
-// value/source come from the platform-tier resolution (never the session
-// workspace's override), so SettingRow and EditDialog render the global row.
-function asPlatformTierSetting(s: SettingWithValue): SettingWithValue {
-  return { ...s, currentValue: s.platformValue, source: s.platformSource ?? "default" };
+// #4669 — a workspace-scoped setting whose platform tier the API resolved
+// (platform-admin view). The narrowed type carries that proof so the
+// reshaping below needs no silent fallback.
+type PlatformTierSetting = SettingWithValue & {
+  platformSource: NonNullable<SettingWithValue["platformSource"]>;
+};
+
+// Reshape to display the PLATFORM tier: value/source come from the
+// platform-tier resolution (never the session workspace's override), so
+// SettingRow and EditDialog render the global row.
+function asPlatformTierSetting(s: PlatformTierSetting): SettingWithValue {
+  return { ...s, currentValue: s.platformValue, source: s.platformSource };
 }
 
 function PlatformSettingsContent() {
@@ -476,11 +483,11 @@ function PlatformSettingsContent() {
   // kill-switch every workspace inherits). The API only populates
   // platformSource in the platform-admin view, so this section is empty
   // (and hidden) for anyone else.
-  const workspaceDefaultSections = new Map<string, SettingWithValue[]>();
+  const workspaceDefaultSections = new Map<string, PlatformTierSetting[]>();
   for (const s of settings) {
     if (s.scope !== "workspace" || !s.platformSource) continue;
     const list = workspaceDefaultSections.get(s.section) ?? [];
-    list.push(s);
+    list.push({ ...s, platformSource: s.platformSource });
     workspaceDefaultSections.set(s.section, list);
   }
 

@@ -1500,13 +1500,13 @@ const updateSettingRoute = createRoute({
   path: "/settings/{key}",
   tags: ["Admin — Settings"],
   summary: "Update setting",
-  description: "Sets or updates a settings override. Requires internal database. Pass tier=platform to write the platform (global) tier of a workspace-scoped setting explicitly — requires the platform_admin role (#4669).",
+  description: "Sets or updates a settings override. Requires internal database. Pass tier=platform to write the platform (global) tier of a workspace-scoped setting explicitly (#4669) — gated like platform-scoped settings: platform_admin, or a self-hosted admin session with no active workspace.",
   request: {
     params: z.object({
       key: z.string().min(1).openapi({ param: { name: "key", in: "path" }, example: "ATLAS_ROW_LIMIT" }),
     }),
     query: z.object({
-      tier: z.enum(["platform"]).optional().openapi({ param: { name: "tier", in: "query" }, description: "#4669 — explicit write tier. \"platform\" targets the global (org_id IS NULL) row regardless of the session's active workspace; platform_admin only. Omitted: workspace-scoped keys write the session workspace's tier." }),
+      tier: z.enum(["platform"]).optional().openapi({ param: { name: "tier", in: "query" }, description: "#4669 — explicit write tier. \"platform\" targets the global (org_id IS NULL) row regardless of the session's active workspace. Requires platform_admin; on self-hosted, an admin session with no active workspace also qualifies. Omitted: workspace-scoped keys write the session workspace's tier when one is active (with none, the global row — self-hosted admins only)." }),
     }),
   },
   responses: {
@@ -1529,13 +1529,13 @@ const deleteSettingRoute = createRoute({
   path: "/settings/{key}",
   tags: ["Admin — Settings"],
   summary: "Delete setting override",
-  description: "Removes a settings override, reverting to env var or default value. Pass tier=platform to clear the platform (global) tier of a workspace-scoped setting explicitly — requires the platform_admin role (#4669).",
+  description: "Removes a settings override, reverting to env var or default value. Pass tier=platform to clear the platform (global) tier of a workspace-scoped setting explicitly (#4669) — gated like platform-scoped settings: platform_admin, or a self-hosted admin session with no active workspace.",
   request: {
     params: z.object({
       key: z.string().min(1).openapi({ param: { name: "key", in: "path" }, example: "ATLAS_ROW_LIMIT" }),
     }),
     query: z.object({
-      tier: z.enum(["platform"]).optional().openapi({ param: { name: "tier", in: "query" }, description: "#4669 — explicit delete tier. \"platform\" clears the global (org_id IS NULL) row regardless of the session's active workspace; platform_admin only. Omitted: workspace-scoped keys clear the session workspace's tier." }),
+      tier: z.enum(["platform"]).optional().openapi({ param: { name: "tier", in: "query" }, description: "#4669 — explicit delete tier. \"platform\" clears the global (org_id IS NULL) row regardless of the session's active workspace. Requires platform_admin; on self-hosted, an admin session with no active workspace also qualifies. Omitted: workspace-scoped keys clear the session workspace's tier when one is active (with none, the global row — self-hosted admins only)." }),
     }),
   },
   responses: {

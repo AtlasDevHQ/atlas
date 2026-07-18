@@ -17,20 +17,22 @@ Only the agent's `executeSQL` path reads and writes this cache — dashboard til
 
 ## How It Works
 
-1. When `executeSQL` runs a query, Atlas builds a cache key from four components:
+1. When `executeSQL` runs a query, Atlas builds a cache key from five components:
    - **SQL text** (trimmed)
    - **Connection ID** (which datasource)
    - **Org ID** (multi-tenant isolation)
-   - **User claims** (RLS context — e.g., `role: "admin"` vs `role: "member"`)
+   - **User claims** (RLS context — e.g., `role: "admin"` vs `role: "member"`), deep-canonicalized so nested claim values count
+   - **Resolved RLS configuration** — enabling or tightening RLS changes the key material, so every pre-change entry is orphaned instantly
 2. The key is a SHA-256 hash of these components, so different orgs or RLS contexts never share cached results
-3. On a **cache hit**, the stored result is returned instantly. The tool response is marked `cached: true`, and the audit log records the query's *original* execution duration (not 0ms), so slow-query analytics stay honest across hits
+3. On a **cache hit**, the stored result is returned instantly. The tool response is marked `cached: true` and carries the hit's **age** (`cacheAgeMs`), so the agent can caveat time-sensitive answers, and the audit log records the query's *original* execution duration (not 0ms), so slow-query analytics stay honest across hits
 4. On a **cache miss**, the query runs against the database, and the result is stored in the cache for the configured TTL
+5. When a user asks for fresh data ("refresh that number"), the agent sends `bypassCache` — the query re-runs against the database and the entry is re-frozen with the fresh result
 
 ---
 
 ## Cache Key Scoping
 
-Cache keys include **all four components**, ensuring strict isolation:
+Cache keys include **all five components**, ensuring strict isolation:
 
 | Component | Purpose |
 |-----------|---------|
@@ -38,6 +40,7 @@ Cache keys include **all four components**, ensuring strict isolation:
 | Connection ID | Different datasources never share cache |
 | Org ID | Multi-tenant isolation (even for identical SQL) |
 | User claims | RLS-aware — different claim sets produce different keys |
+| Resolved RLS config | An RLS policy change orphans all pre-change entries by construction |
 
 Claim **keys** are sorted alphabetically before hashing, so key insertion order doesn't affect the cache key.
 
@@ -49,7 +52,7 @@ A query like `SELECT * FROM orders` with `role: "sales"` produces a different ca
 
 ## Admin Cache Management
 
-The [admin console](/guides/admin-console) provides a cache management UI at `/admin/cache` with real-time stats and a flush button.
+The [admin console](/guides/admin-console) provides a cache management UI at `/admin/cache` with per-workspace stats, an entry inspection table with per-entry delete, runtime enable/TTL controls, and a flush button.
 
 ### Stats Endpoint
 
@@ -57,18 +60,29 @@ The [admin console](/guides/admin-console) provides a cache management UI at `/a
 GET /api/v1/admin/cache/stats
 ```
 
-Returns:
+The payload is **scoped to the caller**: a workspace admin sees their own org's bucket; a platform admin sees fleet totals plus the resolved capacity.
 
 | Field | Description |
 |-------|-------------|
+| `scope` | `workspace` (your org's bucket) or `platform` (fleet totals) |
 | `enabled` | Whether caching is active |
-| `hits` | Total cache hits |
-| `misses` | Total cache misses |
-| `hitRate` | Hit rate (0–1) |
-| `missRate` | Miss rate (0–1) |
-| `entryCount` | Current cached entries |
-| `maxSize` | Maximum capacity |
+| `hits` / `misses` | Cache hits and misses in your scope |
+| `hitRate` | Lifetime hit rate (0–1); `null` before any access |
+| `since` | When counting started (epoch ms); `null` while the cache is still warming |
+| `windowHitRate` | Hit rate over the last hour; `null` with no recent activity |
+| `windowTotal` | Accesses in the last-hour window |
+| `entryCount` | Live cached entries; `null` when the cache backend can't report a count |
+| `maxSize` | Configured capacity; `null` in the workspace view (capacity is platform framing) |
 | `ttl` | TTL in milliseconds |
+
+### Entry Inspection
+
+```
+GET /api/v1/admin/cache/entries
+DELETE /api/v1/admin/cache/entries/{key}
+```
+
+Lists your org's live cached entries as **metadata rows** (capped SQL preview, connection, row count, age, TTL) — the cached rows themselves never leave the cache. Deleting one entry forces a single query fresh without flushing everything; the delete is org-authorized, so a workspace admin can only ever remove their own org's entries. `entries: null` means listing is unavailable on the current cache backend (plugin backends without a trustworthy org index).
 
 ### Flush Endpoint
 
@@ -76,7 +90,7 @@ Returns:
 POST /api/v1/admin/cache/flush
 ```
 
-Clears all cached entries. Returns the count of flushed entries. The cache is also automatically flushed on config reload to prevent stale results from outdated settings.
+**Org-scoped by default**: removes only the caller's org's entries and returns the count. A platform admin can pass `{ "scope": "fleet" }` to clear every workspace's entries in the region — the admin UI discloses that blast radius before confirming. Flushing while caching is disabled returns `409`. The cache is also automatically flushed on config reload to prevent stale results from outdated settings.
 
 ---
 
@@ -92,7 +106,7 @@ Clears all cached entries. Returns the count of flushed entries. The cache is al
 
 **Cause:** The cache is not automatically invalidated when the database schema changes — only when the Atlas config file changes.
 
-**Fix:** Flush the cache via `POST /api/v1/admin/cache/flush` or the admin console after schema changes.
+**Fix:** Flush the cache via `POST /api/v1/admin/cache/flush` or the admin console after schema changes. If only one result is stale, delete just that entry from the admin console's entry table (or `DELETE /api/v1/admin/cache/entries/{key}`) instead of flushing everything — or ask the agent to refresh, which bypasses and re-freshens the entry.
 
 ### Hit rate is very low
 

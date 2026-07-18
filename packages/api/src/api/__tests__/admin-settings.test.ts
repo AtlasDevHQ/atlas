@@ -14,6 +14,10 @@ import {
   type Mock,
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
+// Real ADMIN_ACTIONS so the route's `ADMIN_ACTIONS.settings.update`
+// dereference resolves against the mock (a stub without that path would
+// TypeError inside the handler).
+import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 
 // --- Unified mocks ---
 
@@ -30,6 +34,18 @@ const mocks = createApiTestMocks({
     getWorkspaceRegion: mock(async () => mockWorkspaceRegion),
   },
 });
+
+// --- Audit mock (#4669 — the write handlers annotate metadata.tier) ---
+
+const mockLogAdminAction: Mock<(entry: Record<string, unknown>) => void> = mock(() => {});
+
+void mock.module("@atlas/api/lib/audit", () => ({
+  logAdminAction: mockLogAdminAction,
+  logAdminActionAwait: mock(async () => {}),
+  ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
+  errorMessage: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  causeToError: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
+}));
 
 // --- Test-specific overrides ---
 
@@ -96,6 +112,19 @@ const settingsRegistryData = [
     saasVisible: false,
     saasWritable: true,
   },
+  // #4669 — the Agent Auth master switch: workspace-scoped, but its
+  // PLATFORM (global) tier is the operator surface on/off switch. Used
+  // to pin the explicit tier=platform write path.
+  {
+    key: "ATLAS_AGENT_AUTH_ENABLED",
+    section: "MCP",
+    label: "Enable Agent Auth Protocol",
+    description: "Agent Auth master switch",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_AGENT_AUTH_ENABLED",
+    scope: "workspace",
+  },
   // #3376 — hidden key with no explicit saasWritable: effective
   // writability inherits saasVisible=false, so SaaS workspace admins
   // can neither see nor write it.
@@ -161,6 +190,13 @@ void mock.module("@atlas/api/lib/settings", () => ({
   getAllSettingOverrides: mock(async () => []),
   _resetSettingsCache: mock(() => {}),
   isSaasModeForGuard: mockIsSaasModeForGuard,
+  // Mock-all-exports discipline — unused by these routes but present so
+  // this partial mock never breaks another importer in the same process.
+  refreshSettingsTick: mock(async () => {}),
+  HOT_RELOADED_KEYS: new Set<string>(),
+  isHotReloadedKey: mock(() => false),
+  SECURITY_SENSITIVE_KEYS: new Set<string>(),
+  securitySensitiveAuditFields: mock(() => undefined),
 }));
 
 // --- Import the app AFTER mocks ---
@@ -188,6 +224,7 @@ describe("admin settings routes", () => {
     mockConfigOverride = null;
     mockSetSetting.mockClear();
     mockDeleteSetting.mockClear();
+    mockLogAdminAction.mockClear();
     mockIsSaasModeForGuard.mockClear();
     mockIsSaasModeForGuard.mockImplementation(saasGuardDefaultImpl);
   });
@@ -633,6 +670,11 @@ describe("admin settings routes", () => {
       expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
       // Verify orgId is forwarded for workspace-scoped settings
       expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "ws-admin-1", "org-1");
+      // #4669 — DELETE's audit annotation is a separate copy of PUT's;
+      // pin its workspace arm too.
+      expect(mockLogAdminAction).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ tier: "workspace" }) }),
+      );
     });
 
     it("platform admin can update platform-scoped settings — orgId NOT forwarded", async () => {
@@ -1113,6 +1155,210 @@ describe("admin settings routes", () => {
       });
       expect(res.status).toBe(200);
       expect(mockSetSetting).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── Explicit platform-tier writes (#4669) ──────────────────────
+
+  describe("explicit platform-tier writes (#4669)", () => {
+    // The platform console writes the GLOBAL (org_id IS NULL) row of a
+    // workspace-scoped key via ?tier=platform — explicit in the request,
+    // never inferred from the session org, so a platform admin with an
+    // active workspace still reaches the global row.
+    function asPlatformAdminWithOrg() {
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "platform-admin-1", mode: "better-auth", label: "Platform Admin", role: "platform_admin", activeOrganizationId: "org-1" },
+        }),
+      );
+    }
+
+    function asWorkspaceAdmin() {
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+    }
+
+    it("platform admin WITH an active org: PUT ?tier=platform writes the global row (orgId NOT forwarded)", async () => {
+      asPlatformAdminWithOrg();
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "true" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      // The whole point of #4669: activeOrganizationId is org-1, but the
+      // explicit tier targets the global row → orgId undefined.
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_AGENT_AUTH_ENABLED", "true", "platform-admin-1", undefined);
+      // Audit trail records the row the write actually landed on.
+      expect(mockLogAdminAction).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ tier: "platform" }) }),
+      );
+    });
+
+    it("platform admin WITH an active org: DELETE ?tier=platform clears the global row", async () => {
+      asPlatformAdminWithOrg();
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(200);
+      expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
+      expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_AGENT_AUTH_ENABLED", "platform-admin-1", undefined);
+      expect(mockLogAdminAction).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ tier: "platform" }) }),
+      );
+    });
+
+    it("workspace admin PUT ?tier=platform → 403, write never reached", async () => {
+      asWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "true" }),
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { error: string; message: string; requestId?: string };
+      expect(data.error).toBe("forbidden");
+      expect(data.message).toContain("platform_admin");
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    it("workspace admin DELETE ?tier=platform → 403, delete never reached", async () => {
+      asWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { error: string; message: string };
+      expect(data.error).toBe("forbidden");
+      expect(data.message).toContain("platform_admin");
+      expect(mockDeleteSetting).not.toHaveBeenCalled();
+    });
+
+    function asSaasNoOrgAdmin() {
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "no-org-admin-1", mode: "better-auth", label: "No-Org Admin", role: "admin" },
+        }),
+      );
+    }
+
+    it("SaaS no-org non-platform-admin PUT ?tier=platform → 403", async () => {
+      mockConfigOverride = { deployMode: "saas" };
+      asSaasNoOrgAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "true" }),
+      });
+      expect(res.status).toBe(403);
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    // The DELETE tier gate is a separate copy of the PUT gate — mirror the
+    // probe-dependent arms so the two handlers cannot silently diverge on
+    // who may clear the global row (a cross-workspace default reset).
+    it("SaaS no-org non-platform-admin DELETE ?tier=platform → 403", async () => {
+      mockConfigOverride = { deployMode: "saas" };
+      asSaasNoOrgAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(403);
+      expect(mockDeleteSetting).not.toHaveBeenCalled();
+    });
+
+    it("self-hosted no-org admin PUT ?tier=platform keeps the global-override path (#3395 parity)", async () => {
+      mockConfigOverride = { deployMode: "self-hosted" };
+      // Default auth mock: role=admin, no activeOrganizationId
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "true" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_AGENT_AUTH_ENABLED", "true", "admin-1", undefined);
+    });
+
+    it("self-hosted no-org admin DELETE ?tier=platform keeps the global-override path (#3395 parity)", async () => {
+      mockConfigOverride = { deployMode: "self-hosted" };
+      // Default auth mock: role=admin, no activeOrganizationId
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(200);
+      expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_AGENT_AUTH_ENABLED", "admin-1", undefined);
+    });
+
+    it("tier gate is restrictive when the mode probe fails closed", async () => {
+      mockConfigOverride = null;
+      mockIsSaasModeForGuard.mockImplementation(() => true);
+      // Default auth mock: role=admin, no activeOrganizationId
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "true" }),
+      });
+      expect(res.status).toBe(403);
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    it("DELETE tier gate is restrictive when the mode probe fails closed", async () => {
+      mockConfigOverride = null;
+      mockIsSaasModeForGuard.mockImplementation(() => true);
+      // Default auth mock: role=admin, no activeOrganizationId
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(403);
+      expect(mockDeleteSetting).not.toHaveBeenCalled();
+    });
+
+    it("without ?tier, a workspace admin's PUT still lands on the WORKSPACE row (/admin/settings unchanged)", async () => {
+      asWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "false" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_AGENT_AUTH_ENABLED", "false", "ws-admin-1", "org-1");
+      // Audit trail labels the workspace-row write accordingly.
+      expect(mockLogAdminAction).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ tier: "workspace" }) }),
+      );
+    });
+
+    it("?tier=platform on a platform-scoped key is accepted (already global) for platform admins", async () => {
+      asPlatformAdminWithOrg();
+      const res = await request("/api/v1/admin/settings/ATLAS_PROVIDER?tier=platform", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "openai" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_PROVIDER", "openai", "platform-admin-1", undefined);
+    });
+
+    it("unknown tier value is schema-rejected (422), no inference", async () => {
+      asPlatformAdminWithOrg();
+      const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=workspace", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "true" }),
+      });
+      // The router's shared validationHook defaultHook → 422 Unprocessable Entity.
+      expect(res.status).toBe(422);
+      expect(mockSetSetting).not.toHaveBeenCalled();
     });
   });
 

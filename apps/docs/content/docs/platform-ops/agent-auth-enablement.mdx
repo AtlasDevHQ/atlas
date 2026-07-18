@@ -43,6 +43,32 @@ execution.
   A workspace override can never turn the surface *on* while the
   platform default is off.
 
+## Where to flip each tier
+
+- **Platform tier (operator master switch):** Platform console →
+  **Settings** (`/platform/settings`), under **Workspace setting
+  defaults** → *Enable Agent Auth Protocol*. This writes the global
+  settings row explicitly (the API call is
+  `PUT /api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=platform`,
+  `platform_admin` role — or, on self-hosted, an admin session with no
+  active workspace) — no redeploy, no no-org session, no direct DB
+  write. Because the key is hot-reloadable, the HTTP surface follows
+  within seconds (the gate's live-read TTL is ~5 seconds per
+  instance): `/.well-known/agent-configuration` flips between `404`
+  (off) and `200` (on — assuming managed auth is configured; without
+  it the discovery document is `404` regardless). Workspace overrides
+  are untouched.
+
+- **Workspace tier (per-workspace opt-out):** Admin console →
+  **Settings** (`/admin/settings`), MCP section. A workspace admin's
+  save always writes that workspace's own override — it can seal the
+  workspace's capability execution, never open the surface.
+
+- **Env var (`ATLAS_AGENT_AUTH_ENABLED`):** still honored as the tier
+  below the global settings row, but changing it requires a redeploy —
+  prefer the platform console row, which takes precedence over the env
+  var anyway.
+
 ## The disabled-workspace metadata nuance
 
 When a workspace has opted out (platform on, workspace override off),

@@ -31,7 +31,7 @@ import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
-import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette } from "lucide-react";
+import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette, Building2 } from "lucide-react";
 import { DEFAULT_BRAND_COLOR, OKLCH_RE, applyBrandColor } from "@/ui/hooks/use-dark-mode";
 
 // ── Schemas ───────────────────────────────────────────────────────
@@ -50,6 +50,11 @@ const SettingWithValueSchema = z.object({
   scope: z.enum(["platform", "workspace"]),
   currentValue: z.string().optional(),
   source: z.enum(["env", "override", "workspace-override", "default"]),
+  // #4669 — platform (global) tier of workspace-scoped settings, resolved
+  // without the session workspace's override. Rendered in the
+  // "Workspace setting defaults" section below.
+  platformValue: z.string().optional(),
+  platformSource: z.enum(["env", "override", "default"]).optional(),
 });
 type SettingWithValue = z.infer<typeof SettingWithValueSchema>;
 
@@ -151,17 +156,20 @@ function SettingControl({
 
 function EditDialog({
   setting,
+  tier,
   open,
   onOpenChange,
   onSaved,
 }: {
   setting: SettingWithValue;
+  /** #4669 — "platform" writes the global tier of a workspace-scoped key explicitly. */
+  tier?: "platform";
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
 }) {
   const saveMutation = useAdminMutation({
-    path: `/api/v1/admin/settings/${encodeURIComponent(setting.key)}`,
+    path: `/api/v1/admin/settings/${encodeURIComponent(setting.key)}${tier === "platform" ? "?tier=platform" : ""}`,
     method: "PUT",
     invalidates: onSaved,
   });
@@ -428,8 +436,22 @@ export default function PlatformSettingsPage() {
   );
 }
 
+// #4669 — a workspace-scoped setting whose platform tier the API resolved
+// (platform-admin view). The narrowed type carries that proof so the
+// reshaping below needs no silent fallback.
+type PlatformTierSetting = SettingWithValue & {
+  platformSource: NonNullable<SettingWithValue["platformSource"]>;
+};
+
+// Reshape to display the PLATFORM tier: value/source come from the
+// platform-tier resolution (never the session workspace's override), so
+// SettingRow and EditDialog render the global row.
+function asPlatformTierSetting(s: PlatformTierSetting): SettingWithValue {
+  return { ...s, currentValue: s.platformValue, source: s.platformSource };
+}
+
 function PlatformSettingsContent() {
-  const [editSetting, setEditSetting] = useState<SettingWithValue | null>(null);
+  const [editSetting, setEditSetting] = useState<{ setting: SettingWithValue; tier?: "platform" } | null>(null);
   const { deployMode } = useDeployMode();
   const isSaas = deployMode === "saas";
 
@@ -457,10 +479,22 @@ function PlatformSettingsContent() {
     platformSections.set(s.section, list);
   }
 
-  async function handleReset(key: string) {
+  // #4669 — workspace-scoped settings' PLATFORM tier (the global default /
+  // kill-switch every workspace inherits). The API only populates
+  // platformSource in the platform-admin view, so this section is empty
+  // (and hidden) for anyone else.
+  const workspaceDefaultSections = new Map<string, PlatformTierSetting[]>();
+  for (const s of settings) {
+    if (s.scope !== "workspace" || !s.platformSource) continue;
+    const list = workspaceDefaultSections.get(s.section) ?? [];
+    list.push({ ...s, platformSource: s.platformSource });
+    workspaceDefaultSections.set(s.section, list);
+  }
+
+  async function handleReset(key: string, tier?: "platform") {
     await resetSetting({
-      path: `/api/v1/admin/settings/${encodeURIComponent(key)}`,
-      itemId: key,
+      path: `/api/v1/admin/settings/${encodeURIComponent(key)}${tier === "platform" ? "?tier=platform" : ""}`,
+      itemId: tier === "platform" ? `${key}:platform` : key,
     });
   }
 
@@ -488,7 +522,7 @@ function PlatformSettingsContent() {
           loadingMessage="Loading settings..."
           emptyIcon={Settings}
           emptyTitle="No platform settings available"
-          isEmpty={platformSections.size === 0 && !brandColorSetting}
+          isEmpty={platformSections.size === 0 && workspaceDefaultSections.size === 0 && !brandColorSetting}
         >
           {!manageable && !isSaas && (
             <div className="mb-6 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
@@ -542,7 +576,7 @@ function PlatformSettingsContent() {
                       <SettingRow
                         setting={setting}
                         manageable={manageable}
-                        onEdit={() => setEditSetting(setting)}
+                        onEdit={() => setEditSetting({ setting })}
                         onReset={() => handleReset(setting.key)}
                         resetting={isMutating(setting.key)}
                         isSaas={isSaas}
@@ -552,13 +586,54 @@ function PlatformSettingsContent() {
                 </CardContent>
               </Card>
             ))}
+
+            {/* #4669 — platform tier of workspace-scoped settings */}
+            {workspaceDefaultSections.size > 0 && (
+              <>
+                <div className="pt-4">
+                  <h2 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+                    <Building2 className="size-4" />
+                    Workspace setting defaults
+                  </h2>
+                  <p className="text-sm text-muted-foreground">
+                    The platform tier of workspace-scoped settings — the global
+                    default every workspace inherits unless it sets its own
+                    override. Editing here writes the platform (global) tier
+                    only; per-workspace overrides are untouched.
+                  </p>
+                </div>
+                {Array.from(workspaceDefaultSections.entries()).map(([section, items]) => (
+                  <Card key={`workspace-default-${section}`} className="shadow-none">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-base">{section}</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {items.map((setting, i) => (
+                        <div key={setting.key}>
+                          {i > 0 && <Separator />}
+                          <SettingRow
+                            setting={asPlatformTierSetting(setting)}
+                            manageable={manageable}
+                            onEdit={() => setEditSetting({ setting: asPlatformTierSetting(setting), tier: "platform" })}
+                            onReset={() => handleReset(setting.key, "platform")}
+                            resetting={isMutating(`${setting.key}:platform`)}
+                            isSaas={isSaas}
+                          />
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                ))}
+              </>
+            )}
           </div>
         </AdminContentWrapper>
       </div>
 
       {editSetting && (
         <EditDialog
-          setting={editSetting}
+          setting={editSetting.setting}
+          tier={editSetting.tier}
           open={!!editSetting}
           onOpenChange={(open) => !open && setEditSetting(null)}
           onSaved={refetch}

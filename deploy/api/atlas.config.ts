@@ -1111,8 +1111,8 @@ export default defineConfig({
   // ── Cache ───────────────────────────────────────────────────────
   // Query Cache knobs (ATLAS_CACHE_*) moved to the settings registry (#4545)
   // — tuned at runtime via Admin → the Cache page, no redeploy. The old
-  // `cache:` config-block pin is removed; if re-added it is ignored with a
-  // loud boot warning (config-block deprecation phase 1).
+  // `cache:` config-block pin is removed from the schema entirely (#4551
+  // phase 2); re-adding one fails config validation at boot.
 
   // ── Data Residency ──────────────────────────────────────────────
   residency: {

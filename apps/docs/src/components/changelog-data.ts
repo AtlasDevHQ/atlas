@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.58",
+    title: "Dashboard & Sharing Residue",
+    date: "2026-07-18",
+    summary:
+      "A correctness-and-trust pass over the dashboard draft and both share surfaces. Refreshing your draft can no longer silently rewrite the published board: if your private draft can't be loaded mid-refresh, the request now fails loudly instead of falling back to the published copy. Organization-only shares now work the way the dialog promises — on the hosted SaaS, where the app and API live on different domains, an org-scoped dashboard share previously turned every viewer away with a login prompt; the shared page now resolves your real session so teammates get the dashboard, signed-out viewers get a login wall, and members of other organizations get a clear members-only notice. Shared conversations receive the same hardening the dashboard share surface already had: revoking a link now takes effect immediately (previously up to a minute), organization-only conversation shares work end-to-end on both the page and the embed, share tokens no longer appear in server logs, and share views are rate-limited per viewer.",
+    highlights: [
+      "Draft refresh fails safely — a draft-load error returns an explicit error instead of silently refreshing the published dashboard underneath you",
+      "Organization-only dashboard shares open for logged-in teammates on the hosted SaaS (cross-domain sessions now resolve client-side)",
+      "Revoked conversation share links stop working immediately — the 60-second grace window is gone",
+      "Organization-only conversation shares work end-to-end, with distinct sign-in and members-only walls on both the page and the embed",
+      "Share tokens are fingerprinted, never logged in cleartext, across both share surfaces",
+    ],
+  },
+  {
     version: "v0.0.57",
     title: "Two-Phase Drop Cleanup",
     date: "2026-07-18",

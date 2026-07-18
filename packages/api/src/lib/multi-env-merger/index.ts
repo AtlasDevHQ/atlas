@@ -52,6 +52,15 @@ export interface MemberExecutionResult {
   readonly error?: string;
   /** Wall-clock duration of the per-member execution, in ms. */
   readonly durationMs: number;
+  /**
+   * `true` iff this member's rows came from the Query Cache. Propagated onto
+   * the {@link ConnectionContribution} so a fanout reports per-leg cache state
+   * honestly instead of hardcoding `cached: false` (#4546). Omitted when the
+   * member errored.
+   */
+  readonly cached?: boolean;
+  /** `true` iff PII masking transformed this member's rows (#4546). Omitted when the member errored. */
+  readonly maskingApplied?: boolean;
 }
 
 /**
@@ -154,6 +163,12 @@ export function mergeMemberResults(
         rowCount: m.rows?.length ?? 0,
         error: m.error ?? null,
         durationMs: m.durationMs,
+        // Per-leg cache/masking honesty (#4546). Only meaningful for a
+        // successful leg; a leg that errored carries neither (it never
+        // reached the cache or masking layers), so we omit the field rather
+        // than assert a misleading `false`.
+        ...(m.error === undefined && m.cached !== undefined && { cached: m.cached }),
+        ...(m.error === undefined && m.maskingApplied !== undefined && { maskingApplied: m.maskingApplied }),
       }) satisfies ConnectionContribution,
   );
 

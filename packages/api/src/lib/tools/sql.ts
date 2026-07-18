@@ -48,7 +48,8 @@ import { appendRowLimit, hasLimitClause } from "./auto-limit";
 import { type RoutingMode, type RoutingReason } from "@atlas/api/lib/env-routing";
 import { resolveExecutionTarget, type ExecutionTarget } from "@atlas/api/lib/group-reach/execution-target";
 import { resolveSqlExecutionPlan } from "./sql-execution-plan";
-import { mergeMemberResults } from "@atlas/api/lib/multi-env-merger";
+import { mergeMemberResults, type ConnectionContribution } from "@atlas/api/lib/multi-env-merger";
+import type { ExecuteSqlSuccessResult, ExecuteSqlFailureResult } from "@useatlas/types";
 import {
   ApprovalGate,
   MaskingPolicy,
@@ -1365,6 +1366,14 @@ interface ExecutedSqlResult {
   readonly rows: Record<string, unknown>[];
   readonly truncated: boolean;
   readonly cached: boolean;
+  /**
+   * Age of the served rows in ms — `Date.now()` minus the cache entry's write
+   * timestamp (`cachedAt`) — present only on a cache hit (#4546). The chat
+   * result card renders it as "cached · Xm ago"; the tool description tells
+   * the agent to caveat time-sensitive answers by it. Undefined on a live
+   * execution (miss/bypass), where the rows are current by definition.
+   */
+  readonly cacheAgeMs?: number;
   readonly maskingApplied: boolean;
   readonly executionMs: number;
   readonly metadata?: Record<string, unknown>;
@@ -1685,7 +1694,20 @@ type SqlPipelinePreStep =
        */
       readonly values: Record<string, string | number | null>;
     }
-  | { readonly kind: "check-cache" };
+  | {
+      readonly kind: "check-cache";
+      /**
+       * When `true`, SKIP the cache READ (always execute live) but KEEP the
+       * cache WRITE, so the fresh result re-freshens the shared entry for
+       * everyone on the same key (#4546). Governance-safe by construction: the
+       * live path re-runs every gate (approval, RLS, whitelist, masking), so
+       * bypass costs performance only — it never lowers governance. Set from
+       * the `bypassCache` tool input, which the model sends only when the user
+       * explicitly asks for fresh or current data. Absent/false = normal
+       * read-then-write behavior.
+       */
+      readonly bypassCache?: boolean;
+    };
 
 export interface SqlPipelineOptions {
   readonly sql: string;
@@ -2103,12 +2125,21 @@ export function runSqlPipelineEffect(
         const rlsFingerprint = customValidator ? undefined : rlsCacheFingerprint(resolvedRls);
         const cacheKey = buildCacheKey(normalizedMutated, connId, cacheOrgId, claims, rlsFingerprint);
         cacheWrite = { key: cacheKey, scope: { orgId: cacheOrgId, connectionId: connId } };
+        // Bypass (#4546): skip the cache READ (always execute live) but keep
+        // `cacheWrite` above, so the fresh result re-freshens the shared entry
+        // for everyone on this key. Governance-safe by construction — the live
+        // path below re-runs EVERY gate (approval, RLS, whitelist, masking);
+        // bypass costs performance only, never governance. A bypass reads as a
+        // miss here (`cached = null`), falling straight through to execution.
+        //
         // Awaited via Effect so an async backend's read actually resolves
         // before we branch — an unawaited Promise is truthy and would read as a
         // phantom hit, serving `undefined` rows for every query. Fail open: a
         // read rejection logs, drops the write (so we don't try to write back to
         // a broken backend), and falls through to a live execution.
-        const cached = yield* Effect.tryPromise({
+        const cached = preStep.bypassCache
+          ? null
+          : yield* Effect.tryPromise({
           // `async () =>` (not a bare arrow) so the try always yields a
           // Promise — tolerating a backend (or test mock) whose `get` is
           // sync-shaped, while still awaiting a real async backend's result.
@@ -2187,6 +2218,18 @@ export function runSqlPipelineEffect(
                 success: true, explanation, row_count: cachedRows.length,
                 columns: cached.columns, rows: cachedRows,
                 truncated: cachedTruncated, cached: true,
+                // #4546 — age of the served rows: now minus the entry's write
+                // timestamp. Surfaces "cached · Xm ago" in the result card and
+                // lets the agent caveat time-sensitive answers by it. Clamped
+                // at 0 against clock skew between write and read. Attached only
+                // when `cachedAt` is finite: an external backend (Redis) can
+                // deserialize an entry with a missing/NaN `cachedAt` despite
+                // the required type (mirrors the `executionMs` caveat in
+                // cache/types.ts), and `Math.max(0, NaN)` is NaN → JSON `null`,
+                // handing the agent a garbage age. Omit rather than mislead.
+                ...(Number.isFinite(cached.cachedAt) && {
+                  cacheAgeMs: Math.max(0, Date.now() - cached.cachedAt),
+                }),
                 maskingApplied: cachedMaskingApplied,
                 // Cost of *serving this hit* (~0, no DB round-trip) — NOT the
                 // original execution cost. The query's real duration is
@@ -2420,6 +2463,7 @@ async function executeSqlForConnection({
   routingMode,
   routingReason,
   executionTarget,
+  bypassCache,
 }: {
   readonly sql: string;
   readonly explanation: string;
@@ -2432,12 +2476,18 @@ async function executeSqlForConnection({
   readonly routingReason?: RoutingReason;
   /** See {@link SqlPipelineOptions.executionTarget}. Per-leg; never shared. */
   readonly executionTarget?: ExecutionTarget;
+  /**
+   * When `true`, skip the cache READ (execute live) but keep the WRITE (#4546).
+   * Threaded into the `check-cache` pre-step. Every leg of a fanout inherits
+   * the same value so a bypass is uniform across environments.
+   */
+  readonly bypassCache?: boolean;
 }): Promise<Record<string, unknown>> {
   const pipeline = runSqlPipelineEffect({
     sql,
     explanation,
     connId,
-    preStep: { kind: "check-cache" },
+    preStep: { kind: "check-cache", bypassCache },
     parentAuditId,
     routingMode,
     routingReason,
@@ -2520,8 +2570,14 @@ async function executeSqlFanout(args: {
    * audit rows.
    */
   readonly fanoutReason: RoutingReason;
+  /**
+   * Cache-bypass flag from the tool input (#4546). Applied uniformly to every
+   * leg — a bypass skips each leg's cache read but keeps its write, so all
+   * legs re-freshen their shared entries.
+   */
+  readonly bypassCache?: boolean;
 }): Promise<Record<string, unknown>> {
-  const { sql, explanation, legs, fanoutReason } = args;
+  const { sql, explanation, legs, fanoutReason, bypassCache } = args;
   const connectionIds = legs.map((leg) => leg.connectionId);
 
   // Write the parent audit row up front so each leg's audit insert can
@@ -2586,6 +2642,7 @@ async function executeSqlFanout(args: {
         routingMode: "all",
         routingReason: fanoutReason,
         executionTarget: leg,
+        bypassCache,
       });
     }),
   );
@@ -2612,6 +2669,12 @@ async function executeSqlFanout(args: {
         columns: (value["columns"] as readonly string[] | undefined) ?? [],
         rows: (value["rows"] as readonly Record<string, unknown>[] | undefined) ?? [],
         durationMs,
+        // Per-leg cache/masking honesty (#4546): carry each leg's own signals
+        // through the merger onto its `ConnectionContribution` so an all-hit
+        // fanout can't masquerade as fresh, and a mixed fanout reports each
+        // env truthfully. Read from the leaf tool response by key.
+        cached: value["cached"] === true,
+        maskingApplied: value["maskingApplied"] === true,
       };
     }
     const errorMessage = typeof value["error"] === "string" ? (value["error"] as string) : "Query failed";
@@ -2627,6 +2690,27 @@ async function executeSqlFanout(args: {
     0,
   );
 
+  // Honest per-fanout cache/masking (#4546). The merged table is `cached` only
+  // when EVERY leg SUCCEEDED and was a hit: a single live leg makes the whole
+  // result fresh, and a single ERRORED leg makes the table partial — neither
+  // may wear a clean "cached · Xm ago" chip. (The pre-#4546 hardcoded
+  // `cached: false` was one falsehood; reporting `cached: true` while a leg
+  // failed is the opposite.) A partial failure is still surfaced per-leg in
+  // `envContributions`, so the agent sees exactly which env failed. Masking is
+  // applied when ANY successful leg masked. The age (for the chip + the agent's
+  // caveat) is the OLDEST cached leg, so the caveat reflects the stalest data.
+  const successfulContribs = merged.envContributions.filter((c) => c.error === null);
+  const allLegsSucceeded = successfulContribs.length === merged.envContributions.length;
+  const allLegsCached = successCount > 0 && allLegsSucceeded && successfulContribs.every((c) => c.cached === true);
+  const anyLegMasked = successfulContribs.some((c) => c.maskingApplied === true);
+  const oldestCachedAgeMs = allLegsCached
+    ? settled.reduce((max, o) => {
+        if (o.status !== "fulfilled") return max;
+        const age = o.value["cacheAgeMs"];
+        return typeof age === "number" && age > max ? age : max;
+      }, 0)
+    : undefined;
+
   // All members errored → surface as success=false with a summary message
   // so the agent's recovery loop kicks in. Partial failures stay
   // success=true with envContributions describing which env failed.
@@ -2640,9 +2724,12 @@ async function executeSqlFanout(args: {
       error: `All ${merged.envContributions.length} environments failed — ${messages.join("; ")}`,
       envContributions: merged.envContributions,
       executionMs: totalExecutionMs,
-    };
+    } satisfies ExecuteSqlFailureResult;
   }
 
+  // `satisfies` links this literal to the wire type so a field-name typo on the
+  // one result path that previously had zero compile-time checking (the new
+  // numeric `cacheAgeMs` is easy to misspell) fails the build (#4546 review).
   return {
     success: true,
     explanation,
@@ -2650,11 +2737,12 @@ async function executeSqlFanout(args: {
     columns: merged.columns,
     rows: merged.rows,
     truncated: false,
-    cached: false,
-    maskingApplied: false,
+    cached: allLegsCached,
+    ...(oldestCachedAgeMs !== undefined && { cacheAgeMs: oldestCachedAgeMs }),
+    maskingApplied: anyLegMasked,
     envContributions: merged.envContributions,
     executionMs: totalExecutionMs,
-  };
+  } satisfies ExecuteSqlSuccessResult;
 }
 
 export const executeSQL = tool({
@@ -2683,9 +2771,15 @@ export const executeSQL = tool({
       .describe(
         "Cross-environment routing override (PRD #2515). \"this\" or omitted runs against the conversation's current member; \"all\" fans out across every member of the active environment group; a member connection id routes to that specific environment. Only applies when the active group has more than one member.",
       ),
+    bypassCache: z
+      .boolean()
+      .optional()
+      .describe(
+        "Set to `true` ONLY when the user explicitly asks for fresh, current, real-time, or up-to-date data. Identical queries are otherwise served from a short-lived result cache; a hit returns `cached: true` with a `cacheAgeMs` age. Bypass re-runs the query live (still under every governance gate — validation, RLS, whitelist, masking) and re-freshens the shared cache entry for everyone. Omit for normal reads; it only costs performance.",
+      ),
   }),
 
-  execute: async ({ sql, explanation, group, connectionId, scope }) => {
+  execute: async ({ sql, explanation, group, connectionId, scope, bypassCache }) => {
     // Read the request context ONCE and hand it to the planner (#4350). The
     // planner folds the whole cascade — reach gate (ADR-0022) → group-target
     // member → current member → routing-mode fast-path → routing plan →
@@ -2722,6 +2816,7 @@ export const executeSQL = tool({
           routingMode: plan.routingMode,
           routingReason: plan.routingReason,
           executionTarget: plan.executionTarget,
+          bypassCache,
         });
         return attachSingleEnvContribution(result, connId);
       }
@@ -2731,6 +2826,7 @@ export const executeSQL = tool({
           explanation,
           legs: plan.legs,
           fanoutReason: plan.fanoutReason,
+          bypassCache,
         });
       default: {
         const _exhaustive: never = plan;
@@ -2775,8 +2871,23 @@ function attachSingleEnvContribution(
       ? (result["error"] as string)
       : "Execution failed (no error message available)";
   }
+  // Mirror the fanout's per-leg honesty (#4546) on the single-env 1-element
+  // contribution so consumers read `cached`/`maskingApplied` uniformly across
+  // both wire shapes. Only meaningful on success — a failed execution never
+  // reached the cache or masking layers, so those fields stay omitted.
+  const contribution: ConnectionContribution =
+    error === null
+      ? {
+          connectionId,
+          rowCount,
+          error,
+          durationMs,
+          cached: result["cached"] === true,
+          maskingApplied: result["maskingApplied"] === true,
+        }
+      : { connectionId, rowCount, error, durationMs };
   return {
     ...result,
-    envContributions: [{ connectionId, rowCount, error, durationMs }],
+    envContributions: [contribution],
   };
 }

@@ -281,3 +281,33 @@ describe("mergeMemberResults — envContributions ordering", () => {
     ]);
   });
 });
+
+describe("mergeMemberResults — per-leg cache/masking propagation (#4546)", () => {
+  it("carries each successful leg's cached + maskingApplied onto its contribution", () => {
+    const inputs: MemberExecutionResult[] = [
+      // A cache-hit, PII-masked leg.
+      { connectionId: "us-int", columns: ["a"], rows: [{ a: 1 }], durationMs: 5, cached: true, maskingApplied: true },
+      // A live, unmasked leg.
+      { connectionId: "eu", columns: ["a"], rows: [{ a: 2 }], durationMs: 40, cached: false, maskingApplied: false },
+    ];
+    const merged = mergeMemberResults(inputs);
+
+    const us = merged.envContributions.find((c) => c.connectionId === "us-int")!;
+    const eu = merged.envContributions.find((c) => c.connectionId === "eu")!;
+    expect(us.cached).toBe(true);
+    expect(us.maskingApplied).toBe(true);
+    expect(eu.cached).toBe(false);
+    expect(eu.maskingApplied).toBe(false);
+  });
+
+  it("omits cached/maskingApplied on an errored leg (it never reached those layers)", () => {
+    const inputs: MemberExecutionResult[] = [
+      { connectionId: "down", error: "boom", durationMs: 2 },
+    ];
+    const merged = mergeMemberResults(inputs);
+    const c = merged.envContributions[0]!;
+    expect(c.error).toBe("boom");
+    expect(c.cached).toBeUndefined();
+    expect(c.maskingApplied).toBeUndefined();
+  });
+});

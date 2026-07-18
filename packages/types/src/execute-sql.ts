@@ -34,6 +34,19 @@ export interface ConnectionContribution {
   readonly error: string | null;
   /** Wall-clock duration of this member's execution in milliseconds. */
   readonly durationMs: number;
+  /**
+   * `true` iff THIS member's rows were served from the Query Cache rather than
+   * executed live. Per-leg honesty (#4546): a fanout must not hardcode
+   * `cached: false` — an all-hit fanout would otherwise masquerade as a fresh
+   * zero-second query. Omitted (undefined) when the member errored.
+   */
+  readonly cached?: boolean;
+  /**
+   * `true` iff PII masking transformed THIS member's rows. Per-leg so a mixed
+   * fanout (one masked env, one not) reports each honestly. Omitted when the
+   * member errored.
+   */
+  readonly maskingApplied?: boolean;
 }
 
 /**
@@ -56,6 +69,15 @@ export interface ExecuteSqlSuccessResult {
   readonly rows: readonly Record<string, unknown>[];
   readonly truncated?: boolean;
   readonly cached?: boolean;
+  /**
+   * Age of the served rows in milliseconds — `Date.now()` minus the cache
+   * entry's write timestamp — present only on a cache hit (`cached: true`).
+   * The result card renders it as "cached · Xm ago" and the agent caveats
+   * time-sensitive answers "as of ~N minutes ago" rather than asserting stale
+   * numbers as current (#4546). Absent on a live/miss execution. For a fanout,
+   * this is the age of the OLDEST cached leg when every successful leg hit.
+   */
+  readonly cacheAgeMs?: number;
   readonly maskingApplied?: boolean;
   readonly executionMs?: number;
   readonly envContributions?: readonly ConnectionContribution[];

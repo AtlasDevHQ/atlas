@@ -1,6 +1,6 @@
 import { describe, expect, test, mock } from "bun:test";
 import { render, fireEvent } from "@testing-library/react";
-import { SQLResultCard } from "../components/chat/sql-result-card";
+import { SQLResultCard, formatCacheAge } from "../components/chat/sql-result-card";
 
 // Mock next/dynamic to render children synchronously (avoids async chunk loading)
 void mock.module("next/dynamic", () => ({
@@ -224,5 +224,80 @@ describe("SQLResultCard", () => {
     );
     expect(container.textContent).toContain("1 row");
     expect(container.textContent).not.toContain("1 rows");
+  });
+
+  // #4546 — a cache hit surfaces its staleness as "cached · Xm ago" instead of
+  // an invisible bare "cached".
+  test("renders 'cached · Xm ago' when the result is a cache hit with an age", () => {
+    const { container } = render(
+      <SQLResultCard
+        part={makePart({
+          output: {
+            success: true,
+            columns: ["id"],
+            rows: [{ id: 1 }],
+            executionMs: 0,
+            cached: true,
+            cacheAgeMs: 180_000, // 3 minutes
+          },
+        })}
+      />,
+    );
+    expect(container.textContent).toContain("cached · 3m ago");
+  });
+
+  test("falls back to bare 'cached' when a hit carries no age", () => {
+    const { container } = render(
+      <SQLResultCard
+        part={makePart({
+          output: {
+            success: true,
+            columns: ["id"],
+            rows: [{ id: 1 }],
+            executionMs: 0,
+            cached: true,
+            // no cacheAgeMs (legacy/external entry)
+          },
+        })}
+      />,
+    );
+    expect(container.textContent).toContain("cached");
+    expect(container.textContent).not.toContain("ago");
+  });
+
+  test("a live (uncached) result shows its duration, not 'cached'", () => {
+    const { container } = render(
+      <SQLResultCard
+        part={makePart({
+          output: {
+            success: true,
+            columns: ["id"],
+            rows: [{ id: 1 }],
+            executionMs: 1500,
+            cached: false,
+          },
+        })}
+      />,
+    );
+    expect(container.textContent).toContain("1.5s");
+    expect(container.textContent).not.toContain("cached");
+  });
+});
+
+describe("formatCacheAge (#4546)", () => {
+  test("renders seconds under a minute", () => {
+    expect(formatCacheAge(0)).toBe("0s ago");
+    expect(formatCacheAge(59_000)).toBe("59s ago");
+  });
+
+  test("rolls to minutes at 60s and stays minutes under an hour", () => {
+    expect(formatCacheAge(60_000)).toBe("1m ago");
+    expect(formatCacheAge(180_000)).toBe("3m ago");
+    expect(formatCacheAge(3_540_000)).toBe("59m ago");
+  });
+
+  test("rolls to hours at an hour", () => {
+    expect(formatCacheAge(3_600_000)).toBe("1h ago");
+    expect(formatCacheAge(7_200_000)).toBe("2h ago");
   });
 });

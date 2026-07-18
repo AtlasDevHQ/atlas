@@ -70,9 +70,11 @@ void mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
+const mockFlushCache = mock(async () => {});
+const mockFlushCacheByOrg = mock(async (_orgId: string) => 0);
 void mock.module("@atlas/api/lib/cache/index", () => ({
-  flushCache: async () => {},
-  flushCacheByOrg: async () => 0,
+  flushCache: mockFlushCache,
+  flushCacheByOrg: mockFlushCacheByOrg,
   getCache: () => null,
   cacheEnabled: () => false,
   buildCacheKey: () => "",
@@ -203,6 +205,11 @@ describe("executeRegionMigration", () => {
     // Verify transfer was called to the target region's apiUrl
     expect(capturedFetchCalls.length).toBe(1);
     expect(capturedFetchCalls[0].url).toBe("https://api-eu.example.com/api/v1/internal/migrate/import");
+
+    // Phase 3 purges EXACTLY the migrated workspace's cache (#4548), not the
+    // whole region — a co-tenant on this process keeps its warm entries.
+    expect(mockFlushCacheByOrg).toHaveBeenCalledWith("org-1");
+    expect(mockFlushCache).not.toHaveBeenCalled();
   });
 
   it("includes internal token in transfer request", async () => {

@@ -399,8 +399,9 @@ export interface PluginCacheEntry {
 /**
  * Scope tags carried on every `set()`. `orgId` is the owning workspace (drives
  * `flushByOrg`; may be `undefined` when there is no tenant); `connectionId` is
- * the datasource connection the rows came from (always present, retained so
- * per-connection invalidation is a filter over an org's entries).
+ * the datasource connection the rows came from (always present, retained so a
+ * backend can tag entries by connection and a future per-connection
+ * invalidation can filter an org's entries by it).
  */
 export interface PluginCacheScope {
   orgId?: string;

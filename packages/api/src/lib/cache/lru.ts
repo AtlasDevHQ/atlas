@@ -7,11 +7,13 @@
  * Scope side index: alongside the entry Map, an `orgId → keys` index (with a
  * `key → scope` reverse map) lets {@link LRUCacheBackend.flushByOrg} purge
  * exactly one Workspace's entries in O(entries-for-that-org) rather than
- * scanning the whole cache. The index is kept consistent across EVERY mutation
- * path — set, delete, capacity eviction, TTL expiry on read, and flush — via a
- * single `unindex()` seam, so an entry can never linger in the side index after
- * it leaves the entry Map (a leak that would make `flushByOrg` return stale
- * counts and hold key references forever).
+ * scanning the whole cache. Per-entry removal paths — set-overwrite, delete,
+ * capacity eviction, TTL expiry on read — all route through a single
+ * `unindex()` seam so an entry can never linger in the side index after it
+ * leaves the entry Map (a leak that would make `flushByOrg` return stale counts
+ * and hold key references forever). The two bulk paths clear the index maps
+ * directly: `flush()` empties them wholesale, and `flushByOrg()` deletes an
+ * org's key set in one pass.
  */
 
 import type { CacheBackend, CacheEntry, CacheScope, CacheStats } from "./types";

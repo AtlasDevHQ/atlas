@@ -448,6 +448,24 @@ describe("LRUCacheBackend — scope side index + flushByOrg", () => {
     expect((await cache.stats()).entryCount).toBe(1);
   });
 
+  it("flushByOrg leaves the side index consistent (no keyScope leak, org pruned)", async () => {
+    // Pins the reverse `keyScope` map after a purge — `flushByOrg` hand-rolls
+    // its cleanup rather than routing through `unindex()`, so a dropped
+    // `keyScope.delete` would leak entries forever without this assertion.
+    const cache = new LRUCacheBackend(10, 300_000);
+    await cache.set("a1", makeEntry(), scope("org-a"));
+    await cache.set("a2", makeEntry(), scope("org-a"));
+    await cache.set("b1", makeEntry(), scope("org-b"));
+
+    await cache.flushByOrg("org-a");
+
+    const idx = indexState(cache);
+    expect(idx.orgKeys.has("org-a")).toBe(false); // purged org pruned
+    expect(idx.orgKeys.get("org-b")).toEqual(new Set(["b1"])); // survivor intact
+    // keyScope never outlives the entry Map.
+    expect(idx.keyScopeSize).toBe((await cache.stats()).entryCount);
+  });
+
   it("flushByOrg on an unknown org removes nothing and returns 0", async () => {
     const cache = new LRUCacheBackend(10, 300_000);
     await cache.set("a1", makeEntry(), scope("org-a"));

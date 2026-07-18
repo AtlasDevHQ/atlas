@@ -19,13 +19,23 @@ const REQUIRED_METHODS = ["get", "set", "delete", "flush", "flushByOrg", "stats"
 /** The numeric fields `stats()` must return. */
 const STATS_FIELDS: readonly (keyof CacheStats)[] = ["hits", "misses", "entryCount", "maxSize", "ttl"];
 
+/**
+ * How long the `stats()` probe may take before validation gives up. `stats()`
+ * is documented on the contract as cheap + side-effect-free, so a probe that
+ * doesn't resolve promptly means a misbehaving backend (e.g. a Redis client
+ * blocked on a dead connection). Bounding it keeps a hung backend from stalling
+ * plugin-registry boot — the whole point of validation is to fail fast and
+ * degrade to the LRU so queries keep working.
+ */
+const STATS_PROBE_TIMEOUT_MS = 2_000;
+
 export type CacheBackendValidation = { ok: true } | { ok: false; reason: string };
 
 /**
  * Validate a candidate cache backend against the contract. Probes `stats()`
- * (which must be cheap + side-effect-free per the contract) to confirm the
- * stats shape, catching a throw as a validation failure rather than letting it
- * escape registration.
+ * (bounded by {@link STATS_PROBE_TIMEOUT_MS}) to confirm the stats shape,
+ * treating a throw, a non-conforming return, or a hang as a validation failure
+ * rather than letting any of them escape registration.
  */
 export async function validateCacheBackend(candidate: unknown): Promise<CacheBackendValidation> {
   if (candidate === null || typeof candidate !== "object") {
@@ -39,13 +49,25 @@ export async function validateCacheBackend(candidate: unknown): Promise<CacheBac
   }
 
   // Probe the stats contract. A conforming backend returns an object with the
-  // five numeric fields; anything else (missing field, wrong type, or a throw)
-  // is a contract violation.
+  // five numeric fields; anything else (missing field, wrong type, a throw, or
+  // a probe that never resolves) is a contract violation.
+  const TIMED_OUT = Symbol("stats-timeout");
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let stats: unknown;
   try {
-    stats = await (obj.stats as () => Promise<unknown>)();
+    stats = await Promise.race([
+      (obj.stats as () => Promise<unknown>)(),
+      new Promise<typeof TIMED_OUT>((resolve) => {
+        timer = setTimeout(() => resolve(TIMED_OUT), STATS_PROBE_TIMEOUT_MS);
+      }),
+    ]);
   } catch (err) {
     return { ok: false, reason: `cache backend stats() threw: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  if (stats === TIMED_OUT) {
+    return { ok: false, reason: `cache backend stats() did not resolve within ${STATS_PROBE_TIMEOUT_MS}ms` };
   }
   if (stats === null || typeof stats !== "object") {
     return { ok: false, reason: `cache backend stats() must return an object, got ${stats === null ? "null" : typeof stats}` };

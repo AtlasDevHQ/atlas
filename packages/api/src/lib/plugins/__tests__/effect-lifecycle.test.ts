@@ -691,18 +691,26 @@ describe("PluginRegistry Effect Service", () => {
 
       // Assert inside the live scope — the scoped layer tears every plugin down
       // to "teardown" on scope close, so plugin status must be read before then.
-      const { status, healthy } = await Effect.runPromise(
+      const { status, healthy, healthyAfterReprobe } = await Effect.runPromise(
         Effect.gen(function* () {
           yield* PluginRegistry;
           const s = registry.getStatus("bad-cache-plugin");
           const health = yield* Effect.promise(() => registry.healthCheckAll());
-          return { status: s, healthy: health.get("bad-cache-plugin")?.healthy };
+          // Re-probe: a second cycle must NOT promote it back to healthy
+          // (stickiness) — the offending plugin stays red.
+          const health2 = yield* Effect.promise(() => registry.healthCheckAll());
+          return {
+            status: s,
+            healthy: health.get("bad-cache-plugin")?.healthy,
+            healthyAfterReprobe: health2.get("bad-cache-plugin")?.healthy,
+          };
         }).pipe(Effect.provide(Layer.provide(pluginLayer, wiredDeps()))),
       );
 
       // The offending plugin fails its init — red + sticky in plugin health.
       expect(status).toBe("unhealthy");
       expect(healthy).toBe(false);
+      expect(healthyAfterReprobe).toBe(false);
 
       // The cache degrades safely to the in-process LRU: getCache() returns a
       // conforming backend (NOT the rejected one) so queries keep working.

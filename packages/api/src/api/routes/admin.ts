@@ -1506,7 +1506,7 @@ const updateSettingRoute = createRoute({
       key: z.string().min(1).openapi({ param: { name: "key", in: "path" }, example: "ATLAS_ROW_LIMIT" }),
     }),
     query: z.object({
-      tier: z.enum(["platform"]).optional().openapi({ param: { name: "tier", in: "query" }, description: "#4669 — explicit write tier. \"platform\" targets the global (org_id IS NULL) row regardless of the session's active workspace. Requires platform_admin; on self-hosted, an admin session with no active workspace also qualifies. Omitted: workspace-scoped keys write the session workspace's tier when one is active (with none, the global row — self-hosted admins only)." }),
+      tier: z.enum(["platform"]).optional().openapi({ param: { name: "tier", in: "query" }, description: "#4669 — explicit write tier. \"platform\" targets the global (org_id IS NULL) row regardless of the session's active workspace. Requires platform_admin; on self-hosted, an admin session with no active workspace also qualifies. Omitted: workspace-scoped keys write the session workspace's tier when one is active (with none, the global row — self-hosted admins or platform admins)." }),
     }),
   },
   responses: {
@@ -1535,7 +1535,7 @@ const deleteSettingRoute = createRoute({
       key: z.string().min(1).openapi({ param: { name: "key", in: "path" }, example: "ATLAS_ROW_LIMIT" }),
     }),
     query: z.object({
-      tier: z.enum(["platform"]).optional().openapi({ param: { name: "tier", in: "query" }, description: "#4669 — explicit delete tier. \"platform\" clears the global (org_id IS NULL) row regardless of the session's active workspace. Requires platform_admin; on self-hosted, an admin session with no active workspace also qualifies. Omitted: workspace-scoped keys clear the session workspace's tier when one is active (with none, the global row — self-hosted admins only)." }),
+      tier: z.enum(["platform"]).optional().openapi({ param: { name: "tier", in: "query" }, description: "#4669 — explicit delete tier. \"platform\" clears the global (org_id IS NULL) row regardless of the session's active workspace. Requires platform_admin; on self-hosted, an admin session with no active workspace also qualifies. Omitted: workspace-scoped keys clear the session workspace's tier when one is active (with none, the global row — self-hosted admins or platform admins)." }),
     }),
   },
   responses: {

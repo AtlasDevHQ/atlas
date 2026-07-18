@@ -14,7 +14,9 @@ import {
   type Mock,
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
-// Real ADMIN_ACTIONS values so assertions pin to the canonical strings.
+// Real ADMIN_ACTIONS so the route's `ADMIN_ACTIONS.settings.update`
+// dereference resolves against the mock (a stub without that path would
+// TypeError inside the handler).
 import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 
 // --- Unified mocks ---
@@ -668,6 +670,11 @@ describe("admin settings routes", () => {
       expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
       // Verify orgId is forwarded for workspace-scoped settings
       expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "ws-admin-1", "org-1");
+      // #4669 — DELETE's audit annotation is a separate copy of PUT's;
+      // pin its workspace arm too.
+      expect(mockLogAdminAction).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ tier: "workspace" }) }),
+      );
     });
 
     it("platform admin can update platform-scoped settings — orgId NOT forwarded", async () => {

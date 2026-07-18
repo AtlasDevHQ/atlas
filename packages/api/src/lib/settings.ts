@@ -2139,9 +2139,11 @@ function maskSecret(value: string | undefined): string | undefined {
 /**
  * Resolve a setting at the PLATFORM tier — global override → env → default,
  * with any workspace override deliberately out of scope. The single copy of
- * this ladder (#4669): the platform-scoped display branch, the
- * workspace-scoped fallthrough, and the `platformValue` computation in
- * {@link getSettingsForAdmin} all read it, so they cannot drift.
+ * this ladder in the admin DISPLAY path (#4669) — runtime reads keep using
+ * `getSetting`/`getSettingLive`, which do not mask secrets. The
+ * platform-scoped display branch, the workspace-scoped fallthrough, and the
+ * `platformValue` computation in {@link getSettingsForAdmin} all read it,
+ * so they cannot drift.
  */
 function resolvePlatformTier(def: SettingDefinition): {
   value: string | undefined;

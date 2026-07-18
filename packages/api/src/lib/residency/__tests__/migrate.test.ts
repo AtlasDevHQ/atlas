@@ -71,7 +71,8 @@ void mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 void mock.module("@atlas/api/lib/cache/index", () => ({
-  flushCache: () => {},
+  flushCache: async () => {},
+  flushCacheByOrg: async () => 0,
   getCache: () => null,
   cacheEnabled: () => false,
   buildCacheKey: () => "",

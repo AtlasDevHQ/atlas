@@ -995,18 +995,34 @@ export function makeWiredPluginRegistryLive(
       }
 
       // --- Wire plugin cache backend (first plugin that provides one) ---
-      // server.ts parity. Non-fatal: a failure falls back to the in-memory LRU.
+      // server.ts parity. A plugin's cacheBackend is validated against the
+      // async CacheBackend contract BEFORE it replaces the in-process LRU. A
+      // shape-invalid backend FAILS that plugin's init (goes red + sticky in
+      // plugin health, per "prefer errors over silent fallbacks") and is NOT
+      // registered — the cache degrades safely to the LRU so queries keep
+      // working. The scan continues past a bad backend so a later conforming
+      // one can still win. The whole block is non-fatal: an unexpected throw
+      // leaves the LRU in place.
       yield* Effect.tryPromise({
         try: async () => {
+          const { setCacheBackend, validateCacheBackend } = await import("@atlas/api/lib/cache/index");
           for (const plugin of impl.getAll()) {
-            if (plugin.cacheBackend) {
-              const { setCacheBackend } = await import("@atlas/api/lib/cache/index");
-              setCacheBackend(
-                plugin.cacheBackend as import("@atlas/api/lib/cache/index").CacheBackend,
+            if (!plugin.cacheBackend) continue;
+            const validation = await validateCacheBackend(plugin.cacheBackend);
+            if (!validation.ok) {
+              const reason = `cache backend does not conform to the CacheBackend contract: ${validation.reason}`;
+              impl.markUnhealthy(plugin.id, reason);
+              pluginLog.error(
+                { pluginId: plugin.id, reason: validation.reason },
+                "Plugin cache backend failed contract validation — plugin marked unhealthy; cache falling back to in-memory LRU",
               );
-              pluginLog.info({ pluginId: plugin.id }, "Plugin-provided cache backend registered");
-              break;
+              continue;
             }
+            await setCacheBackend(
+              plugin.cacheBackend as import("@atlas/api/lib/cache/index").CacheBackend,
+            );
+            pluginLog.info({ pluginId: plugin.id }, "Plugin-provided cache backend registered");
+            break;
           }
         },
         catch: normalizeError,

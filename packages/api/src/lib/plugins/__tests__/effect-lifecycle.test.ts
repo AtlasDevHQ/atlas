@@ -629,14 +629,18 @@ describe("PluginRegistry Effect Service", () => {
       expect(getContextFragments()).toContain("FRAGMENT-3743");
     });
 
-    test("registers a plugin-provided cache backend", async () => {
+    test("registers a plugin-provided cache backend that conforms to the async contract", async () => {
       _resetCache();
+      // Conforms to the async CacheBackend contract: every method is
+      // Promise-returning, set() accepts the scope arg, flushByOrg() is present,
+      // and stats() returns the full numeric shape.
       const cacheStub = {
-        get: async () => undefined,
+        get: async () => null,
         set: async () => {},
-        delete: async () => {},
-        flush: () => {},
-        stats: () => ({ hits: 0, misses: 0, size: 0 }),
+        delete: async () => false,
+        flush: async () => {},
+        flushByOrg: async () => 0,
+        stats: async () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 0, ttl: 0 }),
       };
       const config: PluginWiringConfig = {
         plugins: [
@@ -659,6 +663,54 @@ describe("PluginRegistry Effect Service", () => {
       );
 
       expect(getCache()).toBe(cacheStub as never);
+      _resetCache();
+    });
+
+    test("a shape-invalid plugin cache backend fails that plugin's init and degrades to the LRU", async () => {
+      _resetCache();
+      // Contract violation: missing flushByOrg + stats. Must NOT be registered.
+      const badBackend = {
+        get: async () => null,
+        set: async () => {},
+        delete: async () => false,
+        flush: async () => {},
+      };
+      const registry = new PluginRegistryClass();
+      const config: PluginWiringConfig = {
+        plugins: [
+          makePlugin({
+            id: "bad-cache-plugin",
+            // No datasource work — just a broken cache backend.
+            types: ["context"],
+            cacheBackend: badBackend,
+          } as Partial<PluginLike>),
+        ],
+        context: minimalCtx,
+      };
+      const pluginLayer = makeWiredPluginRegistryLive(config, () => registry);
+
+      // Assert inside the live scope — the scoped layer tears every plugin down
+      // to "teardown" on scope close, so plugin status must be read before then.
+      const { status, healthy } = await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+          const s = registry.getStatus("bad-cache-plugin");
+          const health = yield* Effect.promise(() => registry.healthCheckAll());
+          return { status: s, healthy: health.get("bad-cache-plugin")?.healthy };
+        }).pipe(Effect.provide(Layer.provide(pluginLayer, wiredDeps()))),
+      );
+
+      // The offending plugin fails its init — red + sticky in plugin health.
+      expect(status).toBe("unhealthy");
+      expect(healthy).toBe(false);
+
+      // The cache degrades safely to the in-process LRU: getCache() returns a
+      // conforming backend (NOT the rejected one) so queries keep working.
+      const active = getCache();
+      expect(active).not.toBe(badBackend as never);
+      const stats = await active.stats();
+      expect(typeof stats.entryCount).toBe("number");
+      expect(typeof stats.maxSize).toBe("number");
       _resetCache();
     });
 

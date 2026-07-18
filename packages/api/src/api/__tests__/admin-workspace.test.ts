@@ -77,12 +77,14 @@ void mock.module("@atlas/api/lib/db/connection", () =>
 // --- Cache mock ---
 
 const mockFlushCache: Mock<() => void> = mock(() => {});
+const mockFlushCacheByOrg: Mock<(orgId: string) => Promise<number>> = mock(async () => 0);
 
 void mock.module("@atlas/api/lib/cache/index", () => ({
-  getCache: mock(() => ({ get: () => null, set: () => {}, delete: () => false, flush: () => {}, stats: () => ({}) })),
+  getCache: mock(() => ({ get: async () => null, set: async () => {}, delete: async () => false, flush: async () => {}, flushByOrg: async () => 0, stats: async () => ({}) })),
   cacheEnabled: mock(() => true),
-  setCacheBackend: mock(() => {}),
+  setCacheBackend: mock(async () => {}),
   flushCache: mockFlushCache,
+  flushCacheByOrg: mockFlushCacheByOrg,
   getDefaultTtl: mock(() => 300000),
   _resetCache: mock(() => {}),
   buildCacheKey: mock(() => "mock-key"),
@@ -458,10 +460,13 @@ describe("Workspace Lifecycle", () => {
       expect(cascade.settings).toBe(4);
     });
 
-    it("drains pools and flushes cache on delete", async () => {
+    it("drains pools and purges exactly this org's cache on delete", async () => {
       await app.fetch(adminRequest("DELETE", "/api/v1/admin/organizations/org-1"));
       expect(mockDrainOrg).toHaveBeenCalledWith("org-1");
-      expect(mockFlushCache).toHaveBeenCalled();
+      // Per-org purge (#4548) — NOT a fleet-wide flush, so a co-tenant's warm
+      // entries survive one workspace's deletion.
+      expect(mockFlushCacheByOrg).toHaveBeenCalledWith("org-1");
+      expect(mockFlushCache).not.toHaveBeenCalled();
       expect(mockCascadeWorkspaceDelete).toHaveBeenCalledWith("org-1");
     });
 

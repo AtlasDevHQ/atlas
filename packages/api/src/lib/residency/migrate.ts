@@ -310,18 +310,22 @@ export async function executeRegionMigration(
       [migrationId],
     );
 
-    // Flush cached data
+    // Purge exactly the migrated Workspace's cached entries — not the whole
+    // region's. A residency cutover moves one Workspace; co-tenants sharing this
+    // process must keep their warm entries. (`workspaceId` is the organization
+    // id, which is the `orgId` the Query Cache keys + scope-tags by.)
     try {
-      const { flushCache } = await import("@atlas/api/lib/cache/index");
-      flushCache();
+      const { flushCacheByOrg } = await import("@atlas/api/lib/cache/index");
+      const purged = await flushCacheByOrg(workspaceId);
+      log.info({ migrationId, workspaceId, purged }, "Workspace cache purged during migration");
     } catch (cacheErr) {
       log.warn(
         { err: cacheErr instanceof Error ? cacheErr.message : String(cacheErr), migrationId },
-        "Cache flush failed during migration (non-fatal)",
+        "Cache purge failed during migration (non-fatal)",
       );
     }
 
-    log.info({ migrationId }, "Phase 3 complete: region updated and caches flushed");
+    log.info({ migrationId }, "Phase 3 complete: region updated and Workspace cache purged");
 
     // ── Phase 4: Schedule cleanup ────────────────────────────────────
     log.info({ migrationId, step: MIGRATION_STEPS.scheduling_cleanup }, "Phase 4: Scheduling source data cleanup");

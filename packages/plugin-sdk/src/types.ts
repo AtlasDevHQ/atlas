@@ -396,14 +396,33 @@ export interface PluginCacheEntry {
   ttl: number;
 }
 
-/** Cache backend interface for query result caching. */
+/**
+ * Scope tags carried on every `set()`. `orgId` is the owning workspace (drives
+ * `flushByOrg`; may be `undefined` when there is no tenant); `connectionId` is
+ * the datasource connection the rows came from (always present, retained so
+ * per-connection invalidation is a filter over an org's entries).
+ */
+export interface PluginCacheScope {
+  orgId?: string;
+  connectionId: string;
+}
+
+/**
+ * Cache backend interface for query result caching. Every method is
+ * `Promise`-returning so an out-of-process backend (e.g. Redis, Memcached) is
+ * actually implementable — the host awaits each call, which is also what
+ * prevents an unawaited Promise from being mistaken for a truthy cache hit.
+ */
 export interface PluginCacheBackend {
-  get(key: string): PluginCacheEntry | null;
-  set(key: string, entry: PluginCacheEntry): void;
-  delete(key: string): boolean;
-  /** Flush all entries. */
-  flush(): void;
-  stats(): { hits: number; misses: number; entryCount: number; maxSize: number; ttl: number };
+  get(key: string): Promise<PluginCacheEntry | null>;
+  /** Store `entry` under `key`, tagged with `scope` for scoped invalidation. */
+  set(key: string, entry: PluginCacheEntry, scope: PluginCacheScope): Promise<void>;
+  delete(key: string): Promise<boolean>;
+  /** Flush all entries (every workspace's entries in this process). */
+  flush(): Promise<void>;
+  /** Purge exactly the entries owned by `orgId`; returns the number removed. */
+  flushByOrg(orgId: string): Promise<number>;
+  stats(): Promise<{ hits: number; misses: number; entryCount: number; maxSize: number; ttl: number }>;
 }
 
 // ---------------------------------------------------------------------------

@@ -1562,10 +1562,12 @@ export async function loadConfig(
 
   _resolved = resolved;
 
-  // Flush query cache on config reload to avoid stale results
+  // Flush query cache on config reload to avoid stale results. Fleet-wide is
+  // correct here: a config reload can change datasources/tools/limits for every
+  // Workspace in the process, so no per-org scoping applies.
   try {
     const { flushCache } = await import("@atlas/api/lib/cache/index");
-    flushCache();
+    await flushCache();
   } catch (err) {
     // Dynamic import may fail on first load before cache is wired — other errors must be logged
     if (err instanceof Error && !err.message.includes("Cannot find module")) {

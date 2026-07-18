@@ -34,6 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
+import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -180,6 +181,9 @@ function CacheConfigCard({
 
   const ttlNum = Number(ttlInput);
   const ttlValid = ttlInput.trim() !== "" && Number.isFinite(ttlNum) && ttlNum >= 1;
+  // Empty is a transient typing state (Save just disables); only a non-empty
+  // value that can't be saved gets flagged as invalid.
+  const ttlInvalid = ttlInput.trim() !== "" && !ttlValid;
   const ttlDirty = ttlValid && ttlNum !== ttlMs;
 
   return (
@@ -237,6 +241,8 @@ function CacheConfigCard({
               step={1000}
               value={ttlInput}
               disabled={saveTtl.saving}
+              aria-invalid={ttlInvalid || undefined}
+              aria-describedby={ttlInvalid ? "cache-ttl-error" : "cache-ttl-help"}
               onChange={(e) => setTtlInput(e.target.value)}
               className="max-w-[220px]"
             />
@@ -247,8 +253,18 @@ function CacheConfigCard({
             >
               {saveTtl.saving ? "Saving…" : "Save"}
             </Button>
+            {/* Nobody thinks in raw milliseconds — echo the entered value in
+                human units while it differs from what's saved. */}
+            {ttlDirty && (
+              <span className="text-sm text-muted-foreground">= {formatTtl(ttlNum)}</span>
+            )}
           </div>
-          <p className="text-xs text-muted-foreground">
+          {ttlInvalid && (
+            <p id="cache-ttl-error" className="text-xs text-destructive">
+              Enter a whole number of milliseconds, at least 1.
+            </p>
+          )}
+          <p id="cache-ttl-help" className="text-xs text-muted-foreground">
             Currently {formatTtl(ttlMs)}. Applies to newly cached results.
             {!isSaas &&
               " You can also set ATLAS_CACHE_ENABLED / ATLAS_CACHE_TTL via environment variables."}
@@ -309,9 +325,10 @@ function CacheEntriesCard({ onChanged }: { onChanged: () => void }) {
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading entries...</p>
         ) : error ? (
-          <p className="text-sm text-muted-foreground">
-            Couldn&apos;t load entries: {error.message}
-          </p>
+          <ErrorBanner
+            message={`Couldn't load cached entries: ${error.message}`}
+            onRetry={refetch}
+          />
         ) : entries === undefined ? (
           // `undefined` = no parsed payload (transient refetch state) — only
           // the wire's explicit `null` means backend-unavailable.
@@ -411,9 +428,12 @@ export default function CachePage() {
   // Warming: caching is on but no access has ever been recorded — render an
   // honest "warming up" panel instead of a 0.0% rate that reads as broken.
   const warming = data ? data.enabled && data.since === null : false;
+  // `null` = fill is unknowable (entry count or capacity unreported by the
+  // cache backend) — rendered "—", never a confident 0.0% that reads as an
+  // empty cache.
   const fillPercent = data && data.maxSize !== null && data.maxSize > 0 && data.entryCount !== null
     ? (data.entryCount / data.maxSize) * 100
-    : 0;
+    : null;
   const flushDisabledReason = data
     ? !data.enabled
       ? "Cache is disabled"
@@ -435,21 +455,6 @@ export default function CachePage() {
 
       <ErrorBoundary>
         <TooltipProvider>
-          <MutationErrorSurface
-            error={flushError}
-            feature="Cache"
-            onRetry={clearFlushError}
-          />
-          {flushMessage && (
-            <div
-              role="status"
-              aria-live="polite"
-              className="mb-6 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300"
-            >
-              {flushMessage}
-            </div>
-          )}
-
           <AdminContentWrapper
             loading={loading}
             error={error}
@@ -509,7 +514,7 @@ export default function CachePage() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="flex items-baseline gap-2">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                     <span className="text-4xl font-bold tracking-tight">
                       {data.hitRate === null ? "—" : formatPercent(data.hitRate)}
                     </span>
@@ -580,9 +585,11 @@ export default function CachePage() {
                     {isPlatform && (
                       <StatItem
                         label="Fill"
-                        value={`${fillPercent.toFixed(1)}%`}
+                        value={fillPercent === null ? "—" : `${fillPercent.toFixed(1)}%`}
                         icon={Activity}
-                        description="How much of the cache's capacity is in use"
+                        description={fillPercent === null
+                          ? "Fill unavailable — this cache backend doesn't report entry count or capacity"
+                          : "How much of the cache's capacity is in use"}
                       />
                     )}
                     <StatItem
@@ -592,7 +599,7 @@ export default function CachePage() {
                       description="How long a cached result stays fresh before it expires"
                     />
                   </div>
-                  {isPlatform && (
+                  {isPlatform && fillPercent !== null && (
                     <Progress
                       value={fillPercent}
                       className="h-2"
@@ -618,21 +625,43 @@ export default function CachePage() {
                       : "Remove this workspace's cached query results. Queries hit the database directly until the cache is repopulated."}
                   </CardDescription>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-4">
+                  {/* Flush feedback lives in this card, next to the button
+                      that caused it — a banner at the top of the page is
+                      off-screen when the user is down here. */}
+                  <MutationErrorSurface
+                    error={flushError}
+                    feature="Cache"
+                    onRetry={clearFlushError}
+                  />
+                  {flushMessage && (
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300"
+                    >
+                      {flushMessage}
+                    </div>
+                  )}
                   <AlertDialog>
                     {flushDisabledReason ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          {/* span wrapper: disabled buttons don't fire pointer
-                              events in Safari/Firefox, so the tooltip trigger
-                              must sit on an enabled element. tabIndex makes
-                              the explanation keyboard-reachable — Radix opens
-                              the tooltip on focus (#4549 a11y). */}
-                          <span className="inline-block" tabIndex={0}>
-                            <Button variant="destructive" disabled>
-                              Flush Cache
-                            </Button>
-                          </span>
+                          {/* aria-disabled, not disabled: a disabled button
+                              loses pointer events in Safari/Firefox (no
+                              tooltip) and a focusable span wrapper has no
+                              accessible name. This keeps the button itself
+                              hoverable + focusable, announced with its name
+                              and disabled state, with the reason attached via
+                              Radix's aria-describedby (#4549 a11y). No
+                              AlertDialogTrigger, so activation is a no-op. */}
+                          <Button
+                            variant="destructive"
+                            aria-disabled="true"
+                            className="cursor-not-allowed opacity-50 hover:bg-destructive dark:hover:bg-destructive/60"
+                          >
+                            Flush Cache
+                          </Button>
                         </TooltipTrigger>
                         <TooltipContent>{flushDisabledReason}</TooltipContent>
                       </Tooltip>

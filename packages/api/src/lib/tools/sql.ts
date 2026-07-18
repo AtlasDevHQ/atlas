@@ -26,7 +26,7 @@ import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSourceSlot } from "@atlas/api/lib/db/source-rate-limit";
-import { getConfig } from "@atlas/api/lib/config";
+import { getConfig, type RLSConfig } from "@atlas/api/lib/config";
 import { resolveRLSFilters, injectRLSConditions, type RLSFilterGroup } from "@atlas/api/lib/rls";
 import {
   extractPlaceholderNames,
@@ -1071,7 +1071,125 @@ function runQueryValidationEffect(
 }
 
 /**
+ * The resolved *effective* RLS configuration for the current request — the
+ * base boot config (`atlas.config.ts`) with the SaaS settings overlay applied.
+ * Discriminated so the pipeline can resolve it ONCE and hand the SAME value to
+ * both consumers:
+ *   - {@link applyRLSEffect}, which injects the WHERE conditions at execution,
+ *   - the `check-cache` pre-step, which fingerprints it into the cache key.
+ *
+ * `runSqlPipelineEffect` resolves it a single time above the cache check and
+ * threads that snapshot into both — so a settings hot-reload (or cross-replica
+ * propagation) landing mid-request can't make the key's fingerprint and the
+ * injected policy disagree. That single-snapshot discipline is what makes
+ * ADR-0033's "the RLS config the key fingerprints is the config the injector
+ * applies" true by construction; a per-consumer re-resolution would re-open
+ * audit H3 (pre-change rows served after a policy change) in the slot-contention
+ * window between the two calls. `misconfigured` is a distinct arm —
+ * enabled-but-incomplete — so its fingerprint differs from both `disabled` and
+ * any `active` config; such a request always fails closed at injection and
+ * never writes an entry, so no cache hit can ever resolve under a
+ * `misconfigured` fingerprint.
+ */
+type ResolvedRlsConfig =
+  | { readonly kind: "disabled" }
+  | { readonly kind: "active"; readonly config: RLSConfig }
+  | {
+      readonly kind: "misconfigured";
+      readonly message: string;
+      /** Which of the required settings was absent — surfaced on the
+       *  fail-closed security-audit log so an operator sees *what* to fix. */
+      readonly missingColumn: boolean;
+      readonly missingClaim: boolean;
+    };
+
+const RLS_MISCONFIGURED_MESSAGE =
+  "Row-level security is enabled but not fully configured. Contact your administrator.";
+
+/**
+ * Resolve the effective RLS config from boot config + the SaaS settings
+ * overlay. Pure (reads `getConfig()` + `getSettingAuto`, no I/O). Called once
+ * per pipeline run; the result is threaded to both the cache-key fingerprint
+ * and the injector so they can't drift (see {@link ResolvedRlsConfig}).
+ *
+ * The SaaS overlay only activates when there is a DB override for
+ * `ATLAS_RLS_ENABLED` — env vars and defaults are handled by the boot-time
+ * config and don't trigger the overlay, preserving multi-policy configs from
+ * `atlas.config.ts`.
+ */
+function resolveEffectiveRlsConfig(): ResolvedRlsConfig {
+  const config = getConfig();
+  let rlsConfig = config?.rls;
+
+  if (config?.deployMode === "saas") {
+    const rlsEnabledSetting = getSettingAuto("ATLAS_RLS_ENABLED");
+    if (rlsEnabledSetting !== undefined) {
+      if (rlsEnabledSetting !== "true") {
+        // Explicitly disabled via settings — skip RLS.
+        return { kind: "disabled" };
+      }
+      // Setting says enabled — build/overlay config from settings.
+      const column = getSettingAuto("ATLAS_RLS_COLUMN");
+      const claim = getSettingAuto("ATLAS_RLS_CLAIM");
+      if (column && claim) {
+        rlsConfig = {
+          enabled: true,
+          policies: [{ tables: ["*"], column, claim }],
+          combineWith: rlsConfig?.combineWith ?? "and",
+        };
+      } else {
+        // RLS enabled but missing required config — fail closed. Carry which
+        // input was absent so the blocking-path log stays actionable.
+        return {
+          kind: "misconfigured",
+          message: RLS_MISCONFIGURED_MESSAGE,
+          missingColumn: !column,
+          missingClaim: !claim,
+        };
+      }
+    }
+  }
+
+  if (!rlsConfig?.enabled) return { kind: "disabled" };
+  return { kind: "active", config: rlsConfig };
+}
+
+/**
+ * The value the cache key fingerprints for RLS (ADR-0033). `undefined` when RLS
+ * is not applied (disabled), the resolved config when active, and a stable
+ * distinct sentinel when misconfigured — so a config that flips
+ * active→disabled, active→misconfigured, or tightens its policies always yields
+ * a different fingerprint and orphans the pre-change entries. The sentinel is
+ * shaped so it can never collide with a real `RLSConfig` (which always carries
+ * `enabled`/`policies`/`combineWith`).
+ */
+function rlsCacheFingerprint(resolved: ResolvedRlsConfig): unknown {
+  switch (resolved.kind) {
+    case "disabled":
+      return undefined;
+    case "active":
+      return resolved.config;
+    case "misconfigured":
+      return { __rlsMisconfigured: true };
+    default: {
+      // Exhaustiveness sink: a new `ResolvedRlsConfig` arm that forgets to add
+      // a fingerprint here is a COMPILE error, not a silent collapse into the
+      // `disabled` (empty) fingerprint — which would re-open audit H3 by
+      // serving pre-change rows for the new state. This is the one spot a
+      // missed fingerprint would be a security regression, so guard it.
+      const _exhaustive: never = resolved;
+      return _exhaustive;
+    }
+  }
+}
+
+/**
  * Apply RLS conditions. Returns the (possibly modified) SQL. Fails with RLSError.
+ *
+ * `resolved` is the effective RLS config snapshot the pipeline already computed
+ * for this run (see {@link resolveEffectiveRlsConfig}); it is threaded in, not
+ * re-resolved here, so the config that fingerprints the cache key is exactly the
+ * config injected (ADR-0033 — no mid-request hot-reload drift).
  *
  * `validatedParse` (#4349) is the shared parse threaded out of `validateSQL`.
  * When it describes the EXACT string this function is about to inject into,
@@ -1086,47 +1204,21 @@ function applyRLSEffect(
   connId: string,
   dbType: DBType,
   targetHost: string | undefined,
+  resolved: ResolvedRlsConfig,
   validatedParse?: ValidatedParse,
 ): Effect.Effect<string, RLSError> {
   return Effect.gen(function* () {
-    const config = getConfig();
-    let rlsConfig = config?.rls;
-
-    // In SaaS mode only, overlay settings-based RLS config for hot-reload.
-    // Only activates when there is a DB override for ATLAS_RLS_ENABLED — env
-    // vars and defaults are handled by the boot-time config and don't trigger
-    // the overlay, preserving multi-policy configs from atlas.config.ts.
-    if (config?.deployMode === "saas") {
-      const rlsEnabledSetting = getSettingAuto("ATLAS_RLS_ENABLED");
-      if (rlsEnabledSetting !== undefined) {
-        if (rlsEnabledSetting !== "true") {
-          // Explicitly disabled via settings — skip RLS
-          return sql;
-        }
-        // Setting says enabled — build/overlay config from settings
-        const column = getSettingAuto("ATLAS_RLS_COLUMN");
-        const claim = getSettingAuto("ATLAS_RLS_CLAIM");
-        if (column && claim) {
-          rlsConfig = {
-            enabled: true,
-            policies: [{ tables: ["*"], column, claim }],
-            combineWith: rlsConfig?.combineWith ?? "and",
-          };
-        } else {
-          // RLS enabled but missing required config — fail closed
-          log.error(
-            { column: !!column, claim: !!claim },
-            "RLS enabled via settings but ATLAS_RLS_COLUMN or ATLAS_RLS_CLAIM is missing — blocking query",
-          );
-          return yield* new RLSError({
-            message: "Row-level security is enabled but not fully configured. Contact your administrator.",
-            phase: "filter",
-          });
-        }
-      }
+    if (resolved.kind === "disabled") return sql;
+    if (resolved.kind === "misconfigured") {
+      // Log here (not in the pure resolver) so the security-audit trail fires
+      // exactly on the injection path that blocks, not on every cache-key build.
+      log.error(
+        { connectionId: connId, missingColumn: resolved.missingColumn, missingClaim: resolved.missingClaim },
+        "RLS enabled via settings but ATLAS_RLS_COLUMN or ATLAS_RLS_CLAIM is missing — blocking query",
+      );
+      return yield* new RLSError({ message: resolved.message, phase: "filter" });
     }
-
-    if (!rlsConfig?.enabled) return sql;
+    const rlsConfig = resolved.config;
 
     const ctx = getRequestContext();
     const user = ctx?.user;
@@ -1902,9 +1994,101 @@ export function runSqlPipelineEffect(
       }
     }
 
+    // Plugin beforeQuery hook — dispatched ABOVE the cache check (ADR-0033:
+    // "anything that can veto a query runs before the cache check"). A plugin
+    // rejection here blocks a warm hit (an incident lockdown a plugin enforces
+    // can't be bypassed by a previously-cached query), and a beforeQuery
+    // rewrite lands in the cache key below so the rewritten SQL gets its own
+    // entry rather than colliding with the original (closes M11's governance
+    // half). Loaded and dispatched OUTSIDE the source slot: a hit must not
+    // consume a concurrency slot, and neither the hook load nor beforeQuery
+    // touches the datasource.
+    //
+    // Live-path-only carve-out (ADR-0033): `afterQuery` and the connection
+    // SLA / `recordQuery` metrics stay in `executeAndAuditEffect` (inside the
+    // slot), NOT here. They observe *executions*; a cache hit doesn't execute,
+    // so replaying them on a hit would fabricate a datasource round-trip that
+    // never happened. Hit-traffic visibility belongs to the cache's own stats.
+    const { dispatchHook, dispatchMutableHook } = yield* Effect.tryPromise({
+      try: () => import("@atlas/api/lib/plugins/hooks"),
+      catch: (err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        log.error({ err, connectionId: connId }, "Failed to load plugin hooks module");
+        return new PluginRejectedError({ message: `Plugin system unavailable: ${message}`, connectionId: connId });
+      },
+    });
+    const hookMetadata: Record<string, unknown> = {};
+    // Which SQL string the hook receives is derived from the pre-step
+    // (keeping it a free option would let a caller desync the hook
+    // input from the bind array): the agent path (`check-cache`)
+    // historically hands plugins the ORIGINAL (untrimmed, possibly
+    // `;`-suffixed) SQL; the raw path hands the normalized/bound SQL
+    // so the hook, re-validation, RLS, and execution all operate on
+    // the same string the bind array aligns to (#2267). Plugins that
+    // rewrite SQL must preserve placeholder order for parameterized
+    // cards.
+    const hookInputSql = preStep?.kind === "check-cache" ? sql : normalizedSql;
+    const hookCtx = { sql: hookInputSql, connectionId: connId, metadata: hookMetadata };
+    const mutatedSql = yield* Effect.tryPromise({
+      try: () => dispatchMutableHook("beforeQuery", hookCtx, "sql"),
+      catch: (err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        return new PluginRejectedError({
+          message: `Query rejected by plugin: ${message}`,
+          connectionId: connId,
+        });
+      },
+    }).pipe(
+      Effect.tapError((error) =>
+        Effect.sync(() =>
+          logQueryAudit({
+            sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+            error: `Plugin rejected: ${error.message}`,
+            sourceId: connId, sourceType: dbType, targetHost,
+            parentAuditId,
+          }),
+        ),
+      ),
+    );
+
+    // Re-validate if the plugin rewrote the SQL. Runs BEFORE the cache check so
+    // the rewritten string that lands in the cache key is a validated one, and
+    // an invalid rewrite fails fast rather than after a wasted cache lookup.
+    let normalizedMutated = mutatedSql.trim().replace(/;\s*$/, "").trimEnd();
+    if (normalizedMutated !== normalizedSql) {
+      const revalidation = yield* runQueryValidationEffect(normalizedMutated, connId, dbType, customValidator, authOrgId);
+      if (!revalidation.ok) {
+        logQueryAudit({
+          sql: normalizedMutated.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+          error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
+          sourceId: connId, sourceType: dbType, targetHost,
+          parentAuditId,
+        });
+        return { kind: "validation_failed" as const, message: `Plugin-rewritten SQL failed validation: ${revalidation.error}` };
+      }
+      // The re-validation reparsed the rewritten SQL — carry its parse so RLS
+      // reuses it rather than parsing the mutated string a third time (#4349).
+      parsedForRls = revalidation.parsed;
+    }
+
+    // Resolve the effective RLS config ONCE for this run and thread the same
+    // snapshot into both the cache-key fingerprint below and `applyRLSEffect`
+    // inside the slot (ADR-0033). Resolving it per-consumer would let a settings
+    // hot-reload landing in the await gap (slot contention) fingerprint the key
+    // under one config while injecting another — the exact H3 drift the key is
+    // meant to prevent. Custom validators bypass RLS injection entirely, so RLS
+    // is not a row-determining input for them and never enters their key.
+    const resolvedRls = resolveEffectiveRlsConfig();
+
     // Pre-step (agent path): result-cache check (short-circuit on hit).
-    // Deliberately AFTER the approval gate so a cache hit can never bypass
-    // governance, and masking + the CURRENT row limit apply before serving.
+    // Deliberately AFTER the approval gate AND the beforeQuery hook so a cache
+    // hit can never bypass governance, and masking + the CURRENT row limit
+    // apply before serving. The key is built from the POST-beforeQuery SQL
+    // (`normalizedMutated`, so a rewrite gets its own entry) plus the resolved
+    // effective RLS config (ADR-0033) — the same config the injector applies —
+    // so enabling or tightening RLS instantly orphans every pre-change entry by
+    // construction, with no flush choreography (closes audit H3).
+    //
     // The cache write (key + scope), or null for "don't cache". `scope.orgId`
     // is the SAME org that goes into `key`, so a later `flushByOrg(orgId)`
     // targets exactly this entry. One object so key-without-scope can't happen.
@@ -1914,7 +2098,10 @@ export function runSqlPipelineEffect(
         const ctx = getRequestContext();
         const cacheOrgId = ctx?.user?.activeOrganizationId;
         const claims = ctx?.user?.claims;
-        const cacheKey = buildCacheKey(normalizedSql, connId, cacheOrgId, claims);
+        // Custom validators bypass RLS injection, so RLS is not a
+        // row-determining input for them and never enters their key.
+        const rlsFingerprint = customValidator ? undefined : rlsCacheFingerprint(resolvedRls);
+        const cacheKey = buildCacheKey(normalizedMutated, connId, cacheOrgId, claims, rlsFingerprint);
         cacheWrite = { key: cacheKey, scope: { orgId: cacheOrgId, connectionId: connId } };
         // Awaited via Effect so an async backend's read actually resolves
         // before we branch — an unawaited Promise is truthy and would read as a
@@ -1947,7 +2134,7 @@ export function runSqlPipelineEffect(
               // the cache entry so this hit carries the query's real cost,
               // not duration_ms=0. Falls back to 0 only for legacy/external
               // entries written before executionMs was stamped.
-              sql: normalizedSql.slice(0, 2000), durationMs: cached.executionMs ?? 0,
+              sql: normalizedMutated.slice(0, 2000), durationMs: cached.executionMs ?? 0,
               rowCount: cached.rows.length,
               success: true, sourceId: connId, sourceType: dbType, targetHost,
               parentAuditId,
@@ -2026,79 +2213,21 @@ export function runSqlPipelineEffect(
     }
 
     // Execute inside a rate-limit slot (concurrency release is automatic):
-    // plugin beforeQuery → re-validate → RLS → auto-LIMIT → execute + audit.
+    // RLS → auto-LIMIT → execute + audit (+ afterQuery + metrics, live-only).
+    // beforeQuery + re-validate already ran above the cache check (ADR-0033),
+    // so only the datasource-touching steps hold the slot.
     return yield* withSourceSlot(connId,
       Effect.gen(function* () {
-        // Plugin beforeQuery hook (may rewrite SQL)
-        const { dispatchHook, dispatchMutableHook } = yield* Effect.tryPromise({
-          try: () => import("@atlas/api/lib/plugins/hooks"),
-          catch: (err) => {
-            const message = err instanceof Error ? err.message : String(err);
-            log.error({ err, connectionId: connId }, "Failed to load plugin hooks module");
-            return new PluginRejectedError({ message: `Plugin system unavailable: ${message}`, connectionId: connId });
-          },
-        });
-        const hookMetadata: Record<string, unknown> = {};
-        // Which SQL string the hook receives is derived from the pre-step
-        // (keeping it a free option would let a caller desync the hook
-        // input from the bind array): the agent path (`check-cache`)
-        // historically hands plugins the ORIGINAL (untrimmed, possibly
-        // `;`-suffixed) SQL; the raw path hands the normalized/bound SQL
-        // so the hook, re-validation, RLS, and execution all operate on
-        // the same string the bind array aligns to (#2267). Plugins that
-        // rewrite SQL must preserve placeholder order for parameterized
-        // cards.
-        const hookInputSql = preStep?.kind === "check-cache" ? sql : normalizedSql;
-        const hookCtx = { sql: hookInputSql, connectionId: connId, metadata: hookMetadata };
-        const mutatedSql = yield* Effect.tryPromise({
-          try: () => dispatchMutableHook("beforeQuery", hookCtx, "sql"),
-          catch: (err) => {
-            const message = err instanceof Error ? err.message : String(err);
-            return new PluginRejectedError({
-              message: `Query rejected by plugin: ${message}`,
-              connectionId: connId,
-            });
-          },
-        }).pipe(
-          Effect.tapError((error) =>
-            Effect.sync(() =>
-              logQueryAudit({
-                sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-                error: `Plugin rejected: ${error.message}`,
-                sourceId: connId, sourceType: dbType, targetHost,
-                parentAuditId,
-              }),
-            ),
-          ),
-        );
-
-        // Re-validate if plugin rewrote the SQL
-        let normalizedMutated = mutatedSql.trim().replace(/;\s*$/, "").trimEnd();
-        if (normalizedMutated !== normalizedSql) {
-          const revalidation = yield* runQueryValidationEffect(normalizedMutated, connId, dbType, customValidator, authOrgId);
-          if (!revalidation.ok) {
-            logQueryAudit({
-              sql: normalizedMutated.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-              error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
-              sourceId: connId, sourceType: dbType, targetHost,
-              parentAuditId,
-            });
-            return { kind: "validation_failed" as const, message: `Plugin-rewritten SQL failed validation: ${revalidation.error}` };
-          }
-          // The re-validation reparsed the rewritten SQL — carry its parse so RLS
-          // reuses it rather than parsing the mutated string a third time (#4349).
-          parsedForRls = revalidation.parsed;
-        }
-
         // RLS: inject WHERE conditions (skipped for custom validators / non-SQL languages)
+        let executedSql = normalizedMutated;
         if (!customValidator) {
-          normalizedMutated = yield* applyRLSEffect(normalizedMutated, connId, dbType, targetHost, parsedForRls);
+          executedSql = yield* applyRLSEffect(executedSql, connId, dbType, targetHost, resolvedRls, parsedForRls);
         }
 
         // Auto-append LIMIT if not present
         const rowLimit = getRowLimit(authOrgId);
         const queryTimeout = getQueryTimeout(authOrgId);
-        let querySql = normalizedMutated;
+        let querySql = executedSql;
         if (!customValidator && !hasLimitClause(querySql, { backslashEscapes: dbType === "mysql" })) {
           querySql = appendRowLimit(querySql, rowLimit);
         }

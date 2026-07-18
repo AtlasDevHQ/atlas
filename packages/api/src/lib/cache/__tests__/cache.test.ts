@@ -698,4 +698,100 @@ describe("buildCacheKey", () => {
     const b = buildCacheKey("SELECT 1", "default", "org1");
     expect(a).not.toBe(b);
   });
+
+  // ── Resolved RLS config in the key (ADR-0033, closes audit H3) ──────────
+  describe("resolved RLS config fingerprint", () => {
+    const rlsA = {
+      enabled: true,
+      policies: [{ tables: ["*"], column: "tenant_id", claim: "org_id" }],
+      combineWith: "and",
+    };
+    const rlsATighter = {
+      enabled: true,
+      // Same shape, an extra policy — a "tightening" change.
+      policies: [
+        { tables: ["*"], column: "tenant_id", claim: "org_id" },
+        { tables: ["orders"], column: "region", claim: "region" },
+      ],
+      combineWith: "and",
+    };
+
+    it("same resolved RLS config = same key (unchanged config still hits)", () => {
+      const a = buildCacheKey("SELECT 1", "default", "org1", { role: "m" }, rlsA);
+      const b = buildCacheKey("SELECT 1", "default", "org1", { role: "m" }, rlsA);
+      expect(a).toBe(b);
+    });
+
+    it("tightening the resolved RLS config = different key (orphans pre-change entries)", () => {
+      const before = buildCacheKey("SELECT 1", "default", "org1", { role: "m" }, rlsA);
+      const after = buildCacheKey("SELECT 1", "default", "org1", { role: "m" }, rlsATighter);
+      expect(after).not.toBe(before);
+    });
+
+    it("enabling RLS (undefined → config) = different key", () => {
+      const rlsOff = buildCacheKey("SELECT 1", "default", "org1", { role: "m" });
+      const rlsOn = buildCacheKey("SELECT 1", "default", "org1", { role: "m" }, rlsA);
+      expect(rlsOn).not.toBe(rlsOff);
+    });
+
+    it("RLS policy key order does not affect the fingerprint", () => {
+      const a = buildCacheKey("SELECT 1", "default", "org1", undefined, {
+        enabled: true,
+        combineWith: "and",
+        policies: [{ column: "tenant_id", claim: "org_id", tables: ["*"] }],
+      });
+      const b = buildCacheKey("SELECT 1", "default", "org1", undefined, {
+        policies: [{ tables: ["*"], claim: "org_id", column: "tenant_id" }],
+        enabled: true,
+        combineWith: "and",
+      });
+      expect(a).toBe(b);
+    });
+
+    it("the misconfigured sentinel is distinct from disabled and from an active config", () => {
+      const disabled = buildCacheKey("SELECT 1", "default", "org1");
+      const active = buildCacheKey("SELECT 1", "default", "org1", undefined, rlsA);
+      const misconfigured = buildCacheKey("SELECT 1", "default", "org1", undefined, {
+        __rlsMisconfigured: true,
+      });
+      expect(misconfigured).not.toBe(disabled);
+      expect(misconfigured).not.toBe(active);
+    });
+  });
+
+  // ── L9 invariant: no-org/no-claims key collapse (audit L9) ──────────────
+  //
+  // When BOTH orgId and claims are absent, an entry is isolated SOLELY by
+  // connectionId (+ SQL + RLS fingerprint). This is correct only for a
+  // single-tenant-per-connection deployment; a per-tenant discriminator MUST
+  // reach the key through orgId or claims, never left implicit. These tests
+  // pin exactly that surface so a regression that quietly drops orgId/claims
+  // from the material — collapsing distinct tenants onto one entry — fails.
+  describe("L9 invariant — no-org/no-claims isolation rests on connectionId", () => {
+    it("identical SQL + same connection, both org and claims absent = SAME key (single-tenant collapse is intentional)", () => {
+      const a = buildCacheKey("SELECT * FROM t", "conn-a");
+      const b = buildCacheKey("SELECT * FROM t", "conn-a");
+      expect(a).toBe(b);
+    });
+
+    it("with no org/claims, a different connectionId is the ONLY thing isolating entries", () => {
+      const a = buildCacheKey("SELECT * FROM t", "conn-a");
+      const b = buildCacheKey("SELECT * FROM t", "conn-b");
+      expect(a).not.toBe(b);
+    });
+
+    it("attaching an orgId to an otherwise no-org/no-claims key changes it (the discriminator must surface)", () => {
+      const collapsed = buildCacheKey("SELECT * FROM t", "conn-a");
+      const withOrg = buildCacheKey("SELECT * FROM t", "conn-a", "org-9");
+      expect(withOrg).not.toBe(collapsed);
+    });
+
+    it("attaching claims to an otherwise no-org/no-claims key changes it (claims-only tenancy)", () => {
+      const collapsed = buildCacheKey("SELECT * FROM t", "conn-a");
+      const withClaims = buildCacheKey("SELECT * FROM t", "conn-a", undefined, {
+        tenant: "acme",
+      });
+      expect(withClaims).not.toBe(collapsed);
+    });
+  });
 });

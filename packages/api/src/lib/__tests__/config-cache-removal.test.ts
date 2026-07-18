@@ -28,6 +28,21 @@ describe("config-block removal: cache (#4551 phase 2)", () => {
     );
   });
 
+  it("rejects `cache: null` (any present value counts as carrying the block)", () => {
+    expect(() => validateAndResolve({ cache: null })).toThrow(
+      /`cache:` block was removed/,
+    );
+  });
+
+  it("wins over other schema errors — the guard runs before the Zod parse, which would strip the block", () => {
+    // Pins the ordering: if a refactor moved the check after safeParse, the
+    // schema's unknown-key stripping would swallow the block silently — the
+    // exact regression the two-phase drop exists to prevent.
+    expect(() =>
+      validateAndResolve({ cache: {}, tools: "not-an-array" }),
+    ).toThrow(/`cache:` block was removed/);
+  });
+
   it("points the operator at the settings registry and the env vars", () => {
     let message = "";
     try {

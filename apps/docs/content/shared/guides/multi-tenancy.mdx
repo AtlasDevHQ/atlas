@@ -233,17 +233,11 @@ curl -X POST https://your-atlas.com/api/v1/admin/cache/flush \
   -H "Cookie: atlas.session_token=<session>"
 ```
 
-Configure cache behavior in `atlas.config.ts`:
-
-```typescript
-export default defineConfig({
-  cache: {
-    enabled: true,      // Default: true
-    ttl: 300_000,       // Milliseconds (default: 300000 = 5 minutes)
-    maxSize: 1000,      // Max entries (default: 1000)
-  },
-});
-```
+Cache behavior is tuned at runtime via the settings registry — **Admin → the
+Cache page** or the `ATLAS_CACHE_*` env vars (`ATLAS_CACHE_ENABLED`,
+`ATLAS_CACHE_TTL`, `ATLAS_CACHE_MAX_SIZE`) — with no redeploy. A `cache:`
+block in `atlas.config.ts` is no longer supported and fails validation at
+boot. See <AudienceLink selfHosted="/self-hosted/deployment/cache-configuration">Cache Configuration</AudienceLink> for details.
 
 ---
 

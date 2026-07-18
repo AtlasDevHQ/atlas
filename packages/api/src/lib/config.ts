@@ -1299,6 +1299,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
   // shipped in v0.0.56 via #4545): a config-file `cache:` block now FAILS
   // validation. Checked against the raw input because the schema strips
   // unknown keys, which would silently swallow the block instead.
+  // `cache: undefined` is treated as absent (TS optional-field semantics).
   if (raw !== null && typeof raw === "object" && (raw as Record<string, unknown>).cache !== undefined) {
     throw new Error(
       "Invalid atlas.config.ts: the `cache:` block was removed — the Query Cache is configured at runtime via the settings registry (workspace > platform > env > default), not the config file. Delete the `cache:` block and use Admin → the Cache page or the ATLAS_CACHE_* env vars (ATLAS_CACHE_ENABLED / ATLAS_CACHE_TTL / ATLAS_CACHE_MAX_SIZE).",

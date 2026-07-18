@@ -1,11 +1,11 @@
 ---
 title: Cache Configuration
-description: Configure query result caching via environment variables, atlas.config.ts, or an external Redis backend.
+description: Configure query result caching via the settings registry, environment variables, or an external Redis backend.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas caches query results in-memory with tenant-isolated, claim-scoped cache keys. This page covers operator-level configuration: environment variables, config file settings, and plugging in an external cache backend.
+Atlas caches query results in-memory with tenant-isolated, claim-scoped cache keys. This page covers operator-level configuration: the settings registry, environment variables, and plugging in an external cache backend.
 
 <Callout title="Prerequisites">
 - Atlas server running (`bun run dev`)
@@ -41,10 +41,11 @@ overrides still take precedence at runtime):
 | `ATLAS_CACHE_TTL` | `300000` | Cache TTL in milliseconds (default: 5 minutes) |
 | `ATLAS_CACHE_MAX_SIZE` | `1000` | Maximum cached entries. LRU eviction when full |
 
-<Callout type="warn" title="The `atlas.config.ts` `cache:` block is deprecated">
-A `cache:` block in `atlas.config.ts` is **ignored** and logs a boot warning —
-migrate to **Admin → Settings** or the `ATLAS_CACHE_*` env vars above. The
-block will be removed entirely in a future release.
+<Callout type="warn" title="The `atlas.config.ts` `cache:` block was removed">
+The `cache:` block is gone from the config schema — a config file that still
+carries one **fails validation at boot**. Delete the block and use **Admin →
+the Cache page** or the `ATLAS_CACHE_*` env vars above. (It was deprecated —
+ignored with a boot warning — for one release before removal.)
 </Callout>
 
 See [Configuration](/reference/config#query-cache) for full details.

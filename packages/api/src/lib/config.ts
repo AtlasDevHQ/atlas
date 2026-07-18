@@ -585,19 +585,12 @@ const AtlasConfigSchema = z.object({
    */
   pool: PoolConfigSchema.optional(),
 
-  /**
-   * Query result cache configuration. When enabled (default), identical
-   * queries return cached results within the TTL. Cache keys include
-   * orgId for tenant isolation.
-   */
-  cache: z.object({
-    /** Whether query caching is enabled. Default: true. */
-    enabled: z.boolean().default(true),
-    /** Time-to-live in milliseconds. Default: 300000 (5 minutes). */
-    ttl: z.number().int().positive().default(300_000),
-    /** Maximum number of cached entries. Default: 1000. */
-    maxSize: z.number().int().positive().default(1000),
-  }).optional(),
+  // `cache:` REMOVED (#4551, phase 2 of the two-phase drop; the phase-1
+  // ignored-with-boot-warning path shipped in v0.0.56 via #4545). The Query
+  // Cache is configured solely via the settings registry (workspace >
+  // platform > env > default — Admin → the Cache page or ATLAS_CACHE_*).
+  // This schema strips unknown keys, so the hard rejection of a leftover
+  // `cache:` block lives in validateAndResolve, which reads the raw input.
 
   /**
    * Adaptive starter prompt configuration. Controls the empty-chat grid
@@ -736,8 +729,6 @@ export interface ResolvedConfig {
   semanticIndex?: { enabled: boolean };
   /** Connection pool configuration for tenant-scoped pooling. */
   pool?: { perOrg?: { maxConnections: number; idleTimeoutMs: number; maxOrgs: number; warmupProbes: number; drainThreshold: number } };
-  /** Query result cache configuration. */
-  cache?: { enabled: boolean; ttl: number; maxSize: number };
   /** Adaptive starter prompt configuration. */
   starterPrompts?: { coldWindowDays: number; autoPromoteClicks: number; maxFavorites: number };
   /** Enterprise feature gating. */
@@ -948,10 +939,10 @@ export function configFromEnv(): ResolvedConfig {
     ...(process.env.ATLAS_SEMANTIC_INDEX_ENABLED === "false"
       ? { semanticIndex: { enabled: false } }
       : {}),
-    // Cache knobs (ATLAS_CACHE_*) are NOT synthesized into config anymore —
-    // they live in the settings registry (lib/settings.ts) and read env as
-    // their Tier-3 fallback directly. The config-file `cache:` block is
-    // deprecated (see validateAndResolve — #4545, phase 1 of #4551).
+    // Cache knobs (ATLAS_CACHE_*) are NOT synthesized into config — they
+    // live in the settings registry (lib/settings.ts) and read env as their
+    // Tier-3 fallback directly. The config-file `cache:` block was removed
+    // (#4551); validateAndResolve rejects one with a pointed error.
     // Starter prompt config from env vars
     ...((() => {
       const coldWindow = parseInt(process.env.ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS ?? "", 10);
@@ -1304,6 +1295,17 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     );
   }
 
+  // Config-block deprecation, phase 2 (#4551; the phase-1 boot warning
+  // shipped in v0.0.56 via #4545): a config-file `cache:` block now FAILS
+  // validation. Checked against the raw input because the schema strips
+  // unknown keys, which would silently swallow the block instead.
+  // `cache: undefined` is treated as absent (TS optional-field semantics).
+  if (raw !== null && typeof raw === "object" && (raw as Record<string, unknown>).cache !== undefined) {
+    throw new Error(
+      "Invalid atlas.config.ts: the `cache:` block was removed — the Query Cache is configured at runtime via the settings registry (workspace > platform > env > default), not the config file. Delete the `cache:` block and use Admin → the Cache page or the ATLAS_CACHE_* env vars (ATLAS_CACHE_ENABLED / ATLAS_CACHE_TTL / ATLAS_CACHE_MAX_SIZE).",
+    );
+  }
+
   const parseResult = AtlasConfigSchema.safeParse(raw);
   if (!parseResult.success) {
     throw new Error(`Invalid atlas.config.ts:\n${formatZodErrors(parseResult.error, raw)}`);
@@ -1314,18 +1316,6 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
   // Structural validation of plugin entries (id, type, version)
   if (config.plugins?.length) {
     validatePlugins(config.plugins);
-  }
-
-  // Config-block deprecation, phase 1 (#4545, schema removal is #4551): a
-  // config-file `cache:` block is IGNORED — the Query Cache's knobs now live
-  // in the settings registry (ATLAS_CACHE_*, Admin → Settings / the Cache
-  // page). Warn loudly so an operator who set it knows it is a no-op, then
-  // drop it below (never spread into ResolvedConfig).
-  if (config.cache) {
-    log.warn(
-      { reason: "cache-config-deprecated" },
-      "atlas.config.ts `cache:` block is deprecated and IGNORED — migrate to Admin → Settings or the ATLAS_CACHE_* env vars (ATLAS_CACHE_ENABLED / ATLAS_CACHE_TTL / ATLAS_CACHE_MAX_SIZE). The Query Cache is now tuned at runtime via the settings registry.",
-    );
   }
 
   return {
@@ -1343,7 +1333,6 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.session ? { session: config.session } : {}),
     ...(config.semanticIndex ? { semanticIndex: config.semanticIndex } : {}),
     ...(config.pool ? { pool: config.pool } : {}),
-    // config.cache intentionally dropped — deprecated & ignored (see warning above)
     ...(config.starterPrompts ? { starterPrompts: config.starterPrompts } : {}),
     ...(config.enterprise ? { enterprise: config.enterprise } : {}),
     ...(config.residency ? { residency: config.residency } : {}),

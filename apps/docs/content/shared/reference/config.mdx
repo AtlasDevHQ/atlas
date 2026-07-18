@@ -350,8 +350,8 @@ The cache knobs are **runtime settings**, not `atlas.config.ts` fields — tune 
 
 A TTL or max-size change takes effect on the running backend immediately (hit/miss counters survive). Manual flush is available via `POST /api/v1/admin/cache/flush`. Plugins can provide an external cache backend (e.g. Redis) via the `cacheBackend` field on the plugin object.
 
-<Callout type="warn" title="Deprecated: the `cache:` config block">
-A `cache:` block in `atlas.config.ts` is **ignored** and logs a boot warning. Its values no longer apply — use the settings above. The block is scheduled for removal in a future release.
+<Callout type="warn" title="Removed: the `cache:` config block">
+The `cache:` block has been **removed** from the config schema — a `cache:` block in `atlas.config.ts` now fails validation at boot. Delete the block and use the settings above (Admin → the Cache page, or the `ATLAS_CACHE_*` env vars). It was previously deprecated (ignored with a boot warning) for one release before removal.
 </Callout>
 
 ---
@@ -1070,7 +1070,6 @@ export default defineConfig({
 | `sandbox` | `object` | — | Sandbox backend priority ([details](#sandbox)) |
 | `python` | `object` | — | Python import guard overrides ([details](#python-import-guard)) |
 | `session` | `object` | — | Session timeout configuration ([details](#session-timeouts)) |
-| `cache` | `object` | — | Query result caching ([details](#query-cache)) |
 | `pool` | `object` | — | Per-org connection pool isolation ([details](#per-org-pool-isolation)) |
 | `semanticIndex` | `object` | — | Semantic index configuration ([details](#semantic-index)) |
 | `starterPrompts` | `object` | — | Adaptive starter prompt configuration ([details](#starter-prompts)) |

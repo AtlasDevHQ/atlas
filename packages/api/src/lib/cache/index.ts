@@ -13,8 +13,8 @@
  * Plugins can replace the backend via `setCacheBackend()`; a plugin backend
  * manages its own sizing and is never reconciled.
  *
- * The config-file `cache:` block is deprecated (ignored with a loud boot
- * warning in `lib/config.ts`, phase 1 of #4551) — knobs come from the
+ * The config-file `cache:` block is gone (#4551 phase 2 — a leftover block
+ * fails config validation in `lib/config.ts`) — knobs come from the
  * registry only.
  */
 

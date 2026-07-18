@@ -36,15 +36,24 @@ import { HardDrive, Trash2, Activity, Database, Clock, Target, Settings2 } from 
 
 // ── Schemas ───────────────────────────────────────────────────────
 
+// Per-caller payload (#4549): `scope` is self-describing — "workspace" means
+// the caller's org bucket (maxSize null: fleet capacity is platform framing),
+// "platform" means fleet totals + resolved capacity. `since: null` while
+// enabled is the warming state; rates are null when there's nothing to rate;
+// `entryCount: null` means the count is structurally unavailable (plugin
+// cache backend) — rendered as "unavailable", never a confident 0.
 const CacheStatsResponseSchema = z.object({
+  scope: z.enum(["workspace", "platform"]),
   enabled: z.boolean(),
+  ttl: z.number(),
+  since: z.number().nullable(),
   hits: z.number(),
   misses: z.number(),
-  hitRate: z.number(),
-  missRate: z.number(),
-  entryCount: z.number(),
-  maxSize: z.number(),
-  ttl: z.number(),
+  hitRate: z.number().nullable(),
+  windowHitRate: z.number().nullable(),
+  windowTotal: z.number(),
+  entryCount: z.number().nullable(),
+  maxSize: z.number().nullable(),
 });
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -61,6 +70,10 @@ function formatTtl(ms: number): string {
 
 function formatPercent(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`;
+}
+
+function formatSince(sinceMs: number): string {
+  return new Date(sinceMs).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 // ── Stat Card ─────────────────────────────────────────────────────
@@ -222,27 +235,40 @@ export default function CachePage() {
   );
 
   const { mutate: flush, saving: flushing, error: flushError, clearError: clearFlushError } =
-    useAdminMutation<{ flushed?: number }>({
+    useAdminMutation<{ ok: boolean; flushed: number; message: string }>({
       path: "/api/v1/admin/cache/flush",
       method: "POST",
       invalidates: refetch,
     });
 
+  const isPlatform = data?.scope === "platform";
+
   async function handleFlush() {
-    if (flushing) return;
+    if (flushing || !data) return;
     setFlushMessage(null);
-    const result = await flush();
+    // Workspace admins purge only their org's entries; platform admins clear
+    // the whole fleet (the dialog below disclosed the blast radius). A 409
+    // (cache disabled) or 403 flows into MutationErrorSurface via the hook —
+    // the success banner only ever renders on a true 200.
+    const result = await flush({ body: { scope: isPlatform ? "fleet" : "workspace" } });
     if (result.ok && result.data) {
-      const count = result.data.flushed ?? 0;
+      const count = result.data.flushed;
       setFlushMessage(`Flushed ${count} ${count === 1 ? "entry" : "entries"}`);
     }
   }
 
   const totalQueries = data ? data.hits + data.misses : 0;
-  const fillPercent = data && data.maxSize > 0 ? (data.entryCount / data.maxSize) * 100 : 0;
+  // Warming: caching is on but no access has ever been recorded — render an
+  // honest "warming up" panel instead of a 0.0% rate that reads as broken.
+  const warming = data ? data.enabled && data.since === null : false;
+  const fillPercent = data && data.maxSize !== null && data.maxSize > 0 && data.entryCount !== null
+    ? (data.entryCount / data.maxSize) * 100
+    : 0;
   const flushDisabledReason = data
     ? !data.enabled
       ? "Cache is disabled"
+      // null entryCount = count unavailable (plugin backend) — the cache may
+      // well be warm, so flushing stays allowed; only a known-zero disables.
       : data.entryCount === 0
         ? "Cache is empty"
         : null
@@ -300,7 +326,27 @@ export default function CachePage() {
                   disabled, the Configuration card's toggle is the whole page
                   — no env-var copy a SaaS admin cannot act on. */}
               {data.enabled && <>
-              {/* Hit Rate Card */}
+              {/* Hit Rate Card — or an honest warming panel when the cache
+                  has never recorded an access (a 0.0% rate over an empty bar
+                  reads as broken, not as new). */}
+              {warming ? (
+                <Card className="shadow-none">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Target className="size-4" />
+                      Hit Rate
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm font-medium">Warming up</p>
+                    <p className="text-sm text-muted-foreground">
+                      Caching is on, but no queries have consulted it yet.
+                      Statistics appear after the first query runs
+                      {isPlatform ? " in any workspace." : " in this workspace."}
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : (
               <Card className="shadow-none">
                 <CardHeader className="pb-2">
                   <CardTitle className="flex items-center gap-2 text-base">
@@ -309,19 +355,28 @@ export default function CachePage() {
                   </CardTitle>
                   <CardDescription>
                     Cache effectiveness across {totalQueries.toLocaleString()} total {totalQueries === 1 ? "query" : "queries"}
+                    {isPlatform ? " (all workspaces)" : " in this workspace"}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="flex items-baseline gap-2">
                     <span className="text-4xl font-bold tracking-tight">
-                      {formatPercent(data.hitRate)}
+                      {data.hitRate === null ? "—" : formatPercent(data.hitRate)}
                     </span>
-                    <span className="text-sm text-muted-foreground">hit rate</span>
+                    <span className="text-sm text-muted-foreground">
+                      {data.since === null ? "hit rate" : `since ${formatSince(data.since)}`}
+                    </span>
+                    <span className="text-sm text-muted-foreground" aria-hidden="true">·</span>
+                    <span className="text-sm text-muted-foreground">
+                      {data.windowHitRate === null
+                        ? "no recent activity"
+                        : `${formatPercent(data.windowHitRate)} last hour`}
+                    </span>
                   </div>
                   <Progress
-                    value={data.hitRate * 100}
+                    value={(data.hitRate ?? 0) * 100}
                     className="h-2"
-                    aria-label={`Cache hit rate ${formatPercent(data.hitRate)}`}
+                    aria-label={`Lifetime cache hit rate ${data.hitRate === null ? "unavailable" : formatPercent(data.hitRate)}`}
                   />
                   <div className="grid grid-cols-2 gap-4 pt-2">
                     <div className="space-y-1">
@@ -339,8 +394,11 @@ export default function CachePage() {
                   </div>
                 </CardContent>
               </Card>
+              )}
 
-              {/* Size & Config Card */}
+              {/* Storage Card. Workspace admins see their org's live entry
+                  count only — capacity (maxSize) and the fill gauge are fleet
+                  framing reserved for the platform view. */}
               <Card className="shadow-none">
                 <CardHeader className="pb-2">
                   <CardTitle className="flex items-center gap-2 text-base">
@@ -348,32 +406,49 @@ export default function CachePage() {
                     Storage
                   </CardTitle>
                   <CardDescription>
-                    Cache capacity and configuration
+                    {isPlatform
+                      ? "Cache capacity and configuration"
+                      : "This workspace's cached entries"}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
+                  <div className={`grid grid-cols-1 gap-6 ${isPlatform ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
                     <StatItem
                       label="Entries"
-                      value={`${data.entryCount.toLocaleString()} / ${data.maxSize.toLocaleString()}`}
+                      value={data.entryCount === null
+                        ? "—"
+                        : data.maxSize !== null
+                          ? `${data.entryCount.toLocaleString()} / ${data.maxSize.toLocaleString()}`
+                          : data.entryCount.toLocaleString()}
                       icon={HardDrive}
+                      description={data.entryCount === null
+                        ? "Entry count unavailable for this cache backend"
+                        : data.maxSize !== null
+                          ? "Live entries vs. the configured capacity"
+                          : "Live cached results owned by this workspace"}
                     />
-                    <StatItem
-                      label="Fill"
-                      value={`${fillPercent.toFixed(1)}%`}
-                      icon={Activity}
-                    />
+                    {isPlatform && (
+                      <StatItem
+                        label="Fill"
+                        value={`${fillPercent.toFixed(1)}%`}
+                        icon={Activity}
+                        description="How much of the cache's capacity is in use"
+                      />
+                    )}
                     <StatItem
                       label="TTL"
                       value={formatTtl(data.ttl)}
                       icon={Clock}
+                      description="How long a cached result stays fresh before it expires"
                     />
                   </div>
-                  <Progress
-                    value={fillPercent}
-                    className="h-2"
-                    aria-label={`Cache fill ${fillPercent.toFixed(1)}%`}
-                  />
+                  {isPlatform && (
+                    <Progress
+                      value={fillPercent}
+                      className="h-2"
+                      aria-label={`Cache fill ${fillPercent.toFixed(1)}%`}
+                    />
+                  )}
                 </CardContent>
               </Card>
 
@@ -385,7 +460,9 @@ export default function CachePage() {
                     Flush Cache
                   </CardTitle>
                   <CardDescription>
-                    Remove all cached query results. New queries will hit the database directly until the cache is repopulated.
+                    {isPlatform
+                      ? "Remove every workspace's cached query results in this region. Queries hit the database directly until the cache is repopulated."
+                      : "Remove this workspace's cached query results. Queries hit the database directly until the cache is repopulated."}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -395,8 +472,10 @@ export default function CachePage() {
                         <TooltipTrigger asChild>
                           {/* span wrapper: disabled buttons don't fire pointer
                               events in Safari/Firefox, so the tooltip trigger
-                              must sit on an enabled element. */}
-                          <span className="inline-block">
+                              must sit on an enabled element. tabIndex makes
+                              the explanation keyboard-reachable — Radix opens
+                              the tooltip on focus (#4549 a11y). */}
+                          <span className="inline-block" tabIndex={0}>
                             <Button variant="destructive" disabled>
                               Flush Cache
                             </Button>
@@ -413,10 +492,26 @@ export default function CachePage() {
                     )}
                     <AlertDialogContent>
                       <AlertDialogHeader>
-                        <AlertDialogTitle>Flush cache?</AlertDialogTitle>
+                        <AlertDialogTitle>{isPlatform ? "Flush every workspace's cache?" : "Flush cache?"}</AlertDialogTitle>
                         <AlertDialogDescription>
-                          This will remove {data.entryCount.toLocaleString()} cached{" "}
-                          {data.entryCount === 1 ? "entry" : "entries"}. Subsequent queries will be slower until the cache warms up again.
+                          {isPlatform ? (
+                            <>
+                              This clears EVERY workspace in this region —{" "}
+                              {data.entryCount === null
+                                ? "all cached entries"
+                                : `all ${data.entryCount.toLocaleString()} cached ${data.entryCount === 1 ? "entry" : "entries"}`}
+                              , not just your own workspace&apos;s.
+                              Subsequent queries will be slower for every tenant until their caches warm up again.
+                            </>
+                          ) : (
+                            <>
+                              This will remove{" "}
+                              {data.entryCount === null
+                                ? "all of your organization's cached entries"
+                                : `${data.entryCount.toLocaleString()} of your organization's cached ${data.entryCount === 1 ? "entry" : "entries"}`}
+                              . Subsequent queries will be slower until the cache warms up again.
+                            </>
+                          )}
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>

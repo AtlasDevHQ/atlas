@@ -5,9 +5,20 @@
  * and uses createAdminRouter() — admin/owner/platform_admin roles all have
  * access; regular members get 403 (#2167).
  *
+ * #4549 — the cache seam here is a REAL `LRUCacheBackend` + the REAL org
+ * stats registry (imported from their un-mocked submodules), not a wholesale
+ * stub: org-scoped flush is proven by seeding real entries for two orgs and
+ * asserting the co-tenant's survive, and the per-caller stats shape is proven
+ * by seeding the registry through its public `recordCacheAccess` seam. The
+ * singleton/settings glue from `lib/cache/index.ts` is re-implemented as
+ * thin wrappers over the real backend (a controllable settings store stands
+ * in for the registry reads — the real glue's behavior is covered by
+ * `lib/cache/__tests__/index.test.ts`), plus audit is mocked (to drive the
+ * #4533 ordering contract).
+ *
  * Endpoints:
- * - GET  /cache/stats  — cache statistics
- * - POST /cache/flush  — flush entire cache
+ * - GET  /cache/stats  — per-caller statistics (workspace bucket vs fleet)
+ * - POST /cache/flush  — org-scoped by default; fleet scope platform-only
  */
 
 import {
@@ -24,10 +35,18 @@ import {
   errorMessage as realErrorMessage,
   causeToError as realCauseToError,
 } from "@atlas/api/lib/audit/error-scrub";
+import type { CacheBackend, CacheEntry } from "@atlas/api/lib/cache/types";
+import { LRUCacheBackend } from "@atlas/api/lib/cache/lru";
+import { buildCacheKey as realBuildCacheKey } from "@atlas/api/lib/cache/keys";
+import { validateCacheBackend as realValidateCacheBackend } from "@atlas/api/lib/cache/validate";
+import {
+  recordCacheAccess as realRecordCacheAccess,
+  getOrgCacheStats as realGetOrgCacheStats,
+  getFleetCacheStats as realGetFleetCacheStats,
+  resetCacheStatsRegistry as realResetCacheStatsRegistry,
+} from "@atlas/api/lib/cache/stats-registry";
 
 // --- Unified mocks ---
-
-let mockCacheEnabled = true;
 
 // Audit mock — override only the two log entry points so a test can drive the
 // audit write into failure (#4533: flush attribution IS the security control,
@@ -35,7 +54,8 @@ let mockCacheEnabled = true;
 // error-scrub helpers stay real (imported from their own, un-mocked modules) so
 // the rest of the app behaves identically.
 const mockLogAdminAction = mock(() => {});
-const mockLogAdminActionAwait = mock((): Promise<void> => Promise.resolve());
+// Takes the audit entry so tests can assert targetId/metadata on calls.
+const mockLogAdminActionAwait = mock((_entry?: unknown): Promise<void> => Promise.resolve());
 
 const auditMockFactory = () => ({
   ADMIN_ACTIONS: REAL_ADMIN_ACTIONS,
@@ -46,16 +66,55 @@ const auditMockFactory = () => ({
 });
 
 void mock.module("@atlas/api/lib/audit", auditMockFactory);
-const mockCacheStats = mock(async () => ({ hits: 42, misses: 8, entryCount: 15, maxSize: 1000, ttl: 300000 }));
-const mockFlushCache = mock(async () => {});
-const mockGetCache = mock(() => ({
-  get: async () => null,
-  set: async () => {},
-  delete: async () => false,
-  flush: async () => {},
-  flushByOrg: async () => 0,
-  stats: mockCacheStats,
-}));
+
+// Controllable settings store: `key` = platform tier, `key::orgId` =
+// workspace override. Mirrors getSetting's precedence for the two
+// workspace-scoped cache keys, so tests toggle enabled/TTL the same way an
+// admin settings write would.
+const settingsStore = new Map<string, string>();
+function settingsKey(key: string, orgId?: string): string {
+  return orgId ? `${key}::${orgId}` : key;
+}
+function resolveSetting(key: string, orgId?: string): string | undefined {
+  if (orgId && settingsStore.has(settingsKey(key, orgId))) return settingsStore.get(settingsKey(key, orgId));
+  return settingsStore.get(key);
+}
+
+// The cache barrel mock: a REAL LRU + the REAL stats registry behind the
+// same singleton surface `lib/cache/index.ts` exposes. `bun:test` has no
+// require-actual, so the barrel (already mocked by createApiTestMocks) is
+// re-mocked here with real submodule implementations wired to a swappable
+// backend instance. Every value export of the real barrel is present.
+let backend: CacheBackend = new LRUCacheBackend(1000, 300_000);
+
+const cacheMockFactory = () => ({
+  getCache: () => backend,
+  cacheEnabled: (orgId?: string) => {
+    const raw = resolveSetting("ATLAS_CACHE_ENABLED", orgId);
+    return raw !== "false" && raw !== "0";
+  },
+  getDefaultTtl: (orgId?: string) => {
+    const raw = Number(resolveSetting("ATLAS_CACHE_TTL", orgId) ?? "");
+    return Number.isFinite(raw) && raw > 0 ? raw : 300_000;
+  },
+  setCacheBackend: async (b: CacheBackend) => {
+    backend = b;
+  },
+  flushCache: async () => backend.flush(),
+  flushCacheByOrg: async (orgId: string) => backend.flushByOrg(orgId),
+  cacheOrgEntryCount: async (orgId: string) =>
+    backend instanceof LRUCacheBackend ? backend.entryCountByOrg(orgId) : null,
+  recordCacheAccess: realRecordCacheAccess,
+  getOrgCacheStats: realGetOrgCacheStats,
+  getFleetCacheStats: realGetFleetCacheStats,
+  resetCacheStatsRegistry: realResetCacheStatsRegistry,
+  _resetCache: () => {
+    backend = new LRUCacheBackend(1000, 300_000);
+    realResetCacheStatsRegistry();
+  },
+  buildCacheKey: realBuildCacheKey,
+  validateCacheBackend: realValidateCacheBackend,
+});
 
 const mocks = createApiTestMocks({
   authUser: {
@@ -68,28 +127,15 @@ const mocks = createApiTestMocks({
   authMode: "managed",
 });
 
-// Override cache with test-specific mocks
-const cacheMockFactory = () => ({
-  getCache: mockGetCache,
-  cacheEnabled: () => mockCacheEnabled,
-  setCacheBackend: mock(async () => {}),
-  flushCache: mockFlushCache,
-  flushCacheByOrg: mock(async () => 0),
-  // Distinct from mockCacheStats.ttl (300000) so a test can prove the route
-  // reports the RESOLVED TTL (getDefaultTtl, #4545) — not the backend's
-  // constructor-frozen stats().ttl.
-  getDefaultTtl: mock(() => 77777),
-  _resetCache: mock(() => {}),
-  buildCacheKey: mock(() => "mock-key"),
-  validateCacheBackend: mock(async () => ({ ok: true })),
-});
-
+// Re-mock AFTER createApiTestMocks so this factory wins over its stub.
+// Both paths: route handlers dynamic-import "@atlas/api/lib/cache/index".
 void mock.module("@atlas/api/lib/cache", cacheMockFactory);
 void mock.module("@atlas/api/lib/cache/index", cacheMockFactory);
 
 // --- Import app after mocks ---
 
 const { app } = await import("../index");
+const cacheApi = await import("@atlas/api/lib/cache/index");
 
 // --- Helpers ---
 
@@ -131,9 +177,7 @@ function setOrgOwner(): void {
 /**
  * Org admin without an enrolled second factor — exercises the
  * `mfaRequired` gate that `createAdminRouter()` wires in front of every
- * admin route. The wider role gate from #2167 means more users hit this
- * path; locking the contract in place here prevents a future regression
- * that drops the gate from silently exposing flush to unenrolled admins.
+ * admin route.
  */
 function setOrgAdminNoMfa(): void {
   mocks.mockAuthenticateRequest.mockImplementation(() =>
@@ -152,38 +196,102 @@ function setOrgAdminNoMfa(): void {
   );
 }
 
-function cacheRequest(urlPath: string, method: "GET" | "POST" = "GET"): Request {
+function cacheRequest(
+  urlPath: string,
+  method: "GET" | "POST" = "GET",
+  body?: Record<string, unknown>,
+): Request {
   return new Request(`http://localhost${urlPath}`, {
     method,
-    headers: { Authorization: "Bearer test-key" },
+    headers: {
+      Authorization: "Bearer test-key",
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
+}
+
+/**
+ * A POST with a NON-JSON content type — skips zod-openapi's request
+ * validation entirely, so it exercises the handler's own text-based parse
+ * (present-but-invalid body → 422, valid body → honored).
+ */
+function rawBodyRequest(urlPath: string, rawBody: string): Request {
+  return new Request(`http://localhost${urlPath}`, {
+    method: "POST",
+    headers: { Authorization: "Bearer test-key", "Content-Type": "text/plain" },
+    body: rawBody,
+  });
+}
+
+/** An admin with NO active organization (auth mode "none" / single-tenant). */
+function setNoOrgAdmin(): void {
+  mocks.mockAuthenticateRequest.mockImplementation(() =>
+    Promise.resolve({
+      authenticated: true,
+      mode: "managed",
+      user: {
+        id: "no-org-admin-1",
+        mode: "managed",
+        label: "solo@test.com",
+        role: "admin",
+        claims: { twoFactorEnabled: true },
+      },
+    }),
+  );
+}
+
+/** A plugin-style (non-LRU) backend whose per-org count is unavailable. */
+function pluginBackend(overrides?: Partial<CacheBackend>): CacheBackend {
+  return {
+    get: async () => null,
+    set: async () => {},
+    delete: async () => false,
+    flush: async () => {},
+    flushByOrg: async () => 5,
+    stats: async () => ({ hits: 0, misses: 0, entryCount: 7, maxSize: 100, ttl: 1000 }),
+    ...overrides,
+  };
+}
+
+function makeEntry(overrides?: Partial<CacheEntry>): CacheEntry {
+  return {
+    columns: ["id"],
+    rows: [{ id: 1 }],
+    cachedAt: Date.now(),
+    ttl: 300_000,
+    ...overrides,
+  };
+}
+
+/** Seed real LRU entries: 2 owned by org-test, 1 by a co-tenant. */
+async function seedEntries(): Promise<void> {
+  const backend = cacheApi.getCache();
+  await backend.set("key-a1", makeEntry(), { orgId: "org-test", connectionId: "default" });
+  await backend.set("key-a2", makeEntry(), { orgId: "org-test", connectionId: "default" });
+  await backend.set("key-b1", makeEntry(), { orgId: "org-other", connectionId: "default" });
+}
+
+async function liveEntryCount(): Promise<number> {
+  return (await cacheApi.getCache().stats()).entryCount;
 }
 
 // --- Cleanup ---
 
 afterAll(() => {
   mocks.cleanup();
+  cacheApi._resetCache();
 });
 
 // --- Tests ---
 
 describe("admin cache routes", () => {
   beforeEach(() => {
-    mockCacheEnabled = true;
-    mockCacheStats.mockClear();
-    mockFlushCache.mockClear();
-    mockFlushCache.mockImplementation(async () => {});
+    settingsStore.clear();
+    cacheApi._resetCache(); // fresh backend AND a cleared stats registry
     mockLogAdminAction.mockClear();
     mockLogAdminActionAwait.mockClear();
     mockLogAdminActionAwait.mockImplementation(() => Promise.resolve());
-    mockGetCache.mockImplementation(() => ({
-      get: async () => null,
-      set: async () => {},
-      delete: async () => false,
-      flush: async () => {},
-      flushByOrg: async () => 0,
-      stats: mockCacheStats,
-    }));
     setPlatformAdmin();
   });
 
@@ -196,23 +304,6 @@ describe("admin cache routes", () => {
       expect(body.error).toBe("forbidden_role");
     });
 
-    it("returns 200 for org admin (#2167 — was 403 under platform-only gate)", async () => {
-      setOrgAdmin();
-      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
-      expect(res.status).toBe(200);
-      const body = await res.json() as Record<string, unknown>;
-      expect(body.enabled).toBe(true);
-      expect(body.hits).toBe(42);
-    });
-
-    it("returns 200 for org owner (#2167 — adminAuth admit-list includes owner)", async () => {
-      setOrgOwner();
-      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
-      expect(res.status).toBe(200);
-      const body = await res.json() as Record<string, unknown>;
-      expect(body.enabled).toBe(true);
-    });
-
     it("returns 403 mfa_enrollment_required when admin has no second factor", async () => {
       setOrgAdminNoMfa();
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
@@ -221,59 +312,135 @@ describe("admin cache routes", () => {
       expect(body.error).toBe("mfa_enrollment_required");
     });
 
-    it("returns cache stats with correct shape for platform admin", async () => {
+    it("returns the workspace bucket for an org admin — never fleet-wide counters (audit L13)", async () => {
+      // Activity for the caller's org AND a co-tenant; entries for both.
+      cacheApi.recordCacheAccess("org-test", true);
+      cacheApi.recordCacheAccess("org-test", true);
+      cacheApi.recordCacheAccess("org-test", false);
+      cacheApi.recordCacheAccess("org-other", false);
+      cacheApi.recordCacheAccess("org-other", false);
+      await seedEntries();
+
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.scope).toBe("workspace");
+      expect(body.enabled).toBe(true);
+      // ONLY org-test's bucket — the co-tenant's misses are invisible.
+      expect(body.hits).toBe(2);
+      expect(body.misses).toBe(1);
+      expect(body.hitRate).toBeCloseTo(2 / 3, 5);
+      expect(typeof body.since).toBe("number");
+      expect(body.windowHitRate).toBeCloseTo(2 / 3, 5);
+      expect(body.windowTotal).toBe(3);
+      // Entry count is the org's live entries, not the whole backend's.
+      expect(body.entryCount).toBe(2);
+      // Fleet capacity framing is withheld from tenants.
+      expect(body.maxSize).toBeNull();
+    });
+
+    it("returns 200 with the workspace bucket for an org owner (#2167)", async () => {
+      setOrgOwner();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.scope).toBe("workspace");
+    });
+
+    it("returns fleet totals + capacity for a platform admin", async () => {
+      cacheApi.recordCacheAccess("org-test", true);
+      cacheApi.recordCacheAccess("org-other", false);
+      await seedEntries();
+
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.scope).toBe("platform");
+      // Fleet aggregate across every org's bucket.
+      expect(body.hits).toBe(1);
+      expect(body.misses).toBe(1);
+      expect(body.hitRate).toBeCloseTo(0.5, 5);
+      expect(body.entryCount).toBe(3);
+      expect(body.maxSize).toBe(1000); // resolved default capacity
+    });
+
+    it("reports the warming state honestly: since null + null rates, never fake zeros", async () => {
+      setOrgAdmin();
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
       expect(res.status).toBe(200);
       const body = await res.json() as Record<string, unknown>;
       expect(body.enabled).toBe(true);
-      expect(body.hits).toBe(42);
-      expect(body.misses).toBe(8);
-      // hitRate should be 42/(42+8) = 0.84
-      expect(body.hitRate).toBeCloseTo(0.84, 2);
-      // missRate should be 8/(42+8) = 0.16
-      expect(body.missRate).toBeCloseTo(0.16, 2);
-      expect(body.entryCount).toBe(15);
-      // #4545 — `ttl` derives from the RESOLVED workspace setting
-      // (getDefaultTtl → 77777), NOT the backend's stats().ttl (300000).
-      expect(body.ttl).toBe(77777);
+      expect(body.since).toBeNull();
+      expect(body.hitRate).toBeNull();
+      expect(body.windowHitRate).toBeNull();
+      expect(body.windowTotal).toBe(0);
     });
 
-    it("returns hitRate/missRate of 0 when cache is enabled but empty", async () => {
-      mockCacheStats.mockResolvedValueOnce({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 });
-      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
-      expect(res.status).toBe(200);
-      const body = await res.json() as Record<string, unknown>;
-      expect(body.enabled).toBe(true);
-      expect(body.hitRate).toBe(0);
-      expect(body.missRate).toBe(0);
-    });
-
-    it("returns fallback response when cache is disabled", async () => {
-      mockCacheEnabled = false;
+    it("reports honest disabled state (no placeholder telemetry) with the resolved TTL", async () => {
+      settingsStore.set("ATLAS_CACHE_ENABLED", "false");
+      settingsStore.set("ATLAS_CACHE_TTL", "77777");
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
       expect(res.status).toBe(200);
       const body = await res.json() as Record<string, unknown>;
       expect(body.enabled).toBe(false);
-      expect(body.hits).toBe(0);
-      expect(body.misses).toBe(0);
-      expect(body.hitRate).toBe(0);
-      expect(body.missRate).toBe(0);
+      expect(body.since).toBeNull();
+      expect(body.hitRate).toBeNull();
+      expect(body.windowHitRate).toBeNull();
       expect(body.entryCount).toBe(0);
-      // #4545 — the disabled branch now reports the RESOLVED TTL (77777),
-      // not the old hardcoded `ttl: 0`, so an admin still sees what TTL
-      // would apply once caching is re-enabled.
+      expect(body.maxSize).toBeNull();
+      // The TTL that WOULD apply once re-enabled is still resolved + reported.
       expect(body.ttl).toBe(77777);
     });
 
-    it("returns 500 with requestId when stats() throws", async () => {
-      mockGetCache.mockImplementation(() => ({
+    it("resolves TTL through the workspace tier (#4545 — override beats platform)", async () => {
+      settingsStore.set("ATLAS_CACHE_TTL", "60000");
+      settingsStore.set(settingsKey("ATLAS_CACHE_TTL", "org-test"), "77777");
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.ttl).toBe(77777);
+    });
+
+    it("honors a per-workspace disable for that workspace's admin", async () => {
+      settingsStore.set(settingsKey("ATLAS_CACHE_ENABLED", "org-test"), "false");
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.enabled).toBe(false);
+    });
+
+    it("no-org admin (single-tenant): entry count is the whole backend's", async () => {
+      await seedEntries();
+      setNoOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.scope).toBe("workspace");
+      // The whole cache belongs to this one tenant.
+      expect(body.entryCount).toBe(3);
+      expect(body.maxSize).toBeNull();
+    });
+
+    it("plugin backend: workspace entry count is null (unavailable), never a confident 0", async () => {
+      await cacheApi.setCacheBackend(pluginBackend());
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.entryCount).toBeNull();
+    });
+
+    it("returns 500 with requestId when the backend's stats() throws", async () => {
+      const broken: CacheBackend = {
         get: async () => null,
         set: async () => {},
         delete: async () => false,
         flush: async () => {},
         flushByOrg: async () => 0,
-        stats: (async () => { throw new Error("Redis connection refused"); }) as unknown as typeof mockCacheStats,
-      }));
+        stats: async () => { throw new Error("Redis connection refused"); },
+      };
+      await cacheApi.setCacheBackend(broken);
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
       expect(res.status).toBe(500);
       const body = await res.json() as Record<string, unknown>;
@@ -291,84 +458,185 @@ describe("admin cache routes", () => {
       expect(body.error).toBe("forbidden_role");
     });
 
-    it("flushes cache successfully for org admin (#2167 — was 403 under platform-only gate)", async () => {
-      setOrgAdmin();
-      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
-      expect(res.status).toBe(200);
-      const body = await res.json() as Record<string, unknown>;
-      expect(body.ok).toBe(true);
-      expect(body.flushed).toBe(15);
-      expect(mockFlushCache).toHaveBeenCalledTimes(1);
-    });
-
-    it("flushes cache successfully for org owner (#2167 — adminAuth admit-list includes owner)", async () => {
-      setOrgOwner();
-      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
-      expect(res.status).toBe(200);
-      const body = await res.json() as Record<string, unknown>;
-      expect(body.ok).toBe(true);
-      expect(mockFlushCache).toHaveBeenCalledTimes(1);
-    });
-
     it("returns 403 mfa_enrollment_required when admin has no second factor", async () => {
+      await seedEntries();
       setOrgAdminNoMfa();
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
       expect(res.status).toBe(403);
       const body = await res.json() as Record<string, unknown>;
       expect(body.error).toBe("mfa_enrollment_required");
-      expect(mockFlushCache).not.toHaveBeenCalled();
+      expect(await liveEntryCount()).toBe(3); // nothing flushed
     });
 
-    it("flushes cache successfully for platform admin", async () => {
+    it("workspace flush (default scope) removes ONLY the caller's org's entries", async () => {
+      await seedEntries();
+      setOrgAdmin();
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
       expect(res.status).toBe(200);
       const body = await res.json() as Record<string, unknown>;
       expect(body.ok).toBe(true);
-      expect(body.flushed).toBe(15);
-      expect(body.message).toBe("Cache flushed");
-      expect(mockFlushCache).toHaveBeenCalledTimes(1);
+      expect(body.flushed).toBe(2); // org-test's two entries, not the fleet's 3
+      // The co-tenant's warm entry survives.
+      expect(await liveEntryCount()).toBe(1);
+      expect(await cacheApi.getCache().get("key-b1")).not.toBeNull();
+      // Audit row targets the org, with scope + count in metadata.
+      expect(mockLogAdminActionAwait).toHaveBeenCalledTimes(1);
+      const audit = mockLogAdminActionAwait.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(audit.targetId).toBe("org-test");
+      expect(audit.metadata).toEqual({ scope: "workspace", orgId: "org-test", flushed: 2 });
     });
 
-    it("returns disabled response when cache is off", async () => {
-      mockCacheEnabled = false;
+    it("explicit scope: workspace behaves identically", async () => {
+      await seedEntries();
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST", { scope: "workspace" }));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.flushed).toBe(2);
+      expect(await liveEntryCount()).toBe(1);
+    });
+
+    it("workspace flush works for an org owner (#2167)", async () => {
+      await seedEntries();
+      setOrgOwner();
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
       expect(res.status).toBe(200);
       const body = await res.json() as Record<string, unknown>;
-      expect(body.ok).toBe(false);
-      expect(body.flushed).toBe(0);
-      expect(body.message).toBe("Cache is disabled");
-      expect(mockFlushCache).not.toHaveBeenCalled();
+      expect(body.ok).toBe(true);
+      expect(body.flushed).toBe(2);
     });
 
-    it("returns 500 with requestId when flush throws", async () => {
-      mockFlushCache.mockImplementation(() => { throw new Error("Redis flush failed"); });
-      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
-      expect(res.status).toBe(500);
+    it("fleet scope is refused for a workspace admin (403, nothing flushed)", async () => {
+      await seedEntries();
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST", { scope: "fleet" }));
+      expect(res.status).toBe(403);
       const body = await res.json() as Record<string, unknown>;
-      expect(body.error).toBe("internal_error");
+      expect(body.error).toBe("forbidden_scope");
       expect(body.requestId).toBeDefined();
+      expect(await liveEntryCount()).toBe(3);
+      expect(mockLogAdminActionAwait).not.toHaveBeenCalled();
     });
 
-    // #4533 — attribution IS the security control on this process-global surface.
+    it("fleet scope clears every workspace's entries for a platform admin", async () => {
+      await seedEntries();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST", { scope: "fleet" }));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.ok).toBe(true);
+      expect(body.flushed).toBe(3);
+      expect(await liveEntryCount()).toBe(0);
+      const audit = mockLogAdminActionAwait.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(audit.targetId).toBe("default");
+      expect(audit.metadata).toEqual({ scope: "fleet", flushed: 3 });
+    });
+
+    it("a platform admin's DEFAULT flush is still workspace-scoped (fleet is opt-in)", async () => {
+      await seedEntries();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      // platform-admin-1's activeOrganizationId is org-test → 2 entries.
+      expect(body.flushed).toBe(2);
+      expect(await liveEntryCount()).toBe(1);
+    });
+
+    it("returns 409 (never a 200 body flag) when caching is disabled", async () => {
+      await seedEntries();
+      settingsStore.set("ATLAS_CACHE_ENABLED", "false");
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
+      expect(res.status).toBe(409);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("cache_disabled");
+      expect(body.requestId).toBeDefined();
+      expect(await liveEntryCount()).toBe(3); // refused = nothing removed
+      expect(mockLogAdminActionAwait).not.toHaveBeenCalled();
+    });
+
+    it("rejects an invalid scope value with 422 (request validation)", async () => {
+      await seedEntries();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST", { scope: "everything" }));
+      expect(res.status).toBe(422);
+      expect(await liveEntryCount()).toBe(3); // rejected before any flush logic
+    });
+
+    it("no-org admin (single-tenant): workspace flush degenerates to a full flush", async () => {
+      await seedEntries();
+      setNoOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.flushed).toBe(3);
+      expect(await liveEntryCount()).toBe(0);
+      const audit = mockLogAdminActionAwait.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(audit.targetId).toBe("default");
+      expect(audit.metadata).toEqual({ scope: "workspace", flushed: 3 });
+    });
+
+    it("plugin backend: audit records flushed null (unknown), response reports the real removal count", async () => {
+      await cacheApi.setCacheBackend(pluginBackend());
+      setOrgAdmin();
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      // flushByOrg's actual removal count reaches the caller...
+      expect(body.flushed).toBe(5);
+      // ...while the pre-flush audit row records the count honestly as
+      // unknown, never a fake 0 that reads as a no-op in forensics.
+      const audit = mockLogAdminActionAwait.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(audit.metadata).toEqual({ scope: "workspace", orgId: "org-test", flushed: null });
+    });
+
+    it("a present-but-invalid body with a non-JSON content type is a 422, never a silent workspace downgrade", async () => {
+      await seedEntries();
+      const res = await app.fetch(rawBodyRequest("/api/v1/admin/cache/flush", '{"scope":"Fleet"}'));
+      expect(res.status).toBe(422);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("invalid_request");
+      expect(body.requestId).toBeDefined();
+      expect(await liveEntryCount()).toBe(3); // nothing flushed
+    });
+
+    it("unparseable non-JSON-content-type body is a 422", async () => {
+      await seedEntries();
+      const res = await app.fetch(rawBodyRequest("/api/v1/admin/cache/flush", "not json at all"));
+      expect(res.status).toBe(422);
+      expect(await liveEntryCount()).toBe(3);
+    });
+
+    it("a VALID body under a non-JSON content type is still honored (fleet scope enforced)", async () => {
+      await seedEntries();
+      setOrgAdmin();
+      // The handler's own parse must see the fleet scope and 403 it — not
+      // silently downgrade to a workspace flush.
+      const res = await app.fetch(rawBodyRequest("/api/v1/admin/cache/flush", '{"scope":"fleet"}'));
+      expect(res.status).toBe(403);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("forbidden_scope");
+      expect(await liveEntryCount()).toBe(3);
+    });
+
+    // #4533 — attribution IS the security control on this shared surface.
     it("commits the audit row before the flush takes effect", async () => {
-      let flushHappenedDuringAudit = false;
-      mockLogAdminActionAwait.mockImplementation(() => {
-        flushHappenedDuringAudit = mockFlushCache.mock.calls.length > 0;
-        return Promise.resolve();
+      await seedEntries();
+      setOrgAdmin();
+      let entriesDuringAudit = -1;
+      mockLogAdminActionAwait.mockImplementation(async () => {
+        // Count the caller's org entries at audit time via the REAL backend —
+        // still present, because the flush must not have run yet.
+        entriesDuringAudit = (await cacheApi.cacheOrgEntryCount("org-test")) ?? -1;
       });
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
       expect(res.status).toBe(200);
-      // The audit row is awaited BEFORE flushCache() runs.
-      expect(flushHappenedDuringAudit).toBe(false);
-      expect(mockLogAdminActionAwait).toHaveBeenCalledTimes(1);
-      expect(mockFlushCache).toHaveBeenCalledTimes(1);
+      expect(entriesDuringAudit).toBe(2);
+      expect(await cacheApi.cacheOrgEntryCount("org-test")).toBe(0);
     });
 
     // #4533 — a flush must NOT silently succeed when its attribution row can't
-    // commit (e.g. audit circuit-breaker open / internal DB down). The audit
-    // write is awaited first, so its rejection surfaces a 500 (with requestId)
-    // and the flush never runs.
+    // commit (e.g. audit circuit-breaker open / internal DB down).
     it("does not silently succeed when the audit write fails", async () => {
+      await seedEntries();
+      setOrgAdmin();
       mockLogAdminActionAwait.mockImplementation(() =>
         Promise.reject(new Error("admin_action_log insert failed")),
       );
@@ -378,7 +646,24 @@ describe("admin cache routes", () => {
       expect(body.error).toBe("internal_error");
       expect(body.requestId).toBeDefined();
       // The flush is gated on the committed audit row — it never took effect.
-      expect(mockFlushCache).not.toHaveBeenCalled();
+      expect(await liveEntryCount()).toBe(3);
+    });
+
+    it("returns 500 with requestId when the backend flush throws", async () => {
+      const broken: CacheBackend = {
+        get: async () => null,
+        set: async () => {},
+        delete: async () => false,
+        flush: async () => { throw new Error("Redis flush failed"); },
+        flushByOrg: async () => { throw new Error("Redis flush failed"); },
+        stats: async () => ({ hits: 0, misses: 0, entryCount: 1, maxSize: 10, ttl: 1000 }),
+      };
+      await cacheApi.setCacheBackend(broken);
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST", { scope: "fleet" }));
+      expect(res.status).toBe(500);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+      expect(body.requestId).toBeDefined();
     });
   });
 });

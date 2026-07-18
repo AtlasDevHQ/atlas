@@ -36,6 +36,11 @@ import {
 } from "@atlas/api/lib/dashboard-parameters";
 import { getSetting, getSettingAuto } from "@atlas/api/lib/settings";
 import { getCache, buildCacheKey, cacheEnabled, getDefaultTtl } from "@atlas/api/lib/cache/index";
+// Imported from the registry submodule (not the barrel) deliberately: the
+// org-stats registry is independent of the backend singleton, and the many
+// suites that partially mock the cache barrel must not each need a
+// `recordCacheAccess` stub just because sql.ts records accounting (#4549).
+import { recordCacheAccess } from "@atlas/api/lib/cache/stats-registry";
 import type { CacheScope } from "@atlas/api/lib/cache/index";
 import { proposePatternIfNovel } from "@atlas/api/lib/learn/pattern-proposer";
 import {
@@ -2158,6 +2163,14 @@ export function runSqlPipelineEffect(
             return Effect.succeed(null);
           }),
         );
+        // #4549 — per-org hit/miss accounting, recorded HERE because this is
+        // the only place both the org and the miss are known (`get(key)`
+        // can't attribute a miss — the key isn't in the backend). A bypass
+        // consulted no cache, so it is neither a hit nor a miss; a failed
+        // read nulled `cacheWrite` above and is likewise not counted.
+        if (cacheWrite !== null && !preStep.bypassCache) {
+          recordCacheAccess(cacheOrgId, cached !== null);
+        }
         if (cached) {
           // Wrapped locally (mirrors the live-path audit in
           // `executeAndAuditEffect`) so an audit-write failure on a hit

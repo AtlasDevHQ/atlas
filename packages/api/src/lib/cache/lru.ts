@@ -155,6 +155,55 @@ export class LRUCacheBackend implements CacheBackend {
     this.orgKeys.clear();
   }
 
+  /**
+   * Count one org's LIVE entries, lazily dropping any that have expired so
+   * the count (and the flush dialog built on it) never includes corpses.
+   * Iterates a snapshot of the org's key set — expiry routes through
+   * `unindex()`, which mutates the live set (#4548's `flushByOrg` gotcha).
+   *
+   * Concrete on the LRU (not part of the `CacheBackend` contract): the cache
+   * module's `owned` state variant is typed as `LRUCacheBackend`, so
+   * `cacheOrgEntryCount` in `index.ts` reaches it without a contract change;
+   * an external plugin backend degrades to "count unavailable" there.
+   */
+  entryCountByOrg(orgId: string, now: number = Date.now()): number {
+    const keys = this.orgKeys.get(orgId);
+    if (!keys) return 0;
+    let live = 0;
+    for (const key of [...keys]) {
+      const entry = this.cache.get(key);
+      if (!entry) {
+        // Index drift shouldn't happen (every removal path unindexes), but
+        // self-heal rather than overcount if it ever does — with a debug
+        // breadcrumb so a recurring drift bug is detectable, not invisible.
+        console.debug(`LRUCacheBackend: healed org-index drift for key ${key.slice(0, 12)}…`);
+        this.unindex(key);
+        continue;
+      }
+      if (now - entry.cachedAt > entry.ttl) {
+        this.cache.delete(key);
+        this.unindex(key);
+        continue;
+      }
+      live++;
+    }
+    return live;
+  }
+
+  /**
+   * Drop every already-expired entry. Called at the top of `stats()` so the
+   * fill gauge counts live entries only — without it, a burst of short-TTL
+   * writes reads as a full cache until each corpse is individually touched.
+   */
+  pruneExpired(now: number = Date.now()): void {
+    for (const [key, entry] of [...this.cache]) {
+      if (now - entry.cachedAt > entry.ttl) {
+        this.cache.delete(key);
+        this.unindex(key);
+      }
+    }
+  }
+
   async flushByOrg(orgId: string): Promise<number> {
     const keys = this.orgKeys.get(orgId);
     if (!keys) return 0;
@@ -173,6 +222,7 @@ export class LRUCacheBackend implements CacheBackend {
   }
 
   async stats(): Promise<CacheStats> {
+    this.pruneExpired();
     return {
       hits: this.hits,
       misses: this.misses,

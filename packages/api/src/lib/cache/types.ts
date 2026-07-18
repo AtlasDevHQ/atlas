@@ -71,9 +71,13 @@ export interface CacheBackend {
    */
   flushByOrg(orgId: string): Promise<number>;
   /**
-   * Return live counters. Must be cheap + side-effect-free: it is invoked on
+   * Return live counters. Must be cheap + idempotent: it is invoked on
    * every admin stats poll and — for a plugin-supplied backend — as the
-   * shape probe during registration validation.
+   * shape probe during registration validation. It MAY lazily drop
+   * already-expired entries (the LRU does, so `entryCount` never counts
+   * corpses; pruning during the validation probe is harmless — it only
+   * removes entries that are already dead) but must have no other side
+   * effect.
    */
   stats(): Promise<CacheStats>;
 }

@@ -43,8 +43,10 @@ void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string, orgId?: string) => resolveMock(key, orgId),
 }));
 
-const { getCache, cacheEnabled, getDefaultTtl, setCacheBackend, flushCache, _resetCache } =
-  await import("../index");
+const {
+  getCache, cacheEnabled, getDefaultTtl, setCacheBackend, flushCache, _resetCache,
+  cacheOrgEntryCount, recordCacheAccess, getOrgCacheStats,
+} = await import("../index");
 const { LRUCacheBackend } = await import("../lru");
 
 function makeEntry(overrides?: Partial<CacheEntry>): CacheEntry {
@@ -207,5 +209,60 @@ describe("setCacheBackend / flushCache", () => {
     expect(s.entryCount).toBe(0);
     expect(s.hits).toBe(1);
     expect(s.misses).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cacheOrgEntryCount + stats-registry independence (#4549)
+// ---------------------------------------------------------------------------
+
+describe("cacheOrgEntryCount", () => {
+  it("returns 0 before any backend exists", async () => {
+    expect(await cacheOrgEntryCount("org-1")).toBe(0);
+  });
+
+  it("counts the owned LRU's live entries for the org", async () => {
+    const backend = getCache();
+    await backend.set("k1", makeEntry(), { orgId: "org-1", connectionId: "conn-1" });
+    await backend.set("k2", makeEntry(), { orgId: "org-1", connectionId: "conn-1" });
+    await backend.set("k3", makeEntry(), { orgId: "org-2", connectionId: "conn-1" });
+    expect(await cacheOrgEntryCount("org-1")).toBe(2);
+    expect(await cacheOrgEntryCount("org-2")).toBe(1);
+  });
+
+  it("returns null for a plugin backend (count structurally unavailable, not 0)", async () => {
+    const plugin: CacheBackend = {
+      get: async () => null,
+      set: async () => {},
+      delete: async () => false,
+      flush: async () => {},
+      flushByOrg: async () => 0,
+      stats: async () => ({ hits: 0, misses: 0, entryCount: 5, maxSize: 10, ttl: 1000 }),
+    };
+    await setCacheBackend(plugin);
+    expect(await cacheOrgEntryCount("org-1")).toBeNull();
+  });
+});
+
+describe("stats registry survives backend recreation", () => {
+  it("counters are untouched by resize and plugin swap; only _resetCache clears them", async () => {
+    recordCacheAccess("org-1", true);
+    recordCacheAccess("org-1", false);
+    expect(getOrgCacheStats("org-1").hits).toBe(1);
+
+    // In-place resize (settings change) — registry untouched.
+    settingsStore.set("ATLAS_CACHE_MAX_SIZE", "7");
+    getCache();
+    expect(getOrgCacheStats("org-1").hits).toBe(1);
+
+    // Plugin backend swap (old backend flushed) — registry untouched: it
+    // lives ABOVE the cache module's `_state`, which is the whole point.
+    await setCacheBackend(new LRUCacheBackend(3, 1000));
+    expect(getOrgCacheStats("org-1").hits).toBe(1);
+    expect(getOrgCacheStats("org-1").misses).toBe(1);
+
+    // Test isolation is the one reset path.
+    _resetCache();
+    expect(getOrgCacheStats("org-1").since).toBeNull();
   });
 });

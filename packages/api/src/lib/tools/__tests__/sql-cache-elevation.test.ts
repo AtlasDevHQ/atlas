@@ -20,6 +20,9 @@ import { describe, expect, it, beforeEach, afterEach, mock, type Mock } from "bu
 import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 import type { CacheEntry, CacheScope } from "@atlas/api/lib/cache/types";
+// The REAL registry (sql.ts imports it from this submodule, not the barrel),
+// so the per-org accounting recorded by the pipeline is observable here.
+import { getOrgCacheStats, resetCacheStatsRegistry } from "@atlas/api/lib/cache/stats-registry";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyResult = any;
@@ -75,10 +78,15 @@ void mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
 // guard).
 let cachedEntry: CacheEntry | null = null;
 let cacheSets: Array<{ key: string; entry: CacheEntry; scope: CacheScope }> = [];
+// When set, the cache READ rejects — models a broken backend (fail-open path).
+let cacheGetThrows = false;
 
 void mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({
-    get: async () => cachedEntry,
+    get: async () => {
+      if (cacheGetThrows) throw new Error("backend read refused");
+      return cachedEntry;
+    },
     set: async (key: string, entry: CacheEntry, scope: CacheScope) => {
       cacheSets.push({ key, entry, scope });
       cachedEntry = entry; // overwrite so a subsequent read sees the fresh rows
@@ -116,6 +124,8 @@ describe("executeSQL cache elevation — age on hit + bypassCache (#4546)", () =
   beforeEach(() => {
     cacheSets = [];
     cachedEntry = null;
+    cacheGetThrows = false;
+    resetCacheStatsRegistry();
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/atlas";
     _resetPool(mockPool);
@@ -260,6 +270,51 @@ describe("executeSQL cache elevation — age on hit + bypassCache (#4546)", () =
     expect(result.cached).toBe(true);
     expect(queryFn).not.toHaveBeenCalled();
     expect(result.rows).toEqual([{ id: 1, name: "STALE" }]);
+  });
+
+  // ── #4549 — read-site hit/miss accounting into the org stats registry ────
+  //
+  // This suite runs with no RequestContext, so accesses land in the no-org
+  // bucket (`getOrgCacheStats(undefined)`) — the single production producer
+  // of the admin cache page's numbers is the call site under test here.
+  describe("org stats registry accounting at the read site", () => {
+    const bucket = () => getOrgCacheStats(undefined);
+
+    it("a cache hit records exactly one hit", async () => {
+      cachedEntry = {
+        columns: ["id", "name"], rows: [{ id: 1, name: "Acme" }],
+        cachedAt: Date.now(), ttl: 300_000, executionMs: 1,
+      };
+      await exec("SELECT id, name FROM companies");
+      expect(bucket().hits).toBe(1);
+      expect(bucket().misses).toBe(0);
+    });
+
+    it("a cache miss records exactly one miss", async () => {
+      cachedEntry = null;
+      await exec("SELECT id, name FROM companies");
+      expect(bucket().hits).toBe(0);
+      expect(bucket().misses).toBe(1);
+    });
+
+    it("a bypass records NOTHING — it consulted no cache, so it is neither hit nor miss", async () => {
+      cachedEntry = {
+        columns: ["id", "name"], rows: [{ id: 1, name: "STALE" }],
+        cachedAt: Date.now(), ttl: 300_000, executionMs: 1,
+      };
+      await exec("SELECT id, name FROM companies", true);
+      expect(bucket().since).toBeNull(); // untouched bucket
+    });
+
+    it("a failed cache read records NOTHING — a backend outage is not a miss", async () => {
+      cacheGetThrows = true;
+      const result = await exec("SELECT id, name FROM companies");
+      // Fail-open: the query still executed live...
+      expect(result.success).toBe(true);
+      expect(queryFn).toHaveBeenCalledTimes(1);
+      // ...but the outage did not pollute the hit-rate accounting.
+      expect(bucket().since).toBeNull();
+    });
   });
 });
 

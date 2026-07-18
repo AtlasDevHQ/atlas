@@ -26,6 +26,15 @@ import type { CacheBackend } from "./types";
 export type { CacheBackend, CacheEntry, CacheScope, CacheStats } from "./types";
 export { buildCacheKey } from "./keys";
 export { validateCacheBackend, type CacheBackendValidation } from "./validate";
+export {
+  recordCacheAccess,
+  getOrgCacheStats,
+  getFleetCacheStats,
+  resetCacheStatsRegistry,
+  type OrgCacheStats,
+} from "./stats-registry";
+
+import { resetCacheStatsRegistry } from "./stats-registry";
 
 const log = createLogger("cache");
 
@@ -186,8 +195,22 @@ export function getDefaultTtl(orgId?: string): number {
   return getCacheTtl(orgId);
 }
 
+/**
+ * Count one Workspace's LIVE cached entries (expired entries are lazily
+ * dropped, never counted). Returns `null` when the count is structurally
+ * unavailable — a plugin backend manages its own store and the `CacheBackend`
+ * contract has no per-org count — so callers can distinguish "0 entries"
+ * from "can't know" instead of rendering a confident zero.
+ */
+export async function cacheOrgEntryCount(orgId: string): Promise<number | null> {
+  if (_state.kind === "unset") return 0;
+  if (_state.kind === "plugin") return null;
+  return _state.backend.entryCountByOrg(orgId);
+}
+
 /** Reset the cache module to its uninitialized state. For test isolation only. */
 export function _resetCache(): void {
   _state = { kind: "unset" };
   _lastWarnedBadValue.clear();
+  resetCacheStatsRegistry();
 }

@@ -19,7 +19,9 @@
  * envelope (`removed` / `sql_updated`) carrying the inverse draft edit; the
  * UI surfaces an Undo affordance that POSTs the inverse to
  * `/dashboards/[id]/draft/undo`. Nothing reads or writes
- * `dashboard_stage_changes` anymore — the draft is the single edit mechanism.
+ * `dashboard_stage_changes` anymore — the draft is the single edit
+ * mechanism; the table itself was dropped in migration 0176 (#4561,
+ * phase 2 of the two-phase drop).
  */
 
 import * as crypto from "crypto";

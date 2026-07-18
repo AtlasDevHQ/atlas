@@ -1,0 +1,30 @@
+-- 0176 — Drop dashboard_stage_changes (stage tracker phase 2, #4561).
+--
+-- Phase 2 of the two-phase drop that retires the #2365 stage tracker
+-- (parent PRD #4553, ADR-0034). Phase 1 (#4555, shipped in v0.0.55)
+-- removed every reader and writer: the bound agent's destructive ops
+-- (`removeCard`, `updateCardSql`) now land in the caller's draft through
+-- the same apply path as every other edit, returning an inline-undo
+-- envelope instead of staging a ghost change. Nothing has read or
+-- written this table since v0.0.55.
+--
+-- Deploy safety (expand-contract): this migration ships at least one
+-- release AFTER v0.0.55, so during the N-1 ↔ N deploy-overlap window the
+-- draining old container is already stage-tracker-free code — no query
+-- can hit a missing relation. The Drizzle mirror (`dashboardStageChanges`
+-- in db/schema.ts) is removed in the same commit, per the drop-table
+-- discipline (see 0047_drop_mcp_tokens.sql for the pattern);
+-- check-schema-drift.sh subtracts explicitly-dropped tables.
+--
+-- Pending rows are not migrated anywhere: stages were per-user, transient
+-- ghost changes (accept/discard UX removed in phase 1), so any residual
+-- `pending` rows have been unreachable — invisible to every surface —
+-- since v0.0.55. Terminal rows were kept only for a hypothetical audit
+-- view that was never built; the audit trail for draft edits now lives in
+-- the draft/versioning path itself.
+--
+-- CASCADE is unnecessary — no FKs reference this table (it only points
+-- outward at dashboards). Attached indexes and CHECK constraints drop
+-- with the table.
+
+DROP TABLE IF EXISTS dashboard_stage_changes;

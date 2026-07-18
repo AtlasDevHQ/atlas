@@ -65,10 +65,11 @@ function getCacheTtl(orgId?: string): number {
 
 /**
  * Resolve the platform-scoped max entry count from the settings registry
- * (platform override > env > default). Uses `getSettingAuto` (not plain
- * `getSetting`) because a maxSize change drives a process-wide backend
- * reconcile that must see the freshest platform write on SaaS — unlike the
- * per-workspace TTL/enabled reads, which tolerate the standard settings cache.
+ * (platform override > env > default). Reads via `getSettingAuto` — the
+ * hot-path marker entry point — since a maxSize change drives a process-wide
+ * backend reconcile. Note `getSettingAuto` currently delegates to `getSetting`
+ * (same in-process cache); the freshness comes from that cache being warmed by
+ * writes + demand-driven live reads, not from a stronger read guarantee here.
  */
 function getCacheMaxSize(): number {
   return parsePositiveIntSetting("ATLAS_CACHE_MAX_SIZE", getSettingAuto("ATLAS_CACHE_MAX_SIZE"), DEFAULT_MAX_SIZE);

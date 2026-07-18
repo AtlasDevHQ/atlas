@@ -507,6 +507,13 @@ describe("migrateAuthTables", () => {
             // runs in every auth mode — must be in the already-applied set so
             // this "all applied" test sees zero new migrations.
             { name: "0175_dashboard_draft_card_cache.sql" },
+            // 0176 (#4561) — drop dashboard_stage_changes (stage tracker
+            // phase 2; readers/writers removed by #4555 in v0.0.55). Plain
+            // DROP TABLE on an Atlas-internal table, no Better Auth
+            // involvement, so it runs in every auth mode — must be in the
+            // already-applied set so this "all applied" test sees zero new
+            // migrations.
+            { name: "0176_drop_dashboard_stage_changes.sql" },
           ],
         };
       }

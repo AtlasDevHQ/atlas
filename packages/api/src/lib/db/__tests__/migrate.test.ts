@@ -227,7 +227,9 @@ describe("runMigrations", () => {
     //   running profile per connection, re-storm fix) = 175.
     //   Plus 0175 (dashboard_draft_card_cache — the draft cache: a draft card's
     //   own cached rows + capture instant, ADR-0034 Decision 1, #4554) = 176.
-    expect(count).toBe(176);
+    //   Plus 0176 (drop dashboard_stage_changes — stage tracker phase 2 of the
+    //   two-phase drop, readers/writers removed by #4555 in v0.0.55, #4561) = 177.
+    expect(count).toBe(177);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -432,6 +434,7 @@ describe("runMigrations", () => {
         "0173_learned_pattern_injections.sql",
         "0174_connection_profile_baseline_started_at.sql",
         "0175_dashboard_draft_card_cache.sql",
+        "0176_drop_dashboard_stage_changes.sql",
       ],
     });
 

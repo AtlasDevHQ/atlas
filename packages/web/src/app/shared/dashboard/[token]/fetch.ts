@@ -10,12 +10,13 @@
 // and the `node:crypto` token hash — live in `../../server-share.ts`, shared
 // with the conversation surface's fetch (#4719) and re-exported here for this
 // surface's consumers/tests. This module is SERVER-ONLY (it imports
-// `next/headers` via itself and `node:crypto` via `server-share`). Client code
-// imports the mapping/types from `share-result.ts`, never from here.
+// `next/headers` directly and `node:crypto` via `../../server-share`). Client
+// code imports the mapping/types from `share-result.ts`, never from here.
 
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { getApiBaseUrl } from "../../lib";
+import { redactShareToken } from "../../share-result";
 import { buildForwardHeaders, hashShareToken } from "../../server-share";
 import { mapSharedDashboardResponse } from "./share-result";
 import type { FetchResult } from "./share-result";
@@ -25,14 +26,17 @@ export { buildForwardHeaders, hashShareToken };
 /** Uncached fetch. Exported for unit tests; production callers use the
  *  `cache()`-wrapped {@link fetchSharedDashboard} so the fetch runs once. */
 export async function fetchSharedDashboardRaw(token: string): Promise<FetchResult> {
-  try {
-    const [cookieStore, headerStore] = await Promise.all([cookies(), headers()]);
-    const forwardHeaders = buildForwardHeaders({
-      cookie: cookieStore.toString() || null,
-      forwardedFor: headerStore.get("x-forwarded-for"),
-      realIp: headerStore.get("x-real-ip"),
-    });
+  // Header collection stays OUTSIDE the try: a throw from `cookies()`/
+  // `headers()` is a request-scope programming error, not the viewer's
+  // connection — surfacing it beats misreporting it as `network-error`.
+  const [cookieStore, headerStore] = await Promise.all([cookies(), headers()]);
+  const forwardHeaders = buildForwardHeaders({
+    cookie: cookieStore.toString() || null,
+    forwardedFor: headerStore.get("x-forwarded-for"),
+    realIp: headerStore.get("x-real-ip"),
+  });
 
+  try {
     const res = await fetch(
       `${getApiBaseUrl()}/api/public/dashboards/${encodeURIComponent(token)}`,
       // No cache — dashboard data may be sensitive and revoked links must die
@@ -44,7 +48,9 @@ export async function fetchSharedDashboardRaw(token: string): Promise<FetchResul
   } catch (err) {
     console.error(
       `[shared-dashboard] Failed to fetch tokenHash=${hashShareToken(token)}:`,
-      err instanceof Error ? err.message : String(err),
+      // A thrown fetch can echo the request URL — token included — in its
+      // message; redact it so the #4317 hash-only discipline holds here too.
+      redactShareToken(err instanceof Error ? err.message : String(err), token),
     );
     return { ok: false, reason: "network-error" };
   }

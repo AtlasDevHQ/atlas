@@ -1,10 +1,11 @@
 // The standalone share-surface error state, shared by the dashboard and
 // conversation pages (#4690, #4719). Renders resource-specific copy (an
-// {@link ErrorContent} produced by each surface's `error-content.ts`) around
-// the one CTA policy that must not drift: `login-required` (and only it)
-// produces the login redirect back to the shared view, while every other
-// reason offers the neutral "Go to Atlas" home link. Client-safe by design —
-// the org-share resolvers (#4718) render it browser-side on the auth wall.
+// {@link ErrorContent} produced by each surface's `error-content.ts`) and the
+// CTA that surface resolved — the reason→action decision (`login-required`
+// and only it gets the login redirect) lives in each `error-content.ts` and
+// its tests, documented on {@link PrimaryAction} below; this component only
+// renders it. Client-safe by design — the org-share resolvers (#4718) render
+// it browser-side on the auth wall.
 
 import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button";

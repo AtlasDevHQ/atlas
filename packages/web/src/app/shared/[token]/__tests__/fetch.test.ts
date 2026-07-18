@@ -8,6 +8,7 @@ let mockHeaders: Record<string, string> = {};
 void mock.module("next/headers", () => ({
   cookies: async () => ({ toString: () => mockCookie }),
   headers: async () => ({ get: (k: string) => mockHeaders[k.toLowerCase()] ?? null }),
+  draftMode: async () => ({ isEnabled: false }),
 }));
 
 import { fetchSharedConversationRaw, hashShareToken } from "../fetch";
@@ -187,6 +188,38 @@ describe("fetchSharedConversationRaw (#4719)", () => {
     }
     const logged = errSpy.mock.calls.map((c) => String(c[0])).join(" ");
     expect(logged).toContain(hashShareToken(TOKEN));
+    errSpy.mockRestore();
+  });
+
+  test("redacts the token when a thrown error's message echoes the request URL (#4317)", async () => {
+    // WHATWG fetch echoes the full URL — token included — in e.g.
+    // "Failed to parse URL from <url>" on a misconfigured API base.
+    globalThis.fetch = mock(async () => {
+      throw new TypeError(`Failed to parse URL from https://bad host/api/public/conversations/${TOKEN}`);
+    }) as unknown as typeof fetch;
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await fetchSharedConversationRaw(TOKEN);
+    expect(result).toEqual({ ok: false, reason: "network-error" });
+
+    for (const call of errSpy.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain(TOKEN);
+    }
+    const logged = errSpy.mock.calls.map((c) => c.map(String).join(" ")).join(" ");
+    expect(logged).toContain("[redacted-share-token]");
+    errSpy.mockRestore();
+  });
+
+  test("maps a malformed message element (messages: [null]) to server-error, never a view crash", async () => {
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(200, { ...okConversation, messages: [null] });
+    expect(await fetchSharedConversationRaw(TOKEN)).toEqual({
+      ok: false,
+      reason: "server-error",
+    });
+    // The logged detail names the field only — never the response's values.
+    const logged = errSpy.mock.calls.map((c) => c.map(String).join(" ")).join(" ");
+    expect(logged).toContain("messages[0]");
     errSpy.mockRestore();
   });
 

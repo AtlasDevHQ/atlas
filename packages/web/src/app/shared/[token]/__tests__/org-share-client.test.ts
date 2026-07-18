@@ -110,6 +110,23 @@ describe("resolveOrgShareClient (conversation, #4719)", () => {
     errSpy.mockRestore();
   });
 
+  test("redacts the token when a thrown error's message echoes the request URL (#4317)", async () => {
+    globalThis.fetch = mock(async () => {
+      throw new TypeError(`Failed to parse URL from https://bad host/api/public/conversations/${TOKEN}`);
+    }) as unknown as typeof fetch;
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await resolveOrgShareClient(TOKEN);
+    expect(result).toEqual({ ok: false, reason: "network-error" });
+
+    for (const call of errSpy.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain(TOKEN);
+    }
+    const logged = errSpy.mock.calls.map((c) => c.map(String).join(" ")).join(" ");
+    expect(logged).toContain("[redacted-share-token]");
+    errSpy.mockRestore();
+  });
+
   test("a 200 whose body isn't JSON resolves to server-error — never a rejection", async () => {
     // Locks the never-rejects contract `OrgShareResolver` builds its two-state
     // model on, through the client seam.

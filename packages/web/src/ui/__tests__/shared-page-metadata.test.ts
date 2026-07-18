@@ -10,6 +10,7 @@ globalThis.fetch = mockFetch as unknown as typeof fetch;
 void mock.module("next/headers", () => ({
   cookies: async () => ({ toString: () => "" }),
   headers: async () => ({ get: () => null }),
+  draftMode: async () => ({ isEnabled: false }),
 }));
 
 // Import generateMetadata from the page module

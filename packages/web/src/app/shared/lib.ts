@@ -6,7 +6,11 @@
 // ---------------------------------------------------------------------------
 
 export interface SharedMessage {
-  role: "user" | "assistant" | "system" | "tool";
+  /** Message author role. Kept as `string` (not a closed union): the views
+   *  only branch on "user"/"assistant" and hide everything else, and the
+   *  boundary validation (`[token]/share-result.ts`) checks string-ness only —
+   *  a narrower type here would assert an invariant nothing enforces. */
+  role: string;
   content: unknown;
   createdAt: string;
 }

@@ -1,10 +1,12 @@
 // Pure resolver mapping a shared-conversation fetch failure to the standalone
 // page's error-shell content (heading, message, and which actions to offer) —
 // mirror of the dashboard's `dashboard/[token]/error-content.ts` (#4719). The
-// copy is conversation-specific; the CTA policy it feeds (`login-required` and
-// only it gets the login redirect, #4690) is enforced by the shared
-// `ErrorShell` (`../error-shell.tsx`). The embed surface (`embed/view.tsx`)
-// keeps its own navigation-free copy and does not consume this.
+// copy is conversation-specific; the CTA policy (`login-required` and only it
+// gets the login redirect, #4690) is DECIDED here and pinned by
+// `__tests__/error-content.test.ts` — the shared `ErrorShell`
+// (`../error-shell.tsx`) only renders the chosen action. The embed surface
+// (`embed/view.tsx`) keeps its own navigation-free copy and does not consume
+// this.
 
 import type { FailReason } from "./share-result";
 import type { ErrorContent } from "../error-shell";

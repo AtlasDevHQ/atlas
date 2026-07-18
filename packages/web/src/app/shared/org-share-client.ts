@@ -17,6 +17,7 @@
 // no `node:crypto`.
 
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
+import { redactShareToken } from "./share-result";
 import type { ShareFetchResult } from "./share-result";
 
 /**
@@ -77,7 +78,9 @@ export async function resolveOrgShare<T>(opts: {
   } catch (err) {
     console.error(
       `${logLabel} Failed to fetch tokenHash=${tokenHash}:`,
-      err instanceof Error ? err.message : String(err),
+      // A thrown fetch can echo the request URL — token included — in its
+      // message; redact it so the #4317 hash-only discipline holds here too.
+      redactShareToken(err instanceof Error ? err.message : String(err), token),
     );
     return { ok: false, reason: "network-error" };
   }

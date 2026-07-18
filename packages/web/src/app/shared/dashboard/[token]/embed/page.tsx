@@ -71,7 +71,7 @@ export default async function SharedDashboardEmbedPage({ params, searchParams }:
         ) : isAuthWallReason(result.reason) ? (
           // Same client-side org-share hand-off as the standalone page (#4718).
           // Scope caveat: the session cookie is host-only AND SameSite=Lax
-          // (ADR-0024 §5), so the credentialed retry only helps when the embed
+          // (ADR-0024, Decision), so the credentialed retry only helps when the embed
           // is framed same-site (e.g. inside Atlas itself). In a third-party
           // iframe the browser withholds the cookie and the resolver lands on
           // the same navigation-free auth copy as before — the intended

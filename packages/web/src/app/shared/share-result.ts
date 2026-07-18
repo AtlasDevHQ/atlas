@@ -71,6 +71,18 @@ export async function resolveAuthReason(res: Response): Promise<AuthWallReason> 
 }
 
 /**
+ * Redact a share token from a message that is about to be logged. The #4317
+ * discipline keeps the cleartext token out of our own log templates, but a
+ * thrown error can echo the request URL — token included — in its message
+ * (e.g. WHATWG fetch's `Failed to parse URL from <url>` on a misconfigured API
+ * base). Every catch that logs an error message on a share surface must pass
+ * it through here first.
+ */
+export function redactShareToken(message: string, token: string): string {
+  return token ? message.replaceAll(token, "[redacted-share-token]") : message;
+}
+
+/**
  * Per-surface validation of a share fetch's 200 body. On failure, `detail` is a
  * log-safe summary (issue paths/codes only — NEVER response values, which are
  * the shared resource's data).

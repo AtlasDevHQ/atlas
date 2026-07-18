@@ -13,6 +13,7 @@
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { getApiBaseUrl } from "../lib";
+import { redactShareToken } from "../share-result";
 import { buildForwardHeaders, hashShareToken } from "../server-share";
 import { mapSharedConversationResponse } from "./share-result";
 import type { ConversationFetchResult } from "./share-result";
@@ -24,14 +25,17 @@ export { buildForwardHeaders, hashShareToken };
 export async function fetchSharedConversationRaw(
   token: string,
 ): Promise<ConversationFetchResult> {
-  try {
-    const [cookieStore, headerStore] = await Promise.all([cookies(), headers()]);
-    const forwardHeaders = buildForwardHeaders({
-      cookie: cookieStore.toString() || null,
-      forwardedFor: headerStore.get("x-forwarded-for"),
-      realIp: headerStore.get("x-real-ip"),
-    });
+  // Header collection stays OUTSIDE the try: a throw from `cookies()`/
+  // `headers()` is a request-scope programming error, not the viewer's
+  // connection — surfacing it beats misreporting it as `network-error`.
+  const [cookieStore, headerStore] = await Promise.all([cookies(), headers()]);
+  const forwardHeaders = buildForwardHeaders({
+    cookie: cookieStore.toString() || null,
+    forwardedFor: headerStore.get("x-forwarded-for"),
+    realIp: headerStore.get("x-real-ip"),
+  });
 
+  try {
     const res = await fetch(
       `${getApiBaseUrl()}/api/public/conversations/${encodeURIComponent(token)}`,
       // No cache — a revoked or expired share link must die immediately (the
@@ -44,7 +48,9 @@ export async function fetchSharedConversationRaw(
   } catch (err) {
     console.error(
       `[shared-conversation] Failed to fetch tokenHash=${hashShareToken(token)}:`,
-      err instanceof Error ? err.message : String(err),
+      // A thrown fetch can echo the request URL — token included — in its
+      // message; redact it so the #4317 hash-only discipline holds here too.
+      redactShareToken(err instanceof Error ? err.message : String(err), token),
     );
     return { ok: false, reason: "network-error" };
   }

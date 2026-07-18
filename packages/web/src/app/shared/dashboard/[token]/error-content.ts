@@ -6,24 +6,11 @@
 // navigation-free copy and does not consume this.
 
 import type { FailReason } from "./share-result";
+import type { ErrorContent } from "../../error-shell";
 
-/** Which primary CTA the error shell offers. */
-export type PrimaryAction =
-  // Login redirect back to the shared view — ONLY for `login-required`, where the
-  // viewer genuinely has no session. Never for `membership-required`.
-  | "login"
-  // Neutral "Go to Atlas" home link — the safe default for every other reason,
-  // including the signed-in wrong-org viewer.
-  | "home";
-
-export interface ErrorContent {
-  readonly heading: string;
-  readonly message: string;
-  readonly primaryAction: PrimaryAction;
-  /** Whether to also offer the "Try again" outline link — for non-terminal
-   *  failures (expired, network-error, server-error), not not-found or the auth wall. */
-  readonly showTryAgain: boolean;
-}
+// The content/CTA shape lives with the shared `ErrorShell` (`../../error-shell`,
+// #4719); re-exported so this surface's consumers keep one import site.
+export type { ErrorContent, PrimaryAction } from "../../error-shell";
 
 /**
  * Resolve the error shell's content for a failed shared-dashboard fetch.

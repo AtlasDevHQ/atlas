@@ -16,8 +16,9 @@
  * never diverge:
  *
  *   1. `defaultHostCapabilities` — the caps auto-granted to a newly created host.
- *      Limited to the SAFE set: read-only methods (`GET`/`HEAD`) AND not under a
- *      sensitive path prefix (`/api/v1/admin`, `/api/v1/platform`). NB: the
+ *      Limited to the SAFE set: a read-only method (`GET`/`HEAD`) or a curated
+ *      {@link READ_SAFE_OPERATIONS} entry, AND not under a sensitive path prefix
+ *      (`/api/v1/admin`, `/api/v1/platform`). NB: the
  *      adapter's own `defaultHostCapabilities: ["GET","HEAD"]` filters by method
  *      ONLY, so it would auto-grant admin GETs — we compute the path-aware safe
  *      set ourselves and override it.
@@ -34,7 +35,7 @@
  *      blocked capability (`validateCapabilityIds` → `CAPABILITY_BLOCKED`), and
  *      execution requires an active grant, so a sensitive route can never be
  *      granted OR executed even if an agent guesses its `operationId`. This is
- *      the every-write-and-admin set.
+ *      the every-non-read-safe-write-and-admin set.
  *
  * Net: the only reachable adapter-derived surface is read-only, non-admin,
  * per-org API operations — the `GET`/`HEAD` metadata surface plus the curated
@@ -60,7 +61,7 @@ export const READ_ONLY_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
 
 /**
  * Curated read-safe POST operations (#4707) — the analyst read actions that
- * compute and return data without mutating durable workspace state, admitted
+ * compute and return data without mutating customer/analytics data, admitted
  * into the capability surface alongside the `GET`/`HEAD` set. Every OTHER
  * write-method operation stays sensitive (hidden + hard-blocked) exactly as
  * before; this list is the ONLY exception, and each entry is admitted only
@@ -69,28 +70,46 @@ export const READ_ONLY_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
  * - `POST /api/v1/query` — runs the analyst agent to answer a question. SQL
  *   executes only through the shared SELECT-only validation pipeline
  *   (`validateSQL` in `lib/tools/sql.ts`: one AST parse, DML/DDL rejected,
- *   table whitelist, auto LIMIT, statement timeout).
+ *   table whitelist, auto LIMIT, statement timeout). Consciously accepted
+ *   residual, shared with every other `/query` surface (SDK, MCP, Slack): the
+ *   agent loop also reaches workspace-INSTALLED integration action tools
+ *   (`sendEmail` / `createLinearIssue` / `querySalesforce`, execute-time
+ *   install-gated per workspace — no more power than the granting user's own
+ *   API key) and best-effort persists the Q&A as a conversation record when
+ *   an internal DB exists. That reachable tool surface is pinned by the
+ *   tripwire in `agent-auth-read-safe-engine.test.ts` so it cannot grow
+ *   silently.
  * - `POST /api/v1/explore` — read-only sandboxed exploration of `semantic/`;
  *   read-only by backend isolation (ephemeral microVM / read-only mounts),
  *   never a write path.
  * - `POST /api/v1/metrics/{id}/run` — executes a canonical metric's
  *   authoritative SQL through the same SELECT-only pipeline
- *   (`runUserQueryPipeline` → `validateSQL`).
+ *   (`runUserQueryPipeline` → `validateSQL`); no agent loop, no action tools.
  * - `POST /api/v1/validate-sql` — validates SQL against the same pipeline
  *   without ever executing it.
  *
- * `POST /api/v1/chat` is deliberately EXCLUDED: it creates/streams a durable
- * conversation (side effects, run lifecycle) — not read-safe. A curated
- * constant is preferred over a spec annotation so the whole exception set is
- * auditable in one place; keyed by `"<METHOD> <spec path template>"` to match
- * the {@link OperationMeta} recovered from the spec.
+ * `POST /api/v1/chat` is deliberately EXCLUDED: it is the full interactive
+ * chat surface — a streaming run lifecycle with durable-session parking and
+ * resume, plus the dashboards-owning tool registry — which is out of scope
+ * for the analyst capability set; the read-analyst loop is fully served by
+ * query/explore/metrics/validate. A curated constant is preferred over a spec
+ * annotation so the whole exception set is auditable in one place; keyed by
+ * `"<METHOD> <spec path template>"` to match the {@link OperationMeta}
+ * recovered from the spec.
  */
-export const READ_SAFE_OPERATIONS: ReadonlySet<string> = new Set([
+export const READ_SAFE_OPERATION_KEYS = [
   "POST /api/v1/query",
   "POST /api/v1/explore",
   "POST /api/v1/metrics/{id}/run",
   "POST /api/v1/validate-sql",
-]);
+] as const;
+
+/** One allowlisted `"<METHOD> <path>"` key — lets consumers (e.g. the per-entry
+ * engine-guarantee registry in `agent-auth-read-safe-engine.test.ts`) make
+ * "every entry is accounted for" a compile-time property, not just a test. */
+export type ReadSafeOperationKey = (typeof READ_SAFE_OPERATION_KEYS)[number];
+
+export const READ_SAFE_OPERATIONS: ReadonlySet<string> = new Set(READ_SAFE_OPERATION_KEYS);
 
 /**
  * Path prefixes whose operations are operator/admin surface and therefore
@@ -182,12 +201,18 @@ export function isSensitiveOperation(
  * with no recoverable method is NOT treated as a write — it is already blocked
  * by {@link isSensitiveOperation}, so its approval strength is moot; leaving
  * it at the default avoids over-claiming a strength it never exercises.
+ * `readSafeAllowlist` mirrors {@link isSensitiveOperation}'s injectable
+ * (test-only) parameter so the two predicates can never classify the same
+ * operation from different allowlists.
  */
-export function isWriteOperation(meta: OperationMeta | undefined): boolean {
+export function isWriteOperation(
+  meta: OperationMeta | undefined,
+  readSafeAllowlist: ReadonlySet<string> = READ_SAFE_OPERATIONS,
+): boolean {
   return (
     meta !== undefined &&
     !READ_ONLY_METHODS.has(meta.method.toUpperCase()) &&
-    !isReadSafeOperation(meta)
+    !isReadSafeOperation(meta, readSafeAllowlist)
   );
 }
 
@@ -226,9 +251,9 @@ export interface AgentAuthOpenApiDeps {
    * it unset so writes keep the library default (`"session"`). Read-only caps and
    * curated read-safe POSTs ({@link READ_SAFE_OPERATIONS}, #4707) are never
    * restamped — they stay at the session default (#4413: `GET → session`).
-   * Orthogonal to the containment controls: writes remain blocked from the
-   * derived surface today, so this stamps the enforcement policy the caps carry
-   * for when they become reachable.
+   * Orthogonal to the containment controls: mutating writes remain blocked from
+   * the derived surface today, so this stamps the enforcement policy the caps
+   * carry for when they become reachable.
    */
   readonly writeApprovalStrength?: ApprovalStrength;
 }
@@ -259,9 +284,10 @@ export function buildAgentAuthOpenApiOptions(
     else safeNames.push(cap.name);
   }
 
-  // Stamp step-up strength on write-method capabilities when requested (#4413,
-  // enterprise). Reads are left untouched so they keep the library default
-  // ("session"). No-op passthrough when `writeApprovalStrength` is unset (core).
+  // Stamp step-up strength on mutating-write capabilities when requested
+  // (#4413, enterprise). Reads and read-safe POSTs (#4707) are left untouched
+  // so they keep the library default ("session"). No-op passthrough when
+  // `writeApprovalStrength` is unset (core).
   // Hoisted to a `const` local: TS PRESERVES the truthy-branch narrowing of a
   // `const` (`ApprovalStrength | undefined` → `ApprovalStrength`) into the nested
   // `.map` closure, but DROPS narrowing of a property access
@@ -280,8 +306,9 @@ export function buildAgentAuthOpenApiOptions(
     // Capabilities carrying the step-up strength stamp (#4413) — overrides the
     // adapter's un-stamped set. Names/inputs are otherwise identical to `base`.
     capabilities,
-    // Auto-grant only the read-only, non-admin surface (control 1). Overrides
-    // the adapter's method-only default, which would auto-grant admin GETs.
+    // Auto-grant only the non-sensitive surface (control 1): read-only +
+    // read-safe, non-admin. Overrides the adapter's method-only default, which
+    // would auto-grant admin GETs.
     defaultHostCapabilities: safeNames,
     // Hide sensitive caps from discovery (control 2).
     resolveCapabilities: ({ capabilities: caps }) => caps.filter((c) => !sensitiveNames.has(c.name)),

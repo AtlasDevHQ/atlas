@@ -160,7 +160,8 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
         "POST /api/v1/validate-sql",
       ].sort(),
     );
-    // POST /api/v1/chat is deliberately excluded (durable conversation lifecycle).
+    // POST /api/v1/chat is deliberately excluded (full interactive chat
+    // surface: streaming run lifecycle + durable-session parking/resume).
     expect(READ_SAFE_OPERATIONS.has("POST /api/v1/chat")).toBe(false);
     expect(isReadSafeOperation({ method: "POST", path: "/api/v1/query" })).toBe(true);
     expect(isReadSafeOperation({ method: "post", path: "/api/v1/query" })).toBe(true); // method normalized
@@ -280,8 +281,9 @@ describe("agent-auth OpenAPI adapter classification (#4410)", () => {
 
     // #4707 — the four analyst read actions are REACHABLE against the real
     // spec: present as capabilities, in the auto-granted safe set, and not
-    // blocked. These are the operationIds the agents-repo tools (#204/#205)
-    // map to, so a spec regen that renames one goes red here.
+    // blocked. These are the operationIds the companion agents-repo tools
+    // (AtlasDevHQ/agents#204/#205) map to, so a spec regen that renames one
+    // goes red here.
     const safe = new Set(opts.defaultHostCapabilities as string[]);
     for (const name of ["postQuery", "postExplore", "postMetricsByIdRun", "postValidateSql"]) {
       expect(index.has(name)).toBe(true);

@@ -104,15 +104,19 @@ grant at a time.
   The reachable derived surface is deliberately narrow: read-only, non-admin operations
   (`GET`/`HEAD`, outside `/api/v1/admin` and `/api/v1/platform`) plus a small **curated
   allowlist of read-safe `POST` operations** — the analyst read actions that compute and
-  return data without mutating workspace state: `POST /api/v1/query`,
+  return data without mutating customer/analytics data: `POST /api/v1/query`,
   `POST /api/v1/explore`, `POST /api/v1/metrics/{id}/run`, and
   `POST /api/v1/validate-sql`. Each is admitted only under a verified read-only execution
-  guarantee (SQL on these paths runs through the SELECT-only validation pipeline; explore
-  is read-only by sandbox isolation). Every other write — including
-  `POST /api/v1/chat` — and every admin/platform operation is hard-blocked from grant and
-  execution and hidden from discovery. The write approval-strength policy below is the
-  enforcement each capability *carries for when true writes become reachable* — it is not
-  a live write path yet.
+  guarantee at the engine (SQL on these paths runs through the SELECT-only validation
+  pipeline; explore is read-only by sandbox isolation). `POST /api/v1/query` runs the
+  same analyst agent every other `/query` surface (SDK, MCP, Slack) runs, so it shares
+  their behavior: it records the question and answer as a conversation when an internal
+  database exists, and workspace-installed integration actions (e.g. send email) remain
+  reachable to the agent exactly as they are for the granting user's own API key. Every
+  other write — including `POST /api/v1/chat` — and every admin/platform operation is
+  hard-blocked from grant and execution and hidden from discovery. The write
+  approval-strength policy below is the enforcement each capability *carries for when
+  mutating writes become reachable* — it is not a live write path yet.
 </Callout>
 
 A **capability grant** is the record that a given agent may invoke a given capability. At

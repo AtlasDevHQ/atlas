@@ -358,6 +358,8 @@ The share dialog's **Embed** tab provides an iframe snippet for dropping a share
 
 The `/embed` variant renders the **same** shared view (same token, same data-only snapshot, same expiry and revocation) inside a frame — it is not a second surface, so nothing leaks that the standard shared link wouldn't. Add `?theme=dark` for dark host pages. The embed route sets `noindex`, and the standalone `/shared/dashboard/[token]` page stays non-framable; only the `/embed` path is allowed as a frame ancestor. The dialog's copy is share-mode aware — an org-scoped share is described as members-only, not "anyone with the link."
 
+One scope note for **org-scoped** shares: inside a *cross-site* iframe the browser withholds the viewer's session cookie (`SameSite`), so the embed shows a members-only sign-in notice instead of the dashboard. Embed org-scoped shares on pages served from the same site as Atlas, or use a public share for third-party embedding.
+
 ---
 
 ## Chat as editor

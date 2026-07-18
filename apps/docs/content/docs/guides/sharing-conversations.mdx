@@ -110,6 +110,8 @@ Embed a shared conversation in another page using the `/embed` variant:
 
 The embed view is a compact, chromeless version of the shared conversation — no header, smaller avatars, and a "Powered by Atlas" footer. It supports both light and dark modes (follows system preference).
 
+For **Organization only** shares, note that a *cross-site* iframe can't carry the viewer's session cookie (`SameSite`), so the embed shows a members-only sign-in notice instead of the transcript. Embed org-scoped shares same-site, or use a public share for third-party embedding.
+
 This is ideal for embedding conversation transcripts in documentation, blog posts, or dashboards.
 
 ## API Reference

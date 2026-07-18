@@ -100,13 +100,19 @@ capabilities from the OpenAPI spec (one per operation) rather than hand-maintain
 Instead of handing an agent a broad scope, the user approves specific capabilities, one
 grant at a time.
 
-<Callout type="info" title="Reads only, for now">
-  The reachable derived surface is deliberately narrow today: only read-only, non-admin
-  operations (`GET`/`HEAD`, outside `/api/v1/admin` and `/api/v1/platform`) can be granted
-  or executed. Every write and every admin/platform operation is hard-blocked from grant
-  and execution and hidden from discovery. The write approval-strength policy below is the
-  enforcement each capability *carries for when writes become reachable* — it is not a live
-  write path yet.
+<Callout type="info" title="Read-only surface, plus a curated read-safe set">
+  The reachable derived surface is deliberately narrow: read-only, non-admin operations
+  (`GET`/`HEAD`, outside `/api/v1/admin` and `/api/v1/platform`) plus a small **curated
+  allowlist of read-safe `POST` operations** — the analyst read actions that compute and
+  return data without mutating workspace state: `POST /api/v1/query`,
+  `POST /api/v1/explore`, `POST /api/v1/metrics/{id}/run`, and
+  `POST /api/v1/validate-sql`. Each is admitted only under a verified read-only execution
+  guarantee (SQL on these paths runs through the SELECT-only validation pipeline; explore
+  is read-only by sandbox isolation). Every other write — including
+  `POST /api/v1/chat` — and every admin/platform operation is hard-blocked from grant and
+  execution and hidden from discovery. The write approval-strength policy below is the
+  enforcement each capability *carries for when true writes become reachable* — it is not
+  a live write path yet.
 </Callout>
 
 A **capability grant** is the record that a given agent may invoke a given capability. At
@@ -137,7 +143,8 @@ method, and the write strength differs by deploy tier:
 | Method class | `approvalStrength` (core / AGPL) | `approvalStrength` (enterprise) | What the user does |
 |---|---|---|---|
 | `GET` / `HEAD` (reads) | `session` | `session` | Approve on the existing authenticated session |
-| Non-read methods (`POST` / `PUT` / `PATCH` / `DELETE`, writes) | `session` | `webauthn` | Complete a <AudienceLink saas="/security/passkeys">passkey</AudienceLink> / WebAuthn step-up |
+| Curated read-safe `POST`s (query / explore / metric run / validate-sql) | `session` | `session` | Approve on the existing authenticated session — read-safe operations do not inherit the write step-up |
+| Other non-read methods (`POST` / `PUT` / `PATCH` / `DELETE`, writes) | `session` | `webauthn` | Complete a <AudienceLink saas="/security/passkeys">passkey</AudienceLink> / WebAuthn step-up |
 
 **Reads always approve on the session.** On the **core (AGPL)** build, writes keep the same
 `session` default — there is no WebAuthn enforcement. Only on an **enterprise** deployment
@@ -148,8 +155,9 @@ mechanisms — `webauthn` step-up enforcement and CIBA — are
 the core surface ships the plugin wiring, capability model, JWT verification, and
 device-authorization approval. This mirrors Atlas's broader
 <AudienceLink saas="/guides/approval-workflows">approval workflows</AudienceLink> for write
-actions. (Recall from above that writes are not a reachable surface yet — this policy
-governs them once they are.)
+actions. (Recall from above that mutating writes are not a reachable surface yet — this
+policy governs them once they are; the curated read-safe `POST`s are reachable, and stay
+at `session` strength precisely because they do not mutate.)
 
 <Callout type="info" title="On enterprise, the write step-up is a floor, not a ceiling">
   Where a capability is stamped `webauthn` (enterprise writes), it always requires the

@@ -37,8 +37,11 @@
  *      the every-write-and-admin set.
  *
  * Net: the only reachable adapter-derived surface is read-only, non-admin,
- * per-org API operations — exactly the analyst-agent surface, and nothing that
- * mutates state or reads the operator console.
+ * per-org API operations — the `GET`/`HEAD` metadata surface plus the curated
+ * read-safe POST allowlist ({@link READ_SAFE_OPERATIONS}, #4707: query /
+ * explore / metric run / validate-sql, each verified read-only at the engine)
+ * — exactly the analyst-agent surface, and nothing that mutates state or reads
+ * the operator console.
  *
  * ── Pure by construction ────────────────────────────────────────────────────
  *
@@ -52,8 +55,42 @@ import { createFromOpenAPI } from "@better-auth/agent-auth/openapi";
 import type { AgentAuthOptions, ApprovalStrength } from "@better-auth/agent-auth";
 import type { AtlasOpenApiSpec } from "@atlas/api/lib/auth/atlas-openapi-source";
 
-/** Read-only HTTP methods — the only ones a derived capability may be safe on. */
+/** Read-only HTTP methods — safe on any non-admin path without further curation. */
 export const READ_ONLY_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
+
+/**
+ * Curated read-safe POST operations (#4707) — the analyst read actions that
+ * compute and return data without mutating durable workspace state, admitted
+ * into the capability surface alongside the `GET`/`HEAD` set. Every OTHER
+ * write-method operation stays sensitive (hidden + hard-blocked) exactly as
+ * before; this list is the ONLY exception, and each entry is admitted only
+ * under a verified read-only execution guarantee at the engine:
+ *
+ * - `POST /api/v1/query` — runs the analyst agent to answer a question. SQL
+ *   executes only through the shared SELECT-only validation pipeline
+ *   (`validateSQL` in `lib/tools/sql.ts`: one AST parse, DML/DDL rejected,
+ *   table whitelist, auto LIMIT, statement timeout).
+ * - `POST /api/v1/explore` — read-only sandboxed exploration of `semantic/`;
+ *   read-only by backend isolation (ephemeral microVM / read-only mounts),
+ *   never a write path.
+ * - `POST /api/v1/metrics/{id}/run` — executes a canonical metric's
+ *   authoritative SQL through the same SELECT-only pipeline
+ *   (`runUserQueryPipeline` → `validateSQL`).
+ * - `POST /api/v1/validate-sql` — validates SQL against the same pipeline
+ *   without ever executing it.
+ *
+ * `POST /api/v1/chat` is deliberately EXCLUDED: it creates/streams a durable
+ * conversation (side effects, run lifecycle) — not read-safe. A curated
+ * constant is preferred over a spec annotation so the whole exception set is
+ * auditable in one place; keyed by `"<METHOD> <spec path template>"` to match
+ * the {@link OperationMeta} recovered from the spec.
+ */
+export const READ_SAFE_OPERATIONS: ReadonlySet<string> = new Set([
+  "POST /api/v1/query",
+  "POST /api/v1/explore",
+  "POST /api/v1/metrics/{id}/run",
+  "POST /api/v1/validate-sql",
+]);
 
 /**
  * Path prefixes whose operations are operator/admin surface and therefore
@@ -103,28 +140,55 @@ export function isSensitivePath(path: string): boolean {
 }
 
 /**
- * A capability is SENSITIVE (blocked + hidden) unless it is a read-only method
- * on a non-admin path. Fails CLOSED: an operation missing from the index (no
- * recoverable method/path) is treated as sensitive.
+ * True when `meta` is on the curated read-safe allowlist (#4707). Fails
+ * CLOSED: no meta → not read-safe. The `allowlist` parameter exists so tests
+ * can pin the unconditional admin/platform path block against a hypothetical
+ * allowlist entry; production call sites never pass it.
  */
-export function isSensitiveOperation(meta: OperationMeta | undefined): boolean {
+export function isReadSafeOperation(
+  meta: OperationMeta | undefined,
+  allowlist: ReadonlySet<string> = READ_SAFE_OPERATIONS,
+): boolean {
+  return meta !== undefined && allowlist.has(`${meta.method.toUpperCase()} ${meta.path}`);
+}
+
+/**
+ * A capability is SENSITIVE (blocked + hidden) unless it is a read-only method
+ * OR a curated read-safe operation ({@link READ_SAFE_OPERATIONS}, #4707), on a
+ * non-admin path. The admin/platform path block is UNCONDITIONAL — it runs
+ * before the allowlist, so even a hypothetically allowlisted operation under
+ * `/api/v1/admin` or `/api/v1/platform` stays sensitive. Fails CLOSED: an
+ * operation missing from the index (no recoverable method/path) is sensitive.
+ */
+export function isSensitiveOperation(
+  meta: OperationMeta | undefined,
+  readSafeAllowlist: ReadonlySet<string> = READ_SAFE_OPERATIONS,
+): boolean {
   if (!meta) return true;
-  if (!READ_ONLY_METHODS.has(meta.method.toUpperCase())) return true;
-  return isSensitivePath(meta.path);
+  if (isSensitivePath(meta.path)) return true;
+  if (READ_ONLY_METHODS.has(meta.method.toUpperCase())) return false;
+  return !isReadSafeOperation(meta, readSafeAllowlist);
 }
 
 /**
  * True when `meta` is a WRITE operation — a non-read-only method
- * (`POST`/`PUT`/`PATCH`/`DELETE`/…). Distinct from {@link isSensitiveOperation},
- * which ALSO flags admin/platform READS: step-up approval strength (#4413) keys
- * off the METHOD, so an admin GET is sensitive-but-not-a-write and keeps the
- * session default. A cap with no recoverable method is NOT treated as a write —
- * it is already blocked by {@link isSensitiveOperation}, so its approval strength
- * is moot; leaving it at the default avoids over-claiming a strength it never
- * exercises.
+ * (`POST`/`PUT`/`PATCH`/`DELETE`/…) that is NOT on the curated read-safe
+ * allowlist. Distinct from {@link isSensitiveOperation}, which ALSO flags
+ * admin/platform READS: step-up approval strength (#4413) keys off the
+ * METHOD, so an admin GET is sensitive-but-not-a-write and keeps the session
+ * default. A read-safe POST (#4707) is likewise NOT a write — it must report
+ * `session` strength even under the enterprise `stepUpWrites` flag, because it
+ * does not mutate; the read-only exemption is explicit, never inherited. A cap
+ * with no recoverable method is NOT treated as a write — it is already blocked
+ * by {@link isSensitiveOperation}, so its approval strength is moot; leaving
+ * it at the default avoids over-claiming a strength it never exercises.
  */
 export function isWriteOperation(meta: OperationMeta | undefined): boolean {
-  return meta !== undefined && !READ_ONLY_METHODS.has(meta.method.toUpperCase());
+  return (
+    meta !== undefined &&
+    !READ_ONLY_METHODS.has(meta.method.toUpperCase()) &&
+    !isReadSafeOperation(meta)
+  );
 }
 
 /** The subset of `AgentAuthOptions` this adapter produces, spreadable into `agentAuth()`. */
@@ -159,8 +223,9 @@ export interface AgentAuthOpenApiDeps {
    * ({@link isWriteOperation}). Enterprise (#4413) passes `"webauthn"` to require
    * a WebAuthn step-up (physical presence) before a write can be approved —
    * unbypassable by an autonomous agent with browser control. Core (AGPL) leaves
-   * it unset so writes keep the library default (`"session"`). Read-only caps are
-   * never restamped — they stay at the session default (#4413: `GET → session`).
+   * it unset so writes keep the library default (`"session"`). Read-only caps and
+   * curated read-safe POSTs ({@link READ_SAFE_OPERATIONS}, #4707) are never
+   * restamped — they stay at the session default (#4413: `GET → session`).
    * Orthogonal to the containment controls: writes remain blocked from the
    * derived surface today, so this stamps the enforcement policy the caps carry
    * for when they become reachable.

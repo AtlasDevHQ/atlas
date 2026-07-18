@@ -1401,6 +1401,10 @@ function executeAndAuditEffect(opts: {
    * write produced.
    */
   cacheWrite: { key: string; scope: CacheScope } | null;
+  /** Per-entry TTL (ms) resolved from the writer's WORKSPACE tier (#4545) —
+   *  so a workspace's ATLAS_CACHE_TTL override is stamped on its own entries.
+   *  Resolved at the call site where the auth orgId is in scope. */
+  cacheTtl: number;
   hookMetadata: Record<string, unknown>;
   dispatchHook: (event: "afterQuery", ctx: Record<string, unknown>) => Promise<void>;
   /** Positional bind values for parameterized queries (#2267) — forwarded to
@@ -1417,7 +1421,7 @@ function executeAndAuditEffect(opts: {
 }): Effect.Effect<ExecutedSqlResult, QueryExecutionError | EnterpriseUnavailableError> {
   const {
     db, dbType, connId, orgId, poolOrgId, targetHost, querySql, queryTimeout,
-    rowLimit, explanation, classification, cacheWrite, hookMetadata, dispatchHook,
+    rowLimit, explanation, classification, cacheWrite, cacheTtl, hookMetadata, dispatchHook,
     bindParams, parentAuditId, routingMode, connectionGroupId, routingReason,
   } = opts;
   // Pool metrics key off the served pool; SLA + masking stay on `orgId`.
@@ -1512,7 +1516,7 @@ function executeAndAuditEffect(opts: {
             try {
               await getCache().set(cacheWrite.key, {
                 columns: result.columns, rows: result.rows,
-                cachedAt: Date.now(), ttl: getDefaultTtl(),
+                cachedAt: Date.now(), ttl: cacheTtl,
                 // #3616 — stamp the real execution cost so the cache-hit
                 // audit row replays it instead of logging duration_ms=0.
                 executionMs: durationMs,
@@ -2115,7 +2119,9 @@ export function runSqlPipelineEffect(
     // is the SAME org that goes into `key`, so a later `flushByOrg(orgId)`
     // targets exactly this entry. One object so key-without-scope can't happen.
     let cacheWrite: { key: string; scope: CacheScope } | null = null;
-    if (preStep?.kind === "check-cache" && cacheEnabled()) {
+    // #4545 — enabled is workspace-resolvable; authOrgId threads the tier
+    // (the same org folded into the key + scope below).
+    if (preStep?.kind === "check-cache" && cacheEnabled(authOrgId)) {
       try {
         const ctx = getRequestContext();
         const cacheOrgId = ctx?.user?.activeOrganizationId;
@@ -2279,6 +2285,9 @@ export function runSqlPipelineEffect(
         const result = yield* executeAndAuditEffect({
           db, dbType, connId, orgId, poolOrgId, targetHost, querySql, queryTimeout,
           rowLimit, explanation, classification, cacheWrite,
+          // Workspace-tier TTL (#4545): stamp the writer's own ATLAS_CACHE_TTL
+          // override onto its entries; authOrgId matches the cache-key org.
+          cacheTtl: getDefaultTtl(authOrgId),
           hookMetadata, dispatchHook, bindParams, parentAuditId, routingMode, routingReason,
         });
         return { kind: "executed" as const, result };

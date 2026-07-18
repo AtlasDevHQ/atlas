@@ -71,15 +71,24 @@ const adminCache = createAdminRouter();
 
 // GET /stats — cache statistics
 adminCache.openapi(getCacheStatsRoute, async (c) => runHandler(c, "retrieve cache statistics", async () => {
-  const { getCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
-  if (!cacheEnabled()) {
-    return c.json({ enabled: false, hits: 0, misses: 0, hitRate: 0, missRate: 0, entryCount: 0, maxSize: 0, ttl: 0 }, 200);
+  const authResult = c.get("authResult");
+  // Resolve enabled/ttl for the CALLER's workspace so a per-workspace
+  // ATLAS_CACHE_ENABLED / ATLAS_CACHE_TTL override is reflected (#4545).
+  const orgId = authResult.user?.activeOrganizationId;
+  const { getCache, cacheEnabled, getDefaultTtl } = await import("@atlas/api/lib/cache/index");
+  // Reported stats derive from RESOLVED settings, never constructor-frozen
+  // values: `ttl` is the workspace-resolved TTL; `maxSize` comes from the
+  // backend, which getCache() has already reconciled to the resolved
+  // platform setting.
+  const ttl = getDefaultTtl(orgId);
+  if (!cacheEnabled(orgId)) {
+    return c.json({ enabled: false, hits: 0, misses: 0, hitRate: 0, missRate: 0, entryCount: 0, maxSize: 0, ttl }, 200);
   }
   const stats = await getCache().stats();
   const total = stats.hits + stats.misses;
   const hitRate = total > 0 ? stats.hits / total : 0;
   const missRate = total > 0 ? stats.misses / total : 0;
-  return c.json({ enabled: true, ...stats, hitRate, missRate }, 200);
+  return c.json({ enabled: true, ...stats, ttl, hitRate, missRate }, 200);
 }));
 
 // POST /flush — flush entire cache
@@ -88,7 +97,7 @@ adminCache.openapi(flushCacheRoute, async (c) => runHandler(c, "flush cache", as
   const authResult = c.get("authResult");
 
   const { getCache, flushCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
-  if (!cacheEnabled()) {
+  if (!cacheEnabled(authResult.user?.activeOrganizationId)) {
     return c.json({ ok: false, flushed: 0, message: "Cache is disabled" }, 200);
   }
   const count = (await getCache().stats()).entryCount;

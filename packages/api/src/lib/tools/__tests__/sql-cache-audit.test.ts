@@ -92,7 +92,9 @@ void mock.module("@atlas/api/lib/cache/index", () => ({
   }),
   buildCacheKey: () => "mock-key",
   cacheEnabled: () => true,
-  getDefaultTtl: () => 300000,
+  // Distinctive value so the write test can prove the entry's `ttl` is
+  // threaded from getDefaultTtl(authOrgId) (#4545), not a hardcoded literal.
+  getDefaultTtl: () => 88888,
   flushCache: async () => {},
   flushCacheByOrg: async () => 0,
   setCacheBackend: async () => {},
@@ -234,6 +236,11 @@ describe("executeSQL cache-hit audit duration (#3616)", () => {
     expect(cacheSets[0].scope).toBeDefined();
     expect(typeof cacheSets[0].scope.connectionId).toBe("string");
     expect(cacheSets[0].scope.connectionId.length).toBeGreaterThan(0);
+
+    // #4545 — the per-entry TTL is stamped from getDefaultTtl(authOrgId)
+    // (the workspace tier), not a constant. A regression that drops the
+    // `cacheTtl` thread or hardcodes a literal fails here.
+    expect(cacheSets[0].entry.ttl).toBe(88888);
 
     // …and it equals the duration logged on the same execution's audit row,
     // proving the stamp is wired to the real measured duration, not a literal.

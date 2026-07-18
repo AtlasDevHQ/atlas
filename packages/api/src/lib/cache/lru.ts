@@ -119,6 +119,36 @@ export class LRUCacheBackend implements CacheBackend {
     return this.cache.delete(key);
   }
 
+  /**
+   * Reconcile the backend to a new resolved max size / default TTL at runtime.
+   * Called from `getCache()` when the platform `ATLAS_CACHE_MAX_SIZE` / TTL
+   * settings change, so a settings edit takes effect on the running backend
+   * with no redeploy.
+   *
+   * Mutating in place (rather than constructing a fresh `LRUCacheBackend`)
+   * preserves BOTH the hit/miss counters and the existing cache entries — a
+   * fresh backend would start cold and reset the counters. A max-size
+   * decrease evicts the oldest entries down to the new cap (same LRU order as
+   * `set()`, and — like every removal path — routing each eviction through
+   * `unindex()` so the scope side index can't drift); `defaultTtl` only
+   * affects `stats()` reporting since per-entry TTL is stamped at write time.
+   *
+   * Stays synchronous (not part of the async `CacheBackend` contract): a pure
+   * in-memory mutation with no I/O, called from the synchronous `getCache()`.
+   */
+  resize(maxSize: number, defaultTtl: number): void {
+    if (maxSize < 1) throw new Error(`Cache maxSize must be >= 1, got ${maxSize}`);
+    if (defaultTtl < 1) throw new Error(`Cache defaultTtl must be >= 1ms, got ${defaultTtl}`);
+    this.maxSize = maxSize;
+    this.defaultTtl = defaultTtl;
+    while (this.cache.size > this.maxSize) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      this.cache.delete(oldest);
+      this.unindex(oldest);
+    }
+  }
+
   async flush(): Promise<void> {
     this.cache.clear();
     this.keyScope.clear();

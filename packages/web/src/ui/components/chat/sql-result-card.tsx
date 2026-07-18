@@ -46,6 +46,20 @@ const AddToDashboardDialog = dynamic(
   { ssr: false, loading: () => null },
 );
 
+/**
+ * Format a cache-entry age (ms since the rows were written) into a compact
+ * "Xs ago" / "Xm ago" / "Xh ago" label for the "cached · …" chip (#4546), so a
+ * cache hit surfaces its staleness instead of an invisible "cached". Sensible
+ * units: seconds under a minute, minutes under an hour, hours beyond.
+ */
+export function formatCacheAge(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.round(minutes / 60)}h ago`;
+}
+
 /** Build a human-readable comparison string, e.g. "was 3.4s" or "was 512 rows · 3.4s" (row count shown only when changed). */
 function formatPreviousExecution(
   prev: PreviousExecution,
@@ -179,7 +193,14 @@ function SQLResultCardInner({
           {rows.length} row{rows.length !== 1 ? "s" : ""}
           {result.truncated ? "+" : ""}
           {typeof result.executionMs === "number" && Number.isFinite(result.executionMs) && (
-            <> · {result.cached ? "cached" : `${(result.executionMs / 1000).toFixed(1)}s`}</>
+            <>
+              {" · "}
+              {result.cached
+                ? typeof result.cacheAgeMs === "number" && Number.isFinite(result.cacheAgeMs)
+                  ? `cached · ${formatCacheAge(result.cacheAgeMs)}`
+                  : "cached"
+                : `${(result.executionMs / 1000).toFixed(1)}s`}
+            </>
           )}
           {previousExecution && (() => {
             const comparison = formatPreviousExecution(previousExecution, rows.length);

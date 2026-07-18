@@ -28,11 +28,13 @@ Use this when the typed tools (\`listEntities\`, \`describeEntity\`, \`searchGlo
 
 Don't use this for catalog discovery, single-entity introspection, glossary lookup, or executing canonical metrics — the typed tools are faster and return structured JSON.`;
 
-export const EXECUTE_SQL_TOOL_DESCRIPTION = `Execute a single read-only SELECT against an Atlas-registered datasource. The query is parsed, table-whitelist-checked against the semantic layer, RLS-injected, auto-LIMITed, and run under a statement timeout — DDL/DML, multi-statement input, and unknown tables are rejected before execution. Result shape: \`{ "columns": ["..."], "rows": [{ "col": "value" }], "row_count": N, "truncated": false }\`.
+export const EXECUTE_SQL_TOOL_DESCRIPTION = `Execute a single read-only SELECT against an Atlas-registered datasource. It is parsed, table-whitelist-checked, RLS-injected, auto-LIMITed, and run under a statement timeout; DDL/DML, multi-statement input, and unknown tables are rejected. Returns \`{ columns, rows, row_count, truncated, cached, cacheAgeMs }\`.
 
-Use this when no canonical metric covers the question, when you need ad-hoc breakdowns, or when a virtual dimension or query pattern requires SQL the agent must compose. Always call \`describeEntity\` to read exact column names and joins. Example call: \`{ "sql": "SELECT status, count(*) FROM orders GROUP BY 1", "explanation": "order count by status" }\`.
+Identical queries are briefly cached; a hit sets \`cached: true\` plus \`cacheAgeMs\` (row age in ms) — caveat time-sensitive answers as of that age, not current numbers. Set \`bypassCache: true\` only when the user explicitly asks for fresh or current data; it re-runs live under every governance gate.
 
-Don't use this for catalog discovery (use \`listEntities\`), schema lookup (use \`describeEntity\`), glossary disambiguation (use \`searchGlossary\`), or any question whose metric id exists under \`semantic/metrics/\` (use \`runMetric\`). Avoid retrying the same SQL after a validation or RLS error — fix the query.`;
+Use this when no canonical metric covers the question or you need ad-hoc breakdowns; call \`describeEntity\` for exact columns and joins. Example call: \`{ "sql": "SELECT status, count(*) FROM orders GROUP BY 1", "explanation": "orders by status" }\`.
+
+Don't use this for catalog discovery (\`listEntities\`), schema lookup (\`describeEntity\`), glossary disambiguation (\`searchGlossary\`), or an existing metric (\`runMetric\`). Avoid retrying failed SQL — fix the query.`;
 
 export const LIST_ENTITIES_TOOL_DESCRIPTION = `Return the catalog of semantic-layer entities (tables and views) declared for this workspace. Each row carries \`{ name, table, description, source }\`; an optional case-insensitive \`filter\` substring narrows the result against name, table, and description. Example call: \`{ "filter": "order" }\`. Example response: \`{ "count": 3, "entities": [{ "name": "orders", "table": "orders", "description": "...", "source": "default" }] }\`.
 

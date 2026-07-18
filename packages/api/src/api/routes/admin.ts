@@ -1480,6 +1480,8 @@ const getSettingsRoute = createRoute({
           scope: z.enum(["platform", "workspace"]),
           currentValue: z.string().optional(),
           source: z.enum(["env", "override", "workspace-override", "default"]),
+          platformValue: z.string().optional().describe("#4669 — the platform (global) tier of a workspace-scoped setting, resolved override → env → default with any workspace override excluded. Platform-admin view only."),
+          platformSource: z.enum(["env", "override", "default"]).optional().describe("#4669 — source of platformValue; never workspace-override by construction."),
         })),
         manageable: z.boolean().describe("Whether settings can be persisted (internal DB is available)"),
         deployMode: z.enum(["self-hosted", "saas"]).describe("Current deploy mode"),
@@ -1498,10 +1500,13 @@ const updateSettingRoute = createRoute({
   path: "/settings/{key}",
   tags: ["Admin — Settings"],
   summary: "Update setting",
-  description: "Sets or updates a settings override. Requires internal database.",
+  description: "Sets or updates a settings override. Requires internal database. Pass tier=platform to write the platform (global) tier of a workspace-scoped setting explicitly (#4669) — gated like platform-scoped settings: platform_admin, or a self-hosted admin session with no active workspace.",
   request: {
     params: z.object({
       key: z.string().min(1).openapi({ param: { name: "key", in: "path" }, example: "ATLAS_ROW_LIMIT" }),
+    }),
+    query: z.object({
+      tier: z.enum(["platform"]).optional().openapi({ param: { name: "tier", in: "query" }, description: "#4669 — explicit write tier. \"platform\" targets the global (org_id IS NULL) row regardless of the session's active workspace. Requires platform_admin; on self-hosted, an admin session with no active workspace also qualifies. Omitted: workspace-scoped keys write the session workspace's tier when one is active (with none, the global row — self-hosted admins or platform admins)." }),
     }),
   },
   responses: {
@@ -1524,10 +1529,13 @@ const deleteSettingRoute = createRoute({
   path: "/settings/{key}",
   tags: ["Admin — Settings"],
   summary: "Delete setting override",
-  description: "Removes a settings override, reverting to env var or default value.",
+  description: "Removes a settings override, reverting to env var or default value. Pass tier=platform to clear the platform (global) tier of a workspace-scoped setting explicitly (#4669) — gated like platform-scoped settings: platform_admin, or a self-hosted admin session with no active workspace.",
   request: {
     params: z.object({
       key: z.string().min(1).openapi({ param: { name: "key", in: "path" }, example: "ATLAS_ROW_LIMIT" }),
+    }),
+    query: z.object({
+      tier: z.enum(["platform"]).optional().openapi({ param: { name: "tier", in: "query" }, description: "#4669 — explicit delete tier. \"platform\" clears the global (org_id IS NULL) row regardless of the session's active workspace. Requires platform_admin; on self-hosted, an admin session with no active workspace also qualifies. Omitted: workspace-scoped keys clear the session workspace's tier when one is active (with none, the global row — self-hosted admins or platform admins)." }),
     }),
   },
   responses: {
@@ -3639,6 +3647,7 @@ admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", asyn
 admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", async () => {
 
   const { key } = c.req.valid("param");
+  const { tier } = c.req.valid("query");
 
   const { authResult, requestId } = await adminAuthAndContext(c, "admin:settings");
 
@@ -3672,6 +3681,19 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   if (def.scope === "platform" && !isPlatformAdmin && (orgId || isSaasModeForGuard())) {
     return c.json({ error: "forbidden", message: `"${key}" is a platform-level setting and cannot be modified by workspace admins.`, requestId }, 403);
+  }
+
+  // #4669 — explicit platform-tier write path. `tier=platform` targets the
+  // global (org_id IS NULL) row of a workspace-scoped key — the
+  // cross-workspace default / kill-switch — REGARDLESS of the session's
+  // active workspace, so a platform admin never needs a no-org session to
+  // reach it. The tier is explicit in the request, never inferred from the
+  // session org. Gate classification matches the platform-scope gate
+  // above: platform admins always pass; self-hosted no-org admins keep the
+  // legitimate global-override path (#3395); everyone else is a workspace
+  // admin → 403. Same fail-closed mode probe.
+  if (tier === "platform" && !isPlatformAdmin && (orgId || isSaasModeForGuard())) {
+    return c.json({ error: "forbidden", message: `Writing the platform tier of "${key}" requires the platform_admin role.`, requestId }, 403);
   }
 
   // #3395 — workspace-scope sibling of the gate above: with no org context,
@@ -3734,8 +3756,9 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
     }
   }
 
-  // Pass orgId for workspace-scoped settings
-  const effectiveOrgId = def.scope === "workspace" ? orgId : undefined;
+  // Pass orgId for workspace-scoped settings; an explicit tier=platform
+  // targets the global row instead (#4669 — gate above already fired).
+  const effectiveOrgId = def.scope === "workspace" && tier !== "platform" ? orgId : undefined;
   try {
     await setSetting(key, value, authResult.user?.id, effectiveOrgId);
   } catch (err) {
@@ -3759,7 +3782,10 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
     targetType: "settings",
     targetId: key,
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-    metadata: { key, value },
+    // #4669 — record which tier the write landed on (global row vs the
+    // session workspace's row) so platform-tier flips are distinguishable
+    // in the audit trail.
+    metadata: { key, value, tier: effectiveOrgId ? "workspace" : "platform" },
   });
 
   return c.json({ success: true, key, value }, 200);
@@ -3768,6 +3794,7 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
 admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", async () => {
 
   const { key } = c.req.valid("param");
+  const { tier } = c.req.valid("query");
 
   const { authResult, requestId } = await adminAuthAndContext(c, "admin:settings");
 
@@ -3798,6 +3825,13 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
     return c.json({ error: "forbidden", message: `"${key}" is a platform-level setting and cannot be modified by workspace admins.`, requestId }, 403);
   }
 
+  // #4669 — explicit platform-tier delete path: clearing the global row is
+  // a write to the cross-workspace default too. Same gate classification
+  // and rationale as the PUT handler's tier gate.
+  if (tier === "platform" && !isPlatformAdmin && (orgId || isSaasModeForGuard())) {
+    return c.json({ error: "forbidden", message: `Clearing the platform tier of "${key}" requires the platform_admin role.`, requestId }, 403);
+  }
+
   // #3395 — same workspace-scope/no-org gate as PUT: clearing the global
   // (org_id IS NULL) override of a workspace-scoped key is a write to the
   // tier-2 default every workspace resolves through. See the PUT handler.
@@ -3814,7 +3848,8 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
     return c.json({ error: "forbidden", message: `"${key}" is managed by Atlas in SaaS mode and cannot be modified by workspace admins.`, requestId }, 403);
   }
 
-  const effectiveOrgId = def.scope === "workspace" ? orgId : undefined;
+  // #4669 — explicit tier=platform clears the global row, mirroring PUT.
+  const effectiveOrgId = def.scope === "workspace" && tier !== "platform" ? orgId : undefined;
   try {
     await deleteSetting(key, authResult.user?.id, effectiveOrgId);
   } catch (err) {
@@ -3837,7 +3872,8 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
     targetType: "settings",
     targetId: key,
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-    metadata: { key, action: "reset_to_default" },
+    // #4669 — same tier annotation as PUT (see there).
+    metadata: { key, action: "reset_to_default", tier: effectiveOrgId ? "workspace" : "platform" },
   });
 
   return c.json({ success: true, key }, 200);

@@ -76,6 +76,20 @@ export interface SettingWithValue extends SettingDefinition {
    * clicking Save. Always undefined in self-hosted.
    */
   saasImmutable?: boolean;
+  /**
+   * #4669 — the platform (global, org_id IS NULL) tier of a
+   * workspace-scoped setting, resolved override → env → default with the
+   * caller's workspace override deliberately excluded. This is the value
+   * every workspace inherits unless it sets its own override — the
+   * platform console renders it so an operator can manage the global row
+   * without a no-org session or a direct DB write. Only populated for
+   * workspace-scoped keys in the platform-admin (showAll) view;
+   * platform-scoped keys already resolve at the platform tier via
+   * `currentValue`/`source`.
+   */
+  platformValue?: string;
+  /** #4669 — source of {@link platformValue}: never "workspace-override" by construction. */
+  platformSource?: "env" | "override" | "default";
 }
 
 export interface SettingRow {
@@ -2123,6 +2137,30 @@ function maskSecret(value: string | undefined): string | undefined {
 }
 
 /**
+ * Resolve a setting at the PLATFORM tier — global override → env → default,
+ * with any workspace override deliberately out of scope. The single copy of
+ * this ladder in the admin DISPLAY path (#4669) — runtime reads keep using
+ * `getSetting`/`getSettingLive`, which do not mask secrets. The
+ * platform-scoped display branch, the workspace-scoped fallthrough, and the
+ * `platformValue` computation in {@link getSettingsForAdmin} all read it,
+ * so they cannot drift.
+ */
+function resolvePlatformTier(def: SettingDefinition): {
+  value: string | undefined;
+  source: "env" | "override" | "default";
+} {
+  const override = _cache.get(cacheKey(def.key));
+  if (override) {
+    return { value: def.secret ? maskSecret(override.value) : override.value, source: "override" };
+  }
+  const envVal = process.env[def.envVar];
+  if (envVal !== undefined) {
+    return { value: def.secret ? maskSecret(envVal) : envVal, source: "env" };
+  }
+  return { value: def.default, source: "default" };
+}
+
+/**
  * Returns settings with current values and sources for the admin API.
  *
  * When orgId is provided, workspace-scoped settings resolve through the
@@ -2142,39 +2180,20 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
       let source: "env" | "override" | "workspace-override" | "default";
 
       if (orgId && def.scope === "workspace") {
-        // 4-tier resolution for workspace-scoped settings
+        // 4-tier resolution for workspace-scoped settings: the workspace
+        // override wins, then the shared platform-tier ladder.
         const wsOverride = _cache.get(cacheKey(def.key, orgId));
-        const platformOverride = _cache.get(cacheKey(def.key));
-        const envVal = process.env[def.envVar];
-
         if (wsOverride) {
           currentValue = def.secret ? maskSecret(wsOverride.value) : wsOverride.value;
           source = "workspace-override";
-        } else if (platformOverride) {
-          currentValue = def.secret ? maskSecret(platformOverride.value) : platformOverride.value;
-          source = "override";
-        } else if (envVal !== undefined) {
-          currentValue = def.secret ? maskSecret(envVal) : envVal;
-          source = "env";
         } else {
-          currentValue = def.default;
-          source = "default";
+          ({ value: currentValue, source } = resolvePlatformTier(def));
         }
       } else {
-        // Standard 3-tier for platform-scoped settings
-        const override = _cache.get(cacheKey(def.key));
-        const envVal = process.env[def.envVar];
-
-        if (override) {
-          currentValue = def.secret ? maskSecret(override.value) : override.value;
-          source = "override";
-        } else if (envVal !== undefined) {
-          currentValue = def.secret ? maskSecret(envVal) : envVal;
-          source = "env";
-        } else {
-          currentValue = def.default;
-          source = "default";
-        }
+        // Standard 3-tier for platform-scoped settings (and workspace-scoped
+        // keys viewed with no org context, where the platform tier IS the
+        // resolved view).
+        ({ value: currentValue, source } = resolvePlatformTier(def));
       }
 
       // #3399 — the SaaS suppression of the requiresRestart hint is
@@ -2196,7 +2215,19 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
       // don't see a noisy `false` everywhere.
       const saasImmutable = inSaas && isSaasImmutableKey(def.key) ? true : undefined;
 
-      return { ...def, requiresRestart, saasImmutable, currentValue, source };
+      // #4669 — platform tier of workspace-scoped keys, for the platform
+      // console. Resolved WITHOUT the caller's workspace override (that
+      // override would mask the global row an operator is managing —
+      // e.g. a platform admin whose own workspace enables Agent Auth
+      // must still see the platform tier as off). Platform-admin
+      // (showAll) view only: workspace admins manage their own tier.
+      let platformValue: string | undefined;
+      let platformSource: "env" | "override" | "default" | undefined;
+      if (showAll && def.scope === "workspace") {
+        ({ value: platformValue, source: platformSource } = resolvePlatformTier(def));
+      }
+
+      return { ...def, requiresRestart, saasImmutable, currentValue, source, platformValue, platformSource };
     });
 }
 

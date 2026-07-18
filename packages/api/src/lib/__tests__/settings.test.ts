@@ -626,6 +626,74 @@ describe("settings module", () => {
       expect(settings.find((s) => s.key === "ATLAS_PROVIDER")).toBeDefined();
       expect(settings.find((s) => s.key === "ATLAS_ROW_LIMIT")).toBeDefined();
     });
+
+    // #4669 — platform tier of workspace-scoped keys for the platform
+    // console: the caller's own workspace override must NOT mask the
+    // global row the operator is managing.
+    describe("platform tier of workspace-scoped keys (#4669)", () => {
+      it("platform-admin view surfaces the global row even when the caller's workspace overrides it", async () => {
+        enableInternalDB();
+        setResults({
+          rows: [
+            { key: "ATLAS_ROW_LIMIT", value: "500", updated_at: "2026-01-01", updated_by: null, org_id: null },
+            { key: "ATLAS_ROW_LIMIT", value: "100", updated_at: "2026-01-01", updated_by: null, org_id: "org-1" },
+          ],
+        });
+        await loadSettings();
+
+        const settings = getSettingsForAdmin("org-1", true);
+        const rowLimit = settings.find((s) => s.key === "ATLAS_ROW_LIMIT");
+        expect(rowLimit).toBeDefined();
+        // Workspace-resolved view is unchanged...
+        expect(rowLimit!.source).toBe("workspace-override");
+        expect(rowLimit!.currentValue).toBe("100");
+        // ...while the platform tier shows the global row.
+        expect(rowLimit!.platformSource).toBe("override");
+        expect(rowLimit!.platformValue).toBe("500");
+      });
+
+      it("platformSource falls back to env, then default", () => {
+        process.env.ATLAS_ROW_LIMIT = "500";
+        _resetSettingsCache();
+        let rowLimit = getSettingsForAdmin("org-1", true).find((s) => s.key === "ATLAS_ROW_LIMIT");
+        expect(rowLimit!.platformSource).toBe("env");
+        expect(rowLimit!.platformValue).toBe("500");
+
+        delete process.env.ATLAS_ROW_LIMIT;
+        rowLimit = getSettingsForAdmin("org-1", true).find((s) => s.key === "ATLAS_ROW_LIMIT");
+        expect(rowLimit!.platformSource).toBe("default");
+        expect(rowLimit!.platformValue).toBe("1000");
+      });
+
+      it("a key with no registry default resolves platformSource 'default' with platformValue undefined", () => {
+        // Pins the wire shape the platform console renders as "not set":
+        // the row still appears (platformSource present) but carries no
+        // value. ATLAS_SANDBOX_URL is workspace-scoped with no default.
+        const origSandboxUrl = process.env.ATLAS_SANDBOX_URL;
+        delete process.env.ATLAS_SANDBOX_URL;
+        try {
+          const sandboxUrl = getSettingsForAdmin("org-1", true).find((s) => s.key === "ATLAS_SANDBOX_URL");
+          expect(sandboxUrl).toBeDefined();
+          expect(sandboxUrl!.platformSource).toBe("default");
+          expect(sandboxUrl!.platformValue).toBeUndefined();
+        } finally {
+          if (origSandboxUrl !== undefined) process.env.ATLAS_SANDBOX_URL = origSandboxUrl;
+          else delete process.env.ATLAS_SANDBOX_URL;
+        }
+      });
+
+      it("platform fields are omitted from the non-platform-admin view", () => {
+        const rowLimit = getSettingsForAdmin("org-1", false).find((s) => s.key === "ATLAS_ROW_LIMIT");
+        expect(rowLimit!.platformSource).toBeUndefined();
+        expect(rowLimit!.platformValue).toBeUndefined();
+      });
+
+      it("platform-scoped keys never carry platform fields (currentValue already IS the platform tier)", () => {
+        const provider = getSettingsForAdmin("org-1", true).find((s) => s.key === "ATLAS_PROVIDER");
+        expect(provider!.platformSource).toBeUndefined();
+        expect(provider!.platformValue).toBeUndefined();
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------

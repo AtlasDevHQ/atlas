@@ -20,6 +20,19 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.59",
+    title: "Backup Engine & Residency Cleanup",
+    date: "2026-07-19",
+    summary:
+      "Automatic internal-database backups are now real on the hosted platform. A scheduled backup engine runs on its own cadence, stores each dump to S3-compatible object storage, and verifies backups by restoring them into a disposable database — and the platform health endpoint surfaces a backups signal that degrades (never hard-fails) when the newest verified backup falls outside its window. Data residency gets two guarantees closed out: when a workspace is migrated to a new region, its data in the source region is now actually deleted after the grace period, and a migration's export bundle now carries every content pillar — dashboards, knowledge documents, scheduled tasks, and durable agent memory — so nothing is silently left behind. Finally, MCP clients that register dynamically now receive refresh tokens, so long-lived connections stop needing frequent re-authentication.",
+    highlights: [
+      "Scheduled internal-DB backups with S3-compatible storage and restore-based verification, surfaced as a degrade-only health signal",
+      "Region migration now deletes the workspace's data from the source region after the grace period — closing the residency cleanup gap",
+      "Region-migration export bundles cover every content pillar (dashboards, knowledge, scheduled tasks, agent memory), guarded against future drift",
+      "MCP dynamic-client registration advertises offline_access, so clients receive refresh tokens and avoid frequent re-auth",
+    ],
+  },
+  {
     version: "v0.0.58",
     title: "Dashboard & Sharing Residue",
     date: "2026-07-18",

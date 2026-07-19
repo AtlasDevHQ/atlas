@@ -194,7 +194,7 @@ The migration runs in 4 phases:
 1. **Export** — workspace data is extracted from the source region's internal database into an export bundle
 2. **Transfer** — the bundle is sent to the target region's API via an internal service-to-service endpoint
 3. **Cutover** — the workspace's region assignment is updated and caches are flushed
-4. **Cleanup** — source data is marked for removal after a 7-day grace period
+4. **Cleanup** — after a 7-day grace period, a background sweep in the source region **deletes** the workspace's data from the source region's internal database (see [Source-data cleanup](#source-data-cleanup))
 
 During migration, the workspace is **read-only** — write operations (new conversations, settings changes) return `409 Workspace Migrating` until the migration completes.
 
@@ -236,10 +236,20 @@ curl http://localhost:3001/api/v1/admin/residency/migration \
 | Billing (subscription, Stripe state) | Global — follows the organization, unaffected by migration |
 
 <Callout type="warn" title="Stays behind does not mean retained">
-  Everything in the "stays" rows above is **scheduled for deletion** from the source region after the 7-day grace period — the migration bundle is the complete set of what is intended to survive. Treat anything else as gone: export what you need before migrating, and do not rely on leftover source-region data after cutover.
+  Everything in the "stays" rows above is **deleted** from the source region after the 7-day grace period — the migration bundle is the complete set of what is intended to survive. Treat anything else as gone: export what you need before migrating, and do not rely on leftover source-region data after cutover.
 </Callout>
 
 The authoritative per-table decision registry lives in `packages/api/src/lib/residency/bundle-scope.ts`; a CI tripwire fails when a new workspace-scoped table appears without an explicit moves/stays decision, so this table cannot silently drift from the implementation again.
+
+### Source-data cleanup
+
+Once a migration completes and the 7-day grace period elapses, a background sweep in the **source** region (hourly) deletes the migrated workspace's rows from the source region's internal database — both the exported pillars (already safely in the target region) and the "stays" residue from the table above. Platform-level state (billing, auth spine, the migration record itself) is never touched. The deletion scope is derived directly from the same per-table registry that defines the export bundle, so what is deleted can never drift from what was decided.
+
+Operational properties:
+
+- **Transactional and retry-safe** — each migration's cleanup runs in a single transaction; a partial failure rolls back completely and is retried on the next sweep. A completed cleanup stamps the migration row (`source_cleaned_at`) so it never re-runs.
+- **Audited** — a `region_migration_source_cleaned` event (with per-table deletion counts) is logged in the source region's service logs when a cleanup executes.
+- **Guarded** — the sweep refuses to delete data for a workspace whose organization record is still (or again) homed in the source region (an ambiguous record fails closed: nothing is deleted and the migration stays flagged for cleanup), and, when the instance declares a region identity (`ATLAS_API_REGION`), only processes migrations whose source region matches it.
 
 ### Post-migration re-connect checklist
 
@@ -313,7 +323,7 @@ When `executeRegionMigration` fails after Phase 3 succeeded, the row will be `st
 2. **Confirm Phase 4 (cleanup scheduling) is what failed.** Inspect the `region_migration_failed` audit event and the `error_message` column on the migration row. If the failure was earlier (Phase 2 transfer or Phase 3 organization update), `region_updated` would not be `TRUE` — the guard would not have fired and the retry endpoint would have accepted the reset normally. A 409 specifically means the destination has taken ownership.
 
 3. **Pick a recovery direction.**
-   - **Forward (preferred):** the destination has the data, only post-cutover bookkeeping failed. Re-issue the cleanup scheduling and any other Phase 4 side effects manually, then mark the migration as completed. `region_updated` stays `TRUE` — the destination still owns the data:
+   - **Forward (preferred):** the destination has the data, only post-cutover bookkeeping failed. Mark the migration as completed — the [source-data cleanup sweep](#source-data-cleanup) then picks it up automatically once the grace period (counted from `completed_at`) elapses. `region_updated` stays `TRUE` — the destination still owns the data:
      ```sql
      UPDATE region_migrations
         SET status = 'completed',

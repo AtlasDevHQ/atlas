@@ -287,7 +287,13 @@ export function isPlaintextUrl(value: string): boolean {
  * to destroy the socket instead of returning it to the pool.
  */
 export interface InternalPoolClient {
-  query(sql: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
+  // `rowCount` is optional so lightweight mocks can keep returning `{ rows }`;
+  // the real pg client always populates it (residency cleanup reads it for
+  // its per-table deletion audit — see lib/residency/cleanup.ts).
+  query(
+    sql: string,
+    params?: unknown[],
+  ): Promise<{ rows: Record<string, unknown>[]; rowCount?: number | null }>;
   release(err?: Error): void;
 }
 

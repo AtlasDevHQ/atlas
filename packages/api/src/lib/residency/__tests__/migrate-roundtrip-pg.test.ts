@@ -26,6 +26,7 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { exportWorkspaceBundle } from "../export";
 import { importBundle } from "../../../api/routes/admin-migrate";
+import { buildCleanupStatements, runSourceCleanupSweep } from "../cleanup";
 import type { ImportResult } from "@useatlas/types";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -295,6 +296,228 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         scheduledTasks: { imported: 0, skipped: 1 },
         agentSessionMemory: { imported: 0, skipped: 1 },
       });
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ── #4458 — Phase 4 source cleanup against the real schema ──────────
+  // The mock-level suite (`cleanup.test.ts`) pins scope + transaction
+  // behavior but can't catch a typo'd column in one of the ~70 generated
+  // DELETE statements — this runs every one of them against real Postgres.
+  it(
+    "deletes the source org's residue after the grace period, sparing the target org, platform rows, and a returned workspace (#4458)",
+    async () => {
+      const CLEAN_ORG = "org-cleanup-src";
+      const GUARD_ORG = "org-cleanup-guard";
+      const GRACE_ORG = "org-cleanup-in-grace";
+      const C_CONV = "77777777-7777-4777-8777-777777777777";
+      const GRACE_CONV = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+      const C_DASH = "88888888-8888-4888-8888-888888888888";
+      const C_CARD = "99999999-9999-4999-8999-999999999999";
+      const C_DOC = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const C_TASK = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      const G_CONV = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+      // Minimal Better-Auth `organization` mirror for the cutover guard
+      // (the BA migrations are skipped in this suite).
+      await pool.query(
+        `CREATE TABLE IF NOT EXISTS organization (id text PRIMARY KEY, region text)`,
+      );
+      await pool.query(
+        `INSERT INTO organization (id, region) VALUES ($1, 'eu-test'), ($2, 'us-test'), ($3, 'eu-test')`,
+        [CLEAN_ORG, GUARD_ORG, GRACE_ORG],
+      );
+
+      // ── Seed residue for the migrated-away org: exported pillars still
+      // present in the source PLUS stays-residue rows ──
+      await pool.query(
+        `INSERT INTO conversations (id, user_id, title, surface, org_id)
+         VALUES ($1, 'user-1', 'Residue conversation', 'web', $2)`,
+        [C_CONV, CLEAN_ORG],
+      );
+      await pool.query(
+        `INSERT INTO messages (conversation_id, role, content)
+         VALUES ($1, 'user', '"hello"'::jsonb)`,
+        [C_CONV],
+      );
+      // No FK from slack_threads → conversations: only the parent-first
+      // delete ordering keeps this row attributable.
+      await pool.query(
+        `INSERT INTO slack_threads (thread_ts, channel_id, conversation_id)
+         VALUES ('171.001', 'C-clean', $1)`,
+        [C_CONV],
+      );
+      await pool.query(
+        `INSERT INTO agent_session_memory (conversation_id, org_id, namespace, value)
+         VALUES ($1, $2, 'scratchpad', '{"note":"residue"}'::jsonb)`,
+        [C_CONV, CLEAN_ORG],
+      );
+      await pool.query(
+        `INSERT INTO dashboards (id, org_id, owner_id, title) VALUES ($1, $2, 'user-1', 'Residue dash')`,
+        [C_DASH, CLEAN_ORG],
+      );
+      await pool.query(
+        `INSERT INTO dashboard_cards (id, dashboard_id, position, title, sql)
+         VALUES ($1, $2, 0, 'Residue card', 'SELECT 1')`,
+        [C_CARD, C_DASH],
+      );
+      await pool.query(
+        `INSERT INTO dashboard_user_drafts (user_id, dashboard_id, draft, baseline, published_baseline_at)
+         VALUES ('user-9', $1, '{"title":"wip","cards":[]}'::jsonb, '{"title":"base","cards":[]}'::jsonb, now())`,
+        [C_DASH],
+      );
+      await pool.query(
+        `INSERT INTO dashboard_draft_card_cache (user_id, dashboard_id, card_id, cached_columns, cached_rows)
+         VALUES ('user-9', $1, $2, '["a"]'::jsonb, '[{"a":1}]'::jsonb)`,
+        [C_DASH, C_CARD],
+      );
+      await pool.query(
+        `INSERT INTO knowledge_documents (id, workspace_id, collection_id, path, type, title, tags, body, status)
+         VALUES ($1, $2, 'handbook', 'residue.md', 'guide', 'Residue doc', '[]'::jsonb, 'body', 'draft')`,
+        [C_DOC, CLEAN_ORG],
+      );
+      await pool.query(
+        `INSERT INTO knowledge_links (source_document_id, target_path) VALUES ($1, 'other.md')`,
+        [C_DOC],
+      );
+      await pool.query(
+        `INSERT INTO scheduled_tasks (id, owner_id, org_id, name, question, cron_expression, delivery_channel,
+                                      recipients, connection_group_id, approval_mode, enabled)
+         VALUES ($1, 'user-1', $2, 'Residue task', 'q?', '0 9 * * 1', 'email', '[]'::jsonb, 'g-prod', 'auto', true)`,
+        [C_TASK, CLEAN_ORG],
+      );
+      await pool.query(
+        `INSERT INTO scheduled_task_runs (task_id, status) VALUES ($1, 'success')`,
+        [C_TASK],
+      );
+      await pool.query(
+        `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id)
+         VALUES ($1, 'entity', 'orders', 'table: orders', 'g-prod')`,
+        [CLEAN_ORG],
+      );
+      await pool.query(
+        `INSERT INTO learned_patterns (org_id, pattern_sql, description, confidence, status, auto_promoted)
+         VALUES ($1, 'SELECT 1', 'Residue pattern', 0.5, 'approved', false)`,
+        [CLEAN_ORG],
+      );
+      // Org-scoped settings row must go; the platform-scoped (org_id NULL)
+      // row must survive — platform state is outside the cleanup scope.
+      await pool.query(
+        `INSERT INTO settings (key, value, org_id) VALUES ('theme', 'light', $1), ('cleanup_probe_platform', 'keep', NULL)`,
+        [CLEAN_ORG],
+      );
+      // chat_cache: the Slack installation row (org id in the JSONB value)
+      // must go; a generic response-cache row is unattributable and stays.
+      await pool.query(
+        `INSERT INTO chat_cache (key, value)
+         VALUES ('slack:installation:T-clean', jsonb_build_object('orgId', $1::text, 'botToken', 'enc')),
+                ('response:generic', '{"answer":42}'::jsonb)`,
+        [CLEAN_ORG],
+      );
+      await pool.query(
+        `INSERT INTO audit_log (auth_mode, sql, duration_ms, success, org_id)
+         VALUES ('none', 'SELECT 1', 5, true, $1)`,
+        [CLEAN_ORG],
+      );
+
+      // ── A workspace that migrated away but came BACK before cleanup ran:
+      // the cutover guard must refuse to delete its (live) data ──
+      await pool.query(
+        `INSERT INTO conversations (id, user_id, title, surface, org_id)
+         VALUES ($1, 'user-1', 'Guarded conversation', 'web', $2)`,
+        [G_CONV, GUARD_ORG],
+      );
+
+      // A migration still INSIDE the grace period (2 days < 7) — the due
+      // query's interval clause is the only timing guard, so this pins that
+      // premature deletion cannot happen even when the sweep runs.
+      await pool.query(
+        `INSERT INTO conversations (id, user_id, title, surface, org_id)
+         VALUES ($1, 'user-1', 'In-grace conversation', 'web', $2)`,
+        [GRACE_CONV, GRACE_ORG],
+      );
+
+      // Two migrations completed 8 days ago — past the 7-day grace period —
+      // and one only 2 days ago, still inside it.
+      await pool.query(
+        `INSERT INTO region_migrations (id, workspace_id, source_region, target_region, status, completed_at, region_updated)
+         VALUES ('mig-clean-1', $1, 'us-test', 'eu-test', 'completed', now() - interval '8 days', TRUE),
+                ('mig-guard-1', $2, 'us-test', 'eu-test', 'completed', now() - interval '8 days', TRUE),
+                ('mig-grace-1', $3, 'us-test', 'eu-test', 'completed', now() - interval '2 days', TRUE)`,
+        [CLEAN_ORG, GUARD_ORG, GRACE_ORG],
+      );
+
+      // Pin this process's region identity to the source region so the
+      // sweep's region guard matches (getApiRegion reads the env var on
+      // every call, so setting it just for this block is enough).
+      const savedRegion = process.env.ATLAS_API_REGION;
+      process.env.ATLAS_API_REGION = "us-test";
+      try {
+        const sweep = await runSourceCleanupSweep();
+        expect(sweep).toEqual({ due: 2, cleaned: 1, skipped: 1, blocked: 0 });
+
+        // Every scoped table's residue for the migrated org is gone.
+        const countIn = async (sql: string, params: unknown[]): Promise<number> => {
+          const res = await pool.query(sql, params);
+          return Number(res.rows[0].n);
+        };
+        expect(await countIn(`SELECT count(*)::int AS n FROM conversations WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM messages WHERE conversation_id = $1`, [C_CONV])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM slack_threads WHERE conversation_id = $1`, [C_CONV])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM agent_session_memory WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM dashboards WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM dashboard_cards WHERE dashboard_id = $1`, [C_DASH])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM dashboard_user_drafts WHERE dashboard_id = $1`, [C_DASH])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM dashboard_draft_card_cache WHERE dashboard_id = $1`, [C_DASH])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM knowledge_documents WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM knowledge_links WHERE source_document_id = $1`, [C_DOC])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM scheduled_tasks WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM scheduled_task_runs WHERE task_id = $1`, [C_TASK])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM semantic_entities WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM learned_patterns WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM settings WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM audit_log WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM chat_cache WHERE key = 'slack:installation:T-clean'`, [])).toBe(0);
+
+        // Survivors: platform settings row, unattributable cache row, the
+        // TARGET org's imported data (seeded by the round-trip test above —
+        // these blocks run sequentially in this file), and the returned
+        // (guarded) workspace.
+        expect(await countIn(`SELECT count(*)::int AS n FROM settings WHERE key = 'cleanup_probe_platform' AND org_id IS NULL`, [])).toBe(1);
+        expect(await countIn(`SELECT count(*)::int AS n FROM chat_cache WHERE key = 'response:generic'`, [])).toBe(1);
+        expect(await countIn(`SELECT count(*)::int AS n FROM conversations WHERE org_id = $1`, [TARGET_ORG])).toBe(1);
+        expect(await countIn(`SELECT count(*)::int AS n FROM conversations WHERE org_id = $1`, [GUARD_ORG])).toBe(1);
+
+        // Grace-period boundary: the 2-day-old migration was never due —
+        // its data is untouched and its row unstamped.
+        expect(await countIn(`SELECT count(*)::int AS n FROM conversations WHERE org_id = $1`, [GRACE_ORG])).toBe(1);
+        const graceRow = await pool.query(
+          `SELECT source_cleaned_at FROM region_migrations WHERE id = 'mig-grace-1'`,
+        );
+        expect(graceRow.rows[0].source_cleaned_at).toBeNull();
+
+        // Both past-grace migration rows resolved; cutover bookkeeping untouched.
+        const migs = await pool.query(
+          `SELECT id, status, region_updated, source_cleaned_at FROM region_migrations WHERE id IN ('mig-clean-1', 'mig-guard-1') ORDER BY id`,
+        );
+        expect(migs.rows).toHaveLength(2);
+        for (const row of migs.rows) {
+          expect(row.status).toBe("completed");
+          expect(row.region_updated).toBe(true);
+          expect(row.source_cleaned_at).not.toBeNull();
+        }
+
+        // Idempotent: nothing is due on the next sweep (the in-grace row is
+        // still not due; the resolved rows are stamped).
+        expect(await runSourceCleanupSweep()).toEqual({ due: 0, cleaned: 0, skipped: 0, blocked: 0 });
+
+        // Belt-and-braces: the generated statement set matches what ran —
+        // every scopable table got exactly one DELETE against the real schema.
+        expect(buildCleanupStatements().length).toBeGreaterThan(60);
+      } finally {
+        if (savedRegion === undefined) delete process.env.ATLAS_API_REGION;
+        else process.env.ATLAS_API_REGION = savedRegion;
+      }
     },
     PG_TEST_TIMEOUT_MS,
   );

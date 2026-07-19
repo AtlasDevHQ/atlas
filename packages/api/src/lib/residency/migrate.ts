@@ -9,6 +9,8 @@
  * 2. **Transfer** — send the export bundle to the target region's API
  * 3. **Cutover** — update the organization's region, flush caches, invalidate pools
  * 4. **Cleanup** — schedule source data removal after a 7-day grace period
+ *    (executed by the `region_migration_source_cleanup` periodic fiber, #4458 —
+ *    see `cleanup.ts`; `getCleanupDueMigrations` below is its due query)
  *
  * During migration, the workspace is read-only — write operations are rejected
  * by the migration write-lock middleware (see readonly.ts).
@@ -492,8 +494,14 @@ export async function failStaleMigrations(): Promise<{
 // ---------------------------------------------------------------------------
 
 /**
- * Find completed migrations where the source data grace period has elapsed.
- * Returns migrations eligible for source data cleanup.
+ * Find completed migrations where the source data grace period has elapsed
+ * and the source-region residue has not been cleaned up yet.
+ *
+ * Consumed by the `region_migration_source_cleanup` periodic fiber (#4458)
+ * via `runSourceCleanupSweep` in `cleanup.ts`. `source_cleaned_at IS NULL`
+ * is the retry contract: the cleanup stamps it in the same transaction as
+ * its deletes, so a partially-failed cleanup rolls back to "still due" and
+ * is retried on the next sweep.
  */
 export async function getCleanupDueMigrations(): Promise<
   Array<{ id: string; workspaceId: string; sourceRegion: string; completedAt: string }>
@@ -510,6 +518,7 @@ export async function getCleanupDueMigrations(): Promise<
      FROM region_migrations
      WHERE status = 'completed'
        AND completed_at < NOW() - make_interval(days => $1)
+       AND source_cleaned_at IS NULL
      ORDER BY completed_at ASC`,
     [CLEANUP_GRACE_PERIOD_DAYS],
   );

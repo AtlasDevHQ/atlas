@@ -521,6 +521,13 @@ describe("migrateAuthTables", () => {
             // must be in the already-applied set so this "all applied" test
             // sees zero new migrations.
             { name: "0177_backups_scheduled_window.sql" },
+            // 0178 (#4458) — region_migrations.source_cleaned_at: the
+            // retry-safe stamp the source-cleanup fiber writes with its
+            // deletes. Plain additive ALTER on an Atlas-internal table, no
+            // Better Auth involvement, so it runs in every auth mode — must
+            // be in the already-applied set so this "all applied" test sees
+            // zero new migrations.
+            { name: "0178_region_migrations_source_cleaned_at.sql" },
           ],
         };
       }

@@ -231,7 +231,10 @@ describe("runMigrations", () => {
     //   two-phase drop, readers/writers removed by #4555 in v0.0.55, #4561) = 177.
     //   Plus 0177 (backups.scheduled_window + partial UNIQUE index — the
     //   scheduled-backup fiber's cross-replica cadence-window claim, #4457) = 178.
-    expect(count).toBe(178);
+    //   Plus 0178 (region_migrations.source_cleaned_at — the retry-safe stamp
+    //   the #4458 source-cleanup fiber writes transactionally with its
+    //   deletes) = 179.
+    expect(count).toBe(179);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -438,6 +441,7 @@ describe("runMigrations", () => {
         "0175_dashboard_draft_card_cache.sql",
         "0176_drop_dashboard_stage_changes.sql",
         "0177_backups_scheduled_window.sql",
+        "0178_region_migrations_source_cleaned_at.sql",
       ],
     });
 

@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.61",
+    title: "Scheduled-Backup Hang Fix",
+    date: "2026-07-19",
+    summary:
+      "The hosted platform's automatic internal-database backups now actually run to completion. A timing bug in the backup engine caused every scheduled backup to stall partway through and never finish — so although the automation appeared configured, no region had ever recorded a verified backup, and the platform health page reported the backup signal as degraded. The stall is fixed, and each region's next scheduled window produces a verified, restore-checked backup. This is an operational reliability fix with no change to how backups are configured or restored.",
+    highlights: [
+      "Scheduled internal-DB backups complete instead of stalling — every region now records verified, restore-checked backups on its normal cadence",
+      "Clears the platform-health 'no verified backup recorded' degraded signal once the next window runs",
+      "Hardened against a related failure mode: a missing pg_dump binary now fails the backup loudly instead of hanging",
+    ],
+  },
+  {
     version: "v0.0.60",
     title: "MCP OAuth Consent Fix",
     date: "2026-07-19",

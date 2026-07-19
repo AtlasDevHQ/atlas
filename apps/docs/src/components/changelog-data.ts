@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.62",
+    title: "Hosted-MCP Transport Fix",
+    date: "2026-07-19",
+    summary:
+      "Connecting an AI agent to the hosted platform over MCP now works out of the box across every setup path we publish. Previously, a client that followed our own installer, SDK helper, in-product connect wizard, or docs received a config that spoke the older HTTP+SSE transport against an endpoint that only speaks the newer Streamable HTTP — so the connection finished signing in and then failed on its very first request. This most visibly hit Claude Code and VS Code, which pick their transport from the config rather than guessing. Every surface now hands out the canonical connection URL and explicitly pins the Streamable HTTP transport, so new connections succeed on the first try. Follows the earlier sign-in fix (v0.0.60) — that fixed getting authorized; this fixes what happened right after.",
+    highlights: [
+      "Every Atlas-authored MCP setup surface — installer, SDK, the in-product connect wizard, and the docs — now emits a canonical Streamable-HTTP config, so first-time connections no longer fail after sign-in",
+      "Fixes the transport mismatch that most visibly broke Claude Code and VS Code, which select their transport from the config block",
+      "Published @useatlas/mcp 0.0.3 and @useatlas/sdk 0.1.1 with the corrected connection config",
+    ],
+  },
+  {
     version: "v0.0.61",
     title: "Scheduled-Backup Hang Fix",
     date: "2026-07-19",

@@ -182,39 +182,43 @@ export function registerSemanticTools(
       throw err;
     }
 
-    // Table-name fallback: `getAdminEntity` matches the name column only, but
-    // the tool contract advertises `name` accepts an entity name OR a table
-    // name (`inputSchema` below) — the pre-#4733 disk scan matched
-    // `raw.table === name`. Scan the org's published rows for a parsed-YAML
-    // `table` match.
+    // Name/table fallback. `getAdminEntity` resolves by the
+    // `semantic_entities.name` COLUMN only — and that column holds the file
+    // STEM (e.g. `conversation`, `organization`), NOT the entity's YAML `name`
+    // field (`Conversation`, `Organization`) that `listEntities` advertises.
+    // So a client describing an entity by the name it just saw in `listEntities`
+    // (or by its table) misses the column lookup above. Scan the org's published
+    // rows and match the parsed-YAML `name` OR `table` against the input — the
+    // two identifiers `listEntities` surfaces — so every listed entity is
+    // describable by either. (#4733 follow-up: verified live against prod, where
+    // `describeEntity({name:"Conversation"})` still 404'd after the first fix.)
     const rows = await listEntityRows(workspaceId, "entity", "published");
-    const tableMatches = rows.filter((row) => {
+    const matches = rows.filter((row) => {
       try {
         const parsed = loadYaml(row.yaml_content);
-        return (
-          !!parsed &&
-          typeof parsed === "object" &&
-          (parsed as Record<string, unknown>).table === nameOrTable
-        );
+        if (!parsed || typeof parsed !== "object") return false;
+        const p = parsed as Record<string, unknown>;
+        return p.name === nameOrTable || p.table === nameOrTable;
       } catch {
         // intentionally ignored: a single malformed sibling row must not block
-        // table-resolution of the others; its own name-column read surfaces the
-        // parse error where it is actionable.
+        // resolution of the others; its own name-column read surfaces the parse
+        // error where it is actionable.
         return false;
       }
     });
-    if (tableMatches.length === 0) return { kind: "unknown" };
+    if (matches.length === 0) return { kind: "unknown" };
 
-    // A table shared across distinct connection groups is ambiguous by the same
-    // rule as a shared name — surface it as a typed envelope, never a silent
-    // pick (multi-member groups share the same definition, collapsing to one
-    // group here so they resolve rather than falsely reporting ambiguity).
-    const groups = new Set(tableMatches.map((row) => row.connection_group_id ?? null));
+    // A name/table shared across distinct connection groups is ambiguous by the
+    // same rule as a shared name-column value — surface it as a typed envelope,
+    // never a silent pick (multi-member groups share the same definition,
+    // collapsing to one group here so they resolve rather than falsely
+    // reporting ambiguity).
+    const groups = new Set(matches.map((row) => row.connection_group_id ?? null));
     if (groups.size > 1) return { kind: "ambiguous", groups: [...groups] };
 
     // Re-resolve by the matched row's canonical name, scoped to its own group
     // so this second lookup can't itself throw an ambiguity.
-    const match = tableMatches[0];
+    const match = matches[0];
     const detail = await getAdminEntity({
       name: match.name,
       orgId: workspaceId,

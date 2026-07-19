@@ -76,9 +76,10 @@ export async function handleMigrateImport(
   // without the dashboards/knowledge/tasks/memory sections) both import.
   // Local constants (not `EXPORT_BUNDLE_VERSION` from @useatlas/types) so a
   // CLI built against an older published types package can't silently shrink
-  // the accept set — same rationale as the server's admin-migrate.ts.
-  const LEGACY_BUNDLE_VERSION = 1;
-  const CURRENT_BUNDLE_VERSION = 2;
+  // the accept set — same rationale as the server's admin-migrate.ts. The
+  // `satisfies` tether (type-only, scaffold-safe) pins both to the wire union.
+  const LEGACY_BUNDLE_VERSION = 1 satisfies import("@useatlas/types").SupportedBundleVersion;
+  const CURRENT_BUNDLE_VERSION = 2 satisfies import("@useatlas/types").SupportedBundleVersion;
   if (manifest.version !== CURRENT_BUNDLE_VERSION && manifest.version !== LEGACY_BUNDLE_VERSION) {
     console.error(
       pc.red(
@@ -170,9 +171,13 @@ export async function handleMigrateImport(
     try {
       result =
         (await resp.json()) as CrossVersionImportResult;
+      // Guard every section the cast claims as required (all four base
+      // sections are accessed unconditionally below).
       if (
         !result?.conversations ||
-        !result?.semanticEntities
+        !result?.semanticEntities ||
+        !result?.learnedPatterns ||
+        !result?.settings
       ) {
         throw new Error("Unexpected response shape");
       }

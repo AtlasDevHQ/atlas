@@ -214,7 +214,7 @@ export interface ExportedDashboard {
   ownerId: string;
   title: string;
   description: string | null;
-  /** Sharing preference; the share token itself is re-minted post-migration. */
+  /** Sharing preference; the share token itself is dropped — the owner re-shares post-migration. */
   shareMode: "public" | "org";
   refreshSchedule: string | null;
   /** Parameter definitions (JSONB array). */

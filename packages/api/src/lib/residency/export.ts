@@ -59,16 +59,16 @@ function scopeClause(columnRef: string, orgScope: string | null): string {
 }
 
 /**
- * Export all workspace data for a given org into an ExportBundle.
+ * Export the bundle-scoped data for a given org into an ExportBundle.
  *
  * Bundle scope (v2, #4460 — see `bundle-scope.ts` for the full per-table
  * decision registry and `data-residency.mdx` for the customer-facing table):
  * conversations (with messages), semantic entities, learned patterns,
- * org-scoped settings, dashboards (cards + per-user drafts, share tokens
- * re-minted), knowledge documents (with link graph + review status),
- * scheduled-task definitions (next run recomputed at import), and durable
- * agent session memory. The returned bundle is ready to POST to the target
- * region's import endpoint.
+ * org-scoped settings, dashboards (cards + per-user drafts; share tokens
+ * dropped — the owner re-shares in the target), knowledge documents (with
+ * link graph + review status), scheduled-task definitions (next run
+ * recomputed at import), and durable agent session memory. The returned
+ * bundle is ready to POST to the target region's import endpoint.
  *
  * @param orgScope - Org id to export, or `null` to export rows with
  *   `org_id IS NULL` (no-auth self-hosted instances, CLI path).
@@ -342,7 +342,10 @@ export async function exportWorkspaceBundle(
       ownerId: d.owner_id as string,
       title: d.title as string,
       description: (d.description as string | null) ?? null,
-      shareMode: ((d.share_mode as string) ?? "public") as ExportedDashboard["shareMode"],
+      // NOT NULL column — bound raw. No `?? "public"` fallback: manufacturing
+      // a permissive sharing posture here would defeat the importer's refusal
+      // to default it (the producer must state the posture).
+      shareMode: d.share_mode as ExportedDashboard["shareMode"],
       refreshSchedule: (d.refresh_schedule as string | null) ?? null,
       parameters: d.parameters ?? [],
       firstPublishedAt: toISOOrNull(d.first_published_at),
@@ -401,8 +404,10 @@ export async function exportWorkspaceBundle(
     deliveryChannel: (t.delivery_channel as string) ?? "webhook",
     recipients: t.recipients ?? [],
     connectionGroupId: (t.connection_group_id as string | null) ?? null,
-    approvalMode: (t.approval_mode as string) ?? "auto",
-    enabled: (t.enabled as boolean) ?? true,
+    // NOT NULL columns — bound raw, no permissive fallbacks (same rationale
+    // as `shareMode` above: the approval posture is stated, never defaulted).
+    approvalMode: t.approval_mode as string,
+    enabled: t.enabled as boolean,
     pluginId: (t.plugin_id as string | null) ?? null,
     createdAt: toISO(t.created_at),
     updatedAt: toISO(t.updated_at),

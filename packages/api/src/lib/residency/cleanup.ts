@@ -53,11 +53,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, getInternalDB } from "@atlas/api/lib/db/internal";
-import {
-  BUNDLE_TABLE_DECISIONS,
-  EXPORTED_TABLES,
-  STAYS_TABLES,
-} from "./bundle-scope";
+import { BUNDLE_TABLE_DECISIONS } from "./bundle-scope";
 import { getCleanupDueMigrations } from "./migrate";
 import { getApiRegion } from "./misrouting";
 

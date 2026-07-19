@@ -27,7 +27,15 @@ import { z } from "zod/v4";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
-import { listEntities } from "@atlas/api/lib/semantic/entities";
+import {
+  listEntities,
+  listEntityRows,
+  AmbiguousEntityError,
+} from "@atlas/api/lib/semantic/entities";
+import { getAdminEntity } from "@atlas/api/lib/semantic/admin-source";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { loadYaml } from "@atlas/api/lib/semantic/yaml";
+import type { EntityShapeT } from "@atlas/api/lib/semantic/shapes";
 import {
   getEntityByName,
   searchGlossary,
@@ -123,6 +131,119 @@ export function registerSemanticTools(
   const dispatch: typeof dispatcher.dispatch = (...args) =>
     dispatcher.dispatch(...args);
 
+  // Resolve one entity by its `name` field OR its `table` name (#4733). The
+  // source branch mirrors `listEntities` below EXACTLY (`opts.orgId &&
+  // hasInternalDB()`), so any identifier `listEntities` advertises is
+  // describable through the same source:
+  //   - SaaS (internal DB): entities live only in `semantic_entities`, keyed by
+  //     connection group — `getEntityByName` was disk-only, so every describe of
+  //     a group-scoped entity missed (the divergence the DB-backed `listEntities`
+  //     closed, #2142). Resolve DB-canonically via `getAdminEntity` (name column)
+  //     + a `listEntityRows` table fallback.
+  //   - Self-hosted (no internal DB): entities are authored on disk. Resolve via
+  //     `getEntityByName` (name / table / file-stem scan) exactly as pre-#4733.
+  //     Note we must NOT reuse `getAdminEntity`'s disk path here: it keys on the
+  //     FILE STEM (`discoverEntities`), so an entity addressed by its YAML `name`
+  //     — the identifier `listEntities` advertises — would miss. And on SaaS the
+  //     disk fixture is the pod's baked-in demo, never the tenant's data, so the
+  //     disk scan is confined to the no-DB branch.
+  type EntityResolution =
+    | { readonly kind: "found"; readonly entity: EntityShapeT | Record<string, unknown> }
+    | { readonly kind: "unknown" }
+    | { readonly kind: "ambiguous"; readonly groups: readonly (string | null)[] };
+
+  async function resolveEntity(
+    nameOrTable: string,
+    requestId: string,
+  ): Promise<EntityResolution> {
+    // Self-hosted / no internal DB: disk is the authored source of truth.
+    if (!(workspaceId && hasInternalDB())) {
+      const entity = getEntityByName(nameOrTable);
+      return entity ? { kind: "found", entity } : { kind: "unknown" };
+    }
+
+    // SaaS / DB-canonical. Primary: resolve by the `semantic_entities.name`
+    // column (published mode so drafts stay hidden — external MCP clients never
+    // run developer-mode). An unscoped multi-group name throws
+    // `AmbiguousEntityError`, mirrored to a typed envelope by the caller (as the
+    // REST route does, `semantic.ts:216`).
+    try {
+      const byName = await getAdminEntity({
+        name: nameOrTable,
+        orgId: workspaceId,
+        mode: "published",
+        requestId,
+      });
+      if (byName) return { kind: "found", entity: byName.entity };
+    } catch (err) {
+      if (err instanceof AmbiguousEntityError) {
+        return { kind: "ambiguous", groups: err.groups };
+      }
+      throw err;
+    }
+
+    // Table-name fallback: `getAdminEntity` matches the name column only, but
+    // the tool contract advertises `name` accepts an entity name OR a table
+    // name (`inputSchema` below) — the pre-#4733 disk scan matched
+    // `raw.table === name`. Scan the org's published rows for a parsed-YAML
+    // `table` match.
+    const rows = await listEntityRows(workspaceId, "entity", "published");
+    const tableMatches = rows.filter((row) => {
+      try {
+        const parsed = loadYaml(row.yaml_content);
+        return (
+          !!parsed &&
+          typeof parsed === "object" &&
+          (parsed as Record<string, unknown>).table === nameOrTable
+        );
+      } catch {
+        // intentionally ignored: a single malformed sibling row must not block
+        // table-resolution of the others; its own name-column read surfaces the
+        // parse error where it is actionable.
+        return false;
+      }
+    });
+    if (tableMatches.length === 0) return { kind: "unknown" };
+
+    // A table shared across distinct connection groups is ambiguous by the same
+    // rule as a shared name — surface it as a typed envelope, never a silent
+    // pick (multi-member groups share the same definition, collapsing to one
+    // group here so they resolve rather than falsely reporting ambiguity).
+    const groups = new Set(tableMatches.map((row) => row.connection_group_id ?? null));
+    if (groups.size > 1) return { kind: "ambiguous", groups: [...groups] };
+
+    // Re-resolve by the matched row's canonical name, scoped to its own group
+    // so this second lookup can't itself throw an ambiguity.
+    const match = tableMatches[0];
+    const detail = await getAdminEntity({
+      name: match.name,
+      orgId: workspaceId,
+      connectionGroupId: match.connection_group_id ?? null,
+      mode: "published",
+      requestId,
+    });
+    return detail ? { kind: "found", entity: detail.entity } : { kind: "unknown" };
+  }
+
+  // Shared envelope for a name that resolved to more than one connection group.
+  // `describeEntity`'s input schema carries no group selector, so the agent's
+  // recovery is to list the distinct entities and describe one by a name that
+  // is unique — `validation_failed` (terminal, client-side) says the bare name
+  // is insufficient to identify a single entity.
+  const ambiguousEntityEnvelope = (
+    name: string,
+    groups: readonly (string | null)[],
+  ) =>
+    envelope(
+      "validation_failed",
+      `Entity "${name}" exists in multiple connection groups (${groups
+        .map((g) => g ?? "default")
+        .join(", ")}); the name alone is ambiguous.`,
+      {
+        hint: "Call listEntities to see the distinct entities and describe one by a name that is unique to its group.",
+      },
+    );
+
   // --- listEntities ---
   server.registerTool(
     "listEntities" satisfies SemanticToolName,
@@ -200,7 +321,7 @@ export function registerSemanticTools(
       dispatch(
         "describeEntity",
         { requiresWrite: false, requiresBoundOrg: false, minRole: "member" },
-        async () => {
+        async (requestId) => {
           // The MCP raw-shape inputSchema can't express a cross-field
           // "exactly one of" refinement, so enforce it here. Both-or-neither
           // is a client mistake, not a catalog miss — return `validation_failed`
@@ -219,8 +340,13 @@ export function registerSemanticTools(
 
           // Single-name path — wire shape unchanged for existing clients.
           if (name !== undefined) {
-            const entity = getEntityByName(name);
-            if (!entity) {
+            const resolution = await resolveEntity(name, requestId);
+            if (resolution.kind === "ambiguous") {
+              return toEnvelopeResult(
+                ambiguousEntityEnvelope(name, resolution.groups),
+              );
+            }
+            if (resolution.kind === "unknown") {
               // Unknown-entity isn't really a "tool failed" condition for the
               // agent — the agent's recovery is "call listEntities and pick a
               // known one." Emit it as a typed envelope so the recovery is
@@ -234,13 +360,15 @@ export function registerSemanticTools(
                 ),
               );
             }
-            return toJsonContent({ found: true, entity });
+            return toJsonContent({ found: true, entity: resolution.entity });
           }
 
           // Batch path — dedupe (preserving first-seen order) and resolve each.
           // A miss is not a tool failure here: resolved entities come back in
-          // `entities`, misses in `notFound`, so the agent recovers per-name
-          // instead of losing the whole batch to one bad name.
+          // `entities`, misses (unknown OR ambiguous) in `notFound`, so the
+          // agent recovers per-name via listEntities instead of losing the
+          // whole batch to one bad name — and never receives a silently-picked
+          // entity for an ambiguous one.
           const requested = names ?? [];
           const seen = new Set<string>();
           const ordered: string[] = [];
@@ -251,13 +379,18 @@ export function registerSemanticTools(
             }
           }
 
-          const entities: NonNullable<ReturnType<typeof getEntityByName>>[] = [];
+          // Resolutions are independent — resolve concurrently (each may issue
+          // its own DB read) and reassemble in the requested order.
+          const resolutions = await Promise.all(
+            ordered.map((n) => resolveEntity(n, requestId)),
+          );
+          const entities: (EntityShapeT | Record<string, unknown>)[] = [];
           const notFound: string[] = [];
-          for (const n of ordered) {
-            const entity = getEntityByName(n);
-            if (entity) entities.push(entity);
+          ordered.forEach((n, i) => {
+            const resolution = resolutions[i];
+            if (resolution.kind === "found") entities.push(resolution.entity);
             else notFound.push(n);
-          }
+          });
 
           return toJsonContent({
             count: entities.length,

@@ -1,4 +1,12 @@
 import { describe, expect, it, mock, beforeEach } from "bun:test";
+// #4733 — describeEntity resolves through the DB-canonical path (getAdminEntity
+// + listEntityRows) when an internal DB is configured; `resolveEntity` branches
+// on `hasInternalDB()` === `!!DATABASE_URL`, mirroring `listEntities`. Pin it so
+// these tests deterministically exercise the SaaS/DB path regardless of ambient
+// env. (`??=` import-time hoist — permitted by the test-discipline gate.) The
+// no-DB disk path (`getEntityByName`) is covered by lookups.test.ts + the
+// canonical MCP eval.
+process.env.DATABASE_URL ??= "postgres://mcp-semantic-tools-unit-test/db";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -93,14 +101,99 @@ const mockFindMetricById = mock<(...args: unknown[]) => unknown>(
 
 void mock.module("@atlas/api/lib/semantic/lookups", () => ({
   // #2150: `listEntities` was consolidated into `semantic/entities.ts` and
-  // is mocked there now (see the entities mock below). lookups still owns
-  // `getEntityByName`, `searchGlossary`, and `findMetricById` — the other
-  // three semantic-tools dispatches.
+  // is mocked there now (see the entities mock below). #4733: `describeEntity`
+  // moved off the disk-only `getEntityByName` onto the org-scoped DB path
+  // (`getAdminEntity`, mocked below); `getEntityByName` stays exported so the
+  // module mock is complete for any transitive importer. lookups still owns
+  // `searchGlossary` and `findMetricById` — two of the semantic-tools dispatches.
   getEntityByName: mockGetEntityByName,
   searchGlossary: mockSearchGlossary,
   findMetricById: mockFindMetricById,
   loadGlossaryTerms: mock(() => []),
   loadMetricDefinitions: mock(() => []),
+}));
+
+// --- #4733: DB-backed entity fixture for describeEntity ---
+//
+// On SaaS entities live only in `semantic_entities` (keyed by connection
+// group), so `describeEntity` resolves through the org-scoped `getAdminEntity`
+// (DB-canonical, published mode) with a `listEntityRows` table-name fallback —
+// NOT the disk-only `getEntityByName`. This fixture models that DB source:
+//   - `User`/`users` and `orders`/`orders` mirror the pre-#4733 disk entities.
+//   - `Conversation`/`conversations` is a group-scoped (`g_prod`) entity like
+//     the ones the live bug missed — describable by name AND table.
+// `getAdminEntity` resolves by the `name` column only; a table-name miss falls
+// back to scanning these rows for a parsed-YAML `table` match.
+interface EntityFixture {
+  readonly name: string;
+  readonly table: string;
+  readonly group: string | null;
+}
+const ENTITY_FIXTURE: readonly EntityFixture[] = [
+  { name: "User", table: "users", group: null },
+  { name: "orders", table: "orders", group: null },
+  { name: "Conversation", table: "conversations", group: "g_prod" },
+];
+
+function fixtureEntity(f: EntityFixture) {
+  return { name: f.name, table: f.table, dimensions: [{ name: "id" }] };
+}
+function fixtureRow(f: EntityFixture, id: number) {
+  return {
+    id: `se_${id}`,
+    org_id: "org_sem",
+    entity_type: "entity" as const,
+    name: f.name,
+    yaml_content: `name: ${f.name}\ntable: ${f.table}\ndimensions:\n  - name: id\n`,
+    connection_group_id: f.group,
+    status: "published" as const,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+}
+
+// Stub of the Data.TaggedError (#4733) — same `_tag`/`groups` shape the SUT's
+// `instanceof AmbiguousEntityError` narrows on, so a mocked throw is caught and
+// mapped to the ambiguity envelope instead of leaking as `internal_error`.
+class MockAmbiguousEntityError extends Error {
+  readonly _tag = "AmbiguousEntityError";
+  readonly groups: ReadonlyArray<string | null>;
+  constructor(opts: { message: string; groups: ReadonlyArray<string | null> }) {
+    super(opts.message);
+    this.name = "AmbiguousEntityError";
+    this.groups = opts.groups;
+  }
+}
+
+// `getAdminEntity({ name, connectionGroupId? })` — resolves by the `name`
+// column against the fixture (published, DB source), matching group when the
+// caller scopes the re-resolve. Returns `null` for a name-column miss (drives
+// the table fallback / unknown path). Overridable per-test for throw cases.
+const mockGetAdminEntity = mock<(...args: unknown[]) => Promise<unknown>>(
+  async (opts: unknown) => {
+    const { name, connectionGroupId } = opts as {
+      name: string;
+      connectionGroupId?: string | null;
+    };
+    const match = ENTITY_FIXTURE.find(
+      (f) =>
+        f.name === name &&
+        (connectionGroupId === undefined || f.group === connectionGroupId),
+    );
+    return match
+      ? { entity: fixtureEntity(match), status: "published", source: "db" }
+      : null;
+  },
+);
+
+// `listEntityRows(orgId, "entity", "published")` — the org's published rows the
+// table-name fallback scans. Returns the full fixture by default.
+const mockListEntityRows = mock<(...args: unknown[]) => Promise<unknown>>(
+  async () => ENTITY_FIXTURE.map((f, i) => fixtureRow(f, i)),
+);
+
+void mock.module("@atlas/api/lib/semantic/admin-source", () => ({
+  getAdminEntity: mockGetAdminEntity,
 }));
 
 // #2150: the consolidated `listEntities(opts)` lives in `semantic/entities.ts`
@@ -110,9 +203,13 @@ void mock.module("@atlas/api/lib/semantic/lookups", () => ({
 // returned.
 void mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mockListEntities,
+  // #4733 — the table-name fallback in describeEntity scans these rows; the
+  // SUT also imports `AmbiguousEntityError` from here (re-exported from
+  // effect/errors) to narrow the multi-group throw.
+  listEntityRows: mockListEntityRows,
+  AmbiguousEntityError: MockAmbiguousEntityError,
   // The other entities exports aren't used by the SUT; provide minimal
   // stubs so any transitive importer doesn't see undefined exports.
-  listEntityRows: mock(async () => []),
   listEntitiesWithOverlay: mock(async () => []),
   getEntity: mock(async () => null),
   upsertEntity: mock(async () => {}),
@@ -254,6 +351,27 @@ describe("MCP semantic tools", () => {
   beforeEach(() => {
     mockListEntities.mockClear();
     mockGetEntityByName.mockClear();
+    // #4733 — reset the DB-path mocks to their documented base implementation so
+    // a `mockImplementationOnce` (throw / ambiguity) can't leak across tests.
+    mockGetAdminEntity.mockClear();
+    mockGetAdminEntity.mockImplementation(async (opts: unknown) => {
+      const { name, connectionGroupId } = opts as {
+        name: string;
+        connectionGroupId?: string | null;
+      };
+      const match = ENTITY_FIXTURE.find(
+        (f) =>
+          f.name === name &&
+          (connectionGroupId === undefined || f.group === connectionGroupId),
+      );
+      return match
+        ? { entity: fixtureEntity(match), status: "published", source: "db" }
+        : null;
+    });
+    mockListEntityRows.mockClear();
+    mockListEntityRows.mockImplementation(async () =>
+      ENTITY_FIXTURE.map((f, i) => fixtureRow(f, i)),
+    );
     mockSearchGlossary.mockClear();
     mockFindMetricById.mockClear();
     mockExecuteSQLExecute.mockClear();
@@ -312,14 +430,17 @@ describe("MCP semantic tools", () => {
   });
 
   it("describeEntity returns an internal_error envelope when the lookup throws", async () => {
-    mockGetEntityByName.mockImplementationOnce(() => {
+    // #4733 — a non-ambiguity throw (e.g. malformed YAML / DB fault) from the
+    // org-scoped resolver propagates to the dispatch catch → internal_error,
+    // matching the REST route's 500 for malformed entity content.
+    mockGetAdminEntity.mockImplementationOnce(async () => {
       throw new Error("yaml parse failed");
     });
 
     const { client } = await createTestClient();
     const result = await client.callTool({
       name: "describeEntity",
-      arguments: { name: "users" },
+      arguments: { name: "User" },
     });
 
     expect(result.isError).toBe(true);
@@ -390,6 +511,74 @@ describe("MCP semantic tools", () => {
     const parsed = JSON.parse(getContentText(result.content));
     expect(parsed.found).toBe(true);
     expect(parsed.entity.table).toBe("users");
+  });
+
+  // #4733 — the regression: on SaaS, entities live only in `semantic_entities`
+  // (group-scoped). describeEntity must resolve a group-scoped entity the same
+  // as listEntities surfaces it — by its `name` field AND by its `table`, via
+  // the org-scoped DB path (getAdminEntity + listEntityRows table fallback).
+  it("describeEntity resolves a group-scoped entity by its name (DB path)", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { name: "Conversation" },
+    });
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.found).toBe(true);
+    expect(parsed.entity.table).toBe("conversations");
+    // Resolved by the `name` column — no need to fall through to the row scan.
+    expect(mockGetAdminEntity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Conversation",
+        orgId: TEST_ACTOR.activeOrganizationId,
+        mode: "published",
+      }),
+    );
+  });
+
+  it("describeEntity resolves a group-scoped entity by its table name (fallback)", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { name: "conversations" },
+    });
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.found).toBe(true);
+    expect(parsed.entity.table).toBe("conversations");
+    expect(parsed.entity.name).toBe("Conversation");
+    // The name-column lookup missed ("conversations" is a table, not a name),
+    // so the table fallback scanned the org's published rows.
+    expect(mockListEntityRows).toHaveBeenCalledWith(
+      TEST_ACTOR.activeOrganizationId,
+      "entity",
+      "published",
+    );
+  });
+
+  it("describeEntity maps a multi-group name to a validation_failed envelope, not a silent pick", async () => {
+    // #4733 — an unscoped name that exists in >1 connection group throws
+    // AmbiguousEntityError from getEntity; the SUT narrows it to a typed
+    // envelope (mirroring the REST route's 409) instead of picking one.
+    mockGetAdminEntity.mockImplementationOnce(async () => {
+      throw new MockAmbiguousEntityError({
+        message: 'Entity "Order" exists in 2 environments.',
+        groups: ["g_prod", "g_eu"],
+      });
+    });
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { name: "Order" },
+    });
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope).not.toBeNull();
+    expect(envelope!.code).toBe("validation_failed");
+    expect(envelope!.message).toContain("multiple connection groups");
+    expect(envelope!.message).toContain("g_prod");
+    expect(envelope!.hint).toContain("listEntities");
   });
 
   it("describeEntity returns an unknown_entity envelope when the entity does not exist", async () => {
@@ -1151,7 +1340,9 @@ describe("MCP semantic tools", () => {
 
   it("describeEntity stamps actor: mcp + toolName", async () => {
     let observed: ReturnType<typeof getRequestContext>;
-    mockGetEntityByName.mockImplementationOnce(() => {
+    // #4733 — the org-scoped resolver runs inside the dispatch's request
+    // context, so capturing it from getAdminEntity proves the actor binding.
+    mockGetAdminEntity.mockImplementationOnce(async () => {
       observed = getRequestContext();
       return null;
     });

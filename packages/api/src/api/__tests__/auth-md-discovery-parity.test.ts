@@ -45,7 +45,7 @@ const HOSTS: ResolvedHosts = {
   resourceUri: "https://mcp.useatlas.dev/mcp",
 };
 
-const ADVERTISED_SCOPES = ["mcp:read", "mcp:write"] as const;
+const ADVERTISED_SCOPES = ["mcp:read", "mcp:write", "offline_access"] as const;
 
 const FAITHFUL_DOC = [
   "# auth.md",
@@ -53,7 +53,7 @@ const FAITHFUL_DOC = [
   "- MCP resource server: `https://mcp.useatlas.dev/mcp`",
   "Metadata: `https://api.useatlas.dev/.well-known/oauth-authorization-server/api/auth`",
   "Per-workspace: `/.well-known/oauth-protected-resource/mcp/{workspace_id}`",
-  "Scopes: `mcp:read`, `mcp:write`.",
+  "Scopes: `mcp:read`, `mcp:write`, `offline_access`.",
   "Go deeper: https://docs.useatlas.dev",
 ].join("\n");
 
@@ -172,6 +172,17 @@ describe("auth-md discovery parity — scope drift fails, naming the scope", () 
     const violations = scopeParityViolations(doc, ADVERTISED_SCOPES);
     expect(violations.length).toBeGreaterThan(0);
     expect(violations.some((v) => v.includes("mcp:write"))).toBe(true);
+    expect(violations.join("\n")).toContain("never names");
+  });
+
+  it("fails when the prose drops offline_access while .well-known advertises it", () => {
+    // Regression for the DCR refresh-token break: `offline_access` is the one
+    // non-`mcp:*` advertised scope, and the doc-token pattern must see it —
+    // otherwise the doc silently drifts from what DCR clients register with.
+    const doc = FAITHFUL_DOC.replace(", `offline_access`", "");
+    const violations = scopeParityViolations(doc, ADVERTISED_SCOPES);
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations.some((v) => v.includes("offline_access"))).toBe(true);
     expect(violations.join("\n")).toContain("never names");
   });
 });

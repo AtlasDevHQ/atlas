@@ -139,8 +139,9 @@ export interface ResolvedHosts {
 
 /**
  * The protected-resource metadata's `scopes_supported` is a hardcoded literal
- * in `well-known.ts` (it lists the `mcp:*` subset the MCP resource server
- * advertises). It is not exported, so we extract the literal from source — the
+ * in `well-known.ts` (the `mcp:*` scopes plus `offline_access` the MCP
+ * resource server advertises). It is not exported, so we extract the literal
+ * from source — the
  * same read-the-source discipline every other drift gate uses. The set the
  * `.well-known` document advertises must equal the set `/auth.md` names, or an
  * agent and a `.well-known`-trusting client disagree on which scopes to
@@ -184,13 +185,15 @@ function wellKnownAdvertisedScopes(): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * The `mcp:*` subset of the canonical scope union, mapped to the
- * `AuthMdScope` shape the builder expects — the same derivation
- * `api/routes/auth-md.ts:mcpScopes()` performs. Grant blurbs are irrelevant to
- * parity (they're prose), so we pass a placeholder; only scope *names* matter.
+ * The documented scope set (`mcp:*` subset plus `offline_access`), mapped to
+ * the `AuthMdScope` shape the builder expects — the same derivation
+ * `api/routes/auth-md.ts:documentedScopes()` performs. Grant blurbs are
+ * irrelevant to parity (they're prose), so we pass a placeholder; only scope
+ * *names* matter.
  */
-function mcpScopesFromCanonical(): AuthMdScope[] {
-  return ATLAS_OAUTH_SCOPES.filter((s) => s.startsWith("mcp:")).map((name) => ({
+function documentedScopesFromCanonical(): AuthMdScope[] {
+  const mcp = ATLAS_OAUTH_SCOPES.filter((s) => s.startsWith("mcp:"));
+  return [...mcp, "offline_access"].map((name) => ({
     name,
     grants: "—",
   }));
@@ -221,7 +224,7 @@ function renderAuthMd(apiBase: string): string {
       authServerUri: buildAuthServerUri(req),
       issuerBaseUri: buildIssuerBaseUri(req),
       resourceUri: buildResourceUri(req),
-      scopes: mcpScopesFromCanonical(),
+      scopes: documentedScopesFromCanonical(),
       onboardingPath: ONBOARDING_MCP_PATH,
       docsUrl: ATLAS_DOCS_URL,
     }),
@@ -258,9 +261,14 @@ function fail(message: string): never {
 export function scopeParityViolations(doc: string, advertised: readonly string[]): string[] {
   const out: string[] = [];
   const advertisedSet = new Set(advertised);
-  // Every `mcp:<word>` token the prose names. The brand host `.../mcp` is not a
-  // scope (no colon), so this pattern can't false-match it.
-  const namedInDoc = new Set(doc.match(/mcp:[a-z][a-z0-9_]*/g) ?? []);
+  // Every `mcp:<word>` token the prose names, plus `offline_access` — the one
+  // non-`mcp:*` scope the protected-resource metadata advertises (DCR clients
+  // register with exactly the advertised list, so it must appear in both
+  // surfaces; see well-known.ts). The brand host `.../mcp` is not a scope
+  // (no colon), so this pattern can't false-match it.
+  const namedInDoc = new Set(
+    doc.match(/mcp:[a-z][a-z0-9_]*|\boffline_access\b/g) ?? [],
+  );
 
   for (const scope of namedInDoc) {
     if (!advertisedSet.has(scope)) {

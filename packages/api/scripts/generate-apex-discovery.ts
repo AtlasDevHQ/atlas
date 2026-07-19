@@ -89,10 +89,12 @@ export const API_PROTECTED_RESOURCE = {
   // resource. RFC 9728 §2 lists `scopes_supported` as OPTIONAL, but agent
   // readiness scanners (and the MCP authorization spec) expect it, and the
   // sibling per-workspace MCP protected-resource metadata advertises the same
-  // `mcp:*` set (well-known.ts). These are the data-access scopes the Atlas
-  // authorization server issues; the OIDC sign-in scopes (openid/profile/email)
-  // are advertised by the auth-server metadata, not the resource.
-  scopes_supported: ["mcp:read", "mcp:write"],
+  // set (well-known.ts). `offline_access` is included because DCR clients
+  // register with exactly the advertised list and the authorize endpoint
+  // validates against the client row's scopes — omitting it breaks refresh
+  // tokens with `invalid_scope`. The OIDC sign-in scopes (openid/profile/
+  // email) are advertised by the auth-server metadata, not the resource.
+  scopes_supported: ["mcp:read", "mcp:write", "offline_access"],
   resource_documentation: "https://docs.useatlas.dev/api-reference",
   resource_name: "Atlas API",
   resource_policy_uri: "https://www.useatlas.dev/privacy",

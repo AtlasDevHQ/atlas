@@ -198,6 +198,27 @@ describe("well-known — managed auth mode", () => {
     }
   });
 
+  it("serves the workspace-less /.well-known/oauth-protected-resource/mcp alias with identical metadata", async () => {
+    // RFC 9728 §3.1 path-insertion default: a client MAY construct the
+    // metadata URL from the resource (`.../mcp`) without following the 401
+    // `WWW-Authenticate` pointer, yielding this workspace-less segment.
+    // It must return the same region-scoped document as the canonical
+    // `/:workspace_id` route (workspace_id is decorative — used only for
+    // log correlation), so a pointer-skipping client discovers the auth
+    // server instead of 404ing.
+    const handle = await startServer();
+    try {
+      const [aliased, canonical] = await Promise.all([
+        fetch(`${handle.url}/.well-known/oauth-protected-resource/mcp`),
+        fetch(`${handle.url}/.well-known/oauth-protected-resource/mcp/org_xyz`),
+      ]);
+      expect(aliased.status).toBe(200);
+      expect(await aliased.json()).toEqual(await canonical.json());
+    } finally {
+      await handle.close();
+    }
+  });
+
   it("advertises mcp.useatlas.dev as the resource when ATLAS_PUBLIC_API_URL points at the us-region api host", async () => {
     // #2068 — mcp.useatlas.dev is the canonical hostname for the
     // hosted MCP endpoint. The protected-resource metadata must

@@ -2655,14 +2655,30 @@ export function buildPlugins() {
   // `oauthConsent`, `jwks`) lands automatically through Better Auth's
   // `ctx.runMigrations()` at boot — see migrate.ts.
   plugins.push(jwt());
+  // The login/consent screens live in the web app (packages/web), which in
+  // SaaS is a *different origin* than this API (app.useatlas.dev vs
+  // api.useatlas.dev) — and even in local dev (web :3000 vs API :3001).
+  // Better Auth's oauthProvider uses these values verbatim as the 302
+  // `Location`, and browsers resolve a relative path against the *response*
+  // origin (the API), so a bare "/login" lands on `api.useatlas.dev/login`
+  // and 404s. This is the same cross-origin redirect trap that
+  // `rewriteVerificationCallbackURL` fixes for email links — it only bit a
+  // fresh MCP flow (no session, `prompt=consent`), since a returning user
+  // with a live session + prior consent skips both pages. Pin them to the
+  // web origin; fall back to the relative path only for the combined-origin
+  // deploy (nextjs-standalone) where `getWebOrigin()` is null and the API
+  // serves the web app on its own origin. See #2024, #4728.
+  const oauthWebOrigin = getWebOrigin();
+  const oauthPage = (path: string): string =>
+    oauthWebOrigin ? `${oauthWebOrigin}${path}` : path;
   plugins.push(
     oauthProvider({
       // Where the user is sent when they hit /oauth2/authorize without
       // a session. Existing managed-auth login page handles it.
-      loginPage: "/login",
+      loginPage: oauthPage("/login"),
       // Consent screen for the user-grants-scopes step. Page lives in
       // packages/web at src/app/oauth2/consent/page.tsx.
-      consentPage: "/oauth2/consent",
+      consentPage: oauthPage("/oauth2/consent"),
       // Required for MCP onboarding — Claude Desktop / ChatGPT / Cursor
       // dynamically register as public clients without prior credentials.
       // See `resolveAllowUnauthDcr` for the deprecation-tracking note.
@@ -2704,7 +2720,11 @@ export function buildPlugins() {
       // The `page` field is required by Better Auth's options shape
       // but is never navigated to under this `shouldRedirect` value.
       postLogin: {
-        page: "/oauth2/post-login",
+        // Absolute for the same cross-origin reason as loginPage/consentPage.
+        // Currently never navigated to (`shouldRedirect: () => false`), but
+        // keeping it web-origin-pinned means flipping that flag can't
+        // reintroduce the API-origin 404.
+        page: oauthPage("/oauth2/post-login"),
         consentReferenceId: async ({ session }) =>
           readActiveOrgId(session as Parameters<typeof readActiveOrgId>[0]),
         shouldRedirect: () => false,

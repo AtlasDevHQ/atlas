@@ -37,7 +37,7 @@
  * authenticated routes; these are public-discovery endpoints by design.
  */
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { ATLAS_OAUTH_SCOPES } from "@atlas/api/lib/auth/oauth-scopes";
 import { createLogger } from "@atlas/api/lib/logger";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
@@ -372,16 +372,28 @@ wellKnown.get("/openid-configuration/api/auth", async (c) => {
   }
 });
 
-// ── /.well-known/oauth-protected-resource/mcp/:workspace_id ─────────
+// ── /.well-known/oauth-protected-resource/mcp[/:workspace_id] ───────
 // RFC 9728. Per the MCP authorization spec, the resource server (us)
-// publishes one document per protected resource so the client can
+// publishes a document for the protected resource so the client can
 // discover the auth server before making an authenticated request.
 //
-// `workspace_id` in the path is the resource identifier — clients
-// reading this document learn that token audience must match the
-// returned `resource` URI exactly. `bearer_methods_supported: ["header"]`
-// reflects what the hosted MCP path accepts (no body / query bearers).
-wellKnown.get("/oauth-protected-resource/mcp/:workspace_id", async (c) => {
+// Two routes, one handler:
+//   - `/oauth-protected-resource/mcp/:workspace_id` — the canonical path
+//     the 401 `WWW-Authenticate: … resource_metadata=…` pointer hands out
+//     (see hosted.ts `wwwAuthenticateHeader`). Spec-compliant clients
+//     follow the pointer and land here.
+//   - `/oauth-protected-resource/mcp` — a workspace-less alias. RFC 9728
+//     §3.1 says a client MAY *construct* the metadata URL from the resource
+//     (`https://mcp.useatlas.dev/mcp`) by path-insertion — which yields
+//     exactly this segment, with NO workspace suffix. A client that skips
+//     the `WWW-Authenticate` pointer and builds the default URL would
+//     otherwise 404. Serving identical metadata here is a defensive hedge.
+//
+// `bearer_methods_supported: ["header"]` reflects what the hosted MCP path
+// accepts (no body / query bearers). The metadata itself is region-scoped,
+// not workspace-scoped (see the `resource` comment below), so both routes
+// return the same document — `workspace_id` is used only for log correlation.
+const handleProtectedResourceMetadata = async (c: Context): Promise<Response> => {
   const requestId = crypto.randomUUID();
   const outcome = await loadAuthAndHelpers();
   if (outcome.kind === "not-managed") return notManagedResponse();
@@ -390,12 +402,6 @@ wellKnown.get("/oauth-protected-resource/mcp/:workspace_id", async (c) => {
   }
 
   const workspaceId = c.req.param("workspace_id");
-  if (!workspaceId) {
-    return new Response(
-      JSON.stringify({ error: "bad_request", message: "Missing workspace_id", requestId }),
-      { status: 400, headers: { "Content-Type": "application/json" } },
-    );
-  }
 
   try {
     // Same structural-cast pattern as the auth-server / openid handlers
@@ -450,7 +456,12 @@ wellKnown.get("/oauth-protected-resource/mcp/:workspace_id", async (c) => {
     );
     return metadataUnavailableResponse(requestId);
   }
-});
+};
+
+wellKnown.get("/oauth-protected-resource/mcp/:workspace_id", handleProtectedResourceMetadata);
+// RFC 9728 §3.1 path-insertion default (no workspace suffix) — see the
+// handler doc above for why this alias exists.
+wellKnown.get("/oauth-protected-resource/mcp", handleProtectedResourceMetadata);
 
 // ── /.well-known/agent-configuration ────────────────────────────────
 // Agent Auth Protocol discovery document (§6.1), gated by #4409's

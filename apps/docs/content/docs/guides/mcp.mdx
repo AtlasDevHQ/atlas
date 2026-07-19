@@ -59,7 +59,8 @@ The resulting block looks like:
 {
   "mcpServers": {
     "atlas": {
-      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse",
+      "type": "http",
+      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>",
       "headers": { "Authorization": "Bearer eyJhbGciOiJSUzI1NiIs…" }
     }
   }
@@ -73,7 +74,7 @@ The `code_verifier` and registered `client_id` stay in memory — only the JWT i
 Standards-compliant MCP clients (Claude Desktop, ChatGPT, Cursor, Gemini, Anthropic agents) can connect directly without the wizard or the CLI — they bootstrap via DCR + PKCE on their own. Just point the agent at your workspace MCP URL:
 
 ```
-https://mcp.useatlas.dev/mcp/{workspace_id}/sse
+https://mcp.useatlas.dev/mcp/{workspace_id}
 ```
 
 The agent does discovery, registration, and the OAuth dance unattended. This is the right path if your agent vendor publishes "paste an MCP URL" UX.
@@ -94,7 +95,8 @@ Open `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 {
   "mcpServers": {
     "atlas": {
-      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse",
+      "type": "http",
+      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>",
       "headers": { "Authorization": "Bearer <jwt>" }
     }
   }
@@ -108,8 +110,8 @@ Claude Desktop also supports DCR natively — point it at the URL alone and it w
 The CLI ships an `mcp add` subcommand that writes to the right scope automatically:
 
 ```bash
-claude mcp add atlas --scope user --transport sse \
-  https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse \
+claude mcp add atlas --scope user --transport http \
+  https://mcp.useatlas.dev/mcp/<your_workspace_id> \
   --header "Authorization: Bearer <jwt>"
 ```
 
@@ -127,7 +129,8 @@ Open `~/.continue/config.json` and add the wizard's `mcpServers.atlas` block und
 {
   "mcpServers": {
     "atlas": {
-      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse",
+      "type": "http",
+      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>",
       "headers": { "Authorization": "Bearer <jwt>" }
     }
   }
@@ -149,7 +152,7 @@ VS Code's GitHub Copilot Chat reads `.vscode/mcp.json` from the workspace root (
   "servers": {
     "atlas": {
       "type": "http",
-      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse",
+      "url": "https://mcp.useatlas.dev/mcp/<your_workspace_id>",
       "headers": { "Authorization": "Bearer <jwt>" }
     }
   }
@@ -386,7 +389,7 @@ It returns:
 ```json
 {
   "workspaceId": "org_…",
-  "connectUrl": "https://mcp.useatlas.dev/mcp/org_…/sse",
+  "connectUrl": "https://mcp.useatlas.dev/mcp/org_…",
   "state": "grace"
 }
 ```
@@ -826,8 +829,10 @@ This section is hosted-only. Self-hosted stdio installs don't speak HTTP, so URL
 ### URL pattern
 
 ```
-https://mcp.useatlas.dev/mcp/{workspace_id}/sse
+https://mcp.useatlas.dev/mcp/{workspace_id}
 ```
+
+This is the canonical Streamable-HTTP path. The legacy `/mcp/{workspace_id}/sse` alias still resolves to the same endpoint (it predates the transport rename), but it only works with a Streamable-HTTP client — a client that treats the `/sse` suffix as a request for the deprecated HTTP+SSE transport will 400 on its first request. Always write the canonical path.
 
 The brand `mcp.useatlas.dev` hostname is the canonical surface every client config writes against. Per-region siblings exist for cross-region targeting:
 
@@ -893,14 +898,14 @@ Atlas's authorization server lives at `/api/auth`. Three discovery documents dri
 
 A standards-compliant MCP client:
 
-1. Hits the resource URL `/mcp/{workspace_id}/sse` without a bearer
+1. Hits the resource URL `/mcp/{workspace_id}` without a bearer
 2. Receives a `401` with `WWW-Authenticate: Bearer realm="Atlas MCP", resource_metadata="…"` pointing at the protected-resource document
 3. Reads the document, finds Atlas's `/api/auth` issuer
 4. Registers as a public OAuth client via `POST /api/auth/oauth2/register` (DCR — no admin pre-issuance required)
 5. Sends the user through `/api/auth/oauth2/authorize` with PKCE + `scope=openid mcp:read offline_access`
 6. The user signs in (if needed), reviews and approves on `/oauth2/consent`
 7. Client exchanges the code at `/api/auth/oauth2/token` and gets a JWT access token + refresh token
-8. Reconnects to `/mcp/{workspace_id}/sse` with `Authorization: Bearer <jwt>`
+8. Reconnects to `/mcp/{workspace_id}` with `Authorization: Bearer <jwt>`
 
 ```http
 Authorization: Bearer eyJhbGciOiJSUzI1NiIs…
@@ -940,7 +945,7 @@ Atlas supports two scoping modes per OAuth client:
 The agent is bound to its origin workspace. The path workspace MUST match the JWT's singular `workspace_id` claim:
 
 ```http
-GET /mcp/org_b/sse                 ← path workspace
+GET /mcp/org_b                     ← path workspace
 Authorization: Bearer <jwt>        ← workspace_id claim = org_a
 → 403 cross_workspace_denied
 ```

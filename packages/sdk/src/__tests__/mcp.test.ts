@@ -611,7 +611,8 @@ describe("buildConfig", () => {
       kind: "wrapped",
       mcpServers: {
         atlas: {
-          url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
+          type: "http",
+          url: `${API_URL}/mcp/${WORKSPACE_ID}`,
           headers: { Authorization: "Bearer access-token-xyz" },
         },
       },
@@ -621,29 +622,45 @@ describe("buildConfig", () => {
   test("cursor uses the wrapped shape", () => {
     const cfg = buildConfig({ client: "cursor", ...args });
     if (cfg.kind !== "wrapped") throw new Error("expected wrapped");
-    expect(cfg.mcpServers.atlas.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}/sse`);
+    expect(cfg.mcpServers.atlas.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}`);
     expect(cfg.mcpServers.atlas.headers.Authorization).toBe("Bearer access-token-xyz");
   });
 
   test("continue uses the wrapped shape", () => {
     const cfg = buildConfig({ client: "continue", ...args });
     if (cfg.kind !== "wrapped") throw new Error("expected wrapped");
-    expect(cfg.mcpServers.atlas.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}/sse`);
+    expect(cfg.mcpServers.atlas.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}`);
   });
 
   test("chatgpt uses the wrapped shape", () => {
     const cfg = buildConfig({ client: "chatgpt", ...args });
     if (cfg.kind !== "wrapped") throw new Error("expected wrapped");
-    expect(cfg.mcpServers.atlas.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}/sse`);
+    expect(cfg.mcpServers.atlas.url).toBe(`${API_URL}/mcp/${WORKSPACE_ID}`);
   });
 
   test("generic returns the bare {url, headers} block", () => {
     const cfg = buildConfig({ client: "generic", ...args });
     expect(cfg).toEqual({
       kind: "bare",
-      url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
+      type: "http",
+      url: `${API_URL}/mcp/${WORKSPACE_ID}`,
       headers: { Authorization: "Bearer access-token-xyz" },
     });
+  });
+
+  test("pins type:http and the canonical (no /sse) URL so clients don't fall back to legacy HTTP+SSE", () => {
+    // Regression: a `/sse` URL + missing `type` drove path-keyed clients
+    // (Claude Code, VS Code) onto the deprecated HTTP+SSE transport, which
+    // the hosted endpoint no longer speaks — first request 400s.
+    const wrapped = buildConfig({ client: "claude-desktop", ...args });
+    if (wrapped.kind !== "wrapped") throw new Error("expected wrapped");
+    expect(wrapped.mcpServers.atlas.type).toBe("http");
+    expect(wrapped.mcpServers.atlas.url.endsWith("/sse")).toBe(false);
+
+    const bare = buildConfig({ client: "generic", ...args });
+    if (bare.kind !== "bare") throw new Error("expected bare");
+    expect(bare.type).toBe("http");
+    expect(bare.url.endsWith("/sse")).toBe(false);
   });
 
   test("custom serverName parameter overrides 'atlas'", () => {
@@ -657,7 +674,8 @@ describe("buildConfig", () => {
     const cfg = buildConfig({ client: "generic", ...args, apiUrl: `${API_URL}/` });
     expect(cfg).toEqual({
       kind: "bare",
-      url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
+      type: "http",
+      url: `${API_URL}/mcp/${WORKSPACE_ID}`,
       headers: { Authorization: "Bearer access-token-xyz" },
     });
   });
@@ -669,14 +687,14 @@ describe("buildConfig", () => {
       workspaceId: "a/b c",
     });
     if (cfg.kind !== "bare") throw new Error("expected bare");
-    expect(cfg.url).toBe(`${API_URL}/mcp/${encodeURIComponent("a/b c")}/sse`);
+    expect(cfg.url).toBe(`${API_URL}/mcp/${encodeURIComponent("a/b c")}`);
   });
 
   // ── Multi-workspace shape (#2196) ────────────────────────────────────
   //
   // Passing `workspaces` (a non-empty array of granted ids) opts into the
   // multi-workspace block — the URL still pins one workspace as the
-  // default (server still requires `/mcp/{ws}/sse`), but an `env:
+  // default (canonical `/mcp/{ws}` path, no `/sse`), but an `env:
   // { ATLAS_DEFAULT_WORKSPACE }` slot is emitted alongside the headers
   // so future MCP-client frameworks can bridge it into the
   // `X-Atlas-Default-Workspace` header. Mirrors `buildHostedServerConfig`
@@ -694,7 +712,8 @@ describe("buildConfig", () => {
       kind: "wrapped",
       mcpServers: {
         atlas: {
-          url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
+          type: "http",
+          url: `${API_URL}/mcp/${WORKSPACE_ID}`,
           headers: { Authorization: "Bearer access-token-xyz" },
           env: { ATLAS_DEFAULT_WORKSPACE: WORKSPACE_ID },
         },
@@ -712,7 +731,8 @@ describe("buildConfig", () => {
     });
     expect(cfg).toEqual({
       kind: "bare",
-      url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
+      type: "http",
+      url: `${API_URL}/mcp/${WORKSPACE_ID}`,
       headers: { Authorization: "Bearer access-token-xyz" },
       env: { ATLAS_DEFAULT_WORKSPACE: WORKSPACE_ID },
     });
@@ -747,7 +767,8 @@ describe("buildConfig", () => {
     });
     if (cfg.kind !== "wrapped") throw new Error("expected wrapped");
     expect(cfg.mcpServers.atlas).toEqual({
-      url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
+      type: "http",
+      url: `${API_URL}/mcp/${WORKSPACE_ID}`,
       headers: { Authorization: "Bearer access-token-xyz" },
     });
     expect("env" in cfg.mcpServers.atlas).toBe(false);
@@ -787,7 +808,8 @@ describe("buildConfig", () => {
       kind: "wrapped",
       mcpServers: {
         atlas: {
-          url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
+          type: "http",
+          url: `${API_URL}/mcp/${WORKSPACE_ID}`,
           headers: { Authorization: "Bearer access-token-xyz" },
         },
       },

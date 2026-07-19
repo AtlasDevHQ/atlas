@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  buildHostedServerConfig,
   buildServerConfig,
   mergeMcpServerConfig,
   writeConfigWithBackup,
@@ -34,6 +35,31 @@ describe("buildServerConfig", () => {
     for (const a of cfg.args) {
       expect(a.startsWith("/")).toBe(false);
     }
+  });
+});
+
+describe("buildHostedServerConfig", () => {
+  it("pins the Streamable-HTTP transport type so path-agnostic clients don't fall back to HTTP+SSE", () => {
+    const cfg = buildHostedServerConfig({
+      url: "https://mcp.useatlas.dev/mcp/ws_alpha",
+      accessToken: "jwt.token.here",
+    });
+    expect(cfg.type).toBe("http");
+    // Canonical endpoint — never the legacy `/sse` alias.
+    expect(cfg.url).toBe("https://mcp.useatlas.dev/mcp/ws_alpha");
+    expect(cfg.url.endsWith("/sse")).toBe(false);
+    expect(cfg.headers?.Authorization).toBe("Bearer jwt.token.here");
+    expect(cfg.env).toBeUndefined();
+  });
+
+  it("adds the ATLAS_DEFAULT_WORKSPACE env hint only for multi-workspace agents", () => {
+    const cfg = buildHostedServerConfig({
+      url: "https://mcp.useatlas.dev/mcp/ws_alpha",
+      accessToken: "jwt",
+      defaultWorkspaceId: "ws_alpha",
+    });
+    expect(cfg.type).toBe("http");
+    expect(cfg.env).toEqual({ ATLAS_DEFAULT_WORKSPACE: "ws_alpha" });
   });
 });
 

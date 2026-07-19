@@ -24,11 +24,19 @@ export interface StdioServerConfig {
 }
 
 /**
- * HTTP/SSE server pointer — used by `init --hosted` against
+ * Streamable-HTTP server pointer — used by `init --hosted` against
  * `app.useatlas.dev` (or a self-hosted instance with managed auth). MCP
  * clients (Claude Desktop, Cursor, Continue) all accept this `url` +
  * `headers` shape for remote MCP servers; the bearer is the JWT minted
  * by the OAuth 2.1 loopback flow in `init/hosted.ts`.
+ *
+ * `type: "http"` pins the transport to Streamable HTTP for the clients
+ * that key off it explicitly (Claude Code, VS Code): without it those
+ * clients guess from the URL, and a bare `{ url }` was defaulting them
+ * to the deprecated HTTP+SSE transport — which the hosted endpoint no
+ * longer speaks, so the first request 400s. Clients that auto-detect
+ * transport (Cursor, Continue) ignore the field. The `url` is always the
+ * canonical `/mcp/{workspaceId}` path — never the legacy `/sse` alias.
  *
  * `env` is a forward-compat slot for the cross-workspace identity flow
  * (#2073). Today's MCP clients don't bridge stdio-style env into HTTP
@@ -38,6 +46,8 @@ export interface StdioServerConfig {
  * every request without re-running this CLI.
  */
 export interface HttpServerConfig {
+  /** Transport discriminator — always Streamable HTTP for hosted Atlas. */
+  type: "http";
   url: string;
   headers?: Record<string, string>;
   env?: Record<string, string>;
@@ -83,7 +93,7 @@ export function buildServerConfig(opts: BuildOpts = {}): StdioServerConfig {
 }
 
 interface BuildHostedOpts {
-  /** The hosted MCP endpoint URL — e.g. `https://api.useatlas.dev/mcp/<workspace>/sse`. */
+  /** The canonical hosted MCP endpoint URL — e.g. `https://mcp.useatlas.dev/mcp/<workspace>` (no `/sse`). */
   url: string;
   /** OAuth 2.1 access token (JWT). Written verbatim into the Authorization header. */
   accessToken: string;
@@ -99,6 +109,7 @@ interface BuildHostedOpts {
 
 export function buildHostedServerConfig(opts: BuildHostedOpts): HttpServerConfig {
   const cfg: HttpServerConfig = {
+    type: "http",
     url: opts.url,
     headers: { Authorization: `Bearer ${opts.accessToken}` },
   };

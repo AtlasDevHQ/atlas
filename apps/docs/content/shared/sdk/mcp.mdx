@@ -179,7 +179,8 @@ if (workspaces.length > 1) {
 
 `buildConfig` opts into the multi-workspace block by accepting the
 `workspaces` array. The emitted config still pins one workspace in the
-URL (the hosted MCP edge mounts at `/mcp/{workspace_id}/sse`), but it
+URL (the hosted MCP edge mounts at `/mcp/{workspace_id}` — the canonical
+Streamable-HTTP path, and every block carries `type: "http"`), but it
 gains an `env: { ATLAS_DEFAULT_WORKSPACE }` slot — the forward-compat
 hint MCP-client framework wrappers will bridge into the
 `X-Atlas-Default-Workspace` header. Per-request overrides happen via
@@ -195,7 +196,8 @@ const config = buildConfig({
   workspaces,            // opt into the multi-workspace block
 });
 // config.mcpServers.atlas → {
-//   url: "https://mcp.useatlas.dev/mcp/<ws>/sse",
+//   type: "http",
+//   url: "https://mcp.useatlas.dev/mcp/<ws>",
 //   headers: { Authorization: "Bearer <token>" },
 //   env: { ATLAS_DEFAULT_WORKSPACE: "<ws>" },
 // }

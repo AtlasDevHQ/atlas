@@ -223,7 +223,7 @@ describe("runHostedAuthFlow — happy path", () => {
     // Bearer is a branded string; compare as plain string for the assertion.
     expect(out.refreshToken as string | null).toBe("r-1");
     expect(out.workspaceId).toBe("ws_alpha");
-    expect(out.mcpUrl).toBe(`${FAKE_API}/mcp/ws_alpha/sse`);
+    expect(out.mcpUrl).toBe(`${FAKE_API}/mcp/ws_alpha`);
     // Listener was stopped on success.
     expect(controller().stopped).toBe(true);
   });
@@ -897,7 +897,10 @@ describe("runInit --hosted (print-only)", () => {
       const res = await pending;
       expect(res.exitCode).toBe(0);
       const out = cap.logs.join("\n");
-      expect(out).toContain(`"url": "${FAKE_API}/mcp/ws_alpha/sse"`);
+      expect(out).toContain(`"url": "${FAKE_API}/mcp/ws_alpha"`);
+      // Streamable-HTTP transport is pinned explicitly so path-agnostic
+      // clients (Claude Code, VS Code) don't fall back to legacy HTTP+SSE.
+      expect(out).toContain('"type": "http"');
       expect(out).toContain('"Authorization": "Bearer ');
       // bunx form is for --local, not hosted.
       expect(out).not.toContain('"command": "bunx"');
@@ -931,7 +934,8 @@ describe("runInit --hosted --write", () => {
       const res = await pending;
       expect(res.exitCode).toBe(0);
       const written = JSON.parse(readFileSync(target, "utf8"));
-      expect(written.mcpServers.atlas.url).toBe(`${FAKE_API}/mcp/ws_alpha/sse`);
+      expect(written.mcpServers.atlas.url).toBe(`${FAKE_API}/mcp/ws_alpha`);
+      expect(written.mcpServers.atlas.type).toBe("http");
       expect(written.mcpServers.atlas.headers.Authorization).toMatch(/^Bearer /);
       // No local-style command — hosted is a remote server pointer.
       expect(written.mcpServers.atlas.command).toBeUndefined();
@@ -978,7 +982,8 @@ describe("runInit --hosted --write — preserves siblings + writes .bak", () => 
       // Sibling server preserved.
       expect(written.mcpServers.other).toEqual({ command: "x", args: ["y"] });
       // Hosted block added.
-      expect(written.mcpServers.atlas.url).toBe(`${FAKE_API}/mcp/ws_alpha/sse`);
+      expect(written.mcpServers.atlas.url).toBe(`${FAKE_API}/mcp/ws_alpha`);
+      expect(written.mcpServers.atlas.type).toBe("http");
       // Unrelated top-level keys preserved.
       expect(written.unrelatedTopLevel).toEqual({ keep: true });
       // .bak written.

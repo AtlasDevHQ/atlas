@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.63",
+    title: "Hosted-MCP Tool Fixes",
+    date: "2026-07-19",
+    summary:
+      "Two fixes to the hosted platform's MCP tools, found while kicking the tires on the now-working connection from v0.0.62. First: asking Atlas to describe a data entity by name or table now works on the hosted platform. Previously the describe call looked in the wrong place — it read from an on-disk copy that hosted workspaces don't use — so entities that showed up fine when you listed them came back 'not found' when you asked for their detail; it now reads the same workspace source the list does. Second: a natural-language question that takes the agent longer than about two minutes to answer no longer drops the connection midway. The long-running request used to sit silent while the agent worked, and a network timeout in between would cut it off before the answer came back; the request now sends a lightweight heartbeat so it stays alive to completion.",
+    highlights: [
+      "describeEntity resolves group-scoped entities on the hosted platform — by entity name and by table — matching what listEntities returns, instead of returning 'unknown entity'",
+      "The natural-language query tool keeps its connection alive on runs longer than ~120s, so long answers complete instead of failing with a dropped transport",
+      "Both are hosted-MCP reliability fixes; no change to how you connect or configure MCP clients",
+    ],
+  },
+  {
     version: "v0.0.62",
     title: "Hosted-MCP Transport Fix",
     date: "2026-07-19",

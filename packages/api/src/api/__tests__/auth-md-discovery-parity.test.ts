@@ -24,6 +24,7 @@ import { describe, it, expect } from "bun:test";
 
 import {
   scopeParityViolations,
+  issuableScopeViolations,
   hostParityViolations,
   endpointParityViolations,
   collectViolations,
@@ -31,6 +32,7 @@ import {
   FORBIDDEN_FRAGMENTS,
   type ResolvedHosts,
 } from "../../../scripts/check-auth-md-discovery-parity";
+import { ATLAS_OAUTH_SCOPES } from "@atlas/api/lib/auth/oauth-scopes";
 
 // A minimal in-parity document: it names exactly the resolved hosts, exactly
 // the advertised scopes, and only `.well-known` paths the router serves. The
@@ -184,6 +186,46 @@ describe("auth-md discovery parity — scope drift fails, naming the scope", () 
     expect(violations.length).toBeGreaterThan(0);
     expect(violations.some((v) => v.includes("offline_access"))).toBe(true);
     expect(violations.join("\n")).toContain("never names");
+  });
+});
+
+describe("auth-md discovery parity — advertised scope must be issuable", () => {
+  it("passes when every advertised scope is in the canonical union", () => {
+    // ADVERTISED_SCOPES is a subset of what the auth server issues.
+    expect(issuableScopeViolations(ADVERTISED_SCOPES)).toEqual([]);
+  });
+
+  it("every advertised scope is actually a member of ATLAS_OAUTH_SCOPES", () => {
+    // The real advertised set the surfaces ship must be issuable — this is the
+    // invariant that #4728 violated (a scope advertised but effectively not
+    // requestable). Locks it against the live canonical union, not a fixture.
+    const issuable = new Set<string>(ATLAS_OAUTH_SCOPES);
+    for (const scope of ADVERTISED_SCOPES) {
+      expect(issuable.has(scope)).toBe(true);
+    }
+  });
+
+  it("fails, naming the scope, when an advertised scope is not issuable", () => {
+    // Simulates renaming `offline_access` in ATLAS_OAUTH_SCOPES without updating
+    // the advertised literal: the two discovery surfaces still agree with each
+    // other, but authorize would reject it with `invalid_scope`.
+    const violations = issuableScopeViolations([
+      "mcp:read",
+      "mcp:write",
+      "offline_access",
+      "mcp:bogus",
+    ]);
+    expect(violations.length).toBe(1);
+    expect(violations[0]).toContain("mcp:bogus");
+    expect(violations[0]).toContain("invalid_scope");
+  });
+
+  it("is wired into collectViolations", () => {
+    const violations = collectViolations({
+      fixtures: [{ label: "us region", doc: FAITHFUL_DOC, hosts: HOSTS }],
+      advertisedScopes: ["mcp:read", "mcp:write", "offline_access", "mcp:bogus"],
+    });
+    expect(violations.some((v) => v.includes("mcp:bogus"))).toBe(true);
   });
 });
 

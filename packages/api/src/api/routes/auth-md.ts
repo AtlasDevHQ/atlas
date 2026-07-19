@@ -47,8 +47,17 @@ type McpScope = Extract<(typeof ATLAS_OAUTH_SCOPES)[number], `mcp:${string}`>;
  * the authorize endpoint validates against the client row's scopes — see
  * `well-known.ts`), and the parity gate requires the doc and the metadata to
  * name the same set.
+ *
+ * The `offline_access` arm is derived via `Extract` rather than hardcoded so it
+ * stays tethered to the canonical union: rename or drop `offline_access` in
+ * `ATLAS_OAUTH_SCOPES` and this narrows to just `McpScope`, turning the
+ * `SCOPE_GRANTS` key and the `documentedScopes()` array into compile errors —
+ * the guard that stops #4728 (a DCR scope silently missing from a surface) from
+ * reappearing.
  */
-type DocumentedScope = McpScope | "offline_access";
+type DocumentedScope =
+  | McpScope
+  | Extract<(typeof ATLAS_OAUTH_SCOPES)[number], "offline_access">;
 
 export const authMd = new Hono();
 
@@ -81,12 +90,21 @@ const SCOPE_GRANTS: Partial<Record<DocumentedScope, string>> = {
     "receive a refresh token so the connection survives access-token expiry",
 };
 
-function documentedScopes(): AuthMdScope[] {
+/**
+ * The scope set /auth.md documents. Exported so the discovery-parity gate
+ * (`scripts/check-auth-md-discovery-parity.ts`) drives the SAME derivation the
+ * live route serves rather than hand-mirroring it — a copy would be its own
+ * drift vector.
+ */
+export function documentedScopes(): AuthMdScope[] {
   const mcp = ATLAS_OAUTH_SCOPES.filter((s): s is McpScope =>
     s.startsWith("mcp:"),
   );
-  // mcp:* first (they are what the doc is about), offline_access last.
-  return [...mcp, "offline_access" as const].map((name) => ({
+  // mcp:* first (they are what the doc is about), offline_access last. Typed as
+  // DocumentedScope[] so dropping/renaming `offline_access` in the canonical
+  // union is a compile error here, not a silent surface divergence.
+  const documented: DocumentedScope[] = [...mcp, "offline_access"];
+  return documented.map((name) => ({
     name,
     grants: SCOPE_GRANTS[name] ?? "an Atlas MCP capability",
   }));

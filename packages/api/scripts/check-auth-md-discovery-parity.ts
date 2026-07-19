@@ -51,8 +51,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { buildAuthMd, type AuthMdScope } from "@atlas/api/lib/mcp/auth-md";
+import { buildAuthMd } from "@atlas/api/lib/mcp/auth-md";
 import { ATLAS_OAUTH_SCOPES } from "@atlas/api/lib/auth/oauth-scopes";
+import { documentedScopes } from "@atlas/api/api/routes/auth-md";
 import {
   buildAuthServerUri,
   buildIssuerBaseUri,
@@ -185,21 +186,6 @@ function wellKnownAdvertisedScopes(): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * The documented scope set (`mcp:*` subset plus `offline_access`), mapped to
- * the `AuthMdScope` shape the builder expects — the same derivation
- * `api/routes/auth-md.ts:documentedScopes()` performs. Grant blurbs are
- * irrelevant to parity (they're prose), so we pass a placeholder; only scope
- * *names* matter.
- */
-function documentedScopesFromCanonical(): AuthMdScope[] {
-  const mcp = ATLAS_OAUTH_SCOPES.filter((s) => s.startsWith("mcp:"));
-  return [...mcp, "offline_access"].map((name) => ({
-    name,
-    grants: "—",
-  }));
-}
-
-/**
  * Drive the shared host helpers + builder for a fixed resolved API base. The
  * route resolves hosts from the request via the shared helpers; we drive the
  * SAME helpers through the env var the route's resolution honors, then hand the
@@ -224,7 +210,10 @@ function renderAuthMd(apiBase: string): string {
       authServerUri: buildAuthServerUri(req),
       issuerBaseUri: buildIssuerBaseUri(req),
       resourceUri: buildResourceUri(req),
-      scopes: documentedScopesFromCanonical(),
+      // The REAL derivation the route serves — imported, not hand-mirrored —
+      // so this gate can't pass against a scope set the live /auth.md doesn't
+      // actually emit.
+      scopes: documentedScopes(),
       onboardingPath: ONBOARDING_MCP_PATH,
       docsUrl: ATLAS_DOCS_URL,
     }),
@@ -294,6 +283,38 @@ export function scopeParityViolations(doc: string, advertised: readonly string[]
     }
   }
   return out;
+}
+
+/**
+ * Advertised⇒issuable invariant: every scope the `.well-known`
+ * protected-resource metadata advertises must be a member of the canonical
+ * scope union the authorization server can actually issue (`ATLAS_OAUTH_SCOPES`).
+ *
+ * This is the backstop the compile-time `satisfies` tethers in `well-known.ts`
+ * / `generate-apex-discovery.ts` can't give the SOURCE-PARSED advertised list:
+ * rename `offline_access` in the canonical union but not in the advertised
+ * literal and the two surfaces still agree with each other (scope parity
+ * passes), yet authorize would 401 every refresh-token request with
+ * `invalid_scope` — DCR clients register with the advertised list, and the
+ * authorize endpoint validates against `ATLAS_OAUTH_SCOPES`. This fails the
+ * gate instead, naming the orphaned scope. Host-independent, so it runs once.
+ * (`/auth.md`'s named scopes are covered transitively: `scopeParityViolations`
+ * already forces them to equal the advertised set.)
+ */
+export function issuableScopeViolations(advertised: readonly string[]): string[] {
+  const issuable = new Set<string>(ATLAS_OAUTH_SCOPES);
+  return advertised
+    .filter((scope) => !issuable.has(scope))
+    .map(
+      (scope) =>
+        `The .well-known protected-resource metadata advertises scope ` +
+        `\`${scope}\`, which is NOT in the canonical scope union ` +
+        `ATLAS_OAUTH_SCOPES (issuable: [${ATLAS_OAUTH_SCOPES.join(", ")}]). ` +
+        `The authorization server cannot issue it, so a DCR client that ` +
+        `registers with the advertised list fails authorize with ` +
+        `\`invalid_scope\`. Re-add the scope to ATLAS_OAUTH_SCOPES, or stop ` +
+        `advertising it in well-known.ts.`,
+    );
 }
 
 /**
@@ -410,6 +431,9 @@ export function collectViolations(input: {
   // early return above guarantees at least one fixture, so `fixtures[0]` is
   // present (no empty-doc fallback needed).
   out.push(...scopeParityViolations(input.fixtures[0].doc, input.advertisedScopes));
+  // Advertised⇒issuable is host-independent too: the advertised set must be a
+  // subset of what the auth server can issue, or DCR clients break at authorize.
+  out.push(...issuableScopeViolations(input.advertisedScopes));
   return out;
 }
 

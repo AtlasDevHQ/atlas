@@ -307,6 +307,26 @@ const performBackup = (
       spawnError = err instanceof Error ? err : new Error(String(err));
     });
 
+    // Latch the exit code NOW, while pg_dump is still running — never after
+    // the pipeline await below. `close` is a one-shot event that fires as
+    // soon as the pipeline drains pg_dump's stdout (observed ~150ms before
+    // `Promise.all` settles, because the S3 `writer.end()` round-trip runs
+    // after stdout EOF). A `close` listener attached *after* that await
+    // always misses the already-fired event and waits forever — the 2h fiber
+    // timeout then interrupts the cycle, stranding the row `in_progress` with
+    // no error and no size (every scheduled backup in prod hung this way).
+    // Resolve-only on BOTH events: `error` (ENOENT/EACCES) is already
+    // captured in `spawnError` above and may fire without a following
+    // `close`, so it must also settle this latch or the await re-hangs.
+    let exitCode: number | null = null;
+    const exitClosed = new Promise<void>((resolve) => {
+      pgDump.on("close", (code) => {
+        exitCode = code;
+        resolve();
+      });
+      pgDump.on("error", () => resolve());
+    });
+
     const gzip = createGzip();
     const gzipped = new PassThrough();
 
@@ -340,20 +360,19 @@ const performBackup = (
       catch: (err) => spawnError ?? (err instanceof Error ? err : new Error(String(err))),
     });
 
-    const exitCode = yield* Effect.tryPromise({
-      try: () =>
-        new Promise<number>((resolve, reject) => {
-          // 'close' never fires when the spawn itself failed — reject with
-          // the captured cause instead of hanging on a resolve-only wait.
-          if (spawnError) {
-            reject(spawnError);
-            return;
-          }
-          pgDump.on("close", resolve);
-          pgDump.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
-        }),
+    // Awaits the pre-registered latch — already settled by now (pg_dump
+    // exited during the pipeline above), so this is an immediate read, not a
+    // fresh listen that could miss the event.
+    yield* Effect.tryPromise({
+      try: () => exitClosed,
       catch: (err) => spawnError ?? (err instanceof Error ? err : new Error(String(err))),
     });
+
+    // A spawn failure (or an `error`-without-`close`) leaves `exitCode` null:
+    // surface the captured spawn error rather than a misleading exit code.
+    if (spawnError) {
+      return yield* Effect.fail(spawnError);
+    }
 
     if (exitCode !== 0) {
       return yield* Effect.fail(new Error(`pg_dump exited with code ${exitCode}: ${stderr.slice(0, 500)}`));

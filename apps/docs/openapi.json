@@ -51391,7 +51391,7 @@
           "Admin — Migration"
         ],
         "summary": "Import a migration bundle",
-        "description": "Receives an export bundle from `atlas export` and imports workspace data (conversations, semantic entities, learned patterns, settings) into the active organization. Idempotent — re-importing skips data that already exists.",
+        "description": "Receives an export bundle from `atlas-operator export` and imports workspace data (conversations, semantic entities, learned patterns, settings, dashboards, knowledge documents, scheduled tasks, agent session memory) into the active organization. Idempotent — re-importing skips data that already exists.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -51438,6 +51438,27 @@
                           },
                           "settings": {
                             "type": "number"
+                          },
+                          "dashboards": {
+                            "type": "number"
+                          },
+                          "dashboardCards": {
+                            "type": "number"
+                          },
+                          "dashboardUserDrafts": {
+                            "type": "number"
+                          },
+                          "knowledgeDocuments": {
+                            "type": "number"
+                          },
+                          "knowledgeLinks": {
+                            "type": "number"
+                          },
+                          "scheduledTasks": {
+                            "type": "number"
+                          },
+                          "agentSessionMemory": {
+                            "type": "number"
                           }
                         },
                         "required": [
@@ -51469,6 +51490,22 @@
                     "items": {}
                   },
                   "settings": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "dashboards": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "knowledgeDocuments": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "scheduledTasks": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "agentSessionMemory": {
                     "type": "array",
                     "items": {}
                   }
@@ -51551,13 +51588,77 @@
                         "imported",
                         "skipped"
                       ]
+                    },
+                    "dashboards": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
+                    },
+                    "knowledgeDocuments": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
+                    },
+                    "scheduledTasks": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
+                    },
+                    "agentSessionMemory": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
                     }
                   },
                   "required": [
                     "conversations",
                     "semanticEntities",
                     "learnedPatterns",
-                    "settings"
+                    "settings",
+                    "dashboards",
+                    "knowledgeDocuments",
+                    "scheduledTasks",
+                    "agentSessionMemory"
                   ]
                 }
               }

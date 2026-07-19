@@ -2,6 +2,11 @@
  * atlas-operator export -- Export workspace data to a portable migration bundle (JSON).
  *
  * Operator-only direct-DB tooling, dispatched from bin/atlas-operator.ts (ADR-0025 step 4, #4045).
+ *
+ * Delegates to `exportWorkspaceBundle` — the SINGLE bundle producer shared
+ * with the region-migration executor (#4460) — so the CLI bundle scope can
+ * never drift from the server's. The per-table moves/stays decision registry
+ * lives in `@atlas/api/lib/residency/bundle-scope.ts`.
  */
 
 import * as fs from "fs";
@@ -24,160 +29,41 @@ export async function handleExport(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const { getInternalDB, closeInternalDB } = await import(
-    "@atlas/api/lib/db/internal"
-  );
-  const pool = getInternalDB();
+  const { closeInternalDB } = await import("@atlas/api/lib/db/internal");
 
   try {
     console.log("\nAtlas Export -- creating migration bundle...\n");
 
-    // Determine org filter
+    // Org filter: a concrete org id, or null for a no-auth self-hosted
+    // instance whose rows carry org_id IS NULL.
     const orgFilter = orgArg ?? null;
-    const orgClause = orgFilter ? "org_id = $1" : "org_id IS NULL";
-    const orgParams = orgFilter ? [orgFilter] : [];
 
-    // 1. Conversations + messages
-    const convRows = await pool.query(
-      `SELECT id, user_id, title, surface, connection_id, starred, created_at, updated_at
-       FROM conversations
-       WHERE ${orgClause} AND deleted_at IS NULL
-       ORDER BY created_at`,
-      orgParams,
+    const { exportWorkspaceBundle } = await import(
+      "@atlas/api/lib/residency/export"
     );
-    console.log(`  Conversations: ${convRows.rows.length}`);
+    const bundle = await exportWorkspaceBundle(
+      orgFilter,
+      orgFilter ? `org:${orgFilter}` : "self-hosted",
+      process.env.ATLAS_API_URL ?? "http://localhost:3001",
+    );
 
-    let messageCount = 0;
-    const conversations = [];
-    for (const row of convRows.rows) {
-      const msgRows = await pool.query(
-        `SELECT id, role, content, created_at
-         FROM messages
-         WHERE conversation_id = $1
-         ORDER BY created_at`,
-        [row.id],
-      );
-      messageCount += msgRows.rows.length;
-      conversations.push({
-        id: row.id as string,
-        userId: (row.user_id as string) ?? null,
-        title: (row.title as string) ?? null,
-        surface:
-          (row.surface as
-            | import("@useatlas/types").ExportedConversation["surface"]) ??
-          "web",
-        connectionId: (row.connection_id as string) ?? null,
-        starred: (row.starred as boolean) ?? false,
-        createdAt: String(row.created_at),
-        updatedAt: String(row.updated_at),
-        messages: msgRows.rows.map(
-          (m: Record<string, unknown>) => ({
-            id: m.id as string,
-            role: m.role as import("@useatlas/types").ExportedMessage["role"],
-            content: m.content,
-            createdAt: String(m.created_at),
-          }),
-        ),
-      });
-    }
-    console.log(`  Messages:      ${messageCount}`);
-
-    // 2. Semantic entities (DB-backed)
-    const entRows = await pool.query(
-      `SELECT name, entity_type, yaml_content, connection_group_id
-       FROM semantic_entities
-       WHERE ${orgClause}
-       ORDER BY entity_type, name`,
-      orgParams,
-    );
-    const semanticEntities = entRows.rows.map(
-      (r: Record<string, unknown>) => ({
-        name: r.name as string,
-        entityType: r.entity_type as string,
-        yamlContent: r.yaml_content as string,
-        connectionGroupId: (r.connection_group_id as string) ?? null,
-      }),
-    );
-    console.log(`  Entities:      ${semanticEntities.length}`);
-
-    // 3. Learned patterns — project the amendment-identity columns too (#4569,
-    // audit M9) so a `semantic_amendment` row survives the migration as an
-    // amendment instead of round-tripping as an orphaned query pattern.
-    const patRows = await pool.query(
-      `SELECT pattern_sql, description, source_entity, confidence, status,
-              type, amendment_payload, connection_group_id, reviewed_by, reviewed_at, repetition_count, auto_promoted
-       FROM learned_patterns
-       WHERE ${orgClause}
-       ORDER BY created_at`,
-      orgParams,
-    );
-    const learnedPatterns: import("@useatlas/types").ExportedLearnedPattern[] = patRows.rows.map(
-      (r: Record<string, unknown>) => ({
-        patternSql: r.pattern_sql as string,
-        description: (r.description as string) ?? null,
-        sourceEntity: (r.source_entity as string) ?? null,
-        confidence: r.confidence as number,
-        status: r.status as import("@useatlas/types").LearnedPattern["status"],
-        type: (r.type as import("@useatlas/types").LearnedPattern["type"]) ?? "query_pattern",
-        amendmentPayload: (r.amendment_payload as Record<string, unknown> | null) ?? null,
-        connectionGroupId: (r.connection_group_id as string) ?? null,
-        reviewedBy: (r.reviewed_by as string) ?? null,
-        reviewedAt: r.reviewed_at ? String(r.reviewed_at) : null,
-        repetitionCount: (r.repetition_count as number) ?? 1,
-        // Human vs machine approval road (#4571) — carried so the eligibility
-        // bypass survives migration. Column is NOT NULL, so coerce defensively.
-        autoPromoted: Boolean(r.auto_promoted),
-      }),
-    );
-    console.log(`  Patterns:      ${learnedPatterns.length}`);
-
-    // 4. Settings
-    const settRows = await pool.query(
-      `SELECT key, value
-       FROM settings
-       WHERE ${orgClause}
-       ORDER BY key`,
-      orgParams,
-    );
-    const settings = settRows.rows.map(
-      (r: Record<string, unknown>) => ({
-        key: r.key as string,
-        value: r.value as string,
-      }),
-    );
-    console.log(`  Settings:      ${settings.length}`);
-
-    // Build bundle
-    const { EXPORT_BUNDLE_VERSION } = await import("@useatlas/types");
-    const bundle: import("@useatlas/types").ExportBundle = {
-      manifest: {
-        version: EXPORT_BUNDLE_VERSION,
-        exportedAt: new Date().toISOString(),
-        source: {
-          label: orgFilter ? `org:${orgFilter}` : "self-hosted",
-          apiUrl:
-            process.env.ATLAS_API_URL ?? "http://localhost:3001",
-        },
-        counts: {
-          conversations: conversations.length,
-          messages: messageCount,
-          semanticEntities: semanticEntities.length,
-          learnedPatterns: learnedPatterns.length,
-          settings: settings.length,
-        },
-      },
-      conversations,
-      semanticEntities,
-      learnedPatterns,
-      settings,
-    };
+    const counts = bundle.manifest.counts;
+    console.log(`  Conversations:      ${counts.conversations}`);
+    console.log(`  Messages:           ${counts.messages}`);
+    console.log(`  Entities:           ${counts.semanticEntities}`);
+    console.log(`  Patterns:           ${counts.learnedPatterns}`);
+    console.log(`  Settings:           ${counts.settings}`);
+    console.log(`  Dashboards:         ${counts.dashboards ?? 0} (${counts.dashboardCards ?? 0} cards, ${counts.dashboardUserDrafts ?? 0} drafts)`);
+    console.log(`  Knowledge docs:     ${counts.knowledgeDocuments ?? 0} (${counts.knowledgeLinks ?? 0} links)`);
+    console.log(`  Scheduled tasks:    ${counts.scheduledTasks ?? 0}`);
+    console.log(`  Session memory:     ${counts.agentSessionMemory ?? 0}`);
 
     // Write output
     const date = new Date().toISOString().slice(0, 10);
     const outPath = outputArg ?? `./atlas-export-${date}.json`;
     fs.writeFileSync(outPath, JSON.stringify(bundle, null, 2));
     console.log(
-      `\n${pc.green("\u2713")} Bundle written to ${pc.bold(outPath)}`,
+      `\n${pc.green("✓")} Bundle written to ${pc.bold(outPath)}`,
     );
     console.log(
       `  Total size: ${(Buffer.byteLength(JSON.stringify(bundle)) / 1024).toFixed(1)} KB`,

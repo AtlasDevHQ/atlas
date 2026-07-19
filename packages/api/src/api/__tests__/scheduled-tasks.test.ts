@@ -73,6 +73,9 @@ const mockListAllRuns = mock((): Promise<unknown> =>
 const mockValidateCronExpression = mock((): unknown => ({ valid: true }));
 
 void mock.module("@atlas/api/lib/scheduled-tasks", () => ({
+  // Region-migration import (#4460) recomputes next_run_at at import time;
+  // present so admin-route loading never hits a missing-export SyntaxError.
+  computeNextRun: mock(() => new Date(Date.now() + 3_600_000)),
   createScheduledTask: mockCreateScheduledTask,
   getScheduledTask: mockGetScheduledTask,
   listScheduledTasks: mockListScheduledTasks,

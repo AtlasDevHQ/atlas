@@ -252,6 +252,10 @@ describe("bundle round-trip shape", () => {
       semanticEntities: { imported: 5, skipped: 0 },
       learnedPatterns: { imported: 3, skipped: 1 },
       settings: { imported: 8, skipped: 0 },
+      dashboards: { imported: 2, skipped: 1 },
+      knowledgeDocuments: { imported: 4, skipped: 0 },
+      scheduledTasks: { imported: 1, skipped: 0 },
+      agentSessionMemory: { imported: 6, skipped: 2 },
     };
 
     const total = (r: { imported: number; skipped: number }) => r.imported + r.skipped;
@@ -259,6 +263,10 @@ describe("bundle round-trip shape", () => {
     expect(total(result.semanticEntities)).toBe(5);
     expect(total(result.learnedPatterns)).toBe(4);
     expect(total(result.settings)).toBe(8);
+    expect(total(result.dashboards)).toBe(3);
+    expect(total(result.knowledgeDocuments)).toBe(4);
+    expect(total(result.scheduledTasks)).toBe(1);
+    expect(total(result.agentSessionMemory)).toBe(8);
   });
 });
 
@@ -573,5 +581,329 @@ describe("importBundle — learned-pattern amendment identity (#4569)", () => {
     // A pre-#4571 bundle omits auto_promoted → fail closed to machine/gated
     // (true), so an old bundle can never grant an unearned confidence bypass.
     expect(p[12]).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 bundle sections (#4460) — dashboards, knowledge, scheduled tasks, memory
+// ---------------------------------------------------------------------------
+
+function validV2Bundle(overrides?: Partial<ExportBundle>): ExportBundle {
+  return {
+    manifest: {
+      version: 2,
+      exportedAt: "2026-07-18T00:00:00Z",
+      source: { label: "region-migration:us-east" },
+      counts: {
+        conversations: 0,
+        messages: 0,
+        semanticEntities: 0,
+        learnedPatterns: 0,
+        settings: 0,
+        dashboards: 1,
+        dashboardCards: 1,
+        dashboardUserDrafts: 1,
+        knowledgeDocuments: 1,
+        knowledgeLinks: 1,
+        scheduledTasks: 1,
+        agentSessionMemory: 1,
+      },
+    },
+    conversations: [],
+    semanticEntities: [],
+    learnedPatterns: [],
+    settings: [],
+    dashboards: [
+      {
+        id: "dash-1",
+        ownerId: "user-1",
+        title: "Revenue",
+        description: "MRR overview",
+        shareMode: "org",
+        refreshSchedule: "0 8 * * *",
+        parameters: [{ key: "region", type: "string" }],
+        firstPublishedAt: "2026-06-01T00:00:00Z",
+        createdAt: "2026-05-01T00:00:00Z",
+        updatedAt: "2026-06-01T00:00:00Z",
+        cards: [
+          {
+            id: "card-1",
+            position: 0,
+            title: "MRR",
+            sql: "SELECT 1",
+            chartConfig: { type: "line" },
+            content: null,
+            annotations: [{ x: "2026-06-01", label: "launch" }],
+            connectionGroupId: "g-prod",
+            layout: { x: 0, y: 0, w: 6, h: 4 },
+            createdAt: "2026-05-01T00:00:00Z",
+            updatedAt: "2026-05-02T00:00:00Z",
+          },
+        ],
+        drafts: [
+          {
+            userId: "user-2",
+            draft: { title: "Revenue (wip)", cards: [] },
+            baseline: { title: "Revenue", cards: [] },
+            publishedBaselineAt: "2026-06-01T00:00:00Z",
+            createdAt: "2026-06-02T00:00:00Z",
+            updatedAt: "2026-06-03T00:00:00Z",
+          },
+        ],
+      },
+    ],
+    knowledgeDocuments: [
+      {
+        id: "doc-1",
+        collectionId: "handbook",
+        path: "policies/refunds.md",
+        type: "guide",
+        title: "Refund policy",
+        description: null,
+        tags: ["policy"],
+        docTimestamp: null,
+        resource: null,
+        body: "# Refunds",
+        atlasSource: null,
+        atlasIngestedAt: null,
+        status: "draft",
+        createdAt: "2026-03-02T00:00:00Z",
+        updatedAt: "2026-03-02T00:00:00Z",
+        links: [{ targetPath: "policies/returns.md", anchorText: "returns" }],
+      },
+    ],
+    scheduledTasks: [
+      {
+        id: "task-1",
+        ownerId: "user-1",
+        name: "Weekly revenue",
+        question: "What was revenue last week?",
+        cronExpression: "0 9 * * 1",
+        deliveryChannel: "email",
+        recipients: ["ops@example.com"],
+        connectionGroupId: "g-prod",
+        approvalMode: "auto",
+        enabled: true,
+        pluginId: null,
+        createdAt: "2026-05-01T00:00:00Z",
+        updatedAt: "2026-05-01T00:00:00Z",
+      },
+    ],
+    agentSessionMemory: [
+      {
+        conversationId: "conv-001",
+        namespace: "scratchpad",
+        value: { note: "weekly grain preferred" },
+        createdAt: "2026-06-01T00:00:00Z",
+        updatedAt: "2026-06-02T00:00:00Z",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+/**
+ * Capture client for the v2 sections: `existingSql` substrings gate which
+ * existence probes report a hit, driving the idempotent-skip branches.
+ */
+function v2CaptureClient(existingSql: string[] = []): {
+  client: InternalPoolClient;
+  calls: Array<{ sql: string; params: unknown[] }>;
+} {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  const client: InternalPoolClient = {
+    query: async (sql: string, params?: unknown[]) => {
+      calls.push({ sql, params: params ?? [] });
+      if (existingSql.some((fragment) => sql.includes(fragment))) {
+        return { rows: [{ id: "existing" }] };
+      }
+      return { rows: [] };
+    },
+    release: () => {},
+  };
+  return { client, calls };
+}
+
+describe("validateBundle — v2 sections (#4460)", () => {
+  it("accepts a full v2 bundle", () => {
+    const result = validateBundle(validV2Bundle());
+    expect(result.ok).toBe(true);
+  });
+
+  it("still accepts a legacy v1 bundle with the v2 sections absent", () => {
+    const result = validateBundle(validBundle());
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects an unknown future version", () => {
+    const bundle = validV2Bundle();
+    (bundle.manifest as unknown as Record<string, unknown>).version = 3;
+    const result = validateBundle(bundle);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("Unsupported bundle version");
+  });
+
+  it("rejects a v2 bundle missing a required section (producer drift fails loudly)", () => {
+    for (const section of ["dashboards", "knowledgeDocuments", "scheduledTasks", "agentSessionMemory"] as const) {
+      const bundle = validV2Bundle();
+      delete (bundle as unknown as Record<string, unknown>)[section];
+      const result = validateBundle(bundle);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain(section);
+    }
+  });
+
+  it("validates sections when present on a v1-labeled bundle (no version-gated skip)", () => {
+    const bundle = validBundle({
+      dashboards: [
+        // Missing ownerId/title/cards/drafts — must be rejected even though
+        // the manifest claims v1.
+        { id: "dash-1" } as unknown as NonNullable<ExportBundle["dashboards"]>[number],
+      ],
+    });
+    const result = validateBundle(bundle);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("dashboards[0]");
+  });
+
+  it("rejects a knowledge document with an invalid content-mode status", () => {
+    const bundle = validV2Bundle();
+    (bundle.knowledgeDocuments![0] as unknown as Record<string, unknown>).status = "live";
+    const result = validateBundle(bundle);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("status");
+  });
+
+  it("rejects a scheduled task missing its cron expression", () => {
+    const bundle = validV2Bundle();
+    delete (bundle.scheduledTasks![0] as unknown as Record<string, unknown>).cronExpression;
+    const result = validateBundle(bundle);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("scheduledTasks[0]");
+  });
+
+  it("rejects a memory slot missing its value", () => {
+    const bundle = validV2Bundle();
+    delete (bundle.agentSessionMemory![0] as unknown as Record<string, unknown>).value;
+    const result = validateBundle(bundle);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("agentSessionMemory[0]");
+  });
+});
+
+describe("importBundle — v2 sections (#4460)", () => {
+  it("imports a dashboard with cards and drafts, preserving UUIDs and re-minting the share token", async () => {
+    const { client, calls } = v2CaptureClient();
+    const result = await importBundle(client, validV2Bundle(), "org-test");
+
+    const dashInsert = calls.find((c) => c.sql.includes("INSERT INTO dashboards"));
+    expect(dashInsert).toBeDefined();
+    // Columns: id, org_id, owner_id, title, description, share_mode,
+    // refresh_schedule, parameters, first_published_at, created_at, updated_at
+    expect(dashInsert!.params[0]).toBe("dash-1"); // original UUID preserved
+    expect(dashInsert!.params[1]).toBe("org-test");
+    expect(dashInsert!.params[5]).toBe("org"); // shareMode preference survives
+    // share_token is not an INSERT column at all — re-minted in the target.
+    expect(dashInsert!.sql).not.toContain("share_token");
+    // jsonb parameters serialized, not raw.
+    expect(typeof dashInsert!.params[7]).toBe("string");
+
+    const cardInsert = calls.find((c) => c.sql.includes("INSERT INTO dashboard_cards"));
+    expect(cardInsert).toBeDefined();
+    expect(cardInsert!.params[0]).toBe("card-1");
+    expect(cardInsert!.params[1]).toBe("dash-1"); // FK survives via preserved UUID
+    // cached_* result snapshots are a carve-out — never inserted.
+    expect(cardInsert!.sql).not.toContain("cached_");
+
+    const draftInsert = calls.find((c) => c.sql.includes("INSERT INTO dashboard_user_drafts"));
+    expect(draftInsert).toBeDefined();
+    expect(draftInsert!.params[0]).toBe("user-2");
+    expect(draftInsert!.params[1]).toBe("dash-1");
+
+    expect(result.dashboards).toEqual({ imported: 1, skipped: 0 });
+  });
+
+  it("skips an already-imported dashboard (idempotent re-import)", async () => {
+    const { client, calls } = v2CaptureClient(["SELECT id FROM dashboards"]);
+    const result = await importBundle(client, validV2Bundle(), "org-test");
+
+    expect(calls.find((c) => c.sql.includes("INSERT INTO dashboards"))).toBeUndefined();
+    expect(calls.find((c) => c.sql.includes("INSERT INTO dashboard_cards"))).toBeUndefined();
+    expect(result.dashboards).toEqual({ imported: 0, skipped: 1 });
+  });
+
+  it("imports a knowledge document with preserved UUID, review status, and its links", async () => {
+    const { client, calls } = v2CaptureClient();
+    const result = await importBundle(client, validV2Bundle(), "org-test");
+
+    const docInsert = calls.find((c) => c.sql.includes("INSERT INTO knowledge_documents"));
+    expect(docInsert).toBeDefined();
+    expect(docInsert!.params[0]).toBe("doc-1");
+    expect(docInsert!.params[1]).toBe("org-test"); // workspace_id = importing org
+    expect(docInsert!.params[13]).toBe("draft"); // review status preserved
+    // The FTS vector is a generated column — the INSERT must not touch it.
+    expect(docInsert!.sql).not.toContain("fts");
+
+    const linkInsert = calls.find((c) => c.sql.includes("INSERT INTO knowledge_links"));
+    expect(linkInsert).toBeDefined();
+    expect(linkInsert!.params[0]).toBe("doc-1");
+    expect(linkInsert!.params[1]).toBe("policies/returns.md");
+
+    expect(result.knowledgeDocuments).toEqual({ imported: 1, skipped: 0 });
+  });
+
+  it("imports a scheduled task and recomputes next_run_at from the cron expression", async () => {
+    const { client, calls } = v2CaptureClient();
+    const result = await importBundle(client, validV2Bundle(), "org-test");
+
+    const taskInsert = calls.find((c) => c.sql.includes("INSERT INTO scheduled_tasks"));
+    expect(taskInsert).toBeDefined();
+    // Columns: id, owner_id, org_id, name, question, cron_expression,
+    // delivery_channel, recipients, connection_group_id, approval_mode,
+    // enabled, plugin_id, next_run_at, created_at, updated_at
+    expect(taskInsert!.params[0]).toBe("task-1");
+    expect(taskInsert!.params[2]).toBe("org-test");
+    expect(taskInsert!.params[5]).toBe("0 9 * * 1");
+    // next_run_at is recomputed at import (target scheduler re-plans), and
+    // must land in the FUTURE — never carried from the source bundle.
+    const nextRunAt = taskInsert!.params[12];
+    expect(typeof nextRunAt).toBe("string");
+    expect(new Date(nextRunAt as string).getTime()).toBeGreaterThan(Date.now());
+
+    expect(result.scheduledTasks).toEqual({ imported: 1, skipped: 0 });
+  });
+
+  it("imports a session memory slot scoped to the importing org", async () => {
+    const { client, calls } = v2CaptureClient();
+    const result = await importBundle(client, validV2Bundle(), "org-test");
+
+    const memInsert = calls.find((c) => c.sql.includes("INSERT INTO agent_session_memory"));
+    expect(memInsert).toBeDefined();
+    // Columns: conversation_id, org_id, namespace, value, created_at, updated_at
+    expect(memInsert!.params[0]).toBe("conv-001");
+    expect(memInsert!.params[1]).toBe("org-test");
+    expect(memInsert!.params[2]).toBe("scratchpad");
+    // jsonb value serialized.
+    expect(typeof memInsert!.params[3]).toBe("string");
+
+    expect(result.agentSessionMemory).toEqual({ imported: 1, skipped: 0 });
+  });
+
+  it("skips an existing memory slot (idempotent re-import)", async () => {
+    const { client, calls } = v2CaptureClient(["FROM agent_session_memory WHERE"]);
+    const result = await importBundle(client, validV2Bundle(), "org-test");
+
+    expect(calls.find((c) => c.sql.includes("INSERT INTO agent_session_memory"))).toBeUndefined();
+    expect(result.agentSessionMemory).toEqual({ imported: 0, skipped: 1 });
+  });
+
+  it("returns 0/0 for the v2 sections when importing a legacy v1 bundle", async () => {
+    const { client } = v2CaptureClient();
+    const result = await importBundle(client, validBundle(), "org-test");
+
+    expect(result.dashboards).toEqual({ imported: 0, skipped: 0 });
+    expect(result.knowledgeDocuments).toEqual({ imported: 0, skipped: 0 });
+    expect(result.scheduledTasks).toEqual({ imported: 0, skipped: 0 });
+    expect(result.agentSessionMemory).toEqual({ imported: 0, skipped: 0 });
   });
 });

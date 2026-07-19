@@ -14,8 +14,16 @@ The migration preserves:
 
 - **Conversations** with all messages, metadata, and timestamps
 - **Semantic entities** (DB-backed YAML definitions)
-- **Learned patterns** (approved, pending, and rejected)
+- **Learned patterns** (approved, pending, and rejected — including semantic amendments)
 - **Settings** (org-scoped key/value pairs)
+- **Dashboards** with cards, parameters, and per-user drafts (share links are re-minted on the target; card caches regenerate on first render)
+- **Knowledge documents** with frontmatter, link graph, and review status (full-text search rebuilds automatically; sync secrets are re-entered on the target)
+- **Scheduled task definitions** (the next run time is recomputed on the target; run history does not move)
+- **Durable agent session memory** (keyed to migrated conversations)
+
+Integrations and their credentials do not move — they are re-connected on the
+target instance (credentials are encrypted per-instance and OAuth callbacks
+bind to instance-specific hosts).
 
 The import is **idempotent** — running it multiple times skips already-imported
 data, so you can safely re-run after fixing errors or adding new data.
@@ -64,7 +72,7 @@ cat atlas-export-2026-04-02.json | jq '.manifest'
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "exportedAt": "2026-04-02T12:00:00.000Z",
   "source": { "label": "self-hosted", "apiUrl": "http://localhost:3001" },
   "counts": {
@@ -72,10 +80,21 @@ cat atlas-export-2026-04-02.json | jq '.manifest'
     "messages": 380,
     "semanticEntities": 15,
     "learnedPatterns": 8,
-    "settings": 3
+    "settings": 3,
+    "dashboards": 4,
+    "dashboardCards": 12,
+    "dashboardUserDrafts": 1,
+    "knowledgeDocuments": 20,
+    "knowledgeLinks": 34,
+    "scheduledTasks": 2,
+    "agentSessionMemory": 6
   }
 }
 ```
+
+Version 1 bundles (produced by pre-v2 exporters, without the dashboard /
+knowledge / task / memory sections) still import — the newer sections simply
+report zero.
 
 </Step>
 <Step>
@@ -120,6 +139,10 @@ Import complete!
   Semantic entities       15        0
   Learned patterns         8        0
   Settings                 3        0
+  Dashboards               4        0
+  Knowledge docs          20        0
+  Scheduled tasks          2        0
+  Session memory           6        0
 ```
 
 Log into the hosted instance and verify your conversations and semantic layer

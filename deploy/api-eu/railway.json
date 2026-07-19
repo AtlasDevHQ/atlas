@@ -9,6 +9,7 @@
       "package.json",
       "patches/**",
       "packages/api/**",
+      "packages/mcp/**",
       "packages/react/**",
       "packages/types/**",
       "packages/schemas/**",

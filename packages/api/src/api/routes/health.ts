@@ -538,9 +538,14 @@ health.openapi(healthRoute, async (c) => {
     // fiber to self-report. Overdue promotes ok → degraded and adds a
     // warning; it NEVER escalates to error/503 — a missing backup must not
     // pull the region from the LB.
-    let backupsComponent:
-      | { status: "healthy" | "degraded" | "disabled"; lastCheckedAt: string; lastVerifiedAt?: string | null; message?: string }
-      | undefined;
+    // Assigned on BOTH the try and catch arms below, so it is definitely
+    // present on the response — no undefined arm, no conditional spread.
+    let backupsComponent: {
+      status: "healthy" | "degraded" | "disabled";
+      lastCheckedAt: string;
+      lastVerifiedAt?: string | null;
+      message?: string;
+    };
     try {
       const { getScheduledBackupHealth } = await import("@atlas/api/lib/backups/health");
       const backupHealth = await getScheduledBackupHealth();
@@ -628,7 +633,7 @@ health.openapi(healthRoute, async (c) => {
         ...(exploreBackend === "just-bash" && { message: "No sandbox isolation — using just-bash fallback" }),
       },
       plugins: pluginsComponent,
-      ...(backupsComponent && { backups: backupsComponent }),
+      backups: backupsComponent,
     };
 
     // #3685 — gate the per-source fleet breakdown. `sourcesSection` above

@@ -119,3 +119,53 @@ export async function withProgressAndCancellation<T>(
     if (onAbort) extra.signal.removeEventListener("abort", onAbort);
   }
 }
+
+/** Default keepalive cadence (#4734) — comfortably under the ~120s edge idle window. */
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
+ * Drive a keepalive heartbeat on a long-running dispatch (#4734).
+ *
+ * During a server-side agent run the POST Streamable-HTTP `text/event-stream`
+ * emits ZERO application bytes, so an intermediary idle-timeout (Railway
+ * edge/LB, ~120s) closes it before the run finishes → the client sees
+ * `transport dropped`. Emitting periodic `notifications/progress` puts bytes on
+ * the wire (they route onto the request stream via `relatedRequestId`) and keeps
+ * it warm. Pair with {@link withProgressAndCancellation}: call this inside the
+ * `work` callback with its `reporter`, and stop it in a `finally`.
+ *
+ * Progress is a bounded, strictly-increasing sequence (0.5, 0.667, 0.75, …)
+ * that approaches — but never reaches — 1, so the wrapper's final
+ * `progress(total ?? 1)` stays monotonic after any number of heartbeats. It is
+ * indeterminate (no `total`): a blind timer, not real agent-step progress
+ * (threading a step callback is a documented follow-up).
+ *
+ * NOTE: `reporter.report` only puts bytes on the wire when the client supplied
+ * a `progressToken` (see {@link withProgressAndCancellation} — no-op otherwise).
+ * Common hosted clients (Claude, Cursor) do, which covers the reported case; a
+ * transport-agnostic `: ping` frame would cover the rest but needs an
+ * SDK/transport hook (follow-up, out of scope).
+ *
+ * @returns a stop function — call it in a `finally` so the timer can never
+ *   outlive the work.
+ */
+export function startHeartbeat(
+  reporter: ProgressReporter,
+  opts?: { readonly intervalMs?: number; readonly message?: string },
+): () => void {
+  const intervalMs = opts?.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+  let ticks = 0;
+  const timer = setInterval(() => {
+    ticks += 1;
+    // Bounded below 1 so a later final `progress(1)` is still monotonic.
+    // Fire-and-forget: `reporter.report` swallows emit failures (see `emit`
+    // above), so a failed keepalive never rejects here or fails the work.
+    void reporter.report(1 - 1 / (ticks + 1), {
+      ...(opts?.message ? { message: opts.message } : {}),
+    });
+  }, intervalMs);
+  // Don't let the keepalive timer, on its own, hold the runtime open — the
+  // work's promise is what the dispatch awaits. `unref` is Node/Bun-only.
+  timer.unref?.();
+  return () => clearInterval(timer);
+}

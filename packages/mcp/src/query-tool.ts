@@ -46,7 +46,11 @@ import { type McpTransport, type McpDeployMode } from "./telemetry.js";
 import { envelope, toEnvelopeResult, toStructuredContent } from "./error-envelope.js";
 import { createMcpDispatch } from "./mcp-dispatch.js";
 import { approvalRequiredResult, queryOutputShape } from "./structured-output.js";
-import { withProgressAndCancellation } from "./progress.js";
+import {
+  withProgressAndCancellation,
+  startHeartbeat,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+} from "./progress.js";
 
 // The question is free text the customer's LLM composed. Cap it so a hostile
 // client can't drive a megabyte prompt into the agent loop; generous enough
@@ -54,6 +58,16 @@ import { withProgressAndCancellation } from "./progress.js";
 // 1024, but a question legitimately carries more context than a filter term).
 const MAX_QUESTION_LEN = 4096;
 const MAX_CONNECTION_ID_LEN = 256;
+
+// #4734 — keepalive cadence for the (potentially minutes-long) agent run. A
+// module-level `let` (not a user-facing env knob) purely so the test can
+// shorten it without a real 15s wait; production always uses the default.
+let queryHeartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS;
+
+/** @internal test seam — override the #4734 query keepalive cadence. */
+export function _setQueryHeartbeatIntervalMsForTest(ms: number): void {
+  queryHeartbeatIntervalMs = ms;
+}
 
 /**
  * The hint attached to a `billing_blocked` envelope — adapts the wording of
@@ -162,16 +176,33 @@ export function registerQueryTool(
             result = await withProgressAndCancellation(
               extra,
               { startMessage: "Running Atlas agent", endMessage: "Answer ready" },
-              async (_reporter, _signal) =>
-                executeAgentQuery(question, requestId, {
-                  // The dispatch RequestContext already carries user + actor
-                  // (kind:mcp, toolName) + agentOrigin:"mcp" (#1858/#2067/#2072),
-                  // which `executeAgentQuery` inherits — so executeSQL audit rows
-                  // record actor_kind='mcp' and origin-scoped approval rules fire
-                  // for origin=mcp. Only connectionId isn't on the context, so
-                  // thread it explicitly (#4124).
-                  ...(connectionId ? { connectionId } : {}),
-                }),
+              async (reporter, _signal) => {
+                // #4734 — the POST SSE stream emits zero application bytes during
+                // the agent run, so an intermediary idle-timeout (Railway
+                // edge/LB, ~120s) closes it before a long run finishes → the
+                // client sees "transport dropped". Drive a keepalive heartbeat so
+                // periodic progress notifications keep the stream warm. Cleared
+                // in `finally` so the timer never outlives the query. (Only
+                // reaches the wire for progressToken-supplying clients — see
+                // startHeartbeat; a transport-agnostic `: ping` is a follow-up.)
+                const stopHeartbeat = startHeartbeat(reporter, {
+                  intervalMs: queryHeartbeatIntervalMs,
+                  message: "Atlas is still working on your question…",
+                });
+                try {
+                  return await executeAgentQuery(question, requestId, {
+                    // The dispatch RequestContext already carries user + actor
+                    // (kind:mcp, toolName) + agentOrigin:"mcp" (#1858/#2067/#2072),
+                    // which `executeAgentQuery` inherits — so executeSQL audit rows
+                    // record actor_kind='mcp' and origin-scoped approval rules fire
+                    // for origin=mcp. Only connectionId isn't on the context, so
+                    // thread it explicitly (#4124).
+                    ...(connectionId ? { connectionId } : {}),
+                  });
+                } finally {
+                  stopHeartbeat();
+                }
+              },
             );
           } catch (err) {
             // The billing/claim gates inside `executeAgentQuery` throw typed

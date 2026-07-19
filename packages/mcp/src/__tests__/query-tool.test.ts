@@ -124,7 +124,9 @@ void mock.module("@atlas/api/lib/billing/claim-gate", () => ({
 }));
 
 // Import after mocks are set up.
-const { registerQueryTool } = await import("../query-tool.js");
+const { registerQueryTool, _setQueryHeartbeatIntervalMsForTest } = await import(
+  "../query-tool.js"
+);
 
 function getContentText(content: unknown): string {
   const arr = content as Array<{ type: string; text: string }>;
@@ -159,6 +161,10 @@ describe("MCP query tool (#4094)", () => {
     mockExecuteAgentQuery.mockImplementation(async () => DEFAULT_RESULT);
     billingGateVerdict = { allowed: true };
     mockCheckAgentBillingGate.mockClear();
+    // #4734 — keep the keepalive interval long by default so the fast-resolving
+    // mocks in the rest of the suite never fire a stray heartbeat; the slow-run
+    // test shortens it locally.
+    _setQueryHeartbeatIntervalMsForTest(60_000);
   });
 
   it("is registered as a read-only, open-world tool advertising the error contract", async () => {
@@ -198,6 +204,60 @@ describe("MCP query tool (#4094)", () => {
 
     // Retained text block mirrors the structured payload.
     expect(JSON.parse(getContentText(result.content))).toEqual(result.structuredContent);
+  });
+
+  it("drives a keepalive heartbeat during a >interval run so the transport stays warm (#4734)", async () => {
+    // The POST SSE stream emits zero app bytes during the agent run, so without
+    // a heartbeat an intermediary idle-timeout (~120s) drops the transport. A
+    // run longer than the (shortened) heartbeat interval must produce interim
+    // progress notifications between the start(0) and final(1) emits.
+    _setQueryHeartbeatIntervalMsForTest(10);
+    mockExecuteAgentQuery.mockImplementationOnce(async () => {
+      await new Promise((r) => setTimeout(r, 55));
+      return DEFAULT_RESULT;
+    });
+
+    const { client } = await createTestClient();
+    const progresses: number[] = [];
+    const result = await client.callTool(
+      { name: "query", arguments: { question: "a slow question" } },
+      undefined,
+      { onprogress: (p) => progresses.push(p.progress) },
+    );
+
+    expect(result.isError).toBeFalsy();
+    // At least one interim heartbeat fired strictly between start and end — the
+    // bytes that keep the stream alive mid-run.
+    const interim = progresses.filter((v) => v > 0 && v < 1);
+    expect(interim.length).toBeGreaterThanOrEqual(1);
+    // The whole sequence is monotonically non-decreasing (start 0 → … → final 1).
+    expect(progresses[0]).toBe(0);
+    expect(progresses.at(-1)).toBe(1);
+    for (let i = 1; i < progresses.length; i++) {
+      expect(progresses[i]).toBeGreaterThanOrEqual(progresses[i - 1]);
+    }
+  });
+
+  it("clears the heartbeat timer once the query settles (no leaked interval)", async () => {
+    // After the query returns, no further progress notifications must fire — a
+    // leaked setInterval would keep emitting past settlement.
+    _setQueryHeartbeatIntervalMsForTest(10);
+    mockExecuteAgentQuery.mockImplementationOnce(async () => {
+      await new Promise((r) => setTimeout(r, 25));
+      return DEFAULT_RESULT;
+    });
+
+    const { client } = await createTestClient();
+    const progresses: number[] = [];
+    await client.callTool(
+      { name: "query", arguments: { question: "another slow question" } },
+      undefined,
+      { onprogress: (p) => progresses.push(p.progress) },
+    );
+    const countAtSettle = progresses.length;
+    // Wait several more intervals — a cleared timer emits nothing further.
+    await new Promise((r) => setTimeout(r, 40));
+    expect(progresses.length).toBe(countAtSettle);
   });
 
   it("threads the question + connectionId into executeAgentQuery", async () => {

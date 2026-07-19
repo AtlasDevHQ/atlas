@@ -10,8 +10,10 @@
 import { describe, expect, it, mock } from "bun:test";
 import {
   withProgressAndCancellation,
+  startHeartbeat,
   OperationCancelledError,
   type McpRequestExtra,
+  type ProgressReporter,
 } from "../progress.js";
 
 interface ProgressParams {
@@ -120,6 +122,75 @@ describe("withProgressAndCancellation", () => {
       expect(unhandled).toEqual([]);
     } finally {
       process.removeListener("unhandledRejection", handler);
+    }
+  });
+});
+
+describe("startHeartbeat (#4734)", () => {
+  /** Capture reporter.report calls into a list. */
+  function captureReporter(): {
+    reporter: ProgressReporter;
+    reports: { progress: number; message?: string }[];
+  } {
+    const reports: { progress: number; message?: string }[] = [];
+    const reporter: ProgressReporter = {
+      report: async (progress, o) => {
+        reports.push({ progress, ...(o?.message ? { message: o.message } : {}) });
+      },
+    };
+    return { reporter, reports };
+  }
+
+  it("emits a bounded, strictly-increasing (<1) progress sequence until stopped", async () => {
+    const { reporter, reports } = captureReporter();
+    const stop = startHeartbeat(reporter, { intervalMs: 5, message: "still working" });
+    await new Promise((r) => setTimeout(r, 32));
+    stop();
+    const countAtStop = reports.length;
+
+    // Several intervals elapsed → multiple heartbeats.
+    expect(countAtStop).toBeGreaterThanOrEqual(2);
+    for (let i = 0; i < reports.length; i++) {
+      expect(reports[i].progress).toBeGreaterThan(0);
+      expect(reports[i].progress).toBeLessThan(1); // bounded below the final(1)
+      if (i > 0) expect(reports[i].progress).toBeGreaterThan(reports[i - 1].progress);
+    }
+    expect(reports[0].message).toBe("still working");
+
+    // Stop clears the timer — no further emits.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(reports.length).toBe(countAtStop);
+  });
+
+  it("omits the message field when none is supplied", async () => {
+    const { reporter, reports } = captureReporter();
+    const stop = startHeartbeat(reporter, { intervalMs: 5 });
+    await new Promise((r) => setTimeout(r, 16));
+    stop();
+    expect(reports.length).toBeGreaterThanOrEqual(1);
+    expect(reports.every((r) => r.message === undefined)).toBe(true);
+  });
+
+  it("stays monotonic through withProgressAndCancellation's final emit", async () => {
+    // The wrapper emits start(0) then final(total ?? 1); the heartbeat's
+    // bounded-below-1 values must never break that ordering.
+    const { extra, progress } = fakeExtra({ progressToken: "tok" });
+    const result = await withProgressAndCancellation(
+      extra,
+      { endMessage: "done" },
+      async (reporter) => {
+        const stop = startHeartbeat(reporter, { intervalMs: 5 });
+        await new Promise((r) => setTimeout(r, 24));
+        stop();
+        return "ok";
+      },
+    );
+    expect(result).toBe("ok");
+    const values = progress.map((p) => p.progress);
+    expect(values[0]).toBe(0);
+    expect(values.at(-1)).toBe(1);
+    for (let i = 1; i < values.length; i++) {
+      expect(values[i]).toBeGreaterThanOrEqual(values[i - 1]);
     }
   });
 });

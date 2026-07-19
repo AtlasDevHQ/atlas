@@ -37,8 +37,27 @@ import {
   buildResourceUri,
 } from "./well-known";
 
-/** The `mcp:*` subset of the canonical scope union — the scopes /auth.md documents. */
+/** The `mcp:*` subset of the canonical scope union. */
 type McpScope = Extract<(typeof ATLAS_OAUTH_SCOPES)[number], `mcp:${string}`>;
+
+/**
+ * The scopes /auth.md documents: the `mcp:*` set plus `offline_access`.
+ * `offline_access` is included because the protected-resource metadata must
+ * advertise it (DCR clients register with exactly the advertised list, and
+ * the authorize endpoint validates against the client row's scopes — see
+ * `well-known.ts`), and the parity gate requires the doc and the metadata to
+ * name the same set.
+ *
+ * The `offline_access` arm is derived via `Extract` rather than hardcoded so it
+ * stays tethered to the canonical union: rename or drop `offline_access` in
+ * `ATLAS_OAUTH_SCOPES` and this narrows to just `McpScope`, turning the
+ * `SCOPE_GRANTS` key and the `documentedScopes()` array into compile errors —
+ * the guard that stops #4728 (a DCR scope silently missing from a surface) from
+ * reappearing.
+ */
+type DocumentedScope =
+  | McpScope
+  | Extract<(typeof ATLAS_OAUTH_SCOPES)[number], "offline_access">;
 
 export const authMd = new Hono();
 
@@ -55,25 +74,39 @@ const ATLAS_DOCS_URL = "https://docs.useatlas.dev";
 const ONBOARDING_MCP_PATH = "/mcp/onboarding";
 
 /**
- * Human-readable grants for the MCP scopes, keyed off the canonical scope
- * token. Only the `mcp:*` scopes are documented in `/auth.md` — the file is
- * about connecting an MCP actor, not the OIDC sign-in scopes. Deriving the
- * *set* from `ATLAS_OAUTH_SCOPES` (rather than re-listing the scopes by
- * hand) is what makes a newly-added `mcp:*` scope surface automatically; a
- * scope without a grant blurb here still appears, with a generic line.
+ * Human-readable grants for the documented scopes, keyed off the canonical
+ * scope token. The `mcp:*` scopes plus `offline_access` are documented in
+ * `/auth.md` — the file is about connecting an MCP actor, not the OIDC
+ * sign-in scopes. Deriving the *set* from `ATLAS_OAUTH_SCOPES` (rather than
+ * re-listing the scopes by hand) is what makes a newly-added `mcp:*` scope
+ * surface automatically; a scope without a grant blurb here still appears,
+ * with a generic line.
  */
-const MCP_SCOPE_GRANTS: Partial<Record<McpScope, string>> = {
+const SCOPE_GRANTS: Partial<Record<DocumentedScope, string>> = {
   "mcp:read": "query workspace data through the hosted MCP endpoint",
   "mcp:write":
     "perform write operations (reserved for future mutation tools)",
+  offline_access:
+    "receive a refresh token so the connection survives access-token expiry",
 };
 
-function mcpScopes(): AuthMdScope[] {
-  return ATLAS_OAUTH_SCOPES.filter(
-    (s): s is McpScope => s.startsWith("mcp:"),
-  ).map((name) => ({
+/**
+ * The scope set /auth.md documents. Exported so the discovery-parity gate
+ * (`scripts/check-auth-md-discovery-parity.ts`) drives the SAME derivation the
+ * live route serves rather than hand-mirroring it — a copy would be its own
+ * drift vector.
+ */
+export function documentedScopes(): AuthMdScope[] {
+  const mcp = ATLAS_OAUTH_SCOPES.filter((s): s is McpScope =>
+    s.startsWith("mcp:"),
+  );
+  // mcp:* first (they are what the doc is about), offline_access last. Typed as
+  // DocumentedScope[] so dropping/renaming `offline_access` in the canonical
+  // union is a compile error here, not a silent surface divergence.
+  const documented: DocumentedScope[] = [...mcp, "offline_access"];
+  return documented.map((name) => ({
     name,
-    grants: MCP_SCOPE_GRANTS[name] ?? "an Atlas MCP capability",
+    grants: SCOPE_GRANTS[name] ?? "an Atlas MCP capability",
   }));
 }
 
@@ -94,7 +127,7 @@ export function renderAuthMd(req: Request): string {
     authServerUri: buildAuthServerUri(req),
     issuerBaseUri: buildIssuerBaseUri(req),
     resourceUri: buildResourceUri(req),
-    scopes: mcpScopes(),
+    scopes: documentedScopes(),
     onboardingPath: ONBOARDING_MCP_PATH,
     docsUrl: ATLAS_DOCS_URL,
   });

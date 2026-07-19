@@ -38,6 +38,7 @@
  */
 
 import { Hono } from "hono";
+import type { ATLAS_OAUTH_SCOPES } from "@atlas/api/lib/auth/oauth-scopes";
 import { createLogger } from "@atlas/api/lib/logger";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -417,11 +418,24 @@ wellKnown.get("/oauth-protected-resource/mcp/:workspace_id", async (c) => {
         resource: buildResourceUri(c.req.raw),
         authorization_servers: [buildAuthServerUri(c.req.raw)],
         bearer_methods_supported: ["header"],
-        scopes_supported: ["mcp:read", "mcp:write"],
+        // `offline_access` must be advertised alongside the `mcp:*` scopes:
+        // DCR clients (Claude Code among them) register with exactly this
+        // list, and `@better-auth/oauth-provider` validates authorize-time
+        // scope requests against the CLIENT row's scopes (`client.scopes ??
+        // opts.scopes`), not the server's. Omitting it makes every client
+        // that wants a refresh token fail authorize with `invalid_scope`.
+        // `satisfies` tethers each literal to the canonical scope union so a
+        // rename there (e.g. of `offline_access`) is a compile error, not a
+        // silent advertise-a-scope-the-server-can't-issue drift (#4728).
+        scopes_supported: [
+          "mcp:read",
+          "mcp:write",
+          "offline_access",
+        ] satisfies readonly (typeof ATLAS_OAUTH_SCOPES)[number][],
       },
       // Silence the OIDC-scopes warning — the MCP resource server
-      // intentionally lists `mcp:*` only. The auth server still
-      // advertises openid/profile/email separately.
+      // intentionally omits the sign-in scopes (openid/profile/email);
+      // the auth server advertises those separately.
       { silenceWarnings: { oidcScopes: true } },
     );
 

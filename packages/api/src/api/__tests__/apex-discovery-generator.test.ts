@@ -50,9 +50,12 @@ describe("apex-discovery generator", () => {
     expect(API_PROTECTED_RESOURCE.bearer_methods_supported).toEqual(["header"]);
     // scopes_supported is what an agent-readiness scanner (and the MCP auth
     // spec) look for; it mirrors the sibling MCP protected-resource metadata.
+    // `offline_access` is load-bearing: DCR clients register with exactly
+    // this list, and dropping it breaks refresh tokens with `invalid_scope`.
     expect(API_PROTECTED_RESOURCE.scopes_supported).toEqual([
       "mcp:read",
       "mcp:write",
+      "offline_access",
     ]);
     expect(API_PROTECTED_RESOURCE.resource_policy_uri).toBe(
       "https://www.useatlas.dev/privacy",

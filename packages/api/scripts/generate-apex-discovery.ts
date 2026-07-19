@@ -36,6 +36,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { renderAuthMd } from "@atlas/api/api/routes/auth-md";
+import type { ATLAS_OAUTH_SCOPES } from "@atlas/api/lib/auth/oauth-scopes";
 
 // ---------------------------------------------------------------------------
 // Canonical inputs
@@ -63,7 +64,12 @@ interface ProtectedResourceMetadata {
   readonly resource: string;
   readonly authorization_servers: readonly string[];
   readonly bearer_methods_supported: readonly string[];
-  readonly scopes_supported: readonly string[];
+  // Tethered to the canonical scope union (not plain `string[]`) so the
+  // `as const satisfies ProtectedResourceMetadata` on the const below fails to
+  // compile if an advertised scope is renamed/dropped in `ATLAS_OAUTH_SCOPES`
+  // — the apex mirror can't silently advertise a scope the auth server can't
+  // issue (#4728).
+  readonly scopes_supported: readonly (typeof ATLAS_OAUTH_SCOPES)[number][];
   readonly resource_documentation: string;
   readonly resource_name: string;
   readonly resource_policy_uri: string;
@@ -89,10 +95,12 @@ export const API_PROTECTED_RESOURCE = {
   // resource. RFC 9728 §2 lists `scopes_supported` as OPTIONAL, but agent
   // readiness scanners (and the MCP authorization spec) expect it, and the
   // sibling per-workspace MCP protected-resource metadata advertises the same
-  // `mcp:*` set (well-known.ts). These are the data-access scopes the Atlas
-  // authorization server issues; the OIDC sign-in scopes (openid/profile/email)
-  // are advertised by the auth-server metadata, not the resource.
-  scopes_supported: ["mcp:read", "mcp:write"],
+  // set (well-known.ts). `offline_access` is included because DCR clients
+  // register with exactly the advertised list and the authorize endpoint
+  // validates against the client row's scopes — omitting it breaks refresh
+  // tokens with `invalid_scope`. The OIDC sign-in scopes (openid/profile/
+  // email) are advertised by the auth-server metadata, not the resource.
+  scopes_supported: ["mcp:read", "mcp:write", "offline_access"],
   resource_documentation: "https://docs.useatlas.dev/api-reference",
   resource_name: "Atlas API",
   resource_policy_uri: "https://www.useatlas.dev/privacy",

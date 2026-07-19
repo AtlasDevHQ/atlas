@@ -19,6 +19,7 @@ const BASE_OPTS: BuildAuthMdOptions = {
   scopes: [
     { name: "mcp:read", grants: "query workspace data through the MCP endpoint" },
     { name: "mcp:write", grants: "reserved for future write paths" },
+    { name: "offline_access", grants: "receive a refresh token" },
   ],
   onboardingPath: "/mcp/onboarding",
   docsUrl: "https://docs.useatlas.dev",

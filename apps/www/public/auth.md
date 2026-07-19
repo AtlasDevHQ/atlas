@@ -45,6 +45,7 @@ Request the scopes you need at registration:
 
 - `mcp:read` — query workspace data through the hosted MCP endpoint
 - `mcp:write` — perform write operations (reserved for future mutation tools)
+- `offline_access` — receive a refresh token so the connection survives access-token expiry
 
 ## Self-serve: provision a trial workspace
 

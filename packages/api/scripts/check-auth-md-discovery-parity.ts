@@ -51,8 +51,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { buildAuthMd, type AuthMdScope } from "@atlas/api/lib/mcp/auth-md";
+import { buildAuthMd } from "@atlas/api/lib/mcp/auth-md";
 import { ATLAS_OAUTH_SCOPES } from "@atlas/api/lib/auth/oauth-scopes";
+import { documentedScopes } from "@atlas/api/api/routes/auth-md";
 import {
   buildAuthServerUri,
   buildIssuerBaseUri,
@@ -139,8 +140,9 @@ export interface ResolvedHosts {
 
 /**
  * The protected-resource metadata's `scopes_supported` is a hardcoded literal
- * in `well-known.ts` (it lists the `mcp:*` subset the MCP resource server
- * advertises). It is not exported, so we extract the literal from source — the
+ * in `well-known.ts` (the `mcp:*` scopes plus `offline_access` the MCP
+ * resource server advertises). It is not exported, so we extract the literal
+ * from source — the
  * same read-the-source discipline every other drift gate uses. The set the
  * `.well-known` document advertises must equal the set `/auth.md` names, or an
  * agent and a `.well-known`-trusting client disagree on which scopes to
@@ -184,19 +186,6 @@ function wellKnownAdvertisedScopes(): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * The `mcp:*` subset of the canonical scope union, mapped to the
- * `AuthMdScope` shape the builder expects — the same derivation
- * `api/routes/auth-md.ts:mcpScopes()` performs. Grant blurbs are irrelevant to
- * parity (they're prose), so we pass a placeholder; only scope *names* matter.
- */
-function mcpScopesFromCanonical(): AuthMdScope[] {
-  return ATLAS_OAUTH_SCOPES.filter((s) => s.startsWith("mcp:")).map((name) => ({
-    name,
-    grants: "—",
-  }));
-}
-
-/**
  * Drive the shared host helpers + builder for a fixed resolved API base. The
  * route resolves hosts from the request via the shared helpers; we drive the
  * SAME helpers through the env var the route's resolution honors, then hand the
@@ -221,7 +210,10 @@ function renderAuthMd(apiBase: string): string {
       authServerUri: buildAuthServerUri(req),
       issuerBaseUri: buildIssuerBaseUri(req),
       resourceUri: buildResourceUri(req),
-      scopes: mcpScopesFromCanonical(),
+      // The REAL derivation the route serves — imported, not hand-mirrored —
+      // so this gate can't pass against a scope set the live /auth.md doesn't
+      // actually emit.
+      scopes: documentedScopes(),
       onboardingPath: ONBOARDING_MCP_PATH,
       docsUrl: ATLAS_DOCS_URL,
     }),
@@ -258,9 +250,14 @@ function fail(message: string): never {
 export function scopeParityViolations(doc: string, advertised: readonly string[]): string[] {
   const out: string[] = [];
   const advertisedSet = new Set(advertised);
-  // Every `mcp:<word>` token the prose names. The brand host `.../mcp` is not a
-  // scope (no colon), so this pattern can't false-match it.
-  const namedInDoc = new Set(doc.match(/mcp:[a-z][a-z0-9_]*/g) ?? []);
+  // Every `mcp:<word>` token the prose names, plus `offline_access` — the one
+  // non-`mcp:*` scope the protected-resource metadata advertises (DCR clients
+  // register with exactly the advertised list, so it must appear in both
+  // surfaces; see well-known.ts). The brand host `.../mcp` is not a scope
+  // (no colon), so this pattern can't false-match it.
+  const namedInDoc = new Set(
+    doc.match(/mcp:[a-z][a-z0-9_]*|\boffline_access\b/g) ?? [],
+  );
 
   for (const scope of namedInDoc) {
     if (!advertisedSet.has(scope)) {
@@ -286,6 +283,38 @@ export function scopeParityViolations(doc: string, advertised: readonly string[]
     }
   }
   return out;
+}
+
+/**
+ * Advertised⇒issuable invariant: every scope the `.well-known`
+ * protected-resource metadata advertises must be a member of the canonical
+ * scope union the authorization server can actually issue (`ATLAS_OAUTH_SCOPES`).
+ *
+ * This is the backstop the compile-time `satisfies` tethers in `well-known.ts`
+ * / `generate-apex-discovery.ts` can't give the SOURCE-PARSED advertised list:
+ * rename `offline_access` in the canonical union but not in the advertised
+ * literal and the two surfaces still agree with each other (scope parity
+ * passes), yet authorize would 401 every refresh-token request with
+ * `invalid_scope` — DCR clients register with the advertised list, and the
+ * authorize endpoint validates against `ATLAS_OAUTH_SCOPES`. This fails the
+ * gate instead, naming the orphaned scope. Host-independent, so it runs once.
+ * (`/auth.md`'s named scopes are covered transitively: `scopeParityViolations`
+ * already forces them to equal the advertised set.)
+ */
+export function issuableScopeViolations(advertised: readonly string[]): string[] {
+  const issuable = new Set<string>(ATLAS_OAUTH_SCOPES);
+  return advertised
+    .filter((scope) => !issuable.has(scope))
+    .map(
+      (scope) =>
+        `The .well-known protected-resource metadata advertises scope ` +
+        `\`${scope}\`, which is NOT in the canonical scope union ` +
+        `ATLAS_OAUTH_SCOPES (issuable: [${ATLAS_OAUTH_SCOPES.join(", ")}]). ` +
+        `The authorization server cannot issue it, so a DCR client that ` +
+        `registers with the advertised list fails authorize with ` +
+        `\`invalid_scope\`. Re-add the scope to ATLAS_OAUTH_SCOPES, or stop ` +
+        `advertising it in well-known.ts.`,
+    );
 }
 
 /**
@@ -402,6 +431,9 @@ export function collectViolations(input: {
   // early return above guarantees at least one fixture, so `fixtures[0]` is
   // present (no empty-doc fallback needed).
   out.push(...scopeParityViolations(input.fixtures[0].doc, input.advertisedScopes));
+  // Advertised⇒issuable is host-independent too: the advertised set must be a
+  // subset of what the auth server can issue, or DCR clients break at authorize.
+  out.push(...issuableScopeViolations(input.advertisedScopes));
   return out;
 }
 

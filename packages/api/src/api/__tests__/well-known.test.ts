@@ -183,7 +183,15 @@ describe("well-known — managed auth mode", () => {
       // every RFC-8707 token request 401s in production.
       expect(body.resource).toMatch(/\/mcp$/);
       expect(body.resource).not.toContain("/mcp/org_xyz");
-      expect(body.scopes_supported).toEqual(["mcp:read", "mcp:write"]);
+      // `offline_access` is load-bearing here: DCR clients register with
+      // exactly this advertised list and the authorize endpoint validates
+      // against the client row's scopes, so dropping it breaks every
+      // refresh-token request with `invalid_scope`.
+      expect(body.scopes_supported).toEqual([
+        "mcp:read",
+        "mcp:write",
+        "offline_access",
+      ]);
       expect(body.bearer_methods_supported).toEqual(["header"]);
     } finally {
       await handle.close();

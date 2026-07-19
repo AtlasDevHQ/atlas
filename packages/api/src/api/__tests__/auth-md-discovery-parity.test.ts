@@ -24,6 +24,7 @@ import { describe, it, expect } from "bun:test";
 
 import {
   scopeParityViolations,
+  issuableScopeViolations,
   hostParityViolations,
   endpointParityViolations,
   collectViolations,
@@ -31,6 +32,7 @@ import {
   FORBIDDEN_FRAGMENTS,
   type ResolvedHosts,
 } from "../../../scripts/check-auth-md-discovery-parity";
+import { ATLAS_OAUTH_SCOPES } from "@atlas/api/lib/auth/oauth-scopes";
 
 // A minimal in-parity document: it names exactly the resolved hosts, exactly
 // the advertised scopes, and only `.well-known` paths the router serves. The
@@ -45,7 +47,7 @@ const HOSTS: ResolvedHosts = {
   resourceUri: "https://mcp.useatlas.dev/mcp",
 };
 
-const ADVERTISED_SCOPES = ["mcp:read", "mcp:write"] as const;
+const ADVERTISED_SCOPES = ["mcp:read", "mcp:write", "offline_access"] as const;
 
 const FAITHFUL_DOC = [
   "# auth.md",
@@ -53,7 +55,7 @@ const FAITHFUL_DOC = [
   "- MCP resource server: `https://mcp.useatlas.dev/mcp`",
   "Metadata: `https://api.useatlas.dev/.well-known/oauth-authorization-server/api/auth`",
   "Per-workspace: `/.well-known/oauth-protected-resource/mcp/{workspace_id}`",
-  "Scopes: `mcp:read`, `mcp:write`.",
+  "Scopes: `mcp:read`, `mcp:write`, `offline_access`.",
   "Go deeper: https://docs.useatlas.dev",
 ].join("\n");
 
@@ -173,6 +175,57 @@ describe("auth-md discovery parity — scope drift fails, naming the scope", () 
     expect(violations.length).toBeGreaterThan(0);
     expect(violations.some((v) => v.includes("mcp:write"))).toBe(true);
     expect(violations.join("\n")).toContain("never names");
+  });
+
+  it("fails when the prose drops offline_access while .well-known advertises it", () => {
+    // Regression for the DCR refresh-token break: `offline_access` is the one
+    // non-`mcp:*` advertised scope, and the doc-token pattern must see it —
+    // otherwise the doc silently drifts from what DCR clients register with.
+    const doc = FAITHFUL_DOC.replace(", `offline_access`", "");
+    const violations = scopeParityViolations(doc, ADVERTISED_SCOPES);
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations.some((v) => v.includes("offline_access"))).toBe(true);
+    expect(violations.join("\n")).toContain("never names");
+  });
+});
+
+describe("auth-md discovery parity — advertised scope must be issuable", () => {
+  it("passes when every advertised scope is in the canonical union", () => {
+    // ADVERTISED_SCOPES is a subset of what the auth server issues.
+    expect(issuableScopeViolations(ADVERTISED_SCOPES)).toEqual([]);
+  });
+
+  it("every advertised scope is actually a member of ATLAS_OAUTH_SCOPES", () => {
+    // The real advertised set the surfaces ship must be issuable — this is the
+    // invariant that #4728 violated (a scope advertised but effectively not
+    // requestable). Locks it against the live canonical union, not a fixture.
+    const issuable = new Set<string>(ATLAS_OAUTH_SCOPES);
+    for (const scope of ADVERTISED_SCOPES) {
+      expect(issuable.has(scope)).toBe(true);
+    }
+  });
+
+  it("fails, naming the scope, when an advertised scope is not issuable", () => {
+    // Simulates renaming `offline_access` in ATLAS_OAUTH_SCOPES without updating
+    // the advertised literal: the two discovery surfaces still agree with each
+    // other, but authorize would reject it with `invalid_scope`.
+    const violations = issuableScopeViolations([
+      "mcp:read",
+      "mcp:write",
+      "offline_access",
+      "mcp:bogus",
+    ]);
+    expect(violations.length).toBe(1);
+    expect(violations[0]).toContain("mcp:bogus");
+    expect(violations[0]).toContain("invalid_scope");
+  });
+
+  it("is wired into collectViolations", () => {
+    const violations = collectViolations({
+      fixtures: [{ label: "us region", doc: FAITHFUL_DOC, hosts: HOSTS }],
+      advertisedScopes: ["mcp:read", "mcp:write", "offline_access", "mcp:bogus"],
+    });
+    expect(violations.some((v) => v.includes("mcp:bogus"))).toBe(true);
   });
 });
 

@@ -8,7 +8,8 @@
   ],
   "scopes_supported": [
     "mcp:read",
-    "mcp:write"
+    "mcp:write",
+    "offline_access"
   ],
   "resource_documentation": "https://docs.useatlas.dev/api-reference",
   "resource_name": "Atlas API",

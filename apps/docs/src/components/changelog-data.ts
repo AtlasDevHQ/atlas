@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.60",
+    title: "MCP OAuth Consent Fix",
+    date: "2026-07-19",
+    summary:
+      "Connecting a fresh MCP client to the hosted platform now completes cleanly. Previously, a first-time authorization — a client with no existing session being asked to grant access — sent you to a login and consent screen that 404'd, because the sign-in pages were addressed on the API domain rather than the app domain where they actually live. Returning users who were already signed in and had granted access before never hit it, which is why it stayed hidden. Sign-in, consent, and post-login pages are now pinned to the correct app origin. Alongside the fix, the OAuth resource-discovery document is now also served at the exact address a strict client derives on its own, so clients that don't follow the server's discovery hint still find the authorization server instead of a dead end.",
+    highlights: [
+      "First-time MCP client authorization no longer 404s at the login/consent step — the OAuth pages resolve to the app domain, not the API domain",
+      "Sign-in, consent, and post-login redirects are all pinned to the web origin, with the single-origin self-hosted deploy unchanged",
+      "OAuth protected-resource metadata is served at the standards-derived default path too, so stricter MCP clients can complete discovery without the server's hint",
+    ],
+  },
+  {
     version: "v0.0.59",
     title: "Backup Engine & Residency Cleanup",
     date: "2026-07-19",

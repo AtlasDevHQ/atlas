@@ -185,7 +185,7 @@ Set `ATLAS_STRICT_ROUTING=true` (or `residency.strictRouting: true` in config) t
 
 ## Region Migration
 
-When a workspace needs to move to a different region, Atlas performs a cross-region data migration. The migration moves conversations, semantic entities, learned patterns, and org-scoped settings from the source region to the target.
+When a workspace needs to move to a different region, Atlas performs a cross-region data migration. The migration moves the workspace's content — conversations, semantic entities, learned patterns, org-scoped settings, dashboards, knowledge documents, scheduled task definitions, and durable agent session memory — from the source region to the target. Operational state (caches, run history, in-flight agent checkpoints) and region-bound credentials deliberately do not move; the full per-item breakdown is in [What moves](#what-moves).
 
 ### How it works
 
@@ -220,12 +220,38 @@ curl http://localhost:3001/api/v1/admin/residency/migration \
 
 | Data | Strategy |
 |------|----------|
-| Conversations + messages | Exported and imported via bundle |
-| Semantic entities (DB-backed) | Exported and imported via bundle |
-| Learned patterns | Exported and imported via bundle |
-| Org-scoped settings | Exported and imported via bundle |
+| Conversations + messages | Moves in the bundle (original IDs preserved) |
+| Semantic entities (DB-backed) | Moves in the bundle |
+| Learned patterns + semantic amendments | Moves in the bundle, including review/approval provenance |
+| Org-scoped settings | Moves in the bundle |
+| Dashboards (cards, parameters, per-user drafts) | Moves in the bundle. **Share links are re-minted** — share URLs are region-bound, so existing links stop working after migration and the owner re-shares from the target region. Card result caches stay behind and regenerate on first render; refresh schedules re-plan in the target |
+| Knowledge documents (bodies, frontmatter, link graph, review status) | Moves in the bundle. Full-text search index rebuilds automatically. Sync credentials and sync state stay behind — re-enter the endpoint secret and re-sync in the target region |
+| Scheduled tasks (definitions) | Moves in the bundle; the next run time is recomputed in the target so its scheduler re-plans. Run history stays behind. Connection-group / plugin references resolve again once the datasource or plugin is re-installed in the target |
+| Durable agent session memory | Moves in the bundle (keyed to migrated conversations) |
+| In-flight agent run checkpoints | Stays — resume leases are region-local and cannot be resumed cross-region; an interrupted turn is simply re-asked in the target |
+| Workspace integrations (chat platforms, action targets, datasource installs, credentials) | **Recreated in the target region.** Credentials are encrypted under per-region keys (the ciphertext is not portable) and OAuth callbacks/webhooks bind to region-specific hosts, so integrations are re-connected after migration — see the checklist below |
+| Caches, run/audit/usage history, derived data (suggestions, profiling state) | Stays — regenerates or re-accrues in the target |
 | Analytics datasource | Customer-managed (not migrated) |
 | Auth data (users, sessions) | Global — stays in place |
+| Billing (subscription, Stripe state) | Global — follows the organization, unaffected by migration |
+
+<Callout type="warn" title="Stays behind does not mean retained">
+  Everything in the "stays" rows above is **scheduled for deletion** from the source region after the 7-day grace period — the migration bundle is the complete set of what is intended to survive. Treat anything else as gone: export what you need before migrating, and do not rely on leftover source-region data after cutover.
+</Callout>
+
+The authoritative per-table decision registry lives in `packages/api/src/lib/residency/bundle-scope.ts`; a CI tripwire fails when a new workspace-scoped table appears without an explicit moves/stays decision, so this table cannot silently drift from the implementation again.
+
+### Post-migration re-connect checklist
+
+Integrations do not move (per-region encryption keys, region-bound OAuth callbacks). After a migration completes, a workspace admin should:
+
+1. **Re-install datasource connections** (Admin → Integrations) — semantic entities and learned patterns are already in place and bind to the re-created connection groups by group id
+2. **Re-connect chat platforms** (Slack, Discord, GitHub, Linear, email) — new OAuth installs against the target region's callback hosts
+3. **Re-connect action targets** (Salesforce, Twenty CRM, and other credentialed integrations)
+4. **Re-enter Knowledge Base sync secrets** and trigger a re-sync for synced collections
+5. **Re-mint dashboard share links** — previous share URLs are dead by design
+6. **Re-configure SSO/SCIM, custom domains, sandbox (BYOC) credentials, and model-gateway settings** if used — these carry secrets or region-bound endpoints
+7. **Verify scheduled tasks** — definitions moved and re-planned automatically, but tasks referencing a not-yet-re-installed datasource or plugin will fail until step 1 is done
 
 ### Configuration
 

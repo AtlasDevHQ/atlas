@@ -68,15 +68,22 @@ export async function handleMigrateImport(
     process.exit(1);
   }
 
-  const { EXPORT_BUNDLE_VERSION } = await import("@useatlas/types");
   const manifest = b.manifest as {
     version: number;
     counts: Record<string, number>;
   };
-  if (manifest.version !== EXPORT_BUNDLE_VERSION) {
+  // Mirror the server: the current version plus legacy v1 (pre-#4460 bundles
+  // without the dashboards/knowledge/tasks/memory sections) both import.
+  // Local constants (not `EXPORT_BUNDLE_VERSION` from @useatlas/types) so a
+  // CLI built against an older published types package can't silently shrink
+  // the accept set — same rationale as the server's admin-migrate.ts. The
+  // `satisfies` tether (type-only, scaffold-safe) pins both to the wire union.
+  const LEGACY_BUNDLE_VERSION = 1 satisfies import("@useatlas/types").SupportedBundleVersion;
+  const CURRENT_BUNDLE_VERSION = 2 satisfies import("@useatlas/types").SupportedBundleVersion;
+  if (manifest.version !== CURRENT_BUNDLE_VERSION && manifest.version !== LEGACY_BUNDLE_VERSION) {
     console.error(
       pc.red(
-        `Unsupported bundle version: ${manifest.version}. This CLI supports version ${EXPORT_BUNDLE_VERSION}.`,
+        `Unsupported bundle version: ${manifest.version}. This CLI supports versions ${LEGACY_BUNDLE_VERSION} and ${CURRENT_BUNDLE_VERSION}.`,
       ),
     );
     process.exit(1);
@@ -96,6 +103,12 @@ export async function handleMigrateImport(
     `  Patterns:      ${manifest.counts.learnedPatterns}`,
   );
   console.log(`  Settings:      ${manifest.counts.settings}`);
+  if (manifest.version >= CURRENT_BUNDLE_VERSION) {
+    console.log(`  Dashboards:    ${manifest.counts.dashboards ?? 0}`);
+    console.log(`  Knowledge:     ${manifest.counts.knowledgeDocuments ?? 0}`);
+    console.log(`  Sched. tasks:  ${manifest.counts.scheduledTasks ?? 0}`);
+    console.log(`  Memory slots:  ${manifest.counts.agentSessionMemory ?? 0}`);
+  }
   console.log();
 
   const importUrl = `${targetUrl.replace(/\/$/, "")}/api/v1/admin/migrate/import`;
@@ -147,13 +160,24 @@ export async function handleMigrateImport(
       process.exit(1);
     }
 
-    let result: import("@useatlas/types").ImportResult;
+    // Cross-version view of the response: an older target server (pre-#4460)
+    // omits the v2 sections entirely, so they are optional HERE even though
+    // the current ImportResult wire type requires them — the cast must not
+    // claim more than the runtime guards below check.
+    type CrossVersionImportResult =
+      Pick<import("@useatlas/types").ImportResult, "conversations" | "semanticEntities" | "learnedPatterns" | "settings"> &
+      Partial<Pick<import("@useatlas/types").ImportResult, "dashboards" | "knowledgeDocuments" | "scheduledTasks" | "agentSessionMemory">>;
+    let result: CrossVersionImportResult;
     try {
       result =
-        (await resp.json()) as import("@useatlas/types").ImportResult;
+        (await resp.json()) as CrossVersionImportResult;
+      // Guard every section the cast claims as required (all four base
+      // sections are accessed unconditionally below).
       if (
         !result?.conversations ||
-        !result?.semanticEntities
+        !result?.semanticEntities ||
+        !result?.learnedPatterns ||
+        !result?.settings
       ) {
         throw new Error("Unexpected response shape");
       }
@@ -191,6 +215,27 @@ export async function handleMigrateImport(
     console.log(
       `  Settings          ${String(result.settings.imported).padStart(8)}  ${String(result.settings.skipped).padStart(7)}`,
     );
+    // v2 sections (#4460) — absent from an older server's response.
+    if (result.dashboards) {
+      console.log(
+        `  Dashboards        ${String(result.dashboards.imported).padStart(8)}  ${String(result.dashboards.skipped).padStart(7)}`,
+      );
+    }
+    if (result.knowledgeDocuments) {
+      console.log(
+        `  Knowledge docs    ${String(result.knowledgeDocuments.imported).padStart(8)}  ${String(result.knowledgeDocuments.skipped).padStart(7)}`,
+      );
+    }
+    if (result.scheduledTasks) {
+      console.log(
+        `  Scheduled tasks   ${String(result.scheduledTasks.imported).padStart(8)}  ${String(result.scheduledTasks.skipped).padStart(7)}`,
+      );
+    }
+    if (result.agentSessionMemory) {
+      console.log(
+        `  Session memory    ${String(result.agentSessionMemory.imported).padStart(8)}  ${String(result.agentSessionMemory.skipped).padStart(7)}`,
+      );
+    }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     if (

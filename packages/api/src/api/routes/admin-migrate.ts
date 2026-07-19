@@ -10,11 +10,34 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/internal";
-import { EXPORT_BUNDLE_VERSION, type ExportBundle, type ImportResult } from "@useatlas/types";
+import { computeNextRun } from "@atlas/api/lib/scheduled-tasks";
+import type { ExportBundle, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-migrate");
+
+/**
+ * The pre-#4460 bundle version — four sections only (conversations, semantic
+ * entities, learned patterns, settings). Still accepted so bundles produced by
+ * older exporters import cleanly; the v2 sections simply come back 0/0.
+ */
+const LEGACY_BUNDLE_VERSION = 1 satisfies SupportedBundleVersion;
+
+/**
+ * The current bundle version (#4460 — dashboards, knowledge, scheduled tasks,
+ * session memory are required sections).
+ *
+ * Deliberately a LOCAL constant rather than `EXPORT_BUNDLE_VERSION` from
+ * `@useatlas/types`: packages/api is scaffold-bound, and a scaffold build
+ * pinned to an older published package (where the constant's *value* is still
+ * 1) would otherwise silently shrink the importer's accept set to `{1}` and
+ * reject every v2 bundle. A new value export can't fix that either — it would
+ * trip scripts/check-published-symbols.ts. The `satisfies` tether keeps both
+ * constants pinned to the type-level `SupportedBundleVersion` union so they
+ * can't drift from the wire contract at compile time.
+ */
+const CURRENT_BUNDLE_VERSION = 2 satisfies SupportedBundleVersion;
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -33,8 +56,19 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
   }
 
   const manifest = obj.manifest as Record<string, unknown>;
-  if (manifest.version !== EXPORT_BUNDLE_VERSION) {
-    return { ok: false, error: `Unsupported bundle version: ${String(manifest.version)}. Expected ${EXPORT_BUNDLE_VERSION}.` };
+  if (manifest.version !== CURRENT_BUNDLE_VERSION && manifest.version !== LEGACY_BUNDLE_VERSION) {
+    return { ok: false, error: `Unsupported bundle version: ${String(manifest.version)}. Expected ${LEGACY_BUNDLE_VERSION} or ${CURRENT_BUNDLE_VERSION}.` };
+  }
+
+  // v2 bundles MUST carry the #4460 sections. A producer that claims v2 but
+  // drops a section indicates exporter drift — fail loudly instead of
+  // silently stranding a pillar in the source region.
+  if (manifest.version === CURRENT_BUNDLE_VERSION) {
+    for (const section of ["dashboards", "knowledgeDocuments", "scheduledTasks", "agentSessionMemory"] as const) {
+      if (!Array.isArray(obj[section])) {
+        return { ok: false, error: `Missing or invalid '${section}' field. Expected an array (required for a version-${CURRENT_BUNDLE_VERSION} bundle).` };
+      }
+    }
   }
 
   if (!Array.isArray(obj.conversations)) {
@@ -90,6 +124,94 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
     }
   }
 
+  // v2 sections (#4460) — validated whenever PRESENT, regardless of the
+  // claimed version, so a mislabeled producer can never smuggle junk past
+  // the shape checks (and never silently loses a present section either).
+  if ("dashboards" in obj && obj.dashboards !== undefined) {
+    if (!Array.isArray(obj.dashboards)) {
+      return { ok: false, error: "Invalid 'dashboards' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.dashboards.length; i++) {
+      const d = obj.dashboards[i] as Record<string, unknown> | null;
+      if (!d || typeof d !== "object" || typeof d.id !== "string" || typeof d.ownerId !== "string" || typeof d.title !== "string" || !Array.isArray(d.cards) || !Array.isArray(d.drafts)) {
+        return { ok: false, error: `dashboards[${i}]: must have 'id', 'ownerId', 'title' (strings), 'cards' and 'drafts' (arrays).` };
+      }
+      // Guard the sharing posture at the seam: `chk_dashboard_share_mode`
+      // would abort the whole transaction on anything else, and coalescing an
+      // absent value to "public" would silently WIDEN sharing — a security
+      // posture must be stated by the producer, never defaulted permissively.
+      if (d.shareMode !== "public" && d.shareMode !== "org") {
+        return { ok: false, error: `dashboards[${i}].shareMode: must be 'public' or 'org'.` };
+      }
+      for (let j = 0; j < d.cards.length; j++) {
+        const card = d.cards[j] as Record<string, unknown> | null;
+        if (!card || typeof card !== "object" || typeof card.id !== "string" || typeof card.title !== "string" || typeof card.sql !== "string") {
+          return { ok: false, error: `dashboards[${i}].cards[${j}]: must have 'id', 'title', and 'sql' (strings).` };
+        }
+      }
+      for (let j = 0; j < d.drafts.length; j++) {
+        const draft = d.drafts[j] as Record<string, unknown> | null;
+        // `draft`/`baseline` presence mirrors the memory section's `"value" in m`
+        // guard — both back NOT NULL jsonb columns, and JSON.stringify(undefined)
+        // would bind NULL and abort the transaction with a raw pg 500.
+        if (!draft || typeof draft !== "object" || typeof draft.userId !== "string" || typeof draft.publishedBaselineAt !== "string" || !("draft" in draft) || !("baseline" in draft)) {
+          return { ok: false, error: `dashboards[${i}].drafts[${j}]: must have 'userId', 'publishedBaselineAt' (strings), 'draft', and 'baseline'.` };
+        }
+      }
+    }
+  }
+
+  if ("knowledgeDocuments" in obj && obj.knowledgeDocuments !== undefined) {
+    if (!Array.isArray(obj.knowledgeDocuments)) {
+      return { ok: false, error: "Invalid 'knowledgeDocuments' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.knowledgeDocuments.length; i++) {
+      const k = obj.knowledgeDocuments[i] as Record<string, unknown> | null;
+      if (!k || typeof k !== "object" || typeof k.id !== "string" || typeof k.collectionId !== "string" || typeof k.path !== "string" || typeof k.body !== "string" || !Array.isArray(k.links)) {
+        return { ok: false, error: `knowledgeDocuments[${i}]: must have 'id', 'collectionId', 'path', 'body' (strings) and 'links' (array).` };
+      }
+      // Guard the content-mode CHECK constraint at the seam — a bad status
+      // would otherwise abort the whole transaction with a pg error.
+      if (k.status !== "draft" && k.status !== "published" && k.status !== "archived") {
+        return { ok: false, error: `knowledgeDocuments[${i}].status: must be 'draft', 'published', or 'archived'.` };
+      }
+    }
+  }
+
+  if ("scheduledTasks" in obj && obj.scheduledTasks !== undefined) {
+    if (!Array.isArray(obj.scheduledTasks)) {
+      return { ok: false, error: "Invalid 'scheduledTasks' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.scheduledTasks.length; i++) {
+      const t = obj.scheduledTasks[i] as Record<string, unknown> | null;
+      if (!t || typeof t !== "object" || typeof t.id !== "string" || typeof t.ownerId !== "string" || typeof t.name !== "string" || typeof t.question !== "string" || typeof t.cronExpression !== "string") {
+        return { ok: false, error: `scheduledTasks[${i}]: must have 'id', 'ownerId', 'name', 'question', and 'cronExpression' (strings).` };
+      }
+      // Approval posture + enabled are execution-safety fields: defaulting an
+      // absent approvalMode to "auto" or an absent enabled to true would let a
+      // malformed bundle run an agent task with a more permissive posture than
+      // its admin configured. Require the producer to state both.
+      if (typeof t.approvalMode !== "string" || t.approvalMode.length === 0) {
+        return { ok: false, error: `scheduledTasks[${i}].approvalMode: must be a non-empty string.` };
+      }
+      if (typeof t.enabled !== "boolean") {
+        return { ok: false, error: `scheduledTasks[${i}].enabled: must be a boolean.` };
+      }
+    }
+  }
+
+  if ("agentSessionMemory" in obj && obj.agentSessionMemory !== undefined) {
+    if (!Array.isArray(obj.agentSessionMemory)) {
+      return { ok: false, error: "Invalid 'agentSessionMemory' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.agentSessionMemory.length; i++) {
+      const m = obj.agentSessionMemory[i] as Record<string, unknown> | null;
+      if (!m || typeof m !== "object" || typeof m.conversationId !== "string" || typeof m.namespace !== "string" || !("value" in m)) {
+        return { ok: false, error: `agentSessionMemory[${i}]: must have 'conversationId', 'namespace' (strings) and 'value'.` };
+      }
+    }
+  }
+
   return { ok: true, bundle: obj as unknown as ExportBundle };
 }
 
@@ -102,6 +224,10 @@ const ImportResultSchema = z.object({
   semanticEntities: z.object({ imported: z.number(), skipped: z.number() }),
   learnedPatterns: z.object({ imported: z.number(), skipped: z.number() }),
   settings: z.object({ imported: z.number(), skipped: z.number() }),
+  dashboards: z.object({ imported: z.number(), skipped: z.number() }),
+  knowledgeDocuments: z.object({ imported: z.number(), skipped: z.number() }),
+  scheduledTasks: z.object({ imported: z.number(), skipped: z.number() }),
+  agentSessionMemory: z.object({ imported: z.number(), skipped: z.number() }),
 });
 
 const importRoute = createRoute({
@@ -110,8 +236,9 @@ const importRoute = createRoute({
   tags: ["Admin — Migration"],
   summary: "Import a migration bundle",
   description:
-    "Receives an export bundle from `atlas export` and imports workspace data " +
-    "(conversations, semantic entities, learned patterns, settings) into the " +
+    "Receives an export bundle from `atlas-operator export` and imports workspace data " +
+    "(conversations, semantic entities, learned patterns, settings, dashboards, " +
+    "knowledge documents, scheduled tasks, agent session memory) into the " +
     "active organization. Idempotent — re-importing skips data that already exists.",
   request: {
     body: {
@@ -131,12 +258,26 @@ const importRoute = createRoute({
                 semanticEntities: z.number(),
                 learnedPatterns: z.number(),
                 settings: z.number(),
+                // v2 sections (#4460) — absent on a v1 bundle.
+                dashboards: z.number().optional(),
+                dashboardCards: z.number().optional(),
+                dashboardUserDrafts: z.number().optional(),
+                knowledgeDocuments: z.number().optional(),
+                knowledgeLinks: z.number().optional(),
+                scheduledTasks: z.number().optional(),
+                agentSessionMemory: z.number().optional(),
               }),
             }),
             conversations: z.array(z.unknown()),
             semanticEntities: z.array(z.unknown()),
             learnedPatterns: z.array(z.unknown()),
             settings: z.array(z.unknown()),
+            // v2 sections (#4460). Declared here so zod's strip-unknown-keys
+            // behavior can't drop them before validateBundle/importBundle run.
+            dashboards: z.array(z.unknown()).optional(),
+            knowledgeDocuments: z.array(z.unknown()).optional(),
+            scheduledTasks: z.array(z.unknown()).optional(),
+            agentSessionMemory: z.array(z.unknown()).optional(),
           }),
         },
       },
@@ -180,6 +321,10 @@ export async function importBundle(
     semanticEntities: { imported: 0, skipped: 0 },
     learnedPatterns: { imported: 0, skipped: 0 },
     settings: { imported: 0, skipped: 0 },
+    dashboards: { imported: 0, skipped: 0 },
+    knowledgeDocuments: { imported: 0, skipped: 0 },
+    scheduledTasks: { imported: 0, skipped: 0 },
+    agentSessionMemory: { imported: 0, skipped: 0 },
   };
 
   // --- 1. Conversations + Messages ---
@@ -315,6 +460,238 @@ export async function importBundle(
       [setting.key, setting.value, orgId],
     );
     result.settings.imported++;
+  }
+
+  // --- 5. Dashboards (v2, #4460) — cards + per-user drafts ride inline ---
+  // Original UUIDs preserved so card/draft FKs survive. Share token + expiry
+  // are NOT restored (share URLs are region-bound — the owner re-mints links
+  // in the target); card `cached_*` snapshots start empty and regenerate on
+  // first render. `next_refresh_at` is recomputed from the schedule below —
+  // the due-refresh scan requires `next_refresh_at <= now()`, so leaving it
+  // NULL would silently kill auto-refresh in the target region.
+  for (const dash of bundle.dashboards ?? []) {
+    const existing = await client.query(
+      "SELECT id FROM dashboards WHERE id = $1 AND org_id = $2",
+      [dash.id, orgId],
+    );
+
+    if (existing.rows.length > 0) {
+      result.dashboards.skipped++;
+      continue;
+    }
+
+    const refreshSchedule = dash.refreshSchedule ?? null;
+    let nextRefreshAt: string | null = null;
+    if (refreshSchedule) {
+      const nextRefresh = computeNextRun(refreshSchedule);
+      if (nextRefresh) {
+        nextRefreshAt = nextRefresh.toISOString();
+      } else {
+        log.warn(
+          { orgId, dashboardId: dash.id, refreshSchedule },
+          "Imported dashboard has an unparseable refresh schedule — auto-refresh will not fire until the schedule is re-saved",
+        );
+      }
+    }
+
+    await client.query(
+      `INSERT INTO dashboards (id, org_id, owner_id, title, description, share_mode, refresh_schedule, next_refresh_at, parameters, first_published_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        dash.id,
+        orgId,
+        dash.ownerId,
+        dash.title,
+        dash.description ?? null,
+        // Validated as 'public' | 'org' — never defaulted (a coalesce here
+        // would silently widen sharing on a malformed bundle).
+        dash.shareMode,
+        refreshSchedule,
+        nextRefreshAt,
+        // JSONB columns take explicit serialization — a bare JS array would be
+        // bound as a Postgres array, not jsonb.
+        JSON.stringify(dash.parameters ?? []),
+        dash.firstPublishedAt ?? null,
+        dash.createdAt,
+        dash.updatedAt,
+      ],
+    );
+
+    for (const card of dash.cards) {
+      await client.query(
+        `INSERT INTO dashboard_cards (id, dashboard_id, position, title, sql, chart_config, content, annotations, connection_group_id, layout, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          card.id,
+          dash.id,
+          card.position ?? 0,
+          card.title,
+          card.sql ?? "",
+          card.chartConfig == null ? null : JSON.stringify(card.chartConfig),
+          card.content ?? null,
+          JSON.stringify(card.annotations ?? []),
+          card.connectionGroupId ?? null,
+          card.layout == null ? null : JSON.stringify(card.layout),
+          card.createdAt,
+          card.updatedAt,
+        ],
+      );
+    }
+
+    for (const draft of dash.drafts) {
+      await client.query(
+        `INSERT INTO dashboard_user_drafts (user_id, dashboard_id, draft, baseline, published_baseline_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          draft.userId,
+          dash.id,
+          JSON.stringify(draft.draft),
+          JSON.stringify(draft.baseline),
+          draft.publishedBaselineAt,
+          draft.createdAt,
+          draft.updatedAt,
+        ],
+      );
+    }
+
+    result.dashboards.imported++;
+  }
+
+  // --- 6. Knowledge documents (v2, #4460) — link graph rides inline ---
+  // Review `status` and original UUIDs preserved. The FTS vector is a
+  // generated column and rebuilds on insert; sync credentials/state are
+  // carve-outs (per-region ciphertext — the customer re-syncs in the target).
+  for (const doc of bundle.knowledgeDocuments ?? []) {
+    const existing = await client.query(
+      "SELECT id FROM knowledge_documents WHERE id = $1 AND workspace_id = $2",
+      [doc.id, orgId],
+    );
+
+    if (existing.rows.length > 0) {
+      result.knowledgeDocuments.skipped++;
+      continue;
+    }
+
+    await client.query(
+      `INSERT INTO knowledge_documents (id, workspace_id, collection_id, path, type, title, description, tags, "timestamp", resource, body, atlas_source, atlas_ingested_at, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      [
+        doc.id,
+        orgId,
+        doc.collectionId,
+        doc.path,
+        doc.type ?? null,
+        doc.title ?? null,
+        doc.description ?? null,
+        JSON.stringify(doc.tags ?? []),
+        doc.docTimestamp ?? null,
+        doc.resource ?? null,
+        doc.body,
+        doc.atlasSource ?? null,
+        doc.atlasIngestedAt ?? null,
+        doc.status,
+        doc.createdAt,
+        doc.updatedAt,
+      ],
+    );
+
+    for (const link of doc.links) {
+      await client.query(
+        `INSERT INTO knowledge_links (source_document_id, target_path, anchor_text)
+         VALUES ($1, $2, $3)`,
+        [doc.id, link.targetPath, link.anchorText ?? null],
+      );
+    }
+
+    result.knowledgeDocuments.imported++;
+  }
+
+  // --- 7. Scheduled-task definitions (v2, #4460) ---
+  // `next_run_at` is recomputed from the cron expression so the target
+  // region's scheduler re-plans on its own clock (a NULL next_run_at would
+  // never fire — the due-task scan requires next_run_at <= now()). Run
+  // history stays behind; `connection_group_id`/`plugin_id` refs dangle
+  // until the datasource/plugin is re-installed in the target.
+  for (const task of bundle.scheduledTasks ?? []) {
+    const existing = await client.query(
+      "SELECT id FROM scheduled_tasks WHERE id = $1 AND org_id = $2",
+      [task.id, orgId],
+    );
+
+    if (existing.rows.length > 0) {
+      result.scheduledTasks.skipped++;
+      continue;
+    }
+
+    // null on an unparseable cron — matches create-task semantics (the task
+    // exists but is not scheduled until the admin fixes the expression).
+    // Logged with import context so a task that arrives dead is findable —
+    // an "imported" count alone would mask exactly the stranded-pillar class
+    // #4460 exists to kill.
+    const nextRun = computeNextRun(task.cronExpression);
+    if (!nextRun) {
+      log.warn(
+        { orgId, taskId: task.id, cronExpression: task.cronExpression },
+        "Imported scheduled task has an unparseable cron expression — it will not fire until the expression is fixed in Admin → Scheduled Tasks",
+      );
+    }
+
+    await client.query(
+      `INSERT INTO scheduled_tasks (id, owner_id, org_id, name, question, cron_expression, delivery_channel, recipients, connection_group_id, approval_mode, enabled, plugin_id, next_run_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+      [
+        task.id,
+        task.ownerId,
+        orgId,
+        task.name,
+        task.question,
+        task.cronExpression,
+        task.deliveryChannel ?? "webhook",
+        JSON.stringify(task.recipients ?? []),
+        task.connectionGroupId ?? null,
+        // Validated non-empty / boolean — never defaulted (a permissive
+        // fallback on the approval posture would bypass the admin's gate).
+        task.approvalMode,
+        task.enabled,
+        task.pluginId ?? null,
+        nextRun ? nextRun.toISOString() : null,
+        task.createdAt,
+        task.updatedAt,
+      ],
+    );
+
+    result.scheduledTasks.imported++;
+  }
+
+  // --- 8. Durable agent session memory (v2, #4460, ADR-0020) ---
+  // Runs after section 1 so the conversation FK resolves whether the
+  // conversation was imported this pass or already existed (skip path).
+  // `agent_runs` checkpoints are a carve-out (region-local resume leases).
+  for (const memory of bundle.agentSessionMemory ?? []) {
+    const existing = await client.query(
+      "SELECT conversation_id FROM agent_session_memory WHERE conversation_id = $1 AND namespace = $2",
+      [memory.conversationId, memory.namespace],
+    );
+
+    if (existing.rows.length > 0) {
+      result.agentSessionMemory.skipped++;
+      continue;
+    }
+
+    await client.query(
+      `INSERT INTO agent_session_memory (conversation_id, org_id, namespace, value, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        memory.conversationId,
+        orgId,
+        memory.namespace,
+        JSON.stringify(memory.value),
+        memory.createdAt,
+        memory.updatedAt,
+      ],
+    );
+
+    result.agentSessionMemory.imported++;
   }
 
   return result;

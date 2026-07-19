@@ -891,6 +891,9 @@ export function createApiTestMocks(
     listTaskRuns: mock(async () => []),
     listAllRuns: mock(async () => ({ runs: [], total: 0 })),
     validateCronExpression: mock(() => ({ valid: true })),
+    // admin-migrate (region-migration import, #4460) recomputes next_run_at
+    // from the cron at import time — same load-time-export rule as above.
+    computeNextRun: mock(() => new Date(Date.now() + 3_600_000)),
   }));
 
   void mock.module("@atlas/api/lib/scheduler", () => ({

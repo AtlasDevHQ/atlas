@@ -117,22 +117,34 @@ void mock.module("@atlas/api/lib/semantic/lookups", () => ({
 //
 // On SaaS entities live only in `semantic_entities` (keyed by connection
 // group), so `describeEntity` resolves through the org-scoped `getAdminEntity`
-// (DB-canonical, published mode) with a `listEntityRows` table-name fallback —
-// NOT the disk-only `getEntityByName`. This fixture models that DB source:
-//   - `User`/`users` and `orders`/`orders` mirror the pre-#4733 disk entities.
-//   - `Conversation`/`conversations` is a group-scoped (`g_prod`) entity like
-//     the ones the live bug missed — describable by name AND table.
-// `getAdminEntity` resolves by the `name` column only; a table-name miss falls
-// back to scanning these rows for a parsed-YAML `table` match.
+// (DB-canonical, published mode) with a `listEntityRows` name/table fallback —
+// NOT the disk-only `getEntityByName`.
+//
+// CRUCIAL (verified live against prod): the `semantic_entities.name` COLUMN
+// holds the file STEM (`user`, `conversation`, `organization`) — NOT the YAML
+// `name` field (`User`, `Conversation`) that `listEntities` advertises, and
+// often NOT the `table` either (`conversation` stem vs `conversations` table).
+// So three distinct identifiers must be modelled: `column` (name column,
+// what getAdminEntity resolves by), `name` (YAML display name), `table`.
+//   - `User`: column `user`, name `User`, table `users` — all three differ.
+//   - `orders`: column/name `orders`, table `orders` — degenerate case.
+//   - `Conversation` (group-scoped `g_prod`): column `conversation`, name
+//     `Conversation`, table `conversations` — the live-bug shape.
+// `getAdminEntity` resolves by `column` only; a miss falls back to scanning
+// these rows for a parsed-YAML `name` OR `table` match.
 interface EntityFixture {
+  /** `semantic_entities.name` column value = file stem (getAdminEntity key). */
+  readonly column: string;
+  /** YAML `name` field — the identifier `listEntities` advertises. */
   readonly name: string;
+  /** YAML `table` field. */
   readonly table: string;
   readonly group: string | null;
 }
 const ENTITY_FIXTURE: readonly EntityFixture[] = [
-  { name: "User", table: "users", group: null },
-  { name: "orders", table: "orders", group: null },
-  { name: "Conversation", table: "conversations", group: "g_prod" },
+  { column: "user", name: "User", table: "users", group: null },
+  { column: "orders", name: "orders", table: "orders", group: null },
+  { column: "conversation", name: "Conversation", table: "conversations", group: "g_prod" },
 ];
 
 function fixtureEntity(f: EntityFixture) {
@@ -143,7 +155,8 @@ function fixtureRow(f: EntityFixture, id: number) {
     id: `se_${id}`,
     org_id: "org_sem",
     entity_type: "entity" as const,
-    name: f.name,
+    // The DB row's name column is the stem, not the YAML name.
+    name: f.column,
     yaml_content: `name: ${f.name}\ntable: ${f.table}\ndimensions:\n  - name: id\n`,
     connection_group_id: f.group,
     status: "published" as const,
@@ -166,9 +179,10 @@ class MockAmbiguousEntityError extends Error {
 }
 
 // `getAdminEntity({ name, connectionGroupId? })` — resolves by the `name`
-// column against the fixture (published, DB source), matching group when the
-// caller scopes the re-resolve. Returns `null` for a name-column miss (drives
-// the table fallback / unknown path). Overridable per-test for throw cases.
+// COLUMN (the file stem, `f.column`) against the fixture (published, DB source),
+// matching group when the caller scopes the re-resolve. Returns `null` for a
+// column miss (drives the name/table fallback / unknown path). Overridable
+// per-test for throw cases.
 const mockGetAdminEntity = mock<(...args: unknown[]) => Promise<unknown>>(
   async (opts: unknown) => {
     const { name, connectionGroupId } = opts as {
@@ -177,7 +191,7 @@ const mockGetAdminEntity = mock<(...args: unknown[]) => Promise<unknown>>(
     };
     const match = ENTITY_FIXTURE.find(
       (f) =>
-        f.name === name &&
+        f.column === name &&
         (connectionGroupId === undefined || f.group === connectionGroupId),
     );
     return match
@@ -361,7 +375,7 @@ describe("MCP semantic tools", () => {
       };
       const match = ENTITY_FIXTURE.find(
         (f) =>
-          f.name === name &&
+          f.column === name &&
           (connectionGroupId === undefined || f.group === connectionGroupId),
       );
       return match
@@ -515,9 +529,15 @@ describe("MCP semantic tools", () => {
 
   // #4733 — the regression: on SaaS, entities live only in `semantic_entities`
   // (group-scoped). describeEntity must resolve a group-scoped entity the same
-  // as listEntities surfaces it — by its `name` field AND by its `table`, via
-  // the org-scoped DB path (getAdminEntity + listEntityRows table fallback).
-  it("describeEntity resolves a group-scoped entity by its name (DB path)", async () => {
+  // way listEntities surfaces it — by its YAML `name` field, by its `table`, and
+  // by the DB name-column/stem — via the org-scoped DB path (getAdminEntity +
+  // listEntityRows name/table fallback).
+
+  it("describeEntity resolves a group-scoped entity by its YAML display name (the id listEntities advertises)", async () => {
+    // The live-bug case: `Conversation` is the name listEntities shows, but the
+    // `semantic_entities.name` COLUMN is the stem `conversation`, so the column
+    // lookup misses and the fallback must match the parsed-YAML `name`. This
+    // exact call (`{name:"Conversation"}`) still 404'd after the first #4733 fix.
     const { client } = await createTestClient();
     const result = await client.callTool({
       name: "describeEntity",
@@ -527,13 +547,13 @@ describe("MCP semantic tools", () => {
     const parsed = JSON.parse(getContentText(result.content));
     expect(parsed.found).toBe(true);
     expect(parsed.entity.table).toBe("conversations");
-    // Resolved by the `name` column — no need to fall through to the row scan.
-    expect(mockGetAdminEntity).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "Conversation",
-        orgId: TEST_ACTOR.activeOrganizationId,
-        mode: "published",
-      }),
+    expect(parsed.entity.name).toBe("Conversation");
+    // Column lookup ("Conversation" ≠ stem "conversation") missed → fallback
+    // scanned the org's published rows and matched the parsed-YAML `name`.
+    expect(mockListEntityRows).toHaveBeenCalledWith(
+      TEST_ACTOR.activeOrganizationId,
+      "entity",
+      "published",
     );
   });
 
@@ -548,13 +568,29 @@ describe("MCP semantic tools", () => {
     expect(parsed.found).toBe(true);
     expect(parsed.entity.table).toBe("conversations");
     expect(parsed.entity.name).toBe("Conversation");
-    // The name-column lookup missed ("conversations" is a table, not a name),
-    // so the table fallback scanned the org's published rows.
+    // The name-column lookup missed ("conversations" is the table, not the
+    // stem), so the fallback scanned the org's published rows.
     expect(mockListEntityRows).toHaveBeenCalledWith(
       TEST_ACTOR.activeOrganizationId,
       "entity",
       "published",
     );
+  });
+
+  it("describeEntity resolves a group-scoped entity by its DB name-column stem (fast path)", async () => {
+    // Describing by the exact name-column value resolves on the getAdminEntity
+    // fast path without scanning rows.
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { name: "conversation" },
+    });
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.found).toBe(true);
+    expect(parsed.entity.table).toBe("conversations");
+    // Direct column hit — no fallback scan needed.
+    expect(mockListEntityRows).not.toHaveBeenCalled();
   });
 
   it("describeEntity maps a multi-group name to a validation_failed envelope, not a silent pick", async () => {

@@ -1715,6 +1715,12 @@ export const regionMigrations = pgTable(
     // ownership. Read by resetMigrationForRetry() to refuse re-running
     // Phase 1 (export from source) on a workspace that already moved.
     regionUpdated: boolean("region_updated").notNull().default(false),
+    // #4458 — when the source-cleanup fiber resolved this migration's
+    // source-region residue (grace-period delete completed, or permanently
+    // skipped by the cutover guard). NULL = cleanup still owed; the sweep's
+    // due query filters on it. Stamped in the same transaction as the
+    // deletes, so a partial failure rolls back to "still due".
+    sourceCleanedAt: timestamp("source_cleaned_at", { withTimezone: true }),
   },
   (t) => [
     index("idx_region_migrations_workspace").on(t.workspaceId),

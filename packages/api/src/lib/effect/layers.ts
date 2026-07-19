@@ -179,7 +179,8 @@ function withFiberDeathLog<A, E, R>(
 // ticking?" via presence/absence + cadence, NOT "did this tick error?". The
 // exceptions are the `spanResultAttributes` fibers — `orphan_task_reconcile`
 // (#2944), `unclaimed_grace_reap` (#3796), `region_migration_stale_reap`
-// (#4459), the three #4195 DB/refresh jobs
+// (#4459), `region_migration_source_cleanup` (#4458), the three #4195
+// DB/refresh jobs
 // (`byot_catalog_refresh`, `openapi_spec_refresh`, `openapi_install_rediscover`),
 // and `scheduled_backup` (#4457)
 // — which deliberately invert the ordering (raw tick spanned, recovery applied
@@ -188,14 +189,16 @@ function withFiberDeathLog<A, E, R>(
 //
 // Membership splits into two single-source records, by fiber kind:
 //
-//   • SCHEDULER_CLEANUP_SPAN_NAMES — 13 cleanup/sweep fibers (they evict
+//   • SCHEDULER_CLEANUP_SPAN_NAMES — 14 cleanup/sweep fibers (they evict
 //     expired in-memory or DB state). Eight were retrofitted with a span by
 //     #2945 (the TTL/ratelimit/state sweeps below); the ninth,
 //     `orphan_task_reconcile` (#2944), shipped with its span from day one and
 //     additionally attaches the orphan count as a result attribute (one of
-//     two `spanResultAttributes` fibers in THIS record, with
-//     `region_migration_stale_reap` — the work record adds
-//     `unclaimed_grace_reap` plus the three #4195 DB/refresh jobs; the
+//     three `spanResultAttributes` fibers in THIS record, with
+//     `region_migration_stale_reap` and `region_migration_source_cleanup` —
+//     the work record adds
+//     `unclaimed_grace_reap`, the three #4195 DB/refresh jobs, and
+//     `scheduled_backup` (#4457); the
 //     scheduler engine uses that 4th arg elsewhere, inside its own module).
 //     The tenth,
 //     `trial_rate_limit_cleanup` (#3654), sweeps the unauthenticated
@@ -209,6 +212,11 @@ function withFiberDeathLog<A, E, R>(
 //     crashed migration releases its workspace write-lock without waiting for
 //     an admin to request another migration (it attaches the stale-found and
 //     reaped counts as result attributes, like `orphan_task_reconcile`).
+//     The fourteenth, `region_migration_source_cleanup` (#4458, ADR-0024),
+//     deletes a migrated workspace's source-region data once the 7-day grace
+//     period elapses — the destructive half of migration Phase 4, scoped by
+//     the bundle-scope registry (attaches due/cleaned/skipped counts as
+//     result attributes).
 //
 //   • SCHEDULER_WORK_SPAN_NAMES — background-work fibers (they perform
 //     recurring side-effecting work rather than evicting state):
@@ -269,6 +277,7 @@ export const SCHEDULER_CLEANUP_SPAN_NAMES = {
   orphan_task_reconcile: "atlas.scheduler.orphan_task_reconcile",
   agent_runs_retention_sweep: "atlas.scheduler.agent_runs_retention_sweep",
   region_migration_stale_reap: "atlas.scheduler.region_migration_stale_reap",
+  region_migration_source_cleanup: "atlas.scheduler.region_migration_source_cleanup",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // Per-tick spans for the background-work fibers (#2987). Same wrap shape and
@@ -2715,6 +2724,78 @@ export function makeSchedulerLive(
           message: "Stale region-migration reap tick failed — will retry next interval",
         },
         startLog: "Stale region-migration reaper started",
+      });
+
+      // ── Periodic fiber: region-migration source-data cleanup (#4458, ADR-0024) ──
+      // The destructive half of migration Phase 4: once a completed
+      // migration's 7-day grace period elapses, `runSourceCleanupSweep`
+      // deletes the workspace's rows from the source region's internal DB.
+      // The deletion scope derives from the bundle-scope registry (#4460):
+      // exported pillars (already moved) plus the `stays` residue; `platform`
+      // tables are never touched. Each migration's cleanup is one transaction
+      // (deletes + `source_cleaned_at` stamp), so a partial failure rolls
+      // back to "still due" and is retried next sweep — and the cutover
+      // guard refuses to delete a workspace homed back in this region. Gated
+      // on an internal DB — without one there are no migrations to clean.
+      // Note the gate's failLog is emitted at debug (helper behavior): a
+      // fiber that never started is observable only as an ABSENCE of
+      // `atlas.scheduler.region_migration_source_cleanup` spans against the
+      // hourly cadence — for this fiber that absence is a residency-promise
+      // gap, so treat it as alertable.
+      //
+      // Error ordering: `spanResultAttributes` attaches the SweepSummary
+      // buckets, so the span wraps the RAW tick (a failed tick records
+      // ERROR, not a status-OK span with fabricated zeros) and loop-liveness
+      // recovery is applied OUTSIDE it — the region_migration_stale_reap
+      // pattern. The tick throws only when attempts failed outright and
+      // nothing succeeded or resolved (guard-skips count as resolved;
+      // blocked rows are counted, not thrown).
+      yield* registerPeriodicFiber({
+        name: "region_migration_source_cleanup",
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as region_migration_stale_reap)
+          const { SOURCE_CLEANUP_SWEEP_INTERVAL_MS } = require("@atlas/api/lib/residency/cleanup") as {
+            SOURCE_CLEANUP_SWEEP_INTERVAL_MS: number;
+          };
+          return SOURCE_CLEANUP_SWEEP_INTERVAL_MS;
+        },
+        gate: {
+          check: () => {
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            return hasInternalDB();
+          },
+          failLog:
+            "Region-migration source-cleanup gate check failed — migrated source data will NOT be deleted",
+          skipLog: "No internal database — region-migration source cleanup not started",
+        },
+        tick: Effect.tryPromise({
+          try: async () => {
+            const { runSourceCleanupSweep } = await import(
+              "@atlas/api/lib/residency/cleanup"
+            );
+            // Throws when migrations were due but every attempt failed
+            // outright — that tick must surface as span ERROR + warn, not a
+            // quiet zero.
+            return runSourceCleanupSweep();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        spanResultAttributes: (result) => ({
+          "atlas.region_migration.cleanup_due": result.due,
+          "atlas.region_migration.cleanup_cleaned": result.cleaned,
+          "atlas.region_migration.cleanup_skipped": result.skipped,
+          // Persistent non-zero across sweeps = operator signal (region
+          // misconfiguration or an ambiguous organization row).
+          "atlas.region_migration.cleanup_blocked": result.blocked,
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Region-migration source-cleanup tick failed — will retry next interval",
+        },
+        startLog: "Region-migration source-data cleanup sweep started",
       });
 
       // ── Periodic fiber: orphan plugin-task reconcile (#2944) — hourly ──

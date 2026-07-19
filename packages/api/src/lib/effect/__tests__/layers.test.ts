@@ -418,10 +418,11 @@ describe("makeSchedulerLive", () => {
     {
       // Cleanup/sweep fibers. Eight were retrofitted by #2945;
       // `orphan_task_reconcile` (#2944) shipped with its span and attaches
-      // the orphan count as a result attribute, as does
-      // `region_migration_stale_reap` (#4459, stale-found/reaped counts);
-      // the work record adds `unclaimed_grace_reap` (#3796) and the three
-      // #4195 DB/refresh jobs.
+      // the orphan count as a result attribute, as do
+      // `region_migration_stale_reap` (#4459, stale-found/reaped counts) and
+      // `region_migration_source_cleanup` (#4458, due/cleaned/skipped counts);
+      // the work record adds `unclaimed_grace_reap` (#3796), the three
+      // #4195 DB/refresh jobs, and `scheduled_backup` (#4457).
       constName: "SCHEDULER_CLEANUP_SPAN_NAMES",
       record: SCHEDULER_CLEANUP_SPAN_NAMES as Record<string, string>,
       expectedKeys: [
@@ -438,6 +439,7 @@ describe("makeSchedulerLive", () => {
         "orphan_task_reconcile",
         "agent_runs_retention_sweep",
         "region_migration_stale_reap",
+        "region_migration_source_cleanup",
       ],
     },
     {
@@ -565,7 +567,7 @@ describe("makeSchedulerLive", () => {
 
   // ── registerPeriodicFiber behavioral contract (#4130) ─────────────────
   // The helper is the single seam every periodic fiber now flows through,
-  // so a helper-level bug is a 21-fiber blast radius. These pin the four
+  // so a helper-level bug is a 26-fiber blast radius. These pin the four
   // behaviors the structural scans above cannot see: the forked fiber
   // actually ticks and repeats (the #2864 forkScoped regression), a failing
   // tick is recovered so the repeat loop survives, a false gate skips the
@@ -774,6 +776,34 @@ describe("makeSchedulerLive", () => {
         registrationIdx + 3000,
       );
       expect(registrationBlock).toContain("STALE_MIGRATION_REAP_INTERVAL_MS");
+    });
+  });
+
+  // ── region_migration_source_cleanup tick body (#4458) ─────────────────────
+  // Same rationale as the stale-reap guard above: the registration wiring
+  // scan proves a `name: "region_migration_source_cleanup"` registration
+  // exists, but not that its tick invokes the sweep — a refactor could leave
+  // the fiber ticking a no-op while migrated workspace data persists in the
+  // source region forever (the exact "code exists, trigger doesn't" gap
+  // #4458 closed: `getCleanupDueMigrations` had zero production callers).
+  describe("region_migration_source_cleanup tick invokes runSourceCleanupSweep (#4458)", () => {
+    const registrationIdx = layersSource.indexOf(
+      'name: "region_migration_source_cleanup"',
+    );
+    const registrationBlock = layersSource.slice(
+      registrationIdx,
+      registrationIdx + 3000,
+    );
+
+    test("the tick body references runSourceCleanupSweep", () => {
+      expect(registrationIdx).toBeGreaterThan(-1);
+      expect(registrationBlock).toContain("runSourceCleanupSweep");
+    });
+
+    test("the cadence is wired to SOURCE_CLEANUP_SWEEP_INTERVAL_MS", () => {
+      // A re-hardcoded interval would detach the fiber from the constant the
+      // cleanup module documents against the 7-day grace period.
+      expect(registrationBlock).toContain("SOURCE_CLEANUP_SWEEP_INTERVAL_MS");
     });
   });
 });

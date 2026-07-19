@@ -56,6 +56,24 @@ export interface StreamLifetimeHooks {
   readonly onActivity?: () => void;
 }
 
+/** SSE comment frame (#4734). A line starting with `:` is a comment — the SSE
+ * spec requires conformant parsers (incl. the MCP client's) to ignore it — so
+ * it puts bytes on the wire without ever surfacing as a JSON-RPC message. */
+const SSE_KEEPALIVE_FRAME = new TextEncoder().encode(": keepalive\n\n");
+
+export interface TrackStreamOptions {
+  /**
+   * #4734 — transport-agnostic keepalive. When set, the POST tool-call SSE
+   * stream emits an SSE comment frame ({@link SSE_KEEPALIVE_FRAME}) whenever the
+   * source produces nothing for `keepaliveMs`, so an intermediary idle-timeout
+   * (Railway edge/LB, ~120s) can't drop a long agent run before its result is
+   * sent. Unlike the progress-notification heartbeat (`progress.ts`), this works
+   * for EVERY client — it doesn't require the client to have sent a
+   * `progressToken`. Omit (GET notification streams) to skip the keepalive.
+   */
+  readonly keepaliveMs?: number;
+}
+
 /**
  * If `res` is an SSE (`text/event-stream`) streaming response, wrap its body
  * so `hooks.onOpen` fires now and `hooks.onClose` fires exactly once when the
@@ -64,11 +82,14 @@ export interface StreamLifetimeHooks {
  *
  * The wrapper is a pull-driven byte-for-byte pass-through: it preserves SSE
  * ordering and backpressure (an idle stream parks in `reader.read()` rather
- * than spinning), so the client sees an identical stream.
+ * than spinning), so the client sees an identical stream. With
+ * `opts.keepaliveMs` (#4734) it additionally injects an SSE comment frame each
+ * time the source idles that long — see {@link TrackStreamOptions}.
  */
 export function trackResponseStreamLifetime(
   res: Response,
   hooks: StreamLifetimeHooks,
+  opts?: TrackStreamOptions,
 ): Response {
   const body = res.body;
   const contentType = (res.headers.get("content-type") ?? "").toLowerCase();
@@ -85,10 +106,53 @@ export function trackResponseStreamLifetime(
   };
 
   const reader = body.getReader();
+  const keepaliveMs = opts?.keepaliveMs;
+  type ReadResult = Awaited<ReturnType<typeof reader.read>>;
+
+  // A SINGLE in-flight read is retained across `pull` calls (`pendingRead`) so
+  // the keepalive race never abandons — and thus never drops — a chunk: when
+  // the timer wins we emit a comment frame and re-race the SAME still-pending
+  // read on the next pull, so `reader.read()` is called exactly once per chunk.
+  let pendingRead: Promise<ReadResult> | null = null;
+
   const tracked = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        const { done, value } = await reader.read();
+        if (!pendingRead) pendingRead = reader.read();
+
+        if (keepaliveMs !== undefined) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const tick = new Promise<"__keepalive__">((resolve) => {
+            timer = setTimeout(() => resolve("__keepalive__"), keepaliveMs);
+          });
+          let raced: ReadResult | "__keepalive__";
+          try {
+            raced = await Promise.race([pendingRead, tick]);
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+          if (raced === "__keepalive__") {
+            // Source idled past the keepalive window — keep the connection warm
+            // (pendingRead is retained so its eventual chunk is not lost). A
+            // keepalive counts as liveness so the idle sweep doesn't evict a
+            // session that is mid-run but quiet.
+            controller.enqueue(SSE_KEEPALIVE_FRAME);
+            hooks.onActivity?.();
+            return;
+          }
+          pendingRead = null;
+          if (raced.done) {
+            controller.close();
+            finish();
+            return;
+          }
+          controller.enqueue(raced.value);
+          hooks.onActivity?.();
+          return;
+        }
+
+        const { done, value } = await pendingRead;
+        pendingRead = null;
         if (done) {
           controller.close();
           finish();
@@ -105,6 +169,7 @@ export function trackResponseStreamLifetime(
         // logging (controller.error only reaches the client), release the
         // liveness mark, then propagate. Normalize per the repo's caught-error
         // rule.
+        pendingRead = null;
         hooks.onError?.(err);
         finish();
         controller.error(err instanceof Error ? err : new Error(String(err)));

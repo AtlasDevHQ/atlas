@@ -114,6 +114,19 @@ RUN if [ "$INSTALL_NSJAIL" = "true" ]; then \
         libnl-route-3-200 libprotobuf32t64 \
       && rm -rf /var/lib/apt/lists/*; \
     fi
+# PostgreSQL 18 client tools — the backup engine (ee/src/backups, #4457)
+# spawns `pg_dump`/`psql`, and the client major must be >= the PG 18 internal
+# DBs (pg_dump refuses a newer server major). The base image's Debian ships an
+# older postgresql-client, so pin PGDG's postgresql-client-18.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates gnupg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg \
+    && . /etc/os-release \
+    && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends postgresql-client-18 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=nsjail-builder /nsjail-out/ /usr/local/bin/
 # Shared types (workspace symlink target — needed at runtime by API + plugins)
 COPY --from=builder --chown=atlas:atlas /app/packages/types ./packages/types

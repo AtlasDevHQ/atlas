@@ -514,6 +514,13 @@ describe("migrateAuthTables", () => {
             // already-applied set so this "all applied" test sees zero new
             // migrations.
             { name: "0176_drop_dashboard_stage_changes.sql" },
+            // 0177 (#4457) — backups.scheduled_window + partial UNIQUE index
+            // (the scheduled-backup fiber's cross-replica cadence-window
+            // claim). Additive nullable column on an Atlas-internal table,
+            // no Better Auth involvement, so it runs in every auth mode —
+            // must be in the already-applied set so this "all applied" test
+            // sees zero new migrations.
+            { name: "0177_backups_scheduled_window.sql" },
           ],
         };
       }

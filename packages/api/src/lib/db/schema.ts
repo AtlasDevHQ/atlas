@@ -1423,9 +1423,18 @@ export const backups = pgTable(
     // verify_level, added by an idempotent ALTER in ensureTable(); mirrored
     // here so drizzle-kit doesn't emit a DROP COLUMN.
     expectedTableCount: integer("expected_table_count"),
+    // Cadence-window claim for the scheduled-backup fiber (#4457). NULL for
+    // manual backups; scheduled ones hold the deterministic window key, and
+    // the partial UNIQUE index below makes the claim atomic across replicas
+    // (exactly one backup per region per window). Migration 0177 + the
+    // idempotent ALTER in ensureTable().
+    scheduledWindow: text("scheduled_window"),
   },
   (t) => [
     index("idx_backups_status").on(t.status, sql`created_at DESC`),
+    uniqueIndex("idx_backups_scheduled_window")
+      .on(t.scheduledWindow)
+      .where(sql`scheduled_window IS NOT NULL`),
   ],
 );
 

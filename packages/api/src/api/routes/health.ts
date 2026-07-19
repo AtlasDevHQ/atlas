@@ -106,6 +106,16 @@ export const HealthResponseSchema = z.object({
     scheduler: ComponentHealthSchema,
     sandbox: ComponentHealthSchema,
     plugins: PluginsComponentSchema,
+    // #4457 — scheduled-backup tripwire. `disabled` when scheduled backups
+    // aren't expected on this deployment; `degraded` when the newest
+    // verified backup is older than the cadence window (or none exists).
+    // The status enum omits `down` ON PURPOSE (same pattern as
+    // PluginsComponentSchema above): backups must never 503 the region, and
+    // narrowing the wire type stops a future contributor from setting it.
+    backups: ComponentHealthSchema.extend({
+      status: z.enum(["healthy", "degraded", "disabled"]),
+      lastVerifiedAt: z.string().nullable().optional(),
+    }).optional(),
   }).optional(),
   checks: z.object({
     datasource: z.object({
@@ -520,6 +530,57 @@ health.openapi(healthRoute, async (c) => {
     const deployModeDowngraded = getConfig()?.deployModeDowngraded;
     if (deployModeDowngraded && status === "ok") status = "degraded";
 
+    // #4457 — scheduled-backup tripwire. An independent DB probe (cached
+    // ~60s in lib/backups/health.ts) asks: is the newest VERIFIED backup
+    // older than the cadence window? This catches every
+    // boot-green-but-broken shape at once (fiber gated off, EE load
+    // failure, pg_dump missing, verification failing) without trusting the
+    // fiber to self-report. Overdue promotes ok → degraded and adds a
+    // warning; it NEVER escalates to error/503 — a missing backup must not
+    // pull the region from the LB.
+    // Assigned on BOTH the try and catch arms below, so it is definitely
+    // present on the response — no undefined arm, no conditional spread.
+    let backupsComponent: {
+      status: "healthy" | "degraded" | "disabled";
+      lastCheckedAt: string;
+      lastVerifiedAt?: string | null;
+      message?: string;
+    };
+    try {
+      const { getScheduledBackupHealth } = await import("@atlas/api/lib/backups/health");
+      const backupHealth = await getScheduledBackupHealth();
+      if (!backupHealth.expected) {
+        backupsComponent = { status: "disabled", lastCheckedAt: new Date().toISOString() };
+      } else {
+        backupsComponent = {
+          status: backupHealth.overdue ? "degraded" : "healthy",
+          lastCheckedAt: new Date().toISOString(),
+          lastVerifiedAt: backupHealth.lastVerifiedAt,
+          ...(backupHealth.message && { message: backupHealth.message }),
+        };
+        if (backupHealth.overdue) {
+          warnings.push(
+            backupHealth.message ?? "Scheduled backups are overdue — see the backups component",
+          );
+          if (status === "ok") status = "degraded";
+        }
+      }
+    } catch (err) {
+      // The probe module is defensive, so reaching here implies a module
+      // load failure — surface it rather than silently dropping the
+      // component (an absent tripwire is the failure mode #4457 fixes).
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "Scheduled-backup health probe failed to load — backups component reported degraded",
+      );
+      backupsComponent = {
+        status: "degraded",
+        lastCheckedAt: new Date().toISOString(),
+        message: "Backup health probe unavailable — see server logs",
+      };
+      if (status === "ok") status = "degraded";
+    }
+
     const components = {
       datasource: {
         status: dsNotConfigured
@@ -572,6 +633,7 @@ health.openapi(healthRoute, async (c) => {
         ...(exploreBackend === "just-bash" && { message: "No sandbox isolation — using just-bash fallback" }),
       },
       plugins: pluginsComponent,
+      backups: backupsComponent,
     };
 
     // #3685 — gate the per-source fleet breakdown. `sourcesSection` above

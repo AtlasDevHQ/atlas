@@ -72,6 +72,7 @@ import { readSaasEnv } from "./saas-env";
 import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
 import {
   AuditPurgeScheduler,
+  BackupsManager,
   SaasCrm,
   AbuseResponse,
   Migration,
@@ -87,6 +88,13 @@ import {
 } from "./services";
 import { durableSessionLayer } from "./durable-session";
 import { durableStateLayer } from "./durable-state";
+// Static import (not the require-in-thunk pattern): cadence.ts is a pure,
+// dependency-free core leaf with no import-time env reads, and a typo'd
+// symbol should be a compile error, not an undefined interval at runtime.
+import {
+  SCHEDULED_BACKUP_CHECK_INTERVAL_MS,
+  isScheduledBackupEnvDisabled,
+} from "@atlas/api/lib/backups/cadence";
 import { getRetentionDays, getMaxParkMinutes } from "@atlas/api/lib/durable-session";
 import {
   recoverInFlight as recoverOutboxInFlight,
@@ -171,8 +179,9 @@ function withFiberDeathLog<A, E, R>(
 // ticking?" via presence/absence + cadence, NOT "did this tick error?". The
 // exceptions are the `spanResultAttributes` fibers — `orphan_task_reconcile`
 // (#2944), `unclaimed_grace_reap` (#3796), `region_migration_stale_reap`
-// (#4459), and the three #4195 DB/refresh jobs
-// (`byot_catalog_refresh`, `openapi_spec_refresh`, `openapi_install_rediscover`)
+// (#4459), the three #4195 DB/refresh jobs
+// (`byot_catalog_refresh`, `openapi_spec_refresh`, `openapi_install_rediscover`),
+// and `scheduled_backup` (#4457)
 // — which deliberately invert the ordering (raw tick spanned, recovery applied
 // OUTSIDE) to keep their result attributes truthful; see `registerPeriodicFiber`
 // below.
@@ -205,12 +214,14 @@ function withFiberDeathLog<A, E, R>(
 //     recurring side-effecting work rather than evicting state):
 //     `sub_processor_publisher`, `settings_refresh`, `onboarding_email`,
 //     `expert_scheduler`, `promote_decay`, `billing_reconcile`,
-//     `stripe_teardown_sweep`, `unclaimed_grace_reap`, `overage_report`, and
+//     `stripe_teardown_sweep`, `unclaimed_grace_reap`, `overage_report`,
 //     the three #4195 DB/refresh jobs `byot_catalog_refresh`,
-//     `openapi_spec_refresh`, `openapi_install_rediscover`. Spanned by #2987
-//     (+#3423 for billing_reconcile, #3992 for overage_report, #4195 for the
-//     DB/refresh trio) — identical rationale and wrap shape. `unclaimed_grace_reap`
-//     (#3796) and the three #4195 jobs attach result attributes (cycle counts);
+//     `openapi_spec_refresh`, `openapi_install_rediscover`, and
+//     `scheduled_backup` (#4457 — the internal-DB backup cycle). Spanned by
+//     #2987 (+#3423 for billing_reconcile, #3992 for overage_report, #4195
+//     for the DB/refresh trio) — identical rationale and wrap shape.
+//     `unclaimed_grace_reap` (#3796), the three #4195 jobs, and
+//     `scheduled_backup` attach result attributes (cycle counts / outcome);
 //     the rest carry none.
 //
 // Two records, not one: "cleanup sweep" vs "background work" is a real
@@ -280,6 +291,12 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   byot_catalog_refresh: "atlas.scheduler.byot_catalog_refresh",
   openapi_spec_refresh: "atlas.scheduler.openapi_spec_refresh",
   openapi_install_rediscover: "atlas.scheduler.openapi_install_rediscover",
+  // #4457 — internal-DB scheduled backups. The tick claims the current
+  // cadence window atomically (partial UNIQUE index on
+  // `backups.scheduled_window`), then create→verify→purge through the
+  // `BackupsManager` Tag (EE-implemented; the gate skips the fiber when the
+  // noop is bound).
+  scheduled_backup: "atlas.scheduler.scheduled_backup",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // ── registerPeriodicFiber — the periodic-fiber choreography, once (#4130) ──
@@ -360,7 +377,7 @@ interface PeriodicFiberSpec<A, E> {
 
 // Exported for the behavioral contract tests in layers.test.ts — every
 // record-listed periodic fiber flows through this one seam (the outbox
-// flushers stay outside, see above), so a helper-level bug is a 21-fiber
+// flushers stay outside, see above), so a helper-level bug is an every-record-listed-fiber
 // blast radius the structural source scans alone cannot see.
 export function registerPeriodicFiber<A, E>(
   spec: PeriodicFiberSpec<A, E>,
@@ -1745,7 +1762,11 @@ export class Scheduler extends Context.Tag("Scheduler")<
  */
 export function makeSchedulerLive(
   config: ResolvedConfig,
-): Layer.Layer<Scheduler, never, AuditPurgeScheduler | SaasCrm | Migration | DurableSession | DurableState> {
+): Layer.Layer<
+  Scheduler,
+  never,
+  AuditPurgeScheduler | BackupsManager | SaasCrm | Migration | DurableSession | DurableState
+> {
   return Layer.scoped(
     Scheduler,
     Effect.gen(function* () {
@@ -2128,6 +2149,103 @@ export function makeSchedulerLive(
           }),
         ),
       );
+
+      // ── Periodic fiber: scheduled internal-DB backups (#4457) ────────────
+      // Wires the previously-dead backup automation through the
+      // `BackupsManager` Tag (EE-implemented via `BackupsManagerLive`; the
+      // noop's `available: false` gates the fiber off on self-hosted without
+      // /ee). Each tick interprets the configured schedule as a cadence
+      // window and atomically claims it in the DB (`INSERT … ON CONFLICT DO
+      // NOTHING` on the partial UNIQUE `backups.scheduled_window` index), so
+      // exactly one backup runs per region per window regardless of replica
+      // count — restart-safe catch-up semantics instead of the retired
+      // minute-matching cron loop. A won claim runs create→verify→purge;
+      // verification depth follows ATLAS_BACKUP_VERIFY_SCRATCH_URL (#2941).
+      // The `yield* Migration` barrier above sequences this after
+      // `MigrationLive`, so the eager boot tick can't race migration 0177
+      // adding `scheduled_window`. The /health `backups` component is the
+      // matching tripwire: it degrades when the newest verified backup is
+      // older than the cadence window, so "fiber gated off by mistake" is
+      // visible instead of boot-green-but-broken.
+      const backupsManager = yield* BackupsManager;
+      yield* registerPeriodicFiber({
+        name: "scheduled_backup",
+        // Check interval, not the backup cadence — each tick is a cheap
+        // claim attempt that no-ops while the current window is satisfied.
+        intervalMs: SCHEDULED_BACKUP_CHECK_INTERVAL_MS,
+        gate: {
+          check: () => {
+            if (!backupsManager.available) return false;
+            // Boot-consumed kill switch for the scheduled path only — the
+            // manual admin backup path is unaffected. Single shared
+            // predicate, mirrored by the /health tripwire's expectation
+            // gate (lib/backups/health.ts) — never duplicate the value set.
+            if (isScheduledBackupEnvDisabled()) return false;
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            return hasInternalDB();
+          },
+          failLog: "Scheduled-backup gate check failed — skipping",
+          skipLog:
+            "Scheduled backups not started — enterprise backups unavailable, internal DB not configured, or ATLAS_BACKUP_SCHEDULED_ENABLED=false",
+        },
+        // Two liveness wraps on the tick:
+        //
+        // 1. Timeout: nothing in create→verify→purge bounds wall time, and a
+        //    pg_dump hung on a network partition (or a stuck S3 upload) would
+        //    otherwise wedge this fiber forever — `Effect.repeat` never
+        //    advances, and the stale-claim reaper (which lives in this same
+        //    fiber's next tick) is hostage to the wedge. 2h is far above any
+        //    sane internal-DB dump and well inside the 6h stale-claim
+        //    threshold, so the reap on a later tick marks the carcass row
+        //    failed. Note: interrupting the Effect does NOT kill the spawned
+        //    pg_dump/psql OS process — it may linger until it exits on its
+        //    own; the claim semantics stay correct either way.
+        //
+        // 2. Defect demotion: the cycle's call graph still contains
+        //    `Effect.promise(internalQuery…)` seams (ensureTable /
+        //    getBackupConfig), whose rejections become DEFECTS — and since
+        //    `spanResultAttributes` can't combine with `viaCause`, an escaped
+        //    defect would exit `Effect.repeat` and permanently kill this
+        //    fiber on the first transient DB blip (the exact silent-death
+        //    class #4457 exists to eliminate). With the demotion,
+        //    `onTickFailure` logs it and the loop survives.
+        tick: backupsManager.runScheduledBackupCycle().pipe(
+          Effect.timeoutFail({
+            duration: "2 hours",
+            onTimeout: () =>
+              new Error(
+                "Scheduled backup cycle exceeded 2h — likely a hung pg_dump or storage upload; the stale-claim reap will mark the row failed",
+              ),
+          }),
+          Effect.catchAllDefect((defect) =>
+            Effect.fail(defect instanceof Error ? defect : new Error(String(defect))),
+          ),
+        ),
+        // Result attributes on the raw tick (orphan_task_reconcile pattern):
+        // recovery is applied OUTSIDE the span, so a failed cycle records an
+        // ERROR span instead of OK-with-fabricated-attributes.
+        spanResultAttributes: (result) => ({
+          "atlas.scheduled_backup.status": result.status,
+          ...(result.status === "ran" && {
+            "atlas.scheduled_backup.backup_id": result.backupId,
+            "atlas.scheduled_backup.verified": result.verified,
+            "atlas.scheduled_backup.verify_level": result.verifyLevel,
+            "atlas.scheduled_backup.purged": result.purged,
+          }),
+        }),
+        onTickFailure: {
+          // error, not warn: a failed cycle means this cadence window may
+          // produce no backup at all (a failed attempt keeps its claim), so
+          // on-call must see it — the /health tripwire corroborates.
+          level: "error",
+          message:
+            "Scheduled backup cycle failed — this cadence window may have no verified backup (see /health backups component)",
+        },
+        startLog: "Scheduled internal-DB backup fiber started",
+      });
 
       // ── Periodic fiber: BYOT catalog refresh (#2284; folded onto the fiber
       // seam by #4195) ─────────────────────────────────────────────────────

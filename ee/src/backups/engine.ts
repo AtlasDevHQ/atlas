@@ -1,25 +1,27 @@
 /**
  * Backup engine — pg_dump-based backup with gzip compression.
  *
- * Creates compressed backups of the internal PostgreSQL database
- * and stores them to a configurable local directory.
+ * Creates compressed backups of the internal PostgreSQL database and
+ * streams them to the configured storage driver (`./storage.ts`) — local
+ * directory by default, S3-compatible object storage (Railway buckets)
+ * when `ATLAS_BACKUP_S3_BUCKET` is set (#4457).
  *
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  * Enterprise-gated via requireEnterpriseEffect("backups").
  */
 
 import { spawn } from "child_process";
-import { createWriteStream } from "fs";
-import { mkdir, stat, unlink, readdir } from "fs/promises";
-import { join, dirname } from "path";
+import { join } from "path";
 import { createGzip } from "zlib";
 import { pipeline } from "stream/promises";
+import { PassThrough } from "stream";
 import { Effect } from "effect";
 import { requireEnterpriseEffect } from "../index";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getBackupStorage } from "./storage";
 import type { BackupStatus } from "@useatlas/types";
 
 const log = createLogger("ee:backups-engine");
@@ -73,6 +75,26 @@ export const ensureTable = (): Effect.Effect<void, EnterpriseError | Error> =>
     yield* Effect.promise(() =>
       internalQuery(
         `ALTER TABLE backups ADD COLUMN IF NOT EXISTS expected_table_count INTEGER`,
+      ),
+    );
+    // scheduled_window (#4457) — the cross-replica concurrency claim for the
+    // scheduled-backup fiber. NULL for manual backups; for scheduled ones it
+    // holds the deterministic cadence-window key (`backupWindowKey`), and the
+    // partial UNIQUE index makes the claim atomic: whichever replica's
+    // INSERT lands first owns the window's backup, everyone else's
+    // `ON CONFLICT DO NOTHING` insert returns no row. Mirrored in
+    // `packages/api/src/lib/db/schema.ts` + migration 0177 (same discipline
+    // as verify_level / expected_table_count above); this idempotent ALTER
+    // covers deployments whose `backups` table predates the migration.
+    yield* Effect.promise(() =>
+      internalQuery(
+        `ALTER TABLE backups ADD COLUMN IF NOT EXISTS scheduled_window TEXT`,
+      ),
+    );
+    yield* Effect.promise(() =>
+      internalQuery(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_backups_scheduled_window
+           ON backups (scheduled_window) WHERE scheduled_window IS NOT NULL`,
       ),
     );
     yield* Effect.promise(() =>
@@ -223,14 +245,16 @@ const countSourceBaseTables = (): Effect.Effect<number | null, never> =>
     }),
   );
 
-/**
- * Create a backup of the internal database.
- *
- * Uses pg_dump with plain-text format, then gzip-compresses the output.
- * Records the backup in the internal backups table.
- */
-export const createBackup = (): Effect.Effect<
-  { id: string; storagePath: string; sizeBytes: number; status: BackupStatus },
+export type CreateBackupResult = {
+  id: string;
+  storagePath: string;
+  sizeBytes: number;
+  status: BackupStatus;
+};
+
+/** Shared pre-insert plumbing for both the manual and scheduled create paths. */
+const prepareBackupTarget = (): Effect.Effect<
+  { databaseUrl: string; storagePath: string; retentionExpiresAt: string },
   EnterpriseError | Error
 > =>
   Effect.gen(function* () {
@@ -247,6 +271,145 @@ export const createBackup = (): Effect.Effect<
     const filename = `atlas-backup-${timestamp}.sql.gz`;
     const storagePath = join(config.storage_path, filename);
     const retentionExpiresAt = new Date(Date.now() + config.retention_days * 24 * 60 * 60 * 1000).toISOString();
+    return { databaseUrl, storagePath, retentionExpiresAt };
+  });
+
+/**
+ * The dump→compress→store pipeline for an already-inserted `in_progress`
+ * row. pg_dump streams through gzip into the storage driver (local fs or
+ * S3 — see ./storage.ts), so nothing is buffered in memory and the write
+ * target survives redeploys when the S3 driver is configured (#4457).
+ */
+const performBackup = (
+  backupId: string,
+  storagePath: string,
+  databaseUrl: string,
+): Effect.Effect<CreateBackupResult, Error> => {
+  // Inner effect uses tryPromise so errors land in the typed channel
+  // (Effect.promise treats rejections as defects, which bypass tapError)
+  const backupWork = Effect.gen(function* () {
+    const { args, password } = parseDatabaseUrl(databaseUrl);
+
+    // Run pg_dump → gzip → storage driver
+    const pgDump = spawn("pg_dump", [...args, "--format=plain"], {
+      env: { ...process.env, PGPASSWORD: password ?? "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    // Capture spawn-level failures (ENOENT when pg_dump isn't on PATH,
+    // EACCES, …). Without a listener the 'error' event is an uncaught
+    // exception with zero backup context, 'close' never fires, and the
+    // pipeline surfaces a misleading "Premature close" — the operator
+    // would chase the wrong cause. The capture is preferred over the
+    // derived stream error wherever a failure is reported below.
+    let spawnError: Error | null = null;
+    pgDump.on("error", (err) => {
+      spawnError = err instanceof Error ? err : new Error(String(err));
+    });
+
+    const gzip = createGzip();
+    const gzipped = new PassThrough();
+
+    // Collect stderr for error reporting
+    let stderr = "";
+    pgDump.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    // The pipeline promise and the storage write settle together: pipeline
+    // propagates pg_dump/gzip stream errors, put propagates storage errors,
+    // and a rejected put destroys the PassThrough so the pipeline can't
+    // hang on backpressure.
+    const sizeBytes = yield* Effect.tryPromise({
+      try: async () => {
+        const storage = getBackupStorage();
+        const pipelineDone = pipeline(pgDump.stdout, gzip, gzipped);
+        const putDone = storage.put(storagePath, gzipped).catch((err: unknown) => {
+          // Destroy WITHOUT an error argument: the put rejection already
+          // carries the failure (and rejects the Promise.all below), and
+          // destroy(err) would emit 'error' on a stream that may have no
+          // listener yet. A bare destroy unblocks the pipeline instead.
+          gzipped.destroy();
+          throw err instanceof Error ? err : new Error(String(err));
+        });
+        const [{ sizeBytes: written }] = await Promise.all([putDone, pipelineDone]);
+        return written;
+      },
+      // A spawn failure manifests here as a derived stream error — report
+      // the root cause instead.
+      catch: (err) => spawnError ?? (err instanceof Error ? err : new Error(String(err))),
+    });
+
+    const exitCode = yield* Effect.tryPromise({
+      try: () =>
+        new Promise<number>((resolve, reject) => {
+          // 'close' never fires when the spawn itself failed — reject with
+          // the captured cause instead of hanging on a resolve-only wait.
+          if (spawnError) {
+            reject(spawnError);
+            return;
+          }
+          pgDump.on("close", resolve);
+          pgDump.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
+        }),
+      catch: (err) => spawnError ?? (err instanceof Error ? err : new Error(String(err))),
+    });
+
+    if (exitCode !== 0) {
+      return yield* Effect.fail(new Error(`pg_dump exited with code ${exitCode}: ${stderr.slice(0, 500)}`));
+    }
+
+    // Capture the source DB's public BASE TABLE count as the verification
+    // baseline (#2989). Best-effort — null when unreadable.
+    const expectedTableCount = yield* countSourceBaseTables();
+
+    // Mark as completed
+    yield* Effect.tryPromise({
+      try: () =>
+        internalQuery(
+          `UPDATE backups SET status = 'completed', size_bytes = $1, expected_table_count = $2 WHERE id = $3`,
+          [sizeBytes, expectedTableCount, backupId],
+        ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+
+    log.info({ backupId, storagePath, sizeBytes, expectedTableCount }, "Backup completed successfully");
+    return { id: backupId, storagePath, sizeBytes, status: "completed" as const };
+  });
+
+  return backupWork.pipe(
+    Effect.tapError((err) =>
+      Effect.sync(() => {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        // Best-effort status update — fire-and-forget with error handling
+        void internalQuery(
+          `UPDATE backups SET status = 'failed', error_message = $1 WHERE id = $2`,
+          [errorMessage.slice(0, 2000), backupId],
+        ).catch((updateErr) => {
+          log.warn(
+            { err: updateErr instanceof Error ? updateErr.message : String(updateErr), backupId },
+            "Failed to update backup status to failed",
+          );
+        });
+        log.error({ err: err instanceof Error ? err : new Error(String(err)), backupId }, "Backup failed");
+      }),
+    ),
+  );
+};
+
+/**
+ * Create a backup of the internal database (manual/admin path — unchanged
+ * contract).
+ *
+ * Uses pg_dump with plain-text format, then gzip-compresses the output.
+ * Records the backup in the internal backups table.
+ */
+export const createBackup = (): Effect.Effect<
+  CreateBackupResult,
+  EnterpriseError | Error
+> =>
+  Effect.gen(function* () {
+    const { databaseUrl, storagePath, retentionExpiresAt } = yield* prepareBackupTarget();
 
     // Insert in-progress record
     const rows = yield* Effect.promise(() =>
@@ -259,87 +422,44 @@ export const createBackup = (): Effect.Effect<
     );
     const backupId = rows[0].id;
 
-    // Inner effect uses tryPromise so errors land in the typed channel
-    // (Effect.promise treats rejections as defects, which bypass tapError)
-    const backupWork = Effect.gen(function* () {
-      yield* Effect.tryPromise({
-        try: () => mkdir(dirname(storagePath), { recursive: true }),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
+    return yield* performBackup(backupId, storagePath, databaseUrl);
+  });
 
-      const { args, password } = parseDatabaseUrl(databaseUrl);
+/**
+ * Scheduled-path variant (#4457): atomically claim the cadence window and
+ * create its backup. The claim IS the `in_progress` insert — the partial
+ * UNIQUE index on `scheduled_window` guarantees at most one row per window
+ * across every replica, so N concurrent fibers can never fan out N pg_dumps
+ * (the #4650 re-storm class). Returns `null` when the window is already
+ * claimed (another replica won, or this window's backup already ran /
+ * already failed — a failed attempt keeps its claim, so a window is
+ * attempted at most once; the /health tripwire surfaces a missed window).
+ */
+export const createScheduledBackup = (
+  windowKey: string,
+): Effect.Effect<CreateBackupResult | null, EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    const { databaseUrl, storagePath, retentionExpiresAt } = yield* prepareBackupTarget();
 
-      // Run pg_dump → gzip → file
-      const pgDump = spawn("pg_dump", [...args, "--format=plain"], {
-        env: { ...process.env, PGPASSWORD: password ?? "" },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-
-      const outStream = createWriteStream(storagePath);
-      const gzip = createGzip();
-
-      // Collect stderr for error reporting
-      let stderr = "";
-      pgDump.stderr.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString();
-      });
-
-      yield* Effect.tryPromise({
-        try: () => pipeline(pgDump.stdout, gzip, outStream),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
-
-      const exitCode = yield* Effect.tryPromise({
-        try: () => new Promise<number>((resolve) => { pgDump.on("close", resolve); }),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
-
-      if (exitCode !== 0) {
-        return yield* Effect.fail(new Error(`pg_dump exited with code ${exitCode}: ${stderr.slice(0, 500)}`));
-      }
-
-      // Get file size
-      const fileStat = yield* Effect.tryPromise({
-        try: () => stat(storagePath),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
-
-      // Capture the source DB's public BASE TABLE count as the verification
-      // baseline (#2989). Best-effort — null when unreadable.
-      const expectedTableCount = yield* countSourceBaseTables();
-
-      // Mark as completed
-      yield* Effect.tryPromise({
-        try: () =>
-          internalQuery(
-            `UPDATE backups SET status = 'completed', size_bytes = $1, expected_table_count = $2 WHERE id = $3`,
-            [fileStat.size, expectedTableCount, backupId],
-          ),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
-
-      log.info({ backupId, storagePath, sizeBytes: fileStat.size, expectedTableCount }, "Backup completed successfully");
-      return { id: backupId, storagePath, sizeBytes: fileStat.size, status: "completed" as const };
+    // tryPromise, not Effect.promise: a rejection here (transient DB blip,
+    // pool exhaustion) must stay a TYPED failure so the scheduled fiber's
+    // onTickFailure recovery logs it and the repeat loop survives — a
+    // defect would escape catchAll and kill the fiber for the process
+    // lifetime (the layers.ts registration also demotes residual defects).
+    const rows = yield* Effect.tryPromise({
+      try: () =>
+        internalQuery<{ id: string }>(
+          `INSERT INTO backups (status, storage_path, retention_expires_at, scheduled_window)
+           VALUES ('in_progress', $1, $2, $3)
+           ON CONFLICT (scheduled_window) WHERE scheduled_window IS NOT NULL DO NOTHING
+           RETURNING id`,
+          [storagePath, retentionExpiresAt, windowKey],
+        ),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
+    if (!rows[0]) return null; // window already claimed
 
-    return yield* backupWork.pipe(
-      Effect.tapError((err) =>
-        Effect.sync(() => {
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          // Best-effort status update — fire-and-forget with error handling
-          void internalQuery(
-            `UPDATE backups SET status = 'failed', error_message = $1 WHERE id = $2`,
-            [errorMessage.slice(0, 2000), backupId],
-          ).catch((updateErr) => {
-            log.warn(
-              { err: updateErr instanceof Error ? updateErr.message : String(updateErr), backupId },
-              "Failed to update backup status to failed",
-            );
-          });
-          log.error({ err: err instanceof Error ? err : new Error(String(err)), backupId }, "Backup failed");
-        }),
-      ),
-    );
+    return yield* performBackup(rows[0].id, storagePath, databaseUrl);
   });
 
 // ---------------------------------------------------------------------------
@@ -420,14 +540,15 @@ export const purgeExpiredBackups = (): Effect.Effect<number, EnterpriseError | E
 
     let purged = 0;
     for (const row of expired) {
+      // storage.remove is already-gone-tolerant (local ENOENT and the S3
+      // missing-key delete both resolve), so a rejection here is a real
+      // storage failure — keep the DB record so the artifact isn't orphaned.
       const fileDeleted = yield* Effect.tryPromise({
-        try: () => unlink(row.storage_path),
+        try: () => getBackupStorage().remove(row.storage_path),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(
         Effect.map(() => true),
         Effect.catchAll((err) => {
-          const code = "code" in err ? (err as NodeJS.ErrnoException).code : undefined;
-          if (code === "ENOENT") return Effect.succeed(true); // file already removed
           log.warn(
             { err: err.message, backupId: row.id, path: row.storage_path },
             "Could not delete backup file — skipping DB record deletion to avoid orphan",
@@ -463,23 +584,21 @@ export const purgeExpiredBackups = (): Effect.Effect<number, EnterpriseError | E
   });
 
 /**
- * List files in the backup storage directory for verification purposes.
+ * List artifacts in the backup storage location for verification purposes.
+ * The driver already filters to `.sql.gz` basenames and treats a missing
+ * location (local ENOENT / empty S3 prefix) as an empty list.
  */
 export const listStorageFiles = (): Effect.Effect<string[], EnterpriseError | Error> =>
   Effect.gen(function* () {
     const config = yield* getBackupConfig();
     return yield* Effect.tryPromise({
-      try: () => readdir(config.storage_path),
+      try: () => getBackupStorage().list(config.storage_path),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(
-      Effect.map((files) => files.filter((f) => f.endsWith(".sql.gz"))),
       Effect.catchAll((err) => {
-        if ("code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
-          return Effect.succeed([] as string[]);
-        }
         log.warn(
           { err: err.message, path: config.storage_path },
-          "Failed to list backup storage directory",
+          "Failed to list backup storage",
         );
         return Effect.fail(err);
       }),

@@ -23,15 +23,34 @@ mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 let mockReadStreamChunks: Buffer[] = [Buffer.from("-- PostgreSQL database dump\n-- Dumped from")];
 let mockReadStreamError: Error | null = null;
 
-mock.module("fs", () => ({
-  createReadStream: () => ({
-    on: mock((event: string, cb: (err: Error) => void) => {
-      if (event === "error" && mockReadStreamError) cb(mockReadStreamError);
-    }),
-    pipe: mock((gunzip: unknown) => gunzip),
-    destroy: mock(),
+const makeMockReadStream = () => ({
+  on: mock((event: string, cb: (err: Error) => void) => {
+    if (event === "error" && mockReadStreamError) cb(mockReadStreamError);
   }),
+  pipe: mock((gunzip: unknown) => gunzip),
+  destroy: mock(),
+});
+
+mock.module("fs", () => ({
+  createReadStream: () => makeMockReadStream(),
   createWriteStream: mock(() => ({ on: mock(), write: mock(), end: mock() })),
+}));
+
+// Storage seam (#4457) — verify.ts reads dumps via getBackupStorage().
+// Mocked so an ambient ATLAS_BACKUP_S3_BUCKET in the shell can never flip
+// this suite onto the real S3 driver.
+mock.module("./storage", () => ({
+  getBackupStorage: () => ({
+    kind: "local" as const,
+    put: mock(async () => ({ sizeBytes: 0 })),
+    getStream: async () => makeMockReadStream(),
+    list: mock(async () => []),
+    remove: mock(async () => {}),
+  }),
+  isS3BackupStorageConfigured: () => false,
+  createLocalBackupStorage: mock(),
+  createS3BackupStorage: mock(),
+  _resetBackupStorage: () => {},
 }));
 
 mock.module("zlib", () => ({

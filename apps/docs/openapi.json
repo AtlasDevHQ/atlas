@@ -1346,6 +1346,45 @@
                             "lastCheckedAt",
                             "status"
                           ]
+                        },
+                        "backups": {
+                          "type": "object",
+                          "properties": {
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "healthy",
+                                "degraded",
+                                "disabled"
+                              ]
+                            },
+                            "latencyMs": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "lastCheckedAt": {
+                              "type": "string"
+                            },
+                            "message": {
+                              "type": "string"
+                            },
+                            "model": {
+                              "type": "string"
+                            },
+                            "backend": {
+                              "type": "string"
+                            },
+                            "lastVerifiedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "lastCheckedAt"
+                          ]
                         }
                       },
                       "required": [
@@ -1856,6 +1895,45 @@
                               "required": [
                                 "lastCheckedAt",
                                 "status"
+                              ]
+                            },
+                            "backups": {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "healthy",
+                                    "degraded",
+                                    "disabled"
+                                  ]
+                                },
+                                "latencyMs": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "lastCheckedAt": {
+                                  "type": "string"
+                                },
+                                "message": {
+                                  "type": "string"
+                                },
+                                "model": {
+                                  "type": "string"
+                                },
+                                "backend": {
+                                  "type": "string"
+                                },
+                                "lastVerifiedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "lastCheckedAt"
                               ]
                             }
                           },

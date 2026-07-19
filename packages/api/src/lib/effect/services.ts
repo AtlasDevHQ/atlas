@@ -1941,6 +1941,23 @@ export type CreateBackupResult = {
   readonly status: string;
 };
 
+/**
+ * Outcome of one scheduled-backup fiber tick (#4457). "ran" — this replica
+ * won the cadence-window claim and executed create→verify→purge;
+ * "window-already-claimed" — the window's backup already ran (or another
+ * replica owns it), so the tick was a no-op by design.
+ */
+export type ScheduledBackupCycleResultShape =
+  | {
+      readonly status: "ran";
+      readonly backupId: string;
+      readonly verified: boolean;
+      /** Same union `verifyBackup` reports — never widened to string. */
+      readonly verifyLevel: "full-restore" | "header-only";
+      readonly purged: number;
+    }
+  | { readonly status: "window-already-claimed" };
+
 export interface BackupsManagerShape {
   /** False when EE backups aren't loaded — `platform-backups.ts` returns 404 `not_available` for config + history reads and run-now writes. */
   readonly available: boolean;
@@ -1969,6 +1986,15 @@ export interface BackupsManagerShape {
     { restored: boolean; preRestoreBackupId: string; message: string },
     Error
   >;
+  /**
+   * One tick of the scheduled-backup fiber (#4457): claim the current
+   * cadence window atomically, then create→verify→purge on a won claim.
+   * Called by the `scheduled_backup` `registerPeriodicFiber` registration
+   * in `layers.ts:makeSchedulerLive` through this Tag — the fiber's gate
+   * checks `available` first, so the noop's failure is never ticked on
+   * self-hosted.
+   */
+  readonly runScheduledBackupCycle: () => Effect.Effect<ScheduledBackupCycleResultShape, Error>;
 }
 export class BackupsManager extends Context.Tag("BackupsManager")<
   BackupsManager,
@@ -1990,6 +2016,7 @@ export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.sync(
     verifyBackup: () => Effect.fail(notAvailable()),
     requestRestore: () => Effect.fail(notAvailable()),
     executeRestore: () => Effect.fail(notAvailable()),
+    runScheduledBackupCycle: () => Effect.fail(notAvailable()),
     } satisfies BackupsManagerShape;
   },
 );

@@ -1,166 +1,144 @@
 /**
- * Backup scheduler — cron-based automated backups.
+ * Scheduled-backup cycle (#4457) — the per-tick body behind the
+ * `scheduled_backup` periodic fiber registered in
+ * `packages/api/src/lib/effect/layers.ts:makeSchedulerLive` (reached
+ * through the `BackupsManager` Tag, never by a direct core→ee import).
  *
- * Evaluates a cron expression to determine when the next backup
- * should run. The scheduler is designed to be called periodically
- * (e.g., every minute via setInterval) and will trigger a backup
- * when the cron expression matches the current time.
+ * This replaces the dead `startScheduler` cron loop: that hand-rolled
+ * `setInterval` + minute-matcher had zero production callers, skipped any
+ * window the process was down for, and had only per-process-memory
+ * double-fire protection. The cycle model instead:
  *
- * Enterprise-gated via requireEnterpriseEffect("backups").
+ *   1. Interprets the configured schedule as a **cadence window**
+ *      (`resolveBackupCadence` — core, shared with the /health tripwire).
+ *   2. Reaps stale `in_progress` scheduled rows (a crash mid-backup must
+ *      not read as a healthy claim forever).
+ *   3. Atomically **claims** the current window via
+ *      `createScheduledBackup` — an `INSERT … ON CONFLICT DO NOTHING`
+ *      against the partial UNIQUE index on `backups.scheduled_window`, so
+ *      exactly one backup runs per region per window no matter how many
+ *      replicas tick (the #4650 re-storm class).
+ *   4. On a won claim: create → verify → purge. Verification depth follows
+ *      `ATLAS_BACKUP_VERIFY_SCRATCH_URL` (#2941); header-only mode is
+ *      treated as DEGRADED and logged at error level so on-call sees it.
+ *
+ * Enterprise-gated via requireEnterpriseEffect("backups") inside
+ * `createScheduledBackup`. The per-tenant Business-plan entitlement
+ * (`feature: "backups"`) is tracked as structurally inapplicable to this
+ * platform-scoped surface in `lib/billing/enforcement-parity.ts` (#3984) —
+ * the enterprise-license Tag is the gate.
  */
 
 import { Effect } from "effect";
-import { requireEnterprise } from "../index";
 import { createLogger } from "@atlas/api/lib/logger";
-import { createBackup, getBackupConfig, purgeExpiredBackups, ensureTable } from "./engine";
+import { internalQuery } from "@atlas/api/lib/db/internal";
+import type { ScheduledBackupCycleResultShape } from "@atlas/api/lib/effect/services";
+import {
+  backupWindowKey,
+  resolveBackupCadence,
+} from "@atlas/api/lib/backups/cadence";
+import { createScheduledBackup, getBackupConfig, purgeExpiredBackups } from "./engine";
 import { verifyBackup } from "./verify";
 
 const log = createLogger("ee:backups-scheduler");
 
-let _schedulerInterval: ReturnType<typeof setInterval> | null = null;
-let _lastRunMinute = -1;
+/**
+ * A scheduled `in_progress` row older than this is a crash carcass: mark it
+ * failed (keeping its window claim — a window is attempted at most once).
+ */
+const STALE_CLAIM_AFTER_MS = 6 * 60 * 60 * 1000;
+
+// The single definition lives on the Tag boundary (core services.ts) and is
+// aliased here — a type-only import, so no runtime coupling. This makes
+// ee↔core drift structurally impossible instead of one-way-checked.
+export type ScheduledBackupCycleResult = ScheduledBackupCycleResultShape;
 
 /**
- * Parse a cron expression and check if it matches the current time.
- * Supports standard 5-field cron: minute hour day-of-month month day-of-week.
+ * One tick of the scheduled-backup fiber. Errors stay in the typed channel;
+ * the fiber's `onTickFailure` recovery logs them and keeps the loop alive.
  */
-function cronMatchesNow(expression: string): boolean {
-  const parts = expression.trim().split(/\s+/);
-  if (parts.length !== 5) {
-    log.warn({ expression }, "Invalid cron expression — expected 5 fields. Scheduled backups will not run.");
-    return false;
-  }
-
-  const now = new Date();
-  const fields = [
-    now.getUTCMinutes(),  // 0-59
-    now.getUTCHours(),    // 0-23
-    now.getUTCDate(),     // 1-31
-    now.getUTCMonth() + 1, // 1-12
-    now.getUTCDay(),      // 0-6 (Sun=0)
-  ];
-
-  return parts.every((part, i) => fieldMatches(part, fields[i]));
-}
-
-function fieldMatches(pattern: string, value: number): boolean {
-  if (pattern === "*") return true;
-
-  // Handle step values: */N or N-M/S
-  if (pattern.includes("/")) {
-    const [range, stepStr] = pattern.split("/");
-    const step = parseInt(stepStr, 10);
-    if (isNaN(step) || step <= 0) return false;
-    if (range === "*") return value % step === 0;
-    // Range with step: e.g. 1-30/2
-    const [startStr, endStr] = range.split("-");
-    const start = parseInt(startStr, 10);
-    const end = endStr ? parseInt(endStr, 10) : start;
-    if (isNaN(start) || isNaN(end)) return false;
-    return value >= start && value <= end && (value - start) % step === 0;
-  }
-
-  // Handle comma-separated values: 1,5,10
-  if (pattern.includes(",")) {
-    return pattern.split(",").some((p) => fieldMatches(p.trim(), value));
-  }
-
-  // Handle ranges: N-M
-  if (pattern.includes("-")) {
-    const [startStr, endStr] = pattern.split("-");
-    const start = parseInt(startStr, 10);
-    const end = parseInt(endStr, 10);
-    if (isNaN(start) || isNaN(end)) return false;
-    return value >= start && value <= end;
-  }
-
-  // Single value
-  return parseInt(pattern, 10) === value;
-}
-
-/**
- * Check if a backup should run now and execute it.
- * Called once per minute by the scheduler interval.
- */
-const tick = (): Effect.Effect<void> =>
+export const runScheduledBackupCycle = (): Effect.Effect<ScheduledBackupCycleResult, Error> =>
   Effect.gen(function* () {
-    const now = new Date();
-    const currentMinute = now.getUTCHours() * 60 + now.getUTCMinutes();
-
-    // Prevent double-execution in the same minute
-    if (currentMinute === _lastRunMinute) return;
-
     const config = yield* getBackupConfig();
-
-    if (!cronMatchesNow(config.schedule)) return;
-
-    _lastRunMinute = currentMinute;
-    log.info({ schedule: config.schedule }, "Scheduled backup triggered");
-
-    const backup = yield* createBackup();
-
-    // Verify every automated backup — without this the success signal is
-    // just "pg_dump exited 0 + non-empty file". A failed verify is logged
-    // loudly so on-call sees it rather than discovering it at restore time.
-    // Verification depth is governed by ATLAS_BACKUP_VERIFY_SCRATCH_URL (#2941):
-    // when set, verifyBackup restores the dump into a disposable scratch DB and
-    // counts base tables ("restorable"); when unset, it degrades to a pg_dump
-    // header check ("has a valid header") and logs a warning.
-    const verification = yield* verifyBackup(backup.id);
-    if (!verification.verified) {
-      log.error(
-        { backupId: backup.id, reason: verification.message },
-        "Scheduled backup failed verification — artifact may not be restorable",
+    const cadence = resolveBackupCadence(config.schedule);
+    if (!cadence.recognized) {
+      log.warn(
+        { schedule: config.schedule },
+        "Backup schedule not recognized — falling back to the daily 03:00 UTC cadence. " +
+          "Supported shapes: 'M H * * *', 'M */N * * *', 'M * * * *', '*/N * * * *'.",
       );
     }
 
-    // Purge expired backups after successful backup
-    yield* purgeExpiredBackups();
-  }).pipe(
-    Effect.catchAll((err) => {
+    // Reap crash carcasses so a dead in_progress row is visible as failed.
+    yield* Effect.tryPromise({
+      try: () =>
+        internalQuery<{ id: string }>(
+          `UPDATE backups
+             SET status = 'failed',
+                 error_message = 'Scheduled backup never completed — process likely crashed or was redeployed mid-backup'
+           WHERE status = 'in_progress'
+             AND scheduled_window IS NOT NULL
+             AND created_at < now() - ($1 || ' milliseconds')::interval
+           RETURNING id`,
+          [String(STALE_CLAIM_AFTER_MS)],
+        ),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(
+      Effect.tap((reaped) =>
+        Effect.sync(() => {
+          if (reaped.length > 0) {
+            log.error(
+              { backupIds: reaped.map((r) => r.id), staleAfterMs: STALE_CLAIM_AFTER_MS },
+              "Marked stale scheduled backup(s) as failed — their windows produced no artifact",
+            );
+          }
+        }),
+      ),
+    );
+
+    const windowKey = backupWindowKey(Date.now(), cadence);
+    const backup = yield* createScheduledBackup(windowKey);
+    if (backup === null) {
+      // Another replica owns this window, or its backup already ran (or
+      // already failed — at most one attempt per window; the /health
+      // tripwire flags a window that produced no verified artifact).
+      return { status: "window-already-claimed" as const };
+    }
+
+    log.info(
+      { backupId: backup.id, windowKey, cadenceMs: cadence.cadenceMs },
+      "Scheduled backup created — verifying",
+    );
+
+    // Verify every automated backup — without this the success signal is
+    // just "pg_dump exited 0 + non-empty artifact". Depth is governed by
+    // ATLAS_BACKUP_VERIFY_SCRATCH_URL (#2941): full restore-into-scratch
+    // when set, degraded header-only otherwise.
+    const verification = yield* verifyBackup(backup.id);
+    if (!verification.verified) {
       log.error(
-        { err: err instanceof Error ? err : new Error(String(err)) },
-        "Scheduled backup failed",
+        { backupId: backup.id, reason: verification.message, level: verification.level },
+        "Scheduled backup failed verification — artifact may not be restorable",
       );
-      return Effect.void;
-    }),
-  );
+    } else if (verification.level === "header-only") {
+      // Loud, error-level: a green scheduled backup that was never proven
+      // restorable is exactly the boot-green-but-broken state #4457 exists
+      // to prevent. Set ATLAS_BACKUP_VERIFY_SCRATCH_URL in production.
+      log.error(
+        { backupId: backup.id },
+        "Scheduled backup verified HEADER-ONLY (degraded) — a truncated dump would pass. " +
+          "Set ATLAS_BACKUP_VERIFY_SCRATCH_URL to a disposable scratch Postgres for full-restore verification.",
+      );
+    }
 
-/**
- * Start the backup scheduler. Runs a check every 60 seconds.
- * Idempotent — calling multiple times is safe.
- */
-export const startScheduler = (): Effect.Effect<void, Error> =>
-  Effect.gen(function* () {
-    yield* Effect.try({
-      try: () => requireEnterprise("backups"),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    });
-    yield* ensureTable();
+    // Purge expired backups after the scheduled backup completes.
+    const purged = yield* purgeExpiredBackups();
 
-    if (_schedulerInterval) return;
-
-    const config = yield* getBackupConfig();
-    log.info({ schedule: config.schedule, retentionDays: config.retention_days }, "Backup scheduler started");
-
-    // Check immediately, then every 60 seconds
-    void Effect.runPromise(tick());
-
-    _schedulerInterval = setInterval(() => {
-      void Effect.runPromise(tick());
-    }, 60_000);
+    return {
+      status: "ran" as const,
+      backupId: backup.id,
+      verified: verification.verified,
+      verifyLevel: verification.level,
+      purged,
+    };
   });
-
-/**
- * Stop the backup scheduler.
- */
-export function stopScheduler(): void {
-  if (_schedulerInterval) {
-    clearInterval(_schedulerInterval);
-    _schedulerInterval = null;
-    log.info("Backup scheduler stopped");
-  }
-}
-
-/** @internal — for testing */
-export { cronMatchesNow as _cronMatchesNow, tick as _tick };

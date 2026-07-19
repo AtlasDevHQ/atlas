@@ -9,7 +9,6 @@
  */
 
 import { spawn } from "child_process";
-import { createReadStream } from "fs";
 import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { Effect } from "effect";
@@ -23,6 +22,7 @@ import {
 import { requireInternalDBEffect } from "../lib/db-guard";
 import { createLogger } from "@atlas/api/lib/logger";
 import { createBackup, getBackupById, ensureTable } from "./engine";
+import { getBackupStorage } from "./storage";
 
 const log = createLogger("ee:backups-restore");
 
@@ -161,7 +161,11 @@ export const executeRestore = (
         stderr += chunk.toString();
       });
 
-      const input = createReadStream(backup.storage_path);
+      // Read the artifact through the storage driver (local fs or S3 — #4457).
+      const input = yield* Effect.tryPromise({
+        try: () => getBackupStorage().getStream(backup.storage_path),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
       const gunzip = createGunzip();
 
       yield* Effect.tryPromise({

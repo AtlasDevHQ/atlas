@@ -20,6 +20,17 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.64",
+    title: "Hosted-MCP Deploy Fix",
+    date: "2026-07-19",
+    summary:
+      "This release carries the two hosted-MCP tool fixes from v0.0.63 to production. Those fixes were merged and tagged, but a gap in our deploy configuration meant the change never actually rebuilt the hosted platform's API service — so the fixes weren't live. This is an internal release-pipeline fix that closes that gap and ships the v0.0.63 improvements for real; there is no additional user-facing change beyond what v0.0.63 described.",
+    highlights: [
+      "The v0.0.63 hosted-MCP fixes (describe-entity resolution and long-running query keepalive) are now actually deployed and live",
+      "Fixed the deploy watch configuration so future changes to the MCP server rebuild and ship automatically instead of being silently skipped",
+    ],
+  },
+  {
     version: "v0.0.63",
     title: "Hosted-MCP Tool Fixes",
     date: "2026-07-19",

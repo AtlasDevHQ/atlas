@@ -110,6 +110,26 @@ void mock.module("@atlas/api/lib/auth/detect", () => ({
   resetAuthModeCache: () => {},
 }));
 
+// #4457 — scheduled-backup tripwire probe (reached via dynamic import in the
+// route). Default mirrors the non-enterprise test environment (`expected:
+// false` → component `disabled`); the backups-component describe below
+// drives the mutable impl.
+type ScheduledBackupHealthShape =
+  | { expected: false }
+  | {
+      expected: true;
+      lastVerifiedAt: string | null;
+      cadenceMs: number;
+      overdue: boolean;
+      message?: string;
+    };
+let backupHealthImpl: () => Promise<ScheduledBackupHealthShape> = () =>
+  Promise.resolve({ expected: false });
+void mock.module("@atlas/api/lib/backups/health", () => ({
+  getScheduledBackupHealth: () => backupHealthImpl(),
+  _resetScheduledBackupHealthCache: () => {},
+}));
+
 void mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(() =>
     Promise.resolve({
@@ -1054,5 +1074,129 @@ describe("GET /api/health — per-source fleet visibility gating (#3685)", () =>
     const response = await app.fetch(healthRequest());
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.sources).toBeUndefined();
+  });
+});
+
+// #4457 — scheduled-backup tripwire component. Mirrors the plugin-component
+// block above: the tripwire surfaces as degraded (never 503) so an overdue
+// backup alerts operators without pulling the region out of the LB.
+describe("GET /api/health — backups component (#4457)", () => {
+  const origDatasource = process.env.ATLAS_DATASOURCE_URL;
+  const origDatabaseUrl = process.env.DATABASE_URL;
+  const origDeployMode = process.env.ATLAS_DEPLOY_MODE;
+
+  beforeEach(() => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    delete process.env.DATABASE_URL;
+    delete process.env.ATLAS_DEPLOY_MODE;
+    connMetadata = [];
+    mockValidateEnvironment.mockReset();
+    mockValidateEnvironment.mockResolvedValue([]);
+    mockGetStartupWarnings.mockReset();
+    mockGetStartupWarnings.mockReturnValue([]);
+    backupHealthImpl = () => Promise.resolve({ expected: false });
+  });
+
+  afterEach(async () => {
+    if (origDatasource !== undefined) process.env.ATLAS_DATASOURCE_URL = origDatasource;
+    else delete process.env.ATLAS_DATASOURCE_URL;
+    if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
+    else delete process.env.DATABASE_URL;
+    if (origDeployMode !== undefined) process.env.ATLAS_DEPLOY_MODE = origDeployMode;
+    else delete process.env.ATLAS_DEPLOY_MODE;
+    const config = await import("@atlas/api/lib/config");
+    config._setConfigForTest(null);
+    backupHealthImpl = () => Promise.resolve({ expected: false });
+  });
+
+  it("reports 'disabled' (and no status promotion) when scheduled backups aren't expected", async () => {
+    backupHealthImpl = () => Promise.resolve({ expected: false });
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("ok");
+    const components = body.components as Record<string, unknown>;
+    const backups = components.backups as Record<string, unknown>;
+    expect(backups.status).toBe("disabled");
+  });
+
+  it("reports 'healthy' with lastVerifiedAt when the newest verified backup is inside the cadence window", async () => {
+    const lastVerifiedAt = new Date().toISOString();
+    backupHealthImpl = () =>
+      Promise.resolve({
+        expected: true,
+        lastVerifiedAt,
+        cadenceMs: 24 * 60 * 60 * 1000,
+        overdue: false,
+      });
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("ok");
+    const components = body.components as Record<string, unknown>;
+    const backups = components.backups as Record<string, unknown>;
+    expect(backups.status).toBe("healthy");
+    expect(backups.lastVerifiedAt).toBe(lastVerifiedAt);
+  });
+
+  it("overdue → component degraded, overall ok→degraded, warning pushed — but HTTP stays 200", async () => {
+    backupHealthImpl = () =>
+      Promise.resolve({
+        expected: true,
+        lastVerifiedAt: null,
+        cadenceMs: 24 * 60 * 60 * 1000,
+        overdue: true,
+        message: "No verified backup recorded — the scheduled-backup fiber may not be running or verification is failing",
+      });
+
+    const response = await app.fetch(healthRequest());
+    // The tripwire must never 503 the region.
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("degraded");
+    const components = body.components as Record<string, unknown>;
+    const backups = components.backups as Record<string, unknown>;
+    expect(backups.status).toBe("degraded");
+    expect(backups.message).toContain("No verified backup recorded");
+    expect(body.warnings as string[]).toContain(
+      "No verified backup recorded — the scheduled-backup fiber may not be running or verification is failing",
+    );
+  });
+
+  it("does not escalate an overdue backup to 503 even in SaaS mode", async () => {
+    // The SaaS-503 short-circuit (#1981) is reserved for the internal DB;
+    // an overdue backup must never pull the region from the LB.
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    const config = await import("@atlas/api/lib/config");
+    // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+    config._setConfigForTest({ deployMode: "saas" } as any);
+
+    backupHealthImpl = () =>
+      Promise.resolve({
+        expected: true,
+        lastVerifiedAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
+        cadenceMs: 24 * 60 * 60 * 1000,
+        overdue: true,
+        message: "Last verified backup is 48h old — older than the configured cadence window",
+      });
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("degraded");
+  });
+
+  it("a probe rejection degrades the component instead of dropping it (an absent tripwire is the failure mode)", async () => {
+    backupHealthImpl = () => Promise.reject(new Error("probe module exploded"));
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("degraded");
+    const components = body.components as Record<string, unknown>;
+    const backups = components.backups as Record<string, unknown>;
+    expect(backups.status).toBe("degraded");
+    expect(backups.message).toContain("probe unavailable");
   });
 });

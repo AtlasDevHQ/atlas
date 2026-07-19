@@ -100,4 +100,13 @@ describe("backupWindowKey", () => {
     expect(backupWindowKey(now, daily)).not.toBe(backupWindowKey(now, sixHourly));
     expect(backupWindowKey(now, daily)).toMatch(/^w86400000a10800000--?\d+$/);
   });
+
+  it("rejects a fabricated cadence with a non-positive/NaN window length (an eternal-window key would silently stop backups)", () => {
+    expect(() => backupWindowKey(Date.now(), { cadenceMs: 0, anchorMs: 0, recognized: true })).toThrow(
+      "positive finite",
+    );
+    expect(() => backupWindowKey(Date.now(), { cadenceMs: Number.NaN, anchorMs: 0, recognized: true })).toThrow(
+      "positive finite",
+    );
+  });
 });

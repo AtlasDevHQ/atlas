@@ -30,8 +30,9 @@ export interface HealthComponents {
   provider: ComponentHealth;
   scheduler: ComponentHealth;
   sandbox: ComponentHealth;
-  // #4457 — scheduled-backup tripwire. Optional: present only when the API
-  // reports it (older APIs / self-hosted without enterprise omit it).
+  // #4457 — scheduled-backup tripwire. Optional on the wire only for older
+  // APIs that predate #4457; current APIs always report it (`disabled` when
+  // scheduled backups aren't expected on the deployment).
   backups?: ComponentHealth;
 }
 

@@ -76,6 +76,23 @@ mock.module("fs", () => ({
   createWriteStream: mock(() => ({ on: mock(), write: mock(), end: mock() })),
 }));
 
+// Storage seam (#4457) — restore.ts reads dumps via getBackupStorage().
+// Mocked so an ambient ATLAS_BACKUP_S3_BUCKET in the shell can never flip
+// this suite onto the real S3 driver.
+mock.module("./storage", () => ({
+  getBackupStorage: () => ({
+    kind: "local" as const,
+    put: mock(async () => ({ sizeBytes: 0 })),
+    getStream: async () => ({ on: mock(), pipe: mock(), destroy: mock() }),
+    list: mock(async () => []),
+    remove: mock(async () => {}),
+  }),
+  isS3BackupStorageConfigured: () => false,
+  createLocalBackupStorage: mock(),
+  createS3BackupStorage: mock(),
+  _resetBackupStorage: () => {},
+}));
+
 mock.module("zlib", () => ({
   createGunzip: mock(() => ({ on: mock(), pipe: mock(), destroy: mock() })),
   createGzip: mock(() => ({ on: mock(), pipe: mock() })),

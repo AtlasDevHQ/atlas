@@ -16,8 +16,8 @@
  * scheduled backups are *expected* mirrors the fiber's gate:
  * enterprise-enabled (core mirror) + internal DB + not env-disabled.
  *
- * Cached ~60s — /health is public and polled; one extra query per minute,
- * not per probe.
+ * Cached ~60s — /health is public and polled; the two cheap reads (config +
+ * newest-verified) happen at most once per minute, not per probe.
  */
 
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
@@ -25,6 +25,7 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   DEFAULT_BACKUP_SCHEDULE,
+  isScheduledBackupEnvDisabled,
   resolveBackupCadence,
 } from "./cadence";
 
@@ -57,12 +58,9 @@ export function _resetScheduledBackupHealthCache(): void {
 }
 
 function scheduledBackupsExpected(): boolean {
-  if (
-    process.env.ATLAS_BACKUP_SCHEDULED_ENABLED === "false" ||
-    process.env.ATLAS_BACKUP_SCHEDULED_ENABLED === "0"
-  ) {
-    return false;
-  }
+  // Same predicate the fiber gate uses (shared from cadence.ts) — the
+  // tripwire's premise is "expected mirrors the gate".
+  if (isScheduledBackupEnvDisabled()) return false;
   return isEnterpriseEnabled() && hasInternalDB();
 }
 
@@ -99,9 +97,15 @@ async function probe(now: number): Promise<ScheduledBackupHealth> {
     lastVerifiedAt = lastRows[0]?.last ?? null;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (/does not exist/i.test(message)) {
-      // Tables not created yet (first boot before the engine's ensureTable /
-      // migration 0177) — equivalent to "no verified backup yet".
+    // Narrow match: only the two backup tables missing reads as "first boot
+    // before ensureTable / migration 0177". A broad /does not exist/ would
+    // also swallow `database/role/column … does not exist` — real
+    // misconfiguration that must reach the operator with its own message.
+    if (/relation "(backups|backup_config)" does not exist/i.test(message)) {
+      // intentionally ignored: first boot before the baseline migration /
+      // the engine's ensureTable() has created backups/backup_config —
+      // equivalent to "no verified backup yet"; logged at debug for trace.
+      log.debug({ err: message }, "Backup tables not created yet — treating as no verified backup");
       lastVerifiedAt = null;
     } else {
       log.warn({ err: message }, "Scheduled-backup health probe query failed — reporting overdue");

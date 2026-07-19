@@ -32,6 +32,7 @@
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
+import type { ScheduledBackupCycleResultShape } from "@atlas/api/lib/effect/services";
 import {
   backupWindowKey,
   resolveBackupCadence,
@@ -47,15 +48,10 @@ const log = createLogger("ee:backups-scheduler");
  */
 const STALE_CLAIM_AFTER_MS = 6 * 60 * 60 * 1000;
 
-export type ScheduledBackupCycleResult =
-  | {
-      status: "ran";
-      backupId: string;
-      verified: boolean;
-      verifyLevel: string;
-      purged: number;
-    }
-  | { status: "window-already-claimed" };
+// The single definition lives on the Tag boundary (core services.ts) and is
+// aliased here — a type-only import, so no runtime coupling. This makes
+// ee↔core drift structurally impossible instead of one-way-checked.
+export type ScheduledBackupCycleResult = ScheduledBackupCycleResultShape;
 
 /**
  * One tick of the scheduled-backup fiber. Errors stay in the typed channel;

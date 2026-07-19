@@ -9,8 +9,9 @@
  * window whenever the process happens to be down (or deploying) at the
  * matching minute, and double-fires across replicas. Instead the schedule is
  * interpreted as a **cadence** (window length + anchor offset): every window
- * gets exactly one backup, claimed atomically in the DB whenever a replica's
- * fiber first ticks inside the window — restart-safe catch-up semantics.
+ * gets at most one backup attempt — exactly one across replicas whenever any
+ * replica is up during the window — claimed atomically in the DB when a
+ * fiber first ticks inside the window. Restart-safe catch-up semantics.
  *
  * Recognized schedule shapes (everything the docs/config surface has ever
  * suggested):
@@ -34,6 +35,21 @@ export const DEFAULT_BACKUP_SCHEDULE = "0 3 * * *";
 
 /** Fiber check interval — how often the claim attempt runs, not the backup cadence. */
 export const SCHEDULED_BACKUP_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
+ * Boot-consumed kill switch for the scheduled-backup path only (manual admin
+ * backups are unaffected). The ONE definition shared by the fiber gate
+ * (`layers.ts:makeSchedulerLive`) and the /health tripwire's expectation
+ * mirror (`lib/backups/health.ts`) — those two are required to agree (the
+ * tripwire's premise is "expected mirrors the gate"), so the accepted value
+ * set must never be duplicated.
+ */
+export function isScheduledBackupEnvDisabled(): boolean {
+  return (
+    process.env.ATLAS_BACKUP_SCHEDULED_ENABLED === "false" ||
+    process.env.ATLAS_BACKUP_SCHEDULED_ENABLED === "0"
+  );
+}
 
 const HOUR_MS = 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
@@ -105,6 +121,13 @@ export function resolveBackupCadence(schedule: string | undefined | null): Backu
  * never a skipped window).
  */
 export function backupWindowKey(nowMs: number, cadence: BackupCadence): string {
+  // Every resolveBackupCadence result satisfies this, but the interface is
+  // open — a fabricated cadence with cadenceMs 0/NaN would yield an
+  // Infinity/NaN window index, i.e. ONE eternal window whose first claim
+  // silently satisfies every future tick. Fail loud instead.
+  if (!Number.isFinite(cadence.cadenceMs) || cadence.cadenceMs <= 0) {
+    throw new Error(`Invalid backup cadence: cadenceMs must be a positive finite number (got ${cadence.cadenceMs})`);
+  }
   const windowIndex = Math.floor((nowMs - cadence.anchorMs) / cadence.cadenceMs);
   return `w${cadence.cadenceMs}a${cadence.anchorMs}-${windowIndex}`;
 }

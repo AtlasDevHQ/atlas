@@ -89,8 +89,12 @@ describe("getScheduledBackupHealth — expectation gate", () => {
     expect(await getScheduledBackupHealth()).toEqual({ expected: false });
   });
 
-  it("not expected when the scheduled path is env-disabled (mirrors the fiber gate)", async () => {
+  it("not expected when the scheduled path is env-disabled (mirrors the fiber gate — both accepted spellings)", async () => {
     process.env.ATLAS_BACKUP_SCHEDULED_ENABLED = "false";
+    expect(await getScheduledBackupHealth()).toEqual({ expected: false });
+
+    _resetScheduledBackupHealthCache();
+    process.env.ATLAS_BACKUP_SCHEDULED_ENABLED = "0";
     expect(await getScheduledBackupHealth()).toEqual({ expected: false });
   });
 });

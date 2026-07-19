@@ -280,6 +280,31 @@ describe("createBackup — expected_table_count baseline (#2989)", () => {
     );
 
     await expect(run(createBackup())).rejects.toThrow("bucket unavailable");
+
+    // The tapError stamp is fire-and-forget — flush microtasks, then assert
+    // the failed UPDATE actually landed (deleting the tapError block must
+    // not leave this suite green).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const failedUpdate = ee.capturedQueries.find((q) => q.sql.includes("status = 'failed'"));
+    expect(failedUpdate).toBeDefined();
+    expect(failedUpdate!.params[0]).toContain("bucket unavailable");
+    expect(failedUpdate!.params[1]).toBe("b1");
+  });
+
+  it("fails (and stamps the row failed) when pg_dump exits non-zero, including the stderr excerpt", async () => {
+    spawnExitCode = 1;
+    ee.queueMockRows(
+      ...ensureTableEmpties(),
+      [defaultConfigRow],
+      [{ id: "b1" }],
+    );
+
+    await expect(run(createBackup())).rejects.toThrow(/pg_dump exited with code 1.*pg_dump error/);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const failedUpdate = ee.capturedQueries.find((q) => q.sql.includes("status = 'failed'"));
+    expect(failedUpdate).toBeDefined();
+    expect(failedUpdate!.params[1]).toBe("b1");
   });
 });
 

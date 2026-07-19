@@ -63,7 +63,7 @@ Every scheduled backup is verified immediately after creation. There are two lev
 
 ### Health tripwire
 
-`GET /api/health` includes a `backups` component whenever scheduled backups are expected (enterprise enabled + internal DB). It reports `degraded` — and promotes the overall status from `ok` to `degraded`, with a warning string — when no verified backup exists or the newest one is older than the cadence window (plus a 25% grace). It never escalates to `error`/503, so an overdue backup alerts operators without pulling the region out of the load balancer.
+`GET /api/health` always includes a `backups` component: `disabled` when scheduled backups aren't expected on the deployment (enterprise enabled + internal DB + not `ATLAS_BACKUP_SCHEDULED_ENABLED=false`), otherwise `healthy` or `degraded`. It reports `degraded` — and promotes the overall status from `ok` to `degraded`, with a warning string — when no verified backup exists or the newest one is older than the cadence window (plus a 25% grace). It never escalates to `error`/503, so an overdue backup alerts operators without pulling the region out of the load balancer.
 
 ## Configuration
 
@@ -84,7 +84,7 @@ Every scheduled backup is verified immediately after creation. There are two lev
 ### Storage drivers
 
 - **Local (default)** — artifacts under `ATLAS_BACKUP_STORAGE_PATH`. Appropriate for self-hosted deployments with a persistent disk. On containerized deploys without a volume, local artifacts **do not survive a redeploy** — use the S3 driver instead.
-- **S3-compatible** — set `ATLAS_BACKUP_S3_*` to write artifacts to object storage (Railway buckets, AWS S3, R2, MinIO). Artifacts survive redeploys and host loss; restore and verification read from the bucket. On the hosted SaaS, each region's API service writes to its own regional bucket, keeping backup artifacts inside the workspace's data-residency region.
+- **S3-compatible** — set `ATLAS_BACKUP_S3_*` to write artifacts to object storage (Railway buckets, AWS S3, R2, MinIO). Artifacts survive redeploys and host loss; restore and verification read from the bucket. On the hosted SaaS, each region's API service writes to its own regional bucket, keeping backup artifacts inside the workspace's data-residency region. A failed upload never finalizes a truncated object — the multipart upload is left incomplete, so configure a bucket lifecycle rule that expires incomplete multipart uploads (e.g. after 7 days) to avoid accruing invisible storage for abandoned parts.
 
 <Callout title="Switching drivers strands old artifacts">
   The driver is selected per process. Artifacts written under the previous driver remain where they are: their history rows stay listed, but verification/restore for them will fail, and retention purge removes their database rows without touching the stranded files. Take a fresh backup after switching.

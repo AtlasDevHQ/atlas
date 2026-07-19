@@ -37,6 +37,12 @@ import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createEEMock } from "../__mocks__/internal";
+// Imported BEFORE the module mock below so the real local driver can back
+// the mocked getBackupStorage — this suite needs genuine fs reads.
+import {
+  createLocalBackupStorage,
+  createS3BackupStorage,
+} from "./storage";
 
 // ── Mocks — DB / enterprise / logger only; fs/zlib/child_process stay real ──
 
@@ -67,6 +73,18 @@ mock.module("./engine", () => ({
   purgeExpiredBackups: () => Effect.succeed(0),
   listStorageFiles: () => Effect.succeed([]),
   _resetTableReady: () => {},
+}));
+
+// Storage seam (#4457): pin the REAL local driver regardless of any ambient
+// ATLAS_BACKUP_S3_BUCKET in the shell — this suite must read its temp-dir
+// dump files via genuine fs, never the S3 driver.
+const localStorage = createLocalBackupStorage();
+mock.module("./storage", () => ({
+  getBackupStorage: () => localStorage,
+  isS3BackupStorageConfigured: () => false,
+  createLocalBackupStorage,
+  createS3BackupStorage,
+  _resetBackupStorage: () => {},
 }));
 
 const { verifyBackup, scratchTargetsSameAsPrimary } = await import("./verify");

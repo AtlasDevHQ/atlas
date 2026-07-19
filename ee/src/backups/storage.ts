@@ -27,7 +27,8 @@
  * succeed by protocol; local deletes tolerate ENOENT). Documented in
  * `apps/docs/content/docs/platform-ops/backups.mdx`.
  *
- * Selection is env-driven and boot-consumed:
+ * Selection is env-driven, read once on first use, and cached for the
+ * process lifetime (restart to change drivers):
  *   ATLAS_BACKUP_S3_BUCKET             — selects the s3 driver when set
  *   ATLAS_BACKUP_S3_ENDPOINT           — S3-compatible endpoint URL
  *   ATLAS_BACKUP_S3_REGION             — optional region
@@ -49,7 +50,11 @@ export interface BackupStorage {
   readonly kind: "local" | "s3";
   /** Stream `source` to `path`, replacing any existing artifact. Resolves with bytes written. */
   put(path: string, source: Readable): Promise<{ sizeBytes: number }>;
-  /** Node Readable over the stored artifact. Rejects if the artifact is missing. */
+  /**
+   * Node Readable over the stored artifact. A missing artifact surfaces as
+   * an `'error'` event on the returned stream (both drivers open lazily) —
+   * always consume via `pipeline` or attach an error handler immediately.
+   */
   getStream(path: string): Promise<Readable>;
   /** Artifact basenames under `prefix` (a directory for local, a key prefix for s3). */
   list(prefix: string): Promise<string[]>;
@@ -170,8 +175,14 @@ export function createS3BackupStorage(
         .writer({ retry: 3, partSize: 8 * 1024 * 1024 });
       let sizeBytes = 0;
       try {
-        for await (const chunk of source) {
+        for await (const chunk of source as AsyncIterable<Buffer | string>) {
+          // Byte-stream contract: pg_dump→gzip yields Buffers (strings are
+          // tolerated for tests); an object-mode stream is a caller bug and
+          // must fail loud rather than corrupt the byte count.
           const bytes: Uint8Array = typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk;
+          if (!(bytes instanceof Uint8Array)) {
+            throw new Error("BackupStorage.put requires a byte stream (Buffer/Uint8Array chunks)");
+          }
           sizeBytes += bytes.byteLength;
           writer.write(bytes);
           // Flush per chunk: bounds process memory to the writer's part
@@ -180,8 +191,12 @@ export function createS3BackupStorage(
         }
         await writer.end();
       } catch (err) {
-        // Best-effort abort — end() after a failed part would otherwise
-        // finalize a truncated object that could pass a header-only verify.
+        // Deliberately do NOT end() after a failed part: finalizing would
+        // produce a truncated object that could pass a header-only verify.
+        // The multipart upload is left unfinalized — configure a bucket
+        // lifecycle rule to expire incomplete multipart uploads (see
+        // backups.mdx); Bun's writer has no abort API today. Log + rethrow
+        // so the backup row is stamped failed.
         log.error(
           { err: err instanceof Error ? err.message : String(err), key: toKey(path) },
           "S3 backup upload failed — artifact not finalized",
@@ -224,20 +239,22 @@ export function createS3BackupStorage(
 
 let _storage: BackupStorage | null = null;
 
-/** Read the env-driven driver selection. Exported for the health mirror + docs tests. */
+/** Read the env-driven driver selection. Exported for tests (storage.test.ts + the engine test's storage mock). */
 export function isS3BackupStorageConfigured(): boolean {
   return !!process.env.ATLAS_BACKUP_S3_BUCKET;
 }
 
 /**
  * The process-wide backup storage driver. S3 when `ATLAS_BACKUP_S3_BUCKET`
- * is set, local filesystem otherwise. Cached — selection is boot-consumed.
+ * is set, local filesystem otherwise. Read once on first use and cached for
+ * the process lifetime — a restart is required to change drivers.
  */
 export function getBackupStorage(): BackupStorage {
   if (_storage) return _storage;
-  if (isS3BackupStorageConfigured()) {
+  const bucket = process.env.ATLAS_BACKUP_S3_BUCKET;
+  if (bucket) {
     _storage = createS3BackupStorage({
-      bucket: process.env.ATLAS_BACKUP_S3_BUCKET as string,
+      bucket,
       ...(process.env.ATLAS_BACKUP_S3_ENDPOINT && { endpoint: process.env.ATLAS_BACKUP_S3_ENDPOINT }),
       ...(process.env.ATLAS_BACKUP_S3_REGION && { region: process.env.ATLAS_BACKUP_S3_REGION }),
       ...(process.env.ATLAS_BACKUP_S3_ACCESS_KEY_ID && { accessKeyId: process.env.ATLAS_BACKUP_S3_ACCESS_KEY_ID }),
@@ -246,7 +263,7 @@ export function getBackupStorage(): BackupStorage {
       }),
     });
     log.info(
-      { bucket: process.env.ATLAS_BACKUP_S3_BUCKET, endpoint: process.env.ATLAS_BACKUP_S3_ENDPOINT },
+      { bucket, endpoint: process.env.ATLAS_BACKUP_S3_ENDPOINT },
       "Backup storage driver: s3 (durable object storage)",
     );
   } else {

@@ -127,7 +127,7 @@ describe("runScheduledBackupCycle — won claim", () => {
     if (result.status === "ran") expect(result.verifyLevel).toBe("header-only");
   });
 
-  it("issues the stale-claim reap before claiming", async () => {
+  it("issues the stale-claim reap before claiming — and the reap preserves the window claim", async () => {
     ee.queueMockRows([]);
     await run(runScheduledBackupCycle());
 
@@ -135,6 +135,13 @@ describe("runScheduledBackupCycle — won claim", () => {
     expect(reap).toBeDefined();
     expect(reap!.sql).toContain("status = 'in_progress'");
     expect(reap!.sql).toContain("scheduled_window IS NOT NULL");
+    expect(reap!.params[0]).toBe(String(6 * 60 * 60 * 1000));
+    // Central invariant: a reaped (crashed) attempt KEEPS its window claim —
+    // a window is attempted at most once. A future "retry fix" that adds
+    // `scheduled_window = NULL` to the SET clause would re-open the
+    // N-concurrent-pg_dump re-storm class and must fail here.
+    const setClause = reap!.sql.slice(reap!.sql.indexOf("SET"), reap!.sql.indexOf("WHERE"));
+    expect(setClause).not.toContain("scheduled_window");
   });
 });
 

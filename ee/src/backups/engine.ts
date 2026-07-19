@@ -418,15 +418,22 @@ export const createScheduledBackup = (
   Effect.gen(function* () {
     const { databaseUrl, storagePath, retentionExpiresAt } = yield* prepareBackupTarget();
 
-    const rows = yield* Effect.promise(() =>
-      internalQuery<{ id: string }>(
-        `INSERT INTO backups (status, storage_path, retention_expires_at, scheduled_window)
-         VALUES ('in_progress', $1, $2, $3)
-         ON CONFLICT (scheduled_window) WHERE scheduled_window IS NOT NULL DO NOTHING
-         RETURNING id`,
-        [storagePath, retentionExpiresAt, windowKey],
-      ),
-    );
+    // tryPromise, not Effect.promise: a rejection here (transient DB blip,
+    // pool exhaustion) must stay a TYPED failure so the scheduled fiber's
+    // onTickFailure recovery logs it and the repeat loop survives — a
+    // defect would escape catchAll and kill the fiber for the process
+    // lifetime (the layers.ts registration also demotes residual defects).
+    const rows = yield* Effect.tryPromise({
+      try: () =>
+        internalQuery<{ id: string }>(
+          `INSERT INTO backups (status, storage_path, retention_expires_at, scheduled_window)
+           VALUES ('in_progress', $1, $2, $3)
+           ON CONFLICT (scheduled_window) WHERE scheduled_window IS NOT NULL DO NOTHING
+           RETURNING id`,
+          [storagePath, retentionExpiresAt, windowKey],
+        ),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
     if (!rows[0]) return null; // window already claimed
 
     return yield* performBackup(rows[0].id, storagePath, databaseUrl);

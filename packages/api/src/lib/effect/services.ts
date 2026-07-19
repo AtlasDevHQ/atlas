@@ -1952,7 +1952,8 @@ export type ScheduledBackupCycleResultShape =
       readonly status: "ran";
       readonly backupId: string;
       readonly verified: boolean;
-      readonly verifyLevel: string;
+      /** Same union `verifyBackup` reports — never widened to string. */
+      readonly verifyLevel: "full-restore" | "header-only";
       readonly purged: number;
     }
   | { readonly status: "window-already-claimed" };

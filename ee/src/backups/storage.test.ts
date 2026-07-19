@@ -25,6 +25,7 @@ const {
   isS3BackupStorageConfigured,
   _resetBackupStorage,
 } = await import("./storage");
+type S3ClientLike = import("./storage").S3ClientLike;
 
 // ── Local driver ───────────────────────────────────────────────────
 
@@ -185,6 +186,31 @@ describe("s3 backup storage", () => {
 
     const files = await storage.list("./backups");
     expect(files.toSorted()).toEqual(["one.sql.gz", "two.sql.gz"]);
+  });
+
+  it("list pages through truncated results and terminates on the final page", async () => {
+    const pages = [
+      { contents: [{ key: "backups/a.sql.gz" }, { key: "backups/b.sql.gz" }], isTruncated: true },
+      { contents: [{ key: "backups/c.sql.gz" }, { key: "backups/skip.txt" }], isTruncated: false },
+    ];
+    const listCalls: { prefix: string; startAfter?: string }[] = [];
+    let page = 0;
+    const pagingClient: S3ClientLike = {
+      file: () => {
+        throw new Error("not used in this test");
+      },
+      list: async (options) => {
+        listCalls.push({ prefix: options.prefix, startAfter: options.startAfter });
+        return pages[Math.min(page++, pages.length - 1)];
+      },
+    };
+    const storage = createS3BackupStorage({ bucket: "b" }, () => pagingClient);
+
+    const files = await storage.list("./backups");
+    expect(files).toEqual(["a.sql.gz", "b.sql.gz", "c.sql.gz"]);
+    expect(listCalls).toHaveLength(2);
+    // The second page continues after the first page's last key.
+    expect(listCalls[1].startAfter).toBe("backups/b.sql.gz");
   });
 
   it("remove deletes and tolerates a missing key (S3 delete semantics)", async () => {

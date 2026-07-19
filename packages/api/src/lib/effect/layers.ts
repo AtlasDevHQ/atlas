@@ -88,6 +88,13 @@ import {
 } from "./services";
 import { durableSessionLayer } from "./durable-session";
 import { durableStateLayer } from "./durable-state";
+// Static import (not the require-in-thunk pattern): cadence.ts is a pure,
+// dependency-free core leaf with no import-time env reads, and a typo'd
+// symbol should be a compile error, not an undefined interval at runtime.
+import {
+  SCHEDULED_BACKUP_CHECK_INTERVAL_MS,
+  isScheduledBackupEnvDisabled,
+} from "@atlas/api/lib/backups/cadence";
 import { getRetentionDays, getMaxParkMinutes } from "@atlas/api/lib/durable-session";
 import {
   recoverInFlight as recoverOutboxInFlight,
@@ -172,8 +179,9 @@ function withFiberDeathLog<A, E, R>(
 // ticking?" via presence/absence + cadence, NOT "did this tick error?". The
 // exceptions are the `spanResultAttributes` fibers — `orphan_task_reconcile`
 // (#2944), `unclaimed_grace_reap` (#3796), `region_migration_stale_reap`
-// (#4459), and the three #4195 DB/refresh jobs
-// (`byot_catalog_refresh`, `openapi_spec_refresh`, `openapi_install_rediscover`)
+// (#4459), the three #4195 DB/refresh jobs
+// (`byot_catalog_refresh`, `openapi_spec_refresh`, `openapi_install_rediscover`),
+// and `scheduled_backup` (#4457)
 // — which deliberately invert the ordering (raw tick spanned, recovery applied
 // OUTSIDE) to keep their result attributes truthful; see `registerPeriodicFiber`
 // below.
@@ -206,12 +214,14 @@ function withFiberDeathLog<A, E, R>(
 //     recurring side-effecting work rather than evicting state):
 //     `sub_processor_publisher`, `settings_refresh`, `onboarding_email`,
 //     `expert_scheduler`, `promote_decay`, `billing_reconcile`,
-//     `stripe_teardown_sweep`, `unclaimed_grace_reap`, `overage_report`, and
+//     `stripe_teardown_sweep`, `unclaimed_grace_reap`, `overage_report`,
 //     the three #4195 DB/refresh jobs `byot_catalog_refresh`,
-//     `openapi_spec_refresh`, `openapi_install_rediscover`. Spanned by #2987
-//     (+#3423 for billing_reconcile, #3992 for overage_report, #4195 for the
-//     DB/refresh trio) — identical rationale and wrap shape. `unclaimed_grace_reap`
-//     (#3796) and the three #4195 jobs attach result attributes (cycle counts);
+//     `openapi_spec_refresh`, `openapi_install_rediscover`, and
+//     `scheduled_backup` (#4457 — the internal-DB backup cycle). Spanned by
+//     #2987 (+#3423 for billing_reconcile, #3992 for overage_report, #4195
+//     for the DB/refresh trio) — identical rationale and wrap shape.
+//     `unclaimed_grace_reap` (#3796), the three #4195 jobs, and
+//     `scheduled_backup` attach result attributes (cycle counts / outcome);
 //     the rest carry none.
 //
 // Two records, not one: "cleanup sweep" vs "background work" is a real
@@ -367,7 +377,7 @@ interface PeriodicFiberSpec<A, E> {
 
 // Exported for the behavioral contract tests in layers.test.ts — every
 // record-listed periodic fiber flows through this one seam (the outbox
-// flushers stay outside, see above), so a helper-level bug is a 21-fiber
+// flushers stay outside, see above), so a helper-level bug is an every-record-listed-fiber
 // blast radius the structural source scans alone cannot see.
 export function registerPeriodicFiber<A, E>(
   spec: PeriodicFiberSpec<A, E>,
@@ -2162,24 +2172,15 @@ export function makeSchedulerLive(
         name: "scheduled_backup",
         // Check interval, not the backup cadence — each tick is a cheap
         // claim attempt that no-ops while the current window is satisfied.
-        intervalMs: () => {
-          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as stripe_teardown_sweep)
-          const { SCHEDULED_BACKUP_CHECK_INTERVAL_MS } = require("@atlas/api/lib/backups/cadence") as {
-            SCHEDULED_BACKUP_CHECK_INTERVAL_MS: number;
-          };
-          return SCHEDULED_BACKUP_CHECK_INTERVAL_MS;
-        },
+        intervalMs: SCHEDULED_BACKUP_CHECK_INTERVAL_MS,
         gate: {
           check: () => {
             if (!backupsManager.available) return false;
             // Boot-consumed kill switch for the scheduled path only — the
-            // manual admin backup path is unaffected.
-            if (
-              process.env.ATLAS_BACKUP_SCHEDULED_ENABLED === "false" ||
-              process.env.ATLAS_BACKUP_SCHEDULED_ENABLED === "0"
-            ) {
-              return false;
-            }
+            // manual admin backup path is unaffected. Single shared
+            // predicate, mirrored by the /health tripwire's expectation
+            // gate (lib/backups/health.ts) — never duplicate the value set.
+            if (isScheduledBackupEnvDisabled()) return false;
             // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
             const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
               hasInternalDB: () => boolean;
@@ -2190,7 +2191,19 @@ export function makeSchedulerLive(
           skipLog:
             "Scheduled backups not started — enterprise backups unavailable, internal DB not configured, or ATLAS_BACKUP_SCHEDULED_ENABLED=false",
         },
-        tick: backupsManager.runScheduledBackupCycle(),
+        // Demote any defect to a typed failure: the cycle's call graph still
+        // contains `Effect.promise(internalQuery…)` seams (ensureTable /
+        // getBackupConfig), whose rejections become DEFECTS — and since
+        // `spanResultAttributes` can't combine with `viaCause`, an escaped
+        // defect would exit `Effect.repeat` and permanently kill this fiber
+        // on the first transient DB blip (the exact silent-death class
+        // #4457 exists to eliminate). With the demotion, `onTickFailure`
+        // logs it and the loop survives.
+        tick: backupsManager.runScheduledBackupCycle().pipe(
+          Effect.catchAllDefect((defect) =>
+            Effect.fail(defect instanceof Error ? defect : new Error(String(defect))),
+          ),
+        ),
         // Result attributes on the raw tick (orphan_task_reconcile pattern):
         // recovery is applied OUTSIDE the span, so a failed cycle records an
         // ERROR span instead of OK-with-fabricated-attributes.

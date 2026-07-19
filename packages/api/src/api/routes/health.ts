@@ -109,8 +109,11 @@ export const HealthResponseSchema = z.object({
     // #4457 — scheduled-backup tripwire. `disabled` when scheduled backups
     // aren't expected on this deployment; `degraded` when the newest
     // verified backup is older than the cadence window (or none exists).
-    // Never `down` — backups must not 503 the region.
+    // The status enum omits `down` ON PURPOSE (same pattern as
+    // PluginsComponentSchema above): backups must never 503 the region, and
+    // narrowing the wire type stops a future contributor from setting it.
     backups: ComponentHealthSchema.extend({
+      status: z.enum(["healthy", "degraded", "disabled"]),
       lastVerifiedAt: z.string().nullable().optional(),
     }).optional(),
   }).optional(),

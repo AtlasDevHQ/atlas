@@ -1355,7 +1355,6 @@
                               "enum": [
                                 "healthy",
                                 "degraded",
-                                "down",
                                 "disabled"
                               ]
                             },
@@ -1906,7 +1905,6 @@
                                   "enum": [
                                     "healthy",
                                     "degraded",
-                                    "down",
                                     "disabled"
                                   ]
                                 },

@@ -153,7 +153,14 @@ export interface HostedFlowResult {
    * missing claim) means single-workspace user — no prompt.
    */
   workspaceIds: string[];
-  /** `${apiUrl}/mcp/${workspaceId}/sse` — what the MCP client connects to. */
+  /**
+   * `${apiUrl}/mcp/${workspaceId}` — the canonical Streamable-HTTP endpoint
+   * the MCP client connects to. Deliberately *not* the legacy `/sse` alias:
+   * a `/sse` URL leads clients that key transport off the path (or a
+   * `type: "sse"` block) into the deprecated HTTP+SSE transport, which the
+   * hosted endpoint no longer speaks — the first request 400s. See
+   * `packages/api/src/lib/mcp/connect-url.ts` for the matching product-side URL.
+   */
   mcpUrl: string;
 }
 
@@ -398,7 +405,7 @@ export async function runHostedAuthFlow(
         : null,
       workspaceId,
       workspaceIds,
-      mcpUrl: `${apiUrl}/mcp/${workspaceId}/sse`,
+      mcpUrl: `${apiUrl}/mcp/${workspaceId}`,
     };
   } finally {
     // Cancel the timer FIRST so a 5-min hang can't survive an early

@@ -134,7 +134,7 @@ export function ConnectWizard({ open, onClose }: ConnectWizardProps) {
 
   const apiBase = useMemo(() => {
     // `getApiUrl()` returns "" in same-origin Next.js rewrite mode (no
-    // `NEXT_PUBLIC_ATLAS_API_URL` set). Pasting `/mcp/<id>/sse` (a relative
+    // `NEXT_PUBLIC_ATLAS_API_URL` set). Pasting `/mcp/<id>` (a relative
     // path) into Claude Desktop / Cursor / ChatGPT silently fails — the
     // agents require an absolute URL. `window.location.origin` is the
     // browser-side absolute base for same-origin deployments. SSR has no
@@ -158,8 +158,13 @@ export function ConnectWizard({ open, onClose }: ConnectWizardProps) {
     // Workspace id is part of the URL — without it the agent can't bind to
     // a workspace. Fall back to a placeholder so the JSON parses; the user
     // sees the placeholder and knows something's missing.
-    if (!orgId) return `${mcpBase}/mcp/<your_workspace_id>/sse`;
-    return `${mcpBase}/mcp/${orgId}/sse`;
+    //
+    // Canonical Streamable-HTTP path — deliberately NOT the legacy `/sse`
+    // alias. A `/sse` suffix leads clients that key transport off the path
+    // (or the `type: "sse"` block) into the deprecated HTTP+SSE transport,
+    // which the hosted endpoint no longer speaks, so the first request 400s.
+    if (!orgId) return `${mcpBase}/mcp/<your_workspace_id>`;
+    return `${mcpBase}/mcp/${orgId}`;
   }, [apiBase, orgId]);
 
   const configJson = useMemo(() => {
@@ -167,6 +172,11 @@ export function ConnectWizard({ open, onClose }: ConnectWizardProps) {
       {
         mcpServers: {
           atlas: {
+            // Pin the Streamable-HTTP transport explicitly so clients that
+            // key off it (Claude Code, VS Code) don't fall back to legacy
+            // HTTP+SSE and 400 on connect. Clients that auto-detect (Cursor,
+            // ChatGPT) ignore the field.
+            type: "http",
             url: mcpUrl,
           },
         },

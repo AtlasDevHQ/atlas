@@ -5,7 +5,7 @@ description: Mint short-lived bearer JWTs for k6-driven MCP load testing
 
 `POST /api/v1/me/load-test/mcp-token` mints a short-lived,
 MCP-scoped JWT bearer for the caller's own active workspace. k6 (or
-any HTTP client) can then carry it against `/mcp/{workspace_id}/sse`
+any HTTP client) can then carry it against `/mcp/{workspace_id}`
 to exercise the hosted MCP surface under load. The token is signed by
 the same regional Better Auth JWKS the OAuth 2.1 path uses — the MCP
 edge verifier (`verifyAccessToken`) resolves the matching public key

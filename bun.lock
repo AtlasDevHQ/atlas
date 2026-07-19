@@ -441,7 +441,7 @@
     },
     "packages/sdk": {
       "name": "@useatlas/sdk",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@useatlas/types": "^0.1.0",
       },
@@ -705,7 +705,7 @@
     },
     "plugins/mcp": {
       "name": "@useatlas/mcp",
-      "version": "0.0.2",
+      "version": "0.0.3",
       "bin": {
         "atlas-mcp": "./bin/cli.ts",
       },

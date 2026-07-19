@@ -301,10 +301,10 @@ export interface BuildConfigOptions {
   /**
    * Workspace pinned in the connection URL. Even for multi-workspace
    * tokens this is required — the hosted MCP edge mounts at
-   * `/mcp/{workspace_id}/sse`. For multi-workspace setups pass the
-   * default-workspace id (typically the singular claim from
-   * `completeConnect`); per-request overrides happen via the
-   * `X-Atlas-Workspace` header.
+   * `/mcp/{workspace_id}` (canonical Streamable-HTTP path, no `/sse`). For
+   * multi-workspace setups pass the default-workspace id (typically the
+   * singular claim from `completeConnect`); per-request overrides happen
+   * via the `X-Atlas-Workspace` header.
    */
   workspaceId: string;
   /** Override the `mcpServers["..."]` key. Defaults to `"atlas"`. */
@@ -322,10 +322,11 @@ export interface BuildConfigOptions {
    * **Wire-shape note.** [#2073's recommendation A](https://github.com/AtlasDevHQ/atlas/issues/2073)
    * sketched `url: "https://mcp.useatlas.dev/sse"` without a workspace
    * in the path, but the implemented hosted MCP endpoint mounts at
-   * `/mcp/{workspace_id}/sse` and resolves per-request overrides via
-   * the `X-Atlas-Workspace` header. The SDK emits the implemented
-   * shape — a single config block, one default workspace in the
-   * path, and the env hint for per-request overrides.
+   * `/mcp/{workspace_id}` (canonical Streamable-HTTP path) and resolves
+   * per-request overrides via the `X-Atlas-Workspace` header. The SDK
+   * emits the implemented shape — a single config block, `type: "http"`,
+   * one default workspace in the path, and the env hint for per-request
+   * overrides.
    *
    * Omit (or pass an empty array) for the legacy single-workspace
    * shape — backward-compatible with every caller pre-#2196.
@@ -334,6 +335,16 @@ export interface BuildConfigOptions {
 }
 
 export interface McpHttpServer {
+  /**
+   * Transport discriminator — always `"http"` (Streamable HTTP). Pins the
+   * transport for clients that key off it explicitly (Claude Code, VS
+   * Code); without it those clients guess from the URL and a bare `{ url }`
+   * defaulted them to the deprecated HTTP+SSE transport, which the hosted
+   * endpoint no longer speaks, so the first request 400s. Clients that
+   * auto-detect (Cursor, Continue) ignore the field. Matches the CLI's
+   * hosted-config writer in `plugins/mcp/src/init/config-merge.ts`.
+   */
+  type: "http";
   url: string;
   headers: { Authorization: string };
   /**
@@ -514,7 +525,12 @@ export function buildConfig(options: BuildConfigOptions): McpClientConfig {
   const apiUrl = stripTrailingSlashes(options.apiUrl);
   // workspaceId is opaque server-issued; encode it defensively so a
   // value containing path-sensitive characters can't reshape the URL.
-  const url = `${apiUrl}/mcp/${encodeURIComponent(options.workspaceId)}/sse`;
+  //
+  // Canonical Streamable-HTTP path — deliberately NOT the legacy `/sse`
+  // alias. The `type: "http"` block below pins the transport, but a `/sse`
+  // suffix would still lead path-keyed clients into the deprecated HTTP+SSE
+  // transport (which the hosted endpoint no longer speaks) and 400.
+  const url = `${apiUrl}/mcp/${encodeURIComponent(options.workspaceId)}`;
   // Multi-workspace opt-in (#2196): non-empty `workspaces` emits the
   // env hint. Empty / omitted preserves the legacy single-workspace
   // shape. Loudly reject the embedder-error case where the picked
@@ -530,11 +546,13 @@ export function buildConfig(options: BuildConfigOptions): McpClientConfig {
   }
   const block: McpHttpServer = isMultiWorkspace
     ? {
+        type: "http",
         url,
         headers: { Authorization: `Bearer ${options.accessToken}` },
         env: { ATLAS_DEFAULT_WORKSPACE: options.workspaceId },
       }
     : {
+        type: "http",
         url,
         headers: { Authorization: `Bearer ${options.accessToken}` },
       };
@@ -549,11 +567,12 @@ export function buildConfig(options: BuildConfigOptions): McpClientConfig {
       return isMultiWorkspace
         ? {
             kind: "bare",
+            type: block.type,
             url: block.url,
             headers: block.headers,
             env: block.env,
           }
-        : { kind: "bare", url: block.url, headers: block.headers };
+        : { kind: "bare", type: block.type, url: block.url, headers: block.headers };
     case "claude-desktop":
     case "cursor":
     case "continue":

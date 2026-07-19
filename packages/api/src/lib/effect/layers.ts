@@ -72,6 +72,7 @@ import { readSaasEnv } from "./saas-env";
 import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
 import {
   AuditPurgeScheduler,
+  BackupsManager,
   SaasCrm,
   AbuseResponse,
   Migration,
@@ -280,6 +281,12 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   byot_catalog_refresh: "atlas.scheduler.byot_catalog_refresh",
   openapi_spec_refresh: "atlas.scheduler.openapi_spec_refresh",
   openapi_install_rediscover: "atlas.scheduler.openapi_install_rediscover",
+  // #4457 — internal-DB scheduled backups. The tick claims the current
+  // cadence window atomically (partial UNIQUE index on
+  // `backups.scheduled_window`), then create→verify→purge through the
+  // `BackupsManager` Tag (EE-implemented; the gate skips the fiber when the
+  // noop is bound).
+  scheduled_backup: "atlas.scheduler.scheduled_backup",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // ── registerPeriodicFiber — the periodic-fiber choreography, once (#4130) ──
@@ -1745,7 +1752,11 @@ export class Scheduler extends Context.Tag("Scheduler")<
  */
 export function makeSchedulerLive(
   config: ResolvedConfig,
-): Layer.Layer<Scheduler, never, AuditPurgeScheduler | SaasCrm | Migration | DurableSession | DurableState> {
+): Layer.Layer<
+  Scheduler,
+  never,
+  AuditPurgeScheduler | BackupsManager | SaasCrm | Migration | DurableSession | DurableState
+> {
   return Layer.scoped(
     Scheduler,
     Effect.gen(function* () {
@@ -2128,6 +2139,80 @@ export function makeSchedulerLive(
           }),
         ),
       );
+
+      // ── Periodic fiber: scheduled internal-DB backups (#4457) ────────────
+      // Wires the previously-dead backup automation through the
+      // `BackupsManager` Tag (EE-implemented via `BackupsManagerLive`; the
+      // noop's `available: false` gates the fiber off on self-hosted without
+      // /ee). Each tick interprets the configured schedule as a cadence
+      // window and atomically claims it in the DB (`INSERT … ON CONFLICT DO
+      // NOTHING` on the partial UNIQUE `backups.scheduled_window` index), so
+      // exactly one backup runs per region per window regardless of replica
+      // count — restart-safe catch-up semantics instead of the retired
+      // minute-matching cron loop. A won claim runs create→verify→purge;
+      // verification depth follows ATLAS_BACKUP_VERIFY_SCRATCH_URL (#2941).
+      // The `yield* Migration` barrier above sequences this after
+      // `MigrationLive`, so the eager boot tick can't race migration 0177
+      // adding `scheduled_window`. The /health `backups` component is the
+      // matching tripwire: it degrades when the newest verified backup is
+      // older than the cadence window, so "fiber gated off by mistake" is
+      // visible instead of boot-green-but-broken.
+      const backupsManager = yield* BackupsManager;
+      yield* registerPeriodicFiber({
+        name: "scheduled_backup",
+        // Check interval, not the backup cadence — each tick is a cheap
+        // claim attempt that no-ops while the current window is satisfied.
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as stripe_teardown_sweep)
+          const { SCHEDULED_BACKUP_CHECK_INTERVAL_MS } = require("@atlas/api/lib/backups/cadence") as {
+            SCHEDULED_BACKUP_CHECK_INTERVAL_MS: number;
+          };
+          return SCHEDULED_BACKUP_CHECK_INTERVAL_MS;
+        },
+        gate: {
+          check: () => {
+            if (!backupsManager.available) return false;
+            // Boot-consumed kill switch for the scheduled path only — the
+            // manual admin backup path is unaffected.
+            if (
+              process.env.ATLAS_BACKUP_SCHEDULED_ENABLED === "false" ||
+              process.env.ATLAS_BACKUP_SCHEDULED_ENABLED === "0"
+            ) {
+              return false;
+            }
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            return hasInternalDB();
+          },
+          failLog: "Scheduled-backup gate check failed — skipping",
+          skipLog:
+            "Scheduled backups not started — enterprise backups unavailable, internal DB not configured, or ATLAS_BACKUP_SCHEDULED_ENABLED=false",
+        },
+        tick: backupsManager.runScheduledBackupCycle(),
+        // Result attributes on the raw tick (orphan_task_reconcile pattern):
+        // recovery is applied OUTSIDE the span, so a failed cycle records an
+        // ERROR span instead of OK-with-fabricated-attributes.
+        spanResultAttributes: (result) => ({
+          "atlas.scheduled_backup.status": result.status,
+          ...(result.status === "ran" && {
+            "atlas.scheduled_backup.backup_id": result.backupId,
+            "atlas.scheduled_backup.verified": result.verified,
+            "atlas.scheduled_backup.verify_level": result.verifyLevel,
+            "atlas.scheduled_backup.purged": result.purged,
+          }),
+        }),
+        onTickFailure: {
+          // error, not warn: a failed cycle means this cadence window may
+          // produce no backup at all (a failed attempt keeps its claim), so
+          // on-call must see it — the /health tripwire corroborates.
+          level: "error",
+          message:
+            "Scheduled backup cycle failed — this cadence window may have no verified backup (see /health backups component)",
+        },
+        startLog: "Scheduled internal-DB backup fiber started",
+      });
 
       // ── Periodic fiber: BYOT catalog refresh (#2284; folded onto the fiber
       // seam by #4195) ─────────────────────────────────────────────────────

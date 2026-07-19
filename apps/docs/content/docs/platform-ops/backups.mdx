@@ -20,15 +20,50 @@ Atlas provides automated backup and disaster recovery for the internal PostgreSQ
 
 ## How It Works
 
-The backup system uses `pg_dump` to create SQL dumps of the internal database, compressed with gzip. Backups are stored in a configurable local directory (or S3-compatible path in the future).
+The backup system uses `pg_dump` to create SQL dumps of the internal database, compressed with gzip and streamed to a storage driver — the local filesystem by default, or any S3-compatible object store when configured (recommended for production, where container filesystems do not survive redeploys).
 
 | Component | Description |
 |-----------|-------------|
-| **Backup engine** | `pg_dump` with gzip compression |
-| **Scheduler** | Cron-based, default daily at 03:00 UTC |
+| **Backup engine** | `pg_dump` with gzip compression, streamed to the storage driver |
+| **Scheduler** | Cadence-window fiber — default one backup per UTC day, anchored at 03:00 UTC. Runs per region; exactly one backup per region per window, enforced by a database claim |
+| **Storage** | Local directory (default) or S3-compatible object storage (`ATLAS_BACKUP_S3_*`) |
 | **Retention** | Auto-purge expired backups (default 30 days) |
-| **Verification** | Decompress and validate pg_dump header |
+| **Verification** | Full restore into a disposable scratch database when `ATLAS_BACKUP_VERIFY_SCRATCH_URL` is set; degraded header-only check otherwise (logged loudly) |
 | **Restore** | `psql` with single-transaction mode and pre-restore safety backup |
+| **Health tripwire** | `/api/health` reports a `backups` component that turns `degraded` when the newest verified backup is older than the cadence window |
+
+### Scheduling model
+
+The schedule is interpreted as a **cadence window**, not a cron tick. Every window gets exactly one backup: a background fiber checks every few minutes whether the current window has been claimed, and the first replica (in each region) to claim it — via an atomic database insert — runs the backup. This is restart-safe: if the process was down (or deploying) when the window opened, the backup runs at the next tick after boot instead of being skipped, and multiple replicas can never double-fire.
+
+Supported schedule shapes:
+
+| `ATLAS_BACKUP_SCHEDULE` | Meaning |
+|---|---|
+| `0 3 * * *` (default) | Daily, window anchored at 03:00 UTC |
+| `M H * * *` | Daily, anchored at `H:M` UTC |
+| `M */N * * *` | Every N hours |
+| `M * * * *` | Hourly |
+| `*/N * * * *` | Every N minutes (minimum 10) |
+
+Any other expression falls back to the daily 03:00 UTC default with a warning — a mistyped schedule never silently disables backups. A window whose backup attempt fails is not retried within that window (the attempt keeps its claim); the failure is logged at error level and the health tripwire surfaces the missed window.
+
+The scheduled path can be disabled without affecting manual backups by setting `ATLAS_BACKUP_SCHEDULED_ENABLED=false` (boot-consumed).
+
+### Verification depth
+
+Every scheduled backup is verified immediately after creation. There are two levels:
+
+- **full-restore** (production posture): when `ATLAS_BACKUP_VERIFY_SCRATCH_URL` points at a disposable scratch Postgres, the dump is restored into it (`psql --single-transaction --set ON_ERROR_STOP=on`) and the restored base-table count is asserted against the count recorded at backup time. "Verified" means **restorable**.
+- **header-only** (degraded fallback): without a scratch URL, only the gzip/pg_dump header is checked — a truncated dump can pass. The scheduler logs this at **error** level on every scheduled backup so it cannot go unnoticed. Set the scratch URL in production.
+
+<Callout type="warn" title="The scratch DB is wiped">
+  Full-restore verification drops and recreates the scratch database's `public` schema on every run. Point `ATLAS_BACKUP_VERIFY_SCRATCH_URL` at a genuinely disposable database only. As a safety net, verification refuses to run if the scratch URL resolves to the same host/port/database as `DATABASE_URL`.
+</Callout>
+
+### Health tripwire
+
+`GET /api/health` includes a `backups` component whenever scheduled backups are expected (enterprise enabled + internal DB). It reports `degraded` — and promotes the overall status from `ok` to `degraded`, with a warning string — when no verified backup exists or the newest one is older than the cadence window (plus a 25% grace). It never escalates to `error`/503, so an overdue backup alerts operators without pulling the region out of the load balancer.
 
 ## Configuration
 
@@ -36,14 +71,29 @@ The backup system uses `pg_dump` to create SQL dumps of the internal database, c
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_BACKUP_SCHEDULE` | `0 3 * * *` | Cron expression (UTC) for automated backups |
+| `ATLAS_BACKUP_SCHEDULE` | `0 3 * * *` | Backup cadence (UTC) — see supported shapes above |
+| `ATLAS_BACKUP_SCHEDULED_ENABLED` | `true` | `false`/`0` disables the scheduled fiber only |
 | `ATLAS_BACKUP_RETENTION_DAYS` | `30` | Days to keep backups before auto-purge |
-| `ATLAS_BACKUP_STORAGE_PATH` | `./backups` | Directory for backup files |
+| `ATLAS_BACKUP_STORAGE_PATH` | `./backups` | Directory (local driver) or object-key prefix (S3 driver) |
+| `ATLAS_BACKUP_S3_BUCKET` | — | Setting this switches artifact storage to the S3 driver |
+| `ATLAS_BACKUP_S3_ENDPOINT` | — | S3-compatible endpoint URL (e.g. a Railway bucket endpoint) |
+| `ATLAS_BACKUP_S3_REGION` | — | Optional region |
+| `ATLAS_BACKUP_S3_ACCESS_KEY_ID` / `ATLAS_BACKUP_S3_SECRET_ACCESS_KEY` | — | Bucket credentials (per-service env secrets) |
+| `ATLAS_BACKUP_VERIFY_SCRATCH_URL` | — | Disposable scratch Postgres for full-restore verification |
+
+### Storage drivers
+
+- **Local (default)** — artifacts under `ATLAS_BACKUP_STORAGE_PATH`. Appropriate for self-hosted deployments with a persistent disk. On containerized deploys without a volume, local artifacts **do not survive a redeploy** — use the S3 driver instead.
+- **S3-compatible** — set `ATLAS_BACKUP_S3_*` to write artifacts to object storage (Railway buckets, AWS S3, R2, MinIO). Artifacts survive redeploys and host loss; restore and verification read from the bucket. On the hosted SaaS, each region's API service writes to its own regional bucket, keeping backup artifacts inside the workspace's data-residency region.
+
+<Callout title="Switching drivers strands old artifacts">
+  The driver is selected per process. Artifacts written under the previous driver remain where they are: their history rows stay listed, but verification/restore for them will fail, and retention purge removes their database rows without touching the stranded files. Take a fresh backup after switching.
+</Callout>
 
 ### Admin UI
 
 Navigate to **Admin → Backups** (platform admin only) to:
-- View all backups with status, size, and retention info
+- View all backups with status, size, verification level, and retention info
 - Trigger manual backups
 - Verify backup integrity
 - Restore from a backup
@@ -69,18 +119,18 @@ curl -X POST http://localhost:3001/api/v1/platform/backups \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-The backup runs in the foreground — the response includes the backup ID, size, and status.
+The backup runs in the foreground — the response includes the backup ID, size, and status. Manual backups are independent of the scheduled cadence and never conflict with it.
 
 ## Verification
 
-Verify a backup's integrity by decompressing the archive and validating the pg_dump header:
+Verify a backup's restorability on demand:
 
 ```bash
 curl -X POST http://localhost:3001/api/v1/platform/backups/$BACKUP_ID/verify \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-A verified backup transitions from `completed` to `verified` status.
+A verified backup transitions from `completed` to `verified` status. The response's `level` field reports which depth ran (`full-restore` or `header-only`).
 
 ## Disaster Recovery
 
@@ -108,7 +158,7 @@ curl -X POST http://localhost:3001/api/v1/platform/backups/$BACKUP_ID/restore/co
 
 The restore process automatically:
 1. Creates a pre-restore backup (safety net)
-2. Restores the target backup using `psql --single-transaction`
+2. Restores the target backup using `psql --single-transaction` (reading the artifact from the configured storage driver)
 3. Returns the pre-restore backup ID for rollback if needed
 
 ### Disaster Recovery Runbook
@@ -117,21 +167,18 @@ If the internal database is corrupted or lost:
 
 1. **Assess the situation** — Check if the database is still accessible. If PostgreSQL is running but data is corrupt, the backup system may still work.
 
-2. **Identify the target backup** — List available backups via API or check the backup storage directory directly:
-   ```bash
-   ls -la ./backups/
-   ```
+2. **Identify the target backup** — List available backups via API, or inspect storage directly: the local directory (`ls -la ./backups/`) or the S3 bucket (any S3 client against the configured endpoint/bucket).
 
-3. **Verify the backup** (optional but recommended):
+3. **Verify the backup** (optional but recommended) — via the verify API, or manually for a local artifact:
    ```bash
    gunzip -t ./backups/atlas-backup-TIMESTAMP.sql.gz
    ```
 
 4. **Restore via API** if the API server is running — follow the two-step restore process above.
 
-5. **Manual restore** if the API server is down:
+5. **Manual restore** if the API server is down (download the artifact from the bucket first when using the S3 driver):
    ```bash
-   gunzip -c ./backups/atlas-backup-TIMESTAMP.sql.gz | \
+   gunzip -c atlas-backup-TIMESTAMP.sql.gz | \
      psql --single-transaction --set ON_ERROR_STOP=on \
      -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME
    ```
@@ -140,8 +187,8 @@ If the internal database is corrupted or lost:
 
 7. **Restart services** — Restart the Atlas API and web servers to pick up the restored data.
 
-<Callout title="Backup storage">
-  Backup files are stored locally by default. For production deployments, consider mounting a persistent volume or configuring an S3-compatible storage path. Keep at least one copy of recent backups off-host.
+<Callout title="Defense in depth">
+  On the hosted SaaS, app-level backups (this page) run alongside Railway's managed volume backups on each regional internal-Postgres volume. The app-level path is the one that is off-host, verified-restorable, and covered by the retention promises; the volume backups are an additional recovery layer.
 </Callout>
 
 ## API Reference
@@ -170,11 +217,17 @@ RUN apt-get update && apt-get install -y postgresql-client
 
 ### Backup fails with permission error
 
-Ensure the backup storage directory exists and is writable by the Atlas process:
+For the local driver, ensure the backup storage directory exists and is writable by the Atlas process:
 
 ```bash
 mkdir -p ./backups && chmod 755 ./backups
 ```
+
+For the S3 driver, check the bucket credentials and endpoint (`ATLAS_BACKUP_S3_*`) — upload failures are logged with the object key and stamp the backup row `failed`.
+
+### `/api/health` shows the backups component as degraded
+
+The newest verified backup is older than the cadence window (or none exists). Check, in order: the scheduled fiber's start log (`Scheduled internal-DB backup fiber started`), recent `Scheduled backup cycle failed` errors, verification errors (scratch DB reachable?), and whether `ATLAS_BACKUP_SCHEDULED_ENABLED` was disabled.
 
 ### Restore fails mid-way
 

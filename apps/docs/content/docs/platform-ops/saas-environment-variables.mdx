@@ -79,6 +79,8 @@ context (which are secrets, which are derived, what changes at runtime).
 | `AI_GATEWAY_API_KEY` | LLM provider key for the SaaS gateway default. (Or the key for whatever `ATLAS_PROVIDER` resolves to.) |
 | `RESEND_API_KEY` | Platform transactional email (DPA-gated: SaaS platform email must be Resend). |
 | `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` / `SLACK_SIGNING_SECRET` / `SLACK_ENCRYPTION_KEY` | Atlas's own Slack app credentials. All four required when the Slack catalog row is enabled — a missing one silently drops the adapter (the 2026-05 incident `ChatAdapterEnvGuardLive` now boot-blocks). |
+| `ATLAS_BACKUP_S3_BUCKET` / `ATLAS_BACKUP_S3_ENDPOINT` / `ATLAS_BACKUP_S3_ACCESS_KEY_ID` / `ATLAS_BACKUP_S3_SECRET_ACCESS_KEY` | Per-region Railway bucket for scheduled internal-DB backup artifacts (#4457) — bucket presence switches the backup storage driver from local (redeploy-ephemeral) to durable object storage. Keep each region's bucket in-region for residency. See [Backups](/platform-ops/backups). |
+| `ATLAS_BACKUP_VERIFY_SCRATCH_URL` | Per-region **disposable** scratch Postgres for full-restore backup verification. Without it, verification degrades to a header-only check (a truncated dump can pass) and the scheduler logs an error per backup. Its `public` schema is wiped on every verify — never point at a real DB. |
 
 Stripe (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`), Turnstile
 (`TURNSTILE_SECRET_KEY`), Twenty (`TWENTY_API_KEY`), and the Vercel sandbox token

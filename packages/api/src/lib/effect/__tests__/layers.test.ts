@@ -462,6 +462,9 @@ describe("makeSchedulerLive", () => {
         "byot_catalog_refresh",
         "openapi_spec_refresh",
         "openapi_install_rediscover",
+        // #4457 — scheduled internal-DB backups (BackupsManager Tag tick;
+        // cadence-window claim in the DB).
+        "scheduled_backup",
       ],
     },
   ] as const;

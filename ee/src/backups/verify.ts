@@ -38,11 +38,12 @@
  */
 
 import { spawn } from "child_process";
-import { createReadStream } from "fs";
+import type { Readable } from "stream";
 import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { Effect } from "effect";
 import { requireEnterpriseEffect } from "../index";
+import { getBackupStorage } from "./storage";
 import {
   EnterpriseError,
   BackupNotFoundError,
@@ -348,9 +349,15 @@ const runPsqlCommand = (conn: PsqlConn, sql: string): Effect.Effect<void, Error>
 /**
  * Decompress the dump and pipe it into `psql --single-transaction --set
  * ON_ERROR_STOP=on`. Reuses the psql-pipe pattern from restore.ts:126-167.
+ * The dump is read through the storage driver (local fs or S3 — #4457).
  */
 const restoreDumpIntoScratch = (conn: PsqlConn, storagePath: string): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
+    const input = yield* Effect.tryPromise({
+      try: () => getBackupStorage().getStream(storagePath),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+
     const psql = spawn(
       "psql",
       [...conn.args, "--single-transaction", "--set", "ON_ERROR_STOP=on"],
@@ -365,7 +372,6 @@ const restoreDumpIntoScratch = (conn: PsqlConn, storagePath: string): Effect.Eff
       stderr += chunk.toString();
     });
 
-    const input = createReadStream(storagePath);
     const gunzip = createGunzip();
 
     yield* Effect.tryPromise({
@@ -467,7 +473,7 @@ const verifyByHeader = (
     );
 
     const header = yield* Effect.tryPromise({
-      try: () => readGzipHeader(storagePath, 4096),
+      try: async () => readGzipHeader(await getBackupStorage().getStream(storagePath), 4096),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
 
@@ -510,14 +516,15 @@ const verifyByHeader = (
   });
 
 /**
- * Read and decompress the first N bytes of a gzip file to inspect the header.
+ * Read and decompress the first N bytes of a gzip artifact stream to
+ * inspect the header. The caller supplies the source stream (from the
+ * storage driver), so this works identically for local files and S3.
  */
-function readGzipHeader(filePath: string, maxBytes: number): Promise<string> {
+function readGzipHeader(input: Readable, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalLength = 0;
 
-    const input = createReadStream(filePath);
     const gunzip = createGunzip();
 
     gunzip.on("data", (chunk: Buffer) => {

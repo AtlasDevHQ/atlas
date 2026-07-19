@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Archive,
   BrainCircuit,
   Cable,
   Clock,
@@ -29,6 +30,9 @@ export interface HealthComponents {
   provider: ComponentHealth;
   scheduler: ComponentHealth;
   sandbox: ComponentHealth;
+  // #4457 — scheduled-backup tripwire. Optional: present only when the API
+  // reports it (older APIs / self-hosted without enterprise omit it).
+  backups?: ComponentHealth;
 }
 
 const COMPONENT_META: Record<
@@ -40,6 +44,7 @@ const COMPONENT_META: Record<
   provider: { label: "LLM Provider", icon: BrainCircuit },
   scheduler: { label: "Scheduler", icon: Clock },
   sandbox: { label: "Sandbox", icon: Shield },
+  backups: { label: "Backups", icon: Archive },
 };
 
 function formatRelativeTime(iso: string): string {
@@ -140,9 +145,12 @@ export function ComponentHealthTiles({
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
       {(Object.keys(COMPONENT_META) as Array<keyof HealthComponents>).map(
-        (key) => (
-          <ComponentCard key={key} name={key} component={components[key]} />
-        ),
+        (key) => {
+          const component = components[key];
+          // `backups` is optional on the wire — skip the tile when absent.
+          if (!component) return null;
+          return <ComponentCard key={key} name={key} component={component} />;
+        },
       )}
     </div>
   );

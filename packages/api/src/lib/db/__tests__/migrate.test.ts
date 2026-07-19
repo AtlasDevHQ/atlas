@@ -229,7 +229,9 @@ describe("runMigrations", () => {
     //   own cached rows + capture instant, ADR-0034 Decision 1, #4554) = 176.
     //   Plus 0176 (drop dashboard_stage_changes — stage tracker phase 2 of the
     //   two-phase drop, readers/writers removed by #4555 in v0.0.55, #4561) = 177.
-    expect(count).toBe(177);
+    //   Plus 0177 (backups.scheduled_window + partial UNIQUE index — the
+    //   scheduled-backup fiber's cross-replica cadence-window claim, #4457) = 178.
+    expect(count).toBe(178);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -435,6 +437,7 @@ describe("runMigrations", () => {
         "0174_connection_profile_baseline_started_at.sql",
         "0175_dashboard_draft_card_cache.sql",
         "0176_drop_dashboard_stage_changes.sql",
+        "0177_backups_scheduled_window.sql",
       ],
     });
 

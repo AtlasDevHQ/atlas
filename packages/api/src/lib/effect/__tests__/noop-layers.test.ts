@@ -276,6 +276,14 @@ describe("previously-Effect.die methods now fail through typed channel", () => {
     expectTypedFailure(await runWithLayer(program, NoopBackupsManagerLayer), "EnterpriseError");
   });
 
+  it("BackupsManager.runScheduledBackupCycle (#4457 — the scheduled-backup fiber's gate skips the noop, but a direct call still fails loud)", async () => {
+    const program = Effect.gen(function* () {
+      const b = yield* BackupsManager;
+      return yield* b.runScheduledBackupCycle();
+    });
+    expectTypedFailure(await runWithLayer(program, NoopBackupsManagerLayer), "EnterpriseError");
+  });
+
   it("IpAllowlistPolicy.addIPAllowlistEntry", async () => {
     const program = Effect.gen(function* () {
       const p = yield* IpAllowlistPolicy;

@@ -940,6 +940,42 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.exists).toBe(false);
   }, PG_TEST_TIMEOUT_MS);
 
+  // ─────────────────────────────────────────────────────────────────────
+  // 0177 — backups.scheduled_window claim (#4457)
+  //
+  // The scheduled-backup fiber's cross-replica concurrency claim: the
+  // partial UNIQUE index makes `INSERT … ON CONFLICT DO NOTHING` on a
+  // window key atomic, so exactly one backup runs per region per cadence
+  // window. This exercises the exact INSERT shape the ee engine's
+  // `createScheduledBackup` issues, against real Postgres — the mock-level
+  // engine tests can't prove index-backed atomicity.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("0177: scheduled_window claim — second insert for the same window returns no row; NULL windows never conflict (#4457)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const windowKey = `w86400000a10800000-test-${stamp}`;
+    const claimSql = `INSERT INTO backups (status, storage_path, retention_expires_at, scheduled_window)
+       VALUES ('in_progress', $1, now() + interval '30 days', $2)
+       ON CONFLICT (scheduled_window) WHERE scheduled_window IS NOT NULL DO NOTHING
+       RETURNING id`;
+
+    const first = await pool.query<{ id: string }>(claimSql, [`./backups/a-${stamp}.sql.gz`, windowKey]);
+    expect(first.rows.length).toBe(1);
+
+    // A second claim for the SAME window loses — no row returned, no error.
+    const second = await pool.query<{ id: string }>(claimSql, [`./backups/b-${stamp}.sql.gz`, windowKey]);
+    expect(second.rows.length).toBe(0);
+
+    // Manual backups (scheduled_window NULL) never conflict with each other.
+    const manualSql = `INSERT INTO backups (status, storage_path, retention_expires_at)
+       VALUES ('in_progress', $1, now() + interval '30 days')
+       RETURNING id`;
+    const manual1 = await pool.query<{ id: string }>(manualSql, [`./backups/m1-${stamp}.sql.gz`]);
+    const manual2 = await pool.query<{ id: string }>(manualSql, [`./backups/m2-${stamp}.sql.gz`]);
+    expect(manual1.rows.length).toBe(1);
+    expect(manual2.rows.length).toBe(1);
+  }, PG_TEST_TIMEOUT_MS);
+
   // #2606 — every integration store renders `installed_at` via the same
   // `to_char(... AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
   // formatter so the admin /admin/integrations response satisfies

@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.66",
+    title: "Hosted-MCP Query Keepalive",
+    date: "2026-07-19",
+    summary:
+      "Long natural-language questions asked over the hosted MCP connection now run to completion instead of dropping partway through. When Atlas's analyst agent took more than about two minutes to answer, the connection could be closed by a network idle-timeout before the answer came back — so the client saw the request fail even though the work was proceeding. A first pass (v0.0.63) fixed this only for clients that opt into progress updates; this release keeps the connection alive for every client by sending a lightweight keepalive on the streaming response itself, regardless of the client. Found by connecting a live MCP client and running a genuinely long query.",
+    highlights: [
+      "A hosted-MCP query that runs longer than ~120s now completes for every client, not just ones that request progress updates",
+      "The keepalive is sent at the streaming-transport layer (an ignored SSE comment frame), so it never appears as a message to the client",
+      "Complements the v0.0.63 progress heartbeat, which remains for clients that show progress",
+    ],
+  },
+  {
     version: "v0.0.65",
     title: "describeEntity Display-Name Fix",
     date: "2026-07-19",

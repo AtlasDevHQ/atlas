@@ -68,18 +68,21 @@ export async function handleMigrateImport(
     process.exit(1);
   }
 
-  const { EXPORT_BUNDLE_VERSION } = await import("@useatlas/types");
   const manifest = b.manifest as {
     version: number;
     counts: Record<string, number>;
   };
   // Mirror the server: the current version plus legacy v1 (pre-#4460 bundles
   // without the dashboards/knowledge/tasks/memory sections) both import.
+  // Local constants (not `EXPORT_BUNDLE_VERSION` from @useatlas/types) so a
+  // CLI built against an older published types package can't silently shrink
+  // the accept set — same rationale as the server's admin-migrate.ts.
   const LEGACY_BUNDLE_VERSION = 1;
-  if (manifest.version !== EXPORT_BUNDLE_VERSION && manifest.version !== LEGACY_BUNDLE_VERSION) {
+  const CURRENT_BUNDLE_VERSION = 2;
+  if (manifest.version !== CURRENT_BUNDLE_VERSION && manifest.version !== LEGACY_BUNDLE_VERSION) {
     console.error(
       pc.red(
-        `Unsupported bundle version: ${manifest.version}. This CLI supports versions ${LEGACY_BUNDLE_VERSION} and ${EXPORT_BUNDLE_VERSION}.`,
+        `Unsupported bundle version: ${manifest.version}. This CLI supports versions ${LEGACY_BUNDLE_VERSION} and ${CURRENT_BUNDLE_VERSION}.`,
       ),
     );
     process.exit(1);
@@ -99,7 +102,7 @@ export async function handleMigrateImport(
     `  Patterns:      ${manifest.counts.learnedPatterns}`,
   );
   console.log(`  Settings:      ${manifest.counts.settings}`);
-  if (manifest.version >= EXPORT_BUNDLE_VERSION) {
+  if (manifest.version >= CURRENT_BUNDLE_VERSION) {
     console.log(`  Dashboards:    ${manifest.counts.dashboards ?? 0}`);
     console.log(`  Knowledge:     ${manifest.counts.knowledgeDocuments ?? 0}`);
     console.log(`  Sched. tasks:  ${manifest.counts.scheduledTasks ?? 0}`);
@@ -156,10 +159,17 @@ export async function handleMigrateImport(
       process.exit(1);
     }
 
-    let result: import("@useatlas/types").ImportResult;
+    // Cross-version view of the response: an older target server (pre-#4460)
+    // omits the v2 sections entirely, so they are optional HERE even though
+    // the current ImportResult wire type requires them — the cast must not
+    // claim more than the runtime guards below check.
+    type CrossVersionImportResult =
+      Pick<import("@useatlas/types").ImportResult, "conversations" | "semanticEntities" | "learnedPatterns" | "settings"> &
+      Partial<Pick<import("@useatlas/types").ImportResult, "dashboards" | "knowledgeDocuments" | "scheduledTasks" | "agentSessionMemory">>;
+    let result: CrossVersionImportResult;
     try {
       result =
-        (await resp.json()) as import("@useatlas/types").ImportResult;
+        (await resp.json()) as CrossVersionImportResult;
       if (
         !result?.conversations ||
         !result?.semanticEntities

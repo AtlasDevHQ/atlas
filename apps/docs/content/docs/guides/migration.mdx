@@ -16,7 +16,7 @@ The migration preserves:
 - **Semantic entities** (DB-backed YAML definitions)
 - **Learned patterns** (approved, pending, and rejected — including semantic amendments)
 - **Settings** (org-scoped key/value pairs)
-- **Dashboards** with cards, parameters, and per-user drafts (share links are re-minted on the target; card caches regenerate on first render)
+- **Dashboards** with cards, parameters, and per-user drafts (existing share links stop working — the owner re-shares on the target; card caches regenerate on first render)
 - **Knowledge documents** with frontmatter, link graph, and review status (full-text search rebuilds automatically; sync secrets are re-entered on the target)
 - **Scheduled task definitions** (the next run time is recomputed on the target; run history does not move)
 - **Durable agent session memory** (keyed to migrated conversations)

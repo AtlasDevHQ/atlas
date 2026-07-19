@@ -236,7 +236,7 @@ curl http://localhost:3001/api/v1/admin/residency/migration \
 | Billing (subscription, Stripe state) | Global — follows the organization, unaffected by migration |
 
 <Callout type="warn" title="Stays behind does not mean retained">
-  Everything in the "stays" rows above remains only for the 7-day grace period. Once the source-region cleanup runs, the workspace's leftover rows are **deleted** from the source region — the migration bundle is the complete set of what survives. Export anything else you need before the grace period ends.
+  Everything in the "stays" rows above is **scheduled for deletion** from the source region after the 7-day grace period — the migration bundle is the complete set of what is intended to survive. Treat anything else as gone: export what you need before migrating, and do not rely on leftover source-region data after cutover.
 </Callout>
 
 The authoritative per-table decision registry lives in `packages/api/src/lib/residency/bundle-scope.ts`; a CI tripwire fails when a new workspace-scoped table appears without an explicit moves/stays decision, so this table cannot silently drift from the implementation again.

@@ -157,6 +157,12 @@ export interface ExportedSetting {
  * Exported dashboard card. Card-level `cached_*` snapshot columns are a
  * deliberate carve-out — the target region regenerates card data on first
  * render rather than importing stale result sets.
+ *
+ * The JSONB fields (`chartConfig`, `annotations`, `layout`) are `unknown` by
+ * design — opaque passthrough from source jsonb to target jsonb. Typing them
+ * as the web-facing dashboard shapes would claim a validation the import path
+ * does not perform (the read side re-validates on render, e.g. annotations
+ * via `dashboardCardAnnotationsSchema`).
  */
 export interface ExportedDashboardCard {
   /** Original UUID, preserved so draft snapshots referencing cards stay valid. */
@@ -243,7 +249,7 @@ export interface ExportedKnowledgeDocument {
   type: string | null;
   title: string | null;
   description: string | null;
-  /** OKF tags (JSONB array). */
+  /** OKF tags (JSONB array, opaque passthrough — not validated at import). */
   tags: unknown;
   /** OKF `timestamp` frontmatter field. */
   docTimestamp: string | null;
@@ -272,10 +278,16 @@ export interface ExportedScheduledTask {
   name: string;
   question: string;
   cronExpression: string;
+  /**
+   * Deliberately wider than `DeliveryChannel`: the column is free-form text
+   * and a bundle may carry a channel value from a newer/older producer; the
+   * importer round-trips it opaquely rather than rejecting on enum drift.
+   */
   deliveryChannel: string;
-  /** Recipient list (JSONB array). */
+  /** Recipient list (JSONB array, opaque passthrough — not validated at import). */
   recipients: unknown;
   connectionGroupId: string | null;
+  /** Same deliberate width as {@link ExportedScheduledTask.deliveryChannel}. */
   approvalMode: string;
   enabled: boolean;
   /** Plugin ownership; null = user-created task. */
@@ -331,7 +343,10 @@ export interface ImportResult {
   semanticEntities: { imported: number; skipped: number };
   learnedPatterns: { imported: number; skipped: number };
   settings: { imported: number; skipped: number };
-  /** v2 sections (#4460) — 0/0 when importing a v1 bundle. */
+  /**
+   * v2 sections (#4460) — 0/0 when the bundle carries no v2 sections (the
+   * normal v1 case; present sections import regardless of claimed version).
+   */
   dashboards: { imported: number; skipped: number };
   knowledgeDocuments: { imported: number; skipped: number };
   scheduledTasks: { imported: number; skipped: number };

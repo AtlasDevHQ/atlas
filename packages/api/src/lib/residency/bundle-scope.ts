@@ -37,16 +37,16 @@ export interface BundleTableScope {
   readonly reason: string;
 }
 
-export const BUNDLE_TABLE_DECISIONS: Readonly<Record<string, BundleTableScope>> = {
+export const BUNDLE_TABLE_DECISIONS = {
   // ── Exported: the v2 bundle (#4460 maintainer-approved scope) ──────────────
   conversations: { decision: "exported", reason: "Core chat pillar; original UUIDs preserved so child FKs survive." },
   messages: { decision: "exported", reason: "Ride inline with their conversation." },
   semantic_entities: { decision: "exported", reason: "DB-backed semantic layer — the workspace's core asset." },
   learned_patterns: { decision: "exported", reason: "Learned patterns + semantic amendments (#4569) with approval provenance (#4571)." },
   settings: { decision: "exported", reason: "Org-scoped runtime settings ride the bundle; platform-scoped rows stay." },
-  dashboards: { decision: "exported", reason: "Dashboards move with parameters; share tokens re-minted (region-bound URLs), refresh bookkeeping re-planned." },
+  dashboards: { decision: "exported", reason: "Dashboards move with parameters; share tokens dropped (region-bound URLs — the owner re-shares in the target), next_refresh_at recomputed at import." },
   dashboard_cards: { decision: "exported", reason: "Ride inline with their dashboard; cached_* result snapshots stripped (regenerate on first render)." },
-  dashboard_user_drafts: { decision: "exported", reason: "Per-user drafts are content under ADR-0034's draft-first model, so they move with their dashboard." },
+  dashboard_user_drafts: { decision: "exported", reason: "Per-user drafts are content under the draft-first model (ADR-0029, amended by ADR-0034), so they move with their dashboard." },
   knowledge_documents: { decision: "exported", reason: "KB pillar — bodies + frontmatter + review status, UUIDs preserved; FTS is a generated column and rebuilds." },
   knowledge_links: { decision: "exported", reason: "Link graph rides inline with its source document (no re-derive step needed at import)." },
   scheduled_tasks: { decision: "exported", reason: "Task definitions move; next_run_at recomputed at import so the target scheduler re-plans. Group/plugin refs dangle until re-install." },
@@ -54,7 +54,7 @@ export const BUNDLE_TABLE_DECISIONS: Readonly<Record<string, BundleTableScope>> 
 
   // ── Stays: caches, derived data, history, region-bound state ───────────────
   // (Deleted from the source region by the #4458 cleanup after the grace period.)
-  chat_cache: { decision: "stays", reason: "Response cache — regenerates in the target." },
+  chat_cache: { decision: "stays", reason: "Response cache PLUS the Slack installation store (AES-GCM-encrypted bot tokens under slack:installation:* keys — region-bound ciphertext; Slack is re-installed in the target per the integrations decision). No org_id column: cache keys have no org dimension, Slack rows scope via value->>'orgId' — #4458 cleanup must scope by that expression, not a column." },
   dashboard_draft_card_cache: { decision: "stays", reason: "Draft-card result cache (ADR-0034) — regenerates on first render." },
   scheduled_task_runs: { decision: "stays", reason: "Run history — operational record of source-region executions." },
   agent_runs: { decision: "stays", reason: "Per-turn checkpoints hold region-local resume leases; un-resumable cross-region — an interrupted turn is re-asked (#4460 decision)." },
@@ -143,7 +143,7 @@ export const BUNDLE_TABLE_DECISIONS: Readonly<Record<string, BundleTableScope>> 
   stripe_teardown_pending: { decision: "platform", reason: "Billing-teardown work queue." },
   sub_processor_subscriptions: { decision: "platform", reason: "Legal sub-processor notification list — platform-wide." },
   sub_processor_snapshots: { decision: "platform", reason: "Legal sub-processor snapshots — platform-wide." },
-};
+} satisfies Readonly<Record<string, BundleTableScope>>;
 
 /** Table names that move in the export bundle (feeds tests + #4458 scoping). */
 export const EXPORTED_TABLES: readonly string[] = Object.entries(BUNDLE_TABLE_DECISIONS)

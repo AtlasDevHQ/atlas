@@ -8,11 +8,13 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 const mockPoolQueryResults: Record<string, { rows: unknown[] }> = {};
 let mockPoolQueryError: Error | null = null;
+const recordedQueries: Array<{ sql: string; params: unknown[] }> = [];
 
 void mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   getInternalDB: () => ({
-    query: (sql: string, _params: unknown[]) => {
+    query: (sql: string, params: unknown[]) => {
+      recordedQueries.push({ sql, params });
       if (mockPoolQueryError) return Promise.reject(mockPoolQueryError);
       for (const [key, value] of Object.entries(mockPoolQueryResults)) {
         if (sql.includes(key)) return Promise.resolve(value);
@@ -50,6 +52,7 @@ function resetMocks() {
     delete mockPoolQueryResults[key];
   }
   mockPoolQueryError = null;
+  recordedQueries.length = 0;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -227,6 +230,31 @@ describe("exportWorkspaceBundle", () => {
     const bundle = await exportWorkspaceBundle(null, "self-hosted", "http://localhost:3001");
 
     expect(bundle.manifest.source.apiUrl).toBe("http://localhost:3001");
+  });
+
+  it("null org scope emits IS NULL clauses with ZERO bind params on every section query", async () => {
+    // The CLI (`atlas-operator export`) depends entirely on this path for
+    // no-auth self-hosted instances. If `scopeClause` regressed to `= $1`
+    // with an empty params array, real Postgres would throw — but a
+    // results-only mock would stay green. Assert the SQL/param pairing.
+    await exportWorkspaceBundle(null, "self-hosted");
+
+    expect(recordedQueries.length).toBeGreaterThanOrEqual(12); // one per section query
+    for (const q of recordedQueries) {
+      expect(q.sql).toContain("IS NULL");
+      expect(q.sql).not.toContain("$1");
+      expect(q.params).toEqual([]);
+    }
+  });
+
+  it("string org scope emits = $1 with exactly one bind param on every section query", async () => {
+    await exportWorkspaceBundle("org-1");
+
+    expect(recordedQueries.length).toBeGreaterThanOrEqual(12);
+    for (const q of recordedQueries) {
+      expect(q.sql).toContain("= $1");
+      expect(q.params).toEqual(["org-1"]);
+    }
   });
 
   // ── v2 sections (#4460) ─────────────────────────────────────────────

@@ -1,8 +1,9 @@
 /**
  * Workspace data export for cross-region migration.
  *
- * Queries the internal database for all workspace-scoped data and builds
- * an ExportBundle compatible with the import endpoint at
+ * Queries the internal database for the bundle-scoped workspace data (the
+ * per-table moves/stays decisions live in `bundle-scope.ts`) and builds an
+ * ExportBundle compatible with the import endpoint at
  * POST /api/v1/admin/migrate/import.
  *
  * This is the SINGLE bundle producer: the region-migration executor
@@ -141,8 +142,9 @@ export async function exportWorkspaceBundle(
     ),
     // --- 5. Dashboards (v2, #4460) ---
     // Share token + expiry deliberately excluded: share URLs are region-bound,
-    // so links are re-minted in the target. Refresh bookkeeping + card caches
-    // excluded: the target regenerates on first render / re-plans refresh.
+    // so the owner re-shares from the target region. Refresh bookkeeping +
+    // card caches excluded: the importer recomputes next_refresh_at from the
+    // schedule, and card data regenerates on first render.
     pool.query(
       `SELECT id, owner_id, title, description, share_mode, refresh_schedule,
               parameters, first_published_at, created_at, updated_at

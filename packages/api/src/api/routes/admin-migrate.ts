@@ -11,7 +11,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/internal";
 import { computeNextRun } from "@atlas/api/lib/scheduled-tasks";
-import { EXPORT_BUNDLE_VERSION, type ExportBundle, type ImportResult } from "@useatlas/types";
+import type { ExportBundle, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -21,11 +21,23 @@ const log = createLogger("admin-migrate");
  * The pre-#4460 bundle version — four sections only (conversations, semantic
  * entities, learned patterns, settings). Still accepted so bundles produced by
  * older exporters import cleanly; the v2 sections simply come back 0/0.
- * Hard-coded rather than exported from @useatlas/types because a new *value*
- * export would break scaffold-bound builds against the published package
- * (see scripts/check-published-symbols.ts).
  */
-const LEGACY_BUNDLE_VERSION = 1;
+const LEGACY_BUNDLE_VERSION = 1 satisfies SupportedBundleVersion;
+
+/**
+ * The current bundle version (#4460 — dashboards, knowledge, scheduled tasks,
+ * session memory are required sections).
+ *
+ * Deliberately a LOCAL constant rather than `EXPORT_BUNDLE_VERSION` from
+ * `@useatlas/types`: packages/api is scaffold-bound, and a scaffold build
+ * pinned to an older published package (where the constant's *value* is still
+ * 1) would otherwise silently shrink the importer's accept set to `{1}` and
+ * reject every v2 bundle. A new value export can't fix that either — it would
+ * trip scripts/check-published-symbols.ts. The `satisfies` tether keeps both
+ * constants pinned to the type-level `SupportedBundleVersion` union so they
+ * can't drift from the wire contract at compile time.
+ */
+const CURRENT_BUNDLE_VERSION = 2 satisfies SupportedBundleVersion;
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -44,17 +56,17 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
   }
 
   const manifest = obj.manifest as Record<string, unknown>;
-  if (manifest.version !== EXPORT_BUNDLE_VERSION && manifest.version !== LEGACY_BUNDLE_VERSION) {
-    return { ok: false, error: `Unsupported bundle version: ${String(manifest.version)}. Expected ${LEGACY_BUNDLE_VERSION} or ${EXPORT_BUNDLE_VERSION}.` };
+  if (manifest.version !== CURRENT_BUNDLE_VERSION && manifest.version !== LEGACY_BUNDLE_VERSION) {
+    return { ok: false, error: `Unsupported bundle version: ${String(manifest.version)}. Expected ${LEGACY_BUNDLE_VERSION} or ${CURRENT_BUNDLE_VERSION}.` };
   }
 
   // v2 bundles MUST carry the #4460 sections. A producer that claims v2 but
   // drops a section indicates exporter drift — fail loudly instead of
   // silently stranding a pillar in the source region.
-  if (manifest.version === EXPORT_BUNDLE_VERSION) {
+  if (manifest.version === CURRENT_BUNDLE_VERSION) {
     for (const section of ["dashboards", "knowledgeDocuments", "scheduledTasks", "agentSessionMemory"] as const) {
       if (!Array.isArray(obj[section])) {
-        return { ok: false, error: `Missing or invalid '${section}' field. Expected an array (required for a version-${EXPORT_BUNDLE_VERSION} bundle).` };
+        return { ok: false, error: `Missing or invalid '${section}' field. Expected an array (required for a version-${CURRENT_BUNDLE_VERSION} bundle).` };
       }
     }
   }
@@ -124,6 +136,13 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       if (!d || typeof d !== "object" || typeof d.id !== "string" || typeof d.ownerId !== "string" || typeof d.title !== "string" || !Array.isArray(d.cards) || !Array.isArray(d.drafts)) {
         return { ok: false, error: `dashboards[${i}]: must have 'id', 'ownerId', 'title' (strings), 'cards' and 'drafts' (arrays).` };
       }
+      // Guard the sharing posture at the seam: `chk_dashboard_share_mode`
+      // would abort the whole transaction on anything else, and coalescing an
+      // absent value to "public" would silently WIDEN sharing — a security
+      // posture must be stated by the producer, never defaulted permissively.
+      if (d.shareMode !== "public" && d.shareMode !== "org") {
+        return { ok: false, error: `dashboards[${i}].shareMode: must be 'public' or 'org'.` };
+      }
       for (let j = 0; j < d.cards.length; j++) {
         const card = d.cards[j] as Record<string, unknown> | null;
         if (!card || typeof card !== "object" || typeof card.id !== "string" || typeof card.title !== "string" || typeof card.sql !== "string") {
@@ -132,8 +151,11 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       }
       for (let j = 0; j < d.drafts.length; j++) {
         const draft = d.drafts[j] as Record<string, unknown> | null;
-        if (!draft || typeof draft !== "object" || typeof draft.userId !== "string" || typeof draft.publishedBaselineAt !== "string") {
-          return { ok: false, error: `dashboards[${i}].drafts[${j}]: must have 'userId' and 'publishedBaselineAt' (strings).` };
+        // `draft`/`baseline` presence mirrors the memory section's `"value" in m`
+        // guard — both back NOT NULL jsonb columns, and JSON.stringify(undefined)
+        // would bind NULL and abort the transaction with a raw pg 500.
+        if (!draft || typeof draft !== "object" || typeof draft.userId !== "string" || typeof draft.publishedBaselineAt !== "string" || !("draft" in draft) || !("baseline" in draft)) {
+          return { ok: false, error: `dashboards[${i}].drafts[${j}]: must have 'userId', 'publishedBaselineAt' (strings), 'draft', and 'baseline'.` };
         }
       }
     }
@@ -164,6 +186,16 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       const t = obj.scheduledTasks[i] as Record<string, unknown> | null;
       if (!t || typeof t !== "object" || typeof t.id !== "string" || typeof t.ownerId !== "string" || typeof t.name !== "string" || typeof t.question !== "string" || typeof t.cronExpression !== "string") {
         return { ok: false, error: `scheduledTasks[${i}]: must have 'id', 'ownerId', 'name', 'question', and 'cronExpression' (strings).` };
+      }
+      // Approval posture + enabled are execution-safety fields: defaulting an
+      // absent approvalMode to "auto" or an absent enabled to true would let a
+      // malformed bundle run an agent task with a more permissive posture than
+      // its admin configured. Require the producer to state both.
+      if (typeof t.approvalMode !== "string" || t.approvalMode.length === 0) {
+        return { ok: false, error: `scheduledTasks[${i}].approvalMode: must be a non-empty string.` };
+      }
+      if (typeof t.enabled !== "boolean") {
+        return { ok: false, error: `scheduledTasks[${i}].enabled: must be a boolean.` };
       }
     }
   }
@@ -433,8 +465,10 @@ export async function importBundle(
   // --- 5. Dashboards (v2, #4460) — cards + per-user drafts ride inline ---
   // Original UUIDs preserved so card/draft FKs survive. Share token + expiry
   // are NOT restored (share URLs are region-bound — the owner re-mints links
-  // in the target); refresh bookkeeping and card `cached_*` snapshots start
-  // empty and regenerate on first render.
+  // in the target); card `cached_*` snapshots start empty and regenerate on
+  // first render. `next_refresh_at` is recomputed from the schedule below —
+  // the due-refresh scan requires `next_refresh_at <= now()`, so leaving it
+  // NULL would silently kill auto-refresh in the target region.
   for (const dash of bundle.dashboards ?? []) {
     const existing = await client.query(
       "SELECT id FROM dashboards WHERE id = $1 AND org_id = $2",
@@ -446,17 +480,34 @@ export async function importBundle(
       continue;
     }
 
+    const refreshSchedule = dash.refreshSchedule ?? null;
+    let nextRefreshAt: string | null = null;
+    if (refreshSchedule) {
+      const nextRefresh = computeNextRun(refreshSchedule);
+      if (nextRefresh) {
+        nextRefreshAt = nextRefresh.toISOString();
+      } else {
+        log.warn(
+          { orgId, dashboardId: dash.id, refreshSchedule },
+          "Imported dashboard has an unparseable refresh schedule — auto-refresh will not fire until the schedule is re-saved",
+        );
+      }
+    }
+
     await client.query(
-      `INSERT INTO dashboards (id, org_id, owner_id, title, description, share_mode, refresh_schedule, parameters, first_published_at, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      `INSERT INTO dashboards (id, org_id, owner_id, title, description, share_mode, refresh_schedule, next_refresh_at, parameters, first_published_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         dash.id,
         orgId,
         dash.ownerId,
         dash.title,
         dash.description ?? null,
-        dash.shareMode ?? "public",
-        dash.refreshSchedule ?? null,
+        // Validated as 'public' | 'org' — never defaulted (a coalesce here
+        // would silently widen sharing on a malformed bundle).
+        dash.shareMode,
+        refreshSchedule,
+        nextRefreshAt,
         // JSONB columns take explicit serialization — a bare JS array would be
         // bound as a Postgres array, not jsonb.
         JSON.stringify(dash.parameters ?? []),
@@ -574,7 +625,16 @@ export async function importBundle(
 
     // null on an unparseable cron — matches create-task semantics (the task
     // exists but is not scheduled until the admin fixes the expression).
+    // Logged with import context so a task that arrives dead is findable —
+    // an "imported" count alone would mask exactly the stranded-pillar class
+    // #4460 exists to kill.
     const nextRun = computeNextRun(task.cronExpression);
+    if (!nextRun) {
+      log.warn(
+        { orgId, taskId: task.id, cronExpression: task.cronExpression },
+        "Imported scheduled task has an unparseable cron expression — it will not fire until the expression is fixed in Admin → Scheduled Tasks",
+      );
+    }
 
     await client.query(
       `INSERT INTO scheduled_tasks (id, owner_id, org_id, name, question, cron_expression, delivery_channel, recipients, connection_group_id, approval_mode, enabled, plugin_id, next_run_at, created_at, updated_at)
@@ -589,8 +649,10 @@ export async function importBundle(
         task.deliveryChannel ?? "webhook",
         JSON.stringify(task.recipients ?? []),
         task.connectionGroupId ?? null,
-        task.approvalMode ?? "auto",
-        task.enabled ?? true,
+        // Validated non-empty / boolean — never defaulted (a permissive
+        // fallback on the approval posture would bypass the admin's gate).
+        task.approvalMode,
+        task.enabled,
         task.pluginId ?? null,
         nextRun ? nextRun.toISOString() : null,
         task.createdAt,

@@ -22,7 +22,12 @@ import {
   BUNDLE_TABLE_DECISIONS,
   EXPORTED_TABLES,
   STAYS_TABLES,
+  type BundleTableScope,
 } from "../bundle-scope";
+
+// String-indexed view: the registry's literal-keyed type (via `satisfies`)
+// rejects arbitrary-string indexing, which is exactly what this suite does.
+const decisionFor: Readonly<Record<string, BundleTableScope | undefined>> = BUNDLE_TABLE_DECISIONS;
 
 // ── Enumerate the live schema ────────────────────────────────────────
 
@@ -102,6 +107,21 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     }
   });
 
+  it("no non-exported table is read by the export implementation (reverse drift)", () => {
+    // The inverse tripwire: a table wired into export.ts while classified
+    // 'stays'/'platform' would ship data the registry — and #4458's deletion
+    // scoping — says stays behind. Both directions must agree.
+    const exportSource = readFileSync(join(import.meta.dir, "..", "export.ts"), "utf8");
+    const nonExported = schemaTableNames.filter((name) => !EXPORTED_TABLES.includes(name));
+    for (const table of nonExported) {
+      expect(
+        exportSource.includes(`FROM ${table}`) || exportSource.includes(`JOIN ${table}`),
+        `export.ts queries '${table}', but bundle-scope.ts classifies it as non-exported — ` +
+          `either reclassify it 'exported' or remove the query.`,
+      ).toBe(false);
+    }
+  });
+
   it("every exported table is actually written by the import implementation", () => {
     const importSource = readFileSync(
       join(import.meta.dir, "..", "..", "..", "api", "routes", "admin-migrate.ts"),
@@ -125,7 +145,7 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     // bundle-scope.ts.
     const orgScopedPlatform = schemaTables
       .filter((t) => {
-        const entry = BUNDLE_TABLE_DECISIONS[t.name];
+        const entry = decisionFor[t.name];
         if (!entry || entry.decision !== "platform") return false;
         return t.columns.some((c) => c.name === "org_id" || c.name === "workspace_id");
       })

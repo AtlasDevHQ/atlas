@@ -20,6 +20,17 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.65",
+    title: "describeEntity Display-Name Fix",
+    date: "2026-07-19",
+    summary:
+      "Completes the hosted-MCP describe-entity fix from v0.0.63. Asking Atlas to describe a data entity by the exact name shown when you list the catalog now works — previously it resolved by the table name but not by the entity's display name, so a lookup that used the name straight from the catalog listing could still come back 'not found'. Now any identifier the catalog surfaces — display name or table — resolves. Found by connecting a live MCP client to the platform and re-checking the original report.",
+    highlights: [
+      "describeEntity resolves an entity by the display name shown in listEntities, not just its table name",
+      "Closes the last gap in the v0.0.63 hosted-MCP describe fix; every catalog identifier now resolves",
+    ],
+  },
+  {
     version: "v0.0.64",
     title: "Hosted-MCP Deploy Fix",
     date: "2026-07-19",

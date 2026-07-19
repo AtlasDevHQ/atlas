@@ -124,6 +124,12 @@ void mock.module("@atlas/api/lib/semantic/lookups", () => ({
 void mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: async () => [],
   listEntityRows: async () => [],
+  // #4733 — describeEntity now narrows the multi-group throw via this
+  // re-export; without it the `entities.ts` re-export chain fails to load.
+  AmbiguousEntityError: class AmbiguousEntityError extends Error {
+    readonly _tag = "AmbiguousEntityError";
+    readonly groups: ReadonlyArray<string | null> = [];
+  },
   listEntitiesWithOverlay: async () => [],
   getEntity: async () => null,
   upsertEntity: async () => {},
@@ -143,6 +149,21 @@ void mock.module("@atlas/api/lib/semantic/entities", () => ({
   restoreSingleConnection: async () => ({ status: "not_found" as const }),
   DEMO_CONNECTION_ID: "__demo__",
   SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
+}));
+
+// #4733 — describeEntity resolves through the org-scoped `getAdminEntity`
+// (DB-canonical) rather than the disk-only `getEntityByName`. Stub it so this
+// telemetry test (which only asserts spans/counters fire) stays hermetic — no
+// real disk/DB read. Resolving "users" keeps the six-tool coverage span green.
+void mock.module("@atlas/api/lib/semantic/admin-source", () => ({
+  getAdminEntity: async ({ name }: { name: string }) =>
+    name === "users" || name === "User"
+      ? {
+          entity: { name: "User", table: "users", dimensions: [{ name: "id" }] },
+          status: "published",
+          source: "db",
+        }
+      : null,
 }));
 
 // Don't mock @atlas/api/lib/config: its many runtime exports would require

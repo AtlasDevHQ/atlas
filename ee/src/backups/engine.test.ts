@@ -57,7 +57,10 @@ mock.module("./storage", () => ({
   _resetBackupStorage: () => {},
 }));
 
-// Mock spawn to return a controllable child process
+// Mock spawn to return a controllable child process. When `spawnEmitError`
+// is set, the process emits 'error' and NEVER emits 'close' — the real
+// missing-binary (ENOENT) shape.
+let spawnEmitError: Error | null = null;
 function createMockProcess(exitCode = 0) {
   const stdout = { on: mock(), pipe: mock() };
   const stderr = {
@@ -69,8 +72,9 @@ function createMockProcess(exitCode = 0) {
     stdout,
     stderr,
     stdin: { on: mock(), write: mock(), end: mock() },
-    on: mock((event: string, cb: (code: number) => void) => {
-      if (event === "close") setTimeout(() => cb(exitCode), 0);
+    on: mock((event: string, cb: (codeOrErr: number | Error) => void) => {
+      if (event === "error" && spawnEmitError) cb(spawnEmitError);
+      if (event === "close" && !spawnEmitError) setTimeout(() => cb(exitCode), 0);
     }),
   };
   return proc;
@@ -125,6 +129,7 @@ function resetAll() {
   _resetTableReady();
   mockSpawn.mockClear();
   spawnExitCode = 0;
+  spawnEmitError = null;
   storagePutError = null;
   storagePutSize = 12345;
   storageListResult = [];
@@ -289,6 +294,25 @@ describe("createBackup — expected_table_count baseline (#2989)", () => {
     expect(failedUpdate).toBeDefined();
     expect(failedUpdate!.params[0]).toContain("bucket unavailable");
     expect(failedUpdate!.params[1]).toBe("b1");
+  });
+
+  it("attributes a spawn failure to the real cause (pg_dump missing), not a derived stream error", async () => {
+    // The real ENOENT shape: 'error' fires, 'close' never does. The failure
+    // must carry the spawn error — not "Premature close" — so the operator
+    // sees the actual cause in the row and the logs.
+    spawnEmitError = new Error('Executable not found in $PATH: "pg_dump"');
+    ee.queueMockRows(
+      ...ensureTableEmpties(),
+      [defaultConfigRow],
+      [{ id: "b1" }],
+    );
+
+    await expect(run(createBackup())).rejects.toThrow("Executable not found");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const failedUpdate = ee.capturedQueries.find((q) => q.sql.includes("status = 'failed'"));
+    expect(failedUpdate).toBeDefined();
+    expect(failedUpdate!.params[0]).toContain("Executable not found");
   });
 
   it("fails (and stamps the row failed) when pg_dump exits non-zero, including the stderr excerpt", async () => {

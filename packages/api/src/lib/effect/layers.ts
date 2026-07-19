@@ -2191,15 +2191,35 @@ export function makeSchedulerLive(
           skipLog:
             "Scheduled backups not started — enterprise backups unavailable, internal DB not configured, or ATLAS_BACKUP_SCHEDULED_ENABLED=false",
         },
-        // Demote any defect to a typed failure: the cycle's call graph still
-        // contains `Effect.promise(internalQuery…)` seams (ensureTable /
-        // getBackupConfig), whose rejections become DEFECTS — and since
-        // `spanResultAttributes` can't combine with `viaCause`, an escaped
-        // defect would exit `Effect.repeat` and permanently kill this fiber
-        // on the first transient DB blip (the exact silent-death class
-        // #4457 exists to eliminate). With the demotion, `onTickFailure`
-        // logs it and the loop survives.
+        // Two liveness wraps on the tick:
+        //
+        // 1. Timeout: nothing in create→verify→purge bounds wall time, and a
+        //    pg_dump hung on a network partition (or a stuck S3 upload) would
+        //    otherwise wedge this fiber forever — `Effect.repeat` never
+        //    advances, and the stale-claim reaper (which lives in this same
+        //    fiber's next tick) is hostage to the wedge. 2h is far above any
+        //    sane internal-DB dump and well inside the 6h stale-claim
+        //    threshold, so the reap on a later tick marks the carcass row
+        //    failed. Note: interrupting the Effect does NOT kill the spawned
+        //    pg_dump/psql OS process — it may linger until it exits on its
+        //    own; the claim semantics stay correct either way.
+        //
+        // 2. Defect demotion: the cycle's call graph still contains
+        //    `Effect.promise(internalQuery…)` seams (ensureTable /
+        //    getBackupConfig), whose rejections become DEFECTS — and since
+        //    `spanResultAttributes` can't combine with `viaCause`, an escaped
+        //    defect would exit `Effect.repeat` and permanently kill this
+        //    fiber on the first transient DB blip (the exact silent-death
+        //    class #4457 exists to eliminate). With the demotion,
+        //    `onTickFailure` logs it and the loop survives.
         tick: backupsManager.runScheduledBackupCycle().pipe(
+          Effect.timeoutFail({
+            duration: "2 hours",
+            onTimeout: () =>
+              new Error(
+                "Scheduled backup cycle exceeded 2h — likely a hung pg_dump or storage upload; the stale-claim reap will mark the row failed",
+              ),
+          }),
           Effect.catchAllDefect((defect) =>
             Effect.fail(defect instanceof Error ? defect : new Error(String(defect))),
           ),

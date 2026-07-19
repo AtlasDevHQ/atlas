@@ -140,7 +140,9 @@ async function probe(now: number): Promise<ScheduledBackupHealth> {
     cadenceMs: cadence.cadenceMs,
     overdue,
     ...(overdue && {
-      message: `Last verified backup is ${Math.round(ageMs / 3_600_000)}h old — older than the configured cadence window`,
+      message: Number.isFinite(ageMs)
+        ? `Last verified backup is ${Math.round(ageMs / 3_600_000)}h old — older than the configured cadence window`
+        : "Last verified backup timestamp is unparseable — treating as overdue",
     }),
   };
 }

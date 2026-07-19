@@ -296,6 +296,17 @@ const performBackup = (
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    // Capture spawn-level failures (ENOENT when pg_dump isn't on PATH,
+    // EACCES, …). Without a listener the 'error' event is an uncaught
+    // exception with zero backup context, 'close' never fires, and the
+    // pipeline surfaces a misleading "Premature close" — the operator
+    // would chase the wrong cause. The capture is preferred over the
+    // derived stream error wherever a failure is reported below.
+    let spawnError: Error | null = null;
+    pgDump.on("error", (err) => {
+      spawnError = err instanceof Error ? err : new Error(String(err));
+    });
+
     const gzip = createGzip();
     const gzipped = new PassThrough();
 
@@ -324,12 +335,24 @@ const performBackup = (
         const [{ sizeBytes: written }] = await Promise.all([putDone, pipelineDone]);
         return written;
       },
-      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      // A spawn failure manifests here as a derived stream error — report
+      // the root cause instead.
+      catch: (err) => spawnError ?? (err instanceof Error ? err : new Error(String(err))),
     });
 
     const exitCode = yield* Effect.tryPromise({
-      try: () => new Promise<number>((resolve) => { pgDump.on("close", resolve); }),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      try: () =>
+        new Promise<number>((resolve, reject) => {
+          // 'close' never fires when the spawn itself failed — reject with
+          // the captured cause instead of hanging on a resolve-only wait.
+          if (spawnError) {
+            reject(spawnError);
+            return;
+          }
+          pgDump.on("close", resolve);
+          pgDump.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
+        }),
+      catch: (err) => spawnError ?? (err instanceof Error ? err : new Error(String(err))),
     });
 
     if (exitCode !== 0) {

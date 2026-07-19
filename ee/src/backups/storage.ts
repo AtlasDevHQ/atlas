@@ -184,7 +184,10 @@ export function createS3BackupStorage(
             throw new Error("BackupStorage.put requires a byte stream (Buffer/Uint8Array chunks)");
           }
           sizeBytes += bytes.byteLength;
-          writer.write(bytes);
+          // Await both (write may return a promise): a stray rejected write
+          // promise would otherwise surface as a context-free
+          // unhandledRejection instead of failing the put.
+          await writer.write(bytes);
           // Flush per chunk: bounds process memory to the writer's part
           // buffer regardless of how far pg_dump outpaces the upload.
           await writer.flush();

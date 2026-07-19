@@ -141,6 +141,11 @@ export function resolveMaxSessions(explicit?: number): number {
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const MIN_SESSION_IDLE_TIMEOUT_MS = 60 * 1000; // 1 minute floor
 
+// #4734 — cadence for the POST tool-call SSE keepalive. Comfortably under the
+// ~120s intermediary (Railway edge/LB) idle window with margin for jitter, so a
+// long, quiet agent run keeps the stream warm and its response is never dropped.
+const POST_STREAM_KEEPALIVE_MS = 15 * 1000;
+
 /**
  * Test-only override. Bypasses the production floor so the cap-pressure
  * sweep can be driven end-to-end with sub-second timeouts. Production must
@@ -399,15 +404,23 @@ export class McpSessionStore {
       });
     }
     if (req.method === "POST") {
-      return trackResponseStreamLifetime(response, {
-        onOpen: () => {},
-        onClose: () => {
-          entry.lastSeenAt = Date.now();
+      return trackResponseStreamLifetime(
+        response,
+        {
+          onOpen: () => {},
+          onClose: () => {
+            entry.lastSeenAt = Date.now();
+          },
+          onActivity: () => {
+            entry.lastSeenAt = Date.now();
+          },
         },
-        onActivity: () => {
-          entry.lastSeenAt = Date.now();
-        },
-      });
+        // #4734 — inject an SSE keepalive on the POST tool-call stream so a
+        // long agent run (e.g. the `query` tool, minutes-long) can't be dropped
+        // by an intermediary idle-timeout while it produces no bytes. Works for
+        // every client, unlike the progressToken-gated progress heartbeat.
+        { keepaliveMs: POST_STREAM_KEEPALIVE_MS },
+      );
     }
     return response;
   }

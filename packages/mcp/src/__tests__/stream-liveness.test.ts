@@ -194,4 +194,69 @@ describe("trackResponseStreamLifetime", () => {
     await expect(reader.read()).rejects.toThrow("boom");
     expect(activityCount).toBe(0); // no chunks were enqueued before the error
   });
+
+  // ── #4734 — transport-agnostic SSE keepalive on the POST tool-call stream ──
+
+  const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it("injects SSE keepalive frames while the source idles, without dropping or reordering data (#4734)", async () => {
+    const enc = new TextEncoder();
+    // Source emits two data frames, each after a ~40ms idle gap, then closes.
+    // With keepaliveMs=10 the wrapper should fill each gap with comment frames.
+    let step = 0;
+    const src = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        step++;
+        if (step === 1) {
+          await delay(40);
+          controller.enqueue(enc.encode("data: one\n\n"));
+          return;
+        }
+        if (step === 2) {
+          await delay(40);
+          controller.enqueue(enc.encode("data: two\n\n"));
+          return;
+        }
+        controller.close();
+      },
+    });
+
+    let activity = 0;
+    const tracked = trackResponseStreamLifetime(
+      sseResponse(src),
+      { onOpen: () => {}, onClose: () => {}, onActivity: () => { activity++; } },
+      { keepaliveMs: 10 },
+    );
+
+    const text = await new Response(tracked.body).text();
+
+    // Both data frames survive intact and in order — the keepalive race never
+    // abandons the pending read.
+    expect(text).toContain("data: one\n\n");
+    expect(text).toContain("data: two\n\n");
+    expect(text.indexOf("data: one")).toBeLessThan(text.indexOf("data: two"));
+    // At least one keepalive comment frame was injected during an idle gap.
+    expect(text).toContain(": keepalive\n\n");
+    // A keepalive counts as activity (keeps the idle sweep from evicting a
+    // mid-run session), so onActivity fired more than the two data chunks.
+    expect(activity).toBeGreaterThan(2);
+  });
+
+  it("injects NO keepalive frames when keepaliveMs is omitted (GET-stream behavior unchanged)", async () => {
+    const enc = new TextEncoder();
+    const src = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await delay(30);
+        controller.enqueue(enc.encode("data: only\n\n"));
+        controller.close();
+      },
+    });
+    const tracked = trackResponseStreamLifetime(sseResponse(src), {
+      onOpen: () => {},
+      onClose: () => {},
+    });
+    const text = await new Response(tracked.body).text();
+    expect(text).toBe("data: only\n\n");
+    expect(text).not.toContain(": keepalive");
+  });
 });

@@ -69,6 +69,21 @@ export function _setQueryHeartbeatIntervalMsForTest(ms: number): void {
   queryHeartbeatIntervalMs = ms;
 }
 
+// #4734 — soft server-side deadline for the whole agent run. Verified live:
+// keepalive/heartbeat alone don't stop a >120s drop, because the MCP CLIENT
+// imposes its own request-timeout ceiling (~120s) that no server keepalive can
+// extend, and a generic client won't poll an async job. So we cap the run just
+// UNDER that ceiling and return a `query_timeout` envelope BEFORE the transport
+// would drop — an actionable result for every client instead of a lost response.
+// 90s leaves margin under the observed ~120s ceiling; overridable for tests.
+const DEFAULT_QUERY_DEADLINE_MS = 90_000;
+let queryDeadlineMs = DEFAULT_QUERY_DEADLINE_MS;
+
+/** @internal test seam — override the #4734 query soft-deadline. */
+export function _setQueryDeadlineMsForTest(ms: number): void {
+  queryDeadlineMs = ms;
+}
+
 /**
  * The hint attached to a `billing_blocked` envelope — adapts the wording of
  * billing-gate.ts (claim/setup framing for the agent path; the mapping *logic*
@@ -166,25 +181,33 @@ export function registerQueryTool(
             "@atlas/api/lib/billing/claim-gate"
           );
 
+          // #4734 — soft server-side deadline. A synchronous MCP tool call can't
+          // outlive the client's own request-timeout ceiling (~120s, verified
+          // live — no server keepalive extends it), so cap the run just under it
+          // and abort, returning a `query_timeout` envelope BEFORE the transport
+          // drops. `deadlineFired` disambiguates our abort from a client cancel.
+          const runAbort = new AbortController();
+          let deadlineFired = false;
+          const deadlineTimer = setTimeout(() => {
+            deadlineFired = true;
+            runAbort.abort();
+          }, queryDeadlineMs);
+          // Carry a client-initiated cancel through to actually stop LLM spend
+          // (the shared dispatch still surfaces the cancel as OperationCancelledError).
+          const onClientAbort = (): void => runAbort.abort();
+          extra.signal.addEventListener("abort", onClientAbort, { once: true });
+
           let result: AgentQueryResult;
           try {
-            // #3500 — progress start/end around the (potentially long) agent
-            // run. #3575 — `executeAgentQuery` takes no abort signal, so the
-            // client-cancel path cuts the dispatch loose at the MCP boundary
-            // (the shared dispatch re-throws OperationCancelledError); the agent
-            // drains server-side. The signal is intentionally not threaded.
+            // #3500 — progress start/end around the (potentially long) agent run.
             result = await withProgressAndCancellation(
               extra,
               { startMessage: "Running Atlas agent", endMessage: "Answer ready" },
               async (reporter, _signal) => {
-                // #4734 — the POST SSE stream emits zero application bytes during
-                // the agent run, so an intermediary idle-timeout (Railway
-                // edge/LB, ~120s) closes it before a long run finishes → the
-                // client sees "transport dropped". Drive a keepalive heartbeat so
-                // periodic progress notifications keep the stream warm. Cleared
-                // in `finally` so the timer never outlives the query. (Only
-                // reaches the wire for progressToken-supplying clients — see
-                // startHeartbeat; a transport-agnostic `: ping` is a follow-up.)
+                // Keepalive heartbeat — keeps the stream warm for progressToken
+                // clients / against an edge idle-timeout. Complementary to the
+                // deadline cap above (which handles the client's hard ceiling)
+                // and the transport-level SSE keepalive (session-store.ts).
                 const stopHeartbeat = startHeartbeat(reporter, {
                   intervalMs: queryHeartbeatIntervalMs,
                   message: "Atlas is still working on your question…",
@@ -196,8 +219,10 @@ export function registerQueryTool(
                     // which `executeAgentQuery` inherits — so executeSQL audit rows
                     // record actor_kind='mcp' and origin-scoped approval rules fire
                     // for origin=mcp. Only connectionId isn't on the context, so
-                    // thread it explicitly (#4124).
+                    // thread it explicitly (#4124). The deadline signal (#4734)
+                    // aborts the run at the cap.
                     ...(connectionId ? { connectionId } : {}),
+                    abortSignal: runAbort.signal,
                   });
                 } finally {
                   stopHeartbeat();
@@ -205,6 +230,21 @@ export function registerQueryTool(
               },
             );
           } catch (err) {
+            // #4734 — our soft deadline fired: the run was aborted before the
+            // client's request-timeout would have dropped the transport. Return
+            // an actionable envelope instead of a lost response. Checked FIRST so
+            // an abort-induced throw isn't misclassified as an internal_error.
+            if (deadlineFired) {
+              return toEnvelopeResult(
+                envelope(
+                  "query_timeout",
+                  `This question took longer than ${Math.round(queryDeadlineMs / 1000)}s and was stopped before the connection would time out. It was too complex to answer in a single request.`,
+                  {
+                    hint: "Narrow the question — a shorter time range, fewer breakdowns, or one metric at a time — or use executeSQL for a specific slice of the data.",
+                  },
+                ),
+              );
+            }
             // The billing/claim gates inside `executeAgentQuery` throw typed
             // errors (mirroring the `/api/v1/query` route). Map each onto the
             // closed MCP envelope catalog rather than letting the shared
@@ -253,6 +293,12 @@ export function registerQueryTool(
             // Anything else (provider/LLM errors, unexpected throws) → let the
             // shared dispatch surface a typed `internal_error` with request_id.
             throw err;
+          } finally {
+            // #4734 — always release the deadline timer + the client-abort
+            // listener, whether the run succeeded, timed out, errored, or the
+            // client cancelled — so neither outlives the dispatch.
+            clearTimeout(deadlineTimer);
+            extra.signal.removeEventListener("abort", onClientAbort);
           }
 
           // Approval branch: one of the agent's SELECTs hit an approval rule and

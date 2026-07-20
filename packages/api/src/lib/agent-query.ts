@@ -143,6 +143,15 @@ export interface ExecuteAgentQueryOptions {
    * workspace's house voice, defaulting to the analyst-grade body.
    */
   answerStyle?: AnswerStyle;
+  /**
+   * #4734 — abort the agent run (forwarded to {@link runAgent} → `streamText`).
+   * The MCP `query` tool sets a soft server-side deadline just under the client's
+   * request-timeout ceiling: a synchronous MCP tool call can't run for minutes
+   * against a client that hard-times-out, so on the deadline the run is aborted
+   * and a `query_timeout` envelope is returned to the client BEFORE the transport
+   * would drop. Also carries a client-initiated cancel through to stop LLM spend.
+   */
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -289,6 +298,7 @@ export async function executeAgentQuery(
       tools: toolRegistry,
       ...(options?.conversationId && { conversationId: options.conversationId }),
       ...(options?.answerStyle && { answerStyle: options.answerStyle }),
+      ...(options?.abortSignal && { abortSignal: options.abortSignal }),
     });
 
     const [text, steps, totalUsage] = await Promise.all([

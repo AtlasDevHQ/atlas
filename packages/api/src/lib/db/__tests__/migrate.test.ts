@@ -234,7 +234,10 @@ describe("runMigrations", () => {
     //   Plus 0178 (region_migrations.source_cleaned_at — the retry-safe stamp
     //   the #4458 source-cleanup fiber writes transactionally with its
     //   deletes) = 179.
-    expect(count).toBe(179);
+    //   Plus 0179 (drop conversations.notebook_state — notebook retirement
+    //   phase 2 of the two-phase drop, readers/writers removed by #4587 in
+    //   v0.0.47, ADR-0035, #4588) = 180.
+    expect(count).toBe(180);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -442,6 +445,7 @@ describe("runMigrations", () => {
         "0176_drop_dashboard_stage_changes.sql",
         "0177_backups_scheduled_window.sql",
         "0178_region_migrations_source_cleaned_at.sql",
+        "0179_drop_conversations_notebook_state.sql",
       ],
     });
 

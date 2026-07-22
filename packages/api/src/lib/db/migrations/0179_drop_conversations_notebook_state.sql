@@ -1,0 +1,30 @@
+-- 0179 — Drop conversations.notebook_state (notebook retirement phase 2, #4588).
+--
+-- Phase 2 of the two-phase drop that retires the notebook surface
+-- (ADR-0035, parent #4587). Phase 1 (#4587, shipped in v0.0.47) removed
+-- every reader and writer of this column: the /notebook route and its
+-- components, the fork/branch endpoints, the chat→notebook conversion, the
+-- `PATCH /:id/notebook-state` persistence route, and the "Share as Report"
+-- path are all gone, and migration 0169 converted the remaining
+-- `surface = 'notebook'` rows to `'web'`. Nothing has read or written
+-- `notebook_state` since v0.0.47.
+--
+-- expand-contract: this is the contract half of the two-phase drop staged by
+-- #4587 / migration 0169. It ships many releases AFTER v0.0.47, so during the
+-- N-1 ↔ N deploy-overlap window the draining old container is already
+-- notebook-free code — no query can reference the missing column. See #4588
+-- and db/migrations/README.md § Two-phase drop discipline.
+--
+-- The Drizzle mirror (`notebookState` on `conversations` in db/schema.ts) is
+-- removed in the same commit, so the next `drizzle-kit generate` cannot emit
+-- a destructive re-add/drop diff.
+--
+-- The branch pointers that lived in `notebook_state.branches` die with the
+-- column — ADR-0035 accepts that: branching exploration is dropped with no
+-- successor, and message history (the user-visible content) was preserved by
+-- 0169's conversion rather than living in this column.
+--
+-- IF EXISTS keeps the migration idempotent for any environment that was
+-- provisioned after the column was already gone.
+
+ALTER TABLE conversations DROP COLUMN IF EXISTS notebook_state;

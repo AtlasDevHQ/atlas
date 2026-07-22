@@ -16,6 +16,7 @@ import { isAnswerStyle, type AnswerStyle } from "@atlas/api/lib/answer-styles";
 import {
   conversationScopeColumnValues,
   conversationScopeFrom,
+  isConversationRoutingMode,
   type ConversationScopePatch,
 } from "@atlas/api/lib/conversation-scope";
 import {
@@ -185,13 +186,6 @@ function readAnswerStyleColumn(r: Record<string, unknown>): AnswerStyle | null {
   return null;
 }
 
-/** Type guard — keeps an unknown DB string from leaking into a typed union. */
-function isConversationRoutingMode(
-  value: unknown,
-): value is import("@useatlas/types/conversation").ConversationRoutingMode {
-  return value === "auto" || value === "pin" || value === "all";
-}
-
 /** Generate a short title from the first user question. */
 export function generateTitle(question: string): string {
   const cleaned = question.replace(/[\r\n]+/g, " ").trim();
@@ -298,7 +292,7 @@ export async function createConversation(opts: {
  *
  * Replaces the five per-field writers it grew out of (#2518 / #3066 / #3067 /
  * #3895 / #4302), which were byte-identical bar the column name and — worse —
- * meant a multi-axis change from one chat turn issued up to four independent
+ * meant a multi-axis change from one chat turn issued up to five independent
  * fire-and-forget writes that could land, or fail, individually. One statement
  * means the row never observes a half-applied scope.
  *
@@ -314,6 +308,13 @@ export async function createConversation(opts: {
  * `undefined` axes are untouched; an axis present with `null` clears it
  * (widen reach to All sources, clear REST focus, …). pg binds the JS
  * `string[]` directly to the `text[]` exclude-set column.
+ *
+ * @security The SET list is assembled from column names, but none of them
+ * are caller-supplied: `conversationScopeColumnValues` only ever emits
+ * `CONVERSATION_SCOPE_COLUMNS` values, a closed module constant keyed by
+ * `CONVERSATION_SCOPE_KEYS`. An unknown key on the patch yields no column and
+ * no parameter. Every *value* is bound, never interpolated, and the auth
+ * scope is the same parameterised {@link scopeClause} every other writer uses.
  */
 export async function updateConversationScope(
   id: string,

@@ -79,9 +79,26 @@ export const ROUTING_MODE_WITHOUT_CONVERSATION: ConversationRoutingMode = "auto"
  * is a pure HTTP client").
  */
 export function routingModeFromColumn(value: unknown): ConversationRoutingMode {
-  return value === "auto" || value === "pin" || value === "all"
+  return isConversationRoutingMode(value)
     ? value
     : CONVERSATION_ROUTING_MODE_DEFAULT;
+}
+
+/**
+ * Type guard for the three legal routing modes — the single statement of
+ * which values the column may hold. Keeps an unknown DB string (a manual
+ * edit, a mode from a future release) from leaking into the typed union.
+ *
+ * Distinct from {@link routingModeFromColumn} on purpose: the guard preserves
+ * "this row says nothing" as a *representable* state, which the read mapper
+ * (`rowToConversation`) needs so the chat route can tell "user picked Auto"
+ * from "row predates the column". The default lands at the routing edge, not
+ * at the read.
+ */
+export function isConversationRoutingMode(
+  value: unknown,
+): value is ConversationRoutingMode {
+  return value === "auto" || value === "pin" || value === "all";
 }
 
 // ---------------------------------------------------------------------------

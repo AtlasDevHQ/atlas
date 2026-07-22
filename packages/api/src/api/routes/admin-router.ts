@@ -160,7 +160,9 @@ export const NO_INTERNAL_DB_MESSAGE = "No internal database configured.";
  *   • `admin-cache.ts`, which deliberately narrows the guard to managed
  *     sessions so the single-tenant modes keep working (#4550);
  *   • `admin-approval.ts`, whose platform-scoped routes are registered
- *     before `requireOrgContext()` on purpose.
+ *     before `requireOrgContext()` on purpose;
+ *   • `admin-model-config.ts`, whose `/catalog` route serves the gateway
+ *     catalog org-lessly and only needs an org on the BYOT branch.
  *
  * It renders the same `{ error, message, requestId }` shape and the same
  * 400 status the middleware does — one message, one envelope.

@@ -7,6 +7,12 @@
  * orchestration order, the best-effort (never-throw) contract, and the
  * `invokeHook` / `deleteCredentials` toggles the datasource path relies on.
  *
+ * #4353 — the orchestrator also owns identity resolution now: it accepts a
+ * bare `installationId` (folded in from the retired hook-only
+ * `invokeOnUninstallHookForInstallRow` shim) as well as a resolved
+ * `(catalogId, catalogSlug)`. The second describe block pins that BOTH forms
+ * run all three steps, so no entry point can run the hook alone again.
+ *
  * The credential-store modules are `mock.module()`-shadowed (they are
  * lazy-`require`d by `deleteDedicatedCredentialStore`); the loader + registry
  * are injected as seams so the real `invokeOnUninstallHook` resolves the
@@ -93,11 +99,25 @@ function fakeRegistry(pluginId: string, onUninstall: (workspaceId: string) => Pr
   };
 }
 
-/** A queryFn that records DELETE FROM scheduled_tasks calls and returns `rowCount` rows. */
-function fakeQueryFn(opts?: { rowCount?: number; reject?: boolean }) {
+/**
+ * A queryFn covering BOTH statements the orchestrator can issue: the
+ * `installationId` identity lookup (`SELECT … FROM workspace_plugins`) and the
+ * `DELETE FROM scheduled_tasks` cleanup. `installRow` (when given) is what the
+ * lookup resolves to; the task DELETE returns `rowCount` rows.
+ */
+function fakeQueryFn(opts?: {
+  rowCount?: number;
+  reject?: boolean;
+  rejectLookup?: boolean;
+  installRow?: { catalog_id: string; slug: string | null; team_id: string | null } | null;
+}) {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
   const fn = async <T = unknown>(sql: string, params?: unknown[]): Promise<T[]> => {
     calls.push({ sql, params });
+    if (sql.includes("FROM workspace_plugins")) {
+      if (opts?.rejectLookup) throw new Error("internal db unavailable (lookup)");
+      return (opts?.installRow ? [opts.installRow] : []) as T[];
+    }
     if (opts?.reject) throw new Error("internal db unavailable");
     return Array.from({ length: opts?.rowCount ?? 0 }, (_, i) => ({ id: `task-${i}` })) as T[];
   };
@@ -211,6 +231,150 @@ describe("tearDownWorkspaceInstall", () => {
     expect(result.scheduledTasksError).toMatch(/internal db unavailable/);
     // Form slug → no dedicated credential store, but the call did not throw.
     expect(result.credentialStoreCleared).toBe(true);
+  });
+});
+
+// ── #4353 — one teardown contract ────────────────────────────────────────
+//
+// The retired `invokeOnUninstallHookForInstallRow` shim resolved
+// `(catalog_id, slug)` from an installation id and then ran the hook ONLY:
+// any route wired to it skipped dedicated-credential and scheduled-task
+// teardown, silently re-opening the orphaned-credential class the orchestrator
+// was built to close. These tests pin that the `installationId` identity form
+// runs the SAME three steps as the `(catalogId, catalogSlug)` form.
+describe("tearDownWorkspaceInstall — installationId identity form", () => {
+  test("clears credentials AND scheduled_tasks regardless of entry point (#4353)", async () => {
+    const byInstallation = await tearDownWorkspaceInstall({
+      workspaceId: "ws-1",
+      installationId: "inst-1",
+      loader: fakeLoader(),
+      registry: fakeRegistry("twenty", async () => {}),
+      queryFn: fakeQueryFn({
+        rowCount: 2,
+        installRow: { catalog_id: "cat:twenty", slug: "twenty", team_id: null },
+      }).fn,
+    });
+
+    const twentyDeletesByInstallation = [...twentyDeletes];
+    const evictsByInstallation = [...evictCalls];
+    twentyDeletes.length = 0;
+    evictCalls.length = 0;
+
+    const byCatalog = await tearDownWorkspaceInstall({
+      workspaceId: "ws-1",
+      catalogId: "cat:twenty",
+      catalogSlug: "twenty",
+      loader: fakeLoader(),
+      registry: fakeRegistry("twenty", async () => {}),
+      queryFn: fakeQueryFn({ rowCount: 2 }).fn,
+    });
+
+    // Identity resolved from the install row, and both forms agree.
+    expect(byInstallation.identityResolved).toBe(true);
+    expect(byInstallation.catalogId).toBe("cat:twenty");
+    expect(byInstallation.catalogSlug).toBe("twenty");
+    // Credentials cleared (twenty_integrations) on BOTH paths — the exact step
+    // the hook-only shim skipped.
+    expect(byInstallation.credentialStoreCleared).toBe(true);
+    expect(byCatalog.credentialStoreCleared).toBe(true);
+    expect(twentyDeletesByInstallation).toEqual(["ws-1"]);
+    expect(twentyDeletes).toEqual(["ws-1"]); // byCatalog (array reset above)
+    // scheduled_tasks cleared on BOTH paths.
+    expect(byInstallation.scheduledTasksDeleted).toBe(2);
+    expect(byCatalog.scheduledTasksDeleted).toBe(2);
+    // Hook ran (and evicted the loader) on BOTH paths.
+    expect(byInstallation.hookInvoked).toContain("twenty");
+    expect(byCatalog.hookInvoked).toContain("twenty");
+    expect(evictsByInstallation).toEqual([{ workspaceId: "ws-1", catalogId: "cat:twenty" }]);
+    expect(evictCalls).toEqual([{ workspaceId: "ws-1", catalogId: "cat:twenty" }]);
+  });
+
+  test("resolves team_id from the install row so Slack credentials are cleared", async () => {
+    // The shim's lookup never selected `team_id`, so a Slack disconnect routed
+    // through it could not have cleared `slack_installations` at all.
+    const { fn } = fakeQueryFn({
+      rowCount: 0,
+      installRow: { catalog_id: "cat:slack", slug: "slack", team_id: "T-77" },
+    });
+    const result = await tearDownWorkspaceInstall({
+      workspaceId: "ws-1",
+      installationId: "inst-slack",
+      loader: fakeLoader(),
+      registry: fakeRegistry("none", async () => {}),
+      queryFn: fn,
+    });
+    expect(slackDeletes).toEqual(["T-77"]);
+    expect(result.credentialStoreCleared).toBe(true);
+    expect(result.credentialError).toBeUndefined();
+  });
+
+  test("scopes the identity lookup by (installationId, workspaceId)", async () => {
+    const { fn, calls } = fakeQueryFn({
+      installRow: { catalog_id: "cat:jira", slug: "jira", team_id: null },
+    });
+    await tearDownWorkspaceInstall({
+      workspaceId: "ws-1",
+      installationId: "inst-1",
+      loader: fakeLoader(),
+      registry: fakeRegistry("none", async () => {}),
+      queryFn: fn,
+    });
+    const lookup = calls.find((c) => c.sql.includes("FROM workspace_plugins"));
+    expect(lookup).toBeDefined();
+    // Cross-workspace isolation: never resolve an install row by id alone.
+    expect(lookup!.sql).toContain("wp.workspace_id = $2");
+    expect(lookup!.params).toEqual(["inst-1", "ws-1"]);
+  });
+
+  test("a NULL catalog slug (raced catalog delete) still runs hook + scheduled_tasks", async () => {
+    const { fn } = fakeQueryFn({
+      rowCount: 4,
+      installRow: { catalog_id: "cat:gone", slug: null, team_id: null },
+    });
+    const result = await tearDownWorkspaceInstall({
+      workspaceId: "ws-1",
+      installationId: "inst-1",
+      loader: fakeLoader(),
+      registry: fakeRegistry("cat:gone", async () => {}),
+      queryFn: fn,
+    });
+    expect(result.catalogSlug).toBe("");
+    expect(result.hookInvoked).toContain("cat:gone");
+    expect(result.scheduledTasksDeleted).toBe(4);
+    // No dedicated store matches "" → the switch no-ops without throwing.
+    expect(result.credentialStoreCleared).toBe(true);
+  });
+
+  test("missing install row → identityResolved:false and no teardown step runs", async () => {
+    const { fn, calls } = fakeQueryFn({ rowCount: 3, installRow: null });
+    const result = await tearDownWorkspaceInstall({
+      workspaceId: "ws-1",
+      installationId: "missing",
+      loader: fakeLoader(),
+      registry: fakeRegistry("twenty", async () => {}),
+      queryFn: fn,
+    });
+    expect(result.identityResolved).toBe(false);
+    expect(result.identityError).toBeUndefined();
+    expect(result.hookInvoked).toEqual([]);
+    expect(twentyDeletes).toEqual([]);
+    expect(result.scheduledTasksDeleted).toBe(0);
+    // Only the lookup ran — no scheduled_tasks DELETE on the caller's 404 path.
+    expect(calls.filter((c) => c.sql.includes("DELETE FROM scheduled_tasks"))).toEqual([]);
+  });
+
+  test("a lookup failure is captured in identityError, never thrown", async () => {
+    const { fn } = fakeQueryFn({ rejectLookup: true });
+    const result = await tearDownWorkspaceInstall({
+      workspaceId: "ws-1",
+      installationId: "inst-1",
+      loader: fakeLoader(),
+      registry: fakeRegistry("none", async () => {}),
+      queryFn: fn,
+    });
+    expect(result.identityResolved).toBe(false);
+    expect(result.identityError).toMatch(/internal db unavailable/);
+    expect(result.hookFailures).toEqual([]);
   });
 });
 

@@ -28,11 +28,7 @@ import {
   InstalledConfigDecryptError,
 } from "@atlas/api/lib/integrations/installed-connection";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
-import { invokeOnUninstallHookForInstallRow } from "@atlas/api/lib/plugins/uninstall-hook";
-import {
-  deleteDedicatedCredentialStore,
-  tearDownWorkspaceInstall,
-} from "@atlas/api/lib/plugins/teardown";
+import { tearDownWorkspaceInstall } from "@atlas/api/lib/plugins/teardown";
 import type { CatalogInstallModel } from "@useatlas/types";
 import { MIN_PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
@@ -1256,19 +1252,27 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       const { orgId } = c.var.orgContext;
       const { id } = c.req.valid("param");
 
-      // #3188 — per-workspace `onUninstall` plugin hook. MUST run before
-      // the DELETE below: the hook lets the plugin revoke external webhook
-      // subscriptions / OAuth grants, which requires the install row (and
-      // the credentials inside its config) to still exist. The helper
-      // resolves (catalog_id, slug) from the installation row itself and
-      // never throws; the catch wrapper is defense-in-depth so even a
-      // defect in the helper can't abort the uninstall. Best-effort and
-      // non-atomic by design: if the row DELETE below fails after the hook
-      // ran, the external webhooks are already revoked — acceptable, since
-      // a re-install re-registers them.
-      yield* Effect.promise(async () => {
+      // #3188 / #3681 / #4353 — the ONE shared teardown, by installation id.
+      // MUST run before the DELETE below: every step needs the install row
+      // (and the credentials inside its config) to still exist — the
+      // `onUninstall` hook so the plugin can authenticate to revoke external
+      // webhook subscriptions / OAuth grants, and the identity resolution so
+      // the dedicated credential switch knows the slug + team_id.
+      //
+      // This route previously called a hook-ONLY shim here and re-derived the
+      // scheduled-task + dedicated-credential steps by hand further down, with
+      // a divergent failure posture (a scheduled-task failure short-circuited
+      // to a 200 BEFORE credential teardown ran — orphaning the credential).
+      // `tearDownWorkspaceInstall` now owns all three steps for every entry
+      // point; it never throws (the catch wrapper is defense-in-depth so even
+      // a defect can't abort the uninstall) and returns a summary for audit.
+      //
+      // Best-effort and non-atomic by design: if the row DELETE below fails
+      // after teardown ran, the external webhooks are already revoked —
+      // acceptable, since a re-install re-registers them.
+      const teardown = yield* Effect.promise(async () => {
         try {
-          await invokeOnUninstallHookForInstallRow({
+          return await tearDownWorkspaceInstall({
             workspaceId: orgId,
             installationId: id,
           });
@@ -1279,8 +1283,9 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
               installationId: id,
               err: err instanceof Error ? err.message : String(err),
             },
-            "onUninstall hook invocation failed — external subscriptions may be orphaned; uninstall proceeds",
+            "Plugin teardown invocation failed — external subscriptions, credentials and scheduled tasks may be orphaned; uninstall proceeds",
           );
+          return null;
         }
       });
 
@@ -1288,10 +1293,13 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       // which we scalar-lookup against plugin_catalog (untouched by this
       // statement) to capture slug alongside the uninstall. The subselect
       // can still return NULL if the catalog row was already gone (e.g. a
-      // catalog_delete cascade raced with this request).
-      const rows = yield* queryEffect<{ id: string; catalog_id: string; slug: string | null; team_id: string | null }>(
+      // catalog_delete cascade raced with this request). `team_id` is no
+      // longer returned here (#4353): the credential switch now reads it from
+      // the teardown's own pre-DELETE install-row lookup, where the row is
+      // guaranteed to still exist.
+      const rows = yield* queryEffect<{ id: string; catalog_id: string; slug: string | null }>(
         `DELETE FROM workspace_plugins WHERE id = $1 AND workspace_id = $2
-         RETURNING id, catalog_id, config->>'team_id' AS team_id, (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug`,
+         RETURNING id, catalog_id, (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug`,
         [id, orgId],
       ).pipe(Effect.tapError((err) => Effect.sync(() => {
         // The DELETE rejected before RETURNING resolved, so we don't have
@@ -1320,14 +1328,55 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
 
       const deleted = rows[0]!;
 
-      // #1987 — clean up plugin-owned scheduled tasks so the scheduler
-      // doesn't keep firing them after uninstall. Scoped by (plugin_id,
-      // org_id) so we never cross workspaces.
+      // #4353 — teardown ran NOTHING (its install-row lookup threw, or the
+      // call itself defected). The row DELETE above still committed, so the
+      // hook, the dedicated credential store and `scheduled_tasks` are ALL
+      // unresolved for a row that no longer exists — the worst orphan shape
+      // this route can produce, and the one case where an encrypted credential
+      // can outlive its install record here. It is a narrow window (the lookup
+      // and the DELETE hit the same internal DB, so a lookup failure usually
+      // means the DELETE 500s too), but it must never be silent: the failure
+      // audit + log.error below are the only operator surface, since the HTTP
+      // response is a normal 200. We deliberately do NOT re-derive the teardown
+      // from the DELETE's RETURNING tuple — that is exactly the divergent
+      // second path this issue removed, and post-DELETE the hook could no
+      // longer authenticate anyway.
+      const teardownIdentityError = teardown === null
+        ? "teardown call failed"
+        : teardown.identityError;
+      if (teardownIdentityError !== undefined || teardown?.identityResolved === false) {
+        const error = teardownIdentityError ?? "install row not resolved";
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.uninstall,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            installationId: id,
+            pluginId: deleted.catalog_id,
+            ...(deleted.slug != null && { pluginSlug: deleted.slug }),
+            orgId,
+            teardownFailed: true,
+            error,
+          },
+        });
+        log.error(
+          { orgId, installationId: id, pluginId: deleted.catalog_id, err: new Error(error) },
+          "Plugin uninstalled but NO teardown ran — the onUninstall hook, dedicated credential store and scheduled tasks may all be orphaned; purge manually",
+        );
+      }
+
+      // #1987 — plugin-owned scheduled tasks are cleaned up by the shared
+      // teardown above (step 3), so the scheduler doesn't keep firing them
+      // after uninstall. Scoped there by (plugin_id, org_id) so we never
+      // cross workspaces. What remains here is the audit surface.
       //
       // Cleanup contract (uninstall — see
       // apps/docs/content/shared/plugins/authoring-guide.mdx#uninstall-contract):
       //   • scheduled_tasks tagged with this plugin's catalog_id are deleted
-      //     here. scheduled_task_runs cascade via FK on task_id.
+      //     by `tearDownWorkspaceInstall`. scheduled_task_runs cascade via
+      //     FK on task_id.
       //   • plugin_<table> rows from the schema-migrate path are RETAINED.
       //     Reinstalling the plugin should pick up where it left off (cached
       //     digest history, cursor state, etc.). Operators who need a
@@ -1350,14 +1399,14 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       //     workspace that no longer has the plugin installed. Documented in
       //     the uninstall contract (apps/docs/.../authoring-guide.mdx#uninstall-contract).
       //
-      // Failure mode: the two DELETEs are deliberately NOT atomic. If this
-      // cleanup rejects after workspace_plugins has already committed, the
-      // catch block below logs a failure audit with `cleanupFailed=true`,
-      // logs a structured log.error (so a stdout-scraping setup catches the
-      // orphan even if the audit-log row drops on internal-DB circuit-open),
-      // and returns 200 — the uninstall semantically succeeded from the
-      // user's perspective. The orphan tasks remain in `scheduled_tasks`
-      // and the scheduler will keep firing them until cleaned manually
+      // Failure mode: teardown and the row DELETE are deliberately NOT atomic.
+      // If the shared teardown's scheduled-task step rejected, we log a failure
+      // audit with `cleanupFailed=true` plus a structured log.error (so a
+      // stdout-scraping setup catches the orphan even if the audit-log row
+      // drops on internal-DB circuit-open) and still return 200 — the uninstall
+      // semantically succeeded from the user's perspective. The orphan tasks
+      // remain in `scheduled_tasks` and the scheduler will keep firing them
+      // until cleaned manually
       // (`DELETE FROM scheduled_tasks WHERE plugin_id = $catalog AND org_id = $org`).
       // We chose best-effort cleanup over a multi-statement transaction
       // because making the cleanup load-bearing would block uninstall on
@@ -1368,14 +1417,12 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       // plugin tasks every tick, rides the count on an OTel span, and warns
       // when > 0 — and, when ATLAS_ORPHAN_TASK_RECONCILE=true, sweeps them
       // using this same (plugin_id, org_id) predicate.
-      let scheduledTasksDeleted: number;
-      try {
-        const taskRows = yield* queryEffect<{ id: string }>(
-          `DELETE FROM scheduled_tasks WHERE plugin_id = $1 AND org_id = $2 RETURNING id`,
-          [deleted.catalog_id, orgId],
-        );
-        scheduledTasksDeleted = taskRows.length;
-      } catch (err) {
+      //
+      // #4353 — unlike the pre-fold route, a scheduled-task failure no longer
+      // short-circuits the response: credential teardown already ran inside
+      // `tearDownWorkspaceInstall` regardless, so it can't be skipped here.
+      const scheduledTasksDeleted = teardown?.scheduledTasksDeleted ?? 0;
+      if (teardown?.scheduledTasksError !== undefined) {
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.uninstall,
           targetType: "plugin",
@@ -1388,7 +1435,7 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
             ...(deleted.slug != null && { pluginSlug: deleted.slug }),
             orgId,
             cleanupFailed: true,
-            error: err instanceof Error ? err.message : String(err),
+            error: teardown.scheduledTasksError,
           },
         });
         log.error(
@@ -1396,60 +1443,50 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
             orgId,
             installationId: id,
             pluginId: deleted.catalog_id,
-            err: err instanceof Error ? err : new Error(String(err)),
+            err: new Error(teardown.scheduledTasksError),
           },
           "Plugin uninstalled but scheduled-task cleanup failed — orphan tasks may continue firing until purged manually",
         );
-        return c.json({ deleted: true, scheduledTasksDeleted: 0 }, 200);
       }
 
       // #3681 — dedicated credential teardown, symmetric with
-      // `WorkspaceInstaller.uninstall`. The `workspace_plugins` DELETE above
-      // does NOT cascade `integration_credentials` (that FK is on
-      // `plugin_catalog`, not `workspace_plugins`) and never touches the
-      // `slack_installations` / `discord_installations` / `twenty_integrations`
-      // tables. Without this, a credential-bearing row removed here orphaned
-      // its dedicated credential. The install route now gates non-`form`
-      // models out, so for a normally-installed plugin this is a no-op; it
-      // remains as defense-in-depth for any pre-gate / dedicated-flow row that
-      // reaches this path. Best-effort (matches the scheduled-task posture):
-      // the install row is already gone, so a transient store hiccup must not
+      // `WorkspaceInstaller.uninstall`, now performed by the shared teardown
+      // above (step 2). The `workspace_plugins` DELETE does NOT cascade
+      // `integration_credentials` (that FK is on `plugin_catalog`, not
+      // `workspace_plugins`) and never touches the `slack_installations` /
+      // `discord_installations` / `twenty_integrations` tables. Without it, a
+      // credential-bearing row removed here orphaned its dedicated credential.
+      // The install route now gates non-`form` models out, so for a normally-
+      // installed plugin this is a no-op; it remains as defense-in-depth for
+      // any pre-gate / dedicated-flow row that reaches this path. Best-effort
+      // (matches the scheduled-task posture): a transient store hiccup must not
       // surface as a 500 — log + failure-audit instead.
-      yield* Effect.promise(async () => {
-        try {
-          await deleteDedicatedCredentialStore(
-            deleted.slug ?? "",
+      if (teardown?.credentialError !== undefined) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.uninstall,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            installationId: id,
+            pluginId: deleted.catalog_id,
+            ...(deleted.slug != null && { pluginSlug: deleted.slug }),
             orgId,
-            deleted.catalog_id,
-            deleted.team_id,
-          );
-        } catch (err) {
-          logAdminAction({
-            actionType: ADMIN_ACTIONS.plugin.uninstall,
-            targetType: "plugin",
-            targetId: id,
-            scope: "workspace",
-            status: "failure",
-            metadata: {
-              installationId: id,
-              pluginId: deleted.catalog_id,
-              ...(deleted.slug != null && { pluginSlug: deleted.slug }),
-              orgId,
-              credentialTeardownFailed: true,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          });
-          log.error(
-            {
-              orgId,
-              installationId: id,
-              pluginId: deleted.catalog_id,
-              err: err instanceof Error ? err : new Error(String(err)),
-            },
-            "Plugin uninstalled but dedicated credential teardown failed — credential row may be orphaned until purged manually",
-          );
-        }
-      });
+            credentialTeardownFailed: true,
+            error: teardown.credentialError,
+          },
+        });
+        log.error(
+          {
+            orgId,
+            installationId: id,
+            pluginId: deleted.catalog_id,
+            err: new Error(teardown.credentialError),
+          },
+          "Plugin uninstalled but dedicated credential teardown failed — credential row may be orphaned until purged manually",
+        );
+      }
 
       logAdminAction({
         actionType: ADMIN_ACTIONS.plugin.uninstall,

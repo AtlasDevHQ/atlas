@@ -53,6 +53,7 @@ import { EXECUTE_SQL_TOOL_DESCRIPTION } from "./descriptions";
 import { appendRowLimit, hasLimitClause } from "./auto-limit";
 import { type RoutingMode, type RoutingReason } from "@atlas/api/lib/env-routing";
 import { resolveExecutionTarget, type ExecutionTarget } from "@atlas/api/lib/group-reach/execution-target";
+import { ROUTING_MODE_WITHOUT_CONVERSATION } from "@atlas/api/lib/conversation-scope";
 import { resolveSqlExecutionPlan } from "./sql-execution-plan";
 import { mergeMemberResults, type ConnectionContribution } from "@atlas/api/lib/multi-env-merger";
 import type { ExecuteSqlSuccessResult, ExecuteSqlFailureResult } from "@useatlas/types";
@@ -1334,7 +1335,10 @@ export function buildSqlExecuteSpanAttrs(opts: {
   const attrs: Record<string, string | number | boolean> = {
     "db.system": opts.dbType,
     "atlas.connection_id": opts.connectionId,
-    "atlas.routing_mode": opts.routingMode ?? "auto",
+    // #4351 — no routing mode threaded ⇒ the caller has no conversation
+    // (direct tool / MCP / scheduler); attribute the span to the same
+    // documented default the planner uses for that case.
+    "atlas.routing_mode": opts.routingMode ?? ROUTING_MODE_WITHOUT_CONVERSATION,
   };
   if (opts.connectionGroupId) {
     attrs["atlas.connection_group_id"] = opts.connectionGroupId;

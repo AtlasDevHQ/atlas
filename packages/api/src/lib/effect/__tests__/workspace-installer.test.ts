@@ -158,7 +158,6 @@ const mockInvokeOnUninstallHook: Mock<
 
 void mock.module("@atlas/api/lib/plugins/uninstall-hook", () => ({
   invokeOnUninstallHook: mockInvokeOnUninstallHook,
-  invokeOnUninstallHookForInstallRow: mock(async () => ({ invoked: [], failures: [] })),
   ON_UNINSTALL_HOOK_TIMEOUT_MS: 15_000,
 }));
 

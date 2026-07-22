@@ -8,11 +8,21 @@
  * subscription kept delivering events to a workspace that no longer had
  * the plugin installed.
  *
- * `invokeOnUninstallHook` is that seam. Both uninstall paths call it
- * BEFORE removing the install row and credential stores (the marketplace
- * `DELETE /api/v1/admin/marketplace/:id` route and
- * `WorkspaceInstaller.uninstall`), so the plugin can still authenticate
- * against the external platform while revoking.
+ * `invokeOnUninstallHook` is that seam. It is step 1 of
+ * `tearDownWorkspaceInstall` (`plugins/teardown.ts`) — the single teardown
+ * orchestrator every route-level uninstall path runs — and is also called
+ * directly by `WorkspaceInstaller.uninstall`, which needs the hook + the
+ * two-store teardown under its own stricter (ADR-0003) failure posture.
+ * Every caller runs it BEFORE removing the install row and credential
+ * stores, so the plugin can still authenticate against the external
+ * platform while revoking.
+ *
+ * #4353 — a former `invokeOnUninstallHookForInstallRow` shim resolved
+ * `(catalogId, slug)` from an `installationId` and then ran the hook ONLY,
+ * skipping credential + scheduled-task teardown. That row lookup now lives
+ * inside `tearDownWorkspaceInstall` (its `installationId` identity form), so
+ * an uninstall entry point can no longer opt into the hook alone. Do NOT
+ * re-add an id-resolving wrapper here.
  *
  * Resolution — which plugin instance(s) get the hook:
  *
@@ -39,9 +49,9 @@
  * ({@link ON_UNINSTALL_HOOK_TIMEOUT_MS}) so a hung plugin HTTP call can
  * never hang the admin DELETE indefinitely; a timeout is recorded as a
  * failure entry. After the candidates run, the loader entry for
- * `(workspaceId, catalogId)` is evicted — step 1 warms (and caches) a
- * credentialed instance, and without the evict the marketplace DELETE
- * route would leak that socket-holding instance until process restart.
+ * `(workspaceId, catalogId)` is evicted — resolution step 1 warms (and
+ * caches) a credentialed instance, and without the evict the marketplace
+ * DELETE route would leak that socket-holding instance until process restart.
  * (`WorkspaceInstaller.uninstall` evicts again afterwards; evicting an
  * absent key is a no-op, so the double-evict is harmless.)
  *
@@ -54,7 +64,6 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { internalQuery } from "@atlas/api/lib/db/internal";
 import { lazyPluginLoader, type LazyPluginLoader } from "./lazy-loader";
 import { plugins, type PluginLike, type PluginRegistry, type PluginType } from "./registry";
 
@@ -222,73 +231,4 @@ export async function invokeOnUninstallHook(
   }
 
   return { invoked, failures };
-}
-
-interface InstallRowForUninstall extends Record<string, unknown> {
-  catalog_id: string;
-  slug: string | null;
-}
-
-/**
- * Marketplace-route variant: resolve `(catalogId, slug)` from the
- * installation row first, then delegate to {@link invokeOnUninstallHook}.
- * The route only has the installation `id`; this lookup MUST run before
- * the route's `DELETE … RETURNING` so the hook sees the row (and the
- * plugin its credentials) while they still exist.
- *
- * Never throws: a missing row (the route's own 404 path) logs and
- * returns an empty summary; a lookup FAILURE additionally pushes a
- * failure entry (keyed by the installation id) so callers can
- * distinguish "nothing to do" from "could not even look".
- */
-export async function invokeOnUninstallHookForInstallRow(args: {
-  readonly workspaceId: string;
-  readonly installationId: string;
-  /** Test seam — defaults to `internalQuery`. */
-  readonly queryFn?: <T = unknown>(sql: string, params?: unknown[]) => Promise<T[]>;
-  readonly loader?: Pick<LazyPluginLoader, "hasBuilder" | "getOrInstantiate" | "evict">;
-  readonly registry?: Pick<PluginRegistry, "get">;
-  readonly hookTimeoutMs?: number;
-}): Promise<OnUninstallInvocationResult> {
-  const { workspaceId, installationId } = args;
-  const queryFn = args.queryFn ?? internalQuery;
-
-  let rows: InstallRowForUninstall[];
-  try {
-    rows = await queryFn<InstallRowForUninstall>(
-      `SELECT wp.catalog_id, pc.slug
-         FROM workspace_plugins wp
-         LEFT JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-        WHERE wp.id = $1 AND wp.workspace_id = $2
-        LIMIT 1`,
-      [installationId, workspaceId],
-    );
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log.warn(
-      { workspaceId, installationId, err: message },
-      "onUninstall: install-row lookup failed — skipping hook (uninstall proceeds)",
-    );
-    // Keyed by installation id (we never resolved a plugin id) so the
-    // summary is distinguishable from the empty "nothing to do" shape —
-    // mirrors the builder-failure branch in `invokeOnUninstallHook`.
-    return {
-      invoked: [],
-      failures: [{ pluginId: installationId, error: message }],
-    };
-  }
-
-  if (rows.length === 0) {
-    // Row already gone (or never existed) — the route's DELETE will 404.
-    return { invoked: [], failures: [] };
-  }
-
-  return invokeOnUninstallHook({
-    workspaceId,
-    catalogId: rows[0].catalog_id,
-    catalogSlug: rows[0].slug,
-    ...(args.loader ? { loader: args.loader } : {}),
-    ...(args.registry ? { registry: args.registry } : {}),
-    ...(args.hookTimeoutMs !== undefined ? { hookTimeoutMs: args.hookTimeoutMs } : {}),
-  });
 }

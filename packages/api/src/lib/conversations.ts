@@ -14,6 +14,12 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { isAnswerStyle, type AnswerStyle } from "@atlas/api/lib/answer-styles";
 import {
+  conversationScopeColumnValues,
+  conversationScopeFrom,
+  isConversationRoutingMode,
+  type ConversationScopePatch,
+} from "@atlas/api/lib/conversation-scope";
+import {
   hasInternalDB,
   internalQuery,
   internalExecute,
@@ -98,28 +104,6 @@ export type CrudDataResult<T> = { ok: true; data: T } | { ok: false; reason: Cru
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve a persisted `routing_mode` value into the runtime three-state
- * union, applying the documented NULL → `"pin"` back-compat default.
- *
- * Centralises the default in one place — pre-fix, the chat route resolved
- * NULL → "pin" while `tools/sql.ts` resolved missing-routingMode → "auto",
- * which is a real correctness gap for any caller that didn't go through
- * the chat route's stamping step (MCP, scheduler, unit tests).
- *
- * Web's `effectiveMode` helper in `chat/env-picker.tsx` must mirror this
- * default — the picker UI converts NULL → "pin" for the trigger label
- * and the mode-row highlight. Drift between them is a UX bug, not a
- * correctness bug, so the duplication is acceptable until web can import
- * api-internal helpers (which it deliberately cannot per CLAUDE.md
- * "frontend is a pure HTTP client").
- */
-export function resolveRoutingMode(
-  stored: import("@useatlas/types/conversation").ConversationRoutingMode | null | undefined,
-): import("@useatlas/types/conversation").ConversationRoutingMode {
-  return stored ?? "pin";
-}
-
 function rowToConversation(r: Record<string, unknown>): Conversation {
   return {
     id: r.id as string,
@@ -202,13 +186,6 @@ function readAnswerStyleColumn(r: Record<string, unknown>): AnswerStyle | null {
   return null;
 }
 
-/** Type guard — keeps an unknown DB string from leaking into a typed union. */
-function isConversationRoutingMode(
-  value: unknown,
-): value is import("@useatlas/types/conversation").ConversationRoutingMode {
-  return value === "auto" || value === "pin" || value === "all";
-}
-
 /** Generate a short title from the first user question. */
 export function generateTitle(question: string): string {
   const cleaned = question.replace(/[\r\n]+/g, " ").trim();
@@ -274,55 +251,33 @@ export async function createConversation(opts: {
   orgId?: string | null;
 }): Promise<{ id: string } | null> {
   if (!hasInternalDB()) return null;
-  // #3066 — null/undefined ⇒ let the column default ('{}') apply; an
-  // explicit [] is equivalent (nothing excluded). pg binds a JS string[]
-  // directly to the text[] column.
-  const restExcluded = opts.restExcludedDatasourceIds ?? [];
-  // #3067 — null/undefined ⇒ persist NULL ("not focused").
-  const restFocus = opts.restFocusDatasourceId ?? null;
-  // #3895 — null/undefined ⇒ persist NULL ("All sources").
-  const groupReach = opts.groupReach ?? null;
-  // #4302 — null/undefined ⇒ persist NULL ("no explicit choice").
-  const answerStyle = opts.answerStyle ?? null;
+  // #4351 — the scope axes (`routing_mode`, the two REST-scope columns,
+  // `group_reach`, `answer_style`) come from ONE normalised value, so a new
+  // axis lands in `lib/conversation-scope.ts` and nothing here changes. The
+  // normalisation is the per-axis persisted default: `[]` for the exclude-set
+  // (nothing excluded), NULL for the rest (not focused / All sources / no
+  // explicit choice / read as the back-compat routing default).
+  const scope = conversationScopeFrom(opts);
   try {
-    const rows = opts.id
-      ? await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    // One column list for both the caller-supplied-id and generated-id
+    // branches — the `id` column is the only difference, and hand-copying the
+    // 11-column list twice is exactly the tax #4351 removes.
+    const fields: (readonly [column: string, value: unknown])[] = [
+      ...(opts.id ? [["id", opts.id] as const] : []),
+      ["user_id", opts.userId ?? null],
+      ["title", opts.title ?? null],
+      ["surface", opts.surface ?? "web"],
+      ["connection_id", opts.connectionId ?? null],
+      ["connection_group_id", opts.connectionGroupId ?? null],
+      ...conversationScopeColumnValues(scope),
+      ["org_id", opts.orgId ?? null],
+    ];
+    const rows = await internalQuery<{ id: string }>(
+      `INSERT INTO conversations (${fields.map(([column]) => column).join(", ")})
+           VALUES (${fields.map((_, i) => `$${i + 1}`).join(", ")})
            RETURNING id`,
-          [
-            opts.id,
-            opts.userId ?? null,
-            opts.title ?? null,
-            opts.surface ?? "web",
-            opts.connectionId ?? null,
-            opts.connectionGroupId ?? null,
-            opts.routingMode ?? null,
-            restExcluded,
-            restFocus,
-            groupReach,
-            answerStyle,
-            opts.orgId ?? null,
-          ],
-        )
-      : await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, answer_style, org_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-           RETURNING id`,
-          [
-            opts.userId ?? null,
-            opts.title ?? null,
-            opts.surface ?? "web",
-            opts.connectionId ?? null,
-            opts.connectionGroupId ?? null,
-            opts.routingMode ?? null,
-            restExcluded,
-            restFocus,
-            groupReach,
-            answerStyle,
-            opts.orgId ?? null,
-          ],
-        );
+      fields.map(([, value]) => value),
+    );
     return rows[0] ?? null;
   } catch (err) {
     log.error({ err: errorMessage(err) }, "createConversation failed");
@@ -331,148 +286,66 @@ export async function createConversation(opts: {
 }
 
 /**
- * #2518 — update the conversation's `routing_mode`. Returns { ok: true }
- * on a row update, `not_found` when the conversation doesn't belong to
- * the caller (scoped via {@link scopeClause}). Fail-open semantics
- * match the rest of this file: a no-DB / error result is logged but the
- * chat turn still proceeds (the row stays at its previous value and the
- * runtime falls back to its read-side default).
+ * #4351 — the **single** conversation-scope writer. Applies a
+ * {@link ConversationScopePatch} (routing mode / REST exclude-set / REST
+ * focus / group reach / answer style) as **one** org-scoped, atomic UPDATE.
+ *
+ * Replaces the five per-field writers it grew out of (#2518 / #3066 / #3067 /
+ * #3895 / #4302), which were byte-identical bar the column name and — worse —
+ * meant a multi-axis change from one chat turn issued up to five independent
+ * fire-and-forget writes that could land, or fail, individually. One statement
+ * means the row never observes a half-applied scope.
+ *
+ * Contract, unchanged from the writers it replaces:
+ *   - Auth-scoped via {@link scopeClause} — `not_found` when the row isn't the
+ *     caller's (a cross-org / cross-user id is indistinguishable from missing).
+ *   - Fail-open: a `no_db` / `error` result is logged but never throws; the
+ *     chat turn still proceeds honouring the request body for this turn.
+ *   - An **empty patch is a no-op success** (`{ ok: true }`, no statement
+ *     issued) — the caller diffs first (`diffConversationScope`) and a turn
+ *     that changes nothing must not burn a write.
+ *
+ * `undefined` axes are untouched; an axis present with `null` clears it
+ * (widen reach to All sources, clear REST focus, …). pg binds the JS
+ * `string[]` directly to the `text[]` exclude-set column.
+ *
+ * @security The SET list is assembled from column names, but none of them
+ * are caller-supplied: `conversationScopeColumnValues` only ever emits
+ * `CONVERSATION_SCOPE_COLUMNS` values, a closed module constant keyed by
+ * `CONVERSATION_SCOPE_KEYS`. An unknown key on the patch yields no column and
+ * no parameter. Every *value* is bound, never interpolated, and the auth
+ * scope is the same parameterised {@link scopeClause} every other writer uses.
  */
-export async function updateConversationRoutingMode(
+export async function updateConversationScope(
   id: string,
-  routingMode: import("@useatlas/types/conversation").ConversationRoutingMode,
+  patch: ConversationScopePatch,
   userId?: string | null,
   orgId?: string | null,
 ): Promise<CrudResult> {
+  const fields = conversationScopeColumnValues(patch);
+  if (fields.length === 0) return { ok: true };
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const scope = scopeClause(3, userId, orgId);
+    // $1..$n are the scope columns, $n+1 is the id, the auth scope follows.
+    const idIdx = fields.length + 1;
+    const scope = scopeClause(idIdx + 1, userId, orgId);
+    const assignments = fields
+      .map(([column], i) => `${column} = $${i + 1}`)
+      .join(", ");
     const rows = await internalQuery<{ id: string }>(
-      `UPDATE conversations SET routing_mode = $1, updated_at = now()
-       WHERE id = $2${scope.sql} RETURNING id`,
-      [routingMode, id, ...scope.params],
-    );
-    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
-  } catch (err) {
-    log.error({ err: errorMessage(err) }, "updateConversationRoutingMode failed");
-    return { ok: false, reason: "error" };
-  }
-}
-
-/**
- * #3066 — update the conversation's `rest_excluded_datasource_ids`. Same
- * fail-open / org-scoped contract as {@link updateConversationRoutingMode}:
- * a no-DB / error result is logged but the chat turn still proceeds (the
- * runtime honours the body's exclude-set for this turn even if the persist
- * fails). pg binds the JS string[] directly to the text[] column; `[]`
- * clears any prior exclusion (re-includes everything).
- */
-export async function updateConversationRestExcluded(
-  id: string,
-  restExcludedDatasourceIds: string[],
-  userId?: string | null,
-  orgId?: string | null,
-): Promise<CrudResult> {
-  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
-  try {
-    const scope = scopeClause(3, userId, orgId);
-    const rows = await internalQuery<{ id: string }>(
-      `UPDATE conversations SET rest_excluded_datasource_ids = $1, updated_at = now()
-       WHERE id = $2${scope.sql} RETURNING id`,
-      [restExcludedDatasourceIds, id, ...scope.params],
-    );
-    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
-  } catch (err) {
-    log.error({ err: errorMessage(err) }, "updateConversationRestExcluded failed");
-    return { ok: false, reason: "error" };
-  }
-}
-
-/**
- * #3067 — update the conversation's `rest_focus_datasource_id`. Same
- * fail-open / org-scoped contract as {@link updateConversationRestExcluded}.
- * Pass an `install_id` to focus that datasource (suspends `executeSQL`), or
- * `null` to clear focus (return to default scope — SQL routing + exclude-set
- * apply again). pg binds the string|null directly to the nullable text column.
- */
-export async function updateConversationRestFocus(
-  id: string,
-  restFocusDatasourceId: string | null,
-  userId?: string | null,
-  orgId?: string | null,
-): Promise<CrudResult> {
-  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
-  try {
-    const scope = scopeClause(3, userId, orgId);
-    const rows = await internalQuery<{ id: string }>(
-      `UPDATE conversations SET rest_focus_datasource_id = $1, updated_at = now()
-       WHERE id = $2${scope.sql} RETURNING id`,
-      [restFocusDatasourceId, id, ...scope.params],
-    );
-    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
-  } catch (err) {
-    log.error({ err: errorMessage(err) }, "updateConversationRestFocus failed");
-    return { ok: false, reason: "error" };
-  }
-}
-
-/**
- * #3895 (ADR-0022) — update the conversation's `group_reach`. Same fail-open /
- * org-scoped contract as {@link updateConversationRestFocus}: a no-DB / error
- * result is logged but the chat turn still proceeds (the runtime honours the
- * body's reach for this turn even if the persist fails). Pass a
- * `connection_group_id` to Focus that group (hard/exclusive — only it is
- * reachable), or `null` to widen back to All sources (every visible group
- * reachable). pg binds the string|null directly to the nullable text column.
- */
-export async function updateConversationGroupReach(
-  id: string,
-  groupReach: string | null,
-  userId?: string | null,
-  orgId?: string | null,
-): Promise<CrudResult> {
-  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
-  try {
-    const scope = scopeClause(3, userId, orgId);
-    const rows = await internalQuery<{ id: string }>(
-      `UPDATE conversations SET group_reach = $1, updated_at = now()
-       WHERE id = $2${scope.sql} RETURNING id`,
-      [groupReach, id, ...scope.params],
-    );
-    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
-  } catch (err) {
-    log.error({ err: errorMessage(err) }, "updateConversationGroupReach failed");
-    return { ok: false, reason: "error" };
-  }
-}
-
-/**
- * #4302 — update the conversation's `answer_style` (the editorial voice of
- * the agent's answers — lib/answer-styles.ts). Same fail-open / org-scoped
- * contract as {@link updateConversationRoutingMode}: a no-DB / error result
- * is logged but the chat turn still proceeds (the runtime honours the
- * body's style for this turn even if the persist fails). The chat route's
- * Zod schema is the validation seam — only registry names reach here.
- */
-export async function updateConversationAnswerStyle(
-  id: string,
-  answerStyle: AnswerStyle,
-  userId?: string | null,
-  orgId?: string | null,
-): Promise<CrudResult> {
-  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
-  try {
-    const scope = scopeClause(3, userId, orgId);
-    const rows = await internalQuery<{ id: string }>(
-      `UPDATE conversations SET answer_style = $1, updated_at = now()
-       WHERE id = $2${scope.sql} RETURNING id`,
-      [answerStyle, id, ...scope.params],
+      `UPDATE conversations SET ${assignments}, updated_at = now()
+       WHERE id = $${idIdx}${scope.sql} RETURNING id`,
+      [...fields.map(([, value]) => value), id, ...scope.params],
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error(
-      { err: errorMessage(err), conversationId: id },
-      "updateConversationAnswerStyle failed",
+      {
+        err: errorMessage(err),
+        conversationId: id,
+        columns: fields.map(([column]) => column),
+      },
+      "updateConversationScope failed",
     );
     return { ok: false, reason: "error" };
   }

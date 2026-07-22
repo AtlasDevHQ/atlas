@@ -3,17 +3,20 @@
  *
  * Everything injects fresh `LazyPluginLoader` / `PluginRegistry`
  * instances via the helper's test seams — no process-wide singleton
- * mutation, no `mock.module()`. The DB lookup variant injects `queryFn`.
+ * mutation, no `mock.module()`.
+ *
+ * #4353 — the `invokeOnUninstallHookForInstallRow` shim (hook-only, resolved
+ * from an installation id) is gone; its row-lookup behavior is now the
+ * `installationId` identity form of `tearDownWorkspaceInstall` and is covered
+ * in `teardown.test.ts`, where the credential + scheduled-task steps that the
+ * shim skipped are asserted alongside the hook.
  */
 
 import { describe, expect, it } from "bun:test";
 
 import { LazyPluginLoader } from "../lazy-loader";
 import { PluginRegistry, type PluginLike } from "../registry";
-import {
-  invokeOnUninstallHook,
-  invokeOnUninstallHookForInstallRow,
-} from "../uninstall-hook";
+import { invokeOnUninstallHook } from "../uninstall-hook";
 
 const WSID = "ws-hook-test";
 const CATALOG_ID = "catalog:jira";
@@ -299,81 +302,5 @@ describe("invokeOnUninstallHook — globally-registered plugins", () => {
     });
     expect(calls).toEqual([WSID]);
     expect(result.invoked).toEqual([CATALOG_ID]);
-  });
-});
-
-describe("invokeOnUninstallHookForInstallRow", () => {
-  it("looks up (catalogId, slug) from the install row, then invokes the hook", async () => {
-    const calls: string[] = [];
-    const registry = new PluginRegistry();
-    registry.register(makePlugin("jira-action", async (wid) => {
-        calls.push(wid);
-      }));
-
-    const queries: Array<{ sql: string; params?: unknown[] }> = [];
-    const queryFn = async <T = unknown>(sql: string, params?: unknown[]): Promise<T[]> => {
-      queries.push({ sql, params });
-      return [{ catalog_id: CATALOG_ID, slug: "jira" }] as T[];
-    };
-
-    const result = await invokeOnUninstallHookForInstallRow({
-      workspaceId: WSID,
-      installationId: "inst-1",
-      queryFn,
-      loader: emptyLoader(),
-      registry,
-    });
-
-    expect(queries).toHaveLength(1);
-    expect(queries[0].params).toEqual(["inst-1", WSID]);
-    expect(calls).toEqual([WSID]);
-    expect(result.invoked).toEqual(["jira-action"]);
-  });
-
-  it("returns empty result when the install row is missing (route 404 path)", async () => {
-    const result = await invokeOnUninstallHookForInstallRow({
-      workspaceId: WSID,
-      installationId: "missing",
-      queryFn: async () => [],
-      loader: emptyLoader(),
-      registry: new PluginRegistry(),
-    });
-    expect(result.invoked).toEqual([]);
-    expect(result.failures).toEqual([]);
-  });
-
-  it("never throws when the lookup query rejects — and reports the failure (distinguishable from nothing-to-do)", async () => {
-    const result = await invokeOnUninstallHookForInstallRow({
-      workspaceId: WSID,
-      installationId: "inst-1",
-      queryFn: async () => {
-        throw new Error("internal DB unavailable");
-      },
-      loader: emptyLoader(),
-      registry: new PluginRegistry(),
-    });
-    expect(result.invoked).toEqual([]);
-    // Keyed by the installation id — no plugin id was ever resolved.
-    expect(result.failures).toEqual([
-      { pluginId: "inst-1", error: "internal DB unavailable" },
-    ]);
-  });
-
-  it("evicts the lazy loader entry on the install-row (marketplace route) path too", async () => {
-    const { loader: stubLoader, evictCalls } = makeStubLoader({
-      hasBuilder: () => true,
-      getOrInstantiate: async () => makePlugin("jira:ws", async () => undefined),
-    });
-
-    await invokeOnUninstallHookForInstallRow({
-      workspaceId: WSID,
-      installationId: "inst-1",
-      queryFn: async <T = unknown>(): Promise<T[]> =>
-        [{ catalog_id: CATALOG_ID, slug: "jira" }] as T[],
-      loader: stubLoader,
-      registry: new PluginRegistry(),
-    });
-
-    expect(evictCalls).toEqual([{ workspaceId: WSID, catalogId: CATALOG_ID }]);
   });
 });

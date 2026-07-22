@@ -802,30 +802,13 @@ export function createApiTestMocks(
     // exercise the routing override this mock locally via mock.module.
     resolveGroupForConnection: mock(() => Promise.resolve(null)),
   verifyGroupBelongsToOrg: mock(() => Promise.resolve("ok")),
-    // #2518 — three-state Auto/Pin/All picker write path. Default to a
-    // no-op success — chat-route tests don't write the row unless they
-    // exercise the picker toggle path, and they override locally when
-    // they do.
-    updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
-    // #3066 — per-conversation REST exclude-set write path. Same no-op
-    // success default as the routing-mode write: chat-route tests don't
-    // persist the row unless they exercise the scope-picker toggle, and
-    // they override locally when they do.
-    updateConversationRestExcluded: mock(() => Promise.resolve({ ok: true as const })),
-    updateConversationRestFocus: mock(() => Promise.resolve({ ok: true as const })),
-    // #3895 — per-conversation Group reach write path. Same no-op success
-    // default; chat.ts statically imports it, so the shared mock MUST export it
-    // (a partial mock omitting it breaks every route test's module load with a
-    // "Export named 'updateConversationGroupReach' not found" SyntaxError).
-    updateConversationGroupReach: mock(() => Promise.resolve({ ok: true as const })),
-    updateConversationAnswerStyle: mock(() => Promise.resolve({ ok: true as const })),
-    // NULL → "pin" back-compat default helper used by the chat route to
-    // resolve a conversation's persisted `routing_mode`. Mocked as a pure
-    // pass-through so tests can simulate either an explicit mode or the
-    // legacy NULL → "pin" coercion without further wiring.
-    resolveRoutingMode: mock(
-      (m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin",
-    ),
+    // #4351 — the SINGLE conversation-scope write path (it replaced the five
+    // per-axis writers). Default to a no-op success: chat-route tests don't
+    // write the row unless they exercise a picker toggle, and they override
+    // locally when they do. chat.ts statically imports it, so the shared mock
+    // MUST export it — a partial mock omitting it breaks every route test's
+    // module load with an "Export named ... not found" SyntaxError.
+    updateConversationScope: mock(() => Promise.resolve({ ok: true as const })),
   }));
 
   // ── Security ──────────────────────────────────────────────────

@@ -528,6 +528,13 @@ describe("migrateAuthTables", () => {
             // be in the already-applied set so this "all applied" test sees
             // zero new migrations.
             { name: "0178_region_migrations_source_cleaned_at.sql" },
+            // 0179 (#4588, ADR-0035) — drop conversations.notebook_state
+            // (notebook retirement phase 2; readers/writers removed by #4587
+            // in v0.0.47). Plain DROP COLUMN on an Atlas-internal table, no
+            // Better Auth involvement, so it runs in every auth mode — must
+            // be in the already-applied set so this "all applied" test sees
+            // zero new migrations.
+            { name: "0179_drop_conversations_notebook_state.sql" },
           ],
         };
       }

@@ -21,7 +21,10 @@
  * Degradation is deliberate and total: no credentials, an endpoint that
  * doesn't implement the multipart-listing API, or any other refusal must
  * never fail a backup cycle. `listInProgress` reports "unsupported" via
- * {@link S3MultipartUnsupportedError} and the caller no-ops at debug level.
+ * {@link S3MultipartUnsupportedError} and the caller no-ops — at debug
+ * level, except for a `403`, which the driver raises to an actionable warn
+ * because a denied `?uploads` query is as likely a fixable IAM gap as a
+ * genuinely unsupported store.
  */
 
 import { createHash, createHmac } from "crypto";

@@ -270,10 +270,11 @@ describe("trial clock stamps", () => {
  * and that a NULL-`trial_ends_at` workspace created at the same instant lands
  * on the same date via the #3434 `createdAt` fallback.
  *
- * The clocks deliberately include both sides of a US and an EU DST
- * transition, a leap day, and a UTC year boundary: the clock is epoch-ms
- * arithmetic, so `TRIAL_DAYS` means exactly `TRIAL_DAYS * 24h` regardless of
- * what the local calendar did in between.
+ * The clocks deliberately straddle a US DST spring-forward, sit on the edge
+ * of an EU DST fall-back, and include a leap day and a UTC year boundary: the
+ * clock is epoch-ms arithmetic, so `TRIAL_DAYS` means exactly
+ * `TRIAL_DAYS * 24h` regardless of what any local calendar did in between, and
+ * regardless of the TZ the test process happens to run under.
  */
 describe("the stamped clock is the enforced clock (write side == read side, #4354)", () => {
   const STAMP_CLOCKS: ReadonlyArray<readonly [label: string, iso: string]> = [
@@ -341,13 +342,18 @@ describe("the stamped clock is the enforced clock (write side == read side, #435
  * rather than silently skipped. Non-arithmetic reads of the constant (plan
  * metadata like `trialDays: TRIAL_DAYS`, Stripe's `freeTrial: { days }`) are
  * fine — only multiplication into a millisecond span is the drift hazard.
+ *
+ * CAVEAT: this reads sources off disk rather than importing them, so it is
+ * `--affected`-blind — editing some far-away file does not schedule it in the
+ * local `test-isolated.ts --affected` loop. The full `bun run test` / CI
+ * `api-tests` shards are what actually catch a re-inlined stamper.
  */
 describe("structural: TRIAL_DAYS arithmetic lives only in trial-state.ts (#4354)", () => {
-  /** Walk up to the monorepo root (has both `packages/` and `ee/`). */
+  /** Walk up to the monorepo root (has both `packages/` and `plugins/`). */
   function repoRoot(): string {
     let dir = import.meta.dir;
     for (let i = 0; i < 12; i++) {
-      if (existsSync(join(dir, "packages")) && existsSync(join(dir, "ee"))) return dir;
+      if (existsSync(join(dir, "packages")) && existsSync(join(dir, "plugins"))) return dir;
       dir = dirname(dir);
     }
     throw new Error(`repo root not found from ${import.meta.dir}`);
@@ -370,10 +376,14 @@ describe("structural: TRIAL_DAYS arithmetic lives only in trial-state.ts (#4354)
   it("no source outside trial-state.ts multiplies TRIAL_DAYS into a duration", () => {
     const root = repoRoot();
     const canonical = join(root, "packages/api/src/lib/billing/trial-state.ts");
-    const files = [
-      ...collectSources(join(root, "packages/api/src"), []),
-      ...collectSources(join(root, "ee/src"), []),
-    ].filter((f) => f !== canonical);
+    const roots = ["packages/api/src", "ee/src"].map((r) => join(root, r));
+    // Assert the scanned trees are actually THERE rather than quietly
+    // guarding nothing — `ee/` in particular is stub-swappable, and a guard
+    // that silently stops covering the SaaS trial provisioner is worse than
+    // no guard at all.
+    for (const dir of roots) expect({ dir, exists: existsSync(dir) }).toEqual({ dir, exists: true });
+
+    const files = roots.flatMap((dir) => collectSources(dir, [])).filter((f) => f !== canonical);
     // Sanity: the walk actually found the tree it claims to guard.
     expect(files.length).toBeGreaterThan(100);
 

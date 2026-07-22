@@ -185,6 +185,7 @@ export const conversations = pgTable(
     // Notebook — RETIRED (ADR-0035, #4587). The `notebook_state` column and its
     // Drizzle mirror were dropped in phase 2 of the two-phase drop (migration
     // 0179, #4588). Do not re-add.
+    //
     // Org scoping
     orgId: text("org_id"),
     // Soft-delete

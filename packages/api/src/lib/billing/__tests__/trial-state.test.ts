@@ -16,6 +16,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterAll } from "bun:test";
+import { existsSync, readdirSync, readFileSync } from "fs";
+import { dirname, join, relative } from "path";
 import { TRIAL_DAYS, TRIAL_GRACE_HOURS } from "../plans";
 import {
   deriveTrialState,
@@ -254,6 +256,137 @@ describe("trial clock stamps", () => {
     expect(Date.parse(unclaimedGraceHorizonFrom(NOW.getTime()))).toBeLessThan(
       Date.parse(fullTrialEndsAtFrom(NOW.getTime())),
     );
+  });
+});
+
+/**
+ * The write-side/read-side pin (#4354). `fullTrialEndsAtFrom` is now the ONE
+ * stamper — `assignSaasTrial`, the boot backfill, and `extendTrialOnClaim`
+ * all write what it returns — and `effectiveTrialEndsAt` is the reader Gate 0
+ * enforces. If those two ever drift, every new trial is silently mis-dated
+ * and enforcement cuts the workspace off on the wrong day. This table walks a
+ * fixed set of stamp instants (no `Date.now()` anywhere) and asserts, for
+ * each, that what the stamper writes is exactly what the reader reads back —
+ * and that a NULL-`trial_ends_at` workspace created at the same instant lands
+ * on the same date via the #3434 `createdAt` fallback.
+ *
+ * The clocks deliberately include both sides of a US and an EU DST
+ * transition, a leap day, and a UTC year boundary: the clock is epoch-ms
+ * arithmetic, so `TRIAL_DAYS` means exactly `TRIAL_DAYS * 24h` regardless of
+ * what the local calendar did in between.
+ */
+describe("the stamped clock is the enforced clock (write side == read side, #4354)", () => {
+  const STAMP_CLOCKS: ReadonlyArray<readonly [label: string, iso: string]> = [
+    ["mid-year UTC noon", "2026-06-12T12:00:00.000Z"],
+    ["just before US DST spring-forward", "2026-03-08T06:59:59.999Z"],
+    ["just after US DST spring-forward", "2026-03-08T07:00:00.000Z"],
+    ["just before EU DST fall-back", "2026-10-25T00:59:59.999Z"],
+    ["leap day", "2024-02-29T23:30:00.000Z"],
+    ["UTC year boundary", "2025-12-31T23:59:59.999Z"],
+    ["unix epoch", "1970-01-01T00:00:00.000Z"],
+  ];
+
+  for (const [label, iso] of STAMP_CLOCKS) {
+    describe(label, () => {
+      const stampedAt = Date.parse(iso);
+      const stamped = fullTrialEndsAtFrom(stampedAt);
+      const expectedEndMs = stampedAt + TRIAL_DAYS * DAY;
+      // `createdAt` is irrelevant when trial_ends_at is set — deliberately a
+      // wildly different date, so a reader that ignored the stamp would fail.
+      const stampedWorkspace = {
+        trial_ends_at: stamped,
+        createdAt: new Date(stampedAt - 400 * DAY).toISOString(),
+      };
+      // The #3434 pre-backfill shape: no stamp, clock implied from createdAt.
+      const unstampedWorkspace = {
+        trial_ends_at: null,
+        createdAt: new Date(stampedAt).toISOString(),
+      };
+
+      it("the reader reads back exactly the stamped instant", () => {
+        expect(effectiveTrialEndsAt(stampedWorkspace)?.getTime()).toBe(expectedEndMs);
+      });
+
+      it("the createdAt fallback lands on the same instant the stamper would have written", () => {
+        expect(effectiveTrialEndsAt(unstampedWorkspace)?.getTime()).toBe(
+          Date.parse(fullTrialEndsAtFrom(stampedAt)),
+        );
+      });
+
+      it("Gate 0 expires the stamped trial exactly one ms after the stamped end, not before", () => {
+        for (const workspace of [stampedWorkspace, unstampedWorkspace]) {
+          const end = effectiveTrialEndsAt(workspace);
+          expect(isTrialExpiredAt(end, new Date(expectedEndMs))).toBe(false);
+          expect(isTrialExpiredAt(end, new Date(expectedEndMs + 1))).toBe(true);
+        }
+      });
+
+      it("the countdown reads a full TRIAL_DAYS at the stamp instant on both shapes", () => {
+        const now = new Date(stampedAt);
+        expect(trialDaysRemaining(stampedWorkspace, now)).toBe(TRIAL_DAYS);
+        expect(trialDaysRemaining(unstampedWorkspace, now)).toBe(TRIAL_DAYS);
+      });
+    });
+  }
+});
+
+/**
+ * STRUCTURAL ENFORCEMENT (#4354) — one home for the trial clock.
+ *
+ * The table above pins that the stamper and the reader agree TODAY; this pins
+ * that they still CAN'T disagree tomorrow. `trial-state.ts` is the only module
+ * allowed to turn `TRIAL_DAYS` into a duration; every other call site must go
+ * through `fullTrialEndsAtFrom`. Sources are DISCOVERED by walking the tree,
+ * not enumerated, so a new stamper in a file nobody thought of is auto-enrolled
+ * rather than silently skipped. Non-arithmetic reads of the constant (plan
+ * metadata like `trialDays: TRIAL_DAYS`, Stripe's `freeTrial: { days }`) are
+ * fine — only multiplication into a millisecond span is the drift hazard.
+ */
+describe("structural: TRIAL_DAYS arithmetic lives only in trial-state.ts (#4354)", () => {
+  /** Walk up to the monorepo root (has both `packages/` and `ee/`). */
+  function repoRoot(): string {
+    let dir = import.meta.dir;
+    for (let i = 0; i < 12; i++) {
+      if (existsSync(join(dir, "packages")) && existsSync(join(dir, "ee"))) return dir;
+      dir = dirname(dir);
+    }
+    throw new Error(`repo root not found from ${import.meta.dir}`);
+  }
+
+  function collectSources(dir: string, out: string[]): string[] {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "__tests__") continue;
+        collectSources(full, out);
+      } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  it("no source outside trial-state.ts multiplies TRIAL_DAYS into a duration", () => {
+    const root = repoRoot();
+    const canonical = join(root, "packages/api/src/lib/billing/trial-state.ts");
+    const files = [
+      ...collectSources(join(root, "packages/api/src"), []),
+      ...collectSources(join(root, "ee/src"), []),
+    ].filter((f) => f !== canonical);
+    // Sanity: the walk actually found the tree it claims to guard.
+    expect(files.length).toBeGreaterThan(100);
+
+    const offenders = files.filter((file) => {
+      // Strip block + line comments — prose citing `NOW() + TRIAL_DAYS` is
+      // documentation, not a second stamper.
+      const source = readFileSync(file, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/[^\n]*/g, "");
+      return /TRIAL_DAYS\s*\*|\*\s*TRIAL_DAYS/.test(source);
+    });
+
+    expect(offenders.map((f) => relative(root, f))).toEqual([]);
   });
 });
 

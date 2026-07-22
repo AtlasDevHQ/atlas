@@ -48,7 +48,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getConfig } from "@atlas/api/lib/config";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
+import { fullTrialEndsAtFrom } from "@atlas/api/lib/billing/trial-state";
 
 const log = createLogger("billing.backfill-saas-trial");
 
@@ -74,7 +74,10 @@ export async function backfillSaasTrial(): Promise<BackfillResult> {
   if (getConfig()?.deployMode !== "saas") return SKIPPED;
   if (!hasInternalDB()) return SKIPPED;
 
-  const trialEndsAt = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+  // The one trial-clock stamper (#4354) — shares its fragment with the
+  // reader (`effectiveTrialEndsAt`) Gate 0 enforces, so a backfilled
+  // workspace's stamped date can't drift from the enforced one.
+  const trialEndsAt = fullTrialEndsAtFrom(Date.now());
 
   try {
     // 1) One-trial-per-user arm (#3426): free orgs with an owner who
@@ -123,7 +126,7 @@ export async function backfillSaasTrial(): Promise<BackfillResult> {
         WHERE plan_tier = 'free'
           AND trial_ends_at IS NULL
         RETURNING id`,
-      [trialEndsAt.toISOString()],
+      [trialEndsAt],
     );
     const orgIds = rows.map((r) => r.id);
 
@@ -143,7 +146,7 @@ export async function backfillSaasTrial(): Promise<BackfillResult> {
       );
     }
     log.info(
-      { updatedCount: orgIds.length, orgIds, lockedOrgIds, trialEndsAt: trialEndsAt.toISOString() },
+      { updatedCount: orgIds.length, orgIds, lockedOrgIds, trialEndsAt },
       orgIds.length === 0 && lockedOrgIds.length === 0
         ? "SaaS trial backfill: no free workspaces to promote"
         : "SaaS trial backfill: promoted free workspaces (trial-consumed owners landed on locked)",

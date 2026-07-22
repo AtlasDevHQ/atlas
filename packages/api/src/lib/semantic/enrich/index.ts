@@ -25,8 +25,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
 import { loadYaml } from "../yaml";
-
-const SEMANTIC_DIR = path.resolve("semantic");
+import { getSemanticRoot } from "../files";
 
 // ---------------------------------------------------------------------------
 // Token usage tracking
@@ -375,7 +374,7 @@ export async function enrichGlossary(
   profiles: TableProfile[],
   model: ReturnType<typeof getModel>,
   usage: TokenUsage,
-  semanticDir: string = SEMANTIC_DIR
+  semanticDir: string = getSemanticRoot()
 ): Promise<void> {
   const glossaryPath = path.join(semanticDir, "glossary.yml");
   if (!fs.existsSync(glossaryPath)) {
@@ -601,7 +600,7 @@ export async function enrichSemanticLayer(
   profiles: TableProfile[],
   options?: { semanticDir?: string }
 ): Promise<void> {
-  const semanticDir = options?.semanticDir ?? SEMANTIC_DIR;
+  const semanticDir = options?.semanticDir ?? getSemanticRoot();
   const entitiesDir = path.join(semanticDir, "entities");
   const metricsDir = path.join(semanticDir, "metrics");
 

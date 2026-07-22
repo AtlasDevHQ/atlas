@@ -546,9 +546,12 @@ describe("cross-source join hints", () => {
       ].join("\n"),
     );
 
-    // Temporarily change CWD so getWhitelistedTables() without args finds semantic/
-    const originalCwd = process.cwd();
-    process.chdir(tmpRoot);
+    // Point the default semantic root at the fixture so getWhitelistedTables()
+    // without args finds it. This used to `process.chdir(tmpRoot)`, which only
+    // worked while the root resolved from cwd; ATLAS_SEMANTIC_ROOT is the
+    // documented override and is what the test preload now sets (#4655).
+    const originalRoot = process.env.ATLAS_SEMANTIC_ROOT;
+    process.env.ATLAS_SEMANTIC_ROOT = join(tmpRoot, "semantic");
     try {
       // Call without custom paths — populates global cache (_tablesByConnection + _crossSourceJoins)
       const tables = getWhitelistedTables();
@@ -565,7 +568,8 @@ describe("cross-source join hints", () => {
       expect(joins[0].relationship).toBe("one_to_many");
       expect(joins[0].description).toBe("User activity events");
     } finally {
-      process.chdir(originalCwd);
+      if (originalRoot === undefined) delete process.env.ATLAS_SEMANTIC_ROOT;
+      else process.env.ATLAS_SEMANTIC_ROOT = originalRoot;
     }
   });
 });

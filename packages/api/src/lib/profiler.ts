@@ -149,17 +149,30 @@ export {
 
 import * as path from "path";
 import { GROUPS_DIR } from "./semantic/scanner";
+import { getSemanticRoot } from "./semantic/files";
 
-const SEMANTIC_DIR = path.resolve("semantic");
-
-/** Root for a (possibly org-scoped) semantic layer. */
+/**
+ * Root for a (possibly org-scoped) semantic layer.
+ *
+ * Resolved through `getSemanticRoot()` (call time, not module-load time) so
+ * the documented `ATLAS_SEMANTIC_ROOT` override applies to the *write* path
+ * too. This used to be a module-level `path.resolve("semantic")`, which meant
+ * a configured deployment read from the override but generated YAML into
+ * `{cwd}/semantic` — and tests wrote real per-org dirs into the checkout
+ * (#4655). With the env var unset the resolution is byte-identical.
+ *
+ * Inherits `getSemanticRoot()`'s fail-loud contract: an `ATLAS_SEMANTIC_ROOT`
+ * set to an empty string throws rather than silently generating into `{cwd}`,
+ * which is the same posture the read path has always had.
+ */
 function semanticBaseDir(orgId?: string): string {
-  if (!orgId) return SEMANTIC_DIR;
+  const base = getSemanticRoot();
+  if (!orgId) return base;
   // orgId becomes a path segment under `.orgs/`; a value like `../../outside`
   // (e.g. from --org / ATLAS_ORG_ID) would escape the semantic root. Same guard
   // sync.ts:getSemanticRoot already applies on the read side.
   assertSafePathSegment(orgId, "org");
-  return path.join(SEMANTIC_DIR, ".orgs", orgId);
+  return path.join(base, ".orgs", orgId);
 }
 
 /**

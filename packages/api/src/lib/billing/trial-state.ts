@@ -25,6 +25,17 @@
  * ({@link trialTierSql}, {@link unclaimedOwnerExistsSql}) colocated with the
  * TS predicate and pinned against it by `trial-state.test.ts`, so drift is
  * caught rather than silent.
+ *
+ * #4127 folded the predicates but left the CLOCK in four places — a canonical
+ * stamper with only one caller, a reader that re-derived the same rule, and
+ * two hand-inlined `now + TRIAL_DAYS` stampers. #4354 closed that: the write
+ * side ({@link fullTrialEndsAtFrom}, now the ONLY stamper — `assignSaasTrial`,
+ * the boot backfill, and `extendTrialOnClaim` all write what it returns) and
+ * the read side ({@link effectiveTrialEndsAt}, the date Gate 0 enforces) share
+ * one arithmetic fragment, so a stamped trial cannot be dated differently from
+ * the trial enforcement expires. `trial-state.test.ts` pins write-against-read
+ * over a table of fixed clocks and structurally forbids re-inlining the
+ * arithmetic anywhere else.
  */
 
 import type { PlanTier, WorkspaceRow } from "@atlas/api/lib/db/internal";
@@ -90,6 +101,27 @@ function toMs(value: string | Date): number {
 }
 
 /**
+ * THE trial-clock fragment: the epoch-ms instant a full {@link TRIAL_DAYS}
+ * clock started at `startMs` runs out. Every trial-clock computation in the
+ * codebase — read side and write side — bottoms out here (#4354):
+ *
+ *   - write: {@link fullTrialEndsAtFrom}, the one stamper, consumed by
+ *     `assignSaasTrial`, the boot backfill, and `extendTrialOnClaim`;
+ *   - read: {@link effectiveTrialEndsAt}'s `createdAt` fallback (#3434), the
+ *     date Gate 0 actually enforces.
+ *
+ * Sharing the fragment is the point: if the write side could drift from the
+ * read side, every new trial would be silently mis-dated and enforcement
+ * would expire it on the wrong day. Pure epoch-ms arithmetic — deliberately
+ * NOT calendar-day arithmetic, so the horizon is timezone- and DST-invariant
+ * (a trial stamped across a DST boundary still lasts exactly
+ * `TRIAL_DAYS * 24h`).
+ */
+function fullTrialEndMsFrom(startMs: number): number {
+  return startMs + TRIAL_DAYS * MS_PER_DAY;
+}
+
+/**
  * The date enforcement treats as the end of the trial: `trial_ends_at` when
  * set and parseable, else `createdAt + TRIAL_DAYS` (#3434). Returns null only
  * when neither input parses — expiry treats that as "not expired" and
@@ -104,7 +136,7 @@ export function effectiveTrialEndsAt(workspace: TrialExpiryInput): Date | null {
   }
   const createdMs = toMs(workspace.createdAt);
   if (!Number.isFinite(createdMs)) return null;
-  return new Date(createdMs + TRIAL_DAYS * MS_PER_DAY);
+  return new Date(fullTrialEndMsFrom(createdMs));
 }
 
 /**
@@ -134,13 +166,17 @@ export function trialDaysRemaining(
 /**
  * ISO timestamp of the full {@link TRIAL_DAYS} clock end measured from
  * `nowMs` — the `trial_ends_at` a trial carries once its clock has started
- * (web signup at org creation, or MCP signup at claim time). Consumed by
- * `extendTrialOnClaim`; `assignSaasTrial` and the boot backfill still stamp
- * the same arithmetic inline — #4127 folded the predicates, not the
- * stampers.
+ * (web signup at org creation, or MCP signup at claim time).
+ *
+ * The ONLY trial-clock stamper (#4354): `assignSaasTrial`, the boot backfill
+ * (`backfill-saas-trial.ts`), and `extendTrialOnClaim` all write what this
+ * returns, and it shares {@link fullTrialEndMsFrom} with the reader
+ * {@link effectiveTrialEndsAt} that Gate 0 enforces — so the stamped date and
+ * the enforced date cannot drift. Don't re-inline the arithmetic at a call
+ * site; `trial-state.test.ts` pins write-against-read.
  */
 export function fullTrialEndsAtFrom(nowMs: number): string {
-  return new Date(nowMs + TRIAL_DAYS * MS_PER_DAY).toISOString();
+  return new Date(fullTrialEndMsFrom(nowMs)).toISOString();
 }
 
 /**

@@ -1328,6 +1328,45 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
 
       const deleted = rows[0]!;
 
+      // #4353 — teardown ran NOTHING (its install-row lookup threw, or the
+      // call itself defected). The row DELETE above still committed, so the
+      // hook, the dedicated credential store and `scheduled_tasks` are ALL
+      // unresolved for a row that no longer exists — the worst orphan shape
+      // this route can produce, and the one case where an encrypted credential
+      // can outlive its install record here. It is a narrow window (the lookup
+      // and the DELETE hit the same internal DB, so a lookup failure usually
+      // means the DELETE 500s too), but it must never be silent: the failure
+      // audit + log.error below are the only operator surface, since the HTTP
+      // response is a normal 200. We deliberately do NOT re-derive the teardown
+      // from the DELETE's RETURNING tuple — that is exactly the divergent
+      // second path this issue removed, and post-DELETE the hook could no
+      // longer authenticate anyway.
+      const teardownIdentityError = teardown === null
+        ? "teardown call failed"
+        : teardown.identityError;
+      if (teardownIdentityError !== undefined || teardown?.identityResolved === false) {
+        const error = teardownIdentityError ?? "install row not resolved";
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.uninstall,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            installationId: id,
+            pluginId: deleted.catalog_id,
+            ...(deleted.slug != null && { pluginSlug: deleted.slug }),
+            orgId,
+            teardownFailed: true,
+            error,
+          },
+        });
+        log.error(
+          { orgId, installationId: id, pluginId: deleted.catalog_id, err: new Error(error) },
+          "Plugin uninstalled but NO teardown ran — the onUninstall hook, dedicated credential store and scheduled tasks may all be orphaned; purge manually",
+        );
+      }
+
       // #1987 — plugin-owned scheduled tasks are cleaned up by the shared
       // teardown above (step 3), so the scheduler doesn't keep firing them
       // after uninstall. Scoped there by (plugin_id, org_id) so we never

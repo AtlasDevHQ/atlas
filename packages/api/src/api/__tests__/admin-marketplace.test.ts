@@ -1730,6 +1730,75 @@ describe("Workspace Plugin Marketplace", () => {
       expect(entries.some((e) => e.metadata?.cleanupFailed === true)).toBe(true);
       expect(entries.some((e) => e.metadata?.credentialTeardownFailed === true)).toBe(true);
     });
+
+    // #4353 — the worst orphan shape this route can produce: the identity
+    // lookup threw, so NO teardown step ran, yet the row DELETE committed.
+    // The 200 is indistinguishable from a clean uninstall, so the failure
+    // audit is the only operator surface. Deliberately NOT re-derived from
+    // the DELETE's RETURNING tuple — that second path is what #4353 removed.
+    it("audits teardownFailed when the teardown resolved no identity (#4353)", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "twenty" },
+      ]);
+      tearDownResultOverride = {
+        identityResolved: false,
+        identityError: "internal db unavailable",
+        credentialStoreCleared: false,
+      };
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+
+      const failure = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.metadata?.teardownFailed === true);
+      expect(failure).toBeDefined();
+      expect(failure!.actionType).toBe("plugin.uninstall");
+      expect(failure!.status).toBe("failure");
+      expect(failure!.metadata).toMatchObject({
+        installationId: "inst-1",
+        pluginId: "cat-1",
+        pluginSlug: "twenty",
+        orgId: "org-1",
+        teardownFailed: true,
+      });
+      expect(failure!.metadata!.error).toContain("internal db unavailable");
+    });
+
+    it("audits teardownFailed when the teardown call itself rejects (#4353)", async () => {
+      mockTearDownWorkspaceInstall.mockImplementationOnce(async () => {
+        throw new Error("teardown defect");
+      });
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "twenty" },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+
+      const failure = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.metadata?.teardownFailed === true);
+      expect(failure).toBeDefined();
+      expect(failure!.status).toBe("failure");
+    });
+
+    it("emits no teardownFailed audit on the clean path", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(
+        mockLogAdminAction.mock.calls
+          .map((c) => c[0])
+          .some((e) => e.metadata?.teardownFailed === true),
+      ).toBe(false);
+    });
   });
 
   describe("PUT /marketplace/:id/config", () => {

@@ -248,6 +248,46 @@ describe("settings (SaaS mode)", () => {
       expect(queryCalls).toHaveLength(0);
     });
 
+    // #4462 — DpaGuardLive validates the RESOLVED transport at boot via
+    // `resolveResendApiKey()` (registry override → env). A runtime write is a
+    // guard bypass, so the key joined SAAS_IMMUTABLE_KEYS.
+    it("setSetting rejects RESEND_API_KEY in SaaS mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      let captured: unknown;
+      try {
+        await setSetting("RESEND_API_KEY", "re_rotated", "admin-1");
+      } catch (err) {
+        captured = err;
+      }
+
+      expect(captured).toBeInstanceOf(SaasImmutableSettingError);
+      expect((captured as InstanceType<typeof SaasImmutableSettingError>).key).toBe("RESEND_API_KEY");
+      expect((captured as InstanceType<typeof SaasImmutableSettingError>)._tag).toBe("SaasImmutableSettingError");
+      // No DB write — rejection precedes persist.
+      expect(queryCalls).toHaveLength(0);
+    });
+
+    // #4462 — ProactiveProviderKeyGuardLive validates the settings-resolved
+    // proactive provider at boot; `requiresRestart` is a display hint that
+    // defers nothing, so membership in SAAS_IMMUTABLE_KEYS is the real guard.
+    it("setSetting rejects ATLAS_PROVIDER in SaaS mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      let captured: unknown;
+      try {
+        await setSetting("ATLAS_PROVIDER", "openai", "admin-1");
+      } catch (err) {
+        captured = err;
+      }
+
+      expect(captured).toBeInstanceOf(SaasImmutableSettingError);
+      expect((captured as InstanceType<typeof SaasImmutableSettingError>).key).toBe("ATLAS_PROVIDER");
+      expect(queryCalls).toHaveLength(0);
+    });
+
     it("setSetting allows non-immutable keys in SaaS mode", async () => {
       enableInternalDB();
       setResults({ rows: [] });
@@ -294,6 +334,30 @@ describe("settings (SaaS mode)", () => {
       await expect(
         deleteSetting("ATLAS_RATE_LIMIT_RPM", "admin-1"),
       ).rejects.toThrow(SaasImmutableSettingError);
+      expect(queryCalls).toHaveLength(0);
+    });
+
+    // #4462 — the original report: deleting a registry-only RESEND_API_KEY
+    // override post-boot silently flips the platform transport to the
+    // ATLAS_SMTP_URL bridge (a DPA violation) or to "none" (mail dropped),
+    // with no re-guard until restart. Both write verbs must reject.
+    it("deleteSetting rejects RESEND_API_KEY and ATLAS_PROVIDER in SaaS mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      let captured: unknown;
+      try {
+        await deleteSetting("RESEND_API_KEY", "admin-1");
+      } catch (err) {
+        captured = err;
+      }
+      expect(captured).toBeInstanceOf(SaasImmutableSettingError);
+      expect((captured as InstanceType<typeof SaasImmutableSettingError>).key).toBe("RESEND_API_KEY");
+
+      await expect(
+        deleteSetting("ATLAS_PROVIDER", "admin-1"),
+      ).rejects.toThrow(SaasImmutableSettingError);
+      // No DB delete for either key.
       expect(queryCalls).toHaveLength(0);
     });
 

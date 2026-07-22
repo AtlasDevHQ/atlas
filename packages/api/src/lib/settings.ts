@@ -614,6 +614,11 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // hosted/SaaS and `anthropic` for self-hosted. A hardcoded "anthropic"
     // here would override that and make SaaS report/run the wrong default (#3098).
     envVar: "ATLAS_PROVIDER",
+    // #4462 — `requiresRestart` here is a display hint only (it neither
+    // blocks a write nor defers application). The real guard is membership
+    // in `SAAS_IMMUTABLE_KEYS` below: `ProactiveProviderKeyGuardLive`
+    // validates this key's settings-resolved value at boot, so on SaaS both
+    // writes and deletes are rejected. Self-hosted stays hot-reloadable.
     requiresRestart: true,
     scope: "platform",
     saasVisible: false,
@@ -844,6 +849,11 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     secret: true,
     envVar: "RESEND_API_KEY",
+    // #4462 — DpaGuardLive validates the RESOLVED transport at boot
+    // (`resolveResendApiKey()` = this override → env), so on SaaS this key
+    // is in `SAAS_IMMUTABLE_KEYS` below: both writes and deletes are
+    // rejected, and the key is env-managed. Self-hosted keeps it
+    // runtime-editable (the DPA guard early-returns there).
     scope: "platform",
     saasVisible: false,
   },
@@ -2312,6 +2322,28 @@ export function isHotReloadedKey(key: string): boolean {
  * Self-hosted preserves the runtime-mutable behavior — the guards
  * either don't run there (DPA) or are advisory (#1978 family).
  *
+ * ## The invariant this set encodes (#4462)
+ *
+ * > A platform-scoped setting validated by a SaaS boot guard must either
+ * > be a member of this set or be explicitly re-guarded on write. A
+ * > `requiresRestart` hint is NEVER a guard.
+ *
+ * `requiresRestart` is annotation-only: it neither blocks a write nor
+ * defers application (`setSetting` updates the in-process settings
+ * cache that `getSetting`/`getSettingAuto` read, so the new value is
+ * live on the very next read), so a
+ * guard whose "it only takes effect next boot" rationale rests on the
+ * flag is unsound. There is no validate-on-write seam in the registry,
+ * and adding one was rejected in #4462 — membership here is the
+ * mechanism: symmetric (blocks `setSetting` AND `deleteSetting`),
+ * fail-closed (`isSaasModeForGuard`), and SaaS-only. Rotation stays
+ * available out-of-band: change the env value, restart, and the boot
+ * guard re-validates.
+ *
+ * Known cousin that is deliberately NOT here: the Stripe price-ID keys.
+ * Their boot check is warn-only, so a runtime change can't slip past a
+ * fail-boot guard.
+ *
  * The `as const` is load-bearing: it preserves literal types so
  * `SaasImmutableKey` is a closed union and `SaasImmutableSettingError`
  * can refuse construction with an unknown key at compile time.
@@ -2320,6 +2352,19 @@ const SAAS_IMMUTABLE_KEYS_LITERAL = [
   "ATLAS_EMAIL_PROVIDER",
   "ATLAS_DEPLOY_MODE",
   "ATLAS_RATE_LIMIT_RPM",
+  // #4462 — `DpaGuardLive` validates the RESOLVED platform email
+  // transport at boot via `resolveResendApiKey()` (registry override →
+  // env). Deleting a registry-only override post-boot silently flips the
+  // transport to the `ATLAS_SMTP_URL` bridge (a DPA violation the guard
+  // never re-sees) or to "none" (platform mail silently dropped), with no
+  // re-guard until the next restart.
+  "RESEND_API_KEY",
+  // #4462 — `ProactiveProviderKeyGuardLive` validates the SETTINGS-backed
+  // proactive provider at boot via `getSettingAuto("ATLAS_PROVIDER")`.
+  // Writing/clearing the override post-boot re-resolves the proactive
+  // model live (`resolveModelFromSettings`), so an unkeyed provider fails
+  // every proactive answer while boot and /health stay green.
+  "ATLAS_PROVIDER",
 ] as const;
 const SAAS_IMMUTABLE_KEYS: ReadonlySet<SaasImmutableKey> = new Set(SAAS_IMMUTABLE_KEYS_LITERAL);
 

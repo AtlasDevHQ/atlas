@@ -977,11 +977,20 @@ export const ProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissingError | 
  * getDefaultProvider()`. A DB-persisted `ATLAS_PROVIDER` whose key is absent
  * passes {@link ProviderKeyGuardLive}'s env-only check (the main chat still
  * resolves to the env/gateway provider) yet fails every proactive answer at model
- * init despite green boot/health. `ATLAS_PROVIDER` is `requiresRestart: true`, so
- * a post-boot settings change only takes effect on the next boot — which re-runs
- * this guard — making the boot-time check authoritative without a revalidation
- * fiber. (And `setSetting` can't mutate `process.env`, so the boot decision can't
- * be bypassed at runtime.)
+ * init despite green boot/health.
+ *
+ * The boot-time check is authoritative because `ATLAS_PROVIDER` is a member of
+ * `SAAS_IMMUTABLE_KEYS` in `lib/settings.ts` (#4462): on SaaS both `setSetting`
+ * and `deleteSetting` reject it, so the resolution this guard validated cannot
+ * drift until the next restart — which re-runs the guard. It is NOT because of
+ * the key's `requiresRestart: true` annotation: that flag is a display hint. It
+ * neither blocks a write nor defers application — `setSetting` updates the
+ * in-process settings cache that `getSettingAuto` reads, so a post-boot
+ * override would reach `resolveModelFromSettings()` on the very next proactive
+ * answer. Reasoning from the restart hint (as this docstring did before
+ * #4462) would leave a real guard-bypass hole. The general invariant — a
+ * boot-guard-validated platform setting is either immutable or re-guarded on
+ * write — is recorded at the `SAAS_IMMUTABLE_KEYS` definition.
  *
  * Split from {@link ProviderKeyGuardLive} rather than folded in because validating
  * the settings-backed provider needs the settings cache: it depends on `Settings`

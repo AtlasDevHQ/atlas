@@ -323,6 +323,43 @@ items and re-baselined the counts:
   ratchet decision was split out to #4620 (`ready-for-human`); its findings
   fold back into this document.
 
+## Guard-validated settings are immutable or re-guarded (#4462, 2026-07-22)
+
+The 2026-07-10 `/prod-audit` Part C found `RESEND_API_KEY` boot-validated by
+`DpaGuardLive` (which resolves the *transport* through `resolveResendApiKey()` =
+registry override → env) yet freely mutable at runtime, so a platform admin
+could delete the override post-boot and silently flip the platform email
+transport to the `ATLAS_SMTP_URL` bridge — or to nothing — with no re-guard until
+the next restart. Triage found the identical shape on `ATLAS_PROVIDER`
+(`ProactiveProviderKeyGuardLive`).
+
+**Decision (maintainer-approved 2026-07-16): both keys join
+`SAAS_IMMUTABLE_KEYS`.** A validate-on-write hook in the settings registry was
+considered and rejected — no such seam exists, and the immutable-key mechanism
+is already proven, symmetric across `setSetting`/`deleteSetting`, fail-closed
+(`isSaasModeForGuard`), and SaaS-only. Key rotation stays available out-of-band:
+change the env value, restart, and the boot guard re-validates.
+
+**Recorded invariant** (stated at the `SAAS_IMMUTABLE_KEYS` definition in
+`lib/settings.ts` and in the operator reference):
+
+> A platform-scoped setting validated by a SaaS boot guard must either be in
+> `SAAS_IMMUTABLE_KEYS` or be explicitly re-guarded on write. A restart *hint* is
+> never a guard.
+
+`requiresRestart` is annotation-only — it neither blocks a write nor defers
+application (values hot-apply through the live settings cache), so a guard whose
+rationale rests on it is unsound. The `ProactiveProviderKeyGuardLive` docstring
+made exactly that argument before #4462 and was corrected.
+
+**Known warn-only cousin, deliberately left mutable:** the nine
+`STRIPE_*_PRICE_ID` keys. Their boot check only warns, so a runtime change
+cannot slip past a fail-boot guard; they stay Admin-editable by design.
+
+**Operator note:** an existing registry-only `RESEND_API_KEY` override keeps
+working but becomes undeletable at runtime. Confirm each region's key source and
+migrate any registry-only region to the env var at the next deploy.
+
 ## Tracked work
 
 See the umbrella issue and its children in `AtlasDevHQ/atlas` (search label

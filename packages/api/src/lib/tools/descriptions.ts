@@ -137,6 +137,10 @@ export const RUN_METRIC_ERROR_CODES = [
 export const QUERY_ERROR_CODES = [
   "billing_blocked",
   "rate_limited",
+  // #4734 — the run exceeded the server-side soft deadline (set just under the
+  // client's request-timeout ceiling) and was aborted, so the caller gets an
+  // actionable envelope instead of a dropped transport with a lost response.
+  "query_timeout",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
 

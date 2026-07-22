@@ -124,9 +124,11 @@ void mock.module("@atlas/api/lib/billing/claim-gate", () => ({
 }));
 
 // Import after mocks are set up.
-const { registerQueryTool, _setQueryHeartbeatIntervalMsForTest } = await import(
-  "../query-tool.js"
-);
+const {
+  registerQueryTool,
+  _setQueryHeartbeatIntervalMsForTest,
+  _setQueryDeadlineMsForTest,
+} = await import("../query-tool.js");
 
 function getContentText(content: unknown): string {
   const arr = content as Array<{ type: string; text: string }>;
@@ -165,6 +167,9 @@ describe("MCP query tool (#4094)", () => {
     // mocks in the rest of the suite never fire a stray heartbeat; the slow-run
     // test shortens it locally.
     _setQueryHeartbeatIntervalMsForTest(60_000);
+    // #4734 — keep the soft deadline long by default so fast mocks never trip it;
+    // the deadline test shortens it locally.
+    _setQueryDeadlineMsForTest(60_000);
   });
 
   it("is registered as a read-only, open-world tool advertising the error contract", async () => {
@@ -258,6 +263,92 @@ describe("MCP query tool (#4094)", () => {
     // Wait several more intervals — a cleared timer emits nothing further.
     await new Promise((r) => setTimeout(r, 40));
     expect(progresses.length).toBe(countAtSettle);
+  });
+
+  it("returns a query_timeout envelope (not a dropped transport) when the run exceeds the soft deadline (#4734)", async () => {
+    // The real fix: a synchronous MCP call can't outlive the client's request
+    // ceiling, so the server aborts at the soft deadline and returns an
+    // actionable envelope BEFORE the transport would drop. The agent
+    // (executeAgentQuery → runAgent → streamText) rejects on abort, which the
+    // mock models by honoring the threaded abortSignal.
+    _setQueryDeadlineMsForTest(20);
+    mockExecuteAgentQuery.mockImplementationOnce(async (...args: unknown[]) => {
+      const opts = args[2] as { abortSignal?: AbortSignal };
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(resolve, 5000); // would run "forever" relative to the 20ms cap
+        opts.abortSignal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(t);
+            reject(new DOMException("aborted", "AbortError"));
+          },
+          { once: true },
+        );
+      });
+      return DEFAULT_RESULT;
+    });
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "query",
+      arguments: { question: "an intractably broad question" },
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("query_timeout");
+    expect(envelope!.message).toMatch(/took longer than \d+s/);
+    expect(envelope!.hint).toContain("Narrow the question");
+  });
+
+  it("returns query_timeout even when the aborted run RESOLVES with a partial answer (#4734)", async () => {
+    // The AI SDK treats an abort after ≥1 completed step as a graceful stream
+    // end and resolves `text`/`steps` from what it recorded, so the run comes
+    // back truncated instead of throwing. That must not be surfaced as a normal
+    // answer — the client would get a silently-incomplete result.
+    _setQueryDeadlineMsForTest(20);
+    mockExecuteAgentQuery.mockImplementationOnce(async (...args: unknown[]) => {
+      const opts = args[2] as { abortSignal?: AbortSignal };
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, 5000);
+        opts.abortSignal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(t);
+            resolve(); // graceful settle — the partial-answer path
+          },
+          { once: true },
+        );
+      });
+      return { ...DEFAULT_RESULT, answer: "partial, truncated answer" };
+    });
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "query",
+      arguments: { question: "an intractably broad question" },
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("query_timeout");
+    expect(getContentText(result.content)).not.toContain("partial, truncated answer");
+  });
+
+  it("threads an abortSignal into executeAgentQuery so the deadline can cancel the run (#4734)", async () => {
+    const { client } = await createTestClient();
+    await client.callTool({ name: "query", arguments: { question: "anything" } });
+
+    const calls = mockExecuteAgentQuery.mock.calls;
+    const options = (calls[calls.length - 1] as unknown[])[2] as Record<string, unknown>;
+    expect(options.abortSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("advertises the query_timeout code in its error contract (#4734)", async () => {
+    const { client } = await createTestClient();
+    const { tools } = await client.listTools();
+    const query = tools.find((t) => t.name === "query");
+    expect(query?.description).toContain("`query_timeout`");
   });
 
   it("threads the question + connectionId into executeAgentQuery", async () => {

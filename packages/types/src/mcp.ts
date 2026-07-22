@@ -25,8 +25,10 @@
  *   query is permanently broken; the agent should rewrite it, not retry.
  * - `rls_denied` — row-level security rejected the query for the bound
  *   actor. Retrying with the same identity will not help; surface to user.
- * - `query_timeout` — `statement_timeout` fired. Suggest a simpler query
- *   or a tighter `LIMIT`. Not retryable as-is.
+ * - `query_timeout` — `statement_timeout` fired on a datasource query, or a
+ *   `query` agent run hit the server-side soft deadline and was stopped
+ *   before the client's request timeout would drop the response (#4734).
+ *   Suggest a simpler query / narrower question. Not retryable as-is.
  * - `unknown_entity` — the requested entity is not in the semantic layer
  *   (also covers unregistered connection ids and missing datasource
  *   config — all "agent specified the wrong identifier" failures). The

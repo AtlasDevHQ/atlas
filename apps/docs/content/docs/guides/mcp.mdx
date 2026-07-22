@@ -423,6 +423,8 @@ question: "top 5 customers by revenue last quarter"
 
 It returns a prose `answer` plus the exact SQL it ran and the result rows. Because it runs a second, server-side LLM it **spends your Atlas plan tokens** and additionally clears the claim gate (unclaimed-trial metering).
 
+The agent run is capped by a **90-second server-side soft deadline** — MCP clients impose their own request-timeout ceiling (commonly ~120s) that no server keepalive can extend, so Atlas stops the run just under it and returns a `query_timeout` [error envelope](#error-contract) rather than letting the transport drop with the response lost. Narrow the question (shorter time range, fewer breakdowns, one metric at a time) or drop down to `executeSQL` for a specific slice.
+
 ### explore
 
 Read files from the semantic layer directory. Accepts bash commands scoped to the `semantic/` directory.
@@ -632,7 +634,7 @@ The envelope is serialized as the `text` of the first content block. Use `parseA
 |------|-----------------|---------------------------|
 | `validation_failed` | The SQL guard rejected (regex, AST, table whitelist), or `runMetric` was called with a non-empty `filters` object. | Rewrite the query; do **not** retry the same SQL. |
 | `rls_denied` | Row-level security rejected the query for the bound actor. | Surface the failure to the user — the agent cannot retry under another identity. |
-| `query_timeout` | `statement_timeout` fired. | Suggest a simpler query (tighter `WHERE`/`LIMIT`) or break the work up. |
+| `query_timeout` | `statement_timeout` fired on a datasource query (`executeSQL`, `runMetric`), **or** a `query` agent run hit the server-side soft deadline (90s) and was stopped before the client's request timeout would have dropped the response. | Suggest a simpler query (tighter `WHERE`/`LIMIT`) or a narrower question, or break the work up. |
 | `unknown_entity` | `describeEntity` was called with an entity that doesn't exist, `executeSQL` referenced a table missing from the semantic whitelist, or a `connectionId` was specified that isn't registered. | Call `listEntities` to discover what exists, then retry with a real name (or check the connection id). |
 | `unknown_metric` | `runMetric` was called with an id missing from `metrics/*.yml`. | Fall back to `executeSQL`, or pick a different metric id. |
 | `ambiguous_term` | `searchGlossary` matched a glossary entry with `status: ambiguous`. | **Do not silently pick a mapping.** Surface `possible_mappings` to the user and ask which they meant. |

@@ -64,7 +64,7 @@ void mock.module("@atlas/api/lib/mcp/action-policy", () => ({
   setMcpActionCategoryStatus: async () => {},
 }));
 
-// Gate-2 billing gate (#3437, #4370): the MCP dispatch path consults
+// Gate-0 billing gate (#3437; stub added by #4370): the dispatch path consults
 // `checkAgentBillingGate` before any datasource query (executeSQL / runMetric).
 // The real gate reads the internal DB (`organization` / `settings`) and FAILS
 // CLOSED when that DB is missing or unmigrated, short-circuiting to

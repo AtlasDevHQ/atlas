@@ -34,6 +34,7 @@ import { z } from "zod/v4";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
+import type { AtlasMcpToolError } from "@useatlas/types/mcp";
 // Type-only — erased at compile time, so it does NOT pull the `runAgent` graph
 // into registration (the reason `executeAgentQuery` itself is lazy-imported).
 import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
@@ -82,6 +83,23 @@ let queryDeadlineMs = DEFAULT_QUERY_DEADLINE_MS;
 /** @internal test seam — override the #4734 query soft-deadline. */
 export function _setQueryDeadlineMsForTest(ms: number): void {
   queryDeadlineMs = ms;
+}
+
+/**
+ * #4734 — the envelope returned when the soft deadline aborted the run. Shared
+ * by both deadline exits: the abort can either reject the run (no step had
+ * finished) or resolve it with a truncated partial answer (the AI SDK resolves
+ * `text`/`steps` from what was recorded once at least one step completed), and
+ * a truncated answer must not be dressed up as a successful one.
+ */
+function queryTimeoutEnvelope(): AtlasMcpToolError {
+  return envelope(
+    "query_timeout",
+    `This question took longer than ${Math.round(queryDeadlineMs / 1000)}s and was stopped before the connection would time out. It was too complex to answer in a single request.`,
+    {
+      hint: "Narrow the question — a shorter time range, fewer breakdowns, or one metric at a time — or use executeSQL for a specific slice of the data.",
+    },
+  );
 }
 
 /**
@@ -235,15 +253,7 @@ export function registerQueryTool(
             // an actionable envelope instead of a lost response. Checked FIRST so
             // an abort-induced throw isn't misclassified as an internal_error.
             if (deadlineFired) {
-              return toEnvelopeResult(
-                envelope(
-                  "query_timeout",
-                  `This question took longer than ${Math.round(queryDeadlineMs / 1000)}s and was stopped before the connection would time out. It was too complex to answer in a single request.`,
-                  {
-                    hint: "Narrow the question — a shorter time range, fewer breakdowns, or one metric at a time — or use executeSQL for a specific slice of the data.",
-                  },
-                ),
-              );
+              return toEnvelopeResult(queryTimeoutEnvelope());
             }
             // The billing/claim gates inside `executeAgentQuery` throw typed
             // errors (mirroring the `/api/v1/query` route). Map each onto the
@@ -299,6 +309,16 @@ export function registerQueryTool(
             // client cancelled — so neither outlives the dispatch.
             clearTimeout(deadlineTimer);
             extra.signal.removeEventListener("abort", onClientAbort);
+          }
+
+          // #4734 — the deadline can also land on the *resolve* path: the AI SDK
+          // treats an abort after ≥1 completed step as a graceful stream end and
+          // resolves `text`/`steps` from what it recorded, so `executeAgentQuery`
+          // returns a truncated answer rather than throwing. Returning that as a
+          // normal result would hand the client a silently-incomplete answer with
+          // no signal that the run was cut short — same envelope, either exit.
+          if (deadlineFired) {
+            return toEnvelopeResult(queryTimeoutEnvelope());
           }
 
           // Approval branch: one of the agent's SELECTs hit an approval rule and

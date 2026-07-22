@@ -301,6 +301,40 @@ describe("MCP query tool (#4094)", () => {
     expect(envelope!.hint).toContain("Narrow the question");
   });
 
+  it("returns query_timeout even when the aborted run RESOLVES with a partial answer (#4734)", async () => {
+    // The AI SDK treats an abort after ≥1 completed step as a graceful stream
+    // end and resolves `text`/`steps` from what it recorded, so the run comes
+    // back truncated instead of throwing. That must not be surfaced as a normal
+    // answer — the client would get a silently-incomplete result.
+    _setQueryDeadlineMsForTest(20);
+    mockExecuteAgentQuery.mockImplementationOnce(async (...args: unknown[]) => {
+      const opts = args[2] as { abortSignal?: AbortSignal };
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, 5000);
+        opts.abortSignal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(t);
+            resolve(); // graceful settle — the partial-answer path
+          },
+          { once: true },
+        );
+      });
+      return { ...DEFAULT_RESULT, answer: "partial, truncated answer" };
+    });
+
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "query",
+      arguments: { question: "an intractably broad question" },
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("query_timeout");
+    expect(getContentText(result.content)).not.toContain("partial, truncated answer");
+  });
+
   it("threads an abortSignal into executeAgentQuery so the deadline can cancel the run (#4734)", async () => {
     const { client } = await createTestClient();
     await client.callTool({ name: "query", arguments: { question: "anything" } });

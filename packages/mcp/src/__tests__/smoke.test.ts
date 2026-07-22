@@ -64,6 +64,22 @@ void mock.module("@atlas/api/lib/mcp/action-policy", () => ({
   setMcpActionCategoryStatus: async () => {},
 }));
 
+// Gate-2 billing gate (#3437, #4370): the MCP dispatch path consults
+// `checkAgentBillingGate` before any datasource query (executeSQL / runMetric).
+// The real gate reads the internal DB (`organization` / `settings`) and FAILS
+// CLOSED when that DB is missing or unmigrated, short-circuiting to
+// `internal_error` before the mocked `executeSQL` ever runs. Stub it all-allowed
+// so these smoke tests stay hermetic. Mock ALL runtime exports so a sibling test
+// loading the real module doesn't inherit a partial mock (CLAUDE.md); the
+// module's other exports (`AgentBillingBlock`, `AgentBillingGateResult`) are
+// types and erase at runtime.
+void mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+  checkAgentBillingGate: mock(async (_orgId: string | undefined) => ({ allowed: true as const })),
+  BillingBlockedError: class BillingBlockedError extends Error {
+    override readonly name = "BillingBlockedError";
+  },
+}));
+
 void mock.module("@atlas/api/lib/tools/explore", () => ({
   explore: {
     description: "Explore the semantic layer",

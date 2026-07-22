@@ -371,6 +371,25 @@ describe("settings module", () => {
       expect(getSetting("ATLAS_EMAIL_PROVIDER")).toBe("sendgrid");
     });
 
+    // #4462 — RESEND_API_KEY and ATLAS_PROVIDER joined SAAS_IMMUTABLE_KEYS.
+    // Self-hosted must stay runtime-editable: the DPA guard early-returns
+    // outside SaaS, and the proactive provider guard is SaaS-only too.
+    it("permits writes to the #4462 immutable keys in self-hosted mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      await expect(
+        setSetting("RESEND_API_KEY", "re_local", "admin-1"),
+      ).resolves.toBeUndefined();
+      expect(getSetting("RESEND_API_KEY")).toBe("re_local");
+
+      setResults({ rows: [] });
+      await expect(
+        setSetting("ATLAS_PROVIDER", "openai", "admin-1"),
+      ).resolves.toBeUndefined();
+      expect(getSetting("ATLAS_PROVIDER")).toBe("openai");
+    });
+
     it("upserts platform setting (no orgId) and updates cache", async () => {
       enableInternalDB();
       setResults({ rows: [] }); // for the upsert query
@@ -445,6 +464,19 @@ describe("settings module", () => {
 
       await expect(
         deleteSetting("ATLAS_EMAIL_PROVIDER", "admin-1"),
+      ).resolves.toBeUndefined();
+    });
+
+    // #4462 — same mirror for the two keys added in #4462.
+    it("permits deletes of the #4462 immutable keys in self-hosted mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      await expect(
+        deleteSetting("RESEND_API_KEY", "admin-1"),
+      ).resolves.toBeUndefined();
+      await expect(
+        deleteSetting("ATLAS_PROVIDER", "admin-1"),
       ).resolves.toBeUndefined();
     });
 

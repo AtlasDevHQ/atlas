@@ -20,6 +20,7 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { connections } from "@atlas/api/lib/db/connection";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
+import { noActiveOrgBody } from "./admin-router";
 
 const log = createLogger("admin-semantic-editor");
 
@@ -582,7 +583,7 @@ export function registerSemanticEditorRoutes(
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
-        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+        return c.json(noActiveOrgBody(requestId), 400);
       }
 
       if (!hasInternalDB()) {
@@ -724,7 +725,7 @@ export function registerSemanticEditorRoutes(
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
-        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+        return c.json(noActiveOrgBody(requestId), 400);
       }
 
       if (!hasInternalDB()) {
@@ -809,7 +810,7 @@ export function registerSemanticEditorRoutes(
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
-        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+        return c.json(noActiveOrgBody(requestId), 400);
       }
 
       // Validate table name as a SQL identifier to prevent injection.
@@ -894,7 +895,7 @@ export function registerSemanticEditorRoutes(
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
-        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+        return c.json(noActiveOrgBody(requestId), 400);
       }
 
       if (!hasInternalDB()) {
@@ -926,7 +927,7 @@ export function registerSemanticEditorRoutes(
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
-        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+        return c.json(noActiveOrgBody(requestId), 400);
       }
 
       if (!hasInternalDB()) {
@@ -966,7 +967,7 @@ export function registerSemanticEditorRoutes(
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
-        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+        return c.json(noActiveOrgBody(requestId), 400);
       }
 
       if (!hasInternalDB()) {
@@ -1065,7 +1066,7 @@ export function registerSemanticEditorRoutes(
 
       const orgId = authResult.user?.activeOrganizationId;
       if (!orgId) {
-        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+        return c.json(noActiveOrgBody(requestId), 400);
       }
 
       if (!hasInternalDB()) {

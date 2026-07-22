@@ -156,8 +156,8 @@ adminProactivePauses.openapi(getPauseStatusRoute, async (c) =>
   runEffect(
     c,
     Effect.gen(function* () {
-      const { requestId } = yield* RequestContext;
-      const { orgId } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
@@ -165,12 +165,6 @@ adminProactivePauses.openapi(getPauseStatusRoute, async (c) =>
       // where the enterprise-license Tag above is the gate. (#4064 / #3984)
       yield* requireFeatureEntitlement(orgId, "proactive");
 
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization.", requestId },
-          400,
-        );
-      }
       if (!hasInternalDB()) {
         return c.json(
           { workspaceKillActive: false } satisfies z.infer<typeof PauseStatusSchema>,
@@ -210,7 +204,9 @@ adminProactivePauses.openapi(enableKillSwitchRoute, async (c) =>
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId, user } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
+      const { user } = yield* AuthContext;
 
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
@@ -218,12 +214,6 @@ adminProactivePauses.openapi(enableKillSwitchRoute, async (c) =>
       // where the enterprise-license Tag above is the gate. (#4064 / #3984)
       yield* requireFeatureEntitlement(orgId, "proactive");
 
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization.", requestId },
-          400,
-        );
-      }
       if (!hasInternalDB()) {
         return yield* Effect.fail(
           new EnterpriseError(
@@ -280,7 +270,9 @@ adminProactivePauses.openapi(liftKillSwitchRoute, async (c) =>
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId, user } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
+      const { user } = yield* AuthContext;
 
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
@@ -288,12 +280,6 @@ adminProactivePauses.openapi(liftKillSwitchRoute, async (c) =>
       // where the enterprise-license Tag above is the gate. (#4064 / #3984)
       yield* requireFeatureEntitlement(orgId, "proactive");
 
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization.", requestId },
-          400,
-        );
-      }
       if (!hasInternalDB()) {
         return c.json(
           { ok: true as const, workspaceKillActive: false },

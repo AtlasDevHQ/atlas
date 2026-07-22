@@ -14,7 +14,6 @@ import {
   normalizeSandboxBackendValue,
 } from "@useatlas/schemas";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { AuthContext } from "@atlas/api/lib/effect/services";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting, deleteSetting } from "@atlas/api/lib/settings";
 import {
@@ -238,10 +237,8 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-      if (!orgId) {
-        return c.json({ error: "Bad Request", message: "No active organization." }, 400);
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       // Workspace override — normalized once to backend-id vocabulary so
       // legacy stored provider keys ("e2b") resolve like backend ids
@@ -344,10 +341,8 @@ adminSandbox.openapi(connectRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-      if (!orgId) {
-        return c.json({ error: "Bad Request", message: "No active organization." }, 400);
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
       const provider = c.req.param("provider");
 
       if (!isValidProvider(provider)) {
@@ -423,10 +418,8 @@ adminSandbox.openapi(disconnectRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-      if (!orgId) {
-        return c.json({ error: "Bad Request", message: "No active organization." }, 400);
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
       const provider = c.req.param("provider");
 
       if (!isValidProvider(provider)) {

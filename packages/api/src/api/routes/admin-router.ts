@@ -132,6 +132,50 @@ export function createPlatformRouter() {
 // ---------------------------------------------------------------------------
 
 /**
+ * The single definition of the "no active organization" copy (#4356).
+ *
+ * Every org-context bail — the `requireOrgContext()` middleware below, and
+ * the few routers that legitimately cannot mount it (see
+ * `noActiveOrgBody`) — renders this exact string, so the message can never
+ * drift into per-handler variants again.
+ */
+export const NO_ACTIVE_ORG_MESSAGE = "No active organization. Set an active org first.";
+
+/**
+ * The single definition of the "no internal database" copy for the
+ * org-context seam (#4356). Paired with a 404, per `requireOrgContext()`.
+ */
+export const NO_INTERNAL_DB_MESSAGE = "No internal database configured.";
+
+/**
+ * Canonical 400 body for a request with no active organization.
+ *
+ * `requireOrgContext()` is the preferred seam — mount it and read
+ * `c.var.orgContext.orgId`. This helper exists ONLY for routers that
+ * structurally cannot mount middleware for the check:
+ *
+ *   • the `admin.ts` monolith (and the `admin-semantic.ts` routes it hosts),
+ *     which authenticates per-handler via `adminAuthAndContext`, so no
+ *     middleware can read `authResult`;
+ *   • `admin-cache.ts`, which deliberately narrows the guard to managed
+ *     sessions so the single-tenant modes keep working (#4550);
+ *   • `admin-approval.ts`, whose platform-scoped routes are registered
+ *     before `requireOrgContext()` on purpose.
+ *
+ * It renders the same `{ error, message, requestId }` shape and the same
+ * 400 status the middleware does — one message, one envelope.
+ *
+ * NOT for the signup/billing surfaces (`onboarding.ts`, `wizard.ts`,
+ * `billing.ts`). Those answer a different question — the caller has no
+ * workspace *at all*, not an unselected one — so their copy stays
+ * "Create a workspace first." / "Select a workspace first." and their
+ * `no_organization` / `org_required` codes stay the onboarding contract.
+ */
+export function noActiveOrgBody(requestId: string) {
+  return { error: "bad_request" as const, message: NO_ACTIVE_ORG_MESSAGE, requestId };
+}
+
+/**
  * Middleware that validates hasInternalDB() and extracts the active org ID.
  *
  * On success, sets `c.var.orgContext = { requestId, orgId }`.
@@ -143,7 +187,7 @@ export function requireOrgContext() {
 
     if (!hasInternalDB()) {
       return c.json(
-        { error: "not_available", message: "No internal database configured.", requestId },
+        { error: "not_available", message: NO_INTERNAL_DB_MESSAGE, requestId },
         404,
       );
     }
@@ -151,14 +195,7 @@ export function requireOrgContext() {
     const authResult = c.get("authResult");
     const orgId = authResult.user?.activeOrganizationId;
     if (!orgId) {
-      return c.json(
-        {
-          error: "bad_request",
-          message: "No active organization. Set an active org first.",
-          requestId,
-        },
-        400,
-      );
+      return c.json(noActiveOrgBody(requestId), 400);
     }
 
     c.set("orgContext", { requestId, orgId });

@@ -22,7 +22,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { AuthContext, Domains, RequestContext } from "@atlas/api/lib/effect/services";
+import { Domains, RequestContext } from "@atlas/api/lib/effect/services";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { hasInternalDB, getWorkspaceDetails } from "@atlas/api/lib/db/internal";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -273,14 +273,11 @@ adminDomains.use(requirePermission("admin:settings"));
 // GET / — get workspace custom domain
 adminDomains.openapi(getDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { orgId } = yield* AuthContext;
+    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+    const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
-
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
-    }
 
     if (!mod.available) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
@@ -294,14 +291,11 @@ adminDomains.openapi(getDomainRoute, async (c) => {
 // POST / — add custom domain (Pro or Business plan required)
 adminDomains.openapi(addDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { orgId } = yield* AuthContext;
+    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+    const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
-
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
-    }
 
     if (!mod.available) {
       return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
@@ -345,14 +339,11 @@ adminDomains.openapi(addDomainRoute, async (c) => {
 // POST /verify — check domain verification status
 adminDomains.openapi(verifyDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { orgId } = yield* AuthContext;
+    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+    const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
-
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
-    }
 
     if (!mod.available) {
       return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
@@ -379,14 +370,11 @@ adminDomains.openapi(verifyDomainRoute, async (c) => {
 // POST /verify-dns — verify domain ownership via DNS TXT
 adminDomains.openapi(verifyDnsTxtRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { orgId } = yield* AuthContext;
+    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+    const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
-
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
-    }
 
     if (!mod.available) {
       return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
@@ -412,14 +400,11 @@ adminDomains.openapi(verifyDnsTxtRoute, async (c) => {
 // GET /domain-check — check domain availability
 adminDomains.openapi(domainCheckRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { orgId } = yield* AuthContext;
+    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+    const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
-
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
-    }
 
     if (!mod.available) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
@@ -438,14 +423,11 @@ adminDomains.openapi(domainCheckRoute, async (c) => {
 // DELETE / — remove workspace custom domain
 adminDomains.openapi(removeDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { orgId } = yield* AuthContext;
+    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+    const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
-
-    if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
-    }
 
     if (!mod.available) {
       return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));

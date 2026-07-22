@@ -55,6 +55,9 @@ import {
   createAdminRouter,
   createPlatformRouter,
   requireOrgContext,
+  noActiveOrgBody,
+  NO_ACTIVE_ORG_MESSAGE,
+  NO_INTERNAL_DB_MESSAGE,
   type OrgContextEnv,
 } from "../admin-router";
 
@@ -208,6 +211,48 @@ describe("requireOrgContext", () => {
     expect(body.ok).toBe(true);
     expect(body.requestId).toBe("test-req-id");
     expect(body.orgId).toBe("org-123");
+  });
+
+  // #4356 — the ~53 hand-rolled inline org-context checks were migrated onto
+  // this middleware (or, for the routers that structurally cannot mount it,
+  // onto `noActiveOrgBody`). These pin the "exactly one definition" property
+  // so the copies can't drift apart again.
+  it("renders the 400 body through the shared noActiveOrgBody builder", async () => {
+    const app = new OpenAPIHono<OrgContextEnv>();
+    withFakeAuth(app, undefined);
+    app.use(requireOrgContext());
+    app.openapi(testRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(noActiveOrgBody("test-req-id"));
+  });
+
+  it("renders the 404 body from the shared no-internal-DB message", async () => {
+    mockHasInternalDB = false;
+
+    const app = new OpenAPIHono<OrgContextEnv>();
+    withFakeAuth(app, "org-1");
+    app.use(requireOrgContext());
+    app.openapi(testRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: "not_available",
+      message: NO_INTERNAL_DB_MESSAGE,
+      requestId: "test-req-id",
+    });
+  });
+});
+
+describe("noActiveOrgBody", () => {
+  it("carries the single no-active-organization message and a requestId", () => {
+    expect(noActiveOrgBody("req-9")).toEqual({
+      error: "bad_request",
+      message: NO_ACTIVE_ORG_MESSAGE,
+      requestId: "req-9",
+    });
   });
 });
 

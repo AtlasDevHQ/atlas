@@ -240,8 +240,8 @@ adminProactivePublicDataset.openapi(listEntriesRoute, async (c) =>
   runEffect(
     c,
     Effect.gen(function* () {
-      const { requestId } = yield* RequestContext;
-      const { orgId } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
@@ -249,12 +249,6 @@ adminProactivePublicDataset.openapi(listEntriesRoute, async (c) =>
       // where the enterprise-license Tag above is the gate. (#4064 / #3984)
       yield* requireFeatureEntitlement(orgId, "proactive");
 
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request" as const, message: "No active organization.", requestId },
-          400,
-        );
-      }
       if (!hasInternalDB()) {
         return c.json({ entries: [] }, 200);
       }
@@ -272,7 +266,9 @@ adminProactivePublicDataset.openapi(upsertEntryRoute, async (c) =>
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId, user } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
+      const { user } = yield* AuthContext;
 
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
@@ -280,12 +276,6 @@ adminProactivePublicDataset.openapi(upsertEntryRoute, async (c) =>
       // where the enterprise-license Tag above is the gate. (#4064 / #3984)
       yield* requireFeatureEntitlement(orgId, "proactive");
 
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request" as const, message: "No active organization.", requestId },
-          400,
-        );
-      }
       if (!hasInternalDB()) {
         return c.json(
           { error: "internal_error" as const, message: "Public dataset requires an internal database. Configure DATABASE_URL.", requestId },
@@ -336,20 +326,15 @@ adminProactivePublicDataset.openapi(deleteEntryRoute, async (c) =>
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId, user } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
+      const { user } = yield* AuthContext;
 
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
       // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
       // where the enterprise-license Tag above is the gate. (#4064 / #3984)
       yield* requireFeatureEntitlement(orgId, "proactive");
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request" as const, message: "No active organization.", requestId },
-          400,
-        );
-      }
 
       const { entityName } = c.req.valid("param");
 
@@ -393,21 +378,14 @@ adminProactivePublicDataset.openapi(refusedRollupRoute, async (c) =>
   runEffect(
     c,
     Effect.gen(function* () {
-      const { requestId } = yield* RequestContext;
-      const { orgId } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
       // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
       // where the enterprise-license Tag above is the gate. (#4064 / #3984)
       yield* requireFeatureEntitlement(orgId, "proactive");
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request" as const, message: "No active organization.", requestId },
-          400,
-        );
-      }
 
       const sinceMs = parseSinceMs(c.req.query("since"));
       const proactiveSvc = yield* ProactiveService;

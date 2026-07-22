@@ -3188,7 +3188,7 @@ describe("GET /api/v1/admin/semantic/org/entities", () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities"));
     expect(res.status).toBe(400);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.error).toBe("org_not_found");
+    expect(body.error).toBe("bad_request");
   });
 
   it("returns 501 when no internal DB", async () => {
@@ -3224,12 +3224,12 @@ describe("PUT /api/v1/admin/semantic/org/entities/:name", () => {
     mockUpsertEntityAdmin.mockResolvedValue(undefined);
   });
 
-  it("returns 400 with org_not_found when no active organization", async () => {
+  it("returns the canonical bad_request 400 when no active organization (#4356)", async () => {
     setAdmin();
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "PUT", { yamlContent: "table: users" }));
     expect(res.status).toBe(400);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.error).toBe("org_not_found");
+    expect(body.error).toBe("bad_request");
   });
 
   it("returns 400 when yamlContent is missing", async () => {
@@ -3288,12 +3288,12 @@ describe("DELETE /api/v1/admin/semantic/org/entities/:name", () => {
     mockDeleteDraftEntityAdmin.mockResolvedValue(true);
   });
 
-  it("returns 400 with org_not_found when no active organization", async () => {
+  it("returns the canonical bad_request 400 when no active organization (#4356)", async () => {
     setAdmin();
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "DELETE"));
     expect(res.status).toBe(400);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.error).toBe("org_not_found");
+    expect(body.error).toBe("bad_request");
   });
 
   it("returns 404 when entity not found", async () => {

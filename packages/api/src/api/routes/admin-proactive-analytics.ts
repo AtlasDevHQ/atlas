@@ -18,7 +18,6 @@ import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitl
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
-  AuthContext,
   AnswerMeter,
   ProactiveGate,
   ProactiveService,
@@ -92,22 +91,12 @@ adminProactiveAnalytics.get("/", async (c) => {
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
 
-      const { orgId } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
       const { requestId } = yield* RequestContext;
       // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
       // where the enterprise-license Tag above is the gate. (#4064 / #3984)
       yield* requireFeatureEntitlement(orgId, "proactive");
-
-      if (!orgId) {
-        return c.json(
-          {
-            error: "bad_request",
-            message: "No active organization.",
-            requestId,
-          },
-          400,
-        );
-      }
 
       const sinceParam = c.req.query("since");
       const sinceMs = parseSinceMs(sinceParam);

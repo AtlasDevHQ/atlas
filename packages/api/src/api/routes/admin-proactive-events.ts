@@ -155,22 +155,12 @@ adminProactiveEvents.get("/", async (c) =>
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
 
-      const { orgId } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
       const { requestId } = yield* RequestContext;
       // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
       // where the enterprise-license Tag above is the gate. (#4064 / #3984)
       yield* requireFeatureEntitlement(orgId, "proactive");
-
-      if (!orgId) {
-        return c.json(
-          {
-            error: "bad_request",
-            message: "No active organization.",
-            requestId,
-          },
-          400,
-        );
-      }
 
       const sinceMs = parseSinceMs(c.req.query("since"));
       const eventTypeRaw = c.req.query("eventType")?.trim() || undefined;
@@ -264,22 +254,14 @@ adminProactiveEvents.post("/:messageId/review", async (c) =>
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
 
-      const { orgId, user } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
+      const { user } = yield* AuthContext;
       const { requestId } = yield* RequestContext;
       // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
       // where the enterprise-license Tag above is the gate. (#4064 / #3984)
       yield* requireFeatureEntitlement(orgId, "proactive");
 
-      if (!orgId) {
-        return c.json(
-          {
-            error: "bad_request",
-            message: "No active organization.",
-            requestId,
-          },
-          400,
-        );
-      }
       // hasInternalDB() check lives in `requireOrgContext()` middleware;
       // we don't repeat it here.
 

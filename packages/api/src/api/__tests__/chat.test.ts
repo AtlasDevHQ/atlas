@@ -124,28 +124,15 @@ const mockCreateConversation = mock((): Promise<{ id: string } | null> =>
 const mockAddMessage = mock(() => {});
 const mockGetConversationChat = mock((): Promise<{ ok: boolean; reason?: string; data?: unknown }> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockGenerateTitle = mock((q: string) => q.slice(0, 80));
-// #3066 — captured so tests can assert the REST exclude-set persist path
-// (incl. the re-include `[]` case, the #3073 transport-omits-null bug class).
-const mockUpdateConversationRestExcluded = mock(() =>
-  Promise.resolve({ ok: true as const }),
-);
-// #3067 — captured so tests can assert the REST-only focus persist path,
-// incl. the clear-via-null case (the #3073 transport-omits-null bug class).
-const mockUpdateConversationRestFocus = mock(() =>
-  Promise.resolve({ ok: true as const }),
-);
-// #3895 — captured so tests can assert the Group-reach persist path, incl. the
-// widen-via-null case (the #3073 transport-omits-null bug class). The chat route
-// imports + CALLS this synchronously (before .catch), so it MUST be mocked or
-// the persist-reach branch throws a TypeError the moment the picker is touched.
-const mockUpdateConversationGroupReach = mock(() =>
-  Promise.resolve({ ok: true as const }),
-);
-// #4302 — captured so tests can assert the answer-style persist path (persist
-// on explicit change, no UPDATE when unchanged/omitted). Like the reach helper
-// above, chat.ts calls this synchronously (before .catch), so it MUST be
-// mocked or the persist-style branch throws the moment the picker is touched.
-const mockUpdateConversationAnswerStyle = mock(() =>
+// #4351 — the single conversation-scope writer, captured so tests can assert
+// the persist path for every axis (routing mode / REST exclude-set / REST
+// focus / group reach / answer style) — incl. the clear-via-`null` and
+// re-include-via-`[]` cases (the #3073 transport-omits-null bug class). The
+// chat route imports + CALLS this synchronously (before `.then`), so it MUST
+// be mocked or the persist branch throws the moment a picker is touched.
+// The second argument is the DIFFED patch: only the axes that actually
+// changed, which is exactly what these tests assert on.
+const mockUpdateConversationScope = mock(() =>
   Promise.resolve({ ok: true as const }),
 );
 type ReservationResult =
@@ -182,12 +169,7 @@ void mock.module("@atlas/api/lib/conversations", () => ({
   getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   resolveGroupForConnection: mock(() => Promise.resolve(null)),
   verifyGroupBelongsToOrg: mockVerifyGroupBelongsToOrg,
-  updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
-  updateConversationRestExcluded: mockUpdateConversationRestExcluded,
-  updateConversationRestFocus: mockUpdateConversationRestFocus,
-  updateConversationGroupReach: mockUpdateConversationGroupReach,
-  updateConversationAnswerStyle: mockUpdateConversationAnswerStyle,
-  resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
+  updateConversationScope: mockUpdateConversationScope,
 }));
 
 const mockGetPluginTools: Mock<() => unknown> = mock(() => undefined);
@@ -309,14 +291,8 @@ describe("POST /api/v1/chat", () => {
     mockAddMessage.mockReset();
     mockGetConversationChat.mockReset();
     mockGetConversationChat.mockResolvedValue({ ok: false, reason: "not_found" });
-    mockUpdateConversationRestExcluded.mockReset();
-    mockUpdateConversationRestExcluded.mockResolvedValue({ ok: true as const });
-    mockUpdateConversationRestFocus.mockReset();
-    mockUpdateConversationRestFocus.mockResolvedValue({ ok: true as const });
-    mockUpdateConversationGroupReach.mockReset();
-    mockUpdateConversationGroupReach.mockResolvedValue({ ok: true as const });
-    mockUpdateConversationAnswerStyle.mockReset();
-    mockUpdateConversationAnswerStyle.mockResolvedValue({ ok: true as const });
+    mockUpdateConversationScope.mockReset();
+    mockUpdateConversationScope.mockResolvedValue({ ok: true as const });
     mockReserveConversationBudget.mockReset();
     mockReserveConversationBudget.mockResolvedValue({ status: "ok", totalStepsBefore: 0 });
     mockSettleConversationSteps.mockReset();
@@ -549,15 +525,16 @@ describe("POST /api/v1/chat", () => {
       }),
     );
     expect(response.status).toBe(200);
-    expect(mockUpdateConversationRestExcluded).toHaveBeenCalledTimes(1);
-    const calls = mockUpdateConversationRestExcluded.mock.calls as unknown as unknown[][];
-    // Second arg is the new (now-empty) set persisted to the row.
-    expect(calls[0]![1]).toEqual([]);
+    expect(mockUpdateConversationScope).toHaveBeenCalledTimes(1);
+    const calls = mockUpdateConversationScope.mock.calls as unknown as unknown[][];
+    // Second arg is the diffed patch — the exclude-set axis ONLY, carrying the
+    // now-empty set. No other axis changed, so no other axis is written.
+    expect(calls[0]![1]).toEqual({ restExcludedDatasourceIds: [] });
   });
 
   // #3066 — when the body OMITS the exclude-set (the common follow-up turn),
-  // the stored set is inherited and NO redundant UPDATE fires (sameStringSet
-  // gate). This is the counterpart to the re-include test above.
+  // the stored set is inherited and NO redundant UPDATE fires (the
+  // `diffConversationScope` set-equality gate). This is the counterpart to the re-include test above.
   it("inherits the stored exclude-set and skips the UPDATE when the body omits it (#3066)", async () => {
     const convId = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
     mockGetConversationChat.mockResolvedValueOnce({
@@ -594,10 +571,10 @@ describe("POST /api/v1/chat", () => {
     // Inherited the stored set into the ALS frame…
     expect(capturedContext?.restExcludedDatasourceIds).toEqual(["ds-1"]);
     // …and did NOT burn an UPDATE (body matched the stored set / was absent).
-    expect(mockUpdateConversationRestExcluded).not.toHaveBeenCalled();
+    expect(mockUpdateConversationScope).not.toHaveBeenCalled();
   });
 
-  // #3066 — the `sameStringSet` gate: a body that sends a non-empty set EQUAL
+  // #3066 — the exclude-set equality gate (`diffConversationScope`): a body that sends a non-empty set EQUAL
   // to the stored set (here reordered) must NOT burn an UPDATE. A regression to
   // order-sensitive (e.g. JSON.stringify) comparison would bump `updated_at`
   // and reshuffle the conversation list on every turn.
@@ -625,7 +602,7 @@ describe("POST /api/v1/chat", () => {
       }),
     );
     expect(response.status).toBe(200);
-    expect(mockUpdateConversationRestExcluded).not.toHaveBeenCalled();
+    expect(mockUpdateConversationScope).not.toHaveBeenCalled();
   });
 
   // #3067 — the conversation's REST-only focus must reach the agent via the ALS
@@ -704,10 +681,10 @@ describe("POST /api/v1/chat", () => {
       }),
     );
     expect(response.status).toBe(200);
-    expect(mockUpdateConversationRestFocus).toHaveBeenCalledTimes(1);
-    const calls = mockUpdateConversationRestFocus.mock.calls as unknown as unknown[][];
-    // Second arg is the new (null) focus persisted to the row.
-    expect(calls[0]![1]).toBeNull();
+    expect(mockUpdateConversationScope).toHaveBeenCalledTimes(1);
+    const calls = mockUpdateConversationScope.mock.calls as unknown as unknown[][];
+    // Diffed patch — the focus axis ONLY, cleared to null.
+    expect(calls[0]![1]).toEqual({ restFocusDatasourceId: null });
   });
 
   // #3067 — when the body OMITS focus (the common follow-up turn), the stored
@@ -749,7 +726,7 @@ describe("POST /api/v1/chat", () => {
     // Inherited the stored focus into the ALS frame…
     expect(capturedContext?.restFocusDatasourceId).toBe("ds-stripe");
     // …and did NOT burn an UPDATE (body absent → inherit, no change).
-    expect(mockUpdateConversationRestFocus).not.toHaveBeenCalled();
+    expect(mockUpdateConversationScope).not.toHaveBeenCalled();
   });
 
   // #3895 — the conversation's Group reach (a Focus group id) must reach the
@@ -828,10 +805,10 @@ describe("POST /api/v1/chat", () => {
       }),
     );
     expect(response.status).toBe(200);
-    expect(mockUpdateConversationGroupReach).toHaveBeenCalledTimes(1);
-    const calls = mockUpdateConversationGroupReach.mock.calls as unknown as unknown[][];
-    // Second arg is the new (null) reach persisted to the row.
-    expect(calls[0]![1]).toBeNull();
+    expect(mockUpdateConversationScope).toHaveBeenCalledTimes(1);
+    const calls = mockUpdateConversationScope.mock.calls as unknown as unknown[][];
+    // Diffed patch — the reach axis ONLY, widened to null (All sources).
+    expect(calls[0]![1]).toEqual({ groupReach: null });
   });
 
   // #3895 — when the body OMITS groupReach (the common follow-up turn), the
@@ -874,7 +851,7 @@ describe("POST /api/v1/chat", () => {
     // Inherited the stored Focus into the ALS frame…
     expect(capturedContext?.groupReach).toBe("g_prod");
     // …and did NOT burn an UPDATE (body absent → inherit, no change).
-    expect(mockUpdateConversationGroupReach).not.toHaveBeenCalled();
+    expect(mockUpdateConversationScope).not.toHaveBeenCalled();
   });
 
   // #4302 — per-conversation answer style: the header picker's selection
@@ -949,7 +926,7 @@ describe("POST /api/v1/chat", () => {
     const runCalls = mockRunAgent.mock.calls as unknown as unknown[][];
     expect((runCalls[0]![0] as { answerStyle?: string }).answerStyle).toBe("executive");
     // Inherit is not a change — no UPDATE burned.
-    expect(mockUpdateConversationAnswerStyle).not.toHaveBeenCalled();
+    expect(mockUpdateConversationScope).not.toHaveBeenCalled();
   });
 
   // #4302 — the pre-#4302 back-compat path: an existing conversation whose
@@ -983,7 +960,7 @@ describe("POST /api/v1/chat", () => {
     expect(response.status).toBe(200);
     const runCalls = mockRunAgent.mock.calls as unknown as unknown[][];
     expect((runCalls[0]![0] as { answerStyle?: string }).answerStyle).toBeUndefined();
-    expect(mockUpdateConversationAnswerStyle).not.toHaveBeenCalled();
+    expect(mockUpdateConversationScope).not.toHaveBeenCalled();
   });
 
   // #4302 — an explicit picker change persists onto the row (that's what
@@ -1014,10 +991,10 @@ describe("POST /api/v1/chat", () => {
       }),
     );
     expect(response.status).toBe(200);
-    expect(mockUpdateConversationAnswerStyle).toHaveBeenCalledTimes(1);
-    const updateCalls = mockUpdateConversationAnswerStyle.mock.calls as unknown as unknown[][];
+    expect(mockUpdateConversationScope).toHaveBeenCalledTimes(1);
+    const updateCalls = mockUpdateConversationScope.mock.calls as unknown as unknown[][];
     expect(updateCalls[0]![0]).toBe(convId);
-    expect(updateCalls[0]![1]).toBe("plain-english");
+    expect(updateCalls[0]![1]).toEqual({ answerStyle: "plain-english" });
     // The changed style also voices THIS turn.
     const runCalls = mockRunAgent.mock.calls as unknown as unknown[][];
     expect((runCalls[0]![0] as { answerStyle?: string }).answerStyle).toBe("plain-english");
@@ -1052,9 +1029,9 @@ describe("POST /api/v1/chat", () => {
       }),
     );
     expect(response.status).toBe(200);
-    expect(mockUpdateConversationAnswerStyle).toHaveBeenCalledTimes(1);
-    const updateCalls = mockUpdateConversationAnswerStyle.mock.calls as unknown as unknown[][];
-    expect(updateCalls[0]![1]).toBe("executive");
+    expect(mockUpdateConversationScope).toHaveBeenCalledTimes(1);
+    const updateCalls = mockUpdateConversationScope.mock.calls as unknown as unknown[][];
+    expect(updateCalls[0]![1]).toEqual({ answerStyle: "executive" });
   });
 
   // #4302 — re-sending the stored style (the transport re-sends it every turn
@@ -1086,7 +1063,7 @@ describe("POST /api/v1/chat", () => {
       }),
     );
     expect(response.status).toBe(200);
-    expect(mockUpdateConversationAnswerStyle).not.toHaveBeenCalled();
+    expect(mockUpdateConversationScope).not.toHaveBeenCalled();
   });
 
   // #4302 — no explicit choice anywhere ⇒ runAgent gets NO answerStyle (prompt

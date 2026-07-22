@@ -435,7 +435,12 @@ describe("explore root isolation", () => {
 
   it("no-org root is the base semantic/ directory (self-hosted fallback)", () => {
     const root = getSemanticRoot();
-    const expected = path.resolve(process.cwd(), "semantic");
+    // The test preload points ATLAS_SEMANTIC_ROOT at a per-process sandbox
+    // (#4655); the invariant under test is that the no-org root IS the
+    // configured base root, whatever that is — not that it is cwd-relative.
+    const expected = process.env.ATLAS_SEMANTIC_ROOT
+      ? path.resolve(process.env.ATLAS_SEMANTIC_ROOT)
+      : path.resolve(process.cwd(), "semantic");
 
     expect(root).toBe(expected);
     // Base root should NOT be under .orgs/

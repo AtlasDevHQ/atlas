@@ -409,6 +409,10 @@ export function createApiTestMocks(
   // ── Temp semantic directory ────────────────────────────────────
 
   const wantSemanticDir = overrides?.semanticDir !== false;
+  // The preload's per-process sandbox root (#4655). `cleanup()` restores it
+  // rather than deleting the var, so a suite that tears these mocks down
+  // mid-run can't drop the process back to `{cwd}/semantic`.
+  const priorSemanticRoot = process.env.ATLAS_SEMANTIC_ROOT;
   let tmpRoot: string | undefined;
   if (wantSemanticDir) {
     tmpRoot = path.join(
@@ -1080,7 +1084,8 @@ export function createApiTestMocks(
   function cleanup(): void {
     if (tmpRoot) {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
-      delete process.env.ATLAS_SEMANTIC_ROOT;
+      if (priorSemanticRoot === undefined) delete process.env.ATLAS_SEMANTIC_ROOT;
+      else process.env.ATLAS_SEMANTIC_ROOT = priorSemanticRoot;
     }
   }
 

@@ -8,10 +8,11 @@
  * - syncAllEntitiesToDisk() — full rebuild from DB mock, verifies disk output
  * - cleanupOrgDirectory() — directory removal
  *
- * The tests call the real production functions. Since getSemanticRoot
- * delegates to getBaseSemanticRoot() (which defaults to cwd/semantic
- * unless ATLAS_SEMANTIC_ROOT is set), syncEntityToDisk/syncAllEntitiesToDisk
- * write to the real semantic/.orgs/ directory. Tests clean up after themselves.
+ * The tests call the real production functions, so syncEntityToDisk /
+ * syncAllEntitiesToDisk really do hit the filesystem. The test preload points
+ * ATLAS_SEMANTIC_ROOT at a per-process sandbox under os.tmpdir() (#4655), so
+ * those writes land there rather than in the checkout; tests still clean up
+ * their own org directories so cases can't see each other's leftovers.
  *
  * Uses mock.module() to mock the DB layer.
  */
@@ -97,6 +98,23 @@ import {
 // Test setup — use a unique org ID per test to avoid collisions
 // ---------------------------------------------------------------------------
 
+/**
+ * The preload's per-process sandbox root. Suites restore this value instead of
+ * deleting the var — a bare `delete` would drop the process back to
+ * `{cwd}/semantic` and litter the checkout again (#4655).
+ */
+const SANDBOX_ROOT = process.env.ATLAS_SEMANTIC_ROOT;
+
+function restoreSandboxRoot(): void {
+  if (SANDBOX_ROOT === undefined) delete process.env.ATLAS_SEMANTIC_ROOT;
+  else process.env.ATLAS_SEMANTIC_ROOT = SANDBOX_ROOT;
+}
+
+/** Whatever base root the process is currently configured with. */
+function baseRoot(): string {
+  return SANDBOX_ROOT ?? path.resolve(process.cwd(), "semantic");
+}
+
 /** Org IDs created during tests — cleaned up in afterEach. */
 const createdOrgIds: string[] = [];
 
@@ -151,12 +169,21 @@ afterEach(() => {
 describe("getSemanticRoot", () => {
   it("returns base semantic root when no orgId", () => {
     const root = getSemanticRoot();
-    expect(root).toBe(path.resolve(process.cwd(), "semantic"));
+    expect(root).toBe(baseRoot());
   });
 
   it("returns org-scoped root when orgId provided", () => {
     const root = getSemanticRoot("org-123");
-    expect(root).toBe(path.resolve(process.cwd(), "semantic", ".orgs", "org-123"));
+    expect(root).toBe(path.join(baseRoot(), ".orgs", "org-123"));
+  });
+
+  it("falls back to cwd/semantic when ATLAS_SEMANTIC_ROOT is unset", () => {
+    try {
+      delete process.env.ATLAS_SEMANTIC_ROOT;
+      expect(getSemanticRoot()).toBe(path.resolve(process.cwd(), "semantic"));
+    } finally {
+      restoreSandboxRoot();
+    }
   });
 
   it("returns different roots for different orgs", () => {
@@ -194,7 +221,7 @@ describe("getSemanticRoot", () => {
       const root = getSemanticRoot();
       expect(root).toBe(tmpDir);
     } finally {
-      delete process.env.ATLAS_SEMANTIC_ROOT;
+      restoreSandboxRoot();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -206,7 +233,7 @@ describe("getSemanticRoot", () => {
       const root = getSemanticRoot("org-test");
       expect(root).toBe(path.join(tmpDir, ".orgs", "org-test"));
     } finally {
-      delete process.env.ATLAS_SEMANTIC_ROOT;
+      restoreSandboxRoot();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });

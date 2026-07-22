@@ -34,9 +34,5 @@ export {
   LazyPluginInstallNotFoundError,
 } from "./lazy-loader";
 export type { LazyPluginBuilder, LazyPluginBuilderArgs } from "./lazy-loader";
-export {
-  invokeOnUninstallHook,
-  invokeOnUninstallHookForInstallRow,
-  ON_UNINSTALL_HOOK_TIMEOUT_MS,
-} from "./uninstall-hook";
+export { invokeOnUninstallHook, ON_UNINSTALL_HOOK_TIMEOUT_MS } from "./uninstall-hook";
 export type { InvokeOnUninstallArgs, OnUninstallInvocationResult } from "./uninstall-hook";

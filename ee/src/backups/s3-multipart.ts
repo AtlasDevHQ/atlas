@@ -117,8 +117,12 @@ function amzDate(now: Date): string {
  * encoded here exactly once, so the canonical URI and the wire URL are the
  * same string by construction and the signature cannot drift from the
  * request actually sent.
+ *
+ * @internal Exported only so tests can pin the canonical-request shape
+ * against a fixed clock — a miscanonicalized request still produces a
+ * well-formed 64-hex signature, so the format alone proves nothing.
  */
-function signedRequest(
+export function signedRequest(
   config: S3MultipartConfig,
   method: "GET" | "DELETE",
   host: string,

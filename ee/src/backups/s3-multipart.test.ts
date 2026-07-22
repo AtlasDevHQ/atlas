@@ -10,10 +10,13 @@
 
 import { describe, it, expect } from "bun:test";
 
+import { createHmac } from "crypto";
+
 import {
   createS3MultipartOps,
   parseListMultipartUploads,
   S3MultipartUnsupportedError,
+  signedRequest,
 } from "./s3-multipart";
 
 type Call = { url: string; method: string; headers: Record<string, string> };
@@ -97,6 +100,61 @@ describe("parseListMultipartUploads", () => {
     const parsed = parseListMultipartUploads(uploadsXml([]));
     expect(parsed.uploads).toEqual([]);
     expect(parsed.isTruncated).toBe(false);
+  });
+});
+
+// ── SigV4 ──────────────────────────────────────────────────────────
+
+describe("SigV4 signing", () => {
+  it("derives the signing key exactly as AWS's published example does", () => {
+    // AWS docs, "Examples of how to derive a signing key for Signature
+    // Version 4". Pins the HMAC chain itself against an external oracle —
+    // the one part of the scheme with a reference value we can check.
+    const hmac = (key: Buffer | string, data: string) => createHmac("sha256", key).update(data, "utf8").digest();
+    const derived = hmac(
+      hmac(hmac(hmac("AWS4wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "20120215"), "us-east-1"), "iam"),
+      "aws4_request",
+    );
+    expect(derived.toString("hex")).toBe("f4780e2d9f65fa895f9c67b32ce1baf0b0d8a43505a000a1a9e090d414db404d");
+  });
+
+  it("produces a stable signature for a fixed clock, path and query", () => {
+    // A golden lock on the *canonical request*. Asserting the signature is
+    // 64 hex chars proves nothing — a miscanonicalized request (wrong query
+    // ordering, wrong URI encoding, a stray header in SignedHeaders) still
+    // hashes to a well-formed value. This value changes only if the
+    // canonicalization changes, which is exactly when a human should look.
+    const signed = signedRequest(
+      {
+        bucket: "atlas-backups",
+        accessKeyId: "AKIDEXAMPLE",
+        secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+        region: "us-east-1",
+      },
+      "GET",
+      "atlas-backups.s3.us-east-1.amazonaws.com",
+      "https://atlas-backups.s3.us-east-1.amazonaws.com",
+      "",
+      { uploads: "", "max-uploads": "1000", prefix: "backups/" },
+      new Date("2026-07-22T12:34:56.000Z"),
+    );
+
+    // Query params canonically sorted by name; `uploads` valueless.
+    expect(signed.url).toBe(
+      "https://atlas-backups.s3.us-east-1.amazonaws.com/?max-uploads=1000&prefix=backups%2F&uploads=",
+    );
+    expect(signed.headers["x-amz-date"]).toBe("20260722T123456Z");
+    expect(signed.headers.authorization).toBe(
+      "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260722/us-east-1/s3/aws4_request, " +
+        "SignedHeaders=host;x-amz-content-sha256;x-amz-date, " +
+        "Signature=b3fe074730a53cfe61cc6189662916401aed816d301dd8529a5146d850278281",
+    );
+  });
+
+  it("refuses to build an unsigned request when credentials are missing", () => {
+    expect(() =>
+      signedRequest({ bucket: "b" }, "GET", "h", "https://h", "", {}, new Date()),
+    ).toThrow("requires accessKeyId + secretAccessKey");
   });
 });
 

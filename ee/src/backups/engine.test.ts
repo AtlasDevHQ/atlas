@@ -25,6 +25,8 @@ let storagePutSize = 12345;
 let storageListResult: string[] = [];
 let storageListError: Error | null = null;
 let storageRemoveError: Error | null = null;
+let storageAbortError: Error | null = null;
+let storageAbortCount = 0;
 const storageCalls: { op: string; path: string }[] = [];
 
 const storageMock = {
@@ -46,6 +48,11 @@ const storageMock = {
   remove: mock(async (path: string) => {
     storageCalls.push({ op: "remove", path });
     if (storageRemoveError) throw storageRemoveError;
+  }),
+  abortStaleUploads: mock(async (prefix: string) => {
+    storageCalls.push({ op: "abortStaleUploads", path: prefix });
+    if (storageAbortError) throw storageAbortError;
+    return storageAbortCount;
   }),
 };
 
@@ -135,6 +142,8 @@ function resetAll() {
   storageListResult = [];
   storageListError = null;
   storageRemoveError = null;
+  storageAbortError = null;
+  storageAbortCount = 0;
   storageCalls.length = 0;
 }
 
@@ -425,17 +434,41 @@ describe("purgeExpiredBackups", () => {
       { id: "b2", storage_path: "/tmp/b2.sql.gz" },
     ];
     // ensureTable (8) + SELECT expired (1) + DELETE b1 (1) + DELETE b2 (1)
-    ee.queueMockRows(...ensureTableEmpties(), expired, [], []);
+    // + the multipart-housekeeping config read (1, #4727)
+    ee.queueMockRows(...ensureTableEmpties(), expired, [], [], [defaultConfigRow]);
 
     const count = await run(purgeExpiredBackups());
     expect(count).toBe(2);
     expect(storageCalls.filter((c) => c.op === "remove")).toHaveLength(2);
   });
 
+  it("sweeps stale incomplete multipart uploads under the configured prefix (#4727)", async () => {
+    ee.queueMockRows(...ensureTableEmpties(), [], [defaultConfigRow]);
+    storageAbortCount = 3;
+
+    await run(purgeExpiredBackups());
+
+    const sweep = storageCalls.filter((c) => c.op === "abortStaleUploads");
+    expect(sweep).toHaveLength(1);
+    expect(sweep[0].path).toBe("./backups");
+    // Abort args carry the 7-day threshold the issue specifies.
+    expect(storageMock.abortStaleUploads).toHaveBeenLastCalledWith("./backups", 7 * 24 * 60 * 60 * 1000);
+  });
+
+  it("a failing multipart sweep is logged, not propagated — the purge count still returns", async () => {
+    const expired = [{ id: "b1", storage_path: "/tmp/b1.sql.gz" }];
+    ee.queueMockRows(...ensureTableEmpties(), expired, [], [defaultConfigRow]);
+    storageAbortError = new Error("bucket unreachable");
+
+    // The purge is the caller's contract; housekeeping must never fail it.
+    expect(await run(purgeExpiredBackups())).toBe(1);
+  });
+
   it("skips DB deletion when the storage delete fails (already-gone is handled inside the driver)", async () => {
     const expired = [{ id: "b1", storage_path: "/tmp/locked.sql.gz" }];
     // ensureTable (8) + SELECT expired (1) — no DELETE (storage remove fails)
-    ee.queueMockRows(...ensureTableEmpties(), expired);
+    // + the multipart-housekeeping config read (1)
+    ee.queueMockRows(...ensureTableEmpties(), expired, [defaultConfigRow]);
     storageRemoveError = new Error("EACCES");
 
     const count = await run(purgeExpiredBackups());
@@ -443,7 +476,7 @@ describe("purgeExpiredBackups", () => {
   });
 
   it("returns 0 when no expired backups", async () => {
-    ee.queueMockRows(...ensureTableEmpties());
+    ee.queueMockRows(...ensureTableEmpties(), [], [defaultConfigRow]);
     const count = await run(purgeExpiredBackups());
     expect(count).toBe(0);
   });

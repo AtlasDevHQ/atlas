@@ -42,6 +42,7 @@ import { basename, dirname } from "path";
 import { pipeline } from "stream/promises";
 import type { Readable } from "stream";
 import { createLogger } from "@atlas/api/lib/logger";
+import { createS3MultipartOps, S3MultipartUnsupportedError, type S3MultipartOps } from "./s3-multipart";
 
 const log = createLogger("ee:backups-storage");
 
@@ -60,6 +61,17 @@ export interface BackupStorage {
   list(prefix: string): Promise<string[]>;
   /** Delete the artifact. Resolves (does not reject) when it is already gone. */
   remove(path: string): Promise<void>;
+  /**
+   * Abort in-progress multipart uploads under `prefix` that were initiated
+   * more than `olderThanMs` ago, returning how many were aborted (#4727).
+   *
+   * A failed S3 upload deliberately never finalizes, so its parts linger as
+   * billable-but-invisible storage. Resolves with `0` — never rejects — when
+   * the driver has no multipart concept (local), when the endpoint does not
+   * implement the API, or when static credentials aren't available to sign
+   * the request. Genuine failures reject so the caller can log them.
+   */
+  abortStaleUploads(prefix: string, olderThanMs: number): Promise<number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +109,11 @@ export function createLocalBackupStorage(): BackupStorage {
         }
         throw err instanceof Error ? err : new Error(String(err));
       }
+    },
+    async abortStaleUploads() {
+      // The filesystem has no multipart concept: a failed `put` leaves a
+      // partial file at a known path, which the next attempt overwrites.
+      return 0;
     },
   };
 }
@@ -143,6 +160,7 @@ function toKey(path: string): string {
 export function createS3BackupStorage(
   config: S3BackupStorageConfig,
   clientFactory?: (config: S3BackupStorageConfig) => S3ClientLike,
+  multipartFactory: (config: S3BackupStorageConfig) => S3MultipartOps | null = createS3MultipartOps,
 ): BackupStorage {
   const makeClient =
     clientFactory ??
@@ -165,6 +183,19 @@ export function createS3BackupStorage(
   const getClient = (): S3ClientLike => {
     client ??= makeClient(config);
     return client;
+  };
+
+  // Multipart housekeeping is a separate, optional seam: `null` (no static
+  // credentials) is a legitimate steady state, so the resolution is cached in
+  // its own flag rather than folded into `client`.
+  let multipartOps: S3MultipartOps | null = null;
+  let multipartResolved = false;
+  const getMultipartOps = (): S3MultipartOps | null => {
+    if (!multipartResolved) {
+      multipartOps = multipartFactory(config);
+      multipartResolved = true;
+    }
+    return multipartOps;
   };
 
   return {
@@ -196,10 +227,11 @@ export function createS3BackupStorage(
       } catch (err) {
         // Deliberately do NOT end() after a failed part: finalizing would
         // produce a truncated object that could pass a header-only verify.
-        // The multipart upload is left unfinalized — configure a bucket
-        // lifecycle rule to expire incomplete multipart uploads (see
-        // backups.mdx); Bun's writer has no abort API today. Log + rethrow
-        // so the backup row is stamped failed.
+        // The multipart upload is left unfinalized (Bun's writer has no abort
+        // API today) — the retention purge's `abortStaleUploads` sweeps those
+        // parts a week later, so they can't accrue invisible storage even on
+        // buckets with no lifecycle-rule support (#4727). Log + rethrow so
+        // the backup row is stamped failed.
         log.error(
           { err: err instanceof Error ? err.message : String(err), key: toKey(path) },
           "S3 backup upload failed — artifact not finalized",
@@ -232,6 +264,76 @@ export function createS3BackupStorage(
       // S3 DeleteObject succeeds for missing keys by protocol — the
       // ENOENT-tolerant contract holds without a special case.
       await getClient().file(toKey(path)).delete();
+    },
+    async abortStaleUploads(prefix, olderThanMs) {
+      const ops = getMultipartOps();
+      if (!ops) {
+        log.debug(
+          { bucket: config.bucket },
+          "Skipping stale multipart-upload cleanup — no static S3 credentials to sign the request",
+        );
+        return 0;
+      }
+
+      const keyPrefix = toKey(prefix.endsWith("/") ? prefix : `${prefix}/`);
+      let stale: { key: string; uploadId: string }[];
+      try {
+        const cutoff = Date.now() - olderThanMs;
+        const listing = await ops.listInProgress(keyPrefix);
+        if (listing.truncated) {
+          // Not fatal — aborting this batch shrinks the population so later
+          // cycles converge — but a capped sweep must not read as complete.
+          log.warn(
+            { bucket: config.bucket, prefix: keyPrefix, listed: listing.uploads.length },
+            "Multipart-upload listing hit its page cap — sweeping this batch, remainder next cycle",
+          );
+        }
+        stale = listing.uploads.filter((u) => u.initiatedAt < cutoff);
+      } catch (err) {
+        if (err instanceof S3MultipartUnsupportedError) {
+          // Documented degradation: some S3-compatible stores don't expose
+          // bucket-level `?uploads`. A 403 is the one status here that is
+          // just as likely a *fixable* permission gap (the credential lacks
+          // `s3:ListBucketMultipartUploads`), so it gets an actionable warn
+          // rather than a debug line nobody will ever read.
+          const detail = {
+            bucket: config.bucket,
+            status: err.status,
+          };
+          if (err.status === 403) {
+            log.warn(
+              detail,
+              "Skipping stale multipart-upload cleanup — the bucket credential was denied ListMultipartUploads. " +
+                "Grant s3:ListBucketMultipartUploads + s3:AbortMultipartUpload, or expect abandoned upload parts to accrue.",
+            );
+          } else {
+            log.debug(
+              detail,
+              "Skipping stale multipart-upload cleanup — endpoint does not support ListMultipartUploads",
+            );
+          }
+          return 0;
+        }
+        throw err instanceof Error ? err : new Error(String(err));
+      }
+
+      let aborted = 0;
+      for (const upload of stale) {
+        try {
+          await ops.abort(upload.key, upload.uploadId);
+          aborted++;
+        } catch (err) {
+          // One un-abortable upload must not strand the rest.
+          log.warn(
+            { err: err instanceof Error ? err.message : String(err), key: upload.key },
+            "Failed to abort a stale multipart upload — will retry next cycle",
+          );
+        }
+      }
+      if (aborted > 0) {
+        log.info({ bucket: config.bucket, prefix: keyPrefix, aborted }, "Aborted stale incomplete multipart uploads");
+      }
+      return aborted;
     },
   };
 }

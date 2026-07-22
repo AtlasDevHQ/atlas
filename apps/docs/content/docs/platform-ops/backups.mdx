@@ -84,7 +84,15 @@ Every scheduled backup is verified immediately after creation. There are two lev
 ### Storage drivers
 
 - **Local (default)** — artifacts under `ATLAS_BACKUP_STORAGE_PATH`. Appropriate for self-hosted deployments with a persistent disk. On containerized deploys without a volume, local artifacts **do not survive a redeploy** — use the S3 driver instead.
-- **S3-compatible** — set `ATLAS_BACKUP_S3_*` to write artifacts to object storage (Railway buckets, AWS S3, R2, MinIO). Artifacts survive redeploys and host loss; restore and verification read from the bucket. On the hosted SaaS, each region's API service writes to its own regional bucket, keeping backup artifacts inside the workspace's data-residency region. A failed upload never finalizes a truncated object — the multipart upload is left incomplete, so configure a bucket lifecycle rule that expires incomplete multipart uploads (e.g. after 7 days) to avoid accruing invisible storage for abandoned parts.
+- **S3-compatible** — set `ATLAS_BACKUP_S3_*` to write artifacts to object storage (Railway buckets, AWS S3, R2, MinIO). Artifacts survive redeploys and host loss; restore and verification read from the bucket. On the hosted SaaS, each region's API service writes to its own regional bucket, keeping backup artifacts inside the workspace's data-residency region. A failed upload never finalizes a truncated object — the multipart upload is left incomplete, so its already-uploaded parts are billable storage that no object listing shows.
+
+<Callout title="Incomplete multipart uploads are cleaned up automatically">
+  Atlas self-heals: the retention purge (part of every scheduled backup cycle) lists in-progress multipart uploads under the backup key prefix and aborts any initiated more than **7 days** ago. This exists because some hosts — Railway buckets among them — expose no bucket lifecycle configuration at all, so the platform cannot do it for you.
+
+  Where your provider *does* support lifecycle rules (AWS S3, Cloudflare R2, MinIO), still configure one expiring incomplete multipart uploads: it is a cheaper, provider-side backstop that keeps working even if the Atlas backup fiber is disabled or the process never runs a purge.
+
+  The sweep degrades quietly to a no-op — logged at debug, never failing a cycle — on the local driver, on endpoints that don't implement `ListMultipartUploads`, and when the credentials in use aren't static keys Atlas can sign with.
+</Callout>
 
 <Callout title="Switching drivers strands old artifacts">
   The driver is selected per process. Artifacts written under the previous driver remain where they are: their history rows stay listed, but verification/restore for them will fail, and retention purge removes their database rows without touching the stranded files. Take a fresh backup after switching.

@@ -545,7 +545,40 @@ export const getBackupById = (id: string): Effect.Effect<BackupRow | null, Enter
   });
 
 /**
- * Delete expired backups — removes both the DB record and the file on disk.
+ * An incomplete multipart upload older than this is abandoned — no backup
+ * takes a week to upload. Aborted during the retention purge (#4727) because
+ * Railway buckets support no lifecycle configuration, so the "expire
+ * incomplete multipart uploads" rule the platform would normally own has to
+ * be enforced by Atlas itself.
+ */
+const STALE_MULTIPART_UPLOAD_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Abort incomplete multipart uploads under the backup prefix that are older
+ * than {@link STALE_MULTIPART_UPLOAD_AFTER_MS}. Never fails the cycle: a
+ * driver without a multipart concept (local), an endpoint that doesn't
+ * implement the API, and a transport failure all resolve to a logged 0.
+ */
+const abortStaleMultipartUploads = (): Effect.Effect<number, never> =>
+  Effect.gen(function* () {
+    const config = yield* getBackupConfig();
+    return yield* Effect.tryPromise({
+      try: () => getBackupStorage().abortStaleUploads(config.storage_path, STALE_MULTIPART_UPLOAD_AFTER_MS),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
+  }).pipe(
+    Effect.catchAll((err) => {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Could not abort stale incomplete multipart uploads — retrying next purge cycle",
+      );
+      return Effect.succeed(0);
+    }),
+  );
+
+/**
+ * Delete expired backups — removes both the DB record and the file on disk,
+ * then sweeps abandoned incomplete multipart uploads under the backup prefix.
  */
 export const purgeExpiredBackups = (): Effect.Effect<number, EnterpriseError | Error> =>
   Effect.gen(function* () {
@@ -598,6 +631,12 @@ export const purgeExpiredBackups = (): Effect.Effect<number, EnterpriseError | E
     if (purged > 0) {
       log.info({ count: purged }, "Purged expired backups");
     }
+
+    // Storage-side housekeeping: parts left behind by failed uploads are
+    // invisible to `list`, so nothing else in the system would ever reclaim
+    // them. Deliberately after the row purge and failure-isolated — the
+    // purge count is the caller's contract and must not depend on it.
+    yield* abortStaleMultipartUploads();
 
     return purged;
   });

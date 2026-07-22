@@ -240,13 +240,17 @@ describe("s3 backup storage — abortStaleUploads", () => {
   const DAY = 24 * 60 * 60 * 1000;
   const WEEK = 7 * DAY;
 
-  function createFakeMultipart(uploads: InProgressUpload[], abortImpl?: (key: string) => void) {
+  function createFakeMultipart(
+    uploads: InProgressUpload[],
+    abortImpl?: (key: string) => void,
+    truncated = false,
+  ) {
     const listedPrefixes: string[] = [];
     const aborted: { key: string; uploadId: string }[] = [];
     const ops: S3MultipartOps = {
       async listInProgress(prefix) {
         listedPrefixes.push(prefix);
-        return uploads;
+        return { uploads, truncated };
       },
       async abort(key, uploadId) {
         abortImpl?.(key);
@@ -308,6 +312,19 @@ describe("s3 backup storage — abortStaleUploads", () => {
 
     expect(await storage.abortStaleUploads("./backups", WEEK)).toBe(1);
     expect(fake.aborted).toEqual([{ key: "backups/b.sql.gz", uploadId: "u-b" }]);
+  });
+
+  it("still sweeps the batch it got when the listing was page-capped", async () => {
+    const now = Date.now();
+    const fake = createFakeMultipart(
+      [{ key: "backups/a.sql.gz", uploadId: "u-a", initiatedAt: now - 8 * DAY }],
+      undefined,
+      /* truncated */ true,
+    );
+    const storage = createS3BackupStorage({ bucket: "b" }, undefined, () => fake.ops);
+
+    // Partial progress, not a refusal — successive cycles converge.
+    expect(await storage.abortStaleUploads("./backups", WEEK)).toBe(1);
   });
 
   it("resolves the multipart factory once and caches a null result", async () => {

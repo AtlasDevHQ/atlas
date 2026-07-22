@@ -123,6 +123,14 @@ describe("createS3MultipartOps", () => {
       virtualHosted.calls[0].url.startsWith("https://atlas-backups.s3.eu-west-1.amazonaws.com/?"),
     ).toBe(true);
   });
+
+  it("keeps an endpoint's own path prefix ahead of the bucket", async () => {
+    const fake = fakeFetch([{ status: 200, body: uploadsXml([]) }]);
+    await createS3MultipartOps({ ...CREDS, endpoint: "https://gw.example.com/s3/" }, fake.impl)!.listInProgress(
+      "backups/",
+    );
+    expect(fake.calls[0].url.startsWith("https://gw.example.com/s3/atlas-backups?")).toBe(true);
+  });
 });
 
 // ── listInProgress ─────────────────────────────────────────────────
@@ -177,8 +185,9 @@ describe("listInProgress", () => {
     ]);
     const ops = createS3MultipartOps(CREDS, fake.impl)!;
 
-    const uploads = await ops.listInProgress("backups/");
-    expect(uploads.map((u) => u.uploadId)).toEqual(["u1", "u2"]);
+    const listing = await ops.listInProgress("backups/");
+    expect(listing.uploads.map((u) => u.uploadId)).toEqual(["u1", "u2"]);
+    expect(listing.truncated).toBe(false);
     expect(fake.calls).toHaveLength(2);
     expect(fake.calls[1].url).toContain("key-marker=backups%2Fa.sql.gz");
     expect(fake.calls[1].url).toContain("upload-id-marker=u1");
@@ -188,8 +197,43 @@ describe("listInProgress", () => {
     const fake = fakeFetch([{ status: 200, body: uploadsXml([], { isTruncated: true }) }]);
     const ops = createS3MultipartOps(CREDS, fake.impl)!;
 
-    expect(await ops.listInProgress("backups/")).toEqual([]);
+    expect(await ops.listInProgress("backups/")).toEqual({ uploads: [], truncated: false });
     expect(fake.calls).toHaveLength(1);
+  });
+
+  it("reports truncated:true rather than looping forever when the page cap is hit", async () => {
+    // Every page claims more to come — the cap is the only thing that stops it.
+    const fake = fakeFetch([
+      {
+        status: 200,
+        body: uploadsXml([{ key: "backups/a.sql.gz", uploadId: "u1", initiated: "2026-07-01T00:00:00.000Z" }], {
+          isTruncated: true,
+          nextKeyMarker: "backups/a.sql.gz",
+          nextUploadIdMarker: "u1",
+        }),
+      },
+    ]);
+    const ops = createS3MultipartOps(CREDS, fake.impl)!;
+
+    const listing = await ops.listInProgress("backups/");
+    expect(listing.truncated).toBe(true);
+    expect(fake.calls).toHaveLength(50);
+    // The batch is still returned so the caller can make partial progress.
+    expect(listing.uploads).toHaveLength(50);
+  });
+
+  it("signs a key containing % / ? / # without mangling it", async () => {
+    const fake = fakeFetch([{ status: 204, body: "" }]);
+    const ops = createS3MultipartOps({ ...CREDS, endpoint: "https://s3.example.com" }, fake.impl)!;
+
+    // A literal `%` used to blow up the old decodeURIComponent round-trip;
+    // `?`/`#` used to be swallowed by URL parsing.
+    await ops.abort("backups/od%d?x#y.sql.gz", "u1");
+
+    // `/` stays a separator (S3 canonical-URI rule); everything else escapes.
+    expect(fake.calls[0].url).toBe(
+      "https://s3.example.com/atlas-backups/backups/od%25d%3Fx%23y.sql.gz?uploadId=u1",
+    );
   });
 
   it.each([400, 403, 404, 405, 501])(

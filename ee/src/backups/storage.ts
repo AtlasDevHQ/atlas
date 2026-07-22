@@ -279,15 +279,39 @@ export function createS3BackupStorage(
       let stale: { key: string; uploadId: string }[];
       try {
         const cutoff = Date.now() - olderThanMs;
-        stale = (await ops.listInProgress(keyPrefix)).filter((u) => u.initiatedAt < cutoff);
+        const listing = await ops.listInProgress(keyPrefix);
+        if (listing.truncated) {
+          // Not fatal — aborting this batch shrinks the population so later
+          // cycles converge — but a capped sweep must not read as complete.
+          log.warn(
+            { bucket: config.bucket, prefix: keyPrefix, listed: listing.uploads.length },
+            "Multipart-upload listing hit its page cap — sweeping this batch, remainder next cycle",
+          );
+        }
+        stale = listing.uploads.filter((u) => u.initiatedAt < cutoff);
       } catch (err) {
         if (err instanceof S3MultipartUnsupportedError) {
           // Documented degradation: some S3-compatible stores don't expose
-          // bucket-level `?uploads`. Nothing to clean up, nothing to alarm on.
-          log.debug(
-            { bucket: config.bucket, status: err.status },
-            "Skipping stale multipart-upload cleanup — endpoint does not support ListMultipartUploads",
-          );
+          // bucket-level `?uploads`. A 403 is the one status here that is
+          // just as likely a *fixable* permission gap (the credential lacks
+          // `s3:ListBucketMultipartUploads`), so it gets an actionable warn
+          // rather than a debug line nobody will ever read.
+          const detail = {
+            bucket: config.bucket,
+            status: err.status,
+          };
+          if (err.status === 403) {
+            log.warn(
+              detail,
+              "Skipping stale multipart-upload cleanup — the bucket credential was denied ListMultipartUploads. " +
+                "Grant s3:ListBucketMultipartUploads + s3:AbortMultipartUpload, or expect abandoned upload parts to accrue.",
+            );
+          } else {
+            log.debug(
+              detail,
+              "Skipping stale multipart-upload cleanup — endpoint does not support ListMultipartUploads",
+            );
+          }
           return 0;
         }
         throw err instanceof Error ? err : new Error(String(err));

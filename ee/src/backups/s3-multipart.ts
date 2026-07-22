@@ -49,9 +49,15 @@ export class S3MultipartUnsupportedError extends Error {
   }
 }
 
+/** One listing sweep. `truncated` means the page cap stopped it early. */
+export interface InProgressUploadListing {
+  uploads: InProgressUpload[];
+  truncated: boolean;
+}
+
 export interface S3MultipartOps {
-  /** In-progress multipart uploads whose key starts with `prefix` (paged to exhaustion). */
-  listInProgress(prefix: string): Promise<InProgressUpload[]>;
+  /** In-progress multipart uploads whose key starts with `prefix`, paged to exhaustion or the page cap. */
+  listInProgress(prefix: string): Promise<InProgressUploadListing>;
   /** Abort one upload, discarding its parts. */
   abort(key: string, uploadId: string): Promise<void>;
 }
@@ -103,11 +109,21 @@ function amzDate(now: Date): string {
 /**
  * Build a SigV4-signed request. Body is always empty (both operations are
  * bodyless), so the payload hash is the constant empty-string digest.
+ *
+ * `path` is the **decoded** resource path (`/bucket` or `/bucket/<key>`) — it
+ * is never round-tripped through `URL`, because an object key may legally
+ * contain `%`, `?` or `#`, all of which `URL` parsing would mangle (and a
+ * lone `%` makes `decodeURIComponent` throw outright). Each segment is
+ * encoded here exactly once, so the canonical URI and the wire URL are the
+ * same string by construction and the signature cannot drift from the
+ * request actually sent.
  */
 function signedRequest(
   config: S3MultipartConfig,
   method: "GET" | "DELETE",
-  baseUrl: string,
+  host: string,
+  origin: string,
+  path: string,
   query: Record<string, string>,
   now: Date,
 ): { url: string; headers: Record<string, string> } {
@@ -118,24 +134,21 @@ function signedRequest(
     throw new Error("S3 multipart housekeeping requires accessKeyId + secretAccessKey");
   }
   const region = config.region || DEFAULT_REGION;
-  const url = new URL(baseUrl);
 
   const canonicalQuery = Object.keys(query)
     .toSorted()
     .map((k) => `${encodeRfc3986(k)}=${encodeRfc3986(query[k])}`)
     .join("&");
 
-  // The path is `/bucket[/key]`; each segment is encoded independently so `/`
-  // stays a separator.
-  const canonicalUri =
-    url.pathname === "" ? "/" : url.pathname.split("/").map((s) => encodeRfc3986(decodeURIComponent(s))).join("/");
+  // Each segment is encoded independently so `/` stays a separator.
+  const canonicalUri = path === "" ? "/" : path.split("/").map(encodeRfc3986).join("/");
 
   const payloadHash = sha256Hex("");
   const date = amzDate(now);
   const dateStamp = date.slice(0, 8);
 
   const headers: Record<string, string> = {
-    host: url.host,
+    host,
     "x-amz-content-sha256": payloadHash,
     "x-amz-date": date,
     ...(config.sessionToken && { "x-amz-security-token": config.sessionToken }),
@@ -163,7 +176,7 @@ function signedRequest(
     `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
   return {
-    url: `${url.origin}${canonicalUri}${canonicalQuery ? `?${canonicalQuery}` : ""}`,
+    url: `${origin}${canonicalUri}${canonicalQuery ? `?${canonicalQuery}` : ""}`,
     headers,
   };
 }
@@ -234,29 +247,36 @@ function isUnsupportedStatus(status: number): boolean {
  */
 export function createS3MultipartOps(
   config: S3MultipartConfig,
-  fetchImpl: FetchLike = ((url, init) => fetch(url, init)) as FetchLike,
+  fetchImpl: FetchLike = (url, init) => fetch(url, init),
 ): S3MultipartOps | null {
   if (!config.accessKeyId || !config.secretAccessKey) return null;
 
   // Path-style against an explicit endpoint (what Railway/MinIO/R2 expose);
   // virtual-hosted style against real AWS, which is the only addressing mode
-  // new AWS buckets support.
-  const baseUrl = config.endpoint
-    ? `${config.endpoint.replace(/\/+$/, "")}/${config.bucket}`
-    : `https://${config.bucket}.s3.${config.region || DEFAULT_REGION}.amazonaws.com`;
+  // new AWS buckets support. Parsed once, here, from operator-supplied
+  // configuration — never from an object key (see `signedRequest`).
+  const endpointUrl = new URL(
+    config.endpoint
+      ? config.endpoint.replace(/\/+$/, "")
+      : `https://${config.bucket}.s3.${config.region || DEFAULT_REGION}.amazonaws.com`,
+  );
+  const { origin, host } = endpointUrl;
+  // An endpoint may itself carry a path prefix; keep it ahead of the bucket.
+  const endpointPath = endpointUrl.pathname.replace(/\/+$/, "");
+  const bucketPath = config.endpoint ? `${endpointPath}/${config.bucket}` : endpointPath;
 
   const send = async (
     method: "GET" | "DELETE",
-    url: string,
+    path: string,
     query: Record<string, string>,
   ): Promise<{ status: number; body: string }> => {
-    const signed = signedRequest(config, method, url, query, new Date());
+    const signed = signedRequest(config, method, host, origin, path, query, new Date());
     const res = await fetchImpl(signed.url, { method, headers: signed.headers });
     return { status: res.status, body: await res.text() };
   };
 
   return {
-    async listInProgress(prefix) {
+    async listInProgress(prefix): Promise<InProgressUploadListing> {
       const uploads: InProgressUpload[] = [];
       let keyMarker: string | null = null;
       let uploadIdMarker: string | null = null;
@@ -269,7 +289,7 @@ export function createS3MultipartOps(
           ...(keyMarker && { "key-marker": keyMarker }),
           ...(uploadIdMarker && { "upload-id-marker": uploadIdMarker }),
         };
-        const { status, body } = await send("GET", baseUrl, query);
+        const { status, body } = await send("GET", bucketPath, query);
         if (isUnsupportedStatus(status)) {
           throw new S3MultipartUnsupportedError(
             `ListMultipartUploads not available on this endpoint (HTTP ${status})`,
@@ -282,16 +302,22 @@ export function createS3MultipartOps(
 
         const parsed = parseListMultipartUploads(body);
         uploads.push(...parsed.uploads);
-        if (!parsed.isTruncated || (!parsed.nextKeyMarker && !parsed.nextUploadIdMarker)) break;
+        if (!parsed.isTruncated || (!parsed.nextKeyMarker && !parsed.nextUploadIdMarker)) {
+          return { uploads, truncated: false };
+        }
         keyMarker = parsed.nextKeyMarker;
         uploadIdMarker = parsed.nextUploadIdMarker;
       }
 
-      return uploads;
+      // Page cap hit with more pages pending. Report the partial listing
+      // rather than throwing: aborting what we found shrinks the population,
+      // so successive cycles converge — but `truncated` makes the shortfall
+      // visible instead of letting a capped sweep read as a complete one.
+      return { uploads, truncated: true };
     },
 
     async abort(key, uploadId) {
-      const { status } = await send("DELETE", `${baseUrl}/${key}`, { uploadId });
+      const { status } = await send("DELETE", `${bucketPath}/${key}`, { uploadId });
       // 204 is the documented success; 404 means another replica already
       // aborted it — the desired end state either way.
       if (status === 404 || (status >= 200 && status < 300)) return;

@@ -103,7 +103,7 @@ import { adminModelConfig } from "./admin-model-config";
 import { adminEmailProvider } from "./admin-email-provider";
 import { adminAuthPreamble, authErrorCode, requireAdminAuth } from "./admin-auth";
 import { mountBoth } from "./mount";
-import { enforcePermission } from "./admin-router";
+import { enforcePermission, noActiveOrgBody } from "./admin-router";
 import type { Permission } from "@atlas/api/lib/auth/permissions";
 import { adminUsage } from "./admin-usage";
 import { adminAuditRetention } from "./admin-audit-retention";
@@ -2080,7 +2080,7 @@ admin.openapi(listOrgEntitiesRoute, async (c) => runHandler(c, "list org semanti
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
-    return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+    return c.json(noActiveOrgBody(reqId(c)), 400);
   }
 
   if (!hasInternalDB()) {
@@ -2116,7 +2116,7 @@ admin.openapi(getOrgEntityRoute, async (c) => runHandler(c, "get org semantic en
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
-    return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+    return c.json(noActiveOrgBody(reqId(c)), 400);
   }
 
   if (!hasInternalDB()) {
@@ -2155,7 +2155,7 @@ admin.openapi(putOrgEntityRoute, async (c) => runHandler(c, "save org semantic e
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
-    return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+    return c.json(noActiveOrgBody(reqId(c)), 400);
   }
 
   if (!hasInternalDB()) {
@@ -2226,7 +2226,7 @@ admin.openapi(deleteOrgEntityRoute, async (c) => runHandler(c, "delete org seman
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
-    return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+    return c.json(noActiveOrgBody(reqId(c)), 400);
   }
 
   if (!hasInternalDB()) {
@@ -2285,7 +2285,7 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
-    return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+    return c.json(noActiveOrgBody(reqId(c)), 400);
   }
 
   if (!hasInternalDB()) {

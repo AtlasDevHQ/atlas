@@ -15,7 +15,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createAdminRouter } from "./admin-router";
+import { createAdminRouter, noActiveOrgBody } from "./admin-router";
 
 const log = createLogger("admin-cache");
 
@@ -248,7 +248,7 @@ adminCache.openapi(getCacheStatsRoute, async (c) => runHandler(c, "retrieve cach
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   const scope = isPlatformAdmin ? ("platform" as const) : ("workspace" as const);
   if (managedSessionMissingOrg(authResult)) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+    return c.json(noActiveOrgBody(requestId), 400);
   }
   // Resolve enabled/ttl for the CALLER's workspace so a per-workspace
   // ATLAS_CACHE_ENABLED / ATLAS_CACHE_TTL override is reflected (#4545).
@@ -363,7 +363,7 @@ adminCache.openapi(flushCacheRoute, async (c) => runHandler(c, "flush cache", as
 
   if (orgId === undefined) {
     if (managedSessionMissingOrg(authResult)) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+      return c.json(noActiveOrgBody(requestId), 400);
     }
     // Single-tenant deployment (auth mode "none" / simple-key — no org
     // concept): the whole cache is this one tenant's, so a workspace flush
@@ -414,7 +414,7 @@ adminCache.openapi(listCacheEntriesRoute, async (c) => runHandler(c, "list cache
     }, 403);
   }
   if (managedSessionMissingOrg(authResult)) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+    return c.json(noActiveOrgBody(requestId), 400);
   }
   const targetOrgId = inspectOrgId ?? callerOrgId;
 
@@ -439,7 +439,7 @@ adminCache.openapi(deleteCacheEntryRoute, async (c) => runHandler(c, "delete cac
   const { key } = c.req.valid("param");
 
   if (managedSessionMissingOrg(authResult)) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+    return c.json(noActiveOrgBody(requestId), 400);
   }
 
   const { cacheEnabled, cacheDeleteEntry } = await import("@atlas/api/lib/cache/index");

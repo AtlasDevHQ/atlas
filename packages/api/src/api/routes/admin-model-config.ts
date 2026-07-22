@@ -47,7 +47,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
 import { isInternalEgressAllowed } from "@atlas/api/lib/openapi/egress-guard";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createAdminRouter, requirePermission } from "./admin-router";
+import { createAdminRouter, requirePermission, noActiveOrgBody, NO_INTERNAL_DB_MESSAGE } from "./admin-router";
 
 const log = createLogger("admin-model-config");
 
@@ -271,11 +271,11 @@ adminModelConfig.openapi(getConfigRoute, async (c) => {
     const router = yield* ModelRouter;
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
+      return c.json({ error: "not_available", message: NO_INTERNAL_DB_MESSAGE, requestId }, 404);
     }
 
     if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+      return c.json(noActiveOrgBody(requestId), 400);
     }
 
     const config = yield* router.getWorkspaceModelConfig(orgId);
@@ -291,11 +291,11 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
     const router = yield* ModelRouter;
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
+      return c.json({ error: "not_available", message: NO_INTERNAL_DB_MESSAGE, requestId }, 404);
     }
 
     if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+      return c.json(noActiveOrgBody(requestId), 400);
     }
 
     const body = c.req.valid("json");
@@ -373,11 +373,11 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
     const router = yield* ModelRouter;
 
     if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
+      return c.json({ error: "not_available", message: NO_INTERNAL_DB_MESSAGE, requestId }, 404);
     }
 
     if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+      return c.json(noActiveOrgBody(requestId), 400);
     }
 
     const deleted = yield* router.deleteWorkspaceModelConfig(orgId).pipe(
@@ -417,7 +417,7 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
     const router = yield* ModelRouter;
 
     if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+      return c.json(noActiveOrgBody(requestId), 400);
     }
 
     const body = c.req.valid("json");
@@ -503,10 +503,7 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
     // `{ region, bundle }` cred shape joins the same table as the
     // string-apiKey shape via the generic `Cred` parameter.
     if (!orgId) {
-      return c.json(
-        { error: "bad_request", message: "No active organization. Set an active org first.", requestId },
-        400,
-      );
+      return c.json(noActiveOrgBody(requestId), 400);
     }
 
     // Decrypt errors surface as 422 with a clear "re-enter the key" message

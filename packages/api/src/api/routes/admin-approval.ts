@@ -33,7 +33,7 @@ import {
 import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { ApprovalError } from "@atlas/api/lib/governance/errors";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, noActiveOrgBody } from "./admin-router";
 
 const approvalDomainError = domainError(ApprovalError, { validation: 400, not_found: 404, conflict: 409, expired: 410 });
 
@@ -317,7 +317,7 @@ adminApproval.openapi(pendingCountRoute, async (c) => {
     const { orgId } = yield* AuthContext;
 
     if (!orgId) {
-      return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+      return c.json(noActiveOrgBody(requestId), 400);
     }
     yield* requireFeatureEntitlement(orgId, "approvals");
 

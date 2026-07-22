@@ -11,7 +11,6 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { AuthContext } from "@atlas/api/lib/effect/services";
 import {
   WorkspaceInstaller,
   WorkspaceInstallerLive,
@@ -147,16 +146,8 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      // requireOrgContext() middleware guarantees orgId is set, but verify
-      // at the Effect boundary to avoid non-null assertions
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       const deployMode = getConfig()?.deployMode ?? "self-hosted";
 
@@ -446,14 +437,8 @@ adminIntegrations.openapi(disconnectSlackRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       // Try the facade first — drains both stores when the install was
       // created via OAuth (slice 5+ flow). Catch `InstallNotFoundError`
@@ -551,14 +536,8 @@ adminIntegrations.openapi(disconnectDiscordRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       const deleted = yield* Effect.tryPromise({
         try: () => deleteDiscordInstallationByOrg(orgId),
@@ -648,14 +627,8 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
         return c.json(
@@ -797,14 +770,8 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
         return c.json(
@@ -972,14 +939,8 @@ adminIntegrations.openapi(connectGitHubRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
         return c.json(
@@ -1125,14 +1086,8 @@ adminIntegrations.openapi(disconnectGitHubRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       const deleted = yield* Effect.tryPromise({
         try: () => deleteGitHubInstallationByOrg(orgId),
@@ -1224,14 +1179,8 @@ adminIntegrations.openapi(connectLinearRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
         return c.json(
@@ -1393,14 +1342,8 @@ adminIntegrations.openapi(disconnectLinearRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       const deleted = yield* Effect.tryPromise({
         try: () => deleteLinearInstallationByOrg(orgId),
@@ -1542,14 +1485,8 @@ adminIntegrations.openapi(connectEmailRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
         return c.json(
@@ -1665,14 +1602,8 @@ adminIntegrations.openapi(testEmailRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
         return c.json(
@@ -1811,14 +1742,8 @@ adminIntegrations.openapi(disconnectEmailRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
 
       const deleted = yield* Effect.tryPromise({
         try: () => deleteEmailInstallationByOrg(orgId),

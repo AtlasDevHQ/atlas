@@ -482,7 +482,8 @@ adminResidency.openapi(getStatusRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
       yield* requireFeatureEntitlement(orgId, "residency");
       const mod = yield* ResidencyResolver;
 
@@ -561,7 +562,8 @@ adminResidency.openapi(assignRegionRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
       yield* requireFeatureEntitlement(orgId, "residency");
       const mod = yield* ResidencyResolver;
 
@@ -622,7 +624,8 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
       yield* requireFeatureEntitlement(orgId, "residency");
 
       if (!hasInternalDB()) {
@@ -658,13 +661,11 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId, user } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
+      const { user } = yield* AuthContext;
       yield* requireFeatureEntitlement(orgId, "residency");
       const { targetRegion } = c.req.valid("json");
-
-      if (!orgId) {
-        return c.json({ error: "no_organization", message: "No active organization.", requestId }, 400);
-      }
 
       if (!hasInternalDB()) {
         return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
@@ -794,7 +795,8 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
       yield* requireFeatureEntitlement(orgId, "residency");
       const { id } = c.req.valid("param");
 
@@ -890,7 +892,8 @@ adminResidency.openapi(cancelMigrationRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { orgId } = yield* AuthContext;
+      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
+      const { orgId } = c.get("orgContext");
       yield* requireFeatureEntitlement(orgId, "residency");
       const { id } = c.req.valid("param");
 

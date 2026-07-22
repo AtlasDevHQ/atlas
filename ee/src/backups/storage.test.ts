@@ -27,6 +27,10 @@ const {
 } = await import("./storage");
 type S3ClientLike = import("./storage").S3ClientLike;
 
+const { S3MultipartUnsupportedError } = await import("./s3-multipart");
+type S3MultipartOps = import("./s3-multipart").S3MultipartOps;
+type InProgressUpload = import("./s3-multipart").InProgressUpload;
+
 // ── Local driver ───────────────────────────────────────────────────
 
 describe("local backup storage", () => {
@@ -73,6 +77,11 @@ describe("local backup storage", () => {
     expect(existsSync(path)).toBe(false);
     // Second remove: already gone — resolves, no throw.
     await storage.remove(path);
+  });
+
+  it("abortStaleUploads is a no-op — the filesystem has no multipart concept (#4727)", async () => {
+    const storage = createLocalBackupStorage();
+    expect(await storage.abortStaleUploads(tmp, 7 * 24 * 60 * 60 * 1000)).toBe(0);
   });
 });
 
@@ -124,8 +133,7 @@ function createFakeS3() {
         },
       };
     },
-    async list({ prefix }: { prefix: string; maxKeys?: number; startAfter?: string }) {
-      const keys = [...objects.keys()].filter((k) => k.startsWith(prefix)).toSorted();
+    async list({ prefix }: { prefix: string; maxKeys?: number; startAfter?: string }) {      const keys = [...objects.keys()].filter((k) => k.startsWith(prefix)).toSorted();
       return { contents: keys.map((key) => ({ key })), isTruncated: false };
     },
   };
@@ -223,6 +231,95 @@ describe("s3 backup storage", () => {
     // Missing key — still resolves.
     await storage.remove("./backups/gone.sql.gz");
     expect(fake.deleted.filter((k) => k === "backups/gone.sql.gz")).toHaveLength(2);
+  });
+});
+
+// ── Stale incomplete multipart uploads (#4727) ─────────────────────
+
+describe("s3 backup storage — abortStaleUploads", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const WEEK = 7 * DAY;
+
+  function createFakeMultipart(uploads: InProgressUpload[], abortImpl?: (key: string) => void) {
+    const listedPrefixes: string[] = [];
+    const aborted: { key: string; uploadId: string }[] = [];
+    const ops: S3MultipartOps = {
+      async listInProgress(prefix) {
+        listedPrefixes.push(prefix);
+        return uploads;
+      },
+      async abort(key, uploadId) {
+        abortImpl?.(key);
+        aborted.push({ key, uploadId });
+      },
+    };
+    return { ops, listedPrefixes, aborted };
+  }
+
+  it("aborts only uploads older than the threshold, under the normalized key prefix", async () => {
+    const now = Date.now();
+    const fake = createFakeMultipart([
+      { key: "backups/stale.sql.gz", uploadId: "u-old", initiatedAt: now - 8 * DAY },
+      { key: "backups/fresh.sql.gz", uploadId: "u-new", initiatedAt: now - 1 * DAY },
+    ]);
+    const storage = createS3BackupStorage({ bucket: "b" }, undefined, () => fake.ops);
+
+    expect(await storage.abortStaleUploads("./backups", WEEK)).toBe(1);
+    // Leading `./` stripped and a trailing `/` appended, exactly as `list` does.
+    expect(fake.listedPrefixes).toEqual(["backups/"]);
+    expect(fake.aborted).toEqual([{ key: "backups/stale.sql.gz", uploadId: "u-old" }]);
+  });
+
+  it("no-ops when the endpoint does not support ListMultipartUploads", async () => {
+    const storage = createS3BackupStorage({ bucket: "b" }, undefined, () => ({
+      listInProgress: () => Promise.reject(new S3MultipartUnsupportedError("nope", 501)),
+      abort: () => Promise.reject(new Error("should not be reached")),
+    }));
+
+    expect(await storage.abortStaleUploads("./backups", WEEK)).toBe(0);
+  });
+
+  it("no-ops when no static credentials are available to sign the request", async () => {
+    const storage = createS3BackupStorage({ bucket: "b" }, undefined, () => null);
+    expect(await storage.abortStaleUploads("./backups", WEEK)).toBe(0);
+  });
+
+  it("propagates a genuine listing failure so the caller can log it", async () => {
+    const storage = createS3BackupStorage({ bucket: "b" }, undefined, () => ({
+      listInProgress: () => Promise.reject(new Error("connection reset")),
+      abort: () => Promise.resolve(),
+    }));
+
+    await expect(storage.abortStaleUploads("./backups", WEEK)).rejects.toThrow("connection reset");
+  });
+
+  it("one un-abortable upload does not strand the rest", async () => {
+    const now = Date.now();
+    const fake = createFakeMultipart(
+      [
+        { key: "backups/a.sql.gz", uploadId: "u-a", initiatedAt: now - 8 * DAY },
+        { key: "backups/b.sql.gz", uploadId: "u-b", initiatedAt: now - 9 * DAY },
+      ],
+      (key) => {
+        if (key === "backups/a.sql.gz") throw new Error("AccessDenied");
+      },
+    );
+    const storage = createS3BackupStorage({ bucket: "b" }, undefined, () => fake.ops);
+
+    expect(await storage.abortStaleUploads("./backups", WEEK)).toBe(1);
+    expect(fake.aborted).toEqual([{ key: "backups/b.sql.gz", uploadId: "u-b" }]);
+  });
+
+  it("resolves the multipart factory once and caches a null result", async () => {
+    let calls = 0;
+    const storage = createS3BackupStorage({ bucket: "b" }, undefined, () => {
+      calls++;
+      return null;
+    });
+
+    await storage.abortStaleUploads("./backups", WEEK);
+    await storage.abortStaleUploads("./backups", WEEK);
+    expect(calls).toBe(1);
   });
 });
 

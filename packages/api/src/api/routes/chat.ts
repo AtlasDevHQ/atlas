@@ -48,13 +48,14 @@ import {
   reserveConversationBudget,
   resolveGroupForConnection,
   settleConversationSteps,
-  updateConversationRoutingMode,
-  updateConversationRestExcluded,
-  updateConversationRestFocus,
-  updateConversationGroupReach,
-  updateConversationAnswerStyle,
-  resolveRoutingMode,
+  updateConversationScope,
 } from "@atlas/api/lib/conversations";
+import {
+  conversationScopeFrom,
+  conversationScopePatchFrom,
+  diffConversationScope,
+  routingModeFromColumn,
+} from "@atlas/api/lib/conversation-scope";
 import { ANSWER_STYLE_NAMES } from "@atlas/api/lib/answer-styles";
 import type { AnswerStyle } from "@atlas/api/lib/answer-styles";
 import type { ConversationRoutingMode } from "@useatlas/types/conversation";
@@ -90,21 +91,6 @@ function getConversationStepCap(orgId?: string): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) return DEFAULT_CONVERSATION_STEP_CAP;
   return Math.floor(n);
-}
-
-/**
- * #3066 — order-independent equality for two string sets. Used to decide
- * whether the body's REST exclude-set differs from the conversation's
- * stored set before burning an UPDATE. Duplicates collapse (a set, not a
- * list), so `["a","a"]` and `["a"]` compare equal — which is correct for
- * an exclude-set keyed on `install_id`.
- */
-function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
-  const setA = new Set(a);
-  const setB = new Set(b);
-  if (setA.size !== setB.size) return false;
-  for (const v of setA) if (!setB.has(v)) return false;
-  return true;
 }
 
 /**
@@ -1161,153 +1147,56 @@ chat.openapi(chatRoute, async (c) => {
             if (effectiveAnswerStyle === undefined && existing.data.answerStyle) {
               effectiveAnswerStyle = existing.data.answerStyle;
             }
-            // Persist the picker mode if the body explicitly set one for
-            // this turn. We compare against the stored value to avoid
-            // burning an UPDATE on every chat turn when nothing changed.
-            if (
-              parsed.data.routingMode !== undefined &&
-              parsed.data.routingMode !== existing.data.routingMode
-            ) {
-              // Fire-and-forget within the request lifetime: a transient
-              // write failure shouldn't block the chat turn (the runtime
-              // will still honor the body's routingMode for this turn).
-              // Note we don't await — the helper logs its own failures.
-              updateConversationRoutingMode(
+            // #4351 — persist the conversation's scope in ONE diffed,
+            // org-scoped, atomic UPDATE. Previously this was five parallel
+            // "body explicitly set X AND X differs from the row" guards, each
+            // firing its own per-field writer: a turn that changed reach AND
+            // style issued two independent fire-and-forget writes that could
+            // land — or fail — separately, leaving the row half-updated.
+            //
+            // The presence semantics are unchanged and load-bearing (#3073,
+            // the transport-omits-null bug class): `conversationScopePatchFrom`
+            // keeps only the axes the BODY carries, so an omitted field
+            // inherits the row while an explicit `null` (clear REST focus,
+            // widen reach to All sources) is a real change that persists.
+            // `diffConversationScope` then drops the axes that already match
+            // the row, so a turn that changes nothing burns no write — the
+            // transport re-sends the picker state on every turn, so that skip
+            // is the common path, not the exception.
+            const scopeChanges = diffConversationScope(
+              conversationScopeFrom(existing.data),
+              conversationScopePatchFrom(parsed.data),
+            );
+            if (Object.keys(scopeChanges).length > 0) {
+              // Fire-and-forget within the request lifetime: a transient write
+              // failure must not block the chat turn (the runtime honours the
+              // body's scope for this turn either way). The writer never
+              // rejects (it catches internally and returns a CrudResult), so
+              // inspect the RESOLUTION too: an `ok: false` that isn't the
+              // already-logged `error` arm — `not_found` (conversation deleted
+              // mid-turn, or an ownership-scope miss) — would otherwise be
+              // silent at both layers, and a scope pick that didn't stick
+              // reverts on reopen with zero breadcrumb.
+              updateConversationScope(
                 conversationId,
-                parsed.data.routingMode,
-                authResult.user?.id,
-                authResult.user?.activeOrganizationId,
-              ).catch((err: unknown) => {
-                log.warn(
-                  {
-                    err: err instanceof Error ? err.message : String(err),
-                    conversationId,
-                  },
-                  "updateConversationRoutingMode rejected",
-                );
-              });
-            }
-            // #3066 — persist the exclude-set when the body explicitly set
-            // one this turn AND it differs from the stored set. Set-equality
-            // is order-independent so a reorder doesn't burn an UPDATE; an
-            // explicit `[]` that clears a prior non-empty set DOES persist
-            // (that's the re-include path the transport must support).
-            if (
-              parsed.data.restExcludedDatasourceIds !== undefined &&
-              !sameStringSet(
-                parsed.data.restExcludedDatasourceIds,
-                existing.data.restExcludedDatasourceIds ?? [],
-              )
-            ) {
-              // Fire-and-forget, same contract as routing-mode above: the
-              // runtime honours the body's set for this turn even if the
-              // persist fails; the helper logs its own failures.
-              updateConversationRestExcluded(
-                conversationId,
-                parsed.data.restExcludedDatasourceIds,
-                authResult.user?.id,
-                authResult.user?.activeOrganizationId,
-              ).catch((err: unknown) => {
-                log.warn(
-                  {
-                    err: err instanceof Error ? err.message : String(err),
-                    conversationId,
-                  },
-                  "updateConversationRestExcluded rejected",
-                );
-              });
-            }
-            // #3067 — persist REST-only focus when the body explicitly set one
-            // this turn AND it differs from the stored value. An explicit
-            // `null` that clears a prior focus DOES persist (the clear path the
-            // transport must support); normalize the row's value with `?? null`
-            // so a string→null or null→string change is detected.
-            if (
-              parsed.data.restFocusDatasourceId !== undefined &&
-              parsed.data.restFocusDatasourceId !==
-                (existing.data.restFocusDatasourceId ?? null)
-            ) {
-              // Fire-and-forget, same contract as routing-mode / exclude-set
-              // above: the runtime honours the body's focus for this turn even
-              // if the persist fails; the helper logs its own failures.
-              updateConversationRestFocus(
-                conversationId,
-                parsed.data.restFocusDatasourceId,
-                authResult.user?.id,
-                authResult.user?.activeOrganizationId,
-              ).catch((err: unknown) => {
-                log.warn(
-                  {
-                    err: err instanceof Error ? err.message : String(err),
-                    conversationId,
-                  },
-                  "updateConversationRestFocus rejected",
-                );
-              });
-            }
-            // #3895 — persist Group reach when the body explicitly set one this
-            // turn AND it differs from the stored value. An explicit `null` that
-            // widens a prior Focus back to All sources DOES persist (the widen
-            // path the transport must support); normalize the row's value with
-            // `?? null` so a string→null or null→string change is detected.
-            if (
-              parsed.data.groupReach !== undefined &&
-              parsed.data.groupReach !== (existing.data.groupReach ?? null)
-            ) {
-              // Fire-and-forget, same contract as routing-mode / REST scope
-              // above: the runtime honours the body's reach for this turn even
-              // if the persist fails; the helper logs its own failures.
-              updateConversationGroupReach(
-                conversationId,
-                parsed.data.groupReach,
-                authResult.user?.id,
-                authResult.user?.activeOrganizationId,
-              ).catch((err: unknown) => {
-                log.warn(
-                  {
-                    err: err instanceof Error ? err.message : String(err),
-                    conversationId,
-                  },
-                  "updateConversationGroupReach rejected",
-                );
-              });
-            }
-            // #4302 — persist the answer style when the body explicitly set
-            // one this turn AND it differs from the stored value, so the
-            // choice restores on reopen. Compared against the row to avoid
-            // burning an UPDATE on every turn: the transport re-sends the
-            // style whenever its state holds one — touched this session OR
-            // restored from the row on reopen — so the reopen path is the
-            // main beneficiary of this skip-UPDATE gate.
-            if (
-              parsed.data.answerStyle !== undefined &&
-              parsed.data.answerStyle !== existing.data.answerStyle
-            ) {
-              // Fire-and-forget, same contract as routing-mode / REST scope /
-              // Group reach above: the runtime honours the body's style for
-              // this turn even if the persist fails. The helper never rejects
-              // (it catches internally and returns a CrudResult), so inspect
-              // the RESOLUTION: an `ok: false` that isn't the logged `error`
-              // arm — `not_found` (conversation deleted mid-turn, or an
-              // ownership-scope miss) — would otherwise be silent at both
-              // layers, and a style pin that didn't stick reverts the voice
-              // on reopen with zero breadcrumb.
-              updateConversationAnswerStyle(
-                conversationId,
-                parsed.data.answerStyle,
+                scopeChanges,
                 authResult.user?.id,
                 authResult.user?.activeOrganizationId,
               ).then(
                 (result) => {
                   if (!result.ok) {
                     log.warn(
-                      { conversationId, reason: result.reason },
-                      "answer-style persist did not apply — the conversation will revert to its stored voice on reopen",
+                      {
+                        conversationId,
+                        reason: result.reason,
+                        axes: Object.keys(scopeChanges),
+                      },
+                      "conversation-scope persist did not apply — the conversation will revert to its stored scope on reopen",
                     );
                   }
                 },
                 (err: unknown) => {
-                  // Contract breach only: the helper catches internally, so a
+                  // Contract breach only: the writer catches internally, so a
                   // rejection means that changed — log it rather than letting a
                   // fire-and-forget path emit an unhandled rejection.
                   log.warn(
@@ -1315,7 +1204,7 @@ chat.openapi(chatRoute, async (c) => {
                       err: err instanceof Error ? err.message : String(err),
                       conversationId,
                     },
-                    "updateConversationAnswerStyle rejected",
+                    "updateConversationScope rejected",
                   );
                 },
               );
@@ -1710,12 +1599,13 @@ chat.openapi(chatRoute, async (c) => {
               // before reaching `resolveRoutingPlan`. When neither the
               // body nor the persisted row carries a value, the
               // conversation predates the picker column (NULL on the row)
-              // — apply the back-compat default 'pin' here so the agent's
-              // scope hints don't suddenly start fanning out on
-              // pre-#2518 chats. The tool's own default ('auto') only
-              // kicks in for non-chat callers (MCP / scheduler / direct
-              // tool tests).
-              routingMode: resolveRoutingMode(effectiveRoutingMode),
+              // — `routingModeFromColumn` (#4351, the ONE decoder of that
+              // column) applies the back-compat 'pin' default here so the
+              // agent's scope hints don't suddenly start fanning out on
+              // pre-#2518 chats. `ROUTING_MODE_WITHOUT_CONVERSATION` ('auto')
+              // is the separate, documented default for callers with no
+              // conversation at all (MCP / scheduler / direct tool tests).
+              routingMode: routingModeFromColumn(effectiveRoutingMode),
               // #3066 — the resolved exclude-set reaches the REST datasource
               // resolver (agent.ts) via the request context. Stripped when
               // undefined (and when empty — an empty set excludes nothing,

@@ -19,11 +19,9 @@ import {
   getShareStatus,
   getSharedConversation,
   cleanupExpiredShares,
-  updateConversationRestExcluded,
-  updateConversationRestFocus,
-  updateConversationGroupReach,
-  updateConversationAnswerStyle,
+  updateConversationScope,
 } from "../conversations";
+import type { ConversationScopePatch } from "../conversation-scope";
 
 // ---------------------------------------------------------------------------
 // Mock pool
@@ -1319,138 +1317,131 @@ describe("conversations module", () => {
       expect(queryCalls[0].params).toEqual([true, "c1", "u1", "org-B"]);
     });
 
-    // #3066 — the REST exclude-set write helper. Binds the JS array directly to
-    // the text[] column ($1), org/user-scopes the UPDATE, and returns the same
-    // fail-soft result contract as updateConversationRoutingMode.
-    it("updateConversationRestExcluded writes the array, scoped + parameterized", async () => {
-      enableInternalDB();
-      setResults({ rows: [{ id: "c1" }] });
+    // #4351 — the ONE conversation-scope writer, table-driven. Replaces the
+    // five parallel per-axis writer suites: the axis ↔ column mapping, the
+    // parameter order, and the auth-scope offset are all derived from one
+    // list, so a new axis is one row here rather than a new copied suite.
+    const scopeWriteCases: ReadonlyArray<{
+      readonly label: string;
+      readonly patch: ConversationScopePatch;
+      readonly assignments: string;
+      readonly values: readonly unknown[];
+    }> = [
+      {
+        label: "routing mode (#2518)",
+        patch: { routingMode: "all" },
+        assignments: "routing_mode = $1",
+        values: ["all"],
+      },
+      {
+        label: "REST exclude-set (#3066) — pg binds the JS array to text[]",
+        patch: { restExcludedDatasourceIds: ["ds-1", "ds-2"] },
+        assignments: "rest_excluded_datasource_ids = $1",
+        values: [["ds-1", "ds-2"]],
+      },
+      {
+        label: "REST exclude-set re-include — an explicit [] clears the set",
+        patch: { restExcludedDatasourceIds: [] },
+        assignments: "rest_excluded_datasource_ids = $1",
+        values: [[]],
+      },
+      {
+        label: "REST focus (#3067)",
+        patch: { restFocusDatasourceId: "ds-stripe" },
+        assignments: "rest_focus_datasource_id = $1",
+        values: ["ds-stripe"],
+      },
+      {
+        label: "REST focus clear — an explicit null returns to default scope",
+        patch: { restFocusDatasourceId: null },
+        assignments: "rest_focus_datasource_id = $1",
+        values: [null],
+      },
+      {
+        label: "group reach (#3895) — Focus a group",
+        patch: { groupReach: "g_prod" },
+        assignments: "group_reach = $1",
+        values: ["g_prod"],
+      },
+      {
+        label: "group reach widen — an explicit null returns to All sources",
+        patch: { groupReach: null },
+        assignments: "group_reach = $1",
+        values: [null],
+      },
+      {
+        label: "answer style (#4302)",
+        patch: { answerStyle: "executive" },
+        assignments: "answer_style = $1",
+        values: ["executive"],
+      },
+      {
+        label: "MULTI-AXIS — one atomic UPDATE, columns in persisted order",
+        patch: {
+          routingMode: "pin",
+          restFocusDatasourceId: null,
+          groupReach: "g_eu",
+          answerStyle: "plain-english",
+        },
+        assignments:
+          "routing_mode = $1, rest_focus_datasource_id = $2, group_reach = $3, answer_style = $4",
+        values: ["pin", null, "g_eu", "plain-english"],
+      },
+    ];
 
-      const result = await updateConversationRestExcluded("c1", ["ds-1", "ds-2"], "u1", "org-B");
-      expect(result).toEqual({ ok: true });
-      expect(queryCalls[0].sql).toContain("UPDATE conversations SET rest_excluded_datasource_ids = $1");
-      expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
-      // $1 is the array bound directly; $2 the id; $3 user; $4 org.
-      expect(queryCalls[0].params).toEqual([["ds-1", "ds-2"], "c1", "u1", "org-B"]);
-    });
+    for (const testCase of scopeWriteCases) {
+      it(`updateConversationScope writes ${testCase.label}, scoped + parameterized`, async () => {
+        enableInternalDB();
+        setResults({ rows: [{ id: "c1" }] });
 
-    it("updateConversationRestExcluded returns not_found when no row matches (cross-org)", async () => {
+        const result = await updateConversationScope("c1", testCase.patch, "u1", "org-B");
+        expect(result).toEqual({ ok: true });
+        // Exactly ONE statement, whatever the patch width — a multi-axis
+        // change must never fan out into several fire-and-forget writes.
+        expect(queryCalls).toHaveLength(1);
+        expect(queryCalls[0].sql).toContain(`SET ${testCase.assignments}, updated_at = now()`);
+        // The id placeholder follows the SET params; the auth scope follows it.
+        const idIdx = testCase.values.length + 1;
+        expect(queryCalls[0].sql).toContain(`WHERE id = $${idIdx}`);
+        expect(queryCalls[0].sql).toContain(`user_id = $${idIdx + 1}`);
+        expect(queryCalls[0].sql).toContain(`(org_id = $${idIdx + 2} OR org_id IS NULL)`);
+        expect(queryCalls[0].params).toEqual([...testCase.values, "c1", "u1", "org-B"]);
+      });
+    }
+
+    it("updateConversationScope returns not_found when no row matches (cross-org)", async () => {
       enableInternalDB();
       setResults({ rows: [] });
 
-      const result = await updateConversationRestExcluded("c1", [], "u1", "org-B");
+      const result = await updateConversationScope("c1", { groupReach: "g_prod" }, "u1", "org-B");
       expect(result).toEqual({ ok: false, reason: "not_found" });
     });
 
-    it("updateConversationRestExcluded short-circuits to no_db when the internal DB is off", async () => {
-      // No enableInternalDB() — hasInternalDB() is false.
-      const result = await updateConversationRestExcluded("c1", ["ds-1"]);
+    it("updateConversationScope short-circuits to no_db when the internal DB is off", async () => {
+      const result = await updateConversationScope("c1", { answerStyle: "executive" });
       expect(result).toEqual({ ok: false, reason: "no_db" });
       expect(queryCalls).toHaveLength(0);
     });
 
-    // #3067 — the REST-only focus write helper. Binds the install_id (or null
-    // to clear) to the nullable text column ($1), org/user-scopes the UPDATE,
-    // and returns the same fail-soft result contract.
-    it("updateConversationRestFocus writes the install_id, scoped + parameterized", async () => {
+    // An empty patch is a no-op SUCCESS — the caller diffed first and nothing
+    // changed. It must not issue a statement (that would bump `updated_at` and
+    // reshuffle the conversation list on every turn) and must not even consult
+    // the DB availability check.
+    it("updateConversationScope no-ops (ok) on an empty patch without querying", async () => {
       enableInternalDB();
       setResults({ rows: [{ id: "c1" }] });
 
-      const result = await updateConversationRestFocus("c1", "ds-stripe", "u1", "org-B");
+      const result = await updateConversationScope("c1", {}, "u1", "org-B");
       expect(result).toEqual({ ok: true });
-      expect(queryCalls[0].sql).toContain("UPDATE conversations SET rest_focus_datasource_id = $1");
-      expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
-      expect(queryCalls[0].params).toEqual(["ds-stripe", "c1", "u1", "org-B"]);
-    });
-
-    it("updateConversationRestFocus persists null to CLEAR focus (back to default scope)", async () => {
-      enableInternalDB();
-      setResults({ rows: [{ id: "c1" }] });
-
-      const result = await updateConversationRestFocus("c1", null, "u1", "org-B");
-      expect(result).toEqual({ ok: true });
-      // $1 is null — the clear path the transport must support.
-      expect(queryCalls[0].params).toEqual([null, "c1", "u1", "org-B"]);
-    });
-
-    it("updateConversationRestFocus returns not_found when no row matches (cross-org)", async () => {
-      enableInternalDB();
-      setResults({ rows: [] });
-
-      const result = await updateConversationRestFocus("c1", "ds-stripe", "u1", "org-B");
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-    });
-
-    it("updateConversationRestFocus short-circuits to no_db when the internal DB is off", async () => {
-      const result = await updateConversationRestFocus("c1", "ds-stripe");
-      expect(result).toEqual({ ok: false, reason: "no_db" });
       expect(queryCalls).toHaveLength(0);
     });
 
-    // #3895 — Group reach persistence. Same org-scoped / fail-open contract as
-    // updateConversationRestFocus; uses scopeClause(3, …) so the org param lands
-    // at $4 (an off-by-one in the SQL would surface in the param assertion).
-    it("updateConversationGroupReach writes the Focus group id, scoped + parameterized", async () => {
+    it("updateConversationScope returns error and logs when the query throws", async () => {
       enableInternalDB();
-      setResults({ rows: [{ id: "c1" }] });
+      queryThrow = new Error("connection reset");
 
-      const result = await updateConversationGroupReach("c1", "g_prod", "u1", "org-B");
-      expect(result).toEqual({ ok: true });
-      expect(queryCalls[0].sql).toContain("UPDATE conversations SET group_reach = $1");
-      expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
-      expect(queryCalls[0].params).toEqual(["g_prod", "c1", "u1", "org-B"]);
-    });
-
-    it("updateConversationGroupReach persists null to WIDEN back to All sources", async () => {
-      enableInternalDB();
-      setResults({ rows: [{ id: "c1" }] });
-
-      const result = await updateConversationGroupReach("c1", null, "u1", "org-B");
-      expect(result).toEqual({ ok: true });
-      // $1 is null — the widen path the transport must support (#3073).
-      expect(queryCalls[0].params).toEqual([null, "c1", "u1", "org-B"]);
-    });
-
-    it("updateConversationGroupReach returns not_found when no row matches (cross-org)", async () => {
-      enableInternalDB();
-      setResults({ rows: [] });
-
-      const result = await updateConversationGroupReach("c1", "g_prod", "u1", "org-B");
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-    });
-
-    it("updateConversationGroupReach short-circuits to no_db when the internal DB is off", async () => {
-      const result = await updateConversationGroupReach("c1", "g_prod");
-      expect(result).toEqual({ ok: false, reason: "no_db" });
-      expect(queryCalls).toHaveLength(0);
-    });
-
-    // #4302 — answer-style persistence. Same org-scoped / fail-open contract
-    // as the reach helper; uses scopeClause(3, ...) so the org param lands at
-    // $4 (an off-by-one in the SQL would surface in the param assertion).
-    it("updateConversationAnswerStyle writes the style, scoped + parameterized", async () => {
-      enableInternalDB();
-      setResults({ rows: [{ id: "c1" }] });
-
-      const result = await updateConversationAnswerStyle("c1", "executive", "u1", "org-B");
-      expect(result).toEqual({ ok: true });
-      expect(queryCalls[0].sql).toContain("UPDATE conversations SET answer_style = $1");
-      expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
-      expect(queryCalls[0].params).toEqual(["executive", "c1", "u1", "org-B"]);
-    });
-
-    it("updateConversationAnswerStyle returns not_found when no row matches (cross-org)", async () => {
-      enableInternalDB();
-      setResults({ rows: [] });
-
-      const result = await updateConversationAnswerStyle("c1", "executive", "u1", "org-B");
-      expect(result).toEqual({ ok: false, reason: "not_found" });
-    });
-
-    it("updateConversationAnswerStyle short-circuits to no_db when the internal DB is off", async () => {
-      const result = await updateConversationAnswerStyle("c1", "executive");
-      expect(result).toEqual({ ok: false, reason: "no_db" });
-      expect(queryCalls).toHaveLength(0);
+      const result = await updateConversationScope("c1", { groupReach: "g_prod" }, "u1", "org-B");
+      expect(result).toEqual({ ok: false, reason: "error" });
     });
 
     it("shareConversation scopes the preflight SELECT by orgId (shareMode='org')", async () => {

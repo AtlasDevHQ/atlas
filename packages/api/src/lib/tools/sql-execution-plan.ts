@@ -59,6 +59,7 @@ import {
   type ReachState,
 } from "@atlas/api/lib/group-reach";
 import { resolveReachableGroups } from "@atlas/api/lib/group-reach/resolve";
+import { ROUTING_MODE_WITHOUT_CONVERSATION } from "@atlas/api/lib/conversation-scope";
 import {
   resolveExecutionTarget,
   type ExecutionTarget,
@@ -262,9 +263,13 @@ export async function resolveSqlExecutionPlan(
     groupTargetMember ?? connectionId ?? reqCtx?.connectionId ?? "default";
 
   // #2518 — three-state picker. Undefined here means the caller never went
-  // through the chat route (tools / MCP / scheduler / unit tests), where the
-  // legacy "agent decides" (`auto`) semantics are the right answer.
-  const routingMode = reqCtx?.routingMode ?? "auto";
+  // through the chat route (tools / MCP / scheduler / unit tests), i.e. there
+  // is no conversation and therefore no `routing_mode` column to decode, where
+  // the legacy "agent decides" semantics are the right answer. #4351 — this is
+  // deliberately NOT the NULL-column default (`routingModeFromColumn` → 'pin');
+  // both constants live side by side in `lib/conversation-scope.ts` with the
+  // rationale for why the two questions get different answers.
+  const routingMode = reqCtx?.routingMode ?? ROUTING_MODE_WITHOUT_CONVERSATION;
 
   // --- 3. Fast path — only when EVERY override path collapses to "single
   // execution against currentMember": the agent emitted no scope (or "this")

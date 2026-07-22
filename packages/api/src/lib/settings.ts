@@ -2329,7 +2329,9 @@ export function isHotReloadedKey(key: string): boolean {
  * > `requiresRestart` hint is NEVER a guard.
  *
  * `requiresRestart` is annotation-only: it neither blocks a write nor
- * defers application (values hot-apply through the live cache), so a
+ * defers application (`setSetting` updates the in-process settings
+ * cache that `getSetting`/`getSettingAuto` read, so the new value is
+ * live on the very next read), so a
  * guard whose "it only takes effect next boot" rationale rests on the
  * flag is unsound. There is no validate-on-write seam in the registry,
  * and adding one was rejected in #4462 — membership here is the

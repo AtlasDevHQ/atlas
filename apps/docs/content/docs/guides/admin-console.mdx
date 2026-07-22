@@ -360,7 +360,7 @@ Global settings that affect all workspaces — security policies, LLM provider, 
 - **Brand color** — A dedicated card lets you preview and set the primary brand color in oklch format, with a live color swatch. Changes apply immediately
 - **Live vs Restart** — Settings marked **Live** take effect immediately. Settings marked **Requires restart** need a server restart (self-hosted only — on **app.useatlas.dev**, most settings are hot-reloadable)
 - **Secrets** — Sensitive settings (API keys, database URLs) are masked and read-only. Manage these via environment variables
-- **Boot-guard settings on app.useatlas.dev** — A few keys are validated by a boot guard and are therefore **env-managed on the hosted platform**: `ATLAS_EMAIL_PROVIDER`, `RESEND_API_KEY`, `ATLAS_PROVIDER`, `ATLAS_RATE_LIMIT_RPM`, `ATLAS_DEPLOY_MODE`. Saving or clearing one returns a 409 there — rotate the value in the environment and restart so the guard re-validates. Self-hosted keeps all of them runtime-editable
+- **Boot-guard settings on app.useatlas.dev** — A few keys are validated by a boot guard and are therefore **env-managed on the hosted platform**: `ATLAS_EMAIL_PROVIDER`, `RESEND_API_KEY`, `ATLAS_PROVIDER`, `ATLAS_RATE_LIMIT_RPM`, `ATLAS_DEPLOY_MODE`. Saving or clearing one is rejected there (409 `saas_immutable`) — rotate the value in the environment and restart so the guard re-validates. Self-hosted keeps all of them runtime-editable
 
 | Section | Setting | Description |
 |---------|---------|-------------|

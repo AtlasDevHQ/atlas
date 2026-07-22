@@ -984,9 +984,10 @@ export const ProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissingError | 
  * and `deleteSetting` reject it, so the resolution this guard validated cannot
  * drift until the next restart — which re-runs the guard. It is NOT because of
  * the key's `requiresRestart: true` annotation: that flag is a display hint. It
- * neither blocks a write nor defers application — `resolveModelFromSettings()`
- * reads through the live settings cache, so a post-boot override would apply
- * immediately. Reasoning from the restart hint (as this docstring did before
+ * neither blocks a write nor defers application — `setSetting` updates the
+ * in-process settings cache that `getSettingAuto` reads, so a post-boot
+ * override would reach `resolveModelFromSettings()` on the very next proactive
+ * answer. Reasoning from the restart hint (as this docstring did before
  * #4462) would leave a real guard-bypass hole. The general invariant — a
  * boot-guard-validated platform setting is either immutable or re-guarded on
  * write — is recorded at the `SAAS_IMMUTABLE_KEYS` definition.

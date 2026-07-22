@@ -80,8 +80,9 @@ import {
   assertBusinessEmail,
   assertNoPlusAddressing,
 } from "@atlas/api/lib/auth/business-email";
-import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
+import { getStripePlans, resolvePlanTierFromPriceId } from "@atlas/api/lib/billing/plans";
 import { userHasConsumedTrial, claimTrialGrant, extendTrialOnClaim } from "@atlas/api/lib/billing/trial-eligibility";
+import { fullTrialEndsAtFrom } from "@atlas/api/lib/billing/trial-state";
 import { getStripeClient } from "@atlas/api/lib/billing/stripe-client";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import { ensureOverageSubscriptionItem } from "@atlas/api/lib/billing/overage-meter";
@@ -293,14 +294,17 @@ export async function assignSaasTrial(args: {
       return;
     }
 
-    const trialEndsAt = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    // The one trial-clock stamper (#4354) — shares its fragment with the
+    // reader (`effectiveTrialEndsAt`) Gate 0 enforces, so the stamped date
+    // can't drift from the enforced one. Never re-inline the arithmetic.
+    const trialEndsAt = fullTrialEndsAtFrom(Date.now());
     await internalQuery(
       `UPDATE organization SET plan_tier = 'trial', trial_ends_at = $1
        WHERE id = $2 AND plan_tier = 'free'`,
-      [trialEndsAt.toISOString(), org.id],
+      [trialEndsAt, org.id],
     );
     log.info(
-      { userId: user.id, orgId: org.id, trialEndsAt: trialEndsAt.toISOString() },
+      { userId: user.id, orgId: org.id, trialEndsAt },
       "Assigned SaaS trial to new workspace",
     );
   } catch (err) {

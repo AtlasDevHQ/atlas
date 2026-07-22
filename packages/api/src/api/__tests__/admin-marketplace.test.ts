@@ -36,74 +36,71 @@ void mock.module("@atlas/api/lib/audit", async () => {
   };
 });
 
-// #3188 — per-workspace onUninstall hook. The DELETE route calls
-// invokeOnUninstallHookForInstallRow BEFORE the workspace_plugins DELETE
-// so the plugin can still authenticate to revoke external subscriptions.
-// Captured here (with a flag recording whether the DELETE had already
-// run at call time) so tests can assert args + ordering. Mock ALL
-// exports of the module.
-const onUninstallRouteCalls: Array<{
-  workspaceId: string;
-  installationId: string;
-  deleteAlreadyRan: boolean;
-}> = [];
-const mockInvokeOnUninstallHookForInstallRow: Mock<
-  (args: { workspaceId: string; installationId: string }) => Promise<{
-    invoked: string[];
-    failures: Array<{ pluginId: string; error: string }>;
-  }>
-> = mock(async (args) => {
-  onUninstallRouteCalls.push({
-    workspaceId: args.workspaceId,
-    installationId: args.installationId,
-    deleteAlreadyRan:
-      findCapturedQuery("DELETE FROM workspace_plugins") !== undefined,
-  });
-  return { invoked: [], failures: [] };
-});
-
 void mock.module("@atlas/api/lib/plugins/uninstall-hook", () => ({
   invokeOnUninstallHook: mock(async () => ({ invoked: [], failures: [] })),
-  invokeOnUninstallHookForInstallRow: mockInvokeOnUninstallHookForInstallRow,
   ON_UNINSTALL_HOOK_TIMEOUT_MS: 15_000,
 }));
 
-// #3681 — shared per-workspace teardown. The catalog DELETE calls
-// `tearDownWorkspaceInstall` per affected workspace BEFORE the
-// `plugin_catalog` cascade; the marketplace DELETE calls
-// `deleteDedicatedCredentialStore` for dedicated-credential teardown.
-// Captured here (with a flag recording whether the cascade had already run)
-// so tests assert args + ordering. Mock ALL exports of the module.
-const tearDownCalls: Array<{
+// #3681 / #4353 — the ONE shared per-workspace teardown. Both uninstall
+// routes call `tearDownWorkspaceInstall`, differing only in identity form:
+// the catalog DELETE passes `(catalogId, catalogSlug)` per affected workspace
+// BEFORE the `plugin_catalog` cascade; the marketplace DELETE passes the bare
+// `installationId` BEFORE the `workspace_plugins` DELETE (the route used to
+// call a hook-only shim here and re-derive credential + scheduled-task
+// teardown by hand). Captured here — with flags recording whether the
+// respective DELETE had already run at call time — so tests assert args +
+// ordering. Mock ALL exports of the module.
+interface TearDownCall {
   workspaceId: string;
-  catalogId: string;
-  catalogSlug: string;
+  catalogId?: string;
+  catalogSlug?: string;
   teamId?: string | null;
+  installationId?: string;
   catalogDeleteAlreadyRan: boolean;
-}> = [];
+  installDeleteAlreadyRan: boolean;
+}
+const tearDownCalls: TearDownCall[] = [];
+interface TearDownResult {
+  identityResolved: boolean;
+  identityError?: string;
+  catalogId?: string;
+  catalogSlug?: string;
+  hookInvoked: string[];
+  hookFailures: Array<{ pluginId: string; error: string }>;
+  credentialStoreCleared: boolean;
+  credentialError?: string;
+  scheduledTasksDeleted: number;
+  scheduledTasksError?: string;
+}
+/** Overrides applied to the NEXT teardown result (reset each test). */
+let tearDownResultOverride: Partial<TearDownResult> | null = null;
 const mockTearDownWorkspaceInstall = mock(
-  async (args: { workspaceId: string; catalogId: string; catalogSlug: string; teamId?: string | null }) => {
+  async (args: {
+    workspaceId: string;
+    catalogId?: string;
+    catalogSlug?: string;
+    teamId?: string | null;
+    installationId?: string;
+  }): Promise<TearDownResult> => {
     tearDownCalls.push({
       ...args,
       catalogDeleteAlreadyRan: findCapturedQuery("DELETE FROM plugin_catalog") !== undefined,
+      installDeleteAlreadyRan:
+        findCapturedQuery("DELETE FROM workspace_plugins") !== undefined,
     });
     return {
-      hookInvoked: [] as string[],
-      hookFailures: [] as Array<{ pluginId: string; error: string }>,
+      identityResolved: true,
+      hookInvoked: [],
+      hookFailures: [],
       credentialStoreCleared: true,
       scheduledTasksDeleted: 0,
+      ...tearDownResultOverride,
     };
-  },
-);
-const credStoreCalls: Array<{ slug: string; workspaceId: string; catalogId: string; teamId: string | null }> = [];
-const mockDeleteDedicatedCredentialStore = mock(
-  async (slug: string, workspaceId: string, catalogId: string, teamId: string | null) => {
-    credStoreCalls.push({ slug, workspaceId, catalogId, teamId });
   },
 );
 void mock.module("@atlas/api/lib/plugins/teardown", () => ({
   tearDownWorkspaceInstall: mockTearDownWorkspaceInstall,
-  deleteDedicatedCredentialStore: mockDeleteDedicatedCredentialStore,
+  deleteDedicatedCredentialStore: mock(async () => {}),
   INTEGRATION_CREDENTIALS_SLUGS: new Set<string>(["salesforce", "jira", "linear"]),
 }));
 
@@ -618,6 +615,7 @@ describe("Platform Plugin Catalog", () => {
     mockQueryResults = new Map();
     capturedQueries = [];
     tearDownCalls.length = 0;
+    tearDownResultOverride = null;
     mockTearDownWorkspaceInstall.mockClear();
   });
 
@@ -887,24 +885,13 @@ describe("Workspace Plugin Marketplace", () => {
     mockQueryResults = new Map();
     capturedQueries = [];
     mockLogAdminAction.mockClear();
-    // #3188 — reset onUninstall hook capture + default implementation.
-    onUninstallRouteCalls.length = 0;
-    mockInvokeOnUninstallHookForInstallRow.mockClear();
-    mockInvokeOnUninstallHookForInstallRow.mockImplementation(async (args) => {
-      onUninstallRouteCalls.push({
-        workspaceId: args.workspaceId,
-        installationId: args.installationId,
-        deleteAlreadyRan:
-          findCapturedQuery("DELETE FROM workspace_plugins") !== undefined,
-      });
-      return { invoked: [], failures: [] };
-    });
     // Default to an unresolved deploy mode (self-hosted behavior) so the
     // plan-only tests below are unaffected by the #3301 saas_eligible gate.
     mockDeployMode = undefined;
-    // #3681 — reset dedicated-credential teardown capture.
-    credStoreCalls.length = 0;
-    mockDeleteDedicatedCredentialStore.mockClear();
+    // #3681 / #4353 — reset shared-teardown capture + result override.
+    tearDownCalls.length = 0;
+    tearDownResultOverride = null;
+    mockTearDownWorkspaceInstall.mockClear();
     // #4186 — reset spine-evict capture + keyset availability.
     evictCalls.length = 0;
     mockLazyEvict.mockClear();
@@ -1559,39 +1546,41 @@ describe("Workspace Plugin Marketplace", () => {
       expect(res.status).toBe(404);
     });
 
-    // #1987 — uninstall must clean up scheduled tasks owned by the plugin.
-    // Prior behavior left rows in `scheduled_tasks` tagged with the plugin's
-    // catalog_id, so the scheduler would keep firing them after uninstall.
-    it("deletes scheduled tasks owned by the uninstalled plugin", async () => {
+    // ── #4353 — one teardown contract ────────────────────────────────
+    //
+    // This route used to call a hook-ONLY shim here and then re-derive
+    // scheduled-task + dedicated-credential teardown by hand. It now calls
+    // the shared orchestrator by installation id, so hook + credentials +
+    // scheduled_tasks always run together. The route's remaining job is
+    // ordering (before the DELETE) and the audit surface.
+    it("runs the shared teardown by installationId BEFORE the DELETE (#4353)", async () => {
       setQueryResult("DELETE FROM workspace_plugins WHERE id", [
         { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
-      ]);
-      setQueryResult("DELETE FROM scheduled_tasks", [
-        { id: "task-1" },
-        { id: "task-2" },
       ]);
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
       expect(res.status).toBe(200);
 
-      const cleanup = findCapturedQuery("DELETE FROM scheduled_tasks");
-      expect(cleanup).toBeDefined();
-      // Must scope by plugin_id (catalog_id from workspace_plugins) AND org_id
-      // — narrowest possible match so we don't drop other workspaces' tasks.
-      expect(cleanup!.sql).toContain("plugin_id");
-      expect(cleanup!.sql).toContain("org_id");
-      expect(cleanup!.params).toEqual(["cat-1", "org-1"]);
+      expect(tearDownCalls).toEqual([
+        {
+          workspaceId: "org-1",
+          installationId: "inst-1",
+          // Teardown must run while the install row (and its config-held
+          // credentials + team_id) still exists — i.e. before the DELETE.
+          installDeleteAlreadyRan: false,
+          catalogDeleteAlreadyRan: false,
+        },
+      ]);
+      // The route no longer issues its own scheduled_tasks DELETE — that
+      // statement belongs to the orchestrator (asserted in teardown.test.ts).
+      expect(findCapturedQuery("DELETE FROM scheduled_tasks")).toBeUndefined();
     });
 
-    it("reports scheduled-task cleanup count in the response", async () => {
+    it("reports the teardown's scheduled-task count in the response", async () => {
+      tearDownResultOverride = { scheduledTasksDeleted: 3 };
       setQueryResult("DELETE FROM workspace_plugins WHERE id", [
         { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
-      ]);
-      setQueryResult("DELETE FROM scheduled_tasks", [
-        { id: "task-1" },
-        { id: "task-2" },
-        { id: "task-3" },
       ]);
 
       const app = buildWorkspaceApp();
@@ -1605,7 +1594,6 @@ describe("Workspace Plugin Marketplace", () => {
       setQueryResult("DELETE FROM workspace_plugins WHERE id", [
         { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
       ]);
-      setQueryResult("DELETE FROM scheduled_tasks", []);
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
@@ -1615,56 +1603,11 @@ describe("Workspace Plugin Marketplace", () => {
       expect(body.scheduledTasksDeleted).toBe(0);
     });
 
-    // #3681 (F2) — the workspace_plugins DELETE does NOT cascade
-    // integration_credentials (that FK is on plugin_catalog) and never touches
-    // slack/discord/twenty tables. The uninstall must tear the dedicated
-    // credential store down too, symmetric with WorkspaceInstaller.uninstall.
-    it("tears down the dedicated credential store with the resolved slug + team_id (#3681 F2)", async () => {
-      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
-        { id: "inst-1", catalog_id: "cat-1", slug: "twenty", team_id: "T-77" },
-      ]);
-      setQueryResult("DELETE FROM scheduled_tasks", []);
-
-      const app = buildWorkspaceApp();
-      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
-      expect(res.status).toBe(200);
-
-      expect(credStoreCalls).toHaveLength(1);
-      expect(credStoreCalls[0]).toEqual({
-        slug: "twenty",
-        workspaceId: "org-1",
-        catalogId: "cat-1",
-        teamId: "T-77",
-      });
-    });
-
-    // ── #3188 — per-workspace onUninstall hook ───────────────────────
-
-    it("invokes the onUninstall hook with (workspaceId, installationId) BEFORE the DELETE (#3188)", async () => {
-      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
-        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
-      ]);
-
-      const app = buildWorkspaceApp();
-      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
-      expect(res.status).toBe(200);
-
-      expect(onUninstallRouteCalls).toEqual([
-        {
-          workspaceId: "org-1",
-          installationId: "inst-1",
-          // The hook must fire while the install row (and its config-held
-          // credentials) still exists — i.e. before the DELETE statement.
-          deleteAlreadyRan: false,
-        },
-      ]);
-    });
-
-    it("uninstall still succeeds (200) when the hook invocation rejects (#3188)", async () => {
-      // The helper never rejects by contract, but the route wraps the call
-      // defensively — a defect must not abort the uninstall.
-      mockInvokeOnUninstallHookForInstallRow.mockImplementation(async () => {
-        throw new Error("hook helper defect");
+    it("uninstall still succeeds (200) when the teardown call rejects (#3188)", async () => {
+      // The orchestrator never rejects by contract, but the route wraps the
+      // call defensively — a defect must not abort the uninstall.
+      mockTearDownWorkspaceInstall.mockImplementationOnce(async () => {
+        throw new Error("teardown defect");
       });
       setQueryResult("DELETE FROM workspace_plugins WHERE id", [
         { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
@@ -1675,28 +1618,31 @@ describe("Workspace Plugin Marketplace", () => {
       expect(res.status).toBe(200);
       const body = await json(res);
       expect(body.deleted).toBe(true);
+      expect(body.scheduledTasksDeleted).toBe(0);
     });
 
     it("does not query scheduled_tasks when installation is missing (404)", async () => {
-      // 404 short-circuits before cleanup — there is no plugin to clean up after.
+      // 404 short-circuits — there is no plugin to clean up after. The
+      // teardown call still fires first (it resolves the identity), but with
+      // no install row it resolves nothing and runs no step.
       setQueryResult("DELETE FROM workspace_plugins WHERE id", []);
+      tearDownResultOverride = { identityResolved: false };
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/missing-inst", { method: "DELETE" });
       expect(res.status).toBe(404);
 
-      const cleanup = findCapturedQuery("DELETE FROM scheduled_tasks");
-      expect(cleanup).toBeUndefined();
+      expect(findCapturedQuery("DELETE FROM scheduled_tasks")).toBeUndefined();
     });
 
-    it("returns 200 with scheduledTasksDeleted=0 when cleanup query rejects after the row is gone", async () => {
-      // The workspace_plugins DELETE has already committed by the time the
-      // cleanup runs — losing the cleanup mid-flight should not undo the
-      // uninstall. We surface the orphan via a failure audit instead.
+    it("returns 200 with scheduledTasksDeleted=0 when the teardown's task cleanup fails", async () => {
+      // The workspace_plugins DELETE commits regardless — losing the cleanup
+      // mid-flight should not undo the uninstall. We surface the orphan via a
+      // failure audit instead.
       setQueryResult("DELETE FROM workspace_plugins WHERE id", [
         { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
       ]);
-      setQueryResult("DELETE FROM scheduled_tasks", new Error("connection lost"));
+      tearDownResultOverride = { scheduledTasksError: "connection lost" };
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
@@ -1709,33 +1655,35 @@ describe("Workspace Plugin Marketplace", () => {
       // response is byte-identical to "succeeded with no plugin-owned tasks".
       // If this assertion ever drops, an operator following the documented
       // runbook would silently miss orphan tasks that keep firing post-uninstall.
-      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
-      const entry = mockLogAdminAction.mock.calls[0]![0];
-      expect(entry.actionType).toBe("plugin.uninstall");
-      expect(entry.status).toBe("failure");
-      expect(entry.targetId).toBe("inst-1");
-      expect(entry.metadata).toMatchObject({
+      const failure = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.metadata?.cleanupFailed === true);
+      expect(failure).toBeDefined();
+      expect(failure!.actionType).toBe("plugin.uninstall");
+      expect(failure!.status).toBe("failure");
+      expect(failure!.targetId).toBe("inst-1");
+      expect(failure!.metadata).toMatchObject({
         installationId: "inst-1",
         pluginId: "cat-1",
         pluginSlug: "bigquery",
         orgId: "org-1",
         cleanupFailed: true,
       });
-      expect(entry.metadata!.error).toContain("connection lost");
+      expect(failure!.metadata!.error).toContain("connection lost");
     });
 
     // #3681 (F2) — credential teardown is best-effort and symmetric with the
-    // scheduled-task posture: the install row is already gone by the time it
-    // runs, so a transient store hiccup must surface as a failure audit, never
-    // a 500 that would leave the operator thinking the uninstall failed.
-    it("returns 200 + credentialTeardownFailed audit when the dedicated credential store throws (#3681 F2)", async () => {
+    // scheduled-task posture: a transient store hiccup must surface as a
+    // failure audit, never a 500 that would leave the operator thinking the
+    // uninstall failed.
+    it("returns 200 + credentialTeardownFailed audit when the credential store throws (#3681 F2)", async () => {
       setQueryResult("DELETE FROM workspace_plugins WHERE id", [
-        { id: "inst-1", catalog_id: "cat-1", slug: "twenty", team_id: "T-77" },
+        { id: "inst-1", catalog_id: "cat-1", slug: "twenty" },
       ]);
-      setQueryResult("DELETE FROM scheduled_tasks", []);
-      mockDeleteDedicatedCredentialStore.mockImplementationOnce(async () => {
-        throw new Error("twenty store unreachable");
-      });
+      tearDownResultOverride = {
+        credentialStoreCleared: false,
+        credentialError: "twenty store unreachable",
+      };
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
@@ -1760,26 +1708,27 @@ describe("Workspace Plugin Marketplace", () => {
       expect(failure!.metadata!.error).toContain("twenty store unreachable");
     });
 
-    // #1987 — locks in the workspace-isolation contract documented in the
-    // migration: cleanup must scope by (plugin_id AND org_id), never (... OR ...).
-    // A bug here would let a workspace admin uninstall a plugin and silently
-    // delete another tenant's scheduled tasks.
-    it("scopes cleanup with AND between plugin_id and org_id (not OR)", async () => {
+    // #4353 — the pre-fold route short-circuited to a 200 on scheduled-task
+    // failure BEFORE dedicated-credential teardown ran, orphaning the
+    // encrypted credential. Both failures must now be reported together
+    // because the orchestrator ran both steps unconditionally.
+    it("audits BOTH cleanupFailed and credentialTeardownFailed when both steps fail (#4353)", async () => {
       setQueryResult("DELETE FROM workspace_plugins WHERE id", [
-        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+        { id: "inst-1", catalog_id: "cat-1", slug: "twenty" },
       ]);
-      setQueryResult("DELETE FROM scheduled_tasks", []);
+      tearDownResultOverride = {
+        credentialStoreCleared: false,
+        credentialError: "twenty store unreachable",
+        scheduledTasksError: "connection lost",
+      };
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
       expect(res.status).toBe(200);
 
-      const cleanup = findCapturedQuery("DELETE FROM scheduled_tasks");
-      expect(cleanup).toBeDefined();
-      // Normalize whitespace so the assertion is shape-stable.
-      const sql = cleanup!.sql.replace(/\s+/g, " ");
-      expect(sql).toContain("WHERE plugin_id = $1 AND org_id = $2");
-      expect(sql).not.toMatch(/plugin_id\s*=\s*\$1\s+OR\s+org_id/i);
+      const entries = mockLogAdminAction.mock.calls.map((c) => c[0]);
+      expect(entries.some((e) => e.metadata?.cleanupFailed === true)).toBe(true);
+      expect(entries.some((e) => e.metadata?.credentialTeardownFailed === true)).toBe(true);
     });
   });
 
@@ -2456,6 +2405,11 @@ describe("audit emission — Workspace marketplace", () => {
     mockQueryResults = new Map();
     capturedQueries = [];
     mockLogAdminAction.mockClear();
+    // #4353 — the uninstall audit reads counts/errors off the shared
+    // teardown's summary, so the per-test override must not leak.
+    tearDownCalls.length = 0;
+    tearDownResultOverride = null;
+    mockTearDownWorkspaceInstall.mockClear();
   });
 
   describe("POST /marketplace/install — plugin.install", () => {
@@ -2620,10 +2574,8 @@ describe("audit emission — Workspace marketplace", () => {
       setQueryResult("DELETE FROM workspace_plugins WHERE id", [
         { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
       ]);
-      setQueryResult("DELETE FROM scheduled_tasks", [
-        { id: "task-1" },
-        { id: "task-2" },
-      ]);
+      // #4353 — the count now comes from the shared teardown's summary.
+      tearDownResultOverride = { scheduledTasksDeleted: 2 };
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
@@ -2637,7 +2589,6 @@ describe("audit emission — Workspace marketplace", () => {
       setQueryResult("DELETE FROM workspace_plugins WHERE id", [
         { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
       ]);
-      setQueryResult("DELETE FROM scheduled_tasks", []);
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/inst-1", { method: "DELETE" });

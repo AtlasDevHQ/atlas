@@ -76,8 +76,55 @@ describe("ToolRegistry", () => {
 
     const all = registry.getAll();
     expect(Object.keys(all).sort()).toEqual(["bar", "foo"]);
-    expect(all.foo).toBe(fooTool);
-    expect(all.bar).toBe(barTool);
+    // #4464 — getAll() is the span seam, so entries are the span-wrapped tools
+    // rather than the raw registered ones; get() still returns the raw entry.
+    expect(all.foo.description).toBe(fooTool.description);
+    expect(all.bar.description).toBe(barTool.description);
+    expect(registry.get("foo")!.tool).toBe(fooTool);
+  });
+
+  // #4464 — the span wrapper is a property of registration, not of each tool
+  // remembering to self-instrument. A brand-new tool must be traced with zero
+  // per-tool code, so assert the seam rewrote its execute.
+  it("getAll() span-wraps every tool, including a newly registered one", () => {
+    const registry = new ToolRegistry();
+    const rawTool = makeTool("brandNew");
+    registry.register({ name: "brandNew", description: "New", tool: rawTool });
+
+    const wrapped = registry.getAll().brandNew;
+    expect(wrapped.execute).toBeDefined();
+    expect(wrapped.execute).not.toBe(rawTool.execute);
+  });
+
+  it("getAll() span-wraps every default-registry tool", () => {
+    const raw = new Map(defaultRegistry.entries());
+    let checked = 0;
+    for (const [name, entry] of Object.entries(defaultRegistry.getAll())) {
+      const rawExecute = raw.get(name)?.tool.execute;
+      if (!rawExecute) continue; // client-side tool — nothing to wrap
+      expect(entry.execute).not.toBe(rawExecute);
+      checked++;
+    }
+    // Guard against the loop passing vacuously if the registry ever yields
+    // only execute-less entries.
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  // #4464 — merge() must consume the RAW entries. If it ever consumed
+  // getAll(), each merge hop would wrap an already-wrapped tool and nest a
+  // redundant span; the span-lifecycle behaviour itself is covered by
+  // tool-spans.test.ts.
+  it("merge() carries raw tools, so spans cannot nest per merge hop", () => {
+    const base = new ToolRegistry();
+    const fooTool = makeTool("foo");
+    base.register({ name: "foo", description: "Foo", tool: fooTool });
+    const overlay = new ToolRegistry();
+    const barTool = makeTool("bar");
+    overlay.register({ name: "bar", description: "Bar", tool: barTool });
+
+    const merged = ToolRegistry.merge(base, overlay);
+    expect(merged.get("foo")!.tool).toBe(fooTool);
+    expect(merged.get("bar")!.tool).toBe(barTool);
   });
 
   it("describe concatenates descriptions with \\n\\n separator", () => {

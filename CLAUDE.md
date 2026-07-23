@@ -78,6 +78,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Default tool set lives in the registry** — `defaultRegistry` (`lib/tools/registry.ts`) registers `explore`, `executeSQL`, `searchKnowledge`, `createDashboard`, `sendEmail`, `createLinearIssue`, and OAuth-gated `querySalesforce`; `buildRegistry` adds `executePython` (when `ATLAS_PYTHON_ENABLED`) + configured action tools. Never wire a tool around the registry
 - [ ] **Explore is read-only by isolation, not command validation** — There is no command allowlist; the agent may run arbitrary shell (`awk`/`sed`/pipes included). Read-only scoping to `semantic/` is enforced structurally by each backend (ephemeral microVM / read-only bind mounts / OverlayFs): writes land in ephemeral or in-memory layers and never touch host files. Output is capped at 1 MB at the tool seam. Sandbox priority documented under **Security (General)** above
 - [ ] **Agent max steps** — `stopWhen: stepCountIs(getAgentMaxSteps())`. Default 25, via `ATLAS_AGENT_MAX_STEPS` (1–100)
+- [ ] **Tools are traced by registration, not by diligence** — `ToolRegistry.getAll()` wraps every executable tool in an `atlas.tool.<name>` span (`lib/tools/tool-spans.ts`), so a new tool needs no telemetry code; a tool that wants more detail adds an inner span that nests under it. Span/attribute conventions + the grandfathered off-prefix names: [docs/development/telemetry.md](docs/development/telemetry.md)
 - [ ] **Semantic layer drives the agent** — Read entity YAMLs before writing SQL
 
 ### Semantic Layer

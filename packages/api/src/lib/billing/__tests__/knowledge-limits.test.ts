@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { PlanTier } from "@useatlas/types";
-import { buildInternalDbMockDefaults } from "@atlas/api/__mocks__/api-test-mocks";
+import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 
 let PLATFORM = { docs: 1000, docBytes: 1_000_000, bundleBytes: 25_000_000 };
 void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({

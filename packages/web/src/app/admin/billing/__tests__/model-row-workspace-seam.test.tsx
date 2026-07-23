@@ -119,6 +119,7 @@ function makeBillingData(overrides: { byot: boolean }): BillingStatus {
       maxSeats: 10,
       maxConnections: 1,
       maxChatIntegrations: 1,
+      maxKnowledgeCollections: 1,
     },
     usage: {
       queryCount: 10,

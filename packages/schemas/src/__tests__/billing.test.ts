@@ -25,6 +25,7 @@ const validStatus = {
     maxSeats: 10,
     maxConnections: 1,
     maxChatIntegrations: 1,
+    maxKnowledgeCollections: 1,
   },
   usage: {
     queryCount: 423,
@@ -58,6 +59,7 @@ const selfHostedStatus = {
     maxSeats: null,
     maxConnections: null,
     maxChatIntegrations: null,
+    maxKnowledgeCollections: null,
   },
   seats: { count: 1, max: null },
   connections: { count: 0, max: null },

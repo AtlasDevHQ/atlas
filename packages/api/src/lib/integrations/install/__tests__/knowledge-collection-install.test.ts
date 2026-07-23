@@ -13,7 +13,7 @@
 
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { PlanTier, WorkspaceId } from "@useatlas/types";
-import { buildInternalDbMockDefaults } from "@atlas/api/__mocks__/api-test-mocks";
+import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 
 type LimitResult =
   | { allowed: true }

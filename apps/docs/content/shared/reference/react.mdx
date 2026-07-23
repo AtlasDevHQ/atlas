@@ -1033,6 +1033,8 @@ type ChatErrorCode =
   | "forbidden"
   | "session_expired"
   | "forbidden_role"
+  // Deprecated — no route emits this. The no-active-organization
+  // response is `bad_request`. Retained for wire compatibility only.
   | "org_not_found"
   | "plan_limit_exceeded"
   | "trial_expired"

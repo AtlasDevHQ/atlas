@@ -266,6 +266,11 @@ const EE_REQUIRED_MESSAGE =
 
 const adminDomains = createAdminRouter();
 
+// #4356 — every handler on this router reads `const { orgId } = c.get("orgContext")`
+// directly: this mount is what makes that read non-null (a missing active org 400s
+// here, before any handler runs). Stated once, at the mount, rather than repeated
+// above each read. A structural test pins the pairing — see
+// `__tests__/admin-router.test.ts` (#4751).
 adminDomains.use(requireOrgContext());
 // F-53 — custom domain config is part of the settings cluster.
 adminDomains.use(requirePermission("admin:settings"));
@@ -273,7 +278,6 @@ adminDomains.use(requirePermission("admin:settings"));
 // GET / — get workspace custom domain
 adminDomains.openapi(getDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
     const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
@@ -291,7 +295,6 @@ adminDomains.openapi(getDomainRoute, async (c) => {
 // POST / — add custom domain (Pro or Business plan required)
 adminDomains.openapi(addDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
     const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
@@ -339,7 +342,6 @@ adminDomains.openapi(addDomainRoute, async (c) => {
 // POST /verify — check domain verification status
 adminDomains.openapi(verifyDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
     const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
@@ -370,7 +372,6 @@ adminDomains.openapi(verifyDomainRoute, async (c) => {
 // POST /verify-dns — verify domain ownership via DNS TXT
 adminDomains.openapi(verifyDnsTxtRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
     const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
@@ -400,7 +401,6 @@ adminDomains.openapi(verifyDnsTxtRoute, async (c) => {
 // GET /domain-check — check domain availability
 adminDomains.openapi(domainCheckRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
     const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
@@ -423,7 +423,6 @@ adminDomains.openapi(domainCheckRoute, async (c) => {
 // DELETE / — remove workspace custom domain
 adminDomains.openapi(removeDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
     const { orgId } = c.get("orgContext");
     yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;

@@ -38,6 +38,7 @@ import type { AtlasMcpToolError } from "@useatlas/types/mcp";
 // Type-only — erased at compile time, so it does NOT pull the `runAgent` graph
 // into registration (the reason `executeAgentQuery` itself is lazy-imported).
 import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
+import { createMcpLogger } from "./logger";
 import {
   QUERY_TOOL_DESCRIPTION,
   QUERY_ERROR_CODES,
@@ -59,6 +60,11 @@ import {
 // 1024, but a question legitimately carries more context than a filter term).
 const MAX_QUESTION_LEN = 4096;
 const MAX_CONNECTION_ID_LEN = 256;
+
+// #4751 — the deadline exits were the only outcome in this file with NO
+// server-side record. How often the cap is hit is the single signal for whether
+// the cap is set right, and a `query_timeout` envelope is client-side only.
+const log = createMcpLogger("mcp:query-tool");
 
 // #4734 — keepalive cadence for the (potentially minutes-long) agent run. A
 // module-level `let` (not a user-facing env knob) purely so the test can
@@ -252,7 +258,23 @@ export function registerQueryTool(
             // client's request-timeout would have dropped the transport. Return
             // an actionable envelope instead of a lost response. Checked FIRST so
             // an abort-induced throw isn't misclassified as an internal_error.
+            // #4751 — NOTE this is the FIRST catch branch: a real error thrown
+            // in the same tick the deadline fires is reported as a timeout. That
+            // ordering is deliberate (an abort-induced throw must not be
+            // misclassified as `internal_error`), so the thrown error is logged
+            // here alongside the timeout rather than discarded — an operator
+            // seeing a non-abort `err` on this line knows the classification was
+            // the coarse one.
             if (deadlineFired) {
+              log.warn(
+                {
+                  requestId,
+                  deadlineMs: queryDeadlineMs,
+                  exit: "throw",
+                  err: err instanceof Error ? err : new Error(String(err)),
+                },
+                "MCP query hit its server-side deadline — returning query_timeout envelope",
+              );
               return toEnvelopeResult(queryTimeoutEnvelope());
             }
             // The billing/claim gates inside `executeAgentQuery` throw typed
@@ -318,6 +340,10 @@ export function registerQueryTool(
           // normal result would hand the client a silently-incomplete answer with
           // no signal that the run was cut short — same envelope, either exit.
           if (deadlineFired) {
+            log.warn(
+              { requestId, deadlineMs: queryDeadlineMs, exit: "resolve" },
+              "MCP query hit its server-side deadline after ≥1 completed step — discarding the truncated answer and returning query_timeout envelope",
+            );
             return toEnvelopeResult(queryTimeoutEnvelope());
           }
 

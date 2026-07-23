@@ -70,6 +70,16 @@
  *      `deleteCredentials: false`: a soft archive must not revoke external
  *      grants, and datasource credentials live inline in
  *      `workspace_plugins.config` (cleared by the row delete).
+ *   5. `DELETE /admin/openapi-datasources/:installId`
+ *      (`api/routes/admin-openapi-datasources.ts`) and the delete-then-insert
+ *      in `POST /onboarding` (`api/routes/onboarding.ts`) delete
+ *      `workspace_plugins` rows WITHOUT this orchestrator — deliberately, and
+ *      only because both are `pillar = 'datasource'` with inline
+ *      `config`-encrypted credentials and no `scheduled_tasks`, i.e. the same
+ *      posture as (4) with `invokeHook: false` + `deleteCredentials: false`.
+ *      They are listed here so the list stays TOTAL: a new route deleting
+ *      `workspace_plugins` for any non-datasource pillar must route through
+ *      this orchestrator, not copy these two.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -283,15 +293,28 @@ export interface WorkspaceTeardownResult {
   readonly identityError?: string;
   /** Resolved `plugin_catalog.id`, when identity resolved. */
   readonly catalogId?: string;
-  /** Resolved `plugin_catalog.slug`, when identity resolved (`""` if the catalog row was gone). */
+  /**
+   * Resolved `plugin_catalog.slug`, when identity resolved. `""` means the slug
+   * could NOT be resolved (catalog row gone, or the caller's pre-lookup threw) —
+   * in that case dedicated-credential teardown is skipped and reported via
+   * {@link credentialError} rather than as a success (#4751).
+   */
   readonly catalogSlug?: string;
   /** Plugin ids whose `onUninstall` ran to completion. */
   readonly hookInvoked: readonly string[];
   /** `onUninstall` hook throws / builder failures, normalized to messages. */
   readonly hookFailures: ReadonlyArray<{ pluginId: string; error: string }>;
-  /** Whether dedicated-credential teardown ran without throwing. */
+  /**
+   * Whether dedicated-credential teardown actually ran (and did not throw).
+   * `false` when it was disabled (`deleteCredentials: false`), when it threw, or
+   * when the slug was unresolved — never `true` for a step that did not run.
+   */
   readonly credentialStoreCleared: boolean;
-  /** Dedicated-credential teardown error, when it threw. */
+  /**
+   * Dedicated-credential teardown error — either the store threw, or the
+   * catalog slug was unresolved so the step could not run at all (#4751).
+   * Both callers branch on this to emit a failure audit.
+   */
   readonly credentialError?: string;
   /** Number of `scheduled_tasks` rows removed for this (catalog, workspace). */
   readonly scheduledTasksDeleted: number;
@@ -377,7 +400,8 @@ export async function tearDownWorkspaceInstall(
     }
     catalogId = row.catalog_id;
     // `slug` is NULL only when the catalog row is already gone (a racing
-    // catalog delete). The credential switch then no-ops, but the hook +
+    // catalog delete). `""` is the "unresolved" sentinel — step 2 below records
+    // it as a credential FAILURE rather than a no-op (#4751); the hook +
     // scheduled_tasks + loader evict still run keyed on catalog id.
     catalogSlug = row.slug ?? "";
     teamId = row.team_id;
@@ -402,7 +426,31 @@ export async function tearDownWorkspaceInstall(
   // 2) dedicated credential store (slack/discord/twenty/integration_credentials).
   let credentialStoreCleared = false;
   let credentialError: string | undefined;
-  if (deleteCredentials) {
+  if (deleteCredentials && catalogSlug === "") {
+    // #4751 — an EMPTY slug is not a slug that has no dedicated store; it is a
+    // slug we never resolved. `deleteDedicatedCredentialStore("")` matches no
+    // branch and falls through to the bare `return` that form-based plugins
+    // rely on, so the step would report `credentialStoreCleared: true` for a
+    // workspace whose Slack/Discord/Twenty/`integration_credentials` row was
+    // never touched — an encrypted credential outliving its install record with
+    // a positively-asserted success in the audit trail. Both producers of `""`
+    // are degradation paths, not steady state:
+    //   • `admin-marketplace.ts` catalog delete — `catalogSlug: pluginSlug ?? ""`,
+    //     where `pluginSlug` is null exactly when the `plugin_catalog` pre-lookup
+    //     THREW (the not-found case already 404'd).
+    //   • the `installationId` form above — `row.slug ?? ""` when the catalog row
+    //     is already gone (racing catalog delete).
+    // Recording it as a credential FAILURE routes it into the `credentialError`
+    // audit branches both callers already have, so the operator sees a
+    // `teardownCredentialFailures` / `credentialTeardownFailed` signal instead of
+    // silence. The hook + scheduled_tasks steps still run — they key on catalog
+    // id, which is always resolved here.
+    credentialError = "catalog slug unresolved — dedicated credential teardown skipped";
+    log.error(
+      { workspaceId, catalogId, err: new Error(credentialError) },
+      "tearDownWorkspaceInstall: catalog slug could not be resolved — dedicated credential teardown was SKIPPED; a credential row may outlive the install record and must be purged manually",
+    );
+  } else if (deleteCredentials) {
     try {
       await deleteDedicatedCredentialStore(catalogSlug, workspaceId, catalogId, teamId);
       credentialStoreCleared = true;

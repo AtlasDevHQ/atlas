@@ -3762,10 +3762,13 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   try {
     await setSetting(key, value, authResult.user?.id, effectiveOrgId);
   } catch (err) {
-    // #1978 — DPA/contract guards run once at boot. SAAS_IMMUTABLE_KEYS
-    // (ATLAS_EMAIL_PROVIDER, ATLAS_DEPLOY_MODE) reject runtime mutation
-    // in SaaS so the admin doesn't end up with a value the running
-    // process won't honor until restart. Map to 409 with operator copy.
+    // #1978 / #4462 — DPA and contract guards run ONCE, at boot. The keys in
+    // `SAAS_IMMUTABLE_KEYS` (lib/settings.ts) are inputs to those guards, and
+    // `setSetting` updates the in-process cache immediately — which is exactly
+    // why a SaaS write must be blocked rather than merely flagged
+    // "requires restart": the new value WOULD take effect, silently
+    // invalidating a decision the boot guard already validated, with no
+    // re-guard until the next restart. Map to 409 with operator copy.
     if (err instanceof SaasImmutableSettingError) {
       log.warn({ requestId, key, actorId: authResult.user?.id }, "Rejected SaaS-immutable setting write");
       return c.json(

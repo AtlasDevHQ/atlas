@@ -299,6 +299,7 @@ export function createS3BackupStorage(
           const detail = {
             bucket: config.bucket,
             status: err.status,
+            endpoint: err.endpoint,
           };
           if (err.status === 403) {
             log.warn(
@@ -306,7 +307,23 @@ export function createS3BackupStorage(
               "Skipping stale multipart-upload cleanup — the bucket credential was denied ListMultipartUploads. " +
                 "Grant s3:ListBucketMultipartUploads + s3:AbortMultipartUpload, or expect abandoned upload parts to accrue.",
             );
+          } else if (err.status === 400 || err.status === 404) {
+            // #4751 — 400/404 are AMBIGUOUS, unlike 405/501. `s3-multipart.ts`
+            // derives its own path-style URL independently of `Bun.S3Client`,
+            // so a mis-derived bucket path (wrong endpoint path prefix,
+            // path-style vs virtual-hosted mismatch) answers exactly like a
+            // store with no multipart API — forever, while abandoned parts
+            // accrue and bill. Warn with the address actually tried so an
+            // operator can tell the two apart.
+            log.warn(
+              detail,
+              "Skipping stale multipart-upload cleanup — the bucket-level ?uploads request was rejected. " +
+                "Either this store has no multipart API, or the derived endpoint path is wrong (check `endpoint` above " +
+                "against the bucket's real address). Abandoned upload parts will accrue until this resolves.",
+            );
           } else {
+            // 405 / 501 — an unambiguous "not implemented here" capability
+            // signal. Nothing for an operator to act on; stays at debug.
             log.debug(
               detail,
               "Skipping stale multipart-upload cleanup — endpoint does not support ListMultipartUploads",

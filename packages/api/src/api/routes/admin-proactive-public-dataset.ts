@@ -233,6 +233,11 @@ const refusedRollupRoute = createRoute({
 // ---------------------------------------------------------------------------
 
 const adminProactivePublicDataset = createAdminRouter();
+// #4356 — every handler on this router reads `const { orgId } = c.get("orgContext")`
+// directly: this mount is what makes that read non-null (a missing active org 400s
+// here, before any handler runs). Stated once, at the mount, rather than repeated
+// above each read. A structural test pins the pairing — see
+// `__tests__/admin-router.test.ts` (#4751).
 adminProactivePublicDataset.use(requireOrgContext());
 adminProactivePublicDataset.use(requirePermission("admin:settings"));
 
@@ -240,7 +245,6 @@ adminProactivePublicDataset.openapi(listEntriesRoute, async (c) =>
   runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       const proactive = yield* ProactiveGate;
@@ -266,7 +270,6 @@ adminProactivePublicDataset.openapi(upsertEntryRoute, async (c) =>
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       const { user } = yield* AuthContext;
 
@@ -326,7 +329,6 @@ adminProactivePublicDataset.openapi(deleteEntryRoute, async (c) =>
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       const { user } = yield* AuthContext;
 
@@ -378,7 +380,6 @@ adminProactivePublicDataset.openapi(refusedRollupRoute, async (c) =>
   runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       const proactive = yield* ProactiveGate;

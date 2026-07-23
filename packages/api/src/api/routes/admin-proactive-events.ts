@@ -137,6 +137,11 @@ const ReviewBodySchema = z.object({
 
 const adminProactiveEvents = createAdminRouter();
 
+// #4356 — every handler on this router reads `const { orgId } = c.get("orgContext")`
+// directly: this mount is what makes that read non-null (a missing active org 400s
+// here, before any handler runs). Stated once, at the mount, rather than repeated
+// above each read. A structural test pins the pairing — see
+// `__tests__/admin-router.test.ts` (#4751).
 adminProactiveEvents.use(requireOrgContext());
 // `admin:audit` matches the analytics route — the drill-down is an
 // observability surface for forensic / quality work. Reviewing a
@@ -155,7 +160,6 @@ adminProactiveEvents.get("/", async (c) =>
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
 
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       const { requestId } = yield* RequestContext;
       // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
@@ -254,7 +258,6 @@ adminProactiveEvents.post("/:messageId/review", async (c) =>
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
 
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       const { user } = yield* AuthContext;
       const { requestId } = yield* RequestContext;

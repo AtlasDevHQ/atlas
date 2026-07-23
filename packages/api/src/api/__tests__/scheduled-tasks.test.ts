@@ -131,7 +131,6 @@ void mock.module("@atlas/api/lib/conversations", () => ({
   // #4351 — the single conversation-scope write path. No-op success by
   // default; tests that exercise a picker toggle override locally.
   updateConversationScope: mock(() => Promise.resolve({ ok: true as const })),
-  resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
 void mock.module("@atlas/api/lib/semantic", () => ({

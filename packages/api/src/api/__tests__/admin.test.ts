@@ -127,6 +127,11 @@ setupFixtures();
 // `packages/api/src/test-setup.ts` preload strips `ATLAS_*` per-file so
 // cross-file leakage under `bun test --parallel` (#2797) stays bounded
 // — for path-typed test-owned vars, the override behavior is required.
+// #4655 / #4751 — capture the preload's per-process semantic sandbox so the
+// teardown RESTORES it rather than deleting the var. A bare `delete` drops
+// every later suite in a shared process back to `{cwd}/semantic`, which is the
+// developer-checkout litter the sandbox exists to prevent.
+const priorSemanticRoot = process.env.ATLAS_SEMANTIC_ROOT;
 process.env.ATLAS_SEMANTIC_ROOT = tmpRoot;
 
 // --- Mocks (before any import that touches the modules) ---
@@ -603,7 +608,6 @@ void mock.module("@atlas/api/lib/conversations", () => ({
   // #4351 — the single conversation-scope write path. No-op success by
   // default; tests that exercise a picker toggle override locally.
   updateConversationScope: mock(() => Promise.resolve({ ok: true as const })),
-  resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
 // Import app after all mocks are registered
@@ -656,7 +660,8 @@ function setPlatformAdmin(): void {
 
 afterAll(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
-  delete process.env.ATLAS_SEMANTIC_ROOT;
+  if (priorSemanticRoot === undefined) delete process.env.ATLAS_SEMANTIC_ROOT;
+  else process.env.ATLAS_SEMANTIC_ROOT = priorSemanticRoot;
 });
 
 // --- Tests ---

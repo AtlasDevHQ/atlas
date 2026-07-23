@@ -743,7 +743,7 @@ try {
 | `rate_limited` | 429 | Yes | Too many requests (check `retryAfterSeconds`) |
 | `configuration_error` | 400 | No | Server misconfigured |
 | `no_datasource` | 400 | No | No datasource connected |
-| `org_not_found` | 400 | No | No active organization selected |
+| `org_not_found` | — | No | **Deprecated — no longer emitted.** Kept in the union for wire compatibility. The no-active-organization response is `bad_request` (400); branch on that instead |
 | `invalid_request` | 400 | No | Invalid request body |
 | `validation_error` | 422 | No | Request validation failed (see `details` for field errors) |
 | `not_found` | 404 | No | Resource not found |

@@ -21,10 +21,13 @@
  * Degradation is deliberate and total: no credentials, an endpoint that
  * doesn't implement the multipart-listing API, or any other refusal must
  * never fail a backup cycle. `listInProgress` reports "unsupported" via
- * {@link S3MultipartUnsupportedError} and the caller no-ops — at debug
- * level, except for a `403`, which the driver raises to an actionable warn
- * because a denied `?uploads` query is as likely a fixable IAM gap as a
- * genuinely unsupported store.
+ * {@link S3MultipartUnsupportedError} and the caller no-ops. The DRIVER
+ * chooses the log level by status (#4751): `405`/`501` are unambiguous
+ * "not implemented here" capability signals and stay at debug, while `403`
+ * (as likely a fixable IAM gap) and `400`/`404` (as likely a mis-derived
+ * bucket path — this module builds its own URL, independent of
+ * `Bun.S3Client`) are raised to an actionable warn carrying the
+ * {@link S3MultipartUnsupportedError.endpoint} that was actually addressed.
  */
 
 import { createHash, createHmac } from "crypto";
@@ -45,10 +48,19 @@ export interface InProgressUpload {
  */
 export class S3MultipartUnsupportedError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  /**
+   * The host + path the request was actually addressed to, with no query
+   * string and no credentials (#4751). This module derives its own path-style
+   * URL independently of `Bun.S3Client`, so a MIS-DERIVED bucket path answers
+   * 400/404 exactly like a store with no multipart API — indistinguishable
+   * without seeing the address that was tried.
+   */
+  readonly endpoint: string;
+  constructor(message: string, status: number, endpoint: string) {
     super(message);
     this.name = "S3MultipartUnsupportedError";
     this.status = status;
+    this.endpoint = endpoint;
   }
 }
 
@@ -301,6 +313,7 @@ export function createS3MultipartOps(
           throw new S3MultipartUnsupportedError(
             `ListMultipartUploads not available on this endpoint (HTTP ${status})`,
             status,
+            `${host}${bucketPath}`,
           );
         }
         if (status < 200 || status >= 300) {

@@ -828,15 +828,15 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     options: [...EMAIL_PROVIDERS],
     default: "resend",
     envVar: "ATLAS_EMAIL_PROVIDER",
-    // #1978 — DpaGuardLive runs once at boot; without `requiresRestart`,
-    // a hot-reload of this key via setSetting would silently bypass the
-    // guard. Self-hosted admins see the "restart required" banner;
-    // SaaS writes are additionally blocked by `SAAS_IMMUTABLE_KEYS`
-    // below — a restart hint alone would still let a SaaS admin persist
-    // a value the boot-time contract guard never re-evaluates. (Since
-    // #3399 the SaaS metadata suppression no longer applies to
-    // boot-consumed keys like this one, but the write block remains the
-    // real guard.)
+    // #1978 / #4462 — `DpaGuardLive` validates this key once, at boot.
+    // `requiresRestart` is a UI HINT only: it neither blocks the write nor
+    // defers when the new value is applied (see the `requiresRestart` note on
+    // `SAAS_IMMUTABLE_KEYS` below). It exists so a self-hosted admin sees the
+    // "restart required" banner. On SaaS the real guard is the write block:
+    // the key is in `SAAS_IMMUTABLE_KEYS` below, so a settings write can't
+    // silently invalidate a decision the boot guard already validated. (Since
+    // #3399 the SaaS metadata suppression no longer applies to boot-consumed
+    // keys like this one.)
     requiresRestart: true,
     scope: "platform",
     saasVisible: false,

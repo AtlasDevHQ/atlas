@@ -473,6 +473,11 @@ const cancelMigrationRoute = createRoute({
 
 const adminResidency = createAdminRouter();
 
+// #4356 — every handler on this router reads `const { orgId } = c.get("orgContext")`
+// directly: this mount is what makes that read non-null (a missing active org 400s
+// here, before any handler runs). Stated once, at the mount, rather than repeated
+// above each read. A structural test pins the pairing — see
+// `__tests__/admin-router.test.ts` (#4751).
 adminResidency.use(requireOrgContext());
 // F-53 — data residency configuration is a settings cluster surface.
 adminResidency.use(requirePermission("admin:settings"));
@@ -482,7 +487,6 @@ adminResidency.openapi(getStatusRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       yield* requireFeatureEntitlement(orgId, "residency");
       const mod = yield* ResidencyResolver;
@@ -562,7 +566,6 @@ adminResidency.openapi(assignRegionRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       yield* requireFeatureEntitlement(orgId, "residency");
       const mod = yield* ResidencyResolver;
@@ -624,7 +627,6 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       yield* requireFeatureEntitlement(orgId, "residency");
 
@@ -661,7 +663,6 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       const { user } = yield* AuthContext;
       yield* requireFeatureEntitlement(orgId, "residency");
@@ -795,7 +796,6 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       yield* requireFeatureEntitlement(orgId, "residency");
       const { id } = c.req.valid("param");
@@ -892,7 +892,6 @@ adminResidency.openapi(cancelMigrationRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       yield* requireFeatureEntitlement(orgId, "residency");
       const { id } = c.req.valid("param");

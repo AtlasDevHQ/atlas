@@ -158,6 +158,15 @@ describe("tearDownWorkspaceInstall", () => {
     const taskDelete = calls.find((c) => c.sql.includes("DELETE FROM scheduled_tasks"));
     expect(taskDelete).toBeDefined();
     expect(taskDelete!.params).toEqual(["cat:twenty", "ws-1"]);
+    // #1987 / #4751 — TENANT ISOLATION. The params above are byte-identical
+    // under `AND` and under `OR`, so they cannot pin the predicate: with `OR`
+    // this DELETE removes every OTHER workspace's scheduled tasks for the
+    // plugin. This shape assertion lived in `admin-marketplace.test.ts` until
+    // #4353 moved the statement into this orchestrator and it was dropped with
+    // the old test. Negative-test it: flipping `AND` to `OR` in `teardown.ts`
+    // must turn this suite red.
+    expect(taskDelete!.sql).toContain("WHERE plugin_id = $1 AND org_id = $2");
+    expect(taskDelete!.sql).not.toMatch(/plugin_id\s*=\s*\$1\s+OR\s+org_id/i);
     expect(result.scheduledTasksDeleted).toBe(2);
     // Loader evicted (inside the hook).
     expect(evictCalls).toEqual([{ workspaceId: "ws-1", catalogId: "cat:twenty" }]);
@@ -231,6 +240,56 @@ describe("tearDownWorkspaceInstall", () => {
     expect(result.scheduledTasksError).toMatch(/internal db unavailable/);
     // Form slug → no dedicated credential store, but the call did not throw.
     expect(result.credentialStoreCleared).toBe(true);
+    expect(result.credentialError).toBeUndefined();
+  });
+
+  // #4751 — an EMPTY slug is "we never resolved it", not "this plugin has no
+  // dedicated store". The catalog-delete route passes `pluginSlug ?? ""`, and
+  // `pluginSlug` is null exactly when its `plugin_catalog` pre-lookup THREW —
+  // so a transient pool error used to skip credential teardown for every
+  // affected workspace while the result still asserted `credentialStoreCleared:
+  // true` and the cascade audit recorded no `teardownCredentialFailures`.
+  test("an unresolved (empty) catalog slug is a credential FAILURE, not a silent success", async () => {
+    const { fn } = fakeQueryFn({ rowCount: 2 });
+    const result = await tearDownWorkspaceInstall({
+      workspaceId: "ws-1",
+      catalogId: "cat:twenty",
+      catalogSlug: "", // pre-lookup degraded (admin-marketplace.ts `pluginSlug ?? ""`)
+      teamId: null,
+      loader: fakeLoader(),
+      registry: fakeRegistry("none", async () => {}),
+      queryFn: fn,
+    });
+    // The audit must not claim a step ran that never ran.
+    expect(result.credentialStoreCleared).toBe(false);
+    expect(result.credentialError).toBeDefined();
+    expect(result.credentialError).toMatch(/slug unresolved/i);
+    // No dedicated store was touched — that is precisely the orphan risk.
+    expect(twentyDeletes).toEqual([]);
+    expect(slackDeletes).toEqual([]);
+    expect(credBundleDeletes).toEqual([]);
+    expect(discordDeletes).toEqual([]);
+    // The other steps still run — they key on catalog id, which IS resolved.
+    expect(result.scheduledTasksDeleted).toBe(2);
+  });
+
+  test("deleteCredentials:false is not reported as a credential failure", async () => {
+    // The datasource archive path deliberately retains credentials; that is a
+    // deliberate skip, not a degraded one, so it must not emit credentialError
+    // (which both route callers turn into a failure audit).
+    const { fn } = fakeQueryFn({ rowCount: 0 });
+    const result = await tearDownWorkspaceInstall({
+      workspaceId: "ws-1",
+      catalogId: "cat:postgres",
+      catalogSlug: "",
+      loader: fakeLoader(),
+      registry: fakeRegistry("none", async () => {}),
+      queryFn: fn,
+      deleteCredentials: false,
+      invokeHook: false,
+    });
+    expect(result.credentialStoreCleared).toBe(false);
+    expect(result.credentialError).toBeUndefined();
   });
 });
 
@@ -341,8 +400,11 @@ describe("tearDownWorkspaceInstall — installationId identity form", () => {
     expect(result.catalogSlug).toBe("");
     expect(result.hookInvoked).toContain("cat:gone");
     expect(result.scheduledTasksDeleted).toBe(4);
-    // No dedicated store matches "" → the switch no-ops without throwing.
-    expect(result.credentialStoreCleared).toBe(true);
+    // #4751 — the credential step could NOT run (no slug to switch on), so it
+    // must NOT be reported as cleared. It surfaces as a credentialError, which
+    // is what routes it into the callers' failure-audit branches.
+    expect(result.credentialStoreCleared).toBe(false);
+    expect(result.credentialError).toMatch(/slug unresolved/i);
   });
 
   test("missing install row → identityResolved:false and no teardown step runs", async () => {

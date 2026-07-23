@@ -228,6 +228,11 @@ function isValidProvider(provider: string): provider is (typeof SANDBOX_PROVIDER
 
 const adminSandbox = createAdminRouter();
 
+// #4356 — every handler on this router reads `const { orgId } = c.get("orgContext")`
+// directly: this mount is what makes that read non-null (a missing active org 400s
+// here, before any handler runs). Stated once, at the mount, rather than repeated
+// above each read. A structural test pins the pairing — see
+// `__tests__/admin-router.test.ts` (#4751).
 adminSandbox.use(requireOrgContext());
 // F-53 — sandbox backend selection is a settings cluster surface.
 adminSandbox.use(requirePermission("admin:settings"));
@@ -237,7 +242,6 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       // Workspace override — normalized once to backend-id vocabulary so
@@ -341,7 +345,6 @@ adminSandbox.openapi(connectRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       const provider = c.req.param("provider");
 
@@ -418,7 +421,6 @@ adminSandbox.openapi(disconnectRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       const provider = c.req.param("provider");
 

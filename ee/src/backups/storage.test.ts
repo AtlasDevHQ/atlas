@@ -276,7 +276,7 @@ describe("s3 backup storage — abortStaleUploads", () => {
 
   it("no-ops when the endpoint does not support ListMultipartUploads", async () => {
     const storage = createS3BackupStorage({ bucket: "b" }, undefined, () => ({
-      listInProgress: () => Promise.reject(new S3MultipartUnsupportedError("nope", 501)),
+      listInProgress: () => Promise.reject(new S3MultipartUnsupportedError("nope", 501, "s3.example.com/b")),
       abort: () => Promise.reject(new Error("should not be reached")),
     }));
 

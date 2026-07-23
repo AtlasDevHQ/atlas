@@ -304,6 +304,23 @@ describe("listInProgress", () => {
     },
   );
 
+  // #4751 — the driver raises 400/404 to an actionable warn precisely because a
+  // MIS-DERIVED path is indistinguishable from "no multipart API" by status
+  // alone. That warn is only actionable if it names the address actually tried,
+  // so the error must carry it — and must not leak the query string (which is
+  // where the SigV4 material would be).
+  it("carries the addressed host+path so a mis-derived bucket path is diagnosable", async () => {
+    const fake = fakeFetch([{ status: 404, body: "<Error><Code>NoSuchBucket</Code></Error>" }]);
+    const ops = createS3MultipartOps({ ...CREDS, endpoint: "https://s3.example.com" }, fake.impl)!;
+
+    const err = (await ops.listInProgress("backups/").catch((e: unknown) => e)) as
+      S3MultipartUnsupportedError;
+    expect(err).toBeInstanceOf(S3MultipartUnsupportedError);
+    expect(err.endpoint).toBe("s3.example.com/atlas-backups");
+    expect(err.endpoint).not.toContain("?");
+    expect(err.endpoint).not.toContain("Signature");
+  });
+
   it("surfaces a server-side failure as a plain error (retried next cycle)", async () => {
     const fake = fakeFetch([{ status: 500, body: "<Error/>" }]);
     const ops = createS3MultipartOps(CREDS, fake.impl)!;

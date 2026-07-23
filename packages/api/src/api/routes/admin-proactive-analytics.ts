@@ -78,6 +78,11 @@ export function parseSinceMs(raw: string | undefined): number {
 
 const adminProactiveAnalytics = createAdminRouter();
 
+// #4356 — every handler on this router reads `const { orgId } = c.get("orgContext")`
+// directly: this mount is what makes that read non-null (a missing active org 400s
+// here, before any handler runs). Stated once, at the mount, rather than repeated
+// above each read. A structural test pins the pairing — see
+// `__tests__/admin-router.test.ts` (#4751).
 adminProactiveAnalytics.use(requireOrgContext());
 // `admin:audit` is the closest existing permission flag — analytics is
 // an observability surface like the audit log readers. When the
@@ -91,7 +96,6 @@ adminProactiveAnalytics.get("/", async (c) => {
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
 
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       const { requestId } = yield* RequestContext;
       // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,

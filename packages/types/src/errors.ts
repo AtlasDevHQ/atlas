@@ -40,6 +40,15 @@ export const CHAT_ERROR_CODES = [
   "not_found",
   "forbidden",
   "forbidden_role",
+  // DEPRECATED (#4751) — no server route emits this any more. #4356 replaced
+  // every producer (7 in `admin-semantic.ts`, 5 in `admin.ts`) with
+  // `noActiveOrgBody()`, which emits `bad_request` — the documented
+  // `CLI_REST_ERROR_CODES` member for "credential resolved but no workspace
+  // bound". `org_not_found` was always a *chat* code, so the admin routes were
+  // the anomaly. The member (and its display branch below) is retained
+  // deliberately: removing it is a breaking change to the published
+  // `@useatlas/types` wire union. Do NOT branch new client code on it —
+  // handle `bad_request` for the no-active-org case.
   "org_not_found",
   "plan_limit_exceeded",
   "trial_expired",

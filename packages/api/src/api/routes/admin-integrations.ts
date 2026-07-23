@@ -139,6 +139,11 @@ const disconnectSlackRoute = createRoute({
 
 const adminIntegrations = createAdminRouter();
 
+// #4356 — every handler on this router reads `const { orgId } = c.get("orgContext")`
+// directly: this mount is what makes that read non-null (a missing active org 400s
+// here, before any handler runs). Stated once, at the mount, rather than repeated
+// above each read. A structural test pins the pairing — see
+// `__tests__/admin-router.test.ts` (#4751).
 adminIntegrations.use(requireOrgContext());
 
 // GET /status — aggregated integration status
@@ -146,7 +151,6 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       const deployMode = getConfig()?.deployMode ?? "self-hosted";
@@ -437,7 +441,6 @@ adminIntegrations.openapi(disconnectSlackRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       // Try the facade first — drains both stores when the install was
@@ -536,7 +539,6 @@ adminIntegrations.openapi(disconnectDiscordRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       const deleted = yield* Effect.tryPromise({
@@ -627,7 +629,6 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
@@ -770,7 +771,6 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
@@ -939,7 +939,6 @@ adminIntegrations.openapi(connectGitHubRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
@@ -1086,7 +1085,6 @@ adminIntegrations.openapi(disconnectGitHubRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       const deleted = yield* Effect.tryPromise({
@@ -1179,7 +1177,6 @@ adminIntegrations.openapi(connectLinearRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
@@ -1342,7 +1339,6 @@ adminIntegrations.openapi(disconnectLinearRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       const deleted = yield* Effect.tryPromise({
@@ -1485,7 +1481,6 @@ adminIntegrations.openapi(connectEmailRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
@@ -1602,7 +1597,6 @@ adminIntegrations.openapi(testEmailRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       if (!hasInternalDB()) {
@@ -1742,7 +1736,6 @@ adminIntegrations.openapi(disconnectEmailRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       const deleted = yield* Effect.tryPromise({

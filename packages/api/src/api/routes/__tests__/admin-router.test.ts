@@ -3,6 +3,8 @@
  */
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, dirname, relative } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be declared before importing the module under test
@@ -469,5 +471,91 @@ describe("workspace API key admin reach (#4110)", () => {
     expect(body.ok).toBe(true);
 
     mockAuthResult = { authenticated: true, mode: "none", user: undefined };
+  });
+});
+
+/**
+ * STRUCTURAL ENFORCEMENT (#4751) — reading `orgContext` implies mounting
+ * `requireOrgContext()`.
+ *
+ * #4356 replaced ~53 inline `if (!orgId) return 400` guards with
+ * `const { orgId } = c.get("orgContext")`. The middleware is what makes that
+ * read safe: without it, `c.get("orgContext")` is `undefined` and the
+ * destructure throws a TypeError — a 500 where the route used to return a
+ * clean 400 with an actionable message. Every converted router mounts it
+ * today, but nothing pinned that, and the type system cannot: Hono's context
+ * variable map is declared, not proven, so a router that forgets the mount
+ * still type-checks.
+ *
+ * Sources are DISCOVERED by walking the tree rather than enumerated, so a
+ * router added tomorrow is auto-enrolled instead of silently skipped.
+ *
+ * GRANULARITY: this is a FILE-level guard — a file that reads `orgContext`
+ * must also mount `requireOrgContext()` somewhere. It deliberately does not
+ * try to match reads to the specific router instance (several files declare
+ * more than one `OpenAPIHono`), which would need an AST walk. It catches the
+ * realistic failure — a whole router converted to the context read with no
+ * mount — not a cross-wired read inside a multi-router file.
+ *
+ * CAVEAT (same as `trial-state.test.ts`): this reads sources off disk rather
+ * than importing them, so it is `--affected`-blind. The full `bun run test` /
+ * CI `api-tests` shards are what actually catch a missing mount.
+ */
+describe("structural: c.get(\"orgContext\") requires a requireOrgContext() mount (#4751)", () => {
+  /** Walk up to the monorepo root (has both `packages/` and `plugins/`). */
+  function repoRoot(): string {
+    let dir = import.meta.dir;
+    for (let i = 0; i < 12; i++) {
+      if (existsSync(join(dir, "packages")) && existsSync(join(dir, "plugins"))) return dir;
+      dir = dirname(dir);
+    }
+    throw new Error(`repo root not found from ${import.meta.dir}`);
+  }
+
+  function collectSources(dir: string, out: string[]): string[] {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "__tests__") continue;
+        collectSources(full, out);
+      } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  it("every source reading orgContext also mounts requireOrgContext()", () => {
+    const root = repoRoot();
+    // `admin-router.ts` DEFINES both the middleware and the fallback readers —
+    // it is the canonical home, exempt the way `trial-state.ts` is for #4354.
+    const canonical = join(root, "packages/api/src/api/routes/admin-router.ts");
+    const roots = ["packages/api/src/api", "ee/src"].map((r) => join(root, r));
+    // Assert the scanned trees are actually THERE rather than quietly guarding
+    // nothing — `ee/` in particular is stub-swappable, and a guard that
+    // silently stops covering a tree is worse than no guard at all.
+    for (const dir of roots) expect({ dir, exists: existsSync(dir) }).toEqual({ dir, exists: true });
+
+    const files = roots.flatMap((dir) => collectSources(dir, [])).filter((f) => f !== canonical);
+    // Sanity: the walk actually found the tree it claims to guard.
+    expect(files.length).toBeGreaterThan(100);
+
+    const readers: string[] = [];
+    const offenders: string[] = [];
+    for (const file of files) {
+      // Strip block + line comments — the 37 `// orgId is guaranteed non-null
+      // by requireOrgContext()` notes are prose, not a mount.
+      const source = readFileSync(file, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/[^\n]*/g, "");
+      if (!/c\.get\(\s*["']orgContext["']\s*\)/.test(source)) continue;
+      readers.push(relative(root, file));
+      if (!/requireOrgContext\s*\(\s*\)/.test(source)) offenders.push(relative(root, file));
+    }
+
+    // Anti-vacuity: the guard must actually be guarding the converted routers.
+    expect(readers.length).toBeGreaterThan(5);
+    expect(offenders).toEqual([]);
   });
 });

@@ -376,7 +376,14 @@ describe("structural: TRIAL_DAYS arithmetic lives only in trial-state.ts (#4354)
   it("no source outside trial-state.ts multiplies TRIAL_DAYS into a duration", () => {
     const root = repoRoot();
     const canonical = join(root, "packages/api/src/lib/billing/trial-state.ts");
-    const roots = ["packages/api/src", "ee/src"].map((r) => join(root, r));
+    // #4751 — the module docstring claims the arithmetic can't be re-inlined
+    // ANYWHERE, so the scan covers every tree that can import `TRIAL_DAYS`:
+    // `packages/mcp/src` provisions trials over MCP (ADR-0018) and `plugins/`
+    // is on the same workspace resolution, so neither may host a second
+    // stamper. Widened from the original `packages/api/src` + `ee/src`.
+    const roots = ["packages/api/src", "ee/src", "packages/mcp/src", "plugins"].map((r) =>
+      join(root, r),
+    );
     // Assert the scanned trees are actually THERE rather than quietly
     // guarding nothing — `ee/` in particular is stub-swappable, and a guard
     // that silently stops covering the SaaS trial provisioner is worse than

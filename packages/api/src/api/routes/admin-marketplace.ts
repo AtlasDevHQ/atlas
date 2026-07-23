@@ -580,9 +580,13 @@ platformCatalog.openapi(deleteCatalogRoute, async (c) => {
               const result = await tearDownWorkspaceInstall({
                 workspaceId: ws.workspace_id,
                 catalogId: id,
-                // `pluginSlug` is null only when the pre-lookup degraded; the
-                // credential switch then no-ops but the hook + scheduled_tasks
-                // + loader evict still run keyed on catalog id.
+                // `pluginSlug` is null only when the pre-lookup degraded
+                // (`priorLookupFailed`). `""` is the teardown's "unresolved"
+                // sentinel: it reports the skipped credential step as a
+                // `credentialError` (#4751) so it lands in
+                // `teardownCredentialFailures` below instead of being counted
+                // as a success. The hook + scheduled_tasks + loader evict still
+                // run keyed on catalog id.
                 catalogSlug: pluginSlug ?? "",
                 teamId: ws.team_id,
               });

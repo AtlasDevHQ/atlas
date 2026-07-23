@@ -137,6 +137,11 @@ const liftKillSwitchRoute = createRoute({
 // ---------------------------------------------------------------------------
 
 const adminProactivePauses = createAdminRouter();
+// #4356 — every handler on this router reads `const { orgId } = c.get("orgContext")`
+// directly: this mount is what makes that read non-null (a missing active org 400s
+// here, before any handler runs). Stated once, at the mount, rather than repeated
+// above each read. A structural test pins the pairing — see
+// `__tests__/admin-router.test.ts` (#4751).
 adminProactivePauses.use(requireOrgContext());
 // Matches sibling proactive admin routers (admin-proactive.ts,
 // admin-proactive-public-dataset.ts) — keeps the permission flag
@@ -156,7 +161,6 @@ adminProactivePauses.openapi(getPauseStatusRoute, async (c) =>
   runEffect(
     c,
     Effect.gen(function* () {
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
 
       const proactive = yield* ProactiveGate;
@@ -204,7 +208,6 @@ adminProactivePauses.openapi(enableKillSwitchRoute, async (c) =>
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       const { user } = yield* AuthContext;
 
@@ -270,7 +273,6 @@ adminProactivePauses.openapi(liftKillSwitchRoute, async (c) =>
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      // orgId is guaranteed non-null by `requireOrgContext()` on this router (#4356).
       const { orgId } = c.get("orgContext");
       const { user } = yield* AuthContext;
 

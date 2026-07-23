@@ -40,7 +40,8 @@ Retrying these will not help — the request or configuration must be changed.
 | `session_expired` | 401 | Session expired | Session token has expired or been revoked | Sign in again to get a new session |
 | `forbidden` | 403 | Access denied | User lacks the required role (e.g., admin endpoints require `admin` role) | Request the appropriate role from your Atlas administrator |
 | `forbidden_role` | 403 | Admin role required | Non-admin user tried to access an admin endpoint | Sign in with an admin account or request the admin role |
-| `org_not_found` | 400 | No active organization | Request requires an active organization but none is selected | Select an organization in the org switcher and try again |
+| `org_not_found` | — | **Deprecated — no longer emitted** | Retained in the `ChatErrorCode` union for wire compatibility only; no Atlas route produces it. The no-active-organization response is `bad_request` (400) | Do not branch on this code. Handle `bad_request` for the no-active-organization case (see below) |
+| `bad_request` | 400 | No active organization | An admin/REST request resolved a credential but no workspace is bound to it | Select an organization in the org switcher and try again |
 | `configuration_error` | 400 | Atlas is not fully configured | Missing environment variables, invalid config file, or startup diagnostics failed | Run `atlas doctor` to identify the issue. See <AudienceLink saas="/guides/troubleshooting">Troubleshooting</AudienceLink> |
 | `no_datasource` | 400 | No datasource configured | `ATLAS_DATASOURCE_URL` is not set | Set `ATLAS_DATASOURCE_URL` in your environment. See [Environment Variables](/reference/environment-variables) |
 | `invalid_request` | 400 | Invalid request | Malformed JSON body or missing required fields | Check the request body format. See [API Reference](/reference/api) |

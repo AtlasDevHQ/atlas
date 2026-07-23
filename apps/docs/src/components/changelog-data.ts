@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.67",
+    title: "Seam Consolidation & Aggregate-Review Hardening",
+    date: "2026-07-22",
+    summary:
+      "Mostly internal hardening, with two fixes worth calling out. A long-running natural-language question over the hosted MCP connection now ends in a clear 'query timed out' answer at about 90 seconds — including a partial answer where one is available — instead of running until the connection gave up; this bounds the v0.0.66 keepalive rather than replacing it. And uninstalling a plugin can no longer report success while quietly leaving an encrypted credential behind: a case where the catalog lookup failed mid-uninstall used to skip credential cleanup and still record the uninstall as clean. The rest of the release consolidates ten internal seams — conversation settings, plugin teardown, trial clocks, and workspace-context checks each now have one implementation instead of several near-copies — which is invisible in use but is what keeps those behaviors from drifting apart over time.",
+    highlights: [
+      "Hosted-MCP `query` now returns a clear `query_timeout` result at ~90s, with a partial answer when one is available, instead of hanging until the connection drops",
+      "Plugin uninstall can no longer report success while leaving an encrypted credential row behind when the catalog lookup fails",
+      "Scheduled internal-DB backups now clean up stale incomplete multipart uploads during the retention purge, so abandoned parts stop accruing on storage without lifecycle rules",
+      "Platform email and model-provider keys are locked against runtime edits on the hosted platform, so a settings change can't silently invalidate a boot-time guarantee",
+      "Ten internal seams consolidated (conversation scope, plugin teardown, trial clocks, workspace-context checks) — no behavior change, fewer places for behavior to drift",
+    ],
+  },
+  {
     version: "v0.0.66",
     title: "Hosted-MCP Query Keepalive",
     date: "2026-07-19",

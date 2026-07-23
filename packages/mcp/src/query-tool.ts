@@ -38,7 +38,7 @@ import type { AtlasMcpToolError } from "@useatlas/types/mcp";
 // Type-only — erased at compile time, so it does NOT pull the `runAgent` graph
 // into registration (the reason `executeAgentQuery` itself is lazy-imported).
 import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
-import { createMcpLogger } from "./logger";
+import { createMcpLogger } from "./logger.js";
 import {
   QUERY_TOOL_DESCRIPTION,
   QUERY_ERROR_CODES,
@@ -258,13 +258,10 @@ export function registerQueryTool(
             // client's request-timeout would have dropped the transport. Return
             // an actionable envelope instead of a lost response. Checked FIRST so
             // an abort-induced throw isn't misclassified as an internal_error.
-            // #4751 — NOTE this is the FIRST catch branch: a real error thrown
-            // in the same tick the deadline fires is reported as a timeout. That
-            // ordering is deliberate (an abort-induced throw must not be
-            // misclassified as `internal_error`), so the thrown error is logged
-            // here alongside the timeout rather than discarded — an operator
-            // seeing a non-abort `err` on this line knows the classification was
-            // the coarse one.
+            // #4751 — being first is also coarse: a REAL error thrown in the
+            // same tick the deadline fires reports as a timeout. `err` is logged
+            // below rather than discarded, so an operator seeing a non-abort
+            // error on this line knows which side of that coin they got.
             if (deadlineFired) {
               log.warn(
                 {

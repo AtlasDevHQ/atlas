@@ -505,6 +505,9 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         maxSeats: isUnlimited(limits.maxSeats) ? null : limits.maxSeats,
         maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
         maxChatIntegrations: isUnlimited(limits.maxChatIntegrations) ? null : limits.maxChatIntegrations,
+        maxKnowledgeCollections: isUnlimited(limits.maxKnowledgeCollections)
+          ? null
+          : limits.maxKnowledgeCollections,
       },
       usage: {
         queryCount: usage.queryCount,

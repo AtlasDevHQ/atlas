@@ -43,10 +43,14 @@ import {
   FormInstallValidationError,
 } from "./persist-form-install";
 import {
-  assertCollectionSlugAvailable,
-  resolveCollectionSlug,
+  assertCollectionInstallable,
+  upsertKnowledgeCollectionRow,
+} from "./knowledge-collection-install";
+import { isPlanDenial } from "./retryable-install-error";
+import {
   KNOWLEDGE_INSTALL_ID_FIELD,
-} from "./okf-upload-form-handler";
+  resolveCollectionSlug,
+} from "./knowledge-collection-slug";
 import type { FormBasedInstallHandler, InstallRecord } from "./types";
 
 /** Defensive upper bound — a Notion token is ~50 chars; guard against a paste. */
@@ -130,9 +134,9 @@ export class NotionKnowledgeFormInstallHandler implements FormBasedInstallHandle
     }
     const catalogId = catalogRows[0].id;
 
-    // A slug taken by another knowledge catalog (okf-upload / bundle-sync) would
-    // merge document trees — reject before any write.
-    await assertCollectionSlugAvailable(workspaceId, collectionSlug, catalogId);
+    // Slug not taken by another knowledge catalog (#4211), and the workspace's
+    // plan tier has room for another collection (#4235) — both before the write.
+    await assertCollectionInstallable(workspaceId, collectionSlug, catalogId, this.log);
 
     // ── Verify the token loudly BEFORE persisting anything ─────────────────────
     await this.verifyToken(workspaceId, collectionSlug, token);
@@ -159,23 +163,14 @@ export class NotionKnowledgeFormInstallHandler implements FormBasedInstallHandle
     const candidateId = this.newId();
     let persistedId: string;
     try {
-      const rows = await internalQuery<{ id: string }>(NOTION_KNOWLEDGE_INSTALL_UPSERT_SQL, [
-        candidateId,
+      const returned = await upsertKnowledgeCollectionRow({
         workspaceId,
-        catalogId,
-        collectionSlug,
-        JSON.stringify(config),
-      ]);
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        this.log.error(
-          { workspaceId, candidateId, collectionSlug },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
+        collectionSlug: collectionSlug,
+        sql: NOTION_KNOWLEDGE_INSTALL_UPSERT_SQL,
+        params: [candidateId, workspaceId, catalogId, collectionSlug, JSON.stringify(config)],
+        candidateId,
+        log: this.log,
+      });
       persistedId = returned;
     } catch (err) {
       // Roll back the just-written credential so a secret can't outlive a failed
@@ -185,7 +180,9 @@ export class NotionKnowledgeFormInstallHandler implements FormBasedInstallHandle
       // Confluence handler (confluence-form-handler.ts) — keep them in step.
       this.log.error(
         { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
-        "Failed to persist notion-knowledge collection install — rolling back the orphaned credential (retrying the install is safe)",
+        isPlanDenial(err)
+          ? "Failed to persist notion-knowledge collection install — rolling back the orphaned credential (the workspace is at a plan limit — retrying will not help)"
+          : "Failed to persist notion-knowledge collection install — rolling back the orphaned credential (retrying the install is safe)",
       );
       try {
         await deleteSyncCredential(workspaceId, collectionSlug);

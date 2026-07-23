@@ -48,10 +48,13 @@ import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { hostForLog } from "@atlas/api/lib/openapi/egress-guard";
 import { FormInstallValidationError } from "./persist-form-install";
 import {
-  assertCollectionSlugAvailable,
-  resolveCollectionSlug,
+  assertCollectionInstallable,
+  upsertKnowledgeCollectionRow,
+} from "./knowledge-collection-install";
+import {
   KNOWLEDGE_INSTALL_ID_FIELD,
-} from "./okf-upload-form-handler";
+  resolveCollectionSlug,
+} from "./knowledge-collection-slug";
 import type { FormBasedInstallHandler, InstallRecord } from "./types";
 
 // Re-exported for the register.ts boot wiring; both are single-homed in config.ts.
@@ -134,7 +137,7 @@ export class SalesforceKnowledgeFormInstallHandler implements FormBasedInstallHa
     }
     const catalogId = catalogRows[0].id;
 
-    await assertCollectionSlugAvailable(workspaceId, slug, catalogId);
+    await assertCollectionInstallable(workspaceId, slug, catalogId, this.log);
 
     // ── Verify the reused Salesforce connection loudly BEFORE persisting ────
     const instance = await this.resolveInstance(workspaceId);
@@ -158,23 +161,14 @@ export class SalesforceKnowledgeFormInstallHandler implements FormBasedInstallHa
       ...(description !== null ? { description } : {}),
     };
     const candidateId = this.newId();
-    const rows = await internalQuery<{ id: string }>(SALESFORCE_KNOWLEDGE_INSTALL_UPSERT_SQL, [
-      candidateId,
+    const returned = await upsertKnowledgeCollectionRow({
       workspaceId,
-      catalogId,
-      slug,
-      JSON.stringify(config),
-    ]);
-    const returned = rows[0]?.id;
-    if (typeof returned !== "string" || returned.length === 0) {
-      this.log.error(
-        { workspaceId, candidateId, collectionSlug: slug },
-        "workspace_plugins upsert returned no id — Postgres invariant violation",
-      );
-      throw new Error(
-        "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-      );
-    }
+      collectionSlug: slug,
+      sql: SALESFORCE_KNOWLEDGE_INSTALL_UPSERT_SQL,
+      params: [candidateId, workspaceId, catalogId, slug, JSON.stringify(config)],
+      candidateId,
+      log: this.log,
+    });
 
     this.log.info(
       { workspaceId, collectionSlug: slug, articleObject, channel, host: instanceHost },

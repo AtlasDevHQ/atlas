@@ -22,7 +22,7 @@ const { createIntercomConnector } = await import("@atlas/api/lib/knowledge/inter
 const { INTERCOM_CATALOG_ID, INTERCOM_VENDOR } = await import("@atlas/api/lib/knowledge/intercom/config");
 
 function ctx(config: Record<string, unknown> | null) {
-  return { workspaceId: "org-1", collectionSlug: "intercom-docs", config };
+  return { workspaceId: "org-1", collectionSlug: "intercom-docs", config, maxDocs: 1000 };
 }
 
 afterEach(() => {

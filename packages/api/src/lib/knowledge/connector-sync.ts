@@ -52,6 +52,11 @@ import type { KnowledgeIngestDocumentCounts } from "@useatlas/types";
 import type { BundleEntryError } from "./bundle-archive";
 import { ingestDocuments } from "./ingest-bundle";
 import {
+  capIsOperatorTunable,
+  resolveIngestCaps,
+  type EffectiveIngestCaps,
+} from "@atlas/api/lib/billing/knowledge-limits";
+import {
   ConnectorRateLimitError,
   type ConnectorChanges,
   type ConnectorVendorClient,
@@ -418,10 +423,31 @@ async function runConnectorAttempt(
   const mode: ConnectorSyncMode = due || sinceIso === null ? "reconciliation" : "incremental";
   onModeDecided(mode);
 
+  // ── Effective caps ─────────────────────────────────────────────────────────
+  // Resolved ONCE and used for both the vendor fetch bound and the ingest, so
+  // the client never pulls more documents than this workspace could ever
+  // commit (#4235) and both stages agree on the same numbers.
+  let caps: EffectiveIngestCaps;
+  try {
+    caps = await resolveIngestCaps(workspaceId);
+  } catch (err) {
+    return {
+      kind: "error",
+      mode,
+      error: `Could not verify this workspace's Knowledge Base limits: ${err instanceof Error ? err.message : String(err)}`,
+      rejected: [],
+    };
+  }
+
   // ── Vendor client ──────────────────────────────────────────────────────────
   let client: ConnectorVendorClient;
   try {
-    client = await connector.createClient({ workspaceId, collectionSlug, config });
+    client = await connector.createClient({
+      workspaceId,
+      collectionSlug,
+      config,
+      maxDocs: caps.maxDocs.value,
+    });
   } catch (err) {
     return {
       kind: "error",
@@ -496,6 +522,7 @@ async function runConnectorAttempt(
       workspaceId,
       collectionId: collectionSlug,
       source: `connector:${connector.vendor}`,
+      caps,
       files: changes.documents.map((d) => ({ path: d.path, content: d.content })),
       archiveAbsent: mode === "reconciliation" && !coverageIncomplete,
     });
@@ -546,7 +573,15 @@ async function runConnectorAttempt(
       return {
         kind: "error",
         mode,
-        error: `The vendor returned ${outcome.count} documents, over the ${outcome.maxDocs}-document limit (ATLAS_KNOWLEDGE_INGEST_MAX_DOCS) — narrow the connector's scope or raise the cap.`,
+        // Name a lever the reader can actually pull (#4235). The operator
+        // setting is only nameable OFF SaaS: a hosted workspace admin can't
+        // reach it, and on SaaS the platform ceiling is pinned to the Business
+        // tier, so even a `boundBy: "platform"` refusal there is effectively a
+        // plan ceiling to them. Pointing at an unreachable env var is worse
+        // than no hint at all.
+        error: capIsOperatorTunable(outcome.boundBy)
+          ? `The vendor returned ${outcome.count} documents, over the ${outcome.maxDocs}-document limit (ATLAS_KNOWLEDGE_INGEST_MAX_DOCS) — narrow the connector's scope or raise the cap.`
+          : `The vendor returned ${outcome.count} documents, over your plan's ${outcome.maxDocs}-document per-sync limit — narrow the connector's scope or upgrade your plan.`,
         rejected: outcome.rejected,
       };
     case "no_documents":

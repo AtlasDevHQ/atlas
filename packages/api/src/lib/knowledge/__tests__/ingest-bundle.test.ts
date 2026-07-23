@@ -120,6 +120,34 @@ void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   getIngestMaxBundleBytes: () => MAX_BUNDLE_BYTES,
 }));
 
+// Explicit stand-in for the billing composition seam (#4235) — without it the
+// no-`caps` default path reaches the real `billing/knowledge-limits` →
+// `db/internal` stack and passes only because the shared internal-DB mock stubs
+// `getWorkspaceDetails → null` (the same implementation-detail coupling the
+// sync suites were fixed to remove). Platform-only shape stated on purpose.
+void mock.module("@atlas/api/lib/billing/knowledge-limits", () => ({
+  resolveIngestCaps: async (orgId: string | undefined) => ({
+    workspaceId: orgId ?? "",
+    tier: null,
+    maxDocs: { value: MAX_DOCS, boundBy: "platform" },
+    maxBundleBytes: { value: MAX_BUNDLE_BYTES, boundBy: "platform" },
+    maxDocBytes: MAX_DOC_BYTES,
+  }),
+  assertIngestCapsFor: (
+    caps: { workspaceId: string },
+    workspaceId: string,
+  ) => {
+    if (caps.workspaceId !== workspaceId) {
+      throw new Error("caps workspace mismatch");
+    }
+  },
+  assertNotTierBound: () => {},
+  capIsOperatorTunable: (boundBy: string) => boundBy === "platform",
+  minKnowledgeCap: (a: number, b: number) => (b === -1 ? a : Math.min(a, b)),
+  lowestTierAdmitting: () => null,
+  resolveKnowledgeTierLimits: async () => null,
+}));
+
 // The mirror-invalidation seam lazy-imports semantic/sync; only the
 // invalidation entrypoint is reachable from this module's graph.
 let invalidations: Array<{ orgId: string; scope: string }> = [];
@@ -175,7 +203,49 @@ describe("typed failure outcomes (no writes)", () => {
     MAX_BUNDLE_BYTES = 10;
     const bytes = zipSync({ "a.md": strToU8("# A longer body") });
     const outcome = await run(bytes);
-    expect(outcome).toMatchObject({ kind: "bundle_too_large", bytes: bytes.length, maxBundleBytes: 10 });
+    expect(outcome).toMatchObject({
+      kind: "bundle_too_large",
+      bytes: bytes.length,
+      maxBundleBytes: 10,
+      // Nothing tiered the cap, so the operator's ceiling is what refused.
+      boundBy: "platform",
+    });
+  });
+
+  it("carries the caller's cap provenance onto both over-limit outcomes (#4235)", async () => {
+    // The route turns `boundBy: "tier"` into a 403 upgrade envelope instead of
+    // a flat 400, so the seam must not flatten it.
+    const tierCaps = {
+      workspaceId: WS,
+      tier: "starter" as const,
+      maxDocs: { value: 1, boundBy: "tier" as const },
+      maxBundleBytes: { value: 10, boundBy: "tier" as const },
+      maxDocBytes: MAX_DOC_BYTES,
+    };
+    const tooBig = await run(zipSync({ "a.md": strToU8("# A longer body") }), { caps: tierCaps });
+    expect(tooBig).toMatchObject({ kind: "bundle_too_large", maxBundleBytes: 10, boundBy: "tier" });
+
+    const tooMany = await run(zipSync({ "a.md": strToU8("# A"), "b.md": strToU8("# B") }), {
+      caps: { ...tierCaps, maxBundleBytes: { value: 10_000_000, boundBy: "tier" as const } },
+    });
+    expect(tooMany).toMatchObject({ kind: "too_many_documents", count: 2, maxDocs: 1, boundBy: "tier" });
+  });
+
+  it("prefers a caller-supplied cap over its own resolution so both ingest stages agree", async () => {
+    // The upload route caps the raw request body BEFORE the seam sees it; if
+    // the seam re-resolved independently the two could disagree mid-request.
+    MAX_BUNDLE_BYTES = 10_000_000;
+    const bytes = zipSync({ "a.md": strToU8("# A longer body") });
+    const outcome = await run(bytes, {
+      caps: {
+        workspaceId: WS,
+        tier: null,
+        maxDocs: { value: 1000, boundBy: "platform" as const },
+        maxBundleBytes: { value: 5, boundBy: "platform" as const },
+        maxDocBytes: MAX_DOC_BYTES,
+      },
+    });
+    expect(outcome).toMatchObject({ kind: "bundle_too_large", maxBundleBytes: 5 });
   });
 
   it("unrecognized format → invalid_bundle with the format error message", async () => {
@@ -187,7 +257,7 @@ describe("typed failure outcomes (no writes)", () => {
   it("doc cap exceeded → too_many_documents", async () => {
     MAX_DOCS = 1;
     const outcome = await run(zipSync({ "a.md": strToU8("# A"), "b.md": strToU8("# B") }));
-    expect(outcome).toMatchObject({ kind: "too_many_documents", count: 2, maxDocs: 1 });
+    expect(outcome).toMatchObject({ kind: "too_many_documents", count: 2, maxDocs: 1, boundBy: "platform" });
   });
 
   it("every file rejected → no_documents with per-file reasons", async () => {

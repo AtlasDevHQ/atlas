@@ -200,9 +200,9 @@ Caps and cadence for hosted <AudienceLink saas="/guides/knowledge-base">Knowledg
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` | `1000` | Maximum number of documents a single knowledge bundle may ingest |
+| `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` | `1000` self-hosted / `5000` on Atlas Cloud | Maximum number of documents a single knowledge bundle may ingest. On Atlas Cloud the unset default is the Business-tier ceiling and each workspace is additionally bound by its plan — the effective limit is the smaller of the two |
 | `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` | `1000000` (1 MB) | Maximum decoded size of any single document in a knowledge bundle; oversized documents are rejected per-file (surfaced in the upload result, never silently skipped) |
-| `ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES` | `25000000` (25 MB) | Maximum raw upload size of a knowledge bundle; also reused as the decoded-total cap that aborts a decompression bomb mid-inflate |
+| `ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES` | `25000000` (25 MB) self-hosted / `100000000` (100 MB) on Atlas Cloud | Maximum raw upload size of a knowledge bundle; also reused as the decoded-total cap that aborts a decompression bomb mid-inflate. On Atlas Cloud the unset default is the Business-tier ceiling and each workspace is additionally bound by its plan |
 | `ATLAS_KNOWLEDGE_TOC_MAX_BYTES` | `12000` (≈3k tokens) | Maximum size of the Knowledge Base collection table-of-contents injected into the agent's system prompt. Collections beyond the cap are omitted from the prompt but remain browsable via the explore tool |
 | `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` | `24` | How often bundle-sync collections pull their endpoint (default nightly). Hot-reloaded — a change takes effect by the next scheduled tick, no restart needed |
 | `ATLAS_KNOWLEDGE_SYNC_FETCH_TIMEOUT_SECONDS` | `60` | Per-sync time budget for downloading a collection's bundle endpoint, bounding the whole fetch including redirects and body streaming |

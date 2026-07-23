@@ -29,7 +29,7 @@ const { HELPSCOUT_CATALOG_ID, HELPSCOUT_VENDOR } = await import(
 const VALID_CONFIG = { site_id: "site-1", site_name: "Acme Docs", subdomain: "acme" };
 
 function ctx(config: Record<string, unknown> | null) {
-  return { workspaceId: "org-1", collectionSlug: "helpscout-acme", config };
+  return { workspaceId: "org-1", collectionSlug: "helpscout-acme", config, maxDocs: 1000 };
 }
 
 afterEach(() => {

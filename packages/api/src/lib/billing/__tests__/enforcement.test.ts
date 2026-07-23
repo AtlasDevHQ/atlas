@@ -139,7 +139,7 @@ void mock.module("@atlas/api/lib/logger", () => ({
 // bypass-alert assertion unable to observe `log.error`. Types are erased at
 // compile time, so they stay as a static `import type`.
 import type {
-  ChatIntegrationInstallResult,
+  CapGatedInstallResult,
   PlanCheckResult,
   ResourceLimitResult,
 } from "@atlas/api/lib/billing/enforcement";
@@ -255,20 +255,20 @@ function makeFakeTxnClient(opts: FakeTxnClientOpts = {}) {
 
 /** Narrow a chat-install gate cap_reached denial for `.limit` access. */
 function expectInstallCapReached<T extends Record<string, unknown>>(
-  result: ChatIntegrationInstallResult<T>,
-): Extract<ChatIntegrationInstallResult<T>, { reason: "cap_reached" }> {
+  result: CapGatedInstallResult<T>,
+): Extract<CapGatedInstallResult<T>, { reason: "cap_reached" }> {
   expect(result.allowed).toBe(false);
   if (!result.allowed) expect(result.reason).toBe("cap_reached");
-  return result as Extract<ChatIntegrationInstallResult<T>, { reason: "cap_reached" }>;
+  return result as Extract<CapGatedInstallResult<T>, { reason: "cap_reached" }>;
 }
 
 /** Narrow a chat-install gate check_failed (fail-closed) denial. */
 function expectInstallCheckFailed<T extends Record<string, unknown>>(
-  result: ChatIntegrationInstallResult<T>,
-): Extract<ChatIntegrationInstallResult<T>, { reason: "check_failed" }> {
+  result: CapGatedInstallResult<T>,
+): Extract<CapGatedInstallResult<T>, { reason: "check_failed" }> {
   expect(result.allowed).toBe(false);
   if (!result.allowed) expect(result.reason).toBe("check_failed");
-  return result as Extract<ChatIntegrationInstallResult<T>, { reason: "check_failed" }>;
+  return result as Extract<CapGatedInstallResult<T>, { reason: "check_failed" }>;
 }
 
 /** Create a standard workspace fixture (defaults to starter tier). */

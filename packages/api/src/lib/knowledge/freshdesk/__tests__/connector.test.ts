@@ -31,7 +31,7 @@ const VALID_CONFIG = {
 };
 
 function ctx(config: Record<string, unknown> | null) {
-  return { workspaceId: "org-1", collectionSlug: "freshdesk-support", config };
+  return { workspaceId: "org-1", collectionSlug: "freshdesk-support", config, maxDocs: 1000 };
 }
 
 afterEach(() => {

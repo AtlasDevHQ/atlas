@@ -52,7 +52,7 @@ function loaderReturning(result: SalesforcePluginInstance | (() => never)): Sale
 }
 
 function ctx(config: Record<string, unknown> | null) {
-  return { workspaceId: WSID, collectionSlug: "sf-kb", config };
+  return { workspaceId: WSID, collectionSlug: "sf-kb", config, maxDocs: 1000 };
 }
 
 describe("createSalesforceKnowledgeConnector", () => {

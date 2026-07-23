@@ -48,7 +48,7 @@ describe("registerNotionKnowledgeConnector", () => {
 });
 
 describe("notionKnowledgeConnector.createClient", () => {
-  const ctx = { workspaceId: "ws1", collectionSlug: "notion", config: null };
+  const ctx = { workspaceId: "ws1", collectionSlug: "notion", config: null, maxDocs: 1000 };
 
   it("builds a NotionVendorClient from the stored integration token", async () => {
     const built = await notionKnowledgeConnector.createClient(ctx);

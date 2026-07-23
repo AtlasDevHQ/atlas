@@ -275,10 +275,42 @@ function maybeRateLimit(): void {
   }
 }
 
+
+// Explicit stand-in for the billing composition seam (#4235) — without it this
+// suite reaches the real `billing/enforcement` → `db/internal` stack and passes
+// only because the shared internal-DB mock stubs `getWorkspaceDetails → null`.
+// Stating the shape on purpose also makes the TIER branch reachable.
+let CAP_TIER: string | null = null;
+let CAPS_THROW = false;
+void mock.module("@atlas/api/lib/billing/knowledge-limits", () => ({
+  resolveIngestCaps: async (orgId: string | undefined) => {
+    if (CAPS_THROW) throw new Error("settings backend exploded");
+    const boundBy = CAP_TIER === null ? "platform" : "tier";
+    return {
+      workspaceId: orgId ?? "",
+      tier: CAP_TIER,
+      maxDocs: { value: MAX_DOCS, boundBy },
+      maxBundleBytes: { value: MAX_BUNDLE_BYTES, boundBy },
+      maxDocBytes: MAX_DOC_BYTES,
+    };
+  },
+  assertIngestCapsFor: () => {},
+  assertNotTierBound: () => {},
+  capIsOperatorTunable: (boundBy: string) => boundBy === "platform",
+  minKnowledgeCap: (a: number, b: number) => (b === -1 ? a : Math.min(a, b)),
+  lowestTierAdmitting: () => null,
+  resolveKnowledgeTierLimits: async () => null,
+}));
+
+/** The effective per-sync doc cap the engine handed the connector. */
+let clientMaxDocs: number | null = null;
+
 const fixtureConnector: KnowledgeSyncConnector = {
   catalogId: FIXTURE_CATALOG_ID,
   vendor: "fixture",
-  createClient: () => ({
+  createClient: (ctx) => {
+    clientMaxDocs = ctx.maxDocs;
+    return {
     async fetchChanges({ since, cursor }): Promise<ConnectorChanges> {
       maybeRateLimit();
       fetchCalls.push({ kind: "changes", since, cursor });
@@ -300,7 +332,8 @@ const fixtureConnector: KnowledgeSyncConnector = {
         coverageIncomplete: vendorCoverageIncomplete,
       };
     },
-  }),
+    };
+  },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -346,6 +379,8 @@ const state = () => syncState.get(stateKey(ORG, COLLECTION));
 
 beforeEach(() => {
   MAX_DOCS = 100;
+  CAP_TIER = null;
+  CAPS_THROW = false;
   store = new Map();
   syncState = new Map();
   nextId = 1;
@@ -368,6 +403,19 @@ beforeEach(() => {
 });
 
 // ── Reconciliation (the correctness anchor) ─────────────────────────────────
+
+describe("effective-cap resolution", () => {
+  it("returns an error state (never throws) when the caps lookup faults", async () => {
+    // `resolveIngestCaps` is the FIRST thing the engine does; a settings-backend
+    // fault must surface as the collection's error state, not crash the cycle.
+    CAPS_THROW = true;
+    const outcome = await runSync();
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toContain("Could not verify this workspace's Knowledge Base limits");
+    // No vendor fetch was even attempted.
+    expect(fetchCalls).toEqual([]);
+  });
+});
 
 describe("reconciliation crawls", () => {
   it("a collection with no sync state runs a FULL crawl: drafts seeded, mark + reconciled-at persisted", async () => {
@@ -509,6 +557,30 @@ describe("reconciliation crawls", () => {
     expect(state()?.report).toMatchObject({ coverageIncomplete: true });
   });
 
+  it("bounds the vendor fetch by the EFFECTIVE cap, not the raw platform ceiling", async () => {
+    // Otherwise a lower-tier workspace pulls documents it can never ingest —
+    // every scheduled sync, forever, burning the vendor's rate limit.
+    CAP_TIER = "starter";
+    MAX_DOCS = 250;
+    await runSync();
+    expect(clientMaxDocs).toBe(250);
+  });
+
+  it("points a tier-capped workspace at its PLAN, not at an operator setting", async () => {
+    // A hosted workspace admin cannot reach `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS`;
+    // naming it sends them after a knob they can never turn.
+    CAP_TIER = "starter";
+    MAX_DOCS = 1;
+    vendorPages = [
+      { path: "a.md", body: md("A"), lastModified: "2026-07-01T00:00:00.000Z" },
+      { path: "b.md", body: md("B"), lastModified: "2026-07-01T00:00:00.000Z" },
+    ];
+    const outcome = await runSync();
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toContain("your plan's 1-document per-sync limit");
+    expect(outcome.error).not.toContain("ATLAS_KNOWLEDGE_INGEST_MAX_DOCS");
+  });
+
   it("validates the ingest caps over the FULL set with real numbers", async () => {
     MAX_DOCS = 1;
     vendorPages = [
@@ -518,6 +590,9 @@ describe("reconciliation crawls", () => {
     const outcome = await runSync();
     expect(outcome.status).toBe("error");
     expect(outcome.error).toMatch(/2 documents, over the 1-document limit/);
+    // Platform-bound off SaaS → the operator can actually raise this one, so
+    // naming the setting is the useful hint.
+    expect(outcome.error).toMatch(/ATLAS_KNOWLEDGE_INGEST_MAX_DOCS/);
     expect(outcome.error).toMatch(/ATLAS_KNOWLEDGE_INGEST_MAX_DOCS/);
     expect(store.size).toBe(0);
     // The failed attempt didn't stamp a reconciliation success.

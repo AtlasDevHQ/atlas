@@ -73,6 +73,7 @@ describe("enforceInvitationSeatLimit error-arm mapping (#3433)", () => {
       reason: "cap_reached",
       errorMessage: "Your starter plan allows up to 5 seats. Upgrade to add more.",
       limit: 5,
+      tier: "starter" as const,
     }));
 
     const err = await expectAPIError();

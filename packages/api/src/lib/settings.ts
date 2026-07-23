@@ -1607,14 +1607,19 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   // Knowledge Base — OKF bundle ingest caps (#4207, ADR-0028 §5). Platform-
   // scoped operator knobs, read at ingest by `lib/knowledge/ingest-limits.ts`.
   // Registry-backed (not env) so a SaaS operator tunes them without a redeploy.
+  //
+  // The two tier-composed keys (docs, bundle bytes) deliberately carry NO static
+  // `default` (#4235): a static default would shadow the deploy-mode-aware
+  // fallback `ingest-limits.ts` applies — self-hosted keeps the shipped 1000 /
+  // 25 MB, SaaS raises the ceiling to the Business tier's 5000 / 100 MB so that
+  // entitlement is reachable. Same pattern as `ATLAS_RATE_LIMIT_RPM`.
   {
     key: "ATLAS_KNOWLEDGE_INGEST_MAX_DOCS",
     section: "Knowledge Base",
     label: "Ingest Max Documents",
     description:
-      "Maximum number of documents a single knowledge bundle may ingest (default 1000; non-positive values fall back to the default).",
+      "Maximum number of documents a single knowledge bundle may ingest. Unset defaults to 1000 self-hosted and 5000 on Atlas Cloud (the Business-tier ceiling); non-positive values fall back to that default. On Atlas Cloud each workspace is additionally capped by its plan tier — the effective limit is the smaller of the two.",
     type: "number",
-    default: "1000",
     envVar: "ATLAS_KNOWLEDGE_INGEST_MAX_DOCS",
     scope: "platform",
     saasVisible: false,
@@ -1636,9 +1641,8 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Ingest Max Bundle Size (bytes)",
     description:
-      "Maximum raw upload size of a knowledge bundle (default 25000000 / 25 MB); also reused as the decoded-total cap that aborts a decompression bomb mid-inflate during extraction.",
+      "Maximum raw upload size of a knowledge bundle. Unset defaults to 25000000 (25 MB) self-hosted and 100000000 (100 MB) on Atlas Cloud (the Business-tier ceiling). Also reused as the decoded-total cap that aborts a decompression bomb mid-inflate during extraction. On Atlas Cloud each workspace is additionally capped by its plan tier — the effective limit is the smaller of the two.",
     type: "number",
-    default: "25000000",
     envVar: "ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES",
     scope: "platform",
     saasVisible: false,

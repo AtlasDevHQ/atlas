@@ -79774,6 +79774,12 @@
                             "number",
                             "null"
                           ]
+                        },
+                        "maxKnowledgeCollections": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
                         }
                       },
                       "required": [
@@ -79782,7 +79788,8 @@
                         "totalUsageDollars",
                         "maxSeats",
                         "maxConnections",
-                        "maxChatIntegrations"
+                        "maxChatIntegrations",
+                        "maxKnowledgeCollections"
                       ]
                     },
                     "usage": {

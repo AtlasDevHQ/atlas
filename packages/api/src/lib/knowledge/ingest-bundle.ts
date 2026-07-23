@@ -51,10 +51,11 @@ import {
   type IngestSource,
 } from "./ingest";
 import {
-  getIngestMaxBundleBytes,
-  getIngestMaxDocBytes,
-  getIngestMaxDocs,
-} from "./ingest-limits";
+  assertIngestCapsFor,
+  resolveIngestCaps,
+  type CapBoundBy,
+  type EffectiveIngestCaps,
+} from "@atlas/api/lib/billing/knowledge-limits";
 import { archiveCollectionDocuments, INSTALL_RECHECK_SQL } from "./collection-lifecycle";
 import { invalidateKnowledgeMirror } from "./mirror-invalidation";
 
@@ -85,6 +86,15 @@ export interface IngestBundleParams {
    * archive its previously-reviewed document.
    */
   readonly archiveAbsent?: boolean;
+  /**
+   * Pre-resolved effective caps (`min(platform ceiling, plan tier)`, #4235).
+   * Optional: when omitted the seam resolves them itself from `workspaceId`.
+   * Callers that already had to resolve them — the upload route, which caps the
+   * raw request body before it reads it, and `ingestBundle`, which caps bytes
+   * before handing files to the document seam — pass theirs so ONE tier lookup
+   * governs the whole ingest and the two stages can't disagree.
+   */
+  readonly caps?: EffectiveIngestCaps;
 }
 
 /** The document-level entry (#4376): already-extracted files → transaction. */
@@ -112,6 +122,15 @@ export interface IngestDocumentsParams {
    * previously-reviewed document.
    */
   readonly upstreamRejections?: readonly BundleEntryError[];
+  /**
+   * Pre-resolved effective caps (`min(platform ceiling, plan tier)`, #4235).
+   * Optional: when omitted the seam resolves them itself from `workspaceId`.
+   * Callers that already had to resolve them — the upload route, which caps the
+   * raw request body before it reads it, and `ingestBundle`, which caps bytes
+   * before handing files to the document seam — pass theirs so ONE tier lookup
+   * governs the whole ingest and the two stages can't disagree.
+   */
+  readonly caps?: EffectiveIngestCaps;
 }
 
 /**
@@ -136,6 +155,12 @@ export type IngestDocumentsFailure =
       readonly kind: "too_many_documents";
       readonly count: number;
       readonly maxDocs: number;
+      /**
+       * Which cap bound (#4235): `"tier"` means the workspace's plan — not the
+       * fleet-wide operator ceiling — refused the bundle, so the caller owes an
+       * upgrade prompt rather than a flat "too many documents".
+       */
+      readonly boundBy: CapBoundBy;
       readonly rejected: readonly BundleEntryError[];
     }
   | { readonly kind: "no_documents"; readonly rejected: readonly BundleEntryError[] };
@@ -144,7 +169,13 @@ export type IngestDocumentsFailure =
 export type IngestBundleFailure =
   | IngestDocumentsFailure
   | { readonly kind: "empty_bundle" }
-  | { readonly kind: "bundle_too_large"; readonly bytes: number; readonly maxBundleBytes: number }
+  | {
+      readonly kind: "bundle_too_large";
+      readonly bytes: number;
+      readonly maxBundleBytes: number;
+      /** See {@link IngestDocumentsFailure} `too_many_documents.boundBy` (#4235). */
+      readonly boundBy: CapBoundBy;
+    }
   | { readonly kind: "invalid_bundle"; readonly message: string };
 
 /** The successful-transaction shape shared by both entries. */
@@ -192,7 +223,11 @@ export async function ingestDocuments(
   // The bundle path already enforced the doc cap during streaming extraction;
   // document-level callers (connectors) get the SAME cap here so an oversized
   // vendor page is a counted per-file rejection, never an unbounded row.
-  const maxDocBytes = getIngestMaxDocBytes();
+  // A caller-supplied cap object is the one place another tenant's plan limit
+  // could be applied here, so it is checked against this ingest's workspace.
+  if (params.caps) assertIngestCapsFor(params.caps, workspaceId);
+  const caps = params.caps ?? (await resolveIngestCaps(workspaceId));
+  const maxDocBytes = caps.maxDocBytes;
   const encoder = new TextEncoder();
   const oversize: BundleEntryError[] = [];
   const eligible: InteropFile[] = [];
@@ -217,9 +252,9 @@ export async function ingestDocuments(
     ...parsed.errors,
   ];
 
-  const maxDocs = getIngestMaxDocs();
+  const { value: maxDocs, boundBy } = caps.maxDocs;
   if (parsed.docs.length > maxDocs) {
-    return { kind: "too_many_documents", count: parsed.docs.length, maxDocs, rejected };
+    return { kind: "too_many_documents", count: parsed.docs.length, maxDocs, boundBy, rejected };
   }
   if (parsed.docs.length === 0) {
     return { kind: "no_documents", rejected };
@@ -310,17 +345,21 @@ export async function ingestDocuments(
 export async function ingestBundle(params: IngestBundleParams): Promise<IngestBundleOutcome> {
   const { workspaceId, collectionId, source, bytes } = params;
 
-  const maxBundleBytes = getIngestMaxBundleBytes();
+  // A caller-supplied cap object is the one place another tenant's plan limit
+  // could be applied here, so it is checked against this ingest's workspace.
+  if (params.caps) assertIngestCapsFor(params.caps, workspaceId);
+  const caps = params.caps ?? (await resolveIngestCaps(workspaceId));
+  const { value: maxBundleBytes, boundBy } = caps.maxBundleBytes;
   if (bytes.length === 0) return { kind: "empty_bundle" };
   if (bytes.length > maxBundleBytes) {
-    return { kind: "bundle_too_large", bytes: bytes.length, maxBundleBytes };
+    return { kind: "bundle_too_large", bytes: bytes.length, maxBundleBytes, boundBy };
   }
 
   // ── Extract (in memory), then hand the files to the document seam ─────────
   let extracted: ExtractedBundle;
   try {
     extracted = extractBundle(bytes, {
-      maxDocBytes: getIngestMaxDocBytes(),
+      maxDocBytes: caps.maxDocBytes,
       maxTotalBytes: maxBundleBytes,
     });
   } catch (err) {
@@ -334,6 +373,7 @@ export async function ingestBundle(params: IngestBundleParams): Promise<IngestBu
     workspaceId,
     collectionId,
     source,
+    caps,
     files: extracted.files,
     publish: params.publish,
     archiveAbsent: params.archiveAbsent,

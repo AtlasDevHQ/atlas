@@ -64,6 +64,38 @@ export interface PlanLimits {
    * `ee/src/proactive/quota.ts:getEffectiveMonthlyClassifierCap` (relocated #3999).
    */
   monthlyProactiveClassifierCap: number;
+  /**
+   * Max Knowledge Base **collections** a workspace may hold (#4235). -1 =
+   * unlimited. The cap counts `workspace_plugins WHERE pillar = 'knowledge'
+   * AND status <> 'archived'` — one row per collection, whatever its catalog
+   * (upload, bundle-sync, or any connector). Marketed ladder: Starter 1 / Pro
+   * 3 / Business unlimited, mirroring {@link maxChatIntegrations}. Enforced
+   * atomically at collection-install time by
+   * `checkKnowledgeCollectionLimitAndInstall`; re-installing an existing
+   * collection slug (an edit / re-auth) never consumes a new slot.
+   */
+  maxKnowledgeCollections: number;
+  /**
+   * Max raw bytes of a single knowledge-bundle ingest (#4235). -1 = unlimited.
+   * The **tier** half of the effective cap: ingest enforces
+   * `min(platform ceiling, tier limit)`, where the platform ceiling is the
+   * operator guardrail `ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES`. KB size is a
+   * storage + prompt-token cost, hence a pricing lever. Decimal MB (matching
+   * `DEFAULT_INGEST_MAX_BUNDLE_BYTES`): Starter 10 MB / Pro 25 MB /
+   * Business 100 MB.
+   */
+  maxKnowledgeBundleBytes: number;
+  /**
+   * Max documents in a single knowledge-bundle ingest (#4235). -1 = unlimited.
+   * The tier half of `min(platform ceiling, tier limit)` against
+   * `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS`. Starter 250 / Pro 1,000 /
+   * Business 5,000.
+   *
+   * The **per-document** byte cap (`ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES`, 1 MB)
+   * deliberately has NO tier field: it is an abuse guardrail on a single row,
+   * not a pricing lever, so it stays platform-only.
+   */
+  maxKnowledgeDocsPerBundle: number;
 }
 
 export interface PlanDefinition {
@@ -146,6 +178,11 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxConnections: UNLIMITED,
       maxChatIntegrations: UNLIMITED,
       monthlyProactiveClassifierCap: UNLIMITED,
+      // Self-hosted is always free: the `ATLAS_KNOWLEDGE_INGEST_*` platform
+      // knobs stay the ONLY knowledge caps there (#4235).
+      maxKnowledgeCollections: UNLIMITED,
+      maxKnowledgeBundleBytes: UNLIMITED,
+      maxKnowledgeDocsPerBundle: UNLIMITED,
     },
     features: { ...NO_FEATURES },
   },
@@ -166,6 +203,10 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxConnections: 1,
       maxChatIntegrations: 1,
       monthlyProactiveClassifierCap: 5_000,
+      // Trial mirrors Starter (#4235).
+      maxKnowledgeCollections: 1,
+      maxKnowledgeBundleBytes: 10_000_000,
+      maxKnowledgeDocsPerBundle: 250,
     },
     // Data residency is available at every active paid tier (entitlement floor
     // is `trial`); see FEATURE_ENTITLEMENTS.residency.
@@ -183,6 +224,9 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxConnections: 1,
       maxChatIntegrations: 1,
       monthlyProactiveClassifierCap: 5_000,
+      maxKnowledgeCollections: 1,
+      maxKnowledgeBundleBytes: 10_000_000,
+      maxKnowledgeDocsPerBundle: 250,
     },
     features: { ...NO_FEATURES, dataResidency: true },
   },
@@ -198,6 +242,9 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxConnections: 3,
       maxChatIntegrations: 3,
       monthlyProactiveClassifierCap: 20_000,
+      maxKnowledgeCollections: 3,
+      maxKnowledgeBundleBytes: 25_000_000,
+      maxKnowledgeDocsPerBundle: 1_000,
     },
     features: {
       customDomain: true,
@@ -223,6 +270,9 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxConnections: 0,
       maxChatIntegrations: 0,
       monthlyProactiveClassifierCap: 0,
+      maxKnowledgeCollections: 0,
+      maxKnowledgeBundleBytes: 0,
+      maxKnowledgeDocsPerBundle: 0,
     },
     features: { ...NO_FEATURES },
   },
@@ -238,6 +288,9 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxConnections: UNLIMITED,
       maxChatIntegrations: UNLIMITED,
       monthlyProactiveClassifierCap: 100_000,
+      maxKnowledgeCollections: UNLIMITED,
+      maxKnowledgeBundleBytes: 100_000_000,
+      maxKnowledgeDocsPerBundle: 5_000,
     },
     features: {
       customDomain: true,

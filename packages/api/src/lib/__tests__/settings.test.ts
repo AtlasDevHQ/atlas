@@ -821,6 +821,34 @@ describe("settings module", () => {
   // ATLAS_DEFAULT_ANSWER_STYLE — the workspace "house voice" (#4303, PRD #4292)
   // ---------------------------------------------------------------------------
 
+  describe("Knowledge Base ingest-cap registry entries (#4235)", () => {
+    // The ABSENCE of a static `default` on these two keys is load-bearing, not
+    // an oversight: `getSetting`'s precedence is override → env → registry
+    // default, so a static default would SHADOW the deploy-mode-aware fallback
+    // in `lib/knowledge/ingest-limits.ts` and silently clamp the SaaS ceiling
+    // back to the self-hosted 25 MB / 1000 docs — re-capping the Business tier
+    // at a quarter of what it was sold, with a fully green suite (the
+    // ingest-limits tests mock `getSettingAuto` wholesale and cannot see it).
+    // Same pattern as ATLAS_RATE_LIMIT_RPM.
+    it.each([
+      ["ATLAS_KNOWLEDGE_INGEST_MAX_DOCS"],
+      ["ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES"],
+    ])("%s carries NO static default (the resolver owns it)", (key) => {
+      const def = getSettingDefinition(key);
+      expect(def).toBeDefined();
+      expect(def!.scope).toBe("platform");
+      expect(def!.default).toBeUndefined();
+    });
+
+    it("keeps a static default on the per-document cap — it is not deploy-mode-aware", () => {
+      // Platform-only by design: an abuse guardrail on one row, never a
+      // pricing lever, so it has no tier half and no SaaS ceiling to reach.
+      const def = getSettingDefinition("ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES");
+      expect(def).toBeDefined();
+      expect(def!.default).toBe("1000000");
+    });
+  });
+
   describe("ATLAS_DEFAULT_ANSWER_STYLE registry entry (#4303)", () => {
     it("is a workspace-scoped, hot-reloadable select with no built-in default", () => {
       const def = getSettingDefinition("ATLAS_DEFAULT_ANSWER_STYLE");

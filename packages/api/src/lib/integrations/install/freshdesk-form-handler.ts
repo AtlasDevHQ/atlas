@@ -61,11 +61,15 @@ import {
   FormInstallValidationError,
 } from "./persist-form-install";
 import {
-  assertCollectionSlugAvailable,
-  resolveCollectionSlug,
+  assertCollectionBatchInstallable,
+  upsertKnowledgeCollectionRow,
+} from "./knowledge-collection-install";
+import { isPlanDenial, retryableInstallError } from "./retryable-install-error";
+import {
   COLLECTION_SLUG_MAX,
   KNOWLEDGE_INSTALL_ID_FIELD,
-} from "./okf-upload-form-handler";
+  resolveCollectionSlug,
+} from "./knowledge-collection-slug";
 import type { FormBasedInstallHandler, InstallRecord } from "./types";
 
 // Re-exported for the register.ts boot wiring; both are single-homed in config.ts.
@@ -178,8 +182,17 @@ export class FreshdeskFormInstallHandler implements FormBasedInstallHandler {
           formErrors: [],
         });
       }
-      await assertCollectionSlugAvailable(workspaceId, slug, catalogId);
     }
+    // ONE cap check for the WHOLE fan-out, before any credential or row is
+    // written: a per-slug loop would pass N times against the same pre-write
+    // count and strand a partial install when the atomic gate refused the
+    // (cap+1)-th mid-batch (#4235).
+    await assertCollectionBatchInstallable(
+      workspaceId,
+      planned.map((p) => p.slug),
+      catalogId,
+      this.log,
+    );
 
     // ── Per-category writes: credential first, then the collection row ────────
     assertSaasEncryptionKeyset(this.log, workspaceId, "api_key");
@@ -234,28 +247,19 @@ export class FreshdeskFormInstallHandler implements FormBasedInstallHandler {
         { workspaceId, collectionSlug: slug, err: err instanceof Error ? err.message : String(err) },
         "Failed to persist knowledge_sync_credentials row — aborting install (retrying is safe; completed category collections stay installed)",
       );
-      throw retryableInstallError(slug, err);
+      throw retryableInstallError(slug, err, "category");
     }
 
     const candidateId = this.newId();
     try {
-      const rows = await internalQuery<{ id: string }>(FRESHDESK_INSTALL_UPSERT_SQL, [
-        candidateId,
+      const returned = await upsertKnowledgeCollectionRow({
         workspaceId,
-        catalogId,
-        slug,
-        JSON.stringify(config),
-      ]);
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        this.log.error(
-          { workspaceId, candidateId, collectionSlug: slug },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
+        collectionSlug: slug,
+        sql: FRESHDESK_INSTALL_UPSERT_SQL,
+        params: [candidateId, workspaceId, catalogId, slug, JSON.stringify(config)],
+        candidateId,
+        log: this.log,
+      });
       return { id: returned, workspaceId, catalogId: FRESHDESK_SLUG };
     } catch (err) {
       // Roll back the just-written credential so a secret can't outlive a
@@ -276,7 +280,9 @@ export class FreshdeskFormInstallHandler implements FormBasedInstallHandler {
           categoryId: category.id,
           err: err instanceof Error ? err.message : String(err),
         },
-        "Failed to persist freshdesk collection install — rolling back the orphaned credential (retrying the install is safe)",
+        isPlanDenial(err)
+          ? "Failed to persist freshdesk collection install — rolling back the orphaned credential (the workspace is at a plan limit — retrying will not help)"
+          : "Failed to persist freshdesk collection install — rolling back the orphaned credential (retrying the install is safe)",
       );
       try {
         await deleteSyncCredential(workspaceId, slug);
@@ -290,7 +296,7 @@ export class FreshdeskFormInstallHandler implements FormBasedInstallHandler {
           "Failed to roll back the orphaned credential after an install-row failure — a re-install overwrites it",
         );
       }
-      throw retryableInstallError(slug, err);
+      throw retryableInstallError(slug, err, "category");
     }
   }
 
@@ -429,9 +435,3 @@ function fieldError(field: string, message: string): FormInstallValidationError 
  * needs: all writes are idempotent upserts converging on the same slugs, so
  * re-running the install is always safe. The original failure rides as cause.
  */
-function retryableInstallError(slug: string, err: unknown): Error {
-  return new Error(
-    `Failed to install the "${slug}" collection: ${err instanceof Error ? err.message : String(err)}. Retrying the install is safe — already-installed category collections are simply updated in place.`,
-    { cause: err },
-  );
-}

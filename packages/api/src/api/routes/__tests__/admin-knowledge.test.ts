@@ -107,8 +107,20 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: () => ({ connect: async () => fakeTxClient() }),
 }));
 
+// The real bridge catches a handler throw and maps the tagged error to HTTP.
+// This stub keeps the pass-through shape but records the thrown error, so a
+// test can assert the TAG the bridge would have mapped (the 403 envelope
+// mapping itself is pinned in the bridge's own tests).
+let lastHandlerError: unknown = null;
 void mock.module("@atlas/api/lib/effect/hono", () => ({
-  runHandler: async (_c: unknown, _label: string, fn: () => unknown) => fn(),
+  runHandler: async (_c: unknown, _label: string, fn: () => unknown) => {
+    try {
+      return await fn();
+    } catch (err) {
+      lastHandlerError = err;
+      throw err;
+    }
+  },
 }));
 
 void mock.module("@atlas/api/lib/logger", () => {
@@ -257,6 +269,18 @@ void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   },
 }));
 
+// Per-tier KB caps (#4235). `resolveIngestCaps` composes the mocked platform
+// getters above with this workspace's tier, so setting a tier here is how a
+// test makes the TIER the binding cap. Only `getCachedWorkspace` is reachable
+// from this file's graph via `billing/knowledge-limits`; the two collection-cap
+// entries come in through `okf-upload-form-handler`.
+let WORKSPACE_TIER: string | null = null;
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  getCachedWorkspace: async () => (WORKSPACE_TIER === null ? null : { plan_tier: WORKSPACE_TIER }),
+  checkKnowledgeCollectionLimit: async () => ({ allowed: true }),
+  checkKnowledgeCollectionLimitAndInstall: async () => ({ allowed: true, rows: [] }),
+}));
+
 void mock.module("../admin-router", () => ({
   createAdminRouter: () => new OpenAPIHono(),
   requireOrgContext: () => async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {
@@ -266,6 +290,7 @@ void mock.module("../admin-router", () => ({
 }));
 
 const { adminKnowledge } = await import("../admin-knowledge");
+const { FeatureEntitlementError } = await import("@atlas/api/lib/effect/errors");
 
 function ingest(path: string, body: Uint8Array) {
   return adminKnowledge.request(path, {
@@ -276,6 +301,8 @@ function ingest(path: string, body: Uint8Array) {
 }
 
 beforeEach(() => {
+  WORKSPACE_TIER = null;
+  lastHandlerError = null;
   TX_INSTALL_STATUS = "published";
   MAX_DOCS = 100;
   MAX_DOC_BYTES = 100_000;
@@ -369,6 +396,60 @@ describe("POST /{collectionSlug}/ingest — guards", () => {
     const res = await ingest("/runbooks/ingest", strToU8("just some text, not an archive"));
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe("invalid_bundle");
+  });
+
+  describe("per-tier caps (#4235)", () => {
+    // `runHandler` is stubbed to call the handler directly in this file, so a
+    // tagged error propagates instead of being mapped. The tag IS the contract:
+    // the Hono bridge turns `FeatureEntitlementError` into the standard 403
+    // `plan_upgrade_required` envelope (pinned in the bridge's own tests).
+    it("raises the 403 upgrade envelope when the workspace's TIER is the binding bundle-size cap", async () => {
+      MAX_BUNDLE_BYTES = 100_000_000; // the SaaS platform ceiling
+      WORKSPACE_TIER = "starter"; // 10 MB — the binding cap
+      await adminKnowledge.request("/runbooks/ingest", {
+        method: "POST",
+        body: zipSync({ "a.md": strToU8("# A") }),
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": "20000000",
+        },
+      });
+      expect(lastHandlerError).toBeInstanceOf(FeatureEntitlementError);
+      const typed = lastHandlerError as InstanceType<typeof FeatureEntitlementError>;
+      expect(typed.currentPlan).toBe("starter");
+      expect(typed.requiredPlan).toBe("pro");
+    });
+
+    it("raises the 403 upgrade envelope when the TIER is the binding doc-count cap", async () => {
+      MAX_DOCS = 5_000; // the SaaS platform ceiling
+      MAX_BUNDLE_BYTES = 100_000_000;
+      WORKSPACE_TIER = "starter";
+      const files: Record<string, Uint8Array> = {};
+      for (let i = 0; i < 251; i++) files[`d${i}.md`] = strToU8(`# ${i}`);
+      await ingest("/runbooks/ingest", zipSync(files));
+      expect(lastHandlerError).toBeInstanceOf(FeatureEntitlementError);
+      expect((lastHandlerError as InstanceType<typeof FeatureEntitlementError>).requiredPlan).toBe(
+        "pro",
+      );
+    });
+
+    it("stays a plain 400 when the PLATFORM ceiling bound — upgrading would change nothing", async () => {
+      MAX_BUNDLE_BYTES = 10;
+      WORKSPACE_TIER = "business";
+      const res = await ingest("/runbooks/ingest", zipSync({ "a.md": strToU8("# A longer body") }));
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe("bundle_too_large");
+      expect(lastHandlerError).toBeNull();
+    });
+
+    it("leaves a self-hosted (free-tier) workspace on the platform caps alone", async () => {
+      MAX_BUNDLE_BYTES = 10;
+      WORKSPACE_TIER = "free";
+      const res = await ingest("/runbooks/ingest", zipSync({ "a.md": strToU8("# A longer body") }));
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe("bundle_too_large");
+      expect(lastHandlerError).toBeNull();
+    });
   });
 
   it("400s when the doc count exceeds the cap", async () => {

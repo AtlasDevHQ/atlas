@@ -43,10 +43,13 @@ import {
   FormInstallValidationError,
 } from "./persist-form-install";
 import {
-  assertCollectionSlugAvailable,
-  resolveCollectionSlug,
+  assertCollectionInstallable,
+  upsertKnowledgeCollectionRow,
+} from "./knowledge-collection-install";
+import {
   KNOWLEDGE_INSTALL_ID_FIELD,
-} from "./okf-upload-form-handler";
+  resolveCollectionSlug,
+} from "./knowledge-collection-slug";
 import type { FormBasedInstallHandler, InstallRecord } from "./types";
 
 /** Defensive upper bound — a Notion token is ~50 chars; guard against a paste. */
@@ -132,7 +135,7 @@ export class NotionKnowledgeFormInstallHandler implements FormBasedInstallHandle
 
     // A slug taken by another knowledge catalog (okf-upload / bundle-sync) would
     // merge document trees — reject before any write.
-    await assertCollectionSlugAvailable(workspaceId, collectionSlug, catalogId);
+    await assertCollectionInstallable(workspaceId, collectionSlug, catalogId, this.log);
 
     // ── Verify the token loudly BEFORE persisting anything ─────────────────────
     await this.verifyToken(workspaceId, collectionSlug, token);
@@ -159,23 +162,14 @@ export class NotionKnowledgeFormInstallHandler implements FormBasedInstallHandle
     const candidateId = this.newId();
     let persistedId: string;
     try {
-      const rows = await internalQuery<{ id: string }>(NOTION_KNOWLEDGE_INSTALL_UPSERT_SQL, [
-        candidateId,
+      const returned = await upsertKnowledgeCollectionRow({
         workspaceId,
-        catalogId,
-        collectionSlug,
-        JSON.stringify(config),
-      ]);
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        this.log.error(
-          { workspaceId, candidateId, collectionSlug },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
+        collectionSlug: collectionSlug,
+        sql: NOTION_KNOWLEDGE_INSTALL_UPSERT_SQL,
+        params: [candidateId, workspaceId, catalogId, collectionSlug, JSON.stringify(config)],
+        candidateId,
+        log: this.log,
+      });
       persistedId = returned;
     } catch (err) {
       // Roll back the just-written credential so a secret can't outlive a failed

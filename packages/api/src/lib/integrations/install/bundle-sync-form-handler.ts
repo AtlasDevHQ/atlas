@@ -50,10 +50,13 @@ import {
   FormInstallValidationError,
 } from "./persist-form-install";
 import {
-  assertCollectionSlugAvailable,
-  resolveCollectionSlug,
+  assertCollectionInstallable,
+  upsertKnowledgeCollectionRow,
+} from "./knowledge-collection-install";
+import {
   KNOWLEDGE_INSTALL_ID_FIELD,
-} from "./okf-upload-form-handler";
+  resolveCollectionSlug,
+} from "./knowledge-collection-slug";
 import type { FormBasedInstallHandler, InstallRecord } from "./types";
 
 /** The built-in Knowledge Base (Bundle Sync) catalog slug + row id. */
@@ -188,7 +191,7 @@ export class BundleSyncFormInstallHandler implements FormBasedInstallHandler {
 
     // A slug taken by another knowledge catalog (okf-upload) would merge
     // document trees — reject before any write (#4211).
-    await assertCollectionSlugAvailable(workspaceId, collectionSlug, catalogId);
+    await assertCollectionInstallable(workspaceId, collectionSlug, catalogId, this.log);
 
     // ── Credential first (mirrors the Twenty handler's write order) ────────
     if (authSecret !== null) {
@@ -220,25 +223,14 @@ export class BundleSyncFormInstallHandler implements FormBasedInstallHandler {
     const candidateId = this.newId();
     let persistedId: string;
     try {
-      const rows = await internalQuery<{ id: string }>(BUNDLE_SYNC_INSTALL_UPSERT_SQL, [
-        candidateId,
+      const returned = await upsertKnowledgeCollectionRow({
         workspaceId,
-        catalogId,
-        collectionSlug,
-        JSON.stringify(config),
-      ]);
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        // See the okf-upload handler for why an empty RETURNING is fail-loud
-        // (candidateId would be WRONG on the conflict path).
-        this.log.error(
-          { workspaceId, candidateId, collectionSlug },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
+        collectionSlug: collectionSlug,
+        sql: BUNDLE_SYNC_INSTALL_UPSERT_SQL,
+        params: [candidateId, workspaceId, catalogId, collectionSlug, JSON.stringify(config)],
+        candidateId,
+        log: this.log,
+      });
       persistedId = returned;
     } catch (err) {
       this.log.error(

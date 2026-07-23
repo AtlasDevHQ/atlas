@@ -10,6 +10,10 @@ let SETTINGS: Record<string, string | undefined> = {};
 void mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string) => SETTINGS[key],
 }));
+let DEPLOY_MODE: "saas" | "self-hosted" = "self-hosted";
+void mock.module("@atlas/api/lib/effect/deploy-mode", () => ({
+  resolveDeployMode: () => DEPLOY_MODE,
+}));
 void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
@@ -28,9 +32,11 @@ const {
 
 beforeEach(() => {
   SETTINGS = {};
+  DEPLOY_MODE = "self-hosted";
 });
 afterEach(() => {
   SETTINGS = {};
+  DEPLOY_MODE = "self-hosted";
 });
 
 describe("positiveIntSetting", () => {
@@ -77,5 +83,32 @@ describe("cap readers thread the registry key → default", () => {
   it("fall back on a garbage override", () => {
     SETTINGS.ATLAS_KNOWLEDGE_INGEST_MAX_DOCS = "nope";
     expect(getIngestMaxDocs()).toBe(DEFAULT_INGEST_MAX_DOCS);
+  });
+
+  describe("deploy-mode-aware ceilings (#4235)", () => {
+    it("raises the unset ceiling to the Business-tier values on SaaS", () => {
+      // Without this the 25 MB / 1000-doc self-hosted defaults would silently
+      // clamp what the Business tier was sold (100 MB / 5000 docs).
+      DEPLOY_MODE = "saas";
+      expect(getIngestMaxDocs()).toBe(5_000);
+      expect(getIngestMaxBundleBytes()).toBe(100_000_000);
+    });
+
+    it("leaves the shipped self-hosted defaults untouched", () => {
+      DEPLOY_MODE = "self-hosted";
+      expect(getIngestMaxDocs()).toBe(DEFAULT_INGEST_MAX_DOCS);
+      expect(getIngestMaxBundleBytes()).toBe(DEFAULT_INGEST_MAX_BUNDLE_BYTES);
+    });
+
+    it("keeps the per-document cap deploy-mode-invariant — it is a guardrail, not a lever", () => {
+      DEPLOY_MODE = "saas";
+      expect(getIngestMaxDocBytes()).toBe(DEFAULT_INGEST_MAX_DOC_BYTES);
+    });
+
+    it("lets an operator override still win on SaaS", () => {
+      DEPLOY_MODE = "saas";
+      SETTINGS.ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES = "7";
+      expect(getIngestMaxBundleBytes()).toBe(7);
+    });
   });
 });

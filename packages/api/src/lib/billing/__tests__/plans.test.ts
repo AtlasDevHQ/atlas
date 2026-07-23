@@ -67,6 +67,53 @@ describe("billing/plans", () => {
       expect(getPlanLimits("locked").monthlyProactiveClassifierCap).toBe(0);
     });
 
+    it("carries the maintainer-approved Knowledge Base matrix (#4235)", () => {
+      // The decided ladder, pinned so a pricing change is a deliberate edit
+      // here rather than a silent drift in one tier. Self-hosted (`free`) is
+      // unlimited on every field — the `ATLAS_KNOWLEDGE_INGEST_*` platform
+      // knobs stay its only caps.
+      const free = getPlanLimits("free");
+      expect(isUnlimited(free.maxKnowledgeCollections)).toBe(true);
+      expect(isUnlimited(free.maxKnowledgeBundleBytes)).toBe(true);
+      expect(isUnlimited(free.maxKnowledgeDocsPerBundle)).toBe(true);
+
+      for (const tier of ["trial", "starter"] as const) {
+        const limits = getPlanLimits(tier);
+        expect(limits.maxKnowledgeCollections).toBe(1);
+        expect(limits.maxKnowledgeBundleBytes).toBe(10_000_000);
+        expect(limits.maxKnowledgeDocsPerBundle).toBe(250);
+      }
+
+      const pro = getPlanLimits("pro");
+      expect(pro.maxKnowledgeCollections).toBe(3);
+      expect(pro.maxKnowledgeBundleBytes).toBe(25_000_000);
+      expect(pro.maxKnowledgeDocsPerBundle).toBe(1_000);
+
+      const business = getPlanLimits("business");
+      expect(isUnlimited(business.maxKnowledgeCollections)).toBe(true);
+      expect(business.maxKnowledgeBundleBytes).toBe(100_000_000);
+      expect(business.maxKnowledgeDocsPerBundle).toBe(5_000);
+
+      // The churn tier adds nothing — zero, not unlimited.
+      const locked = getPlanLimits("locked");
+      expect(locked.maxKnowledgeCollections).toBe(0);
+      expect(locked.maxKnowledgeBundleBytes).toBe(0);
+      expect(locked.maxKnowledgeDocsPerBundle).toBe(0);
+    });
+
+    it("ladders the Knowledge Base caps monotonically across the paid tiers (#4235)", () => {
+      // A non-monotonic ladder would make `lowestTierAdmitting` name a tier
+      // that doesn't actually help — the upgrade prompt would be a lie.
+      const ladder = ["starter", "pro", "business"] as const;
+      for (const field of ["maxKnowledgeBundleBytes", "maxKnowledgeDocsPerBundle"] as const) {
+        for (let i = 1; i < ladder.length; i++) {
+          const lower = getPlanLimits(ladder[i - 1])[field];
+          const higher = getPlanLimits(ladder[i])[field];
+          expect(isUnlimited(higher) || higher >= lower).toBe(true);
+        }
+      }
+    });
+
     it("starter tier has finite limits", () => {
       const limits = getPlanLimits("starter");
       expect(isUnlimited(limits.tokenBudgetPerSeat)).toBe(false);

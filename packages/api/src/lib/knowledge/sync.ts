@@ -63,7 +63,12 @@ import type { BundleEntryError } from "./bundle-archive";
 import { readBodyWithCap, BodyCapExceededError } from "./read-body-cap";
 import type { IngestReport } from "./ingest";
 import { ingestBundle } from "./ingest-bundle";
-import { getIngestMaxBundleBytes, positiveIntSetting } from "./ingest-limits";
+import { positiveIntSetting } from "./ingest-limits";
+import {
+  resolveIngestCaps,
+  type CapBoundBy,
+  type EffectiveIngestCaps,
+} from "@atlas/api/lib/billing/knowledge-limits";
 import { readSyncCredential } from "./sync-credentials";
 import {
   getKnowledgeSyncConnector,
@@ -77,6 +82,16 @@ import {
 } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 
 const log = createLogger("knowledge.sync");
+
+/**
+ * Name the side that actually refused, so a sync-state error line points a
+ * workspace admin at the right lever (#4235): their plan, or the operator's
+ * fleet-wide setting. A sync surfaces a status row, not an HTTP response, so
+ * there is no upgrade envelope here — only honest wording.
+ */
+function capOwner(boundBy: CapBoundBy): string {
+  return boundBy === "tier" ? "limit on your plan" : "limit";
+}
 
 export const DEFAULT_SYNC_FETCH_TIMEOUT_SECONDS = 60;
 
@@ -271,7 +286,15 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
   }
 
   // ── Fetch (SSRF-guarded, time-budgeted, size-capped) ─────────────────────
-  const maxBundleBytes = getIngestMaxBundleBytes();
+  // The download cap is the workspace's EFFECTIVE cap — `min(platform ceiling,
+  // plan tier)` (#4235) — so a synced collection can't pull past what an upload
+  // of the same size would be refused. Resolved once and handed to
+  // `ingestBundle` below so both stages agree. A tier-lookup fault throws
+  // (`check_failed`); it is deliberately NOT caught here — `syncCollection`'s
+  // outer net records it as an error state, so the failure is surfaced once
+  // with its own message rather than reworded into a cap error it isn't.
+  const caps: EffectiveIngestCaps = await resolveIngestCaps(workspaceId);
+  const maxBundleBytes = caps.maxBundleBytes.value;
   const timeoutMs = getKnowledgeSyncFetchTimeoutMs();
   const host = hostForLog(endpointUrl);
 
@@ -293,7 +316,7 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
     if (Number.isFinite(declared) && declared > maxBundleBytes) {
       return {
         kind: "error",
-        error: `Bundle from "${host}" declares ${declared} bytes, over the ${maxBundleBytes}-byte limit.`,
+        error: `Bundle from "${host}" declares ${declared} bytes, over the ${maxBundleBytes}-byte ${capOwner(caps.maxBundleBytes.boundBy)}.`,
         rejected: [],
       };
     }
@@ -312,7 +335,7 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
     if (err instanceof BodyCapExceededError) {
       return {
         kind: "error",
-        error: `Bundle from "${host}" exceeds the ${maxBundleBytes}-byte limit — download aborted.`,
+        error: `Bundle from "${host}" exceeds the ${maxBundleBytes}-byte ${capOwner(caps.maxBundleBytes.boundBy)} — download aborted.`,
         rejected: [],
       };
     }
@@ -343,6 +366,7 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
   let outcome: Awaited<ReturnType<typeof ingestBundle>>;
   try {
     outcome = await ingestBundle({
+      caps,
       workspaceId,
       collectionId: collectionSlug,
       source: "bundle-sync",
@@ -398,7 +422,7 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
       // stream — but the seam reports it, so map it.
       return {
         kind: "error",
-        error: `Bundle from "${host}" is ${outcome.bytes} bytes, over the ${outcome.maxBundleBytes}-byte limit.`,
+        error: `Bundle from "${host}" is ${outcome.bytes} bytes, over the ${outcome.maxBundleBytes}-byte ${capOwner(outcome.boundBy)}.`,
         rejected: [],
       };
     case "invalid_bundle":
@@ -406,7 +430,7 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
     case "too_many_documents":
       return {
         kind: "error",
-        error: `Bundle has ${outcome.count} documents, over the ${outcome.maxDocs}-document limit.`,
+        error: `Bundle has ${outcome.count} documents, over the ${outcome.maxDocs}-document ${capOwner(outcome.boundBy)}.`,
         rejected: outcome.rejected,
       };
     case "no_documents":

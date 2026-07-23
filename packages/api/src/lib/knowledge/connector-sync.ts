@@ -546,7 +546,14 @@ async function runConnectorAttempt(
       return {
         kind: "error",
         mode,
-        error: `The vendor returned ${outcome.count} documents, over the ${outcome.maxDocs}-document limit (ATLAS_KNOWLEDGE_INGEST_MAX_DOCS) — narrow the connector's scope or raise the cap.`,
+        // Name the ACTUAL binding cap (#4235): on SaaS the workspace's plan
+        // tier is often lower than the operator ceiling, and pointing an admin
+        // at a setting they can't reach (or that isn't what refused them) is
+        // worse than no hint at all.
+        error:
+          outcome.boundBy === "tier"
+            ? `The vendor returned ${outcome.count} documents, over your plan's ${outcome.maxDocs}-document per-sync limit — narrow the connector's scope or upgrade your plan.`
+            : `The vendor returned ${outcome.count} documents, over the ${outcome.maxDocs}-document limit (ATLAS_KNOWLEDGE_INGEST_MAX_DOCS) — narrow the connector's scope or raise the cap.`,
         rejected: outcome.rejected,
       };
     case "no_documents":

@@ -42,7 +42,10 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ingestBundle } from "@atlas/api/lib/knowledge/ingest-bundle";
 import { uninstallCollection } from "@atlas/api/lib/knowledge/collection-lifecycle";
 import { readBodyWithCap, BodyCapExceededError } from "@atlas/api/lib/knowledge/read-body-cap";
-import { getIngestMaxBundleBytes } from "@atlas/api/lib/knowledge/ingest-limits";
+import {
+  assertNotTierBound,
+  resolveIngestCaps,
+} from "@atlas/api/lib/billing/knowledge-limits";
 import {
   buildCollectionDocumentsQuery,
   buildDocumentStatusCountsQuery,
@@ -607,10 +610,21 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
     // cumulative cap (the same `readBodyWithCap` guard the sync fetch uses) — a
     // chunked or lying upload aborts the moment it crosses the limit instead of
     // fully materializing in memory first. The remaining caps (decompression
-    // bomb, doc count/bytes) live inside `ingestBundle` (the shared seam).
-    const maxBundleBytes = getIngestMaxBundleBytes();
+    // bomb, doc count/bytes) live inside `ingestBundle` (the shared seam) — the
+    // SAME `caps` object is handed down, so one tier lookup governs both stages
+    // and the body cap can never disagree with the seam's (#4235).
+    const caps = await resolveIngestCaps(orgId);
+    const { value: maxBundleBytes, boundBy: bundleBoundBy } = caps.maxBundleBytes;
     const declaredLength = Number(c.req.header("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > maxBundleBytes) {
+      await assertNotTierBound({
+        orgId,
+        field: "maxKnowledgeBundleBytes",
+        boundBy: bundleBoundBy,
+        required: declaredLength,
+        limit: maxBundleBytes,
+        noun: "bytes per bundle",
+      });
       return c.json(
         {
           error: "bundle_too_large",
@@ -625,6 +639,17 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       bytes = await readBodyWithCap(c.req.raw.body, maxBundleBytes, { requestId });
     } catch (err) {
       if (err instanceof BodyCapExceededError) {
+        // The body was streamed and aborted at the cap, so the true size is
+        // unknown — `maxBundleBytes + 1` is the smallest value that provably
+        // breached it, which is exactly what naming an upgrade target needs.
+        await assertNotTierBound({
+          orgId,
+          field: "maxKnowledgeBundleBytes",
+          boundBy: bundleBoundBy,
+          required: maxBundleBytes + 1,
+          limit: maxBundleBytes,
+          noun: "bytes per bundle",
+        });
         return c.json(
           {
             error: "bundle_too_large",
@@ -647,6 +672,7 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       collectionId: collectionSlug,
       source: "upload",
       bytes,
+      caps,
       publish: shouldPublish,
     });
 
@@ -667,6 +693,14 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
             400,
           );
         case "bundle_too_large":
+          await assertNotTierBound({
+            orgId,
+            field: "maxKnowledgeBundleBytes",
+            boundBy: outcome.boundBy,
+            required: outcome.bytes,
+            limit: outcome.maxBundleBytes,
+            noun: "bytes per bundle",
+          });
           return c.json(
             {
               error: "bundle_too_large",
@@ -678,6 +712,14 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
         case "invalid_bundle":
           return c.json({ error: "invalid_bundle", message: outcome.message, requestId }, 400);
         case "too_many_documents":
+          await assertNotTierBound({
+            orgId,
+            field: "maxKnowledgeDocsPerBundle",
+            boundBy: outcome.boundBy,
+            required: outcome.count,
+            limit: outcome.maxDocs,
+            noun: "documents in one bundle",
+          });
           return c.json(
             {
               error: "too_many_documents",

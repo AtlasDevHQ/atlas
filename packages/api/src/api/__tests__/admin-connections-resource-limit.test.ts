@@ -45,6 +45,9 @@ void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
   checkChatIntegrationLimit: mock(async () => ({ allowed: true })),
   checkChatIntegrationLimitAndInstall: mock(async () => ({ outcome: "installed" })),
+  KNOWLEDGE_COLLECTION_COUNT_SQL: "SELECT 1",
+  checkKnowledgeCollectionLimit: mock(async () => ({ allowed: true })),
+  checkKnowledgeCollectionLimitAndInstall: mock(async () => ({ allowed: true, rows: [] })),
 }));
 
 const { app } = await import("../index");

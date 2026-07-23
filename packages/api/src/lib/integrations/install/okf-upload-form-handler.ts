@@ -36,31 +36,16 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { WorkspaceId } from "@useatlas/types";
 import { FormInstallValidationError } from "./email-form-handler";
+import {
+  assertCollectionInstallable,
+  upsertKnowledgeCollectionRow,
+} from "./knowledge-collection-install";
+import { KNOWLEDGE_INSTALL_ID_FIELD, resolveCollectionSlug } from "./knowledge-collection-slug";
 import type { FormBasedInstallHandler, InstallRecord } from "./types";
 
 /** The built-in Knowledge Base (Upload) catalog slug + row id. */
 export const OKF_UPLOAD_SLUG = "okf-upload";
 export const OKF_UPLOAD_CATALOG_ID = "catalog:okf-upload";
-
-/**
- * Reserved form key carrying the collection slug (= `install_id`). Same wire key
- * the datasource install modal uses (`__install_id__`), so the shared web
- * install form drives collection creation with no new field. Stripped from the
- * persisted config. When omitted, the first collection defaults to the catalog
- * slug (`okf-upload`), matching the datasource single-instance default.
- */
-export const KNOWLEDGE_INSTALL_ID_FIELD = "__install_id__";
-
-/** Max collection-slug length — generous, bounded so a paste can't bloat the row key. */
-export const COLLECTION_SLUG_MAX = 128;
-
-/**
- * A collection slug becomes the `install_id` (row key), the `collection_id` on
- * every document, and the URL path segment of the ingest endpoint — so restrict
- * it to the same URL-safe id alphabet a connection id uses (letters, digits,
- * `.`, `-`, `_`), rejecting slashes/whitespace/delimiters.
- */
-const COLLECTION_SLUG_PATTERN = /^[A-Za-z0-9._-]+$/;
 
 /**
  * The multi-instance collection upsert (post-0092 shape). `install_id = $4` (the
@@ -145,35 +130,21 @@ export class OkfUploadFormInstallHandler implements FormBasedInstallHandler {
     }
     const catalogId = catalogRows[0].id;
 
-    // A slug taken by another knowledge catalog (bundle-sync) would merge
-    // document trees — reject before the upsert (#4211).
-    await assertCollectionSlugAvailable(workspaceId, collectionSlug, catalogId);
+    // Slug not taken by another knowledge catalog (#4211), and the workspace's
+    // plan tier has room for another collection (#4235) — both before the write.
+    await assertCollectionInstallable(workspaceId, collectionSlug, catalogId, this.log);
 
     const candidateId = this.newId();
     let persistedId: string;
     try {
-      const rows = await internalQuery<{ id: string }>(KNOWLEDGE_INSTALL_UPSERT_SQL, [
-        candidateId,
+      persistedId = await upsertKnowledgeCollectionRow({
         workspaceId,
-        catalogId,
         collectionSlug,
-        JSON.stringify(config),
-      ]);
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        // INSERT ... ON CONFLICT ... DO UPDATE RETURNING emits exactly one row on
-        // both paths; an empty result is a driver/RLS/query-rewrite anomaly.
-        // Returning candidateId would be WRONG on the conflict path (the row keeps
-        // its existing id). Fail loud.
-        this.log.error(
-          { workspaceId, candidateId, collectionSlug },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
-      persistedId = returned;
+        sql: KNOWLEDGE_INSTALL_UPSERT_SQL,
+        params: [candidateId, workspaceId, catalogId, collectionSlug, JSON.stringify(config)],
+        candidateId,
+        log: this.log,
+      });
     } catch (err) {
       this.log.error(
         { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
@@ -191,80 +162,4 @@ export class OkfUploadFormInstallHandler implements FormBasedInstallHandler {
       credentialWritten: false,
     };
   }
-}
-
-/**
- * Reject a collection slug already used by a DIFFERENT knowledge catalog in
- * this workspace (#4211 — the guard became necessary the moment a second
- * knowledge catalog row, `bundle-sync`, existed). `knowledge_documents` keys
- * on `(workspace_id, collection_id, path)` with NO catalog dimension, so two
- * catalogs sharing an `install_id` would silently merge their document trees
- * — and a bundle-sync's archive-absent pass would archive the other
- * collection's docs. Archived installs count too: their documents still live
- * under the slug and an explicit re-ingest may resurrect them (ADR-0028 §5).
- *
- * Shared by both knowledge form handlers ({@link OkfUploadFormInstallHandler}
- * and `BundleSyncFormInstallHandler`); each passes its own catalog id.
- */
-export async function assertCollectionSlugAvailable(
-  workspaceId: WorkspaceId,
-  collectionSlug: string,
-  ownCatalogId: string,
-): Promise<void> {
-  const rows = await internalQuery<{ catalog_id: string }>(
-    `SELECT catalog_id
-       FROM workspace_plugins
-      WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'knowledge'
-        AND catalog_id <> $3
-      LIMIT 1`,
-    [workspaceId, collectionSlug, ownCatalogId],
-  );
-  if (rows.length > 0) {
-    throw new FormInstallValidationError({
-      fieldErrors: {
-        [KNOWLEDGE_INSTALL_ID_FIELD]: [
-          `Collection id "${collectionSlug}" is already used by another Knowledge Base integration in this workspace.`,
-        ],
-      },
-      formErrors: [],
-    });
-  }
-}
-
-/**
- * Resolve the collection slug from the reserved form value, defaulting to
- * `defaultSlug` when omitted/blank. A supplied slug is trimmed and validated
- * against {@link COLLECTION_SLUG_PATTERN} — an invalid one is a field-level 400
- * (it becomes the row key, document `collection_id`, and URL segment), never
- * silently coerced.
- */
-export function resolveCollectionSlug(raw: unknown, defaultSlug: string): string {
-  if (raw === undefined || raw === null) return defaultSlug;
-  if (typeof raw !== "string") {
-    throw new FormInstallValidationError({
-      fieldErrors: { [KNOWLEDGE_INSTALL_ID_FIELD]: ["Collection id must be a string."] },
-      formErrors: [],
-    });
-  }
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return defaultSlug;
-  if (trimmed.length > COLLECTION_SLUG_MAX) {
-    throw new FormInstallValidationError({
-      fieldErrors: {
-        [KNOWLEDGE_INSTALL_ID_FIELD]: [`Collection id must be ${COLLECTION_SLUG_MAX} characters or fewer.`],
-      },
-      formErrors: [],
-    });
-  }
-  if (!COLLECTION_SLUG_PATTERN.test(trimmed)) {
-    throw new FormInstallValidationError({
-      fieldErrors: {
-        [KNOWLEDGE_INSTALL_ID_FIELD]: [
-          "Collection id may contain only letters, digits, dots, dashes, and underscores.",
-        ],
-      },
-      formErrors: [],
-    });
-  }
-  return trimmed;
 }

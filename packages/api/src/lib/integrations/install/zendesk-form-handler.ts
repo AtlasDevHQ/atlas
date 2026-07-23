@@ -63,11 +63,14 @@ import {
   FormInstallValidationError,
 } from "./persist-form-install";
 import {
-  assertCollectionSlugAvailable,
-  resolveCollectionSlug,
+  assertCollectionInstallable,
+  upsertKnowledgeCollectionRow,
+} from "./knowledge-collection-install";
+import {
   COLLECTION_SLUG_MAX,
   KNOWLEDGE_INSTALL_ID_FIELD,
-} from "./okf-upload-form-handler";
+  resolveCollectionSlug,
+} from "./knowledge-collection-slug";
 import type { FormBasedInstallHandler, InstallRecord } from "./types";
 
 // Re-exported for the register.ts boot wiring; both are single-homed in config.ts.
@@ -196,7 +199,7 @@ export class ZendeskFormInstallHandler implements FormBasedInstallHandler {
           formErrors: [],
         });
       }
-      await assertCollectionSlugAvailable(workspaceId, slug, catalogId);
+      await assertCollectionInstallable(workspaceId, slug, catalogId, this.log);
     }
 
     // ── Per-brand writes: credential first, then the collection row ──────────
@@ -259,23 +262,14 @@ export class ZendeskFormInstallHandler implements FormBasedInstallHandler {
 
     const candidateId = this.newId();
     try {
-      const rows = await internalQuery<{ id: string }>(ZENDESK_INSTALL_UPSERT_SQL, [
-        candidateId,
+      const returned = await upsertKnowledgeCollectionRow({
         workspaceId,
-        catalogId,
-        slug,
-        JSON.stringify(config),
-      ]);
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        this.log.error(
-          { workspaceId, candidateId, collectionSlug: slug },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
+        collectionSlug: slug,
+        sql: ZENDESK_INSTALL_UPSERT_SQL,
+        params: [candidateId, workspaceId, catalogId, slug, JSON.stringify(config)],
+        candidateId,
+        log: this.log,
+      });
       return { id: returned, workspaceId, catalogId: ZENDESK_SLUG };
     } catch (err) {
       // Roll back the just-written credential so a secret can't outlive a

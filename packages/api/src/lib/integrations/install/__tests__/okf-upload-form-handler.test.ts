@@ -34,8 +34,11 @@ void mock.module("@atlas/api/lib/logger", () => {
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
 });
 
-const { OkfUploadFormInstallHandler, resolveCollectionSlug, OKF_UPLOAD_SLUG } = await import(
+const { OkfUploadFormInstallHandler, OKF_UPLOAD_SLUG } = await import(
   "@atlas/api/lib/integrations/install/okf-upload-form-handler"
+);
+const { resolveCollectionSlug } = await import(
+  "@atlas/api/lib/integrations/install/knowledge-collection-slug"
 );
 const { FormInstallValidationError } = await import(
   "@atlas/api/lib/integrations/install/email-form-handler"

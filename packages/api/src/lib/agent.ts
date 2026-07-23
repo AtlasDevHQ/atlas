@@ -1451,8 +1451,9 @@ export async function runAgent({
       "atlas.connection_group_id": connectionGroupId ?? "",
     },
   });
-  // Make the agent span the active context so tool spans (withSpan in
-  // sql.ts, explore.ts) become children in the trace hierarchy.
+  // Make the agent span the active context so tool spans become children in
+  // the trace hierarchy — the per-tool `atlas.tool.*` seam spans (#4464) and,
+  // nested under those, the self-instrumented ones in sql.ts / explore.ts.
   const agentCtx = trace.setSpan(otelContext.active(), span);
 
   let spanEnded = false;
@@ -1716,8 +1717,13 @@ export async function runAgent({
     subagent: subagent ?? false,
   });
 
-  const rawTools = activeRegistry.getAll();
-  const hookedTools = wrapToolsWithHooks(rawTools, { userId: userId ?? undefined, conversationId });
+  // #4464 — already span-wrapped by the registry seam (`atlas.tool.<name>`),
+  // so the two wrappers below sit OUTSIDE that span: plugin hook dispatch is
+  // not counted in it, and a call rejected by a `beforeToolCall` hook never
+  // reaches `execute` and so emits no tool span at all. See
+  // docs/development/telemetry.md § Boundaries of the seam span.
+  const registryTools = activeRegistry.getAll();
+  const hookedTools = wrapToolsWithHooks(registryTools, { userId: userId ?? undefined, conversationId });
   const tools = wrapToolsWithDurableState(hookedTools, memoryStore);
 
   // #3755 — render the deterministic working-memory block from the slots loaded

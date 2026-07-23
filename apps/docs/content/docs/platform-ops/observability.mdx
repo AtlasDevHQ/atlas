@@ -36,16 +36,24 @@ Atlas creates spans at each layer of the request lifecycle, forming a proper par
 HTTP Request (http.request)
   └── Agent Loop (atlas.agent)
       ├── Step 1
-      │   ├── atlas.explore
-      │   └── atlas.explore
+      │   ├── atlas.tool.explore
+      │   │   └── atlas.explore
+      │   └── atlas.tool.searchKnowledge
       └── Step 2
-          └── atlas.sql.execute
+          └── atlas.tool.executeSQL
+              └── atlas.sql.execute
 ```
+
+Every agent tool Atlas executes server-side emits an `atlas.tool.<name>` span,
+so a turn has no un-segmented tool time. The tools that instrument themselves in more detail
+(`atlas.sql.execute`, `atlas.explore`, `atlas.python.execute`,
+`atlas.profile.table`) keep their own span, nested one level deeper.
 
 | Span Name | Attributes | Description |
 |-----------|------------|-------------|
 | `http.request` | `http.method`, `http.target`, `http.status_code` | Root span per API request (Hono middleware) |
 | `atlas.agent` | `atlas.provider`, `atlas.model`, `atlas.message_count`, `atlas.finish_reason`, `atlas.total_steps`, `atlas.total_input_tokens`, `atlas.total_output_tokens` | Full agent loop (one per `streamText` call) |
+| `atlas.tool.<name>` | `atlas.tool.name`, `atlas.tool.call_id`, `atlas.tool.error`, `atlas.tool.streaming` (streaming tools), `atlas.tool.aborted` (turn cancelled mid-call) | One per agent tool invocation, for **every** server-executed tool. `atlas.tool.error` is `true` when the tool returned an error envelope (`{ error }` or `success: false`) rather than throwing — a thrown error sets the span status to ERROR instead. Tool arguments and results are **not** recorded |
 | `atlas.sql.execute` | `db.system`, `atlas.connection_id`, `atlas.row_count`, `atlas.column_count` | SQL query execution. SQL content is **not** included for security |
 | `atlas.explore` | `atlas.command` (truncated), `atlas.backend` | Semantic layer file exploration (ls, cat, grep, find) |
 | `atlas.python.execute` | `code.length` | Python code execution in sandbox |
@@ -61,6 +69,8 @@ Each span records success/failure status and captures exceptions on error, makin
 
 <Callout title="Agent per-step spans">
 When OTel is active, the agent loop also enables the Vercel AI SDK's telemetry, so each `streamText` step emits `ai.streamText` / `ai.streamText.doStream` child spans **under** `atlas.agent`. These carry per-step structure — finish reason, token split, tool-call count — so a multi-step run no longer collapses into a single span. Prompt and completion **content is deliberately not recorded** on these spans (same stance as `atlas.sql.execute`, which omits SQL text); they carry structural metadata only.
+
+That telemetry also emits the SDK's own `ai.toolCall` span per tool call, so an `atlas.tool.<name>` span nests **inside** an `ai.toolCall` one — expect both. They are not redundant: `ai.toolCall` marks a call that *returned* an error envelope as a success, which is exactly what `atlas.tool.error` exists to count, and the seam span is the stable parent for the self-instrumented tool spans.
 </Callout>
 
 <Callout title="MCP span vs. counter leaf names">

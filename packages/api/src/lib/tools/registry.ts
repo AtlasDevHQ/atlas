@@ -19,6 +19,7 @@ import {
   isSalesforceOAuthConfigured,
 } from "@atlas/api/lib/integrations/salesforce-tool";
 import { searchKnowledge, SEARCH_KNOWLEDGE_DESCRIPTION } from "./search-knowledge";
+import { withToolSpans } from "./tool-spans";
 
 export type { AtlasAction, DashboardUrlResolver };
 export { isAction, WORKSPACE_DASHBOARD_URL_RESOLVER };
@@ -57,12 +58,27 @@ export class ToolRegistry {
     return this.tools.get(name);
   }
 
+  /**
+   * The executable tool set handed to the agent — every entry wrapped in an
+   * `atlas.tool.<name>` span (#4464). This is where tools leave the registry
+   * for the AI SDK, so instrumenting here (rather than per tool) means a newly
+   * registered tool is traced by construction. `get()` / `entries()`
+   * deliberately return the RAW entries: they feed metadata and `merge()`, and
+   * re-registering a wrapped tool would nest a redundant span.
+   *
+   * The wrappers are minted per call, so the returned tools are NOT
+   * identity-stable across calls — callers that only need names (`config.ts`)
+   * are unaffected; callers that compare tool identity should use `entries()`.
+   * The span's known boundaries (plugin hook dispatch sits outside it; a
+   * hook-rejected call emits none) are documented in
+   * `docs/development/telemetry.md`.
+   */
   getAll(): ToolSet {
     const result: ToolSet = {};
     for (const [name, entry] of this.tools) {
       result[name] = entry.tool;
     }
-    return result;
+    return withToolSpans(result);
   }
 
   /** Concatenate all tool descriptions. Output order follows registration order. */
@@ -97,7 +113,9 @@ export class ToolRegistry {
 
   /**
    * Create a new registry by merging one or more registries on top of a base.
-   * Entries in later registries take precedence. The returned registry is
+   * The BASE takes precedence: a name already present is not overwritten (see
+   * {@link shadowedNames}, which surfaces exactly those shadowed overlay
+   * entries). The returned registry is
    * **unfrozen** — the caller should freeze it when ready.
    */
   static merge(base: ToolRegistry, ...others: ToolRegistry[]): ToolRegistry {

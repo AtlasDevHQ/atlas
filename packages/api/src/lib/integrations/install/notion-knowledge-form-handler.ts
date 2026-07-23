@@ -46,6 +46,7 @@ import {
   assertCollectionInstallable,
   upsertKnowledgeCollectionRow,
 } from "./knowledge-collection-install";
+import { isPlanDenial } from "./retryable-install-error";
 import {
   KNOWLEDGE_INSTALL_ID_FIELD,
   resolveCollectionSlug,
@@ -179,7 +180,9 @@ export class NotionKnowledgeFormInstallHandler implements FormBasedInstallHandle
       // Confluence handler (confluence-form-handler.ts) — keep them in step.
       this.log.error(
         { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
-        "Failed to persist notion-knowledge collection install — rolling back the orphaned credential (retrying the install is safe)",
+        isPlanDenial(err)
+          ? "Failed to persist notion-knowledge collection install — rolling back the orphaned credential (the workspace is at a plan limit — retrying will not help)"
+          : "Failed to persist notion-knowledge collection install — rolling back the orphaned credential (retrying the install is safe)",
       );
       try {
         await deleteSyncCredential(workspaceId, collectionSlug);

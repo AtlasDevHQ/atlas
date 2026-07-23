@@ -281,6 +281,9 @@ describe("billing routes", () => {
       // #3438 — the chat-integration cap the install gate enforces must reach
       // the wire so the billing page can display it (Starter = 1).
       expect(body.limits.maxChatIntegrations).toBe(1);
+      // #4235 — same for the Knowledge Base collections cap (Starter = 1), so a
+      // customer can SEE the limit their next install will hit, not only a 403.
+      expect(body.limits.maxKnowledgeCollections).toBe(1);
       expect(body.usage.queryCount).toBe(500);
       // Per-seat pricing fields
       expect(body.seats).toEqual({ count: 3, max: 10 });

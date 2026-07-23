@@ -83,7 +83,7 @@ describe("POST /api/v1/admin/connections resource-limit arms (#3433)", () => {
       reason: "cap_reached",
       errorMessage: "Your starter plan allows up to 3 connections. Upgrade to add more.",
       limit: 3,
-    tier: "starter" as const,
+      tier: "starter" as const,
     }));
 
     const res = await app.fetch(createRequest());

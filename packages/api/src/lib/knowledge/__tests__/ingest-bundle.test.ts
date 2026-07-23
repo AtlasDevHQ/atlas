@@ -120,6 +120,34 @@ void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   getIngestMaxBundleBytes: () => MAX_BUNDLE_BYTES,
 }));
 
+// Explicit stand-in for the billing composition seam (#4235) — without it the
+// no-`caps` default path reaches the real `billing/knowledge-limits` →
+// `db/internal` stack and passes only because the shared internal-DB mock stubs
+// `getWorkspaceDetails → null` (the same implementation-detail coupling the
+// sync suites were fixed to remove). Platform-only shape stated on purpose.
+void mock.module("@atlas/api/lib/billing/knowledge-limits", () => ({
+  resolveIngestCaps: async (orgId: string | undefined) => ({
+    workspaceId: orgId ?? "",
+    tier: null,
+    maxDocs: { value: MAX_DOCS, boundBy: "platform" },
+    maxBundleBytes: { value: MAX_BUNDLE_BYTES, boundBy: "platform" },
+    maxDocBytes: MAX_DOC_BYTES,
+  }),
+  assertIngestCapsFor: (
+    caps: { workspaceId: string },
+    workspaceId: string,
+  ) => {
+    if (caps.workspaceId !== workspaceId) {
+      throw new Error("caps workspace mismatch");
+    }
+  },
+  assertNotTierBound: () => {},
+  capIsOperatorTunable: (boundBy: string) => boundBy === "platform",
+  minKnowledgeCap: (a: number, b: number) => (b === -1 ? a : Math.min(a, b)),
+  lowestTierAdmitting: () => null,
+  resolveKnowledgeTierLimits: async () => null,
+}));
+
 // The mirror-invalidation seam lazy-imports semantic/sync; only the
 // invalidation entrypoint is reachable from this module's graph.
 let invalidations: Array<{ orgId: string; scope: string }> = [];

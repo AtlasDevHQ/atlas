@@ -458,6 +458,23 @@ describe("POST /{collectionSlug}/ingest — guards", () => {
       );
     });
 
+    it("keeps the STREAMED-overflow path a plain 400 with a tier present — never a spurious 403", async () => {
+      // The streamed path (no content-length) hits `BodyCapExceededError`, whose
+      // `assertNotTierBound({exact:false})` guard must never name an upgrade
+      // target from a lower bound. Here the platform ceiling binds (tie → the
+      // operator side), so the assertion is that a resolved tier context does
+      // not turn the abort into a 403. The `exact:false` decline-to-name
+      // behaviour itself is unit-tested in knowledge-limits.test.ts.
+      MAX_BUNDLE_BYTES = 10;
+      WORKSPACE_TIER = "starter";
+      const res = await ingest("/runbooks/ingest", zipSync({ "a.md": strToU8("# A longer body") }));
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("bundle_too_large");
+      expect(body.message).toContain("upload aborted");
+      expect(lastHandlerError).toBeNull();
+    });
+
     it("stays a plain 400 when the PLATFORM ceiling bound — upgrading would change nothing", async () => {
       MAX_BUNDLE_BYTES = 10;
       WORKSPACE_TIER = "business";

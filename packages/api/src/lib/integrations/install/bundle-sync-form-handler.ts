@@ -53,6 +53,7 @@ import {
   assertCollectionInstallable,
   upsertKnowledgeCollectionRow,
 } from "./knowledge-collection-install";
+import { isPlanDenial } from "./retryable-install-error";
 import {
   KNOWLEDGE_INSTALL_ID_FIELD,
   resolveCollectionSlug,
@@ -235,7 +236,9 @@ export class BundleSyncFormInstallHandler implements FormBasedInstallHandler {
     } catch (err) {
       this.log.error(
         { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
-        "Failed to persist bundle-sync collection install — aborting install (the credential write, if any, is idempotent; retrying the install is safe)",
+        isPlanDenial(err)
+          ? "Failed to persist bundle-sync collection install — aborting install (the workspace is at a plan limit — retrying will not help)"
+          : "Failed to persist bundle-sync collection install — aborting install (the credential write, if any, is idempotent; retrying the install is safe)",
       );
       throw err;
     }

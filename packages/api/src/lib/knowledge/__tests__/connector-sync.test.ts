@@ -281,8 +281,10 @@ function maybeRateLimit(): void {
 // only because the shared internal-DB mock stubs `getWorkspaceDetails → null`.
 // Stating the shape on purpose also makes the TIER branch reachable.
 let CAP_TIER: string | null = null;
+let CAPS_THROW = false;
 void mock.module("@atlas/api/lib/billing/knowledge-limits", () => ({
   resolveIngestCaps: async (orgId: string | undefined) => {
+    if (CAPS_THROW) throw new Error("settings backend exploded");
     const boundBy = CAP_TIER === null ? "platform" : "tier";
     return {
       workspaceId: orgId ?? "",
@@ -378,6 +380,7 @@ const state = () => syncState.get(stateKey(ORG, COLLECTION));
 beforeEach(() => {
   MAX_DOCS = 100;
   CAP_TIER = null;
+  CAPS_THROW = false;
   store = new Map();
   syncState = new Map();
   nextId = 1;
@@ -400,6 +403,19 @@ beforeEach(() => {
 });
 
 // ── Reconciliation (the correctness anchor) ─────────────────────────────────
+
+describe("effective-cap resolution", () => {
+  it("returns an error state (never throws) when the caps lookup faults", async () => {
+    // `resolveIngestCaps` is the FIRST thing the engine does; a settings-backend
+    // fault must surface as the collection's error state, not crash the cycle.
+    CAPS_THROW = true;
+    const outcome = await runSync();
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toContain("Could not verify this workspace's Knowledge Base limits");
+    // No vendor fetch was even attempted.
+    expect(fetchCalls).toEqual([]);
+  });
+});
 
 describe("reconciliation crawls", () => {
   it("a collection with no sync state runs a FULL crawl: drafts seeded, mark + reconciled-at persisted", async () => {

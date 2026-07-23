@@ -117,6 +117,14 @@ export interface BillingLimits {
    * billing page can display the cap alongside seats / connections (#3438).
    */
   maxChatIntegrations: number | null;
+  /**
+   * Max Knowledge Base collections the workspace may hold (null = unlimited).
+   * Enforced server-side by `checkKnowledgeCollectionLimitAndInstall` via
+   * `PlanLimits.maxKnowledgeCollections` (#4235); surfaced here for the same
+   * reason as the sibling caps — a customer should be able to SEE the limit
+   * their next install will hit, not only discover it from a 403.
+   */
+  maxKnowledgeCollections: number | null;
 }
 
 /** Current-period usage counters. */
@@ -270,6 +278,7 @@ export const BillingLimitsSchema = z.object({
   maxSeats: z.number().nullable(),
   maxConnections: z.number().nullable(),
   maxChatIntegrations: z.number().nullable(),
+  maxKnowledgeCollections: z.number().nullable(),
 }) satisfies z.ZodType<BillingLimits>;
 
 export const BillingUsageSchema = z.object({

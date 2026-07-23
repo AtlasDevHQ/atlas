@@ -122,6 +122,17 @@ export interface ConnectorInstallContext {
   readonly collectionSlug: string;
   /** The install row's config (vendor endpoint/scope fields; never secrets). */
   readonly config: Record<string, unknown> | null;
+  /**
+   * The EFFECTIVE per-sync document cap for this workspace —
+   * `min(platform ceiling, plan tier)` (#4235) — which every vendor client
+   * MUST use to bound its fetch.
+   *
+   * Required, not optional, so a connector cannot silently fall back to the
+   * raw platform ceiling: on SaaS that ceiling is the Business tier's 5,000,
+   * so a Starter workspace (250) would pull 20× the documents it can ever
+   * ingest, burning the vendor's rate limit on every scheduled sync forever.
+   */
+  readonly maxDocs: number;
 }
 
 /**

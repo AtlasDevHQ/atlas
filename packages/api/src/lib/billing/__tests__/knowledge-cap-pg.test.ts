@@ -27,6 +27,8 @@ import {
 } from "@atlas/api/lib/db/internal";
 import {
   KNOWLEDGE_COLLECTION_COUNT_SQL,
+  KNOWLEDGE_COLLECTION_FANOUT_COUNT_SQL,
+  checkKnowledgeCollectionFanOutLimit,
   checkKnowledgeCollectionLimitAndInstall,
   invalidatePlanCache,
 } from "@atlas/api/lib/billing/enforcement";
@@ -142,6 +144,159 @@ describeIfPg("KNOWLEDGE_COLLECTION_COUNT_SQL (real Postgres)", () => {
   );
 });
 
+describeIfPg("KNOWLEDGE_COLLECTION_FANOUT_COUNT_SQL (real Postgres)", () => {
+  let pool: Pool;
+  const schemaName = `kb_cap_fanout_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    pool.on("connect", (client) => {
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        console.error(
+          `knowledge-cap-pg: SET search_path failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+    await seedCatalog(pool, "okf-upload", "knowledge", "context");
+    await seedCatalog(pool, "zendesk", "knowledge", "context");
+  }, PG_TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    if (!pool) return;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    await pool.end();
+  });
+
+  it(
+    "counts only collections OUTSIDE the batch, so a re-install of the same slugs is free",
+    async () => {
+      const ws = `ws-fanout-${Date.now()}`;
+      await seedInstall(pool, { id: `${ws}-1`, workspaceId: ws, catalog: "catalog:okf-upload", installId: "keep", pillar: "knowledge" });
+      await seedInstall(pool, { id: `${ws}-2`, workspaceId: ws, catalog: "catalog:zendesk", installId: "zd-a", pillar: "knowledge" });
+      await seedInstall(pool, { id: `${ws}-3`, workspaceId: ws, catalog: "catalog:zendesk", installId: "zd-b", pillar: "knowledge" });
+
+      // Re-installing the two Zendesk brands: only "keep" is outside the batch,
+      // and both batch members already exist (so the batch adds nothing).
+      const reinstall = await pool.query<{ others: number; this_count: number }>(
+        KNOWLEDGE_COLLECTION_FANOUT_COUNT_SQL,
+        [ws, ["zd-a", "zd-b"]],
+      );
+      expect(reinstall.rows[0]?.others).toBe(1);
+      expect(reinstall.rows[0]?.this_count).toBe(2);
+
+      // A net-new batch: all three existing collections are "others".
+      const netNew = await pool.query<{ others: number; this_count: number }>(
+        KNOWLEDGE_COLLECTION_FANOUT_COUNT_SQL,
+        [ws, ["new-a", "new-b"]],
+      );
+      expect(netNew.rows[0]?.others).toBe(3);
+      expect(netNew.rows[0]?.this_count).toBe(0);
+      expect(typeof netNew.rows[0]?.others).toBe("number");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+});
+
+describeIfPg("checkKnowledgeCollectionFanOutLimit (real Postgres)", () => {
+  let pool: Pool;
+  const schemaName = `kb_cap_fanout_gate_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    pool.on("connect", (client) => {
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        console.error(
+          `knowledge-cap-pg: SET search_path failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+    await pool.query(
+      `CREATE TABLE organization (
+         id text PRIMARY KEY, name text, slug text,
+         workspace_status text NOT NULL DEFAULT 'active',
+         plan_tier text NOT NULL DEFAULT 'free',
+         byot boolean NOT NULL DEFAULT false,
+         "stripeCustomerId" text, trial_ends_at timestamptz,
+         suspended_at timestamptz, suspension_source text,
+         plan_override_until timestamptz, deleted_at timestamptz,
+         region text, region_assigned_at timestamptz,
+         "createdAt" timestamptz NOT NULL DEFAULT now()
+       )`,
+    );
+    await seedCatalog(pool, "zendesk", "knowledge", "context");
+    process.env.DATABASE_URL = TEST_DB_URL;
+    _resetPool(pool as unknown as InternalPool, null);
+  }, PG_TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    _resetPool(null, null);
+    if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
+    if (!pool) return;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    await pool.end();
+  });
+
+  afterEach(async () => {
+    invalidatePlanCache();
+    await pool.query(`DELETE FROM workspace_plugins`);
+    await pool.query(`DELETE FROM organization`);
+  });
+
+  it(
+    "refuses a whole 3-brand fan-out that would breach a Pro workspace's cap of 3",
+    async () => {
+      const ws = "ws-fanout-pro";
+      await pool.query(`INSERT INTO organization (id, name, slug, plan_tier) VALUES ($1,$1,$1,'pro')`, [ws]);
+      await seedInstall(pool, { id: "row-a", workspaceId: ws, catalog: "catalog:zendesk", installId: "existing", pillar: "knowledge" });
+
+      // 1 existing + 3 net-new = 4 > cap 3. A per-slug precheck would pass all
+      // three (each sees `others = 1`) and strand a partial install.
+      const decision = await checkKnowledgeCollectionFanOutLimit(ws, ["b1", "b2", "b3"]);
+      expect(decision.allowed).toBe(false);
+      if (decision.allowed || decision.reason !== "cap_reached") {
+        throw new Error("expected a cap_reached denial");
+      }
+      expect(decision.tier).toBe("pro");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "admits a fan-out that exactly fills the cap",
+    async () => {
+      const ws = "ws-fanout-fits";
+      await pool.query(`INSERT INTO organization (id, name, slug, plan_tier) VALUES ($1,$1,$1,'pro')`, [ws]);
+      await seedInstall(pool, { id: "row-a", workspaceId: ws, catalog: "catalog:zendesk", installId: "existing", pillar: "knowledge" });
+      expect((await checkKnowledgeCollectionFanOutLimit(ws, ["b1", "b2"])).allowed).toBe(true);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "never blocks re-installing the SAME brands an over-cap workspace already owns",
+    async () => {
+      const ws = "ws-fanout-reinstall";
+      await pool.query(`INSERT INTO organization (id, name, slug, plan_tier) VALUES ($1,$1,$1,'starter')`, [ws]);
+      await seedInstall(pool, { id: "row-a", workspaceId: ws, catalog: "catalog:zendesk", installId: "b1", pillar: "knowledge" });
+      await seedInstall(pool, { id: "row-b", workspaceId: ws, catalog: "catalog:zendesk", installId: "b2", pillar: "knowledge" });
+      // Starter's cap is 1 and the workspace holds 2 (a downgrade), yet
+      // re-running the same install adds nothing and must still be admitted.
+      expect((await checkKnowledgeCollectionFanOutLimit(ws, ["b1", "b2"])).allowed).toBe(true);
+      // Adding a THIRD brand on top does grow the set, so it is refused.
+      expect(
+        (await checkKnowledgeCollectionFanOutLimit(ws, ["b1", "b2", "b3"])).allowed,
+      ).toBe(false);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+});
+
 describeIfPg("checkKnowledgeCollectionLimitAndInstall (real Postgres)", () => {
   let pool: Pool;
   const schemaName = `kb_cap_gate_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
@@ -241,8 +396,9 @@ describeIfPg("checkKnowledgeCollectionLimitAndInstall (real Postgres)", () => {
         collectionInsert("row-2", ws, "handbook"),
       );
       expect(second.allowed).toBe(false);
-      if (second.allowed) throw new Error("unreachable");
-      expect(second.reason).toBe("cap_reached");
+      if (second.allowed || second.reason !== "cap_reached") {
+        throw new Error("expected a cap_reached denial");
+      }
 
       // The refused INSERT must have rolled back — no orphan row.
       const rows = await pool.query(`SELECT install_id FROM workspace_plugins WHERE workspace_id = $1`, [ws]);
@@ -292,6 +448,58 @@ describeIfPg("checkKnowledgeCollectionLimitAndInstall (real Postgres)", () => {
         [ws],
       );
       expect(Number(count.rows[0]?.n)).toBe(3);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses the churn tier's FIRST collection — locked is a real zero, not unlimited",
+    async () => {
+      const ws = "ws-locked";
+      await seedOrg(ws, "locked"); // cap = 0
+      const r = await checkKnowledgeCollectionLimitAndInstall<{ id: string }>(
+        ws,
+        "docs",
+        collectionInsert("row-1", ws, "docs"),
+      );
+      expect(r.allowed).toBe(false);
+      if (r.allowed || r.reason !== "cap_reached") {
+        throw new Error("expected a cap_reached denial");
+      }
+      expect(r.limit).toBe(0);
+      expect(r.tier).toBe("locked");
+      const rows = await pool.query(
+        `SELECT 1 FROM workspace_plugins WHERE workspace_id = $1`,
+        [ws],
+      );
+      expect(rows.rowCount).toBe(0);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "caps a trial workspace exactly like starter (the highest-traffic SaaS tier)",
+    async () => {
+      const ws = "ws-trial";
+      await seedOrg(ws, "trial"); // cap = 1, mirroring starter
+      const first = await checkKnowledgeCollectionLimitAndInstall<{ id: string }>(
+        ws,
+        "docs",
+        collectionInsert("row-1", ws, "docs"),
+      );
+      expect(first.allowed).toBe(true);
+      const second = await checkKnowledgeCollectionLimitAndInstall<{ id: string }>(
+        ws,
+        "handbook",
+        collectionInsert("row-2", ws, "handbook"),
+      );
+      expect(second.allowed).toBe(false);
+      if (second.allowed || second.reason !== "cap_reached") {
+        throw new Error("expected a cap_reached denial");
+      }
+      // The denial carries the tier that set the cap, so the upgrade prompt
+      // never has to re-resolve (and can't name a stale plan).
+      expect(second.tier).toBe("trial");
     },
     PG_TEST_TIMEOUT_MS,
   );

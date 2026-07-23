@@ -48,13 +48,16 @@ import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getSettingLive } from "@atlas/api/lib/settings";
 import { getSeatCount, SeatCountUnavailableError } from "./seat-count";
 import { computeUsageDollarBudget, getPlanLimits, isUnlimited } from "./plans";
+// Single-homed in a leaf module so the two producers of the same KB 503 can't
+// drift; `knowledge-limits.ts` imports THIS file, so it can't own the constant.
+import { KNOWLEDGE_CAP_CHECK_FAILED_MSG } from "./knowledge-limits-message";
 import {
   effectiveTrialEndsAt,
   isTrialExpiredAt,
   isTrialTier,
   trialDaysRemaining,
 } from "./trial-state";
-import type { OverageStatus, PlanLimitStatus } from "@useatlas/types";
+import type { OverageStatus, PlanLimitStatus, PlanTier } from "@useatlas/types";
 
 const log = createLogger("billing:enforcement");
 
@@ -795,7 +798,7 @@ export async function getTrialDaysRemaining(
 }
 
 // ---------------------------------------------------------------------------
-// Resource limit enforcement (seats, connections, chat integrations)
+// Resource limit enforcement — every member of `CappedResource`
 // ---------------------------------------------------------------------------
 
 /**
@@ -806,17 +809,30 @@ export async function getTrialDaysRemaining(
  * (429) vs `billing_check_failed` (503) split in {@link checkPlanLimits}:
  *
  *  - `cap_reached` — the workspace is genuinely at/over its plan cap. The
- *    actionable response is "upgrade your plan" (429). Carries `limit`, the
- *    cap that was hit.
+ *    actionable response is "upgrade your plan" — 429 `plan_limit_exceeded`
+ *    for chat integrations, 403 `plan_upgrade_required` for knowledge
+ *    collections. Carries `limit` (the cap that was hit) and `tier` (the plan
+ *    that set it).
  *  - `check_failed` — we could NOT determine the count (DB error, missing
  *    row). Fail-closed: the request is blocked, but the actionable response
- *    is "try again" (503), NOT "upgrade your plan". Carries no `limit` —
- *    there is no meaningful cap to report.
+ *    is "try again" (503), NOT "upgrade your plan". Carries no `limit`/`tier`
+ *    — there is no meaningful cap to report.
+ *
+ * `tier` rides on the denial so a caller composing an upgrade prompt never has
+ * to re-resolve the workspace (#4235): a second `getCachedWorkspace` read can
+ * return a DIFFERENT tier (60s per-replica TTL) or fault outright, which would
+ * make the prompt name a plan that didn't set the cap it quotes.
  */
 export type ResourceLimitResult =
-  | { allowed: true }
-  | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
-  | { allowed: false; reason: "check_failed"; errorMessage: string };
+  | { readonly allowed: true }
+  | {
+      readonly allowed: false;
+      readonly reason: "cap_reached";
+      readonly errorMessage: string;
+      readonly limit: number;
+      readonly tier: PlanTier;
+    }
+  | { readonly allowed: false; readonly reason: "check_failed"; readonly errorMessage: string };
 
 /** Plan-capped resources. Each maps to a `PlanLimits` field. */
 export type CappedResource =
@@ -826,8 +842,8 @@ export type CappedResource =
   | "knowledge_collections";
 
 /**
- * Check whether adding one more resource (seat, connection, or chat
- * integration) would exceed the plan's limit for the given workspace.
+ * Check whether adding `pending` more of a {@link CappedResource} would exceed
+ * the plan's limit for the given workspace.
  *
  * `currentCount` is the count of that resource the workspace already has;
  * the check blocks when `currentCount >= cap`. Because the block fires
@@ -913,6 +929,7 @@ export async function checkResourceLimit(
       reason: "cap_reached",
       errorMessage: `Your ${tier} plan allows up to ${cap} ${resourceLabel}. Upgrade to add more.`,
       limit: cap,
+      tier,
     };
   }
 
@@ -934,8 +951,9 @@ const CHAT_CAP_CHECK_FAILED_MSG = "Unable to verify plan limits. Please try agai
  * `(int4, int4)` lock spaces fully disjoint, so this lock can never collide
  * with any single-arg user regardless of value (migrations
  * `hashtext('atlas_migrations')`, `rotate-encryption-key` `0x1f47`,
- * `backfill-plugin-config` `0x1f42`). The only peer in the two-arg space is
- * `lead-outbox` (`2870`), and `3001 ≠ 2870` keeps them disjoint there too.
+ * `backfill-plugin-config` `0x1f42`). Its peers in the two-arg space are
+ * `lead-outbox` (2870), `last-admin` (3158), `stripe-subscription` (3445),
+ * `demo-seed` (3683), and `knowledge-install` (4235) — all pairwise distinct.
  * Value is this issue's number.
  */
 const CHAT_INSTALL_LOCK_NAMESPACE = 3001;
@@ -967,18 +985,12 @@ export const CHAT_INTEGRATION_COUNT_SQL = `SELECT
    AND status <> 'archived'`;
 
 /**
- * Everything the shared read-only cap precheck ({@link capPrecheck}) needs for
- * ONE {@link CappedResource}. A subset of {@link CapGatedInstallSpec} — no lock
- * namespace, because the precheck deliberately takes no lock.
+ * What the shared read-only cap precheck ({@link capPrecheck}) needs. Derived
+ * from {@link CapGatedInstallSpec} rather than hand-copied, so a field added
+ * there can't silently fall out of the precheck: the precheck differs only in
+ * dropping `lockNamespace`, because it deliberately takes no lock.
  */
-interface CapPrecheckSpec {
-  readonly orgId: string | undefined;
-  readonly resource: CappedResource;
-  readonly countSql: string;
-  readonly selfKey: string;
-  readonly checkFailedMessage: string;
-  readonly label: string;
-}
+type CapPrecheckSpec = Omit<CapGatedInstallSpec, "lockNamespace">;
 
 /**
  * Read-only resource-cap precheck — the fail-fast gate that runs BEFORE the
@@ -996,9 +1008,11 @@ interface CapPrecheckSpec {
  * INSERT: it opens no transaction and takes no advisory lock. The atomic gate
  * remains the TOCTOU guard — a workspace can reach its cap between this
  * precheck and the write. This is a fail-fast precheck, not the correctness
- * boundary. (It also cannot see a *fan-out*: a handler planning N net-new
- * collections in one install runs this per key against the same pre-write
- * count, so only the atomic gate refuses the (cap+1)-th.)
+ * boundary. It is also single-key: a handler planning N net-new collections in
+ * one install must NOT loop this (every iteration would see the same pre-write
+ * count and pass, leaving the atomic gate to refuse the (cap+1)-th mid-fan-out
+ * and strand a partial install) — it calls
+ * {@link checkKnowledgeCollectionFanOutLimit} once with the whole batch instead.
  *
  * Mirrors the atomic gate's enforcement skips and reconnect carve-out exactly,
  * so the two never disagree on a workspace that isn't racing itself:
@@ -1012,8 +1026,9 @@ interface CapPrecheckSpec {
  *   - Otherwise compare the *other* installs to the plan cap via
  *     {@link checkResourceLimit}.
  *
- * Returns a {@link ResourceLimitResult}: `cap_reached` and `check_failed`
- * (→ 503 "try again") map to the same dispositions the atomic path surfaces, so
+ * Returns a {@link ResourceLimitResult}: `cap_reached` (→ 429 for chat, 403
+ * `plan_upgrade_required` for knowledge collections) and `check_failed` (→ 503
+ * "try again") map to the same dispositions the atomic path surfaces, so
  * callers translate one set of arms regardless of which gate fired.
  */
 async function capPrecheck(spec: CapPrecheckSpec): Promise<ResourceLimitResult> {
@@ -1109,9 +1124,12 @@ export function checkChatIntegrationLimit(
  * The `workspace_plugins` INSERT the gate runs inside its transaction. Raw
  * SQL + params (rather than a structured descriptor) because each caller owns
  * its own UPSERT shape; the gate stays agnostic and just executes it under the
- * lock. Both current callers (Slack and Discord) append `RETURNING id` so the
- * handler can read back the persisted row id (#3005). Callers are trusted
- * in-process code — this is internal-DB write SQL, not user analytics SQL.
+ * lock. Every caller — the two chat handlers (#3005) and the twelve knowledge
+ * collection handlers (#4235) — appends `RETURNING id` so the handler can read
+ * back the persisted row id; the knowledge seam
+ * (`upsertKnowledgeCollectionRow`) additionally REQUIRES it and rejects SQL
+ * without it up front. Callers are trusted in-process code — this is
+ * internal-DB write SQL, not user analytics SQL.
  */
 export interface WorkspacePluginInsert {
   readonly sql: string;
@@ -1119,24 +1137,28 @@ export interface WorkspacePluginInsert {
 }
 
 /**
- * Outcome of {@link checkChatIntegrationLimitAndInstall}. Mirrors the
- * {@link ResourceLimitResult} arms (so callers map `cap_reached` → 429 and
- * `check_failed` → 503 exactly as elsewhere), but the success arm carries the
- * INSERT's `RETURNING` rows — the Slack and Discord handlers read the upserted
- * row id from them (#3005).
+ * Outcome of {@link capGatedInstall}. Mirrors the {@link ResourceLimitResult}
+ * arms, so callers map `cap_reached` to their resource's upgrade disposition
+ * (chat → 429 `plan_limit_exceeded`; knowledge collections → 403
+ * `plan_upgrade_required`) and `check_failed` → 503 exactly as elsewhere. The
+ * success arm additionally carries the INSERT's `RETURNING` rows — the two
+ * chat handlers (#3005) and the twelve knowledge handlers (#4235) read the
+ * upserted row id from them.
  *
  * `rows` is the INSERT's `RETURNING` output and **may be empty even on
  * success** when the SQL omits a `RETURNING` clause. A caller that reads a
  * column must guard for absence (see the handlers' `rows[0]?.id` check).
  */
 export type CapGatedInstallResult<T extends Record<string, unknown> = Record<string, unknown>> =
-  | { allowed: true; readonly rows: readonly T[] }
-  | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
-  | { allowed: false; reason: "check_failed"; errorMessage: string };
-
-/** @deprecated Prefer the resource-agnostic {@link CapGatedInstallResult}. */
-export type ChatIntegrationInstallResult<T extends Record<string, unknown> = Record<string, unknown>> =
-  CapGatedInstallResult<T>;
+  | { readonly allowed: true; readonly rows: readonly T[] }
+  | {
+      readonly allowed: false;
+      readonly reason: "cap_reached";
+      readonly errorMessage: string;
+      readonly limit: number;
+      readonly tier: PlanTier;
+    }
+  | { readonly allowed: false; readonly reason: "check_failed"; readonly errorMessage: string };
 
 /**
  * Everything the shared atomic install gate ({@link capGatedInstall}) needs to
@@ -1380,9 +1402,7 @@ export function checkChatIntegrationLimitAndInstall<
 // Knowledge Base collections cap (#4235)
 // ---------------------------------------------------------------------------
 
-/** Message surfaced when the collection count can't be determined (→ 503). */
-const KNOWLEDGE_CAP_CHECK_FAILED_MSG =
-  "Unable to verify your plan's Knowledge Base limits. Please try again.";
+
 
 /**
  * Namespace for the per-workspace knowledge-collection install advisory lock —
@@ -1440,6 +1460,100 @@ export function checkKnowledgeCollectionLimit(
     label: "knowledge-collection",
   });
 }
+
+/**
+ * Batch variant of {@link checkKnowledgeCollectionLimit} for the **fan-out**
+ * handlers — Zendesk (one collection per brand), Front (per knowledge base),
+ * Freshdesk (per category), Help Scout (per site) — which create N collections
+ * from one install submit (#4235).
+ *
+ * Looping the single-key precheck would pass N times against the same pre-write
+ * count, so the atomic gate would refuse the (cap+1)-th *after* earlier brands
+ * had already written their rows and credentials — a partial install the admin
+ * then has to unpick. This compares the whole batch up front.
+ *
+ * The decision is on NET-NEW growth, not batch size:
+ *   - `others` = collections outside the batch; `this_count` = how many of the
+ *     batch already exist, so the workspace holds `others + this_count` today.
+ *   - `netNew = collectionSlugs.length - this_count`.
+ *   - `netNew <= 0` (a pure re-install / edit) is ALWAYS allowed, so a
+ *     workspace that dropped a tier can still re-run the install for what it
+ *     already owns — the same grandfathering the single-key path applies.
+ *   - Otherwise the post-install total is `others + this_count + netNew`, and
+ *     `checkResourceLimit` blocks at `>= cap`, so it is handed
+ *     `others + this_count + netNew - 1` ("one more would breach").
+ *
+ * Like every precheck this takes no lock; {@link checkKnowledgeCollectionLimitAndInstall}
+ * remains the correctness boundary for each individual row.
+ */
+export async function checkKnowledgeCollectionFanOutLimit(
+  orgId: string | undefined,
+  collectionSlugs: readonly string[],
+): Promise<ResourceLimitResult> {
+  if (!orgId || !hasInternalDB() || collectionSlugs.length === 0) {
+    return { allowed: true };
+  }
+
+  let counts: { others: number; this_count: number } | undefined;
+  try {
+    const rows = await internalQuery<{ others: number; this_count: number }>(
+      KNOWLEDGE_COLLECTION_FANOUT_COUNT_SQL,
+      [orgId, [...collectionSlugs]],
+    );
+    counts = rows[0];
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId, planned: collectionSlugs.length },
+      "Failed to count knowledge collections for the fan-out cap precheck — blocking as precaution",
+    );
+    return {
+      allowed: false,
+      reason: "check_failed",
+      errorMessage: KNOWLEDGE_CAP_CHECK_FAILED_MSG,
+    };
+  }
+  // The aggregate always returns exactly one row; an empty result means the
+  // driver/query contract was violated. Fail closed rather than coerce the
+  // absent count to 0 — that would silently breach the cap.
+  if (!counts) {
+    log.error(
+      { orgId, planned: collectionSlugs.length },
+      "Fan-out knowledge-collection count query returned no row — blocking as precaution",
+    );
+    return {
+      allowed: false,
+      reason: "check_failed",
+      errorMessage: KNOWLEDGE_CAP_CHECK_FAILED_MSG,
+    };
+  }
+
+  // A pure re-install adds nothing, so it is never measured against the cap.
+  const netNew = collectionSlugs.length - counts.this_count;
+  if (netNew <= 0) return { allowed: true };
+
+  const existingTotal = counts.others + counts.this_count;
+  return checkResourceLimit(
+    orgId,
+    "knowledge_collections",
+    existingTotal + netNew - 1,
+  );
+}
+
+/**
+ * Partitions the workspace's knowledge collections against the batch being
+ * installed: `others` are outside it, `this_count` are members of it that
+ * already exist (the re-install carve-out). Exported so the real-Postgres test
+ * executes this exact aggregate — an inverted `<> ALL` / `= ANY` would pass
+ * every mock test while either refusing a plain re-install or ignoring the
+ * workspace's existing collections entirely.
+ */
+export const KNOWLEDGE_COLLECTION_FANOUT_COUNT_SQL = `SELECT
+   COUNT(*) FILTER (WHERE install_id <> ALL($2::text[]))::int AS others,
+   COUNT(*) FILTER (WHERE install_id = ANY($2::text[]))::int  AS this_count
+ FROM workspace_plugins
+ WHERE workspace_id = $1
+   AND pillar = 'knowledge'
+   AND status <> 'archived'`;
 
 /**
  * Atomically enforce the per-tier Knowledge Base **collections** cap

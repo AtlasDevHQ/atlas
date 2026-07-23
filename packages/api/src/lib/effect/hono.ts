@@ -376,8 +376,9 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
         message: error.message,
         body: { limit: error.limit },
       };
-    // #2953 — the chat-integration count could not be determined (DB error
-    // / missing row), so the cap check failed closed. This is a transient
+    // A plan-cap count could not be determined (DB error / missing row), so
+    // the check failed closed — chat integrations (#2953) or Knowledge Base
+    // collections / tier resolution (#4235). This is a transient
     // infra fault, NOT a plan-cap hit: 503 + `billing_check_failed` (same
     // code the token-budget check surfaces) so the user sees "try again",
     // not a misleading "upgrade your plan".

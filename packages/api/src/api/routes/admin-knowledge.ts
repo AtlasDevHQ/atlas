@@ -617,8 +617,9 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
     const { value: maxBundleBytes, boundBy: bundleBoundBy } = caps.maxBundleBytes;
     const declaredLength = Number(c.req.header("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > maxBundleBytes) {
-      await assertNotTierBound({
+      assertNotTierBound({
         orgId,
+        tier: caps.tier,
         field: "maxKnowledgeBundleBytes",
         boundBy: bundleBoundBy,
         required: declaredLength,
@@ -639,14 +640,18 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       bytes = await readBodyWithCap(c.req.raw.body, maxBundleBytes, { requestId });
     } catch (err) {
       if (err instanceof BodyCapExceededError) {
-        // The body was streamed and aborted at the cap, so the true size is
-        // unknown — `maxBundleBytes + 1` is the smallest value that provably
-        // breached it, which is exactly what naming an upgrade target needs.
-        await assertNotTierBound({
+        // The body was streamed and aborted AT the cap, so its true size is
+        // unknown — only that it exceeded `maxBundleBytes`. `exact: false`
+        // says so: a lower bound proves this tier was breached but not that
+        // any higher one admits the real body, so no upgrade target is named
+        // and the plain over-limit 400 below stands.
+        assertNotTierBound({
           orgId,
+          tier: caps.tier,
           field: "maxKnowledgeBundleBytes",
           boundBy: bundleBoundBy,
           required: maxBundleBytes + 1,
+          exact: false,
           limit: maxBundleBytes,
           noun: "bytes per bundle",
         });
@@ -693,8 +698,9 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
             400,
           );
         case "bundle_too_large":
-          await assertNotTierBound({
+          assertNotTierBound({
             orgId,
+            tier: caps.tier,
             field: "maxKnowledgeBundleBytes",
             boundBy: outcome.boundBy,
             required: outcome.bytes,
@@ -712,8 +718,9 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
         case "invalid_bundle":
           return c.json({ error: "invalid_bundle", message: outcome.message, requestId }, 400);
         case "too_many_documents":
-          await assertNotTierBound({
+          assertNotTierBound({
             orgId,
+            tier: caps.tier,
             field: "maxKnowledgeDocsPerBundle",
             boundBy: outcome.boundBy,
             required: outcome.count,

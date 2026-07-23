@@ -30,7 +30,7 @@ const VALID_CONFIG = {
 };
 
 function ctx(config: Record<string, unknown> | null) {
-  return { workspaceId: "org-1", collectionSlug: "confluence-eng", config };
+  return { workspaceId: "org-1", collectionSlug: "confluence-eng", config, maxDocs: 1000 };
 }
 
 afterEach(() => {

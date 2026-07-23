@@ -29,6 +29,7 @@ const {
   DEFAULT_INGEST_MAX_DOC_BYTES,
   DEFAULT_INGEST_MAX_BUNDLE_BYTES,
 } = await import("@atlas/api/lib/knowledge/ingest-limits");
+const { getPlanLimits } = await import("@atlas/api/lib/billing/plans");
 
 beforeEach(() => {
   SETTINGS = {};
@@ -109,6 +110,18 @@ describe("cap readers thread the registry key → default", () => {
       DEPLOY_MODE = "saas";
       SETTINGS.ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES = "7";
       expect(getIngestMaxBundleBytes()).toBe(7);
+    });
+
+    it("never sits BELOW the Business tier it is meant to make reachable", () => {
+      // The invariant `SAAS_CEILING >= PlanLimits.business` is stated in a
+      // comment and asserted against literals in two SEPARATE files — raising
+      // Business in plans.ts and updating only its own test would leave the
+      // ceiling behind and silently downgrade what that tier was sold. Compare
+      // the two sides directly so that edit is a red test.
+      DEPLOY_MODE = "saas";
+      const business = getPlanLimits("business");
+      expect(getIngestMaxDocs()).toBeGreaterThanOrEqual(business.maxKnowledgeDocsPerBundle);
+      expect(getIngestMaxBundleBytes()).toBeGreaterThanOrEqual(business.maxKnowledgeBundleBytes);
     });
   });
 });

@@ -189,8 +189,8 @@ export class BundleSyncFormInstallHandler implements FormBasedInstallHandler {
     }
     const catalogId = catalogRows[0].id;
 
-    // A slug taken by another knowledge catalog (okf-upload) would merge
-    // document trees — reject before any write (#4211).
+    // Slug not taken by another knowledge catalog (#4211), and the workspace's
+    // plan tier has room for another collection (#4235) — both before the write.
     await assertCollectionInstallable(workspaceId, collectionSlug, catalogId, this.log);
 
     // ── Credential first (mirrors the Twenty handler's write order) ────────

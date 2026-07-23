@@ -188,6 +188,8 @@ describe("typed failure outcomes (no writes)", () => {
     // The route turns `boundBy: "tier"` into a 403 upgrade envelope instead of
     // a flat 400, so the seam must not flatten it.
     const tierCaps = {
+      workspaceId: WS,
+      tier: "starter" as const,
       maxDocs: { value: 1, boundBy: "tier" as const },
       maxBundleBytes: { value: 10, boundBy: "tier" as const },
       maxDocBytes: MAX_DOC_BYTES,
@@ -208,6 +210,8 @@ describe("typed failure outcomes (no writes)", () => {
     const bytes = zipSync({ "a.md": strToU8("# A longer body") });
     const outcome = await run(bytes, {
       caps: {
+        workspaceId: WS,
+        tier: null,
         maxDocs: { value: 1000, boundBy: "platform" as const },
         maxBundleBytes: { value: 5, boundBy: "platform" as const },
         maxDocBytes: MAX_DOC_BYTES,

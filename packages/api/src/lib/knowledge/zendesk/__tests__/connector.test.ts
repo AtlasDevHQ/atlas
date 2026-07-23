@@ -33,7 +33,7 @@ const VALID_CONFIG = {
 };
 
 function ctx(config: Record<string, unknown> | null) {
-  return { workspaceId: "org-1", collectionSlug: "zendesk-acme", config };
+  return { workspaceId: "org-1", collectionSlug: "zendesk-acme", config, maxDocs: 1000 };
 }
 
 afterEach(() => {

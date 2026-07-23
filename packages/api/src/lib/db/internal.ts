@@ -3211,8 +3211,9 @@ export async function setWorkspaceRegion(
  * keeps the single-arg `pg_advisory_lock(bigint)` and two-arg `(int4, int4)`
  * lock spaces fully disjoint, so this can never collide with any single-arg
  * user. The two-arg peers are the chat-install gate (`3001`), `lead-outbox`
- * (`2870`), and the Stripe webhook lock (`3445`); all four namespaces are
- * pairwise distinct. Value is this guard's issue number (#3158).
+ * (`2870`), the Stripe webhook lock (`3445`), the demo seed (`3683`), and the
+ * knowledge-collection install gate (`4235`); all six namespaces are pairwise
+ * distinct. Value is this guard's issue number (#3158).
  */
 const LAST_ADMIN_LOCK_NAMESPACE = 3158;
 

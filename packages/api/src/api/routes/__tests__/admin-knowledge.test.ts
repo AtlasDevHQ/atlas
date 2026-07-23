@@ -275,10 +275,32 @@ void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
 // from this file's graph via `billing/knowledge-limits`; the two collection-cap
 // entries come in through `okf-upload-form-handler`.
 let WORKSPACE_TIER: string | null = null;
+let WORKSPACE_LOOKUP_THROWS = false;
+// Mock every value export — a partial `mock.module()` breaks other importers
+// of the module (CLAUDE.md "mock all exports").
 void mock.module("@atlas/api/lib/billing/enforcement", () => ({
-  getCachedWorkspace: async () => (WORKSPACE_TIER === null ? null : { plan_tier: WORKSPACE_TIER }),
-  checkKnowledgeCollectionLimit: async () => ({ allowed: true }),
-  checkKnowledgeCollectionLimitAndInstall: async () => ({ allowed: true, rows: [] }),
+  checkChatIntegrationLimitAndInstall: () => Promise.resolve({ allowed: true, rows: [] }),
+  checkChatIntegrationLimit: () => Promise.resolve({ allowed: true }),
+  checkKnowledgeCollectionLimitAndInstall: () => Promise.resolve({ allowed: true, rows: [] }),
+  checkKnowledgeCollectionLimit: () => Promise.resolve({ allowed: true }),
+  checkKnowledgeCollectionFanOutLimit: () => Promise.resolve({ allowed: true }),
+  checkResourceLimit: () => Promise.resolve({ allowed: true }),
+  checkPlanLimits: () => Promise.resolve({ allowed: true }),
+  invalidatePlanCache: () => {},
+  buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 0, usagePercent: 0, status: "ok" }),
+  severityOf: () => 0,
+  resolveAbuseCeilingPercent: () => Promise.resolve(null),
+  resolveSpendPolicy: () => Promise.resolve("continue"),
+  resolveUsageCeiling: () => Promise.resolve({ spendPolicy: "continue", ceilingPercent: null }),
+  computeOverageDollars: () => 0,
+  getTrialDaysRemaining: () => Promise.resolve(null),
+  CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
+  KNOWLEDGE_COLLECTION_COUNT_SQL: "SELECT 1",
+  KNOWLEDGE_COLLECTION_FANOUT_COUNT_SQL: "SELECT 1",
+  getCachedWorkspace: async () => {
+    if (WORKSPACE_LOOKUP_THROWS) throw new Error("workspace lookup exploded");
+    return WORKSPACE_TIER === null ? null : { plan_tier: WORKSPACE_TIER };
+  },
 }));
 
 void mock.module("../admin-router", () => ({
@@ -290,7 +312,9 @@ void mock.module("../admin-router", () => ({
 }));
 
 const { adminKnowledge } = await import("../admin-knowledge");
-const { FeatureEntitlementError } = await import("@atlas/api/lib/effect/errors");
+const { BillingCheckFailedError, FeatureEntitlementError } = await import(
+  "@atlas/api/lib/effect/errors"
+);
 
 function ingest(path: string, body: Uint8Array) {
   return adminKnowledge.request(path, {
@@ -302,6 +326,7 @@ function ingest(path: string, body: Uint8Array) {
 
 beforeEach(() => {
   WORKSPACE_TIER = null;
+  WORKSPACE_LOOKUP_THROWS = false;
   lastHandlerError = null;
   TX_INSTALL_STATUS = "published";
   MAX_DOCS = 100;
@@ -440,6 +465,16 @@ describe("POST /{collectionSlug}/ingest — guards", () => {
       expect(res.status).toBe(400);
       expect(((await res.json()) as { error: string }).error).toBe("bundle_too_large");
       expect(lastHandlerError).toBeNull();
+    });
+
+    it("fails CLOSED with a 503-class error when the workspace lookup faults", async () => {
+      // `resolveIngestCaps` is now the FIRST thing the ingest handler does, so
+      // a transient internal-DB fault must refuse the upload rather than run it
+      // against a cap we could not verify.
+      WORKSPACE_LOOKUP_THROWS = true;
+      await ingest("/runbooks/ingest", zipSync({ "a.md": strToU8("# A") }));
+      expect(lastHandlerError).toBeInstanceOf(BillingCheckFailedError);
+      expect(store.size).toBe(0);
     });
 
     it("leaves a self-hosted (free-tier) workspace on the platform caps alone", async () => {

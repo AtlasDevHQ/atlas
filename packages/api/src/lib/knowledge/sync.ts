@@ -65,6 +65,7 @@ import type { IngestReport } from "./ingest";
 import { ingestBundle } from "./ingest-bundle";
 import { positiveIntSetting } from "./ingest-limits";
 import {
+  capIsOperatorTunable,
   resolveIngestCaps,
   type CapBoundBy,
   type EffectiveIngestCaps,
@@ -84,13 +85,14 @@ import {
 const log = createLogger("knowledge.sync");
 
 /**
- * Name the side that actually refused, so a sync-state error line points a
- * workspace admin at the right lever (#4235): their plan, or the operator's
- * fleet-wide setting. A sync surfaces a status row, not an HTTP response, so
- * there is no upgrade envelope here — only honest wording.
+ * Name the lever a sync-state error line should point at (#4235). A sync
+ * surfaces a status row, not an HTTP response, so there is no upgrade envelope
+ * here — only honest wording. `capIsOperatorTunable` is the shared rule: the
+ * plain "limit" wording is reserved for the operator-tunable case, because on
+ * SaaS even a platform-bound refusal is a plan ceiling to the reader.
  */
 function capOwner(boundBy: CapBoundBy): string {
-  return boundBy === "tier" ? "limit on your plan" : "limit";
+  return capIsOperatorTunable(boundBy) ? "limit" : "limit on your plan";
 }
 
 export const DEFAULT_SYNC_FETCH_TIMEOUT_SECONDS = 60;

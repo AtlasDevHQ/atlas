@@ -18,6 +18,11 @@ void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   getIngestMaxBundleBytes: () => PLATFORM.bundleBytes,
 }));
 
+let DEPLOY_MODE: "saas" | "self-hosted" = "self-hosted";
+void mock.module("@atlas/api/lib/effect/deploy-mode", () => ({
+  resolveDeployMode: () => DEPLOY_MODE,
+}));
+
 let HAS_INTERNAL_DB = true;
 let WORKSPACE: { plan_tier: PlanTier } | null = { plan_tier: "starter" };
 let WORKSPACE_THROWS: Error | null = null;
@@ -26,7 +31,28 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery: mock(async () => []) }),
   hasInternalDB: () => HAS_INTERNAL_DB,
 }));
+// Mock every value export — a partial `mock.module()` breaks other importers
+// of the module (CLAUDE.md "mock all exports"). Only `getCachedWorkspace` is
+// exercised; the rest are inert.
 void mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  checkChatIntegrationLimitAndInstall: () => Promise.resolve({ allowed: true, rows: [] }),
+  checkChatIntegrationLimit: () => Promise.resolve({ allowed: true }),
+  checkKnowledgeCollectionLimitAndInstall: () => Promise.resolve({ allowed: true, rows: [] }),
+  checkKnowledgeCollectionLimit: () => Promise.resolve({ allowed: true }),
+  checkKnowledgeCollectionFanOutLimit: () => Promise.resolve({ allowed: true }),
+  checkResourceLimit: () => Promise.resolve({ allowed: true }),
+  checkPlanLimits: () => Promise.resolve({ allowed: true }),
+  invalidatePlanCache: () => {},
+  buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 0, usagePercent: 0, status: "ok" }),
+  severityOf: () => 0,
+  resolveAbuseCeilingPercent: () => Promise.resolve(null),
+  resolveSpendPolicy: () => Promise.resolve("continue"),
+  resolveUsageCeiling: () => Promise.resolve({ spendPolicy: "continue", ceilingPercent: null }),
+  computeOverageDollars: () => 0,
+  getTrialDaysRemaining: () => Promise.resolve(null),
+  CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
+  KNOWLEDGE_COLLECTION_COUNT_SQL: "SELECT 1",
+  KNOWLEDGE_COLLECTION_FANOUT_COUNT_SQL: "SELECT 1",
   getCachedWorkspace: async () => {
     if (WORKSPACE_THROWS) throw WORKSPACE_THROWS;
     return WORKSPACE;
@@ -39,7 +65,9 @@ void mock.module("@atlas/api/lib/logger", () => {
 });
 
 const {
+  assertIngestCapsFor,
   assertNotTierBound,
+  capIsOperatorTunable,
   lowestTierAdmitting,
   minKnowledgeCap,
   resolveIngestCaps,
@@ -54,6 +82,7 @@ const ORG = "org-1";
 beforeEach(() => {
   PLATFORM = { docs: 1000, docBytes: 1_000_000, bundleBytes: 25_000_000 };
   HAS_INTERNAL_DB = true;
+  DEPLOY_MODE = "self-hosted";
   WORKSPACE = { plan_tier: "starter" };
   WORKSPACE_THROWS = null;
 });
@@ -94,6 +123,18 @@ describe("lowestTierAdmitting", () => {
   it("treats an unlimited tier limit as admitting anything", () => {
     expect(lowestTierAdmitting("maxKnowledgeCollections", 9_999, "pro")).toBe("business");
   });
+
+  it("offers the churn tier a real recovery target", () => {
+    // `locked` ranks below every paid plan (PLAN_RANK -1), so the cheapest
+    // resubscribe target must be named — a null here would leave a churned
+    // customer with a 403 and no way forward.
+    expect(lowestTierAdmitting("maxKnowledgeCollections", 1, "locked")).toBe("starter");
+    expect(lowestTierAdmitting("maxKnowledgeDocsPerBundle", 100, "locked")).toBe("starter");
+  });
+
+  it("offers a trial workspace the starter tier", () => {
+    expect(lowestTierAdmitting("maxKnowledgeDocsPerBundle", 200, "trial")).toBe("starter");
+  });
 });
 
 describe("resolveKnowledgeTierLimits", () => {
@@ -109,9 +150,22 @@ describe("resolveKnowledgeTierLimits", () => {
     expect(await resolveKnowledgeTierLimits(ORG)).toBeNull();
   });
 
-  it("returns null on the free tier — self-hosted keeps the platform knob as its only cap", async () => {
+  it("returns null on the free tier OFF SaaS — the platform knob is the only cap there", async () => {
+    DEPLOY_MODE = "self-hosted";
     WORKSPACE = { plan_tier: "free" };
     expect(await resolveKnowledgeTierLimits(ORG)).toBeNull();
+  });
+
+  it("fails CLOSED to starter on a SaaS `free` workspace — there is no SaaS free tier", async () => {
+    // `organization.plan_tier` DEFAULTS to 'free', so a `free` row on SaaS
+    // means trial provisioning never landed. Treating that as "no plan to
+    // enforce" would hand a provisioning failure the raised SaaS ceiling
+    // (100 MB / 5,000 docs) — strictly more than any paying tier gets.
+    DEPLOY_MODE = "saas";
+    WORKSPACE = { plan_tier: "free" };
+    const ctx = await resolveKnowledgeTierLimits(ORG);
+    expect(ctx?.tier).toBe("starter");
+    expect(ctx?.limits.maxKnowledgeBundleBytes).toBe(10_000_000);
   });
 
   it("fails CLOSED on a workspace-lookup fault", async () => {
@@ -131,9 +185,22 @@ describe("resolveIngestCaps", () => {
   it("hands back the platform ceilings verbatim when no tier applies (self-hosted)", async () => {
     WORKSPACE = { plan_tier: "free" };
     const caps = await resolveIngestCaps(ORG);
+    expect(caps.tier).toBeNull();
     expect(caps.maxDocs).toEqual({ value: 1000, boundBy: "platform" });
     expect(caps.maxBundleBytes).toEqual({ value: 25_000_000, boundBy: "platform" });
     expect(caps.maxDocBytes).toBe(1_000_000);
+  });
+
+  it("stamps the workspace it resolved FOR, so a seam can refuse another tenant's caps", async () => {
+    const caps = await resolveIngestCaps(ORG);
+    expect(caps.workspaceId).toBe(ORG);
+    expect(() => assertIngestCapsFor(caps, ORG)).not.toThrow();
+    expect(() => assertIngestCapsFor(caps, "org-2")).toThrow(/another tenant's plan limits/);
+  });
+
+  it("carries the resolved tier so the upgrade prompt never re-looks it up", async () => {
+    WORKSPACE = { plan_tier: "pro" };
+    expect((await resolveIngestCaps(ORG)).tier).toBe("pro");
   });
 
   it("clamps to the tier when the tier is lower, and says so", async () => {
@@ -184,14 +251,20 @@ describe("assertNotTierBound", () => {
     noun: "documents in one bundle",
   } as const;
 
-  it("is a no-op when the PLATFORM ceiling bound", async () => {
+  it("is a no-op when the PLATFORM ceiling bound", () => {
     // Upgrading changes nothing — the operator's guardrail refused.
-    await expect(assertNotTierBound({ ...base, boundBy: "platform" })).resolves.toBeUndefined();
+    expect(() => assertNotTierBound({ ...base, tier: "starter", boundBy: "platform" })).not.toThrow();
   });
 
-  it("throws the 403 upgrade envelope when the TIER bound", async () => {
-    WORKSPACE = { plan_tier: "starter" };
-    const err = await assertNotTierBound({ ...base, boundBy: "tier" }).catch((e: unknown) => e);
+  it("throws the 403 upgrade envelope when the TIER bound", () => {
+    const err = (() => {
+      try {
+        assertNotTierBound({ ...base, tier: "starter", boundBy: "tier" });
+        return null;
+      } catch (e) {
+        return e;
+      }
+    })();
     expect(err).toBeInstanceOf(FeatureEntitlementError);
     const typed = err as InstanceType<typeof FeatureEntitlementError>;
     expect(typed.currentPlan).toBe("starter");
@@ -200,17 +273,45 @@ describe("assertNotTierBound", () => {
     expect(typed.message).toContain("250 documents in one bundle");
   });
 
-  it("stays silent when no higher tier admits the value", async () => {
-    WORKSPACE = { plan_tier: "business" };
-    await expect(
-      assertNotTierBound({ ...base, boundBy: "tier", required: 99_999, limit: 5_000 }),
-    ).resolves.toBeUndefined();
+  it("stays silent when no higher tier admits the value", () => {
+    expect(() =>
+      assertNotTierBound({ ...base, tier: "business", boundBy: "tier", required: 99_999, limit: 5_000 }),
+    ).not.toThrow();
   });
 
-  it("degrades to the plain over-limit response when the tier lookup faults", async () => {
-    // The cap decision was already made upstream; this call only phrases it, so
-    // a lookup fault must not convert a correct refusal into a 503.
+  it("stays silent for a LOWER-BOUND `required` — no upgrade target is provable", () => {
+    // The streamed-body path aborts AT the cap, so the true size is unknown.
+    // Naming the next tier up would be a guess that a 500 MB body disproves.
+    expect(() =>
+      assertNotTierBound({ ...base, tier: "starter", boundBy: "tier", exact: false }),
+    ).not.toThrow();
+  });
+
+  it("stays silent when no tier context produced the cap", () => {
+    expect(() => assertNotTierBound({ ...base, tier: null, boundBy: "tier" })).not.toThrow();
+  });
+
+  it("never reads the workspace — it cannot fault, and cannot name a stale plan", () => {
+    // The tier arrives with the cap; a second lookup could 503 or name a
+    // different plan than the one whose limit is being quoted.
     WORKSPACE_THROWS = new Error("db down");
-    await expect(assertNotTierBound({ ...base, boundBy: "tier" })).resolves.toBeUndefined();
+    expect(() => assertNotTierBound({ ...base, tier: "starter", boundBy: "platform" })).not.toThrow();
+  });
+});
+
+describe("capIsOperatorTunable", () => {
+  it("is true only for a platform-bound cap OFF SaaS", () => {
+    DEPLOY_MODE = "self-hosted";
+    expect(capIsOperatorTunable("platform")).toBe(true);
+    expect(capIsOperatorTunable("tier")).toBe(false);
+  });
+
+  it("is false on SaaS even for a platform-bound cap", () => {
+    // A hosted workspace admin cannot reach the settings registry, and the
+    // SaaS ceiling IS the Business tier — so naming `ATLAS_KNOWLEDGE_INGEST_*`
+    // sends them after a knob they can never turn.
+    DEPLOY_MODE = "saas";
+    expect(capIsOperatorTunable("platform")).toBe(false);
+    expect(capIsOperatorTunable("tier")).toBe(false);
   });
 });

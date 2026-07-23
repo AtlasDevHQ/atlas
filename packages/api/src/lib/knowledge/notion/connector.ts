@@ -45,7 +45,13 @@ async function createNotionClient(ctx: ConnectorInstallContext): Promise<Connect
       "This Notion collection has no integration token stored — re-install it with a valid internal-integration token (Admin → Integrations → Notion).",
     );
   }
-  return new NotionVendorClient({ http: new NotionHttpClient({ token }) });
+  // Bound the vendor fetch by the EFFECTIVE per-sync cap, not the raw platform
+  // ceiling — otherwise a lower-tier workspace pulls documents it can never
+  // ingest, every sync (#4235).
+  return new NotionVendorClient({
+    http: new NotionHttpClient({ token }),
+    maxDocs: ctx.maxDocs,
+  });
 }
 
 /** The registered connector for the built-in Notion knowledge catalog row. */

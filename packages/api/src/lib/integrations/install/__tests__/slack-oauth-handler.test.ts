@@ -254,6 +254,7 @@ describe("SlackOAuthInstallHandler.startInstall", () => {
         reason: "cap_reached" as const,
         errorMessage: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
         limit: 1,
+        tier: "starter" as const,
       }),
     );
     const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
@@ -459,6 +460,7 @@ describe("SlackOAuthInstallHandler.handleCallback — chat-integration cap", () 
         reason: "cap_reached" as const,
         errorMessage: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
         limit: 1,
+        tier: "starter" as const,
       }),
     );
     const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);

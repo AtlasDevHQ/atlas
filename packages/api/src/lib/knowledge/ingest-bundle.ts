@@ -51,6 +51,7 @@ import {
   type IngestSource,
 } from "./ingest";
 import {
+  assertIngestCapsFor,
   resolveIngestCaps,
   type CapBoundBy,
   type EffectiveIngestCaps,
@@ -222,6 +223,9 @@ export async function ingestDocuments(
   // The bundle path already enforced the doc cap during streaming extraction;
   // document-level callers (connectors) get the SAME cap here so an oversized
   // vendor page is a counted per-file rejection, never an unbounded row.
+  // A caller-supplied cap object is the one place another tenant's plan limit
+  // could be applied here, so it is checked against this ingest's workspace.
+  if (params.caps) assertIngestCapsFor(params.caps, workspaceId);
   const caps = params.caps ?? (await resolveIngestCaps(workspaceId));
   const maxDocBytes = caps.maxDocBytes;
   const encoder = new TextEncoder();
@@ -341,6 +345,9 @@ export async function ingestDocuments(
 export async function ingestBundle(params: IngestBundleParams): Promise<IngestBundleOutcome> {
   const { workspaceId, collectionId, source, bytes } = params;
 
+  // A caller-supplied cap object is the one place another tenant's plan limit
+  // could be applied here, so it is checked against this ingest's workspace.
+  if (params.caps) assertIngestCapsFor(params.caps, workspaceId);
   const caps = params.caps ?? (await resolveIngestCaps(workspaceId));
   const { value: maxBundleBytes, boundBy } = caps.maxBundleBytes;
   if (bytes.length === 0) return { kind: "empty_bundle" };

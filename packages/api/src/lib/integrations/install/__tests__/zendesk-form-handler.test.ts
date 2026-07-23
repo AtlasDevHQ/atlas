@@ -34,6 +34,38 @@ const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<
 });
 
 void mock.module("@atlas/api/lib/db/internal", () => buildInternalDbMockDefaults({ internalQuery }));
+
+// The per-tier cap gates (#4235) run against the internal DB; this suite tests
+// the handler's OWN fan-out logic (slug computation, credential order,
+// rollback), so let the caps pass and keep the UPSERT observable through the
+// same `internalQuery` mock. The cap gates themselves have dedicated tests.
+// Mock every value export — a partial `mock.module()` breaks other importers.
+void mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  checkKnowledgeCollectionLimit: () => Promise.resolve({ allowed: true }),
+  checkKnowledgeCollectionFanOutLimit: () => Promise.resolve({ allowed: true }),
+  checkKnowledgeCollectionLimitAndInstall: async (
+    _org: string,
+    _slug: string,
+    insert: { sql: string; params: readonly unknown[] },
+  ) => ({ allowed: true, rows: await internalQuery(insert.sql, [...insert.params]) }),
+  checkChatIntegrationLimit: () => Promise.resolve({ allowed: true }),
+  checkChatIntegrationLimitAndInstall: () => Promise.resolve({ allowed: true, rows: [] }),
+  checkResourceLimit: () => Promise.resolve({ allowed: true }),
+  checkPlanLimits: () => Promise.resolve({ allowed: true }),
+  getCachedWorkspace: () => Promise.resolve(null),
+  invalidatePlanCache: () => {},
+  buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 0, usagePercent: 0, status: "ok" }),
+  severityOf: () => 0,
+  resolveAbuseCeilingPercent: () => Promise.resolve(null),
+  resolveSpendPolicy: () => Promise.resolve("continue"),
+  resolveUsageCeiling: () => Promise.resolve({ spendPolicy: "continue", ceilingPercent: null }),
+  computeOverageDollars: () => 0,
+  getTrialDaysRemaining: () => Promise.resolve(null),
+  CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
+  KNOWLEDGE_COLLECTION_COUNT_SQL: "SELECT 1",
+  KNOWLEDGE_COLLECTION_FANOUT_COUNT_SQL: "SELECT 1",
+}));
+
 void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };

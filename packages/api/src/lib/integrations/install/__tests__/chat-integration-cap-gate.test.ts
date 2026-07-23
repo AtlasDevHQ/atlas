@@ -44,6 +44,11 @@ void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   computeOverageDollars: () => 0,
   getTrialDaysRemaining: () => Promise.resolve(null),
   CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
+  checkKnowledgeCollectionLimitAndInstall: () => Promise.resolve({ allowed: true, rows: [] }),
+  checkKnowledgeCollectionLimit: () => Promise.resolve({ allowed: true }),
+  checkKnowledgeCollectionFanOutLimit: () => Promise.resolve({ allowed: true }),
+  KNOWLEDGE_COLLECTION_COUNT_SQL: "SELECT 1",
+  KNOWLEDGE_COLLECTION_FANOUT_COUNT_SQL: "SELECT 1",
 }));
 
 const { makeChatIntegrationCapGate } = await import("../chat-integration-cap-gate");

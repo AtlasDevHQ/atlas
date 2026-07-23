@@ -46,7 +46,9 @@ void mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkChatIntegrationLimit: mock(async () => ({ allowed: true })),
   checkChatIntegrationLimitAndInstall: mock(async () => ({ outcome: "installed" })),
   KNOWLEDGE_COLLECTION_COUNT_SQL: "SELECT 1",
+  KNOWLEDGE_COLLECTION_FANOUT_COUNT_SQL: "SELECT 1",
   checkKnowledgeCollectionLimit: mock(async () => ({ allowed: true })),
+  checkKnowledgeCollectionFanOutLimit: mock(async () => ({ allowed: true })),
   checkKnowledgeCollectionLimitAndInstall: mock(async () => ({ allowed: true, rows: [] })),
 }));
 
@@ -81,6 +83,7 @@ describe("POST /api/v1/admin/connections resource-limit arms (#3433)", () => {
       reason: "cap_reached",
       errorMessage: "Your starter plan allows up to 3 connections. Upgrade to add more.",
       limit: 3,
+    tier: "starter" as const,
     }));
 
     const res = await app.fetch(createRequest());

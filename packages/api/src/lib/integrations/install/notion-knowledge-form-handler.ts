@@ -133,8 +133,8 @@ export class NotionKnowledgeFormInstallHandler implements FormBasedInstallHandle
     }
     const catalogId = catalogRows[0].id;
 
-    // A slug taken by another knowledge catalog (okf-upload / bundle-sync) would
-    // merge document trees — reject before any write.
+    // Slug not taken by another knowledge catalog (#4211), and the workspace's
+    // plan tier has room for another collection (#4235) — both before the write.
     await assertCollectionInstallable(workspaceId, collectionSlug, catalogId, this.log);
 
     // ── Verify the token loudly BEFORE persisting anything ─────────────────────

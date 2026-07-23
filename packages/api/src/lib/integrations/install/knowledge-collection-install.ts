@@ -23,19 +23,23 @@
  * *determine* the count is a {@link BillingCheckFailedError} (503 "try again"),
  * never a misleading "upgrade your plan".
  *
+ * Both are `Data.TaggedError`s, so every handler must let them propagate with
+ * their `_tag` intact; the fan-out handlers' `retryableInstallError` wrapper
+ * passes them through unchanged for exactly this reason (see
+ * `./retryable-install-error.ts`).
+ *
  * @module
  */
 
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { PlanTier, WorkspaceId } from "@useatlas/types";
 import {
+  checkKnowledgeCollectionFanOutLimit,
   checkKnowledgeCollectionLimit,
   checkKnowledgeCollectionLimitAndInstall,
+  type ResourceLimitResult,
 } from "@atlas/api/lib/billing/enforcement";
-import {
-  lowestTierAdmitting,
-  resolveKnowledgeTierLimits,
-} from "@atlas/api/lib/billing/knowledge-limits";
+import { lowestTierAdmitting } from "@atlas/api/lib/billing/knowledge-limits";
 import { BillingCheckFailedError, FeatureEntitlementError } from "@atlas/api/lib/effect/errors";
 import type { createLogger } from "@atlas/api/lib/logger";
 import { FormInstallValidationError } from "./email-form-handler";
@@ -47,48 +51,98 @@ type CollectionInstallLogger = Pick<ReturnType<typeof createLogger>, "error" | "
 /**
  * Compose the 403 upgrade error for a collections-cap denial.
  *
- * `requiredPlan` is the cheapest tier that admits one more collection. Business
- * is unlimited, so a real denial always has a named upgrade target; the
- * `"business"` fallback is reachable only if the tier changed between the cap
- * decision and this resolution, and naming the top plan is the honest answer
- * there. `currentPlan` collapses an unresolved tier to `"free"`, matching the
- * feature-entitlement guard's handling of the same case.
+ * `tier` rides on the denial itself (`ResourceLimitResult.cap_reached.tier`),
+ * so the plan named here is provably the one whose `limit` is being quoted —
+ * a second `getCachedWorkspace` read could return a different tier (60s
+ * per-replica TTL) and tell a Pro customer they are on `free`.
+ *
+ * `requiredPlan` is the cheapest tier admitting one more collection. Business
+ * is unlimited on this field, so a real denial always has a named target; the
+ * `"business"` fallback is unreachable in practice and is the honest answer if
+ * the ladder is ever edited to have a finite top.
  */
-function collectionCapError(
-  workspaceId: WorkspaceId,
-  limit: number,
-  tier: PlanTier | null,
-): FeatureEntitlementError {
-  const currentPlan: PlanTier = tier ?? "free";
+function collectionCapError(limit: number, tier: PlanTier): FeatureEntitlementError {
   const requiredPlan =
-    lowestTierAdmitting("maxKnowledgeCollections", limit + 1, currentPlan) ?? "business";
+    lowestTierAdmitting("maxKnowledgeCollections", limit + 1, tier) ?? "business";
   const noun = limit === 1 ? "knowledge collection" : "knowledge collections";
   return new FeatureEntitlementError({
-    message: `Your "${currentPlan}" plan allows up to ${limit} ${noun}. Upgrade to "${requiredPlan}" to add more. (workspace ${workspaceId})`,
+    message: `Your "${tier}" plan allows up to ${limit} ${noun}. Upgrade to "${requiredPlan}" to add more.`,
     feature: "knowledge_collections",
     requiredPlan,
-    currentPlan,
+    currentPlan: tier,
   });
 }
 
 /**
- * Resolve the workspace's tier for an upgrade prompt without letting a lookup
- * fault mask the cap denial we already have. The cap decision is authoritative;
- * this is prompt cosmetics, so a fault degrades to `null` (→ `"free"`) rather
- * than replacing a correct 403 with a 503.
+ * Translate a collections-cap DENIAL into the right throw. Shared by the
+ * single-key precheck, the fan-out precheck, and the atomic gate so all three
+ * map `cap_reached` → 403 upgrade and `check_failed` → 503 fail-closed
+ * identically.
+ *
+ * Returns `never`, so a call site's `if (!decision.allowed)` narrows the
+ * admitted arm afterwards without a second runtime branch. The parameter is
+ * the denial union alone, which `ResourceLimitResult` and
+ * `CapGatedInstallResult` share structurally.
  */
-async function tierForPrompt(
+function throwCollectionDenial(
+  decision: Extract<ResourceLimitResult, { allowed: false }>,
   workspaceId: WorkspaceId,
+  context: Record<string, unknown>,
   log: CollectionInstallLogger,
-): Promise<PlanTier | null> {
-  try {
-    return (await resolveKnowledgeTierLimits(workspaceId))?.tier ?? null;
-  } catch (err) {
-    log.error(
-      { workspaceId, err: err instanceof Error ? err.message : String(err) },
-      "Could not resolve the plan tier for a knowledge-collection cap denial — naming the free tier in the upgrade prompt",
+): never {
+  if (decision.reason === "cap_reached") {
+    log.info(
+      { workspaceId, ...context, limit: decision.limit, tier: decision.tier },
+      "Knowledge collection install blocked — workspace at plan collections cap",
     );
-    return null;
+    throw collectionCapError(decision.limit, decision.tier);
+  }
+  // `check_failed` — and, defensively, any future non-cap denial reason: the
+  // count couldn't be determined, so fail closed as a transient 503 "try
+  // again", never a misleading 403 "upgrade your plan".
+  log.error(
+    { workspaceId, ...context },
+    "Knowledge collection install blocked — collection count check failed (failing closed)",
+  );
+  throw new BillingCheckFailedError({ message: decision.errorMessage, workspaceId });
+}
+
+/**
+ * The cross-catalog slug probe: reject a slug already owned by a DIFFERENT
+ * knowledge catalog in this workspace.
+ *
+ * `knowledge_documents` keys on `(workspace_id, collection_id, path)` with NO
+ * catalog dimension, so two catalogs sharing an `install_id` would silently
+ * merge their document trees — and a bundle-sync's archive-absent pass would
+ * archive the other collection's docs (#4211).
+ *
+ * Unlike the cap aggregate (`KNOWLEDGE_COLLECTION_COUNT_SQL`, which filters
+ * `status <> 'archived'`), this probe deliberately INCLUDES archived installs:
+ * their documents still live under the slug and an explicit re-ingest may
+ * resurrect them (ADR-0028 §5).
+ */
+async function assertCollectionSlugFree(
+  workspaceId: WorkspaceId,
+  collectionSlug: string,
+  ownCatalogId: string,
+): Promise<void> {
+  const rows = await internalQuery<{ catalog_id: string }>(
+    `SELECT catalog_id
+       FROM workspace_plugins
+      WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'knowledge'
+        AND catalog_id <> $3
+      LIMIT 1`,
+    [workspaceId, collectionSlug, ownCatalogId],
+  );
+  if (rows.length > 0) {
+    throw new FormInstallValidationError({
+      fieldErrors: {
+        [KNOWLEDGE_INSTALL_ID_FIELD]: [
+          `Collection id "${collectionSlug}" is already used by another Knowledge Base integration in this workspace.`,
+        ],
+      },
+      formErrors: [],
+    });
   }
 }
 
@@ -114,42 +168,39 @@ export async function assertCollectionInstallable(
   ownCatalogId: string,
   log: CollectionInstallLogger,
 ): Promise<void> {
-  const rows = await internalQuery<{ catalog_id: string }>(
-    `SELECT catalog_id
-       FROM workspace_plugins
-      WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'knowledge'
-        AND catalog_id <> $3
-      LIMIT 1`,
-    [workspaceId, collectionSlug, ownCatalogId],
-  );
-  if (rows.length > 0) {
-    throw new FormInstallValidationError({
-      fieldErrors: {
-        [KNOWLEDGE_INSTALL_ID_FIELD]: [
-          `Collection id "${collectionSlug}" is already used by another Knowledge Base integration in this workspace.`,
-        ],
-      },
-      formErrors: [],
-    });
-  }
-
+  await assertCollectionSlugFree(workspaceId, collectionSlug, ownCatalogId);
   const decision = await checkKnowledgeCollectionLimit(workspaceId, collectionSlug);
-  if (decision.allowed) return;
-  if (decision.reason === "cap_reached") {
-    log.info(
-      { workspaceId, collectionSlug, limit: decision.limit },
-      "Knowledge collection install blocked — workspace at plan collections cap (precheck)",
-    );
-    throw collectionCapError(workspaceId, decision.limit, await tierForPrompt(workspaceId, log));
+  if (!decision.allowed) throwCollectionDenial(decision, workspaceId, { collectionSlug }, log);
+}
+
+/**
+ * The pre-write gate for a **fan-out** install — one collection per vendor
+ * object (Zendesk per brand, Front per knowledge base, Freshdesk per category,
+ * Help Scout per site).
+ *
+ * Looping {@link assertCollectionInstallable} would be wrong: every iteration
+ * sees the same pre-write count, so all N pass, and the atomic gate then
+ * refuses the (cap+1)-th *after* earlier items have written their rows AND
+ * their credentials — a partial install the admin has to unpick. This checks
+ * the whole batch against the cap once, before anything is written.
+ *
+ * @throws {FormInstallValidationError} 400 — a slug is taken by another catalog.
+ * @throws {FeatureEntitlementError} 403 upgrade — the batch exceeds the cap.
+ * @throws {BillingCheckFailedError} 503 — the count couldn't be determined.
+ */
+export async function assertCollectionBatchInstallable(
+  workspaceId: WorkspaceId,
+  collectionSlugs: readonly string[],
+  ownCatalogId: string,
+  log: CollectionInstallLogger,
+): Promise<void> {
+  for (const slug of collectionSlugs) {
+    await assertCollectionSlugFree(workspaceId, slug, ownCatalogId);
   }
-  // `check_failed` — and, defensively, any future non-cap denial reason: the
-  // count couldn't be determined, so fail closed as a transient 503 "try
-  // again", never a misleading 403 "upgrade your plan".
-  log.error(
-    { workspaceId, collectionSlug },
-    "Knowledge collection install blocked — collection count check failed (failing closed)",
-  );
-  throw new BillingCheckFailedError({ message: decision.errorMessage, workspaceId });
+  const decision = await checkKnowledgeCollectionFanOutLimit(workspaceId, collectionSlugs);
+  if (!decision.allowed) {
+    throwCollectionDenial(decision, workspaceId, { planned: collectionSlugs.length }, log);
+  }
 }
 
 /**
@@ -177,6 +228,15 @@ export async function upsertKnowledgeCollectionRow(input: {
   readonly log: CollectionInstallLogger;
 }): Promise<string> {
   const { workspaceId, collectionSlug, sql, params, candidateId, log } = input;
+  // The `RETURNING id` invariant below is only detectable AFTER the write has
+  // run inside the transaction. Catch the omission before we take the lock, so
+  // a handler wired with the wrong SQL fails loudly instead of rolling back a
+  // committed-looking install.
+  if (!/\breturning\s+id\b/i.test(sql)) {
+    throw new Error(
+      `upsertKnowledgeCollectionRow requires SQL ending in "RETURNING id" (collection "${collectionSlug}")`,
+    );
+  }
 
   const result = await checkKnowledgeCollectionLimitAndInstall<{ id: string }>(
     workspaceId,
@@ -185,18 +245,7 @@ export async function upsertKnowledgeCollectionRow(input: {
   );
 
   if (!result.allowed) {
-    if (result.reason === "cap_reached") {
-      log.info(
-        { workspaceId, collectionSlug, limit: result.limit },
-        "Knowledge collection install blocked — workspace at plan collections cap",
-      );
-      throw collectionCapError(workspaceId, result.limit, await tierForPrompt(workspaceId, log));
-    }
-    log.error(
-      { workspaceId, collectionSlug },
-      "Knowledge collection install blocked — collection count check failed under lock (failing closed)",
-    );
-    throw new BillingCheckFailedError({ message: result.errorMessage, workspaceId });
+    throwCollectionDenial(result, workspaceId, { collectionSlug, underLock: true }, log);
   }
 
   const returned = result.rows[0]?.id;

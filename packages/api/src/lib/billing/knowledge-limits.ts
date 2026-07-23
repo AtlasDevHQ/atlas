@@ -19,27 +19,33 @@
  * `lib/knowledge/ingest-limits.ts`.
  *
  * The composition lives HERE rather than next to the platform readers because
- * `knowledge/ingest-limits.ts` is imported by the knowledge mirror and by every
- * connector client: pulling the billing stack (enforcement → metering →
- * seat-count) into that module would widen their dependency graph for a concern
- * none of them have.
+ * `knowledge/ingest-limits.ts` is imported by the knowledge mirror and by the
+ * connector clients that bound their own fetch: pulling the billing stack
+ * (enforcement → metering → seat-count) into that module would widen their
+ * dependency graph for a concern none of them have.
  *
  * ## Fail-closed posture
  *
- * {@link resolveKnowledgeTierLimits} mirrors `checkResourceLimit`'s arms so the
- * KB caps and the chat/connection caps can never disagree about what a
- * workspace is:
+ * {@link resolveKnowledgeTierLimits} follows `checkResourceLimit`'s arms, plus
+ * the `"self-hosted"` sentinel `orgId` that `checkResourceLimit` never sees:
  *
- *   - No `orgId` / no internal DB → `null` (no billing context, no tier cap).
+ *   - No `orgId` / the `"self-hosted"` sentinel / no internal DB → `null` (no
+ *     billing context, no tier cap).
  *   - Workspace lookup **error** → throws {@link BillingCheckFailedError}
  *     (→ 503 "try again"). A transient DB fault must never silently widen a
  *     cap.
  *   - No `organization` row (pre-migration / Better-Auth-only) → `null`. The
  *     one deliberate fail-open, identical to the sibling gates: a genuine
  *     *absence* of a plan means there is no plan to enforce.
- *   - `free` tier (self-hosted) → `null`. Every KB limit is unlimited there, so
+ *   - `free` tier **off SaaS** → `null`. Every KB limit is unlimited there, so
  *     collapsing to `null` keeps the platform knob authoritative and the
  *     self-hosted path allocation-free.
+ *   - `free` tier **on SaaS** → the `starter` limits, with a warn. There is no
+ *     SaaS free tier: `organization.plan_tier` merely DEFAULTS to `'free'`, so
+ *     a `free` row on SaaS means trial provisioning never landed. Reading that
+ *     as "no plan to enforce" would hand a provisioning failure the raised
+ *     SaaS ceiling (100 MB / 5,000 docs) — a strictly wider entitlement than
+ *     any paying tier. Fail closed to the cheapest tier instead.
  *
  * There is no operator-workspace bypass here, matching the resource-cap family
  * (`checkResourceLimit` has none either) rather than the feature-entitlement
@@ -52,6 +58,7 @@ import type { PlanTier } from "@useatlas/types";
 import { PLAN_RANK } from "@atlas/api/lib/integrations/install/plan-rank";
 import { BillingCheckFailedError, FeatureEntitlementError } from "@atlas/api/lib/effect/errors";
 import { hasInternalDB, type WorkspaceRow } from "@atlas/api/lib/db/internal";
+import { resolveDeployMode } from "@atlas/api/lib/effect/deploy-mode";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   getIngestMaxBundleBytes,
@@ -59,12 +66,12 @@ import {
   getIngestMaxDocs,
 } from "@atlas/api/lib/knowledge/ingest-limits";
 import { getCachedWorkspace } from "./enforcement";
+import { KNOWLEDGE_CAP_CHECK_FAILED_MSG } from "./knowledge-limits-message";
 import { getPlanLimits, isUnlimited, type PlanLimits } from "./plans";
 
 const log = createLogger("billing:knowledge-limits");
 
-/** Message surfaced when the tier can't be resolved (fail-closed → 503). */
-const TIER_CHECK_FAILED_MSG = "Unable to verify your plan's Knowledge Base limits. Please try again.";
+
 
 /**
  * The three numeric {@link PlanLimits} fields that ladder the Knowledge Base.
@@ -107,19 +114,44 @@ export async function resolveKnowledgeTierLimits(
       { err: err instanceof Error ? err.message : String(err), orgId },
       "Failed to resolve workspace for Knowledge Base tier caps — blocking as precaution",
     );
-    throw new BillingCheckFailedError({ message: TIER_CHECK_FAILED_MSG, workspaceId: orgId });
+    throw new BillingCheckFailedError({ message: KNOWLEDGE_CAP_CHECK_FAILED_MSG, workspaceId: orgId });
   }
 
   // Genuine absence of a plan → no tier cap (the sibling gates' one fail-open).
   if (!workspace) return null;
   const tier = workspace.plan_tier;
-  // `free` is unlimited on every KB field — the platform knob stays the only cap.
-  if (tier === "free") return null;
+  if (tier === "free") {
+    // Off SaaS `free` is the real, unlimited self-hosted tier — the platform
+    // knob stays the only cap. On SaaS it is an anomaly (see the module
+    // docblock): fail closed to `starter` rather than to "unlimited".
+    if (resolveDeployMode() !== "saas") return null;
+    log.warn(
+      { orgId },
+      "SaaS workspace resolved to the `free` tier — applying starter Knowledge Base caps; its trial provisioning may have failed",
+    );
+    return { tier: "starter", limits: getPlanLimits("starter") };
+  }
   return { tier, limits: getPlanLimits(tier) };
 }
 
 /** Which side of `min(platform ceiling, tier limit)` produced an effective cap. */
 export type CapBoundBy = "platform" | "tier";
+
+/**
+ * Is the cap that refused something the READER can actually change?
+ *
+ * Only off SaaS. A hosted workspace admin cannot reach the platform settings
+ * registry at all, and on SaaS the platform ceiling is deliberately pinned to
+ * the Business tier's values — so even a `boundBy: "platform"` refusal there is
+ * effectively a plan ceiling to them. Naming `ATLAS_KNOWLEDGE_INGEST_*` in a
+ * hosted error message sends the reader after a knob they can never turn.
+ *
+ * Used by the sync paths, which surface a status row rather than an HTTP
+ * response and so have no upgrade envelope to fall back on — only wording.
+ */
+export function capIsOperatorTunable(boundBy: CapBoundBy): boolean {
+  return boundBy === "platform" && resolveDeployMode() !== "saas";
+}
 
 /**
  * Turn a **tier-bound** over-limit into the standard 403 upgrade envelope, or
@@ -134,47 +166,55 @@ export type CapBoundBy = "platform" | "tier";
  *   - `boundBy === "platform"` → return. The operator's fleet-wide guardrail
  *     bound, not the customer's plan; upgrading would change nothing.
  *
- * A tier-resolution fault here degrades to `null` (→ `"free"` in the prompt)
- * rather than replacing a correct refusal with a 503: the cap decision was
- * already made upstream, and this call only phrases it.
+ * `tier` is the plan that was resolved when the cap was COMPUTED
+ * ({@link EffectiveIngestCaps.tier}), never a fresh lookup: `getCachedWorkspace`
+ * has a 60s per-replica TTL, so re-resolving could name a different plan than
+ * the one whose limit is being quoted — and could fault, turning a correct
+ * refusal into a 503. This function is pure; it neither reads nor can fail.
+ *
+ * `required` is the value that breached the cap. When the true value is only
+ * known to be *at least* something (a streamed body aborted at the cap), pass
+ * `exact: false` — an upgrade target cannot be named honestly from a lower
+ * bound, so the caller falls through to its plain over-limit response.
  */
-export async function assertNotTierBound(input: {
-  readonly orgId: string | undefined;
+export function assertNotTierBound(input: {
   readonly field: KnowledgeLimitField;
   readonly boundBy: CapBoundBy;
+  /** The plan that set `limit`, as resolved when the cap was composed. */
+  readonly tier: PlanTier | null;
   /** The value that breached the cap (document count, byte count, …). */
   readonly required: number;
+  /** False when `required` is a lower bound rather than the true value. */
+  readonly exact?: boolean;
   /** The effective cap that was enforced. */
   readonly limit: number;
   /** Human noun for the message, e.g. `"documents in one bundle"`. */
   readonly noun: string;
-}): Promise<void> {
-  const { orgId, field, boundBy, required, limit, noun } = input;
+  /** Log/forensic context only — never part of the customer-facing message. */
+  readonly orgId?: string;
+}): void {
+  const { field, boundBy, tier, required, limit, noun, orgId } = input;
   if (boundBy !== "tier") return;
+  // A lower bound can only prove the CURRENT tier was breached, not that any
+  // higher one admits the real value — naming one would be a guess.
+  if (input.exact === false) return;
+  // `boundBy === "tier"` is only produced by `compose`, which runs only when a
+  // tier context exists, so `tier` is non-null here by construction; the guard
+  // is belt-and-braces rather than a fabricated "free".
+  if (tier === null) return;
 
-  let currentPlan: PlanTier = "free";
-  try {
-    currentPlan = (await resolveKnowledgeTierLimits(orgId))?.tier ?? "free";
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err), orgId, field },
-      "Could not resolve the plan tier for a Knowledge Base over-limit — falling back to the plain over-limit response",
-    );
-    return;
-  }
-
-  const requiredPlan = lowestTierAdmitting(field, required, currentPlan);
+  const requiredPlan = lowestTierAdmitting(field, required, tier);
   if (requiredPlan === null) return;
 
   log.info(
-    { orgId, field, required, limit, currentPlan, requiredPlan },
+    { orgId, field, required, limit, currentPlan: tier, requiredPlan },
     "Knowledge Base ingest denied: the workspace's plan tier is the binding cap",
   );
   throw new FeatureEntitlementError({
-    message: `Your "${currentPlan}" plan allows up to ${limit} ${noun}. Upgrade to "${requiredPlan}" to raise the limit.`,
+    message: `Your "${tier}" plan allows up to ${limit} ${noun}. Upgrade to "${requiredPlan}" to raise the limit.`,
     feature: field,
     requiredPlan,
-    currentPlan,
+    currentPlan: tier,
   });
 }
 
@@ -195,8 +235,10 @@ export function minKnowledgeCap(platformCap: number, tierCap: number): number {
  * `null` when no higher tier admits the value, so the caller reports a plain
  * over-limit error instead of telling a Business customer to "upgrade".
  *
- * Only the self-serve paid ladder is considered: `free` is self-hosted-only and
- * `locked` is the churn tier, so neither is ever a legitimate upgrade target.
+ * Only the self-serve paid ladder is considered: `free` is self-hosted-only,
+ * `locked` is the churn tier, and `trial` is not something you upgrade *to* —
+ * none is ever a legitimate upgrade target. (A workspace ON `trial` still gets
+ * a target: it ranks below `starter`, so `starter` is offered when it helps.)
  */
 export function lowestTierAdmitting(
   field: KnowledgeLimitField,
@@ -223,12 +265,41 @@ export interface EffectiveCap {
   readonly boundBy: CapBoundBy;
 }
 
-/** The caps one ingest enforces, already composed with the workspace's tier. */
+/**
+ * The caps one ingest enforces, already composed with the workspace's tier.
+ *
+ * `workspaceId` is load-bearing, not informational: this object is passed
+ * between the route (which caps the raw request body) and the ingest seam, and
+ * both `assertIngestCapsFor` it against the workspace they are actually writing
+ * to. Without that, a refactor that hoists a caps resolution out of a loop
+ * would silently apply one tenant's cap to another's ingest.
+ */
 export interface EffectiveIngestCaps {
+  /** The workspace these caps were resolved FOR. Checked at every seam. */
+  readonly workspaceId: string;
+  /** The plan that set the tier half, or `null` when no tier context applied. */
+  readonly tier: PlanTier | null;
   readonly maxDocs: EffectiveCap;
   readonly maxBundleBytes: EffectiveCap;
   /** Platform-only, so it carries no provenance. */
   readonly maxDocBytes: number;
+}
+
+/**
+ * Guard a caller-supplied {@link EffectiveIngestCaps} against the workspace it
+ * is about to govern. `caps` is an optional parameter on the ingest seams (so
+ * the route and the seam share ONE tier lookup), which makes it the one place a
+ * plan cap could be crossed between tenants — fail loud rather than enforce the
+ * wrong tenant's limit.
+ */
+export function assertIngestCapsFor(
+  caps: EffectiveIngestCaps,
+  workspaceId: string,
+): void {
+  if (caps.workspaceId === workspaceId) return;
+  throw new Error(
+    `Knowledge ingest caps were resolved for workspace "${caps.workspaceId}" but are being applied to "${workspaceId}" — refusing to enforce another tenant's plan limits.`,
+  );
 }
 
 function compose(platform: number, tier: number): EffectiveCap {
@@ -255,18 +326,26 @@ export async function resolveIngestCaps(orgId: string | undefined): Promise<Effe
   const platformDocs = getIngestMaxDocs();
   const platformBundle = getIngestMaxBundleBytes();
   const maxDocBytes = getIngestMaxDocBytes();
+  // `orgId` is optional upstream (self-hosted no-auth has no workspace); the
+  // sentinel keeps `workspaceId` a plain string so the correlation check has a
+  // total comparison rather than a null-vs-null hole.
+  const workspaceId = orgId ?? "";
 
-  const tier = await resolveKnowledgeTierLimits(orgId);
-  if (!tier) {
+  const ctx = await resolveKnowledgeTierLimits(orgId);
+  if (!ctx) {
     return {
+      workspaceId,
+      tier: null,
       maxDocs: { value: platformDocs, boundBy: "platform" },
       maxBundleBytes: { value: platformBundle, boundBy: "platform" },
       maxDocBytes,
     };
   }
   return {
-    maxDocs: compose(platformDocs, tier.limits.maxKnowledgeDocsPerBundle),
-    maxBundleBytes: compose(platformBundle, tier.limits.maxKnowledgeBundleBytes),
+    workspaceId,
+    tier: ctx.tier,
+    maxDocs: compose(platformDocs, ctx.limits.maxKnowledgeDocsPerBundle),
+    maxBundleBytes: compose(platformBundle, ctx.limits.maxKnowledgeBundleBytes),
     maxDocBytes,
   };
 }

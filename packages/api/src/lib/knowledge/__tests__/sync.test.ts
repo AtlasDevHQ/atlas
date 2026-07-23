@@ -45,6 +45,35 @@ void mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   },
 }));
 
+
+// Explicit stand-in for the billing composition seam (#4235). Without it this
+// suite reaches the real `billing/enforcement` → `db/internal` stack and passes
+// only because the shared internal-DB mock happens to stub
+// `getWorkspaceDetails → null` — an implementation-detail dependency. Stating
+// the platform-only shape on purpose also makes the TIER branch reachable.
+let CAP_TIER: string | null = null;
+void mock.module("@atlas/api/lib/billing/knowledge-limits", () => ({
+  resolveIngestCaps: async (orgId: string | undefined) => {
+    // Cap resolution reads the platform ceiling, so a settings-backend fault
+    // surfaces here — the `LIMITS_THROW` pin for "the engine never throws".
+    if (LIMITS_THROW) throw new Error("settings backend exploded");
+    const boundBy = CAP_TIER === null ? "platform" : "tier";
+    return {
+      workspaceId: orgId ?? "",
+      tier: CAP_TIER,
+      maxDocs: { value: MAX_DOCS, boundBy },
+      maxBundleBytes: { value: MAX_BUNDLE_BYTES, boundBy },
+      maxDocBytes: MAX_DOC_BYTES,
+    };
+  },
+  assertIngestCapsFor: () => {},
+  assertNotTierBound: () => {},
+  capIsOperatorTunable: (boundBy: string) => boundBy === "platform",
+  minKnowledgeCap: (a: number, b: number) => (b === -1 ? a : Math.min(a, b)),
+  lowestTierAdmitting: () => null,
+  resolveKnowledgeTierLimits: async () => null,
+}));
+
 // ── Credential store ─────────────────────────────────────────────────────────
 let CREDENTIAL: string | null = null;
 let CREDENTIAL_THROWS = false;
@@ -262,6 +291,7 @@ beforeEach(() => {
   MAX_DOCS = 100;
   MAX_DOC_BYTES = 100_000;
   MAX_BUNDLE_BYTES = 200_000;
+  CAP_TIER = null;
   LIMITS_THROW = false;
   TX_INSERT_THROWS = false;
   STATE_WRITE_THROWS = false;
@@ -623,6 +653,27 @@ describe("syncCollection — fetch hardening", () => {
     });
     expect(outcome.status).toBe("error");
     expect(outcome.error).toMatch(/byte limit/);
+    // Platform-bound off SaaS → the operator-tunable wording, with no
+    // "your plan" claim attached to an operator setting.
+    expect(outcome.error).not.toContain("your plan");
+  });
+
+  it("says the limit is the PLAN's when the tier is what bound the download", async () => {
+    // The tier-tightened download cap is the security-relevant half: a Starter
+    // workspace must not be able to PULL a bundle it would be refused on
+    // upload. The wording must point at the lever the reader can actually use.
+    CAP_TIER = "starter";
+    const { impl } = fetchReturning(
+      fakeResponse({ headers: { "content-length": String(MAX_BUNDLE_BYTES + 1) } }),
+    );
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toContain("limit on your plan");
   });
 
   it("aborts a streamed body that exceeds the cap (lying/chunked endpoint)", async () => {

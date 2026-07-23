@@ -63,7 +63,10 @@ export function createFreshdeskConnector(
           apiKey,
           collectionSlug: ctx.collectionSlug,
         },
-        deps.clientDeps ?? {},
+        // Bound the vendor fetch by the EFFECTIVE per-sync cap, not the raw
+        // platform ceiling — otherwise a lower-tier workspace pulls documents
+        // it can never ingest, every sync (#4235).
+        { ...(deps.clientDeps ?? {}), maxDocs: ctx.maxDocs },
       );
     },
   };

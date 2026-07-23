@@ -14,10 +14,10 @@
  * `min(platform ceiling, tier limit)`, composed by `resolveIngestCaps` in
  * `lib/billing/knowledge-limits.ts`. That composition deliberately lives on the
  * BILLING side of the seam: this module is imported by the knowledge mirror and
- * by every connector client, and pulling the billing stack (enforcement →
- * metering → seat-count) in here would widen those modules' dependency graph —
- * and break the partial `mock.module` shims their tests rely on — for a concern
- * none of them have.
+ * by the connector clients that bound their own fetch, and pulling the billing
+ * stack (enforcement → metering → seat-count) in here would widen those
+ * modules' dependency graph — and break the partial `mock.module` shims their
+ * tests rely on — for a concern none of them have.
  *
  * The per-document byte cap has no tier field: it is an abuse guardrail on a
  * single row, not a pricing lever, so {@link getIngestMaxDocBytes} stays

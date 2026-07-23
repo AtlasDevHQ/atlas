@@ -24,7 +24,7 @@ const { GITBOOK_CATALOG_ID, GITBOOK_VENDOR } = await import("@atlas/api/lib/know
 const VALID_CONFIG = { space_id: "space-123" };
 
 function ctx(config: Record<string, unknown> | null) {
-  return { workspaceId: "org-1", collectionSlug: "gitbook-docs", config };
+  return { workspaceId: "org-1", collectionSlug: "gitbook-docs", config, maxDocs: 1000 };
 }
 
 afterEach(() => {

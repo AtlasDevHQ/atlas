@@ -2,13 +2,19 @@
  * Read-only semantic-layer exploration endpoint (#4049 / ADR-0025 §3 missing
  * endpoint #3, governed by ADR-0027's shared gate-parity contract).
  *
- * POST /api/v1/explore accepts a read-only bash command (ls/cat/grep/find/…)
- * and runs it against the workspace's semantic layer through the SAME shared
+ * POST /api/v1/explore accepts a bash command (ls/cat/grep/find/…) and runs it
+ * against the workspace's semantic layer through the SAME shared
  * `lib/tools/explore` facade the agent loop and the MCP `explore` tool use.
  * The facade selects a sandboxed backend (plugin > Vercel sandbox > nsjail >
- * sidecar > just-bash) and enforces read-only, path-traversal-protected access
- * scoped to `semantic/` — there is no command re-validation here because the
- * backend (OverlayFs / nsjail bind-mount / deny-all microVM) is the boundary.
+ * sidecar > just-bash). The sandbox IS the boundary: read-only *by isolation,
+ * not command validation*, so writes stay inside the sandbox (OverlayFs /
+ * bind-mount / microVM overlay) and never touch host files — there is no
+ * command re-validation and no path jail. On the managed backends it is
+ * additionally secret-free and egress-blocked — an ephemeral microVM (Vercel
+ * Sandbox, SaaS-pinned) or a namespace/seccomp jail (nsjail); the dev-only
+ * just-bash fallback trades that isolation (and logs a SECURITY DEGRADATION
+ * warning if it is ever selected in production). Isolation, not a traversal
+ * filter, is what contains the command (CLAUDE.md "read-only by isolation").
  *
  * ADR-0027's shared gate-parity contract governs this sibling endpoint:
  *   - NO billing gate. `explore` is metadata-only and touches no datasource,
@@ -77,7 +83,7 @@ const exploreRoute = createRoute({
   tags: ["Explore"],
   summary: "Explore the semantic layer",
   description:
-    "Runs a read-only bash command (ls/cat/grep/find/…) against the workspace's semantic layer inside a sandbox with read-only, path-traversal-protected access scoped to `semantic/`. Returns the command output. Writes, shell escapes, and traversal outside the semantic directory are rejected by the sandbox backend.",
+    "Runs a bash command (ls/cat/grep/find/…) against the workspace's semantic layer inside a sandboxed backend and returns the command output. The sandbox is the security boundary: access is read-only by isolation, not command validation — there is no command allowlist or path jail, and filesystem writes stay inside the sandbox without ever touching host files. On managed (Vercel Sandbox) deployments it is additionally an ephemeral, secret-free, egress-blocked microVM, so commands cannot reach the network or Atlas credentials.",
   request: {
     body: {
       content: { "application/json": { schema: ExploreRequestSchema } },
@@ -191,7 +197,8 @@ explore.openapi(
           // Reuse the shared explore facade — identical to the MCP `explore`
           // tool (packages/mcp/src/tools.ts). It returns a prose string:
           // success → output; failure → an `Error:` / `Error (exit N):` string.
-          // The backend enforces read-only, path-traversal-protected scoping,
+          // The sandbox backend is the boundary — read-only by isolation, not
+          // command validation (writes never touch host files; no path jail) —
           // so no command re-validation is needed or attempted here.
           //
           // Imported dynamically (not at module top) so loading this route never

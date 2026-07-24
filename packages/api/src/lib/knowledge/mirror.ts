@@ -94,7 +94,7 @@ export interface CollectionBundle {
 }
 
 // ---------------------------------------------------------------------------
-// Path safety (explore path-traversal protection — AC "mirror respects …").
+// Path safety (mirror write-boundary path traversal guard — AC "mirror respects …").
 // The segment predicate is the shared mirror leaf helper (semantic/mirror-fs).
 // ---------------------------------------------------------------------------
 

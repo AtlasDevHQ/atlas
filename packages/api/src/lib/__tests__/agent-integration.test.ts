@@ -333,10 +333,10 @@ describe("agent integration", () => {
   });
 
   // -----------------------------------------------------------------------
-  // 4. Explore path traversal rejection
+  // 4. Explore surfaces backend output without leaking file contents
   // -----------------------------------------------------------------------
 
-  it("explore rejects path traversal (../../.env)", async () => {
+  it("explore surfaces the backend's string output, never file contents (cat ../../.env)", async () => {
     let streamIdx = 0;
     mockModel = new MockLanguageModelV3({
       doStream: async () => {
@@ -357,8 +357,12 @@ describe("agent integration", () => {
     const result = await runAgent({ messages: userMessages("Read .env") });
     const steps = await result.steps;
 
-    // NOTE: Protection comes from OverlayFs in production; here we test that
-    // the explore tool surfaces backend errors correctly (not file contents).
+    // The real boundary is sandbox isolation (writes never touch host files),
+    // not a command/traversal filter. Whether an out-of-tree read is blocked is
+    // backend-specific — just-bash's virtual FS jails it (mocked here as
+    // "Could not access file."), a real microVM does not — so this asserts only
+    // that explore surfaces the backend's string output, never leaking file
+    // contents into the agent transcript.
     const exploreResults = findToolResults(steps, "explore");
     expect(exploreResults.length).toBe(1);
     const exploreResult = exploreResults[0];

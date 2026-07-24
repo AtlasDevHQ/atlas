@@ -29,9 +29,10 @@
  *      reviewed decision rather than silent drift.
  *
  * `/api/v1/explore` has no SQL seam: it is read-only by backend isolation
- * (sandboxed, path-traversal-protected access scoped to `semantic/` — see
- * `lib/tools/backends/` and the explore backend tests), which is recorded in
- * `ENGINE_GUARANTEES` and enforced structurally, not by statement validation.
+ * (writes never touch host files; managed backends are additionally ephemeral +
+ * egress-blocked — see `lib/tools/backends/` and the explore backend tests),
+ * which is recorded in `ENGINE_GUARANTEES` and enforced structurally, not by
+ * statement validation.
  *
  * Harness mirrors `lib/tools/__tests__/sql.test.ts` (whitelist + connection
  * mocks; PostgreSQL mode via env inside the suite, restored after).
@@ -83,7 +84,7 @@ const ENGINE_GUARANTEES: Record<ReadSafeOperationKey, string> = {
     "agent loop executes SQL only via the executeSQL tool → validateSQL (SELECT-only, one AST parse); " +
     "residual non-SQL surface (installed action tools, conversation persistence) pinned by the tool-surface tripwire below",
   "POST /api/v1/explore":
-    "read-only by sandbox isolation scoped to semantic/ (no SQL seam; structural enforcement)",
+    "read-only by sandbox isolation (writes never touch host files; managed backends additionally ephemeral + egress-blocked; no SQL seam; structural enforcement)",
   "POST /api/v1/metrics/{id}/run":
     "metric SQL runs through runUserQueryPipeline → validateSQL (same SELECT-only pipeline; no agent loop)",
   "POST /api/v1/validate-sql": "validates via validateSQL only; never executes",

@@ -311,10 +311,12 @@ export async function testNsjailCapabilities(
 
     const timer = setTimeout(() => proc.kill(), TIMEOUT_MS);
     try {
-      const [stdout, stderr] = await Promise.all([
+      const [stdoutRead, stderrRead] = await Promise.all([
         readLimited(proc.stdout, MAX_OUTPUT),
         readLimited(proc.stderr, MAX_OUTPUT),
       ]);
+      const stdout = stdoutRead.text;
+      const stderr = stderrRead.text;
       const exitCode = await proc.exited;
       clearTimeout(timer);
 

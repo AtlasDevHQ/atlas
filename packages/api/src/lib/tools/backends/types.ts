@@ -10,6 +10,14 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /**
+   * Whether the backend cut stdout/stderr at the MAX_OUTPUT cap. Set by
+   * backends that pre-truncate at read time (nsjail); omitted by backends that
+   * return whole buffers (Vercel/just-bash/plugin), which the tool seam caps
+   * and marks via capOutput. The seam appends the truncation notice from these.
+   */
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
 }
 
 /**

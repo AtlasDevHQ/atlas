@@ -148,6 +148,14 @@ export async function createSandboxBackend(
   try {
     sandbox = await Sandbox.create({
       runtime: "node24",
+      // "deny-all" blocks all routed egress. NOTE: it does NOT block the
+      // link-local Firecracker MMDS (169.254.169.254), which the guest reaches
+      // at L3 regardless — that is a provider/Firecracker-level control, not an
+      // app-layer one. As of 2026-07 (Vercel Sandbox v2), networkPolicy is
+      // host-allowlist-only with no CIDR/IP denylist to subtract link-local
+      // ranges, and the MMDS is empty for Atlas sandboxes (no instance creds),
+      // so this is a defense-in-depth gap, not an exposure. #4785/#4781 track
+      // the current status (source of truth if the vendor surface changes).
       networkPolicy: "deny-all",
       // v2 persists (snapshots) by default — force ephemeral so semantic
       // files never linger in Vercel snapshot storage after stop().

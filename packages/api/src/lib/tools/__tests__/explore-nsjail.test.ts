@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, spyOn, mock } from "bun:test";
 import * as fs from "fs";
+import { capOutput, markCappedStream, MAX_OUTPUT } from "@atlas/api/lib/tools/backends/shared";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -176,6 +177,88 @@ describe("exec", () => {
 
   afterEach(() => {
     process.env = { ...originalEnv };
+  });
+
+  it("reports byte-accurate stdout truncation the seam surfaces as a notice (#4785)", async () => {
+    process.env.ATLAS_NSJAIL_PATH = "/usr/local/bin/nsjail";
+    const spy = mockAccessSync(new Set(["/usr/local/bin/nsjail", SEMANTIC_ROOT]));
+
+    const huge = "x".repeat(MAX_OUTPUT + 500);
+    setSpawnResult(huge, "", 0);
+    const backend = await createNsjailBackend(SEMANTIC_ROOT, callbacks);
+    const result = await backend.exec("cat big");
+
+    // stdout is byte-capped and the cut is reported as a fact, not re-derived.
+    expect(result.stdout.length).toBe(MAX_OUTPUT);
+    expect(result.stdoutTruncated).toBe(true);
+    // The tool seam appends the notice from that flag.
+    const marked = markCappedStream(result.stdout, result.stdoutTruncated ?? false);
+    expect(marked).toContain("[output truncated: exceeded 1 MB limit]");
+
+    spy.mockRestore();
+  });
+
+  it("flags truncation for MULTI-BYTE output whose code-unit length is under the cap (#4785)", async () => {
+    process.env.ATLAS_NSJAIL_PATH = "/usr/local/bin/nsjail";
+    const spy = mockAccessSync(new Set(["/usr/local/bin/nsjail", SEMANTIC_ROOT]));
+
+    // "é" (U+00E9) is 2 UTF-8 bytes but 1 UTF-16 code unit. Emit well over the
+    // 1 MB BYTE cap while keeping the string's .length under MAX_OUTPUT — the
+    // exact case where deriving truncation from string length silently missed
+    // the cut. The byte-layer flag must still report it.
+    const multibyte = "é".repeat(MAX_OUTPUT); // ~2 MB bytes, MAX_OUTPUT code units
+    setSpawnResult(multibyte, "", 0);
+    const backend = await createNsjailBackend(SEMANTIC_ROOT, callbacks);
+    const result = await backend.exec("cat unicode");
+
+    expect(result.stdout.length).toBeLessThan(MAX_OUTPUT); // code units below cap
+    expect(result.stdoutTruncated).toBe(true); // but the bytes were cut
+    // The old length-only check would NOT have marked this — the flag does.
+    expect(capOutput(result.stdout)).not.toContain("[output truncated");
+    expect(markCappedStream(result.stdout, result.stdoutTruncated ?? false)).toContain(
+      "[output truncated: exceeded 1 MB limit]",
+    );
+
+    spy.mockRestore();
+  });
+
+  it("does not flag a complete output sitting exactly at the cap", async () => {
+    process.env.ATLAS_NSJAIL_PATH = "/usr/local/bin/nsjail";
+    const spy = mockAccessSync(new Set(["/usr/local/bin/nsjail", SEMANTIC_ROOT]));
+
+    const exact = "y".repeat(MAX_OUTPUT);
+    setSpawnResult(exact, "", 0);
+    const backend = await createNsjailBackend(SEMANTIC_ROOT, callbacks);
+    const result = await backend.exec("cat exact");
+
+    // Exactly at the cap is complete, not cut — must not be falsely flagged.
+    expect(result.stdout.length).toBe(MAX_OUTPUT);
+    expect(result.stdoutTruncated).toBe(false);
+    expect(markCappedStream(result.stdout, result.stdoutTruncated ?? false)).not.toContain(
+      "[output truncated",
+    );
+
+    spy.mockRestore();
+  });
+
+  it("flags stderr truncation on the non-zero-exit path (#4785)", async () => {
+    process.env.ATLAS_NSJAIL_PATH = "/usr/local/bin/nsjail";
+    const spy = mockAccessSync(new Set(["/usr/local/bin/nsjail", SEMANTIC_ROOT]));
+
+    // A failing command's large stderr is the diagnostically most important
+    // truncation case — the seam marks stderr on the exitCode !== 0 branch.
+    setSpawnResult("", "z".repeat(MAX_OUTPUT + 500), 1);
+    const backend = await createNsjailBackend(SEMANTIC_ROOT, callbacks);
+    const result = await backend.exec("cat bigerr");
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.length).toBe(MAX_OUTPUT);
+    expect(result.stderrTruncated).toBe(true);
+    expect(markCappedStream(result.stderr, result.stderrTruncated ?? false)).toContain(
+      "[output truncated: exceeded 1 MB limit]",
+    );
+
+    spy.mockRestore();
   });
 
   it("constructs correct nsjail args", async () => {

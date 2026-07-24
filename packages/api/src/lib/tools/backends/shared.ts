@@ -11,21 +11,52 @@ import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
 /** Maximum bytes to read from stdout/stderr (1 MB). */
 export const MAX_OUTPUT = 1024 * 1024;
 
+/** The notice appended to any output that was cut at the MAX_OUTPUT cap. */
+function truncationNotice(max = MAX_OUTPUT): string {
+  return `\n[output truncated: exceeded ${Math.floor(max / (1024 * 1024))} MB limit]`;
+}
+
 /**
  * Cap a fully-buffered output string destined for agent context, appending a
  * truncation notice so the model knows the output was cut rather than complete.
  *
  * Complements readLimited: readLimited bounds subprocess-stream memory during
- * the read; capOutput bounds already-buffered strings from backends that return
- * whole outputs (Vercel sandbox, just-bash, plugin/BYOC backends).
+ * the read (and reports whether it truncated); capOutput bounds already-buffered
+ * strings from backends that return whole outputs (Vercel sandbox, just-bash,
+ * plugin/BYOC backends).
  */
 export function capOutput(output: string, max = MAX_OUTPUT): string {
   if (output.length <= max) return output;
-  return `${output.slice(0, max)}\n[output truncated: exceeded ${Math.floor(max / (1024 * 1024))} MB limit]`;
+  return `${output.slice(0, max)}${truncationNotice(max)}`;
+}
+
+/**
+ * Mark a stream that a backend already capped at read time (nsjail), appending
+ * the truncation notice iff readLimited reported it cut the stream.
+ *
+ * The nsjail path caps by BYTES in readLimited, so its truncation cannot be
+ * re-derived from the decoded string's `.length` (UTF-16 code units): a
+ * multi-byte output cut at the byte cap can decode to fewer code units than
+ * MAX_OUTPUT, which is why relying on capOutput's `length > max` check silently
+ * dropped the notice for non-ASCII output (#4781/#4785). Carrying the truncation
+ * fact out of the byte layer makes the notice encoding-independent.
+ */
+export function markCappedStream(text: string, truncated: boolean, max = MAX_OUTPUT): string {
+  return truncated ? `${text}${truncationNotice(max)}` : text;
+}
+
+/** Result of readLimited: the decoded text plus whether the cap cut the stream. */
+export interface LimitedRead {
+  readonly text: string;
+  readonly truncated: boolean;
 }
 
 /**
  * Read up to `max` bytes from a stream, releasing the reader on completion or error.
+ *
+ * Returns the decoded text and whether the `max`-byte cap actually cut the
+ * stream — callers surface truncation from this byte-accurate flag rather than
+ * re-deriving it from the decoded string length (see markCappedStream).
  *
  * Used by nsjail backends (explore + python) to cap subprocess output
  * and by testNsjailCapabilities for capability checks.
@@ -33,10 +64,11 @@ export function capOutput(output: string, max = MAX_OUTPUT): string {
 export async function readLimited(
   stream: ReadableStream,
   max: number,
-): Promise<string> {
+): Promise<LimitedRead> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let truncated = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -44,6 +76,7 @@ export async function readLimited(
       total += value.byteLength;
       if (total > max) {
         chunks.push(value.slice(0, max - (total - value.byteLength)));
+        truncated = true;
         break;
       }
       chunks.push(value);
@@ -52,7 +85,7 @@ export async function readLimited(
     // intentionally ignored: stream cancel errors are non-critical during cleanup
     await reader.cancel().catch(() => {});
   }
-  return new TextDecoder().decode(Buffer.concat(chunks));
+  return { text: new TextDecoder().decode(Buffer.concat(chunks)), truncated };
 }
 
 /**

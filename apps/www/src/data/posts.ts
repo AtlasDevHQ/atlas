@@ -16,6 +16,16 @@ export interface Post {
 
 export const POSTS: Post[] = [
   {
+    slug: "a-strangers-agent",
+    title: "Hand a stranger's agent your data",
+    description:
+      "An AI client I've never seen can discover Atlas, provision itself a workspace, and be querying inside a minute with no human in the loop. Here's the model that makes that defensible: two endpoints, one tool versus sixteen, and the same validation pipeline a person gets.",
+    isoDate: "2026-07-30",
+    dateLabel: "July 30, 2026",
+    readingTime: "6 min read",
+    tag: "How it works",
+  },
+  {
     slug: "the-last-mile",
     title: "The last mile",
     description:

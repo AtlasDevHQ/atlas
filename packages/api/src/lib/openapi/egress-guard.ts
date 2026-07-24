@@ -52,34 +52,62 @@ export interface EgressPin {
   readonly family: 4 | 6;
 }
 
+/** A resolved DNS record — the shape of one `dns.promises.lookup(_, {all:true})` entry. */
+interface ResolvedAddress {
+  readonly address: string;
+  readonly family: number;
+}
+
 /**
  * DNS resolver seam. Resolves a hostname to its A/AAAA records. Injectable so
  * the egress guard is testable without touching the network (Atlas prefers a DI
  * seam over `mock.module` on `node:dns`). The default resolves through
- * `node:dns` `lookup` with `{ all: true }` — the same resolution the runtime's
- * own `fetch` connect would perform.
+ * `node:dns` `lookup` with `{ all: true }`. This approximates the resolution the
+ * runtime's own `fetch` connect would perform — it need not be bit-identical
+ * because the returned IP is *pinned* (the connect targets the validated address
+ * and never re-resolves), so any divergence between this resolver and the
+ * runtime's is moot.
  */
-export type EgressLookup = (
-  hostname: string,
-) => Promise<ReadonlyArray<{ address: string; family: number }>>;
+export type EgressLookup = (hostname: string) => Promise<ReadonlyArray<ResolvedAddress>>;
 
 const defaultEgressLookup: EgressLookup = (hostname) =>
   dns.promises.lookup(hostname, { all: true });
 
 /**
  * The genuine runtime `fetch`, captured at module load — before any test swaps
- * `globalThis.fetch` or injects a `fetchImpl`. The connect-time DNS resolution +
- * IP pin is bound to this identity: it runs when {@link guardedFetch} is about
- * to hit the network through the real runtime fetch (production — where no code
- * reassigns `globalThis.fetch`), and is skipped when a **test double** is in
- * play (an injected `fetchImpl` or a swapped `globalThis.fetch`), which falls
- * back to the sync guard. The whole existing consumer-test corpus uses a double,
- * so it keeps its exact pre-#4779 behavior (no network resolution, no URL
- * rewrite) while every production egress surface inherits the DNS guard. A test
- * that WANTS to exercise the resolution injects an explicit `lookup`, which
- * forces it on regardless of this identity check.
+ * `globalThis.fetch` or injects a `fetchImpl`.
+ *
+ * The connect-time DNS resolution + IP pin engages when {@link guardedFetch} is
+ * about to hit the network through this genuine fetch, and is skipped for a
+ * **test double** (an injected `fetchImpl` or a swapped `globalThis.fetch`),
+ * which falls back to the sync guard. This keeps the pre-#4779 consumer-test
+ * corpus behavior-identical while every production surface inherits the guard.
+ *
+ * ASSUMPTION (with consequence): no production layer reassigns `globalThis.fetch`
+ * after this module loads. That holds today (verified: no fetch instrumentation
+ * / proxy shim in the tree). If a future dependency or telemetry hook DOES wrap
+ * `globalThis.fetch`, a caller that neither injects a `lookup` nor a `fetchImpl`
+ * would fall back to the DNS-blind sync guard — so this path emits a one-time
+ * {@link warnDegradedEgressGuard} warning to make that degradation visible rather
+ * than silent, and the highest-value surface ({@link createGuardedFetch}, the
+ * live-agent `baseUrl` path) forces the resolver on unconditionally so it never
+ * depends on this identity at all. A test that wants to exercise resolution
+ * injects an explicit `lookup`, which forces it on regardless.
  */
 const REAL_FETCH: typeof globalThis.fetch = globalThis.fetch;
+
+/** Fires at most once per process so a silent DNS-guard degradation surfaces without log spam. */
+let degradedEgressWarned = false;
+function warnDegradedEgressGuard(): void {
+  if (degradedEgressWarned) return;
+  degradedEgressWarned = true;
+  log.warn(
+    {},
+    "guardedFetch: globalThis.fetch was reassigned since module load and no explicit resolver was " +
+      "supplied — the connect-time DNS SSRF guard is falling back to the sync (DNS-blind) check. If " +
+      "this is production, a fetch wrapper (telemetry/proxy) has disabled the #4779 rebind defense.",
+  );
+}
 
 /**
  * A host-side fetch target was blocked by the SSRF guard. The offending URL is
@@ -173,7 +201,7 @@ export async function assertSafeEgressTarget(
 
   // DNS-name host: resolve and validate every resolved address before connect.
   const lookup = options.lookup ?? defaultEgressLookup;
-  let records: ReadonlyArray<{ address: string; family: number }>;
+  let records: ReadonlyArray<ResolvedAddress>;
   try {
     records = await lookup(bare);
   } catch (err) {
@@ -194,9 +222,11 @@ export async function assertSafeEgressTarget(
     }
   }
   // Every record is public. Pin the first so the connect targets a validated IP
-  // rather than re-resolving (rebind defense).
+  // rather than re-resolving (rebind defense). Derive `family` from the address
+  // itself — never the resolver's self-reported `family` field — so the value
+  // that drives IPv6 bracketing in `applyEgressPin` is internally consistent.
   const chosen = records[0];
-  return { address: chosen.address, family: chosen.family === 6 ? 6 : 4 };
+  return { address: chosen.address, family: net.isIPv6(chosen.address) ? 6 : 4 };
 }
 
 /** Options for {@link guardedFetch}. */
@@ -212,11 +242,18 @@ export interface GuardedFetchOptions {
 /**
  * Rewrite a request to connect to a **pinned** validated IP while preserving TLS
  * correctness. The URL's host becomes the IP (bracketed for IPv6, port kept),
- * and a `Host` header carrying the original authority is injected — Bun's fetch
- * uses that Host value for TLS SNI and certificate verification (so the cert is
- * still validated against the original hostname), while the socket connects to
- * the pinned IP. This is what defeats the rebind race: the address we validated
- * is the address we connect to, with no second resolution in between.
+ * and a `Host` header carrying the original authority is injected. This defeats
+ * the rebind race: the address we validated is the address we connect to, with
+ * no second resolution in between.
+ *
+ * TLS correctness relies on a **Bun-specific** behavior (this runtime is Bun):
+ * when a `Host` header is present, Bun's HTTP client uses its value — not the
+ * URL's IP authority — to drive BOTH the TLS SNI extension AND the certificate
+ * identity check (`get_tls_hostname` in Bun's `src/http/lib.rs`). So the socket
+ * connects to the pinned IP, but SNI and cert verification still ride the
+ * original hostname. On a runtime WITHOUT this behavior (browsers, Node/undici),
+ * SNI/cert would derive from the IP and a normal hostname cert would fail to
+ * verify — the failure would be a loud fetch/TLS error, not a silent bypass.
  *
  * `pin === null` (IP-literal host or operator opt-out) leaves the request
  * untouched.
@@ -341,8 +378,21 @@ export async function guardedFetch(
   // runtime fetch (production). A test double — an injected `fetchImpl` or a
   // swapped `globalThis.fetch` — falls back to the sync guard, keeping the whole
   // existing consumer-test corpus behavior-identical (#4779).
-  const resolver: EgressLookup | undefined =
-    options.lookup ?? (fetchImpl === REAL_FETCH ? defaultEgressLookup : undefined);
+  let resolver: EgressLookup | undefined;
+  if (options.lookup) {
+    resolver = options.lookup;
+  } else if (fetchImpl === REAL_FETCH) {
+    resolver = defaultEgressLookup;
+  } else {
+    resolver = undefined;
+    // No injected resolver, and the effective fetch is NOT the genuine runtime
+    // fetch. That is the norm for test doubles, but in production it means
+    // `globalThis.fetch` was reassigned (a wrapper) — which would silently
+    // disable the DNS guard. Surface it once instead of failing silently.
+    if (options.fetchImpl === undefined && globalThis.fetch !== REAL_FETCH) {
+      warnDegradedEgressGuard();
+    }
+  }
 
   let currentUrl = url;
   let currentInit: RequestInit = { ...init, redirect: "manual" };
@@ -402,6 +452,12 @@ export async function guardedFetch(
  * inference request goes out through the SDK's own `fetch`, bypassing the SSRF
  * guard entirely — the sync check at config-build time is DNS-blind (#4779).
  *
+ * The connect-time DNS resolver is forced ON here (defaulting `lookup` to the
+ * real resolver): this is the live-confirmed exploit surface, so its protection
+ * must NOT depend on the `fetchImpl === REAL_FETCH` identity heuristic that the
+ * general {@link guardedFetch} path uses — a fetch wrapper must never silently
+ * disable it. A test still overrides `lookup` for hermetic runs.
+ *
  * Only the `(input, init)` shape the SDK uses is supported: `input` may be a
  * string, `URL`, or `Request` (the URL is extracted; the request's own body/
  * headers/method are honored when present, with `init` taking precedence).
@@ -409,24 +465,30 @@ export async function guardedFetch(
 export function createGuardedFetch(
   options: GuardedFetchOptions = {},
 ): typeof globalThis.fetch {
+  const forcedOptions: GuardedFetchOptions = {
+    ...options,
+    lookup: options.lookup ?? defaultEgressLookup,
+  };
   const guarded = async (
     input: string | URL | Request,
     init?: RequestInit,
   ): Promise<Response> => {
     if (typeof input === "string" || input instanceof URL) {
-      return guardedFetch(input.toString(), init ?? {}, options);
+      return guardedFetch(input.toString(), init ?? {}, forcedOptions);
     }
     // A `Request` object: fold its fields into an init, letting an explicit
-    // `init` argument override, and read the URL from the request.
+    // `init` argument override, and read the URL from the request. A stream body
+    // needs `duplex: "half"` (undici/Bun throw otherwise); it is dropped when an
+    // explicit `init` overrides the method to a bodyless one.
     const req = input;
-    const merged: RequestInit = {
+    const merged: RequestInit & { duplex?: "half" } = {
       method: req.method,
       headers: req.headers,
-      body: req.body,
+      ...(req.body != null ? { body: req.body, duplex: "half" } : {}),
       signal: req.signal,
       ...init,
     };
-    return guardedFetch(req.url, merged, options);
+    return guardedFetch(req.url, merged, forcedOptions);
   };
   return guarded as typeof globalThis.fetch;
 }

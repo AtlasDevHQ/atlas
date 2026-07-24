@@ -304,6 +304,90 @@ describe("guardedFetch", () => {
     expect(lookupCalled).toBe(false); // opt-out short-circuits before resolution
     expect(connectedHost).toBe("internal.corp"); // and no pin/rewrite is applied
   });
+
+  it("rejects (fail closed) when the resolver itself throws", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response("nope");
+    }) as unknown as typeof globalThis.fetch;
+    const throwingLookup: EgressLookup = async () => {
+      throw new Error("getaddrinfo ENOTFOUND");
+    };
+    await expect(
+      guardedFetch("https://flaky.example/x", {}, { fetchImpl, lookup: throwingLookup }),
+    ).rejects.toBeInstanceOf(EgressBlockedError);
+    expect(called).toBe(false);
+  });
+
+  it("rejects a redirect to a hostname that RESOLVES internal (rebind on a hop, not a literal)", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    let hops = 0;
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      hops++;
+      if (hostHeader(init) === "public.example.com") {
+        return new Response(null, { status: 302, headers: { location: "https://rebind.example/final" } });
+      }
+      return new Response("should-not-reach", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    // public host resolves public; the redirect target resolves to an internal IP.
+    const rebindLookup: EgressLookup = async (host) =>
+      host === "public.example.com"
+        ? [{ address: PUBLIC_IP, family: 4 }]
+        : [{ address: "10.1.2.3", family: 4 }];
+    await expect(
+      guardedFetch("https://public.example.com/x", {}, { fetchImpl, lookup: rebindLookup }),
+    ).rejects.toBeInstanceOf(EgressBlockedError);
+    expect(hops).toBe(1); // the second hop (internal-resolving) never fired
+  });
+
+  it("pins a public IPv6 target with correct bracketing", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    let connectedHost = "";
+    let sentHost = "";
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      connectedHost = new URL(url).hostname; // WHATWG URL keeps IPv6 bracketed
+      sentHost = hostHeader(init) ?? "";
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const v6Lookup: EgressLookup = async () => [{ address: "2001:4860:4860::8888", family: 6 }];
+    const res = await guardedFetch("https://dns.example.com/x", {}, { fetchImpl, lookup: v6Lookup });
+    expect(res.status).toBe(200);
+    expect(connectedHost).toBe("[2001:4860:4860::8888]"); // pin spliced a correctly-bracketed IPv6
+    expect(sentHost).toBe("dns.example.com");
+  });
+
+  it("rejects an IPv4-mapped-IPv6 internal address (::ffff:10.0.0.5) before connect", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response("nope");
+    }) as unknown as typeof globalThis.fetch;
+    const mappedLookup: EgressLookup = async () => [{ address: "::ffff:10.0.0.5", family: 6 }];
+    await expect(
+      guardedFetch("https://mapped.example/x", {}, { fetchImpl, lookup: mappedLookup }),
+    ).rejects.toBeInstanceOf(EgressBlockedError);
+    expect(called).toBe(false);
+  });
+
+  it("preserves a non-default port through the pin rewrite", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    let connectedUrl = "";
+    let sentHost = "";
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      connectedUrl = url;
+      sentHost = hostHeader(init) ?? "";
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const res = await guardedFetch("https://api.example.com:8443/v1", {}, { fetchImpl, lookup: publicLookup });
+    expect(res.status).toBe(200);
+    const u = new URL(connectedUrl);
+    expect(u.hostname).toBe(PUBLIC_IP);
+    expect(u.port).toBe("8443");
+    expect(sentHost).toBe("api.example.com:8443"); // Host carries the original authority incl. port
+  });
 });
 
 describe("assertSafeEgressTarget", () => {
@@ -335,6 +419,17 @@ describe("assertSafeEgressTarget", () => {
     delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
     const pin = await assertSafeEgressTarget("https://api.example.com/x", { lookup: publicLookup });
     expect(pin).toEqual({ address: PUBLIC_IP, family: 4 });
+  });
+
+  it("returns null and does NOT resolve when the operator opts out", async () => {
+    process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
+    let lookupCalled = false;
+    const spy: EgressLookup = async () => {
+      lookupCalled = true;
+      return [{ address: "10.0.0.1", family: 4 }];
+    };
+    await expect(assertSafeEgressTarget("https://internal.corp/x", { lookup: spy })).resolves.toBeNull();
+    expect(lookupCalled).toBe(false);
   });
 });
 
@@ -368,6 +463,21 @@ describe("createGuardedFetch", () => {
     expect(res.status).toBe(200);
     expect(connectedHost).toBe(PUBLIC_IP);
     expect(sentHost).toBe("llm.example.com");
+  });
+
+  it("rejects an internal-resolving host passed as a Request object (SDK Request-input shape)", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response("nope");
+    }) as unknown as typeof globalThis.fetch;
+    const internalLookup: EgressLookup = async () => [{ address: "169.254.169.254", family: 4 }];
+    const guarded = createGuardedFetch({ fetchImpl, lookup: internalLookup });
+    await expect(
+      guarded(new Request("https://metadata.nip.io.example/v1/chat/completions", { method: "POST" })),
+    ).rejects.toBeInstanceOf(EgressBlockedError);
+    expect(called).toBe(false);
   });
 });
 

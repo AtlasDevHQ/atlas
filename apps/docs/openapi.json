@@ -51538,6 +51538,18 @@
                           },
                           "agentSessionMemory": {
                             "type": "number"
+                          },
+                          "brainEpisodes": {
+                            "type": "number"
+                          },
+                          "brainFacts": {
+                            "type": "number"
+                          },
+                          "brainEdges": {
+                            "type": "number"
+                          },
+                          "factAudienceMembers": {
+                            "type": "number"
                           }
                         },
                         "required": [
@@ -51585,6 +51597,18 @@
                     "items": {}
                   },
                   "agentSessionMemory": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "brainEpisodes": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "brainEdges": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "factAudienceMembers": {
                     "type": "array",
                     "items": {}
                   }
@@ -51727,6 +51751,66 @@
                         "imported",
                         "skipped"
                       ]
+                    },
+                    "brainEpisodes": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
+                    },
+                    "brainFacts": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
+                    },
+                    "brainEdges": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
+                    },
+                    "factAudienceMembers": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
                     }
                   },
                   "required": [
@@ -51737,7 +51821,11 @@
                     "dashboards",
                     "knowledgeDocuments",
                     "scheduledTasks",
-                    "agentSessionMemory"
+                    "agentSessionMemory",
+                    "brainEpisodes",
+                    "brainFacts",
+                    "brainEdges",
+                    "factAudienceMembers"
                   ]
                 }
               }

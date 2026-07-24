@@ -3301,6 +3301,13 @@ export const brainFacts = pgTable(
 // polymorphic shape is shorter but discards referential integrity, and an edge
 // whose endpoint silently vanished is exactly the corruption a provenance
 // graph must not tolerate.
+//
+// Endpoint FKs CASCADE, deliberately asymmetric with the RESTRICT on
+// `brainFacts.sourceEpisodeId`. A fact's episode is its EVIDENCE and must not
+// be deletable under a live claim; an edge is a derived assertion ABOUT facts
+// and episodes, so once an endpoint is gone it is dangling structure and
+// should vanish with it. The asymmetry also keeps the #4458 cleanup sweep
+// sound — its column phase assumes CASCADE between in-scope tables.
 export const brainEdges = pgTable(
   "brain_edges",
   {
@@ -3310,13 +3317,13 @@ export const brainEdges = pgTable(
     // (fact→fact, genuine conflict — SURFACED with both provenances, never
     // ranked) · derives-from (fork lineage) · provenance (evidence pointer).
     edgeType: text("edge_type").notNull(),
-    fromFactId: uuid("from_fact_id").references(() => brainFacts.id, { onDelete: "restrict" }),
+    fromFactId: uuid("from_fact_id").references(() => brainFacts.id, { onDelete: "cascade" }),
     fromEpisodeId: uuid("from_episode_id").references(() => brainEpisodes.id, {
-      onDelete: "restrict",
+      onDelete: "cascade",
     }),
-    toFactId: uuid("to_fact_id").references(() => brainFacts.id, { onDelete: "restrict" }),
+    toFactId: uuid("to_fact_id").references(() => brainFacts.id, { onDelete: "cascade" }),
     toEpisodeId: uuid("to_episode_id").references(() => brainEpisodes.id, {
-      onDelete: "restrict",
+      onDelete: "cascade",
     }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

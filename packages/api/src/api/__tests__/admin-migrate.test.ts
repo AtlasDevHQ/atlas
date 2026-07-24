@@ -256,6 +256,10 @@ describe("bundle round-trip shape", () => {
       knowledgeDocuments: { imported: 4, skipped: 0 },
       scheduledTasks: { imported: 1, skipped: 0 },
       agentSessionMemory: { imported: 6, skipped: 2 },
+      brainEpisodes: { imported: 7, skipped: 1 },
+      brainFacts: { imported: 9, skipped: 3 },
+      brainEdges: { imported: 4, skipped: 0 },
+      factAudienceMembers: { imported: 2, skipped: 5 },
     };
 
     const total = (r: { imported: number; skipped: number }) => r.imported + r.skipped;
@@ -267,6 +271,10 @@ describe("bundle round-trip shape", () => {
     expect(total(result.knowledgeDocuments)).toBe(4);
     expect(total(result.scheduledTasks)).toBe(1);
     expect(total(result.agentSessionMemory)).toBe(8);
+    expect(total(result.brainEpisodes)).toBe(8);
+    expect(total(result.brainFacts)).toBe(12);
+    expect(total(result.brainEdges)).toBe(4);
+    expect(total(result.factAudienceMembers)).toBe(7);
   });
 });
 

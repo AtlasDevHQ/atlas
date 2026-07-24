@@ -42,6 +42,10 @@ const DASH_ID = "33333333-3333-4333-8333-333333333333";
 const CARD_ID = "44444444-4444-4444-8444-444444444444";
 const DOC_ID = "55555555-5555-4555-8555-555555555555";
 const TASK_ID = "66666666-6666-4666-8666-666666666666";
+// Company brain (#4767, ADR-0036).
+const EPISODE_ID = "77777777-7777-4777-8777-777777777777";
+const FACT_ID = "88888888-8888-4888-8888-888888888888";
+const SUPERSEDED_FACT_ID = "99999999-9999-4999-8999-999999999999";
 
 describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => {
   let pool: Pool;
@@ -140,6 +144,55 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
                '["ops@example.com"]'::jsonb, 'g-prod', 'auto', true, now(), now())`,
       [TASK_ID, SOURCE_ORG],
     );
+
+    // ── Company brain (#4767, ADR-0036) ──
+    // One episode carrying TWO facts: a live published one and a superseded,
+    // tombstoned one. The retracted fact is the interesting case — it proves
+    // invalidate-never-delete survives the hop, so an as-of read in the
+    // target still answers "what we believed on Monday" correctly. An export
+    // that quietly dropped invalidated rows would look perfectly healthy.
+    await pool.query(
+      `INSERT INTO brain_episodes (id, workspace_id, source, source_id, source_actor, body,
+                                   occurred_at, extracted_at, visible_to)
+       VALUES ($1, $2, 'slack', 'C123/1700000000.1', 'U-alice', 'Pricing moved to $49/seat.',
+               '2026-06-01T00:00:00Z', '2026-06-01T00:05:00Z', ARRAY['org', 'audience:eng'])`,
+      [EPISODE_ID, SOURCE_ORG],
+    );
+    await pool.query(
+      `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from,
+                                ingested_at, extracted_at, source_episode_id, provenance,
+                                status, visible_to, predicate_cardinality)
+       VALUES ($1, $2, 'acme:pro-plan', 'price_per_seat', '49',
+               '2026-06-01T00:00:00Z', '2026-06-01T00:05:00Z', '2026-06-01T00:05:00Z', $3,
+               '{"actor":"U-alice","episode":"C123/1700000000.1"}'::jsonb,
+               'published', ARRAY['org'], 'single')`,
+      [FACT_ID, SOURCE_ORG, EPISODE_ID],
+    );
+    await pool.query(
+      `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from, valid_to,
+                                ingested_at, invalidated_at, source_episode_id, provenance,
+                                status, visible_to, predicate_cardinality)
+       VALUES ($1, $2, 'acme:pro-plan', 'price_per_seat', '39',
+               '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z',
+               '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z', $3,
+               '{"actor":"U-bob"}'::jsonb, 'published', ARRAY['org'], 'single')`,
+      [SUPERSEDED_FACT_ID, SOURCE_ORG, EPISODE_ID],
+    );
+    await pool.query(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
+       VALUES ($1, 'supersedes', $2, $3)`,
+      [SOURCE_ORG, FACT_ID, SUPERSEDED_FACT_ID],
+    );
+    await pool.query(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_episode_id)
+       VALUES ($1, 'provenance', $2, $3)`,
+      [SOURCE_ORG, FACT_ID, EPISODE_ID],
+    );
+    await pool.query(
+      `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source)
+       VALUES ($1, 'eng', 'user-1', 'slack')`,
+      [SOURCE_ORG],
+    );
   }, PG_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
@@ -190,6 +243,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         knowledgeLinks: 1,
         scheduledTasks: 1,
         agentSessionMemory: 1, // the deleted conversation's slot is excluded
+        brainEpisodes: 1,
+        brainFacts: 2, // the live claim AND the superseded/tombstoned one
+        brainEdges: 2,
+        factAudienceMembers: 1,
       });
 
       // ── Simulate the cross-region hop on one DB: preserved UUIDs would
@@ -199,6 +256,12 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       await pool.query(`DELETE FROM dashboards WHERE org_id = $1`, [SOURCE_ORG]); // cascades cards + drafts
       await pool.query(`DELETE FROM knowledge_documents WHERE workspace_id = $1`, [SOURCE_ORG]); // cascades links
       await pool.query(`DELETE FROM scheduled_tasks WHERE org_id = $1`, [SOURCE_ORG]);
+      // Brain: edges first, then facts, then episodes — the FKs are RESTRICT,
+      // not CASCADE, precisely so evidence can't vanish under a live claim.
+      await pool.query(`DELETE FROM brain_edges WHERE workspace_id = $1`, [SOURCE_ORG]);
+      await pool.query(`DELETE FROM brain_facts WHERE workspace_id = $1`, [SOURCE_ORG]);
+      await pool.query(`DELETE FROM brain_episodes WHERE workspace_id = $1`, [SOURCE_ORG]);
+      await pool.query(`DELETE FROM fact_audience_member WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM semantic_entities WHERE org_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM learned_patterns WHERE org_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM settings WHERE org_id = $1`, [SOURCE_ORG]);
@@ -213,6 +276,81 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(result.knowledgeDocuments).toEqual({ imported: 1, skipped: 0 });
       expect(result.scheduledTasks).toEqual({ imported: 1, skipped: 0 });
       expect(result.agentSessionMemory).toEqual({ imported: 1, skipped: 0 });
+      expect(result.brainEpisodes).toEqual({ imported: 1, skipped: 0 });
+      expect(result.brainFacts).toEqual({ imported: 2, skipped: 0 });
+      expect(result.brainEdges).toEqual({ imported: 2, skipped: 0 });
+      expect(result.factAudienceMembers).toEqual({ imported: 1, skipped: 0 });
+
+      // The brain survives the hop INTACT — not just row counts, but every
+      // property that makes a fact trustworthy. A migration that moved the
+      // rows while dropping the grant or the provenance would pass a count
+      // assertion and quietly publish private claims in the target region.
+      const brainFact = await pool.query<{
+        object: string;
+        status: string;
+        visible_to: string[];
+        provenance: Record<string, unknown>;
+        predicate_cardinality: string;
+        invalidated_at: Date | null;
+        source_episode_id: string;
+      }>(
+        `SELECT object, status, visible_to, provenance, predicate_cardinality,
+                invalidated_at, source_episode_id
+           FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
+        [FACT_ID, TARGET_ORG],
+      );
+      expect(brainFact.rows).toHaveLength(1);
+      expect(brainFact.rows[0].object).toBe("49");
+      expect(brainFact.rows[0].status).toBe("published");
+      expect(brainFact.rows[0].visible_to).toEqual(["org"]);
+      expect(brainFact.rows[0].provenance).toEqual({
+        actor: "U-alice",
+        episode: "C123/1700000000.1",
+      });
+      expect(brainFact.rows[0].predicate_cardinality).toBe("single");
+      // FK re-resolved against the imported episode, UUID preserved.
+      expect(brainFact.rows[0].source_episode_id).toBe(EPISODE_ID);
+
+      // Invalidate-never-delete survives: the tombstoned claim is still here,
+      // still carrying the instant it stopped being true.
+      const superseded = await pool.query<{ invalidated_at: Date | null; valid_to: Date | null }>(
+        `SELECT invalidated_at, valid_to FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
+        [SUPERSEDED_FACT_ID, TARGET_ORG],
+      );
+      expect(superseded.rows).toHaveLength(1);
+      expect(superseded.rows[0].invalidated_at).not.toBeNull();
+      expect(superseded.rows[0].valid_to).not.toBeNull();
+
+      // The episode's grant (including its audience arm) and its extraction
+      // stamp travel — the latter so the target doesn't re-queue an episode a
+      // human already reviewed.
+      const episode = await pool.query<{ visible_to: string[]; extracted_at: Date | null }>(
+        `SELECT visible_to, extracted_at FROM brain_episodes WHERE id = $1 AND workspace_id = $2`,
+        [EPISODE_ID, TARGET_ORG],
+      );
+      expect(episode.rows[0].visible_to).toEqual(["org", "audience:eng"]);
+      expect(episode.rows[0].extracted_at).not.toBeNull();
+
+      // Audience membership moved, so the `audience:eng` grant still resolves
+      // to a real person rather than denying everyone.
+      const audience = await pool.query(
+        `SELECT 1 FROM fact_audience_member
+          WHERE workspace_id = $1 AND audience_id = 'eng' AND user_id = 'user-1'`,
+        [TARGET_ORG],
+      );
+      expect(audience.rowCount).toBe(1);
+
+      // Both edge shapes re-resolved: fact→fact and fact→episode.
+      const edges = await pool.query<{ edge_type: string; to_fact_id: string | null; to_episode_id: string | null }>(
+        `SELECT edge_type, to_fact_id, to_episode_id FROM brain_edges
+          WHERE workspace_id = $1 ORDER BY edge_type ASC`,
+        [TARGET_ORG],
+      );
+      expect(edges.rows).toHaveLength(2);
+      expect(edges.rows[0].edge_type).toBe("provenance");
+      expect(edges.rows[0].to_episode_id).toBe(EPISODE_ID);
+      expect(edges.rows[1].edge_type).toBe("supersedes");
+      expect(edges.rows[1].to_fact_id).toBe(SUPERSEDED_FACT_ID);
 
       // UUIDs preserved; carve-outs enforced on the dashboard row.
       const dash = await pool.query(
@@ -295,6 +433,12 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         knowledgeDocuments: { imported: 0, skipped: 1 },
         scheduledTasks: { imported: 0, skipped: 1 },
         agentSessionMemory: { imported: 0, skipped: 1 },
+        brainEpisodes: { imported: 0, skipped: 1 },
+        // Skipped WITH their episode — re-importing them would attach
+        // duplicate claims to an episode that already carries its own.
+        brainFacts: { imported: 0, skipped: 2 },
+        brainEdges: { imported: 0, skipped: 2 },
+        factAudienceMembers: { imported: 0, skipped: 1 },
       });
     },
     PG_TEST_TIMEOUT_MS,
@@ -420,6 +564,36 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         [CLEAN_ORG],
       );
 
+      // Company brain residue (#4767). This is the ONE place the sweep's
+      // phase ordering is load-bearing: `brain_facts.source_episode_id` is
+      // RESTRICT, so if facts were deleted in the same phase as episodes the
+      // sweep would fail outright on any workspace that actually has a brain.
+      // Seeding a full episode → fact → edge chain here is what makes that a
+      // test failure instead of a production incident.
+      const cleanEpisode = "aaaaaaaa-0000-4000-8000-00000000000a";
+      const cleanFact = "aaaaaaaa-0000-4000-8000-00000000000b";
+      await pool.query(
+        `INSERT INTO brain_episodes (id, workspace_id, source, source_id, body, visible_to)
+         VALUES ($1, $2, 'slack', 'C-clean/1', 'residue', ARRAY['org'])`,
+        [cleanEpisode, CLEAN_ORG],
+      );
+      await pool.query(
+        `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object,
+                                  source_episode_id, provenance, visible_to)
+         VALUES ($1, $2, 's', 'p', 'o', $3, '{"actor":"u"}'::jsonb, ARRAY['org'])`,
+        [cleanFact, CLEAN_ORG, cleanEpisode],
+      );
+      await pool.query(
+        `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_episode_id)
+         VALUES ($1, 'provenance', $2, $3)`,
+        [CLEAN_ORG, cleanFact, cleanEpisode],
+      );
+      await pool.query(
+        `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source)
+         VALUES ($1, 'eng', 'user-1', 'slack')`,
+        [CLEAN_ORG],
+      );
+
       // ── A workspace that migrated away but came BACK before cleanup ran:
       // the cutover guard must refuse to delete its (live) data ──
       await pool.query(
@@ -478,6 +652,15 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         expect(await countIn(`SELECT count(*)::int AS n FROM settings WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM audit_log WHERE org_id = $1`, [CLEAN_ORG])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM chat_cache WHERE key = 'slack:installation:T-clean'`, [])).toBe(0);
+        // The brain chain is fully swept — facts ahead of episodes despite the
+        // RESTRICT FK between them, edges cascaded, audience membership gone.
+        expect(await countIn(`SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM brain_episodes WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM brain_edges WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
+        expect(await countIn(`SELECT count(*)::int AS n FROM fact_audience_member WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
+        // The TARGET org's imported brain is untouched — the sweep is scoped
+        // to the migrated-away workspace, not to the tables.
+        expect(await countIn(`SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`, [TARGET_ORG])).toBe(2);
 
         // Survivors: platform settings row, unattributable cache row, the
         // TARGET org's imported data (seeded by the round-trip test above —

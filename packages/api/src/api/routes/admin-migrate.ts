@@ -11,6 +11,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/internal";
 import { computeNextRun } from "@atlas/api/lib/scheduled-tasks";
+import { BRAIN_EDGE_TYPES, type BrainEdgeType } from "@atlas/api/lib/brain/types";
 import type { ExportBundle, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -212,6 +213,90 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
     }
   }
 
+  // Company brain (#4767, ADR-0036). Deliberately NOT added to the v2
+  // required-section list above: a source region still running pre-#4767 code
+  // produces a valid v2 bundle with no brain sections, and requiring them
+  // would turn every mid-rollout migration into a hard failure. Optional on
+  // the wire, imported whenever present.
+  //
+  // The shape guards below exist because the brain tables enforce their
+  // invariants with CHECK constraints. A malformed bundle reaching the INSERT
+  // aborts the WHOLE import transaction with a raw pg error; caught here it is
+  // an actionable message naming the offending index.
+  if ("brainEpisodes" in obj && obj.brainEpisodes !== undefined) {
+    if (!Array.isArray(obj.brainEpisodes)) {
+      return { ok: false, error: "Invalid 'brainEpisodes' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainEpisodes.length; i++) {
+      const e = obj.brainEpisodes[i] as Record<string, unknown> | null;
+      if (!e || typeof e !== "object" || typeof e.id !== "string" || typeof e.source !== "string" || typeof e.sourceId !== "string" || !Array.isArray(e.facts)) {
+        return { ok: false, error: `brainEpisodes[${i}]: must have 'id', 'source', 'sourceId' (strings) and 'facts' (array).` };
+      }
+      // Body XOR locator — guards chk_brain_episodes_body_xor_locator.
+      const hasBody = typeof e.body === "string";
+      const hasLocator = typeof e.locator === "string";
+      if (hasBody === hasLocator) {
+        return { ok: false, error: `brainEpisodes[${i}]: must carry exactly one of 'body' or 'locator'.` };
+      }
+      // No-grant-no-promotion — an absent or empty grant must never be
+      // defaulted to `['org']`, which would publish private source content to
+      // the whole workspace in the target region.
+      if (!Array.isArray(e.visibleTo) || e.visibleTo.length === 0) {
+        return { ok: false, error: `brainEpisodes[${i}].visibleTo: must be a non-empty array (no-grant-no-promotion).` };
+      }
+      for (let j = 0; j < e.facts.length; j++) {
+        const f = e.facts[j] as Record<string, unknown> | null;
+        if (!f || typeof f !== "object" || typeof f.id !== "string" || typeof f.subject !== "string" || typeof f.predicate !== "string" || typeof f.object !== "string") {
+          return { ok: false, error: `brainEpisodes[${i}].facts[${j}]: must have 'id', 'subject', 'predicate', and 'object' (strings).` };
+        }
+        if (f.status !== "draft" && f.status !== "published" && f.status !== "archived") {
+          return { ok: false, error: `brainEpisodes[${i}].facts[${j}].status: must be 'draft', 'published', or 'archived'.` };
+        }
+        if (f.predicateCardinality !== "single" && f.predicateCardinality !== "multi") {
+          return { ok: false, error: `brainEpisodes[${i}].facts[${j}].predicateCardinality: must be 'single' or 'multi'.` };
+        }
+        if (!Array.isArray(f.visibleTo) || f.visibleTo.length === 0) {
+          return { ok: false, error: `brainEpisodes[${i}].facts[${j}].visibleTo: must be a non-empty array (no-grant-no-promotion).` };
+        }
+        // No-provenance-no-promotion. `{}` is rejected at rest by the table,
+        // so reject it here rather than aborting the transaction on it.
+        if (!f.provenance || typeof f.provenance !== "object" || Array.isArray(f.provenance) || Object.keys(f.provenance).length === 0) {
+          return { ok: false, error: `brainEpisodes[${i}].facts[${j}].provenance: must be a non-empty object (no-provenance-no-promotion).` };
+        }
+      }
+    }
+  }
+
+  if ("brainEdges" in obj && obj.brainEdges !== undefined) {
+    if (!Array.isArray(obj.brainEdges)) {
+      return { ok: false, error: "Invalid 'brainEdges' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainEdges.length; i++) {
+      const e = obj.brainEdges[i] as Record<string, unknown> | null;
+      if (!e || typeof e !== "object" || !BRAIN_EDGE_TYPES.includes(e.edgeType as BrainEdgeType)) {
+        return { ok: false, error: `brainEdges[${i}].edgeType: must be one of ${BRAIN_EDGE_TYPES.join(", ")}.` };
+      }
+      // Exactly one endpoint per side — guards chk_brain_edges_{from,to}_endpoint.
+      const fromCount = Number(typeof e.fromFactId === "string") + Number(typeof e.fromEpisodeId === "string");
+      const toCount = Number(typeof e.toFactId === "string") + Number(typeof e.toEpisodeId === "string");
+      if (fromCount !== 1 || toCount !== 1) {
+        return { ok: false, error: `brainEdges[${i}]: each side must have exactly one endpoint ('fromFactId' XOR 'fromEpisodeId', 'toFactId' XOR 'toEpisodeId').` };
+      }
+    }
+  }
+
+  if ("factAudienceMembers" in obj && obj.factAudienceMembers !== undefined) {
+    if (!Array.isArray(obj.factAudienceMembers)) {
+      return { ok: false, error: "Invalid 'factAudienceMembers' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.factAudienceMembers.length; i++) {
+      const m = obj.factAudienceMembers[i] as Record<string, unknown> | null;
+      if (!m || typeof m !== "object" || typeof m.audienceId !== "string" || typeof m.userId !== "string" || typeof m.source !== "string") {
+        return { ok: false, error: `factAudienceMembers[${i}]: must have 'audienceId', 'userId', and 'source' (strings).` };
+      }
+    }
+  }
+
   return { ok: true, bundle: obj as unknown as ExportBundle };
 }
 
@@ -228,6 +313,10 @@ const ImportResultSchema = z.object({
   knowledgeDocuments: z.object({ imported: z.number(), skipped: z.number() }),
   scheduledTasks: z.object({ imported: z.number(), skipped: z.number() }),
   agentSessionMemory: z.object({ imported: z.number(), skipped: z.number() }),
+  brainEpisodes: z.object({ imported: z.number(), skipped: z.number() }),
+  brainFacts: z.object({ imported: z.number(), skipped: z.number() }),
+  brainEdges: z.object({ imported: z.number(), skipped: z.number() }),
+  factAudienceMembers: z.object({ imported: z.number(), skipped: z.number() }),
 });
 
 const importRoute = createRoute({
@@ -266,6 +355,10 @@ const importRoute = createRoute({
                 knowledgeLinks: z.number().optional(),
                 scheduledTasks: z.number().optional(),
                 agentSessionMemory: z.number().optional(),
+                brainEpisodes: z.number().optional(),
+                brainFacts: z.number().optional(),
+                brainEdges: z.number().optional(),
+                factAudienceMembers: z.number().optional(),
               }),
             }),
             conversations: z.array(z.unknown()),
@@ -278,6 +371,12 @@ const importRoute = createRoute({
             knowledgeDocuments: z.array(z.unknown()).optional(),
             scheduledTasks: z.array(z.unknown()).optional(),
             agentSessionMemory: z.array(z.unknown()).optional(),
+            // Company brain (#4767). Same reason as above — an undeclared
+            // section is stripped by zod before the importer ever sees it,
+            // which would strand the whole brain silently.
+            brainEpisodes: z.array(z.unknown()).optional(),
+            brainEdges: z.array(z.unknown()).optional(),
+            factAudienceMembers: z.array(z.unknown()).optional(),
           }),
         },
       },
@@ -325,6 +424,10 @@ export async function importBundle(
     knowledgeDocuments: { imported: 0, skipped: 0 },
     scheduledTasks: { imported: 0, skipped: 0 },
     agentSessionMemory: { imported: 0, skipped: 0 },
+    brainEpisodes: { imported: 0, skipped: 0 },
+    brainFacts: { imported: 0, skipped: 0 },
+    brainEdges: { imported: 0, skipped: 0 },
+    factAudienceMembers: { imported: 0, skipped: 0 },
   };
 
   // --- 1. Conversations + Messages ---
@@ -692,6 +795,141 @@ export async function importBundle(
     );
 
     result.agentSessionMemory.imported++;
+  }
+
+  // --- 9. Company brain (#4767, ADR-0036) — facts ride inside their episode ---
+  // Ordering is load-bearing, and it is the reason facts are NESTED rather
+  // than a sibling array: episode → its facts → (later) edges. A fact's
+  // `source_episode_id` is NOT NULL, so writing facts before episodes would
+  // fail the FK; writing edges before both would fail theirs.
+  //
+  // Everything that makes a fact trustworthy is carried verbatim — provenance,
+  // grant, review status, all four temporal columns. Nothing is defaulted: a
+  // permissive fallback here would manufacture the very rows the table's
+  // CHECKs exist to refuse, and would do it while claiming a successful
+  // migration.
+  for (const episode of bundle.brainEpisodes ?? []) {
+    const existing = await client.query(
+      "SELECT id FROM brain_episodes WHERE id = $1 AND workspace_id = $2",
+      [episode.id, orgId],
+    );
+
+    if (existing.rows.length > 0) {
+      result.brainEpisodes.skipped++;
+      // Its facts are skipped with it — re-importing them would attach
+      // duplicate claims to an episode that already carries its own.
+      result.brainFacts.skipped += episode.facts.length;
+      continue;
+    }
+
+    await client.query(
+      `INSERT INTO brain_episodes (id, workspace_id, source, source_id, source_actor, body, locator, occurred_at, ingested_at, extracted_at, visible_to, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        episode.id,
+        orgId,
+        episode.source,
+        episode.sourceId,
+        episode.sourceActor ?? null,
+        episode.body ?? null,
+        episode.locator ?? null,
+        episode.occurredAt ?? null,
+        episode.ingestedAt,
+        // Preserved: re-extracting in the target would re-queue episodes a
+        // human has already reviewed.
+        episode.extractedAt ?? null,
+        episode.visibleTo,
+        episode.createdAt,
+      ],
+    );
+
+    result.brainEpisodes.imported++;
+
+    for (const fact of episode.facts) {
+      await client.query(
+        `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from, valid_to, ingested_at, invalidated_at, extracted_at, source_episode_id, provenance, status, visible_to, predicate_cardinality, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        [
+          fact.id,
+          orgId,
+          fact.subject,
+          fact.predicate,
+          fact.object,
+          fact.validFrom ?? null,
+          fact.validTo ?? null,
+          fact.ingestedAt,
+          fact.invalidatedAt ?? null,
+          fact.extractedAt ?? null,
+          episode.id,
+          JSON.stringify(fact.provenance),
+          fact.status,
+          fact.visibleTo,
+          fact.predicateCardinality,
+          fact.createdAt,
+          fact.updatedAt,
+        ],
+      );
+      result.brainFacts.imported++;
+    }
+  }
+
+  // Edges LAST — an endpoint can be a fact or an episode on either side, so
+  // this is the only point at which every endpoint is guaranteed to exist.
+  // An edge whose endpoint was skipped (already present) still resolves,
+  // because the skip path means the row is in the target already.
+  for (const edge of bundle.brainEdges ?? []) {
+    const existing = await client.query(
+      `SELECT id FROM brain_edges
+        WHERE workspace_id = $1 AND edge_type = $2
+          AND from_fact_id IS NOT DISTINCT FROM $3
+          AND from_episode_id IS NOT DISTINCT FROM $4
+          AND to_fact_id IS NOT DISTINCT FROM $5
+          AND to_episode_id IS NOT DISTINCT FROM $6`,
+      [
+        orgId,
+        edge.edgeType,
+        edge.fromFactId ?? null,
+        edge.fromEpisodeId ?? null,
+        edge.toFactId ?? null,
+        edge.toEpisodeId ?? null,
+      ],
+    );
+
+    if (existing.rows.length > 0) {
+      result.brainEdges.skipped++;
+      continue;
+    }
+
+    await client.query(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, from_episode_id, to_fact_id, to_episode_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        orgId,
+        edge.edgeType,
+        edge.fromFactId ?? null,
+        edge.fromEpisodeId ?? null,
+        edge.toFactId ?? null,
+        edge.toEpisodeId ?? null,
+        edge.createdAt,
+      ],
+    );
+
+    result.brainEdges.imported++;
+  }
+
+  // Audience membership. Without it every `audience:` grant denies everyone in
+  // the target region — a total loss of access that surfaces as "the brain
+  // forgot everything" rather than as an error.
+  for (const member of bundle.factAudienceMembers ?? []) {
+    const inserted = await client.query(
+      `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source, created_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (workspace_id, audience_id, user_id) DO NOTHING`,
+      [orgId, member.audienceId, member.userId, member.source, member.createdAt],
+    );
+
+    if (inserted.rowCount === 0) result.factAudienceMembers.skipped++;
+    else result.factAudienceMembers.imported++;
   }
 
   return result;

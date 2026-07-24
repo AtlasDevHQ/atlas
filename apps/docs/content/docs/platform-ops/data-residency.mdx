@@ -185,7 +185,7 @@ Set `ATLAS_STRICT_ROUTING=true` (or `residency.strictRouting: true` in config) t
 
 ## Region Migration
 
-When a workspace needs to move to a different region, Atlas performs a cross-region data migration. The migration moves the workspace's content — conversations, semantic entities, learned patterns, org-scoped settings, dashboards, knowledge documents, scheduled task definitions, and durable agent session memory — from the source region to the target. Operational state (caches, run history, in-flight agent checkpoints) and region-bound credentials deliberately do not move; the full per-item breakdown is in [What moves](#what-moves).
+When a workspace needs to move to a different region, Atlas performs a cross-region data migration. The migration moves the workspace's content — conversations, semantic entities, learned patterns, org-scoped settings, dashboards, knowledge documents, scheduled task definitions, durable agent session memory, and the company brain — from the source region to the target. Operational state (caches, run history, in-flight agent checkpoints) and region-bound credentials deliberately do not move; the full per-item breakdown is in [What moves](#what-moves).
 
 ### How it works
 
@@ -228,6 +228,7 @@ curl http://localhost:3001/api/v1/admin/residency/migration \
 | Knowledge documents (bodies, frontmatter, link graph, review status) | Moves in the bundle. Full-text search index rebuilds automatically. Sync credentials and sync state stay behind — re-enter the endpoint secret and re-sync in the target region |
 | Scheduled tasks (definitions) | Moves in the bundle; the next run time is recomputed in the target so its scheduler re-plans. Run history stays behind. Connection-group / plugin references resolve again once the datasource or plugin is re-installed in the target |
 | Durable agent session memory | Moves in the bundle (keyed to migrated conversations) |
+| Company brain (episodes, reviewed facts, provenance graph, audience membership) | Moves in the bundle. Each fact travels with its provenance, its visibility grant, its review status, and its full validity history — including retracted and superseded claims, so "what we believed on Monday" still answers correctly in the target. Audience membership moves with it, so `audience:`-scoped facts stay visible to the right people |
 | In-flight agent run checkpoints | Stays — resume leases are region-local and cannot be resumed cross-region; an interrupted turn is simply re-asked in the target |
 | Workspace integrations (chat platforms, action targets, datasource installs, credentials) | **Recreated in the target region.** Credentials are encrypted under per-region keys (the ciphertext is not portable) and OAuth callbacks/webhooks bind to region-specific hosts, so integrations are re-connected after migration — see the checklist below |
 | Caches, run/audit/usage history, derived data (suggestions, profiling state) | Stays — regenerates or re-accrues in the target |

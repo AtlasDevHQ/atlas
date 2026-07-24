@@ -259,15 +259,27 @@ CREATE INDEX IF NOT EXISTS idx_brain_facts_visible_to
 --                                    with both provenances, never ranked
 --   derives-from    fact  → fact/episode   fork lineage
 --   provenance      fact  → episode   the evidence pointer
+--
+-- Endpoint FKs CASCADE, deliberately asymmetric with the RESTRICT on
+-- brain_facts.source_episode_id. The asymmetry tracks what each reference
+-- MEANS: a fact's episode is its evidence, and evidence must not be
+-- deletable out from under a live claim (RESTRICT). An edge is a derived
+-- assertion ABOUT facts and episodes with no independent evidentiary value —
+-- once an endpoint is gone the edge is dangling structure, so it should
+-- vanish with it (CASCADE) rather than block the delete.
+--
+-- This also keeps the #4458 source-cleanup sweep sound: that sweep's column
+-- phase assumes every FK between in-scope tables is CASCADE, so a RESTRICT
+-- here would make a workspace's post-migration cleanup fail on live data.
 CREATE TABLE IF NOT EXISTS brain_edges (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id text NOT NULL,
   edge_type text NOT NULL,
 
-  from_fact_id uuid REFERENCES brain_facts (id) ON DELETE RESTRICT,
-  from_episode_id uuid REFERENCES brain_episodes (id) ON DELETE RESTRICT,
-  to_fact_id uuid REFERENCES brain_facts (id) ON DELETE RESTRICT,
-  to_episode_id uuid REFERENCES brain_episodes (id) ON DELETE RESTRICT,
+  from_fact_id uuid REFERENCES brain_facts (id) ON DELETE CASCADE,
+  from_episode_id uuid REFERENCES brain_episodes (id) ON DELETE CASCADE,
+  to_fact_id uuid REFERENCES brain_facts (id) ON DELETE CASCADE,
+  to_episode_id uuid REFERENCES brain_episodes (id) ON DELETE CASCADE,
 
   created_at timestamptz NOT NULL DEFAULT now(),
 

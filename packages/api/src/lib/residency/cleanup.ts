@@ -158,6 +158,23 @@ export const CLEANUP_TABLE_RULES = {
   },
   scheduled_tasks: { kind: "column", column: "org_id" },
   agent_session_memory: { kind: "column", column: "org_id" },
+  // Company brain (#4767, ADR-0036). Facts are scoped THROUGH their episode
+  // rather than by their own workspace_id — not for scoping (the column
+  // exists) but for PHASE: `brain_facts.source_episode_id` is the one
+  // RESTRICT FK among the in-scope tables, so the facts must be gone before
+  // the column phase deletes the episodes, or the sweep fails on any
+  // workspace that actually has a brain. Edges CASCADE from both endpoints
+  // and are already gone by then; their rule is kept explicit so the
+  // registry stays a complete map, and the DELETE is a harmless no-op.
+  brain_facts: {
+    kind: "parent",
+    fkColumn: "source_episode_id",
+    parentTable: "brain_episodes",
+    parentColumn: "workspace_id",
+  },
+  brain_episodes: { kind: "column", column: "workspace_id" },
+  brain_edges: { kind: "column", column: "workspace_id" },
+  fact_audience_member: { kind: "column", column: "workspace_id" },
 
   // ── Stays residue (region-local; registry says NOT retained) ─────────────
   // No org column: cache keys have no org dimension, but the Slack
@@ -279,7 +296,15 @@ export interface CleanupStatement {
  * in-scope tables is `ON DELETE CASCADE` (or `SET NULL` for
  * `conversations.bound_dashboard_id`), so no column-phase delete can be
  * blocked by remaining child rows — pinned against real Postgres by
- * `migrate-roundtrip-pg.test.ts`. Exported for the tripwire + PG tests.
+ * `migrate-roundtrip-pg.test.ts`.
+ *
+ * The single exception is `brain_facts.source_episode_id`, which is RESTRICT
+ * on purpose (evidence must not vanish under a live claim). That is why
+ * `brain_facts` carries a `parent` rule despite having its own
+ * `workspace_id`: the parent phase is what puts its delete ahead of
+ * `brain_episodes` in the column phase. A future RESTRICT FK between two
+ * in-scope tables needs the same treatment. Exported for the tripwire + PG
+ * tests.
  */
 export function buildCleanupStatements(): readonly CleanupStatement[] {
   const first: CleanupStatement[] = [];

@@ -28,9 +28,13 @@ const log = createLogger("admin-migrate");
  * importer that rejected a grant the source region legally holds would leave
  * that workspace permanently stuck in its current region.
  *
- * Grammar validity (`org` vs `everyone`) is NOT checked here. That is #4768's
- * parser, whose failure mode is deny+log at read time rather than a rejected
- * import.
+ * Grammar validity (`org` vs `everyone`) is NOT checked here. That is
+ * `lib/brain/acl.ts`'s parser (#4768), whose failure mode is deny+log at READ
+ * time: a malformed token matches no reader principal, so it grants nobody
+ * anything without ever making the row unimportable. The two guards are a
+ * matched pair and move together — if either starts rejecting what the other
+ * admits, a legally-stored workspace becomes unmigratable, and that surfaces
+ * at region cutover rather than here.
  */
 function grantProblem(value: unknown): string | null {
   if (!Array.isArray(value)) {

@@ -10846,7 +10846,8 @@
                 "properties": {
                   "sql": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "maxLength": 100000
                   },
                   "connectionId": {
                     "type": "string"
@@ -67152,7 +67153,8 @@
                 "type": "object",
                 "properties": {
                   "yamlContent": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 256000
                   },
                   "entityType": {
                     "type": "string"

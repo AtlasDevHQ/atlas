@@ -3278,6 +3278,39 @@ describe("PUT /api/v1/admin/semantic/org/entities/:name", () => {
     }));
     expect(res.status).toBe(400);
   });
+
+  it("returns 422 for yamlContent over the max length bound (#4780 — YAML parse DoS cap)", async () => {
+    setOrgAdmin("org-1");
+    // Prior tests in this block exercise the draft-upsert path; reset so the
+    // "never persisted" assertion below is about THIS request only.
+    mockUpsertDraftEntityAdmin.mockReset();
+    // An over-cap `yamlContent` is rejected at the request schema BEFORE it ever
+    // reaches the js-yaml parser or the draft upsert — the missing byte ceiling
+    // that let a 3 MB body persist on staging.
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "PUT", {
+      yamlContent: `table: users\n${"a".repeat(256_001)}`,
+    }));
+    expect(res.status).toBe(422);
+    // Short-circuited at validation — the persistence path never ran.
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+    expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("accepts yamlContent at exactly the max length bound (#4780 — cap is inclusive)", async () => {
+    setOrgAdmin("org-1");
+    mockUpsertDraftEntityAdmin.mockReset();
+    mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    // Boundary guard: valid entity YAML sized to EXACTLY the ceiling must pass
+    // the schema and reach the handler (catches an off-by-one that made the
+    // bound stricter than intended). Pad with a YAML comment js-yaml ignores.
+    const cap = 256_000; // mirrors MAX_ENTITY_YAML_LEN in admin.ts
+    const prefix = "table: users\n# ";
+    const yamlContent = prefix + "a".repeat(cap - prefix.length);
+    expect(yamlContent).toHaveLength(cap);
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/org/entities/users", "PUT", { yamlContent }));
+    expect(res.status).toBe(200);
+    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("DELETE /api/v1/admin/semantic/org/entities/:name", () => {

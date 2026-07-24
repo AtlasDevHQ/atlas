@@ -527,6 +527,9 @@ void mock.module("@atlas/api/lib/tools/sql", () => ({
   parserDatabase: mock(() => "PostgreSQL"),
   executeSQL: {},
   runUserQueryPipeline: mockRunUserQueryPipeline,
+  // A route in this app's graph statically imports the shared SQL cap for its
+  // request schema (#4780); mirror the real value so that import resolves.
+  MAX_SQL_LEN: 100_000,
 }));
 
 void mock.module("@atlas/api/lib/auth/detect", () => ({

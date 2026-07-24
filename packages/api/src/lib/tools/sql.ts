@@ -154,6 +154,17 @@ function warnWhitelistDisabled() {
 
 const parser = new Parser();
 
+/**
+ * Upper bound on a single SQL string fed to the parser. Generous for any
+ * realistic analytical SELECT (deep CTE stacks, long IN lists) while capping
+ * the payload a hostile client can force through `node-sql-parser` on the API
+ * event loop (#4780). Every route that parses caller-authored SQL — both
+ * `execute-sql` and `validate-sql` — enforces this same ceiling at its request
+ * schema, so the cap can't drift between the two sibling endpoints. Tunable if
+ * a real need surfaces.
+ */
+export const MAX_SQL_LEN = 100_000;
+
 // ── Parse-once seam (#4349) ─────────────────────────────────────────
 //
 // The validate-then-execute path used to parse the same query string ~5–6

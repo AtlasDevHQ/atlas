@@ -169,6 +169,9 @@ void mock.module("@atlas/api/lib/tools/sql", () => ({
   parserDatabase: () => "PostgresQL",
   extractClassification: () => ({ tablesAccessed: [], columnsAccessed: [] }),
   buildSqlExecuteSpanAttrs: () => ({}),
+  // The route statically imports this cap for its request schema (#4780);
+  // mirror the real value so the schema constructs with a real `.max()` bound.
+  MAX_SQL_LEN: 100_000,
 }));
 
 const { executeSql } = await import("../execute-sql");

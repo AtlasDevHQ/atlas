@@ -49,17 +49,17 @@ export default defineConfig({
   residency: {
     regions: {
       "us-east": {
-        label: "US East (Virginia)",
+        label: "US East",
         databaseUrl: "postgresql://us-east-db.example.com/atlas",
         datasourceUrl: "postgresql://us-east-analytics.example.com/warehouse",
       },
       "eu-west": {
-        label: "EU West (Ireland)",
+        label: "EU West",
         databaseUrl: "postgresql://eu-west-db.example.com/atlas",
         datasourceUrl: "postgresql://eu-west-analytics.example.com/warehouse",
       },
       "ap-southeast": {
-        label: "Asia Pacific (Singapore)",
+        label: "Asia Pacific",
         databaseUrl: "postgresql://ap-southeast-db.example.com/atlas",
       },
     },
@@ -102,8 +102,8 @@ Response:
 ```json
 {
   "regions": [
-    { "region": "us-east", "label": "US East (Virginia)", "workspaceCount": 12, "healthy": true },
-    { "region": "eu-west", "label": "EU West (Ireland)", "workspaceCount": 5, "healthy": true }
+    { "region": "us-east", "label": "US East", "workspaceCount": 12, "healthy": true },
+    { "region": "eu-west", "label": "EU West", "workspaceCount": 5, "healthy": true }
   ],
   "defaultRegion": "us-east"
 }

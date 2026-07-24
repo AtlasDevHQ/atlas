@@ -158,7 +158,7 @@ const SECTIONS: LegalSectionData[] = [
     id: "transfers",
     title: "International transfers",
     legal: [
-      "Atlas Cloud is hosted in three Customer-selectable regions, available on every paid plan: United States (Ashburn, Virginia), Europe (Eemshaven, Netherlands), and Asia Pacific (Singapore). Customer Data does not leave the selected region except for transactional services (billing, status email) which are processed in the United States.",
+      "Atlas Cloud is hosted in three Customer-selectable regions, available on every paid plan: the United States, Europe, and Asia Pacific. Customer Data does not leave the selected region except for transactional services (billing, status email) which are processed in the United States.",
       "Where personal data is transferred from the EEA, UK, or Switzerland to the US, we rely on Standard Contractual Clauses and the EU-US Data Privacy Framework where available. Custom enterprise contracts can negotiate additional regions.",
     ],
     plain:

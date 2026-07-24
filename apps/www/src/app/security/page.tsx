@@ -56,7 +56,7 @@ const PILLARS: Pillar[] = [
   {
     mono: "sandboxed",
     label: "Sandboxed tool execution",
-    sub: "The agent's explore and Python tools run in an isolated sandbox — a network-denied microVM on Atlas Cloud — with read-only access scoped to your semantic layer, never your filesystem or secrets.",
+    sub: "The agent's explore and Python tools run in an isolated sandbox — a network-denied microVM on Atlas Cloud. It's read-only by isolation: anything the shell writes lands in the sandbox's throwaway layer and never reaches your filesystem, your secrets, or the host.",
   },
   {
     mono: "encrypted",
@@ -109,10 +109,10 @@ const SECTIONS: LegalSectionData[] = [
       "Beyond writing SQL, the agent can explore your semantic layer (ls, cat, grep, find) and, where enabled, run Python. These tools execute in an isolated sandbox — never directly on the host.",
       "On Atlas Cloud, the sandbox is a Vercel Sandbox: a Firecracker microVM with its network policy set to deny-all, so sandboxed code cannot make outbound connections. Self-hosted deployments get the same isolation through nsjail (Linux namespaces) or an isolated sidecar service, selected by a documented priority chain.",
       "One locality note: Vercel Sandbox provisions only in the United States (iad1), so on Atlas Cloud sandbox execution runs in the US regardless of your workspace's data-residency region. What transits is semantic-layer content — including sampled values — plus knowledge-base documents the agent browses and, for Python, query-result rows. Networking is deny-all for explore and deny-all by default for Python (egress can open only to an installed REST datasource's own hosts, with no credential attached); sandboxes are never snapshotted, so nothing persists at Vercel once they stop. This is disclosed in our sub-processor list; workspaces that need in-region execution can connect their own sandbox on a provider account whose execution region they control — today that covers the explore tool, with Python support in progress.",
-      "Inside the sandbox, the explore tool has read-only access scoped to your semantic-layer directory and nothing else. There are no writes, no shell escapes, and path-traversal attempts outside the semantic directory are blocked. The agent's tools can read the map of your data — never your filesystem, your environment, or your database credentials.",
+      "Inside the sandbox, the explore tool reads the semantic-layer content staged for it. Containment is structural, not a path check: the sandbox is read-only by isolation — an ephemeral microVM on Atlas Cloud, read-only bind mounts or an in-memory overlay when self-hosted. There is no command allowlist and no semantic-scoped path jail, so a shell write or a `..` traversal may succeed inside the sandbox — but it lands in an ephemeral or in-memory layer that is discarded when the sandbox stops and never touches host files. What the agent's tools can never reach is the host itself: your real filesystem, your environment, or your database credentials.",
     ],
     plain:
-      "The agent's file and Python tools run in a locked-down sandbox — a network-denied microVM on Cloud, nsjail or a sidecar when self-hosted — with read-only access to your semantic layer and nothing else. On Cloud, sandbox execution runs in the US (iad1) regardless of workspace region; bring your own sandbox — on a provider account whose region you control — for in-region explore execution (Python coverage is in progress).",
+      "The agent's file and Python tools run in a locked-down sandbox — a network-denied microVM on Cloud, nsjail or a sidecar when self-hosted. It's read-only by isolation: writes stay inside the throwaway sandbox and never reach the host filesystem or your secrets. On Cloud, sandbox execution runs in the US (iad1) regardless of workspace region; bring your own sandbox — on a provider account whose region you control — for in-region explore execution (Python coverage is in progress).",
   },
   {
     id: "credentials",

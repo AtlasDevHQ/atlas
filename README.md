@@ -22,7 +22,7 @@
 
 ## What is Atlas?
 
-Atlas turns a directory of YAML files into a complete semantic layer for analytics — entities, dimensions, measures, joins, virtual dimensions, query patterns, glossary terms, and authoritative metrics. Humans author the YAML. AI agents consume it through a built-in chat UI, an embeddable widget, Slack-native chat, or the **Model Context Protocol (MCP)** for Claude Desktop / Cursor / Continue — all returning deterministic, validated, read-only SQL.
+Atlas turns a directory of YAML files into a complete semantic layer for analytics — entities, dimensions, measures, joins, virtual dimensions, query patterns, glossary terms, and authoritative metrics. Humans author the YAML. AI agents consume it through a built-in chat UI, an embeddable widget, Slack-native chat (with Teams, Discord, Telegram, WhatsApp and Google Chat wired next), or the **Model Context Protocol (MCP)** for Claude Desktop / Cursor / Continue — all returning deterministic, validated, read-only SQL.
 
 Every YAML field exists because an LLM needs it to write correct SQL: `sample_values` ground the agent in real data, `glossary.status: ambiguous` forces clarifying questions, `metrics.objective` picks `MAX` vs `MIN`, `query_patterns` teach the canonical join shapes for your domain.
 
@@ -131,7 +131,7 @@ The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `A
 |---|---|---|---|
 | **Semantic layer** | YAML on disk — `query_patterns`, `virtual_dimensions`, `glossary.status: ambiguous`, `metrics.objective` are all first-class | Proprietary metadata, GUI-authored | None or limited |
 | **Agent-native** | MCP server first — Claude Desktop, Cursor, Continue with `bunx @useatlas/mcp init` | Bolted-on AI feature | Standalone chat UI |
-| **Embeddable** | Script tag, React component, headless API, MCP, Slack, Teams | Standalone app | Standalone app |
+| **Embeddable** | Script tag, React component, headless API, MCP, Slack-native chat (5 more chat platforms + GitHub + Linear wired) | Standalone app | Standalone app |
 | **Deploy anywhere** | Docker, Railway, Vercel, or your own infra | Vendor-hosted | Vendor-hosted |
 | **Plugin ecosystem** | 24 plugins across 5 types — extend anything | Closed | Limited |
 | **Open source** | AGPL-3.0 core, MIT client libs | Proprietary | Varies |
@@ -159,7 +159,7 @@ docker compose up
 
 ## How It Works
 
-1. User (or agent) asks a natural language question — over MCP, the chat widget, the API, Slack, or Teams
+1. User (or agent) asks a natural language question — over MCP, the chat widget, the API, or Slack (Teams, Discord, Telegram, WhatsApp, and Google Chat wired next)
 2. Agent explores the **YAML semantic layer** — entities, glossary, metrics, query patterns
 3. Agent writes SQL, validated through a 7-layer security pipeline (empty check, regex guard, AST parse, table whitelist, RLS injection, auto-LIMIT, statement timeout)
 4. Results are returned with charts and an interpreted narrative

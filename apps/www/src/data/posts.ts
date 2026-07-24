@@ -16,6 +16,16 @@ export interface Post {
 
 export const POSTS: Post[] = [
   {
+    slug: "the-last-mile",
+    title: "The last mile",
+    description:
+      "Launch is days away, and one item is still standing. The month since the beta recap didn't add features — it went to backing every promise Atlas makes with code that enforces it: backups that restore themselves to prove they're real, residency deletion that actually executes, one carve-out stated plainly, and six releases forced by MCP clients I don't control.",
+    isoDate: "2026-07-23",
+    dateLabel: "July 23, 2026",
+    readingTime: "5 min read",
+    tag: "Road to launch",
+  },
+  {
     slug: "the-connector-you-dont-write",
     title: "The connector you don't write",
     description:

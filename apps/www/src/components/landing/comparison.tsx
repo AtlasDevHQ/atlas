@@ -26,7 +26,7 @@ const ROWS: ReadonlyArray<Row> = [
   {
     feature: "Embeddable",
     atlas:
-      "Script-tag widget, <AtlasChat /> React component, typed @useatlas/sdk, MCP, 6 chat platforms",
+      "Script-tag widget, <AtlasChat /> React component, typed @useatlas/sdk, MCP, 6 chat platforms (Slack live; Google Chat coming soon)",
     bi: "Standalone app",
     textToSql: "Standalone app",
   },

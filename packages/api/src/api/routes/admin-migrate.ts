@@ -11,7 +11,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/internal";
 import { computeNextRun } from "@atlas/api/lib/scheduled-tasks";
-import { BRAIN_EDGE_TYPES } from "@atlas/api/lib/brain/types";
+import { BRAIN_EDGE_TYPES, type BrainEdgeType } from "@atlas/api/lib/brain/types";
 import type { ExportBundle, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -21,19 +21,24 @@ const log = createLogger("admin-migrate");
 /**
  * Why a grant is unacceptable, or `null` if it is fine (#4767).
  *
- * `cardinality(visible_to) > 0` on both brain tables rejects the empty array,
- * but not `[null]` or `['']` — cardinality-1 arrays that are semantically the
- * same denies-everyone state the CHECK exists to refuse, smuggled past it by
- * the layer that is supposed to front-run it. Grammar validity (`org` vs
- * `everyone`) is deliberately NOT checked here: that is #4768's parser, whose
- * failure mode is deny+log rather than a rejected import.
+ * Deliberately mirrors `chk_brain_{facts,episodes}_grant_nonempty` EXACTLY —
+ * at least one non-NULL, non-empty principal. Not looser (an empty grant
+ * would abort the whole import transaction on the CHECK), and critically not
+ * stricter either: anything Postgres stores must remain migratable, so an
+ * importer that rejected a grant the source region legally holds would leave
+ * that workspace permanently stuck in its current region.
+ *
+ * Grammar validity (`org` vs `everyone`) is NOT checked here. That is #4768's
+ * parser, whose failure mode is deny+log at read time rather than a rejected
+ * import.
  */
 function grantProblem(value: unknown): string | null {
-  if (!Array.isArray(value) || value.length === 0) {
-    return "must be a non-empty array (no-grant-no-promotion).";
+  if (!Array.isArray(value)) {
+    return "must be an array of principals (no-grant-no-promotion).";
   }
-  if (value.some((p) => typeof p !== "string" || p.trim().length === 0)) {
-    return "every principal must be a non-empty string (no-grant-no-promotion).";
+  const usable = value.filter((p) => typeof p === "string" && p.length > 0);
+  if (usable.length === 0) {
+    return "must contain at least one non-empty principal (no-grant-no-promotion).";
   }
   return null;
 }
@@ -44,12 +49,17 @@ function grantProblem(value: unknown): string | null {
  *
  * node-pg binds `undefined` as NULL, and an explicit NULL OVERRIDES a column
  * default — so a producer that omitted `ingestedAt` doesn't get `now()`, it
- * gets a 23502 that rolls back the whole import.
+ * gets a 23502 that rolls back the whole import. An unparseable string is the
+ * same class of late failure (pg 22007), so it is caught here too.
  */
 function missingTimestamps(row: Record<string, unknown>, keys: readonly string[]): string | null {
   for (const key of keys) {
-    if (typeof row[key] !== "string" || (row[key] as string).length === 0) {
+    const value = row[key];
+    if (typeof value !== "string" || value.length === 0) {
       return `${key}: is required (a NOT NULL timestamp; an absent value binds as NULL and aborts the import).`;
+    }
+    if (Number.isNaN(Date.parse(value))) {
+      return `${key}: '${value}' is not a parseable timestamp (it would abort the import at INSERT time).`;
     }
   }
   return null;
@@ -352,23 +362,47 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       if (typeof e.fromFactId !== "string") {
         return { ok: false, error: `brainEdges[${i}]: every committed edge type originates at a fact, so 'fromFactId' is required.` };
       }
-      if (e.edgeType === "provenance" && typeof e.toEpisodeId !== "string") {
-        return { ok: false, error: `brainEdges[${i}]: a 'provenance' edge must point at an episode ('toEpisodeId').` };
+      // Exhaustive on purpose: adding a fifth type to BRAIN_EDGE_TYPES and the
+      // CHECK without deciding its endpoint kind here would let the importer
+      // accept a shape Postgres refuses — a raw 23514 aborting the whole
+      // transaction, which is the failure this whole block exists to move
+      // earlier. `satisfies never` makes that a compile error instead.
+      const edgeType: BrainEdgeType = e.edgeType as BrainEdgeType;
+      switch (edgeType) {
+        case "provenance":
+          if (typeof e.toEpisodeId !== "string") {
+            return { ok: false, error: `brainEdges[${i}]: a 'provenance' edge is the evidence pointer and must point at an episode ('toEpisodeId').` };
+          }
+          break;
+        case "supersedes":
+        case "in-tension-with":
+          if (typeof e.toFactId !== "string") {
+            return { ok: false, error: `brainEdges[${i}]: a '${edgeType}' edge compares claims and must point at a fact ('toFactId').` };
+          }
+          break;
+        case "derives-from":
+          // Fork lineage — legitimately reaches either kind.
+          break;
+        default:
+          edgeType satisfies never;
+          break;
       }
-      if ((e.edgeType === "supersedes" || e.edgeType === "in-tension-with") && typeof e.toFactId !== "string") {
-        return { ok: false, error: `brainEdges[${i}]: a '${e.edgeType}' edge must point at a fact ('toFactId').` };
-      }
+      const edgeTsError = missingTimestamps(e, ["createdAt"]);
+      if (edgeTsError) return { ok: false, error: `brainEdges[${i}].${edgeTsError}` };
       // Referential pre-flight. Edges import LAST, so a dangling endpoint
       // would otherwise abort the transaction after every other pillar has
       // been written — the most expensive possible moment to discover it.
-      // Only ids the bundle itself carries can be checked; an endpoint the
-      // TARGET is expected to already hold is out of scope here.
+      //
+      // A bundle must be self-contained: the exporter always emits the whole
+      // workspace, so an endpoint the bundle doesn't carry is a malformed
+      // bundle, not a reference to target-resident state. (Gating this on
+      // "only check when we have some ids" would make rejection depend on
+      // whether an UNRELATED section happened to be non-empty.)
       const missing = ([
         ["fromFactId", e.fromFactId, factIds],
         ["toFactId", e.toFactId, factIds],
-        ["fromEpisodeId", e.fromEpisodeId, episodeIds],
         ["toEpisodeId", e.toEpisodeId, episodeIds],
-      ] as const).find(([, id, known]) => typeof id === "string" && known.size > 0 && !known.has(id));
+      ] as const).find(([, id, known]) => typeof id === "string" && !known.has(id));
       if (missing) {
         return { ok: false, error: `brainEdges[${i}].${missing[0]}: '${String(missing[1])}' is not carried by this bundle.` };
       }
@@ -900,6 +934,13 @@ export async function importBundle(
   // permissive fallback here would manufacture the very rows the table's
   // CHECKs exist to refuse, and would do it while claiming a successful
   // migration.
+  // bundle episode id → the id it actually resolved to in the target. Only
+  // populated on the adoption path (same source record, different uuid);
+  // empty in the ordinary case. Edges must be rewritten through this or they
+  // reference a uuid that was never inserted, and fail their endpoint FK at
+  // the very last import step.
+  const adoptedEpisodes = new Map<string, string>();
+
   for (const episode of bundle.brainEpisodes ?? []) {
     // Two ways the target can already know this episode, and they need
     // different answers:
@@ -924,6 +965,29 @@ export async function importBundle(
 
     if (typeof existingId === "string") {
       episodeId = existingId;
+      if (existingId !== episode.id) {
+        // ADOPTION: the target holds this source record under a different
+        // uuid. Every later reference to the bundle's id must be rewritten,
+        // because that id is never inserted here — see `adoptedEpisodes`.
+        adoptedEpisodes.set(episode.id, existingId);
+        // Adoption keeps the TARGET's episode row, so the bundle's grant,
+        // body, actor and extraction stamp are discarded. That can WIDEN
+        // visibility of raw source content (tier-3 is gated precisely because
+        // it is often more sensitive than the facts drawn from it), and the
+        // `skipped` counter reports it identically to a benign re-import — so
+        // it must not pass silently.
+        log.warn(
+          {
+            orgId,
+            bundleEpisodeId: episode.id,
+            targetEpisodeId: existingId,
+            source: episode.source,
+            sourceId: episode.sourceId,
+            bundleGrant: episode.visibleTo,
+          },
+          "Adopted an existing target episode under a different id — the bundle's episode row (body, grant, extractedAt) was discarded in favour of the target's",
+        );
+      }
       result.brainEpisodes.skipped++;
     } else {
       await client.query(
@@ -993,13 +1057,28 @@ export async function importBundle(
   }
 
   // Edges LAST — an endpoint can be a fact or an episode on either side, so
-  // this is the only point at which every endpoint could exist. "Could", not
-  // "does": a skipped endpoint resolves only because the skip path means the
-  // row is already in the target. `validateBundle` refuses edges pointing at
-  // ids the bundle doesn't carry, so what remains here is an endpoint the
-  // target was expected to hold and didn't — genuinely exceptional, and it
-  // surfaces as an FK error rather than being papered over.
+  // this is the only point at which every endpoint exists. `validateBundle`
+  // has already refused edges pointing at ids the bundle doesn't carry, and
+  // any episode id the target resolved differently is rewritten below, so an
+  // FK error here means the target lost a row mid-import: genuinely
+  // exceptional, and it surfaces rather than being papered over.
+  //
+  // Episode endpoints go through the adoption map. Skipping this is not a
+  // subtle bug: the adopted bundle id is never inserted, so a `provenance`
+  // edge — the most common type, fact→episode — fails its endpoint FK and
+  // rolls back the ENTIRE import, in exactly the scenario adoption exists to
+  // rescue.
+  const resolveEpisode = (id: string | null | undefined): string | null =>
+    id == null ? null : (adoptedEpisodes.get(id) ?? id);
+
   for (const edge of bundle.brainEdges ?? []) {
+    const endpoints = [
+      edge.fromFactId ?? null,
+      resolveEpisode(edge.fromEpisodeId),
+      edge.toFactId ?? null,
+      resolveEpisode(edge.toEpisodeId),
+    ];
+
     const existing = await client.query(
       `SELECT id FROM brain_edges
         WHERE workspace_id = $1 AND edge_type = $2
@@ -1007,14 +1086,7 @@ export async function importBundle(
           AND from_episode_id IS NOT DISTINCT FROM $4
           AND to_fact_id IS NOT DISTINCT FROM $5
           AND to_episode_id IS NOT DISTINCT FROM $6`,
-      [
-        orgId,
-        edge.edgeType,
-        edge.fromFactId ?? null,
-        edge.fromEpisodeId ?? null,
-        edge.toFactId ?? null,
-        edge.toEpisodeId ?? null,
-      ],
+      [orgId, edge.edgeType, ...endpoints],
     );
 
     if (existing.rows.length > 0) {
@@ -1025,15 +1097,7 @@ export async function importBundle(
     await client.query(
       `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, from_episode_id, to_fact_id, to_episode_id, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        orgId,
-        edge.edgeType,
-        edge.fromFactId ?? null,
-        edge.fromEpisodeId ?? null,
-        edge.toFactId ?? null,
-        edge.toEpisodeId ?? null,
-        edge.createdAt,
-      ],
+      [orgId, edge.edgeType, ...endpoints, edge.createdAt],
     );
 
     result.brainEdges.imported++;

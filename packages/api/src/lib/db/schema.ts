@@ -3203,9 +3203,18 @@ export const brainEpisodes = pgTable(
     index("idx_brain_episodes_source").on(t.workspaceId, t.source, t.occurredAt),
     // Array-overlap lookups for the fail-closed push-down predicate (#4768).
     index("idx_brain_episodes_visible_to").using("gin", t.visibleTo),
-    check("chk_brain_episodes_body_xor_locator", sql`num_nonnulls(body, locator) = 1`),
-    // No-grant-no-promotion, tier-3 half.
-    check("chk_brain_episodes_grant_nonempty", sql`cardinality(visible_to) > 0`),
+    // `nullif(…, '')` so an EMPTY body doesn't count as present — evidence
+    // that is the empty string backs a provenance claim with nothing.
+    check(
+      "chk_brain_episodes_body_xor_locator",
+      sql`num_nonnulls(nullif(body, ''), nullif(locator, '')) = 1`,
+    ),
+    // No-grant-no-promotion, tier-3 half. NULL/'' elements are refused too:
+    // they pass a bare cardinality test while granting access to nobody.
+    check(
+      "chk_brain_episodes_grant_nonempty",
+      sql`cardinality(array_remove(array_remove(visible_to, NULL), '')) > 0`,
+    ),
   ],
 );
 
@@ -3287,7 +3296,10 @@ export const brainFacts = pgTable(
     // No-grant-no-promotion. The public majority carries an explicit `org` —
     // "visible to everyone" is a stated grant, never an omission, so a
     // forgotten grant can never read as public.
-    check("chk_brain_facts_grant_nonempty", sql`cardinality(visible_to) > 0`),
+    check(
+      "chk_brain_facts_grant_nonempty",
+      sql`cardinality(array_remove(array_remove(visible_to, NULL), '')) > 0`,
+    ),
     // NOT NULL alone would admit `'{}'::jsonb` — an empty claim wearing the
     // shape of a real one.
     check(

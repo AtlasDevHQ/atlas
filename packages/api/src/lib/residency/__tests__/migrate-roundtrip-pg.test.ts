@@ -477,6 +477,126 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
     PG_TEST_TIMEOUT_MS,
   );
 
+  it(
+    "adopts a target episode already present under a DIFFERENT uuid, remapping facts AND edges (#4767)",
+    async () => {
+      // The scenario adoption exists for: after cutover the target's own
+      // connector ingests the same source record, minting its own uuid. A bare
+      // INSERT would hit uq_brain_episodes_source_id and abort the entire
+      // import; the importer instead adopts the target's row.
+      //
+      // The subtle half — and the one that was wrong first time — is that the
+      // adopted id must be threaded to EDGES too, not just facts. The bundle's
+      // episode uuid is never inserted on this path, so a `provenance` edge
+      // (fact→episode, the most common type) would otherwise reference a row
+      // that does not exist and fail its composite endpoint FK at the very last
+      // import step, rolling back everything.
+      const ADOPT_ORG = "org-migrate-adopt";
+      const SOURCE_EP = "dddddddd-0000-4000-8000-00000000000d";
+      const TARGET_EP = "eeeeeeee-0000-4000-8000-00000000000e";
+      const ADOPT_FACT = "dddddddd-0000-4000-8000-00000000000f";
+
+      // The target already holds the same (source, source_id) under its own id.
+      await pool.query(
+        `INSERT INTO brain_episodes (id, workspace_id, source, source_id, body, visible_to)
+         VALUES ($1, $2, 'slack', 'C-adopt/1', 'target-side copy', ARRAY['org'])`,
+        [TARGET_EP, ADOPT_ORG],
+      );
+
+      const bundle = {
+        manifest: {
+          version: 2 as const,
+          exportedAt: "2026-06-01T00:00:00Z",
+          source: { label: "adopt-test" },
+          counts: {
+            conversations: 0, messages: 0, semanticEntities: 0, learnedPatterns: 0, settings: 0,
+            brainEpisodes: 1, brainFacts: 1, brainEdges: 1, factAudienceMembers: 0,
+          },
+        },
+        conversations: [], semanticEntities: [], learnedPatterns: [], settings: [],
+        dashboards: [], knowledgeDocuments: [], scheduledTasks: [], agentSessionMemory: [],
+        brainEpisodes: [
+          {
+            id: SOURCE_EP,
+            source: "slack",
+            sourceId: "C-adopt/1",
+            sourceActor: null,
+            body: "source-side copy",
+            locator: null,
+            occurredAt: null,
+            ingestedAt: "2026-06-01T00:00:00Z",
+            extractedAt: null,
+            visibleTo: ["org"],
+            createdAt: "2026-06-01T00:00:00Z",
+            facts: [
+              {
+                id: ADOPT_FACT,
+                subject: "s", predicate: "p", object: "o",
+                validFrom: null, validTo: null,
+                ingestedAt: "2026-06-01T00:00:00Z",
+                invalidatedAt: null, extractedAt: null,
+                provenance: { actor: "u1" },
+                status: "published" as const,
+                visibleTo: ["org"],
+                predicateCardinality: "multi" as const,
+                createdAt: "2026-06-01T00:00:00Z",
+                updatedAt: "2026-06-01T00:00:00Z",
+              },
+            ],
+          },
+        ],
+        // Points at the BUNDLE's episode id — the id that is never inserted.
+        brainEdges: [
+          {
+            edgeType: "provenance" as const,
+            fromFactId: ADOPT_FACT,
+            fromEpisodeId: null,
+            toFactId: null,
+            toEpisodeId: SOURCE_EP,
+            createdAt: "2026-06-01T00:00:00Z",
+          },
+        ],
+        factAudienceMembers: [],
+      };
+
+      const client = await pool.connect();
+      let result: ImportResult;
+      try {
+        await client.query("BEGIN");
+        result = await importBundle(client, bundle as never, ADOPT_ORG);
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+
+      expect(result.brainEpisodes).toEqual({ imported: 0, skipped: 1 });
+      expect(result.brainFacts).toEqual({ imported: 1, skipped: 0 });
+      expect(result.brainEdges).toEqual({ imported: 1, skipped: 0 });
+
+      // The bundle's episode uuid was never inserted…
+      const orphan = await pool.query(`SELECT 1 FROM brain_episodes WHERE id = $1`, [SOURCE_EP]);
+      expect(orphan.rowCount).toBe(0);
+
+      // …so both the fact and the edge must reference the TARGET's uuid.
+      const fact = await pool.query<{ source_episode_id: string }>(
+        `SELECT source_episode_id FROM brain_facts WHERE id = $1`,
+        [ADOPT_FACT],
+      );
+      expect(fact.rows[0].source_episode_id).toBe(TARGET_EP);
+
+      const edge = await pool.query<{ to_episode_id: string }>(
+        `SELECT to_episode_id FROM brain_edges WHERE workspace_id = $1`,
+        [ADOPT_ORG],
+      );
+      expect(edge.rows).toHaveLength(1);
+      expect(edge.rows[0].to_episode_id).toBe(TARGET_EP);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
   // ── #4458 — Phase 4 source cleanup against the real schema ──────────
   // The mock-level suite (`cleanup.test.ts`) pins scope + transaction
   // behavior but can't catch a typo'd column in one of the ~70 generated

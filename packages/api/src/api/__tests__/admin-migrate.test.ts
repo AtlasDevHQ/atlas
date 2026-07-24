@@ -913,9 +913,22 @@ describe("validateBundle — company brain (#4767)", () => {
   // CHECK catches `[]`; it does NOT catch `[null]` or `['']`, which are the
   // same denies-everyone state smuggled past it by the layer meant to
   // front-run the constraint.
-  it("rejects a fact grant that is absent, empty, or has blank principals", () => {
-    for (const bad of [undefined, [], [null], [""], ["  "], [123]]) {
+  it("rejects a fact grant that is absent, empty, or has no usable principal", () => {
+    for (const bad of [undefined, [], [null], [""], [123], [null, ""]]) {
       expectFactRejected((f) => { f.visibleTo = bad; }, "visibleTo");
+    }
+  });
+
+  it("accepts anything the CHECK accepts — the importer is never stricter than the DB", () => {
+    // Load-bearing: a workspace whose grant Postgres legally stores must stay
+    // migratable. An importer stricter than `chk_*_grant_nonempty` would leave
+    // that workspace permanently stuck in its current region, discovered only
+    // at cutover time. Grammar validity is #4768's read-time deny+log problem,
+    // not a reason to refuse a bundle.
+    for (const odd of [["everyone"], ["  "], ["org", null], ["org", ""]]) {
+      const bundle = brainBundle();
+      (bundle.brainEpisodes![0].facts[0] as unknown as Record<string, unknown>).visibleTo = odd;
+      expect(validateBundle(bundle).ok).toBe(true);
     }
   });
 

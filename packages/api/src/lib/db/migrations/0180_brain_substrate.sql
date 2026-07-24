@@ -24,10 +24,17 @@
 --
 -- ADR-0036 states two rules as absolutes ("no-provenance-no-promotion",
 -- "no-grant-no-promotion"), so they are CHECKs rather than application code:
--- an empty grant array and an empty provenance object are refused AT REST,
--- by every writer. Note the exact boundary — a non-empty but MALFORMED grant
--- (`ARRAY[NULL]`, `ARRAY['']`, `['everyone']`) still lands here; that is
--- #4768's parser and its deny+log path, not this CHECK's job.
+-- an empty provenance object and a grant with no usable principal are refused
+-- AT REST, by every writer.
+--
+-- "No usable principal" is stricter than `cardinality > 0` on purpose:
+-- `ARRAY[NULL]` and `ARRAY['']` both have cardinality 1 while granting access
+-- to nobody — the same denies-everyone state the rule exists to refuse,
+-- wearing a non-empty shape. Structural VALIDITY stops there: whether
+-- `['everyone']` is a MEANINGFUL principal is #4768's parser and its deny+log
+-- path. The split matters because anything legal at rest must be migratable,
+-- and an importer stricter than the CHECK would make a workspace that Postgres
+-- happily stores impossible to move between regions.
 --
 -- Workspace containment is structural too: a fact's `(workspace_id,
 -- source_episode_id)` is a COMPOSITE FK onto the episode's `(workspace_id,
@@ -96,13 +103,16 @@ CREATE TABLE IF NOT EXISTS brain_episodes (
   created_at timestamptz NOT NULL DEFAULT now(),
 
   -- Body XOR locator — never both, never neither.
+  -- `nullif(…, '')` so an EMPTY body doesn't count as present: an episode
+  -- whose evidence is the empty string backs a provenance claim with nothing.
   CONSTRAINT chk_brain_episodes_body_xor_locator
-    CHECK (num_nonnulls(body, locator) = 1),
-  -- No-grant-no-promotion, tier-3 half. An empty array is a grant that denies
-  -- everyone, which reads as "hidden" but behaves as "unreviewed" — refuse it
-  -- at rest rather than let it mean two things.
+    CHECK (num_nonnulls(nullif(body, ''), nullif(locator, '')) = 1),
+  -- No-grant-no-promotion, tier-3 half. A grant that denies everyone reads as
+  -- "hidden" but behaves as "unreviewed" — refuse it at rest rather than let
+  -- it mean two things. NULL and '' elements are refused for the same reason:
+  -- they pass a bare cardinality test while granting access to nobody.
   CONSTRAINT chk_brain_episodes_grant_nonempty
-    CHECK (cardinality(visible_to) > 0)
+    CHECK (cardinality(array_remove(array_remove(visible_to, NULL), '')) > 0)
 );
 
 -- The dedupe key. UNIQUE is what makes re-ingest a no-op rather than a
@@ -235,9 +245,11 @@ CREATE TABLE IF NOT EXISTS brain_facts (
     CHECK (predicate_cardinality IN ('single', 'multi')),
   -- No-grant-no-promotion, tier-2 half. The public majority carries an
   -- explicit `org` — "visible to everyone" is a stated grant, never an
-  -- omission, so that a forgotten grant can never read as "public".
+  -- omission, so that a forgotten grant can never read as "public". NULL and
+  -- '' elements are refused too: they pass a bare cardinality test while
+  -- granting access to nobody.
   CONSTRAINT chk_brain_facts_grant_nonempty
-    CHECK (cardinality(visible_to) > 0),
+    CHECK (cardinality(array_remove(array_remove(visible_to, NULL), '')) > 0),
   -- No-provenance-no-promotion. NOT NULL alone would admit `'{}'::jsonb`,
   -- which is an empty claim wearing the shape of a real one.
   CONSTRAINT chk_brain_facts_provenance_nonempty

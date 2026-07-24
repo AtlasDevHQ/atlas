@@ -31,6 +31,10 @@ import {
   type ExportedKnowledgeLink,
   type ExportedScheduledTask,
   type ExportedAgentSessionMemory,
+  type ExportedBrainEpisode,
+  type ExportedBrainFact,
+  type ExportedBrainEdge,
+  type ExportedFactAudienceMember,
 } from "@useatlas/types";
 
 const log = createLogger("region-export");
@@ -67,8 +71,10 @@ function scopeClause(columnRef: string, orgScope: string | null): string {
  * org-scoped settings, dashboards (cards + per-user drafts; share tokens
  * dropped — the owner re-shares in the target), knowledge documents (with
  * link graph + review status), scheduled-task definitions (next run
- * recomputed at import), and durable agent session memory. The returned
- * bundle is ready to POST to the target region's import endpoint.
+ * recomputed at import), durable agent session memory, and the company brain
+ * (#4767 — episodes with their facts nested, the typed edge graph, audience
+ * membership). The returned bundle is ready to POST to the target region's
+ * import endpoint.
  *
  * @param orgScope - Org id to export, or `null` to export rows with
  *   `org_id IS NULL` (no-auth self-hosted instances, CLI path).
@@ -97,6 +103,10 @@ export async function exportWorkspaceBundle(
     knowledgeLinkResult,
     scheduledTaskResult,
     sessionMemoryResult,
+    brainEpisodeResult,
+    brainFactResult,
+    brainEdgeResult,
+    factAudienceResult,
   ] = await Promise.all([
     // --- 1. Conversations + Messages (2 queries, no N+1) ---
     pool.query(
@@ -215,6 +225,63 @@ export async function exportWorkspaceBundle(
        JOIN conversations c ON c.id = m.conversation_id
        WHERE ${scopeClause("c.org_id", orgScope)} AND c.deleted_at IS NULL
        ORDER BY m.conversation_id, m.namespace ASC`,
+      params,
+    ),
+    // --- 9. Company brain: episodes, facts, edges, audiences (#4767, ADR-0036) ---
+    // The whole substrate moves. A workspace's brain is the same class of
+    // asset as its knowledge base, and everything that makes a fact
+    // TRUSTWORTHY travels with it — provenance, grant, review status, and all
+    // four temporal columns. Exporting facts without those would land
+    // unprovenanced, ungated claims in the target region, which is strictly
+    // worse than not migrating them at all.
+    //
+    // Structurally empty on the `orgScope === null` path (the no-auth
+    // self-hosted / CLI export): all four brain tables declare `workspace_id
+    // NOT NULL`, so `IS NULL` matches nothing. That differs from
+    // `conversations.org_id`, which is nullable and does carry rows there —
+    // a no-auth instance has no workspace identity to hang a brain off.
+    pool.query(
+      `SELECT id, source, source_id, source_actor, body, locator, occurred_at,
+              ingested_at, extracted_at, visible_to, created_at
+       FROM brain_episodes WHERE ${scopeClause("workspace_id", orgScope)}
+       ORDER BY ingested_at, id ASC`,
+      params,
+    ),
+    // Scoped via the episode join rather than the fact's own workspace_id, so
+    // a fact travels iff its episode travels — the import-side NOT NULL FK
+    // then resolves by construction (same discipline as session memory above).
+    // The two scopings agree because `fk_brain_facts_episode` is a composite
+    // FK on (workspace_id, source_episode_id): a fact hanging off another
+    // workspace's episode is unrepresentable, so the join can't widen scope.
+    pool.query(
+      `SELECT f.id, f.source_episode_id, f.subject, f.predicate, f.object,
+              f.valid_from, f.valid_to, f.ingested_at, f.invalidated_at,
+              f.extracted_at, f.provenance, f.status, f.visible_to,
+              f.predicate_cardinality, f.created_at, f.updated_at
+       FROM brain_facts f
+       JOIN brain_episodes e ON e.id = f.source_episode_id
+       WHERE ${scopeClause("e.workspace_id", orgScope)}
+       ORDER BY f.source_episode_id, f.ingested_at, f.id ASC`,
+      params,
+    ),
+    // Edges are workspace-scoped directly. Safe because the composite
+    // endpoint FKs (`fk_brain_edges_*`) pin every endpoint to the edge's own
+    // workspace — so this selects the same rows four nullable endpoint joins
+    // would, and cannot export an edge whose endpoint is absent from the
+    // bundle (which would fail the FK at import).
+    pool.query(
+      `SELECT edge_type, from_fact_id, from_episode_id, to_fact_id, to_episode_id,
+              created_at
+       FROM brain_edges WHERE ${scopeClause("workspace_id", orgScope)}
+       ORDER BY created_at, edge_type ASC`,
+      params,
+    ),
+    // Audience membership travels or every `audience:` grant silently denies
+    // everyone in the target region — a total, invisible loss of access.
+    pool.query(
+      `SELECT audience_id, user_id, source, created_at
+       FROM fact_audience_member WHERE ${scopeClause("workspace_id", orgScope)}
+       ORDER BY audience_id, user_id ASC`,
       params,
     ),
   ]);
@@ -421,6 +488,77 @@ export async function exportWorkspaceBundle(
     updatedAt: toISO(m.updated_at),
   }));
 
+  // Facts nest under their episode, mirroring links-under-documents above:
+  // the nesting IS the FK ordering the importer needs, so it can never write a
+  // fact before the episode its NOT NULL provenance FK points at.
+  const factsByEpisode = new Map<string, ExportedBrainFact[]>();
+  for (const f of brainFactResult.rows) {
+    const episodeId = f.source_episode_id as string;
+    let facts = factsByEpisode.get(episodeId);
+    if (!facts) {
+      facts = [];
+      factsByEpisode.set(episodeId, facts);
+    }
+    facts.push({
+      id: f.id as string,
+      subject: f.subject as string,
+      predicate: f.predicate as string,
+      object: f.object as string,
+      validFrom: toISOOrNull(f.valid_from),
+      validTo: toISOOrNull(f.valid_to),
+      ingestedAt: toISO(f.ingested_at),
+      invalidatedAt: toISOOrNull(f.invalidated_at),
+      extractedAt: toISOOrNull(f.extracted_at),
+      // NOT NULL / CHECK-guarded columns — bound raw with no permissive
+      // fallback. A `?? {}` here would manufacture the empty provenance the
+      // table refuses to store, and `?? ['org']` would invent a public grant.
+      provenance: f.provenance,
+      status: f.status as ExportedBrainFact["status"],
+      visibleTo: f.visible_to as string[],
+      predicateCardinality: f.predicate_cardinality as ExportedBrainFact["predicateCardinality"],
+      createdAt: toISO(f.created_at),
+      updatedAt: toISO(f.updated_at),
+    });
+  }
+
+  let totalBrainFacts = 0;
+  const brainEpisodes: ExportedBrainEpisode[] = brainEpisodeResult.rows.map((e) => {
+    const facts = factsByEpisode.get(e.id as string) ?? [];
+    totalBrainFacts += facts.length;
+    return {
+      id: e.id as string,
+      source: e.source as string,
+      sourceId: e.source_id as string,
+      sourceActor: (e.source_actor as string | null) ?? null,
+      body: (e.body as string | null) ?? null,
+      locator: (e.locator as string | null) ?? null,
+      occurredAt: toISOOrNull(e.occurred_at),
+      ingestedAt: toISO(e.ingested_at),
+      // Preserved, not reset: re-extracting in the target would mint fresh
+      // candidates for episodes a human has already reviewed.
+      extractedAt: toISOOrNull(e.extracted_at),
+      visibleTo: e.visible_to as string[],
+      createdAt: toISO(e.created_at),
+      facts,
+    };
+  });
+
+  const brainEdges: ExportedBrainEdge[] = brainEdgeResult.rows.map((e) => ({
+    edgeType: e.edge_type as ExportedBrainEdge["edgeType"],
+    fromFactId: (e.from_fact_id as string | null) ?? null,
+    fromEpisodeId: (e.from_episode_id as string | null) ?? null,
+    toFactId: (e.to_fact_id as string | null) ?? null,
+    toEpisodeId: (e.to_episode_id as string | null) ?? null,
+    createdAt: toISO(e.created_at),
+  }));
+
+  const factAudienceMembers: ExportedFactAudienceMember[] = factAudienceResult.rows.map((a) => ({
+    audienceId: a.audience_id as string,
+    userId: a.user_id as string,
+    source: a.source as string,
+    createdAt: toISO(a.created_at),
+  }));
+
   // --- Build bundle ---
   const bundle: ExportBundle = {
     manifest: {
@@ -443,6 +581,10 @@ export async function exportWorkspaceBundle(
         knowledgeLinks: totalLinks,
         scheduledTasks: scheduledTasks.length,
         agentSessionMemory: agentSessionMemory.length,
+        brainEpisodes: brainEpisodes.length,
+        brainFacts: totalBrainFacts,
+        brainEdges: brainEdges.length,
+        factAudienceMembers: factAudienceMembers.length,
       },
     },
     conversations,
@@ -453,6 +595,9 @@ export async function exportWorkspaceBundle(
     knowledgeDocuments,
     scheduledTasks,
     agentSessionMemory,
+    brainEpisodes,
+    brainEdges,
+    factAudienceMembers,
   };
 
   log.info(

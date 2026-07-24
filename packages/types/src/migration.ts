@@ -50,6 +50,11 @@ export interface ExportManifest {
     knowledgeLinks?: number;
     scheduledTasks?: number;
     agentSessionMemory?: number;
+    /** Company brain (#4767, ADR-0036). */
+    brainEpisodes?: number;
+    brainFacts?: number;
+    brainEdges?: number;
+    factAudienceMembers?: number;
   };
 }
 
@@ -310,6 +315,96 @@ export interface ExportedAgentSessionMemory {
   updatedAt: string;
 }
 
+/**
+ * Exported brain fact — tier-2, a reviewed SPO claim (#4767, ADR-0036).
+ * Rides inline with its source episode, the way a knowledge link rides with
+ * its document: `sourceEpisodeId` is implied by the nesting, which also gives
+ * the importer its FK ordering for free (episode, then facts, then edges).
+ *
+ * Everything that makes the claim trustworthy travels with it — provenance,
+ * the grant, review `status`, and all four temporal columns. A brain fact
+ * stripped of any of those would arrive in the target region as an
+ * unprovenanced, ungated claim, which is worse than not arriving at all.
+ */
+export interface ExportedBrainFact {
+  /** Original UUID, preserved so edge endpoints survive the import. */
+  id: string;
+  subject: string;
+  predicate: string;
+  object: string;
+  validFrom: string | null;
+  validTo: string | null;
+  ingestedAt: string;
+  /** The tombstone — preserved, because invalidate-never-delete travels too. */
+  invalidatedAt: string | null;
+  extractedAt: string | null;
+  /** Provenance payload (JSONB, opaque passthrough). Never empty. */
+  provenance: unknown;
+  /** Content-mode review status — preserved across the migration. */
+  status: "draft" | "published" | "archived";
+  /** The grant principal set. Never empty (`cardinality > 0` is a CHECK). */
+  visibleTo: string[];
+  predicateCardinality: "single" | "multi";
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Exported brain episode — tier-3 raw evidence, with its extracted facts
+ * inline (#4767, ADR-0036).
+ *
+ * `extractedAt` is preserved rather than reset: re-running extraction in the
+ * target region would mint fresh candidates for episodes already reviewed,
+ * flooding the target's review queue with work a human has already done.
+ */
+export interface ExportedBrainEpisode {
+  /** Original UUID, preserved so fact and edge references survive. */
+  id: string;
+  source: string;
+  sourceId: string;
+  sourceActor: string | null;
+  /** Body XOR locator — exactly one is set (a CHECK on the table). */
+  body: string | null;
+  locator: string | null;
+  occurredAt: string | null;
+  ingestedAt: string;
+  extractedAt: string | null;
+  /** The grant principal set. Never empty. */
+  visibleTo: string[];
+  createdAt: string;
+  facts: ExportedBrainFact[];
+}
+
+/**
+ * Exported brain edge (#4767, ADR-0036). Top-level rather than nested,
+ * because an edge can point at a fact or an episode on either side and
+ * therefore belongs to neither. The importer writes edges LAST, once every
+ * endpoint exists.
+ */
+export interface ExportedBrainEdge {
+  edgeType: "supersedes" | "in-tension-with" | "derives-from" | "provenance";
+  /** Exactly one `from*` and one `to*` is set (a CHECK on the table). */
+  fromFactId: string | null;
+  fromEpisodeId: string | null;
+  toFactId: string | null;
+  toEpisodeId: string | null;
+  createdAt: string;
+}
+
+/**
+ * Exported audience membership (#4767, ADR-0036). Moves with the workspace
+ * because it is what makes an `audience:` grant mean anything: without it,
+ * every fact granted to an audience becomes invisible to everyone in the
+ * target region — a silent, total loss of access rather than a visible error.
+ */
+export interface ExportedFactAudienceMember {
+  /** WITHOUT the `audience:` prefix — the prefix belongs to the grammar. */
+  audienceId: string;
+  userId: string;
+  source: string;
+  createdAt: string;
+}
+
 // ---------------------------------------------------------------------------
 // Full bundle
 // ---------------------------------------------------------------------------
@@ -331,6 +426,14 @@ export interface ExportBundle {
   knowledgeDocuments?: ExportedKnowledgeDocument[];
   scheduledTasks?: ExportedScheduledTask[];
   agentSessionMemory?: ExportedAgentSessionMemory[];
+  /**
+   * Company brain sections (#4767, ADR-0036). Same optional-on-the-wire shape
+   * as the other v2 sections. Facts nest inside their episode; edges and
+   * audience membership are top-level because they reference both classes.
+   */
+  brainEpisodes?: ExportedBrainEpisode[];
+  brainEdges?: ExportedBrainEdge[];
+  factAudienceMembers?: ExportedFactAudienceMember[];
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +454,11 @@ export interface ImportResult {
   knowledgeDocuments: { imported: number; skipped: number };
   scheduledTasks: { imported: number; skipped: number };
   agentSessionMemory: { imported: number; skipped: number };
+  /** Company brain (#4767). Facts are counted on their own key, not their episode's. */
+  brainEpisodes: { imported: number; skipped: number };
+  brainFacts: { imported: number; skipped: number };
+  brainEdges: { imported: number; skipped: number };
+  factAudienceMembers: { imported: number; skipped: number };
 }
 
 // ---------------------------------------------------------------------------

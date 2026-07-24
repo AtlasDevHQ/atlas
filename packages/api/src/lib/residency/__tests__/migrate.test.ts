@@ -102,16 +102,37 @@ let mockFetchResponse: { ok: boolean; status: number; body?: unknown } = { ok: t
 let mockFetchError: Error | null = null;
 let capturedFetchCalls: Array<{ url: string; options: RequestInit }> = [];
 
+/**
+ * A target region that understood every section, derived from the bundle it
+ * was actually sent (#4767).
+ *
+ * `transferBundleToTarget` reconciles the acknowledged per-section counts
+ * against `manifest.counts` before cutover — a target that silently dropped a
+ * section it didn't recognize must not be treated as success. So the default
+ * mock has to answer like a CURRENT target; a test that wants the
+ * older-target behaviour sets `mockFetchResponse.body` explicitly.
+ */
+function acknowledgeAll(options?: RequestInit): Record<string, { imported: number; skipped: number }> {
+  const raw = typeof options?.body === "string" ? options.body : "{}";
+  const counts = (JSON.parse(raw) as { manifest?: { counts?: Record<string, number> } }).manifest?.counts ?? {};
+  const ack: Record<string, { imported: number; skipped: number }> = {};
+  for (const [section, n] of Object.entries(counts)) {
+    ack[section] = { imported: n, skipped: 0 };
+  }
+  return ack;
+}
+
 const _originalFetch = globalThis.fetch;
 globalThis.fetch = ((url: string | URL | Request, options?: RequestInit) => {
   const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
   capturedFetchCalls.push({ url: urlStr, options: options ?? {} });
   if (mockFetchError) return Promise.reject(mockFetchError);
+  const body = mockFetchResponse.body ?? acknowledgeAll(options);
   return Promise.resolve({
     ok: mockFetchResponse.ok,
     status: mockFetchResponse.status,
     statusText: mockFetchResponse.ok ? "OK" : "Error",
-    json: () => Promise.resolve(mockFetchResponse.body ?? {}),
+    json: () => Promise.resolve(body),
   } as Response);
 }) as typeof fetch;
 
@@ -140,7 +161,10 @@ function resetMocks() {
   mockPoolQueryResult = { rows: [{ id: "org-1" }] };
   mockPoolQueryError = null;
   capturedQueries.length = 0;
-  mockFetchResponse = { ok: true, status: 200, body: {} };
+  // `body: undefined` ⇒ the mock derives a full acknowledgement from the
+  // bundle it was sent (see acknowledgeAll). A test that needs a target which
+  // dropped sections sets `body` explicitly.
+  mockFetchResponse = { ok: true, status: 200, body: undefined };
   mockFetchError = null;
   capturedFetchCalls = [];
   mockConfig = { ...DEFAULT_MOCK_CONFIG };
@@ -271,6 +295,48 @@ describe("executeRegionMigration", () => {
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toContain("apiUrl");
     // mockConfig is auto-restored by resetMocks in beforeEach
+  });
+
+  it("fails BEFORE cutover when the target silently drops a bundle section (#4767)", async () => {
+    // The failure this prevents: `z.object()` STRIPS unknown keys, so a target
+    // region running an older build drops every section it has no schema for,
+    // imports the rest, and answers 200. The source then cuts over and
+    // schedules the destructive cleanup, which deletes the dropped pillar from
+    // the source after the grace period — total data loss, no error logged.
+    //
+    // Regions deploy independently, so a window where one region has a section
+    // and another doesn't is routine, not exceptional. Before #4767 the bundle
+    // VERSION was the guard; the brain sections are deliberately optional on
+    // the wire (so a pre-#4767 source can still migrate), which removed it.
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+    // An old target: acknowledges the sections it knows, silently omits the
+    // brain. The exporter's manifest says otherwise.
+    mockFetchResponse = {
+      ok: true,
+      status: 200,
+      body: { conversations: { imported: 1, skipped: 0 } },
+    };
+
+    const result = await executeRegionMigration("mig-1");
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      // Actionable: names the section, the shortfall, and that nothing was
+      // deleted — an operator must not have to guess whether to panic.
+      expect(result.error).toContain("older build");
+      expect(result.error).toContain("no source data");
+    }
+
+    // The cutover must NOT have run. `region_updated` is what flips the
+    // workspace's home region; reaching it would mean the source already
+    // considers itself migrated.
+    const cutover = capturedQueries.find(
+      (q) => q.sql.includes("UPDATE organization") || q.sql.includes("region_updated = TRUE"),
+    );
+    expect(cutover).toBeUndefined();
   });
 
   it("fails when transfer HTTP call returns error", async () => {

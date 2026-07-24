@@ -166,7 +166,7 @@ export async function handleMigrateImport(
     // claim more than the runtime guards below check.
     type CrossVersionImportResult =
       Pick<import("@useatlas/types").ImportResult, "conversations" | "semanticEntities" | "learnedPatterns" | "settings"> &
-      Partial<Pick<import("@useatlas/types").ImportResult, "dashboards" | "knowledgeDocuments" | "scheduledTasks" | "agentSessionMemory">>;
+      Partial<Pick<import("@useatlas/types").ImportResult, "dashboards" | "knowledgeDocuments" | "scheduledTasks" | "agentSessionMemory" | "brainEpisodes" | "brainFacts" | "brainEdges" | "factAudienceMembers">>;
     let result: CrossVersionImportResult;
     try {
       result =
@@ -234,6 +234,30 @@ export async function handleMigrateImport(
     if (result.agentSessionMemory) {
       console.log(
         `  Session memory    ${String(result.agentSessionMemory.imported).padStart(8)}  ${String(result.agentSessionMemory.skipped).padStart(7)}`,
+      );
+    }
+    // Company brain (#4767). Reported per-section so a migration that moved
+    // ZERO brain rows can't print a summary identical to one that moved
+    // everything — the operator-visible half of "silent loss is worse than
+    // loud failure".
+    if (result.brainEpisodes) {
+      console.log(
+        `  Brain episodes    ${String(result.brainEpisodes.imported).padStart(8)}  ${String(result.brainEpisodes.skipped).padStart(7)}`,
+      );
+    }
+    if (result.brainFacts) {
+      console.log(
+        `  Brain facts       ${String(result.brainFacts.imported).padStart(8)}  ${String(result.brainFacts.skipped).padStart(7)}`,
+      );
+    }
+    if (result.brainEdges) {
+      console.log(
+        `  Brain edges       ${String(result.brainEdges.imported).padStart(8)}  ${String(result.brainEdges.skipped).padStart(7)}`,
+      );
+    }
+    if (result.factAudienceMembers) {
+      console.log(
+        `  Fact audiences    ${String(result.factAudienceMembers.imported).padStart(8)}  ${String(result.factAudienceMembers.skipped).padStart(7)}`,
       );
     }
   } catch (err) {

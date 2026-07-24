@@ -57,6 +57,8 @@ export async function handleExport(args: string[]): Promise<void> {
     console.log(`  Knowledge docs:     ${counts.knowledgeDocuments ?? 0} (${counts.knowledgeLinks ?? 0} links)`);
     console.log(`  Scheduled tasks:    ${counts.scheduledTasks ?? 0}`);
     console.log(`  Session memory:     ${counts.agentSessionMemory ?? 0}`);
+    console.log(`  Brain episodes:     ${counts.brainEpisodes ?? 0} (${counts.brainFacts ?? 0} facts, ${counts.brainEdges ?? 0} edges)`);
+    console.log(`  Fact audiences:     ${counts.factAudienceMembers ?? 0}`);
 
     // Write output
     const date = new Date().toISOString().slice(0, 10);

@@ -21,12 +21,64 @@ import { hasInternalDB, internalQuery, getInternalDB } from "@atlas/api/lib/db/i
 import { getConfig } from "@atlas/api/lib/config";
 import { UnsafeRegionMigrationResetError } from "@atlas/api/lib/effect/errors";
 import { exportWorkspaceBundle } from "./export";
-import type { MigrationStatus, MigrationPhase, ExportBundle } from "@useatlas/types";
+import type { MigrationStatus, MigrationPhase, ExportBundle, ExportManifest, ImportResult } from "@useatlas/types";
 
 /** Days to wait before cleaning up source region data after migration. */
 const CLEANUP_GRACE_PERIOD_DAYS = 7;
 
 const log = createLogger("region-migration");
+
+/**
+ * Bundle sections whose exported count is reconciled against the target
+ * region's acknowledgement before cutover (#4767).
+ *
+ * The type bound is the point: a member must be a key of BOTH
+ * `manifest.counts` AND `ImportResult`, so the compiler rejects a
+ * manifest-only count (`messages`, `dashboardCards`, `dashboardUserDrafts`,
+ * `knowledgeLinks` — child rows the importer folds into their parent's
+ * counter and never reports separately). Reconciling one of those would
+ * compare against a counter that structurally does not exist and abort every
+ * migration.
+ *
+ * A new bundle section belongs here the moment it gets its own ImportResult
+ * counter — that is what makes "the target silently dropped it" a failure
+ * instead of a silent success.
+ */
+const RECONCILED_SECTIONS = [
+  "conversations",
+  "semanticEntities",
+  "learnedPatterns",
+  "settings",
+  "dashboards",
+  "knowledgeDocuments",
+  "scheduledTasks",
+  "agentSessionMemory",
+  "brainEpisodes",
+  "brainFacts",
+  "brainEdges",
+  "factAudienceMembers",
+] as const satisfies readonly (keyof ExportManifest["counts"] & keyof ImportResult)[];
+
+/**
+ * Completeness half of the bound above: every section that HAS both a manifest
+ * count and an ImportResult counter must be listed.
+ *
+ * The `satisfies` proves each member is legal; this proves none is missing.
+ * Without it, adding a section and forgetting to reconcile it is a silent
+ * no-op — the target drops it, the guard doesn't look, and the source cleanup
+ * deletes it after the grace period. That is precisely the failure the guard
+ * exists to prevent, so it must be a compile error rather than a review catch.
+ *
+ * Bounded on `keyof ImportResult` ALONE, deliberately — not on the
+ * intersection the `satisfies` uses. Intersecting here would re-open the hole:
+ * a new section added to ImportResult but whose `counts:` line was forgotten
+ * would drop out of the intersection and pass unnoticed. Bounded this way it
+ * is forced into RECONCILED_SECTIONS, where the `satisfies` then fails until
+ * the manifest count exists — so both halves of the mistake are caught.
+ */
+type UnreconciledSection = Exclude<keyof ImportResult, (typeof RECONCILED_SECTIONS)[number]>;
+const _everySectionReconciled: [UnreconciledSection] extends [never] ? true : never = true;
+void _everySectionReconciled;
 
 /**
  * Stale migration threshold: 5 minutes.
@@ -182,6 +234,85 @@ async function transferBundleToTarget(
       detail = `HTTP ${response.status} ${response.statusText}`;
     }
     return { ok: false, error: `Target region import failed: ${detail}` };
+  }
+
+  // A 200 is not proof the target understood the bundle. An older build's
+  // `importBundle` simply has no loop for a section it doesn't know about: it
+  // ignores those keys, imports the rest, and answers 200 — after which this
+  // migration cuts over and schedules the destructive source cleanup. The
+  // dropped pillar is then deleted from the source after the grace period,
+  // with no error logged anywhere. (On the ADMIN import route the same outcome
+  // arrives one step earlier, because its zod request schema strips unknown
+  // keys before the importer ever sees them.)
+  //
+  // Before #4767 the bundle VERSION was the guard: a v1 target rejected a v2
+  // bundle outright. The brain sections are deliberately optional-on-the-wire
+  // (so a pre-#4767 SOURCE can still migrate), which removes that guard —
+  // this reconciliation replaces it, and generalizes to every future section.
+  //
+  // Deployment reality that makes this a live hazard rather than a theoretical
+  // one: regions deploy independently, so a window where US has #4767 and EU
+  // does not is routine, not exceptional.
+  let acknowledged: Partial<Record<(typeof RECONCILED_SECTIONS)[number], { imported?: number; skipped?: number }>>;
+  try {
+    acknowledged = await response.json() as typeof acknowledged;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `Target region returned an unreadable import result: ${msg}` };
+  }
+  if (!acknowledged || typeof acknowledged !== "object" || Array.isArray(acknowledged)) {
+    return {
+      ok: false,
+      error:
+        "Target region returned a non-object import result — it is most likely not an Atlas " +
+        `import endpoint (or a proxy answered in its place). Migration ${migrationId} aborted ` +
+        "BEFORE cutover; no source data has been deleted.",
+    };
+  }
+
+  for (const section of RECONCILED_SECTIONS) {
+    // Ground truth from the payload where the section IS a top-level array;
+    // the manifest is a self-report written in a different literal, so a
+    // forgotten `counts:` line would otherwise turn the guard off for that
+    // section without anyone noticing. `brainFacts` is the one section with no
+    // top-level array (facts nest inside their episode), so it necessarily
+    // trusts the manifest.
+    const payload = (bundle as unknown as Record<string, unknown>)[section];
+    const declared = bundle.manifest.counts[section];
+    const expected = Array.isArray(payload) ? payload.length : declared;
+    // The manifest is what both regions LOG and what the CLI prints, so a
+    // divergence between it and the payload must not pass unremarked even
+    // though reconciliation trusts the payload.
+    if (Array.isArray(payload) && declared !== undefined && declared !== payload.length) {
+      log.warn(
+        { migrationId, section, declared, actual: payload.length },
+        "Manifest count disagrees with the exported payload — reconciling against the payload; this is an exporter bug",
+      );
+    }
+    if (expected === undefined) {
+      return {
+        ok: false,
+        error:
+          `Bundle section '${section}' carries no manifest count, so the target's handling of ` +
+          `it cannot be verified. Migration ${migrationId} aborted BEFORE cutover; no source ` +
+          "data has been deleted. This is an exporter bug — the section needs a manifest count.",
+      };
+    }
+    if (expected === 0) continue; // nothing exported ⇒ nothing to reconcile
+    const got = acknowledged[section];
+    const total = (got?.imported ?? 0) + (got?.skipped ?? 0);
+    if (total !== expected) {
+      return {
+        ok: false,
+        error:
+          `Target region accounted for ${got ? total : 0}/${expected} '${section}' rows. ` +
+          `The target is most likely running an older build that does not understand this ` +
+          `bundle section. Migration ${migrationId} aborted BEFORE cutover — no source data ` +
+          `has been deleted and the workspace is still served from its current region. ` +
+          `NOTE: the target has already COMMITTED a partial import; the import is idempotent, ` +
+          `so upgrade the target and re-run, or tear down the partial copy if abandoning.`,
+      };
+    }
   }
 
   return { ok: true };

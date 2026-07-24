@@ -20,7 +20,7 @@ import type { LanguageModel } from "ai";
 import type { ModelConfigProvider } from "@useatlas/types";
 import { createLogger } from "./logger";
 import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
-import { isInternalEgressAllowed } from "@atlas/api/lib/openapi/egress-guard";
+import { createGuardedFetch, isInternalEgressAllowed } from "@atlas/api/lib/openapi/egress-guard";
 import type { WorkspaceCredentials } from "@atlas/api/lib/auth/credentials";
 
 const log = createLogger("providers");
@@ -533,9 +533,17 @@ export function getModelFromWorkspaceConfig(config: WorkspaceModelConfig): Langu
             `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true on a self-hosted deployment.`,
         );
       }
+      // Route the agent's inference request through the DNS-aware egress guard
+      // (#4779): the sync `isSafeExternalUrl` above is a cheap pre-fail but is
+      // DNS-blind, so a `baseUrl` hostname that RESOLVES to an internal IP would
+      // otherwise reach cloud metadata / internal services on the SDK's own
+      // fetch. `createGuardedFetch` resolves + validates + pins the target IP
+      // immediately before connect. Self-hosted internal endpoints stay reachable
+      // via the same `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS` opt-out honored above.
       const client = createOpenAI({
         apiKey: credentials.apiKey,
         baseURL: config.baseUrl,
+        fetch: createGuardedFetch(),
       });
       return client(config.model);
     }

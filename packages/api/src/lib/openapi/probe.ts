@@ -291,8 +291,6 @@ export async function probeSpec(
   auth: ResolvedAuth,
   options: ProbeOptions = {},
 ): Promise<{ readonly doc: unknown; readonly graph: OperationGraph }> {
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-
   // SSRF guard (all deploy modes; opt out via ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS):
   // the spec URL is admin-supplied and fetched here, host-side — block
   // private/internal targets before the fetch. #3006.
@@ -344,7 +342,9 @@ export async function probeSpec(
         },
         signal: AbortSignal.timeout(probeTimeoutMs()),
       },
-      { fetchImpl },
+      // Leave `fetchImpl` unset in prod so `guardedFetch` engages the connect-time
+      // DNS guard on the real runtime fetch (#4779).
+      { ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) },
     );
     if (!response.ok) {
       throw new OpenApiProbeError(
@@ -446,7 +446,6 @@ export async function conditionalProbe(
   specUrl: string,
   options: ConditionalProbeOptions = {},
 ): Promise<ConditionalProbeResult> {
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   assertSpecUrlAllowed(specUrl);
 
   const conditionalHeaders: Record<string, string> = {
@@ -463,7 +462,9 @@ export async function conditionalProbe(
         headers: { Accept: "application/json", ...conditionalHeaders },
         signal: AbortSignal.timeout(probeTimeoutMs()),
       },
-      { fetchImpl },
+      // Leave `fetchImpl` unset in prod so `guardedFetch` engages the connect-time
+      // DNS guard on the real runtime fetch (#4779).
+      { ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) },
     );
   } catch (err) {
     if (err instanceof EgressBlockedError) {

@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { isSafeExternalUrl } from "../validate";
+import { isBlockedResolvedAddress, isSafeExternalUrl } from "../validate";
 
 describe("isSafeExternalUrl — blocked (SSRF vectors)", () => {
   // Every entry MUST be rejected. The comment names the encoding that bypassed
@@ -73,6 +73,49 @@ describe("isSafeExternalUrl — allowed (genuinely public HTTPS)", () => {
   for (const url of allowed) {
     it(`allows ${url}`, () => {
       expect(isSafeExternalUrl(url)).toBe(true);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// isBlockedResolvedAddress — the connect-time half of the guard (#4779). Given a
+// *resolved* IP literal (an A/AAAA record), is it in a blocked range? This is
+// the primitive `assertSafeEgressTarget` re-checks every DNS result against.
+// ---------------------------------------------------------------------------
+
+describe("isBlockedResolvedAddress — blocked resolved IPs", () => {
+  const blocked: ReadonlyArray<readonly [string, string]> = [
+    ["10.0.0.5", "RFC1918 10/8"],
+    ["127.0.0.1", "loopback"],
+    ["169.254.169.254", "link-local (cloud metadata)"],
+    ["172.16.0.5", "RFC1918 172.16/12"],
+    ["192.168.1.10", "RFC1918 192.168/16"],
+    ["100.64.0.1", "CGNAT 100.64/10"],
+    ["0.0.0.0", "'this network' 0/8"],
+    ["::1", "IPv6 loopback"],
+    ["fc00::1", "IPv6 ULA"],
+    ["fe80::1", "IPv6 link-local"],
+    ["::ffff:10.0.0.5", "IPv4-mapped IPv6 wrapping a private IPv4"],
+    ["::ffff:169.254.169.254", "IPv4-mapped IPv6 wrapping metadata"],
+    ["not-an-ip", "non-IP-literal fails CLOSED (anomalous resolver output)"],
+    ["", "empty string fails closed"],
+  ];
+  for (const [ip, why] of blocked) {
+    it(`blocks ${ip || "<empty>"} (${why})`, () => {
+      expect(isBlockedResolvedAddress(ip)).toBe(true);
+    });
+  }
+});
+
+describe("isBlockedResolvedAddress — allowed public resolved IPs", () => {
+  const allowed: ReadonlyArray<string> = [
+    "93.184.216.34", // public IPv4
+    "8.8.8.8", // public IPv4
+    "2001:4860:4860::8888", // public IPv6 (Google DNS)
+  ];
+  for (const ip of allowed) {
+    it(`allows ${ip}`, () => {
+      expect(isBlockedResolvedAddress(ip)).toBe(false);
     });
   }
 });

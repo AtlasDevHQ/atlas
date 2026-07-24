@@ -99,7 +99,6 @@ export async function executeOperation(
   const { body, hasBody } = buildBody(operation, params, headers);
 
   const timeoutMs = opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
 
   let response: Response;
   try {
@@ -116,7 +115,10 @@ export async function executeOperation(
         ...(hasBody ? { body } : {}),
         signal: AbortSignal.timeout(timeoutMs),
       },
-      { fetchImpl },
+      // Don't pre-resolve `globalThis.fetch` into an explicit `fetchImpl`: leaving
+      // it unset lets `guardedFetch` engage the connect-time DNS guard on the real
+      // runtime fetch (and surface a degradation warn if it's ever wrapped) (#4779).
+      { ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) },
     );
   } catch (err) {
     if (err instanceof EgressBlockedError) {

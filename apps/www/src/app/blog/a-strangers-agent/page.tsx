@@ -163,14 +163,18 @@ export default function AStrangersAgent() {
         <H2>Software I don&apos;t ship</H2>
         <P>
           The interesting failures here came from clients I have no control
-          over. The MCP server soaked in staging for weeks and behaved perfectly
-          against my own tooling. Then real AI clients started dialing in, and
-          over two days in mid-July I cut nine release tags, six of them fixes
-          to the hosted MCP surface: a connection config that advertised a
-          transport wrong and got rejected before the first tool call, long
-          queries dying at a proxy because an in-protocol heartbeat doesn&apos;t
-          register as traffic one layer down, an entity tool showing filenames
-          where display names belonged.
+          over. Against my own tooling the server was flawless for weeks. Then
+          strangers&apos; clients arrived and found three things at once: a
+          connection config that advertised its transport wrong and got rejected
+          before the first tool call, long queries dying at a proxy because an
+          in-protocol heartbeat doesn&apos;t register as traffic one layer down,
+          and an entity tool showing filenames where display names belonged. Six
+          of the nine release tags I cut that week went to this surface, and I
+          wrote up the whole stretch in{" "}
+          <a href="/blog/the-last-mile" className="link-accent">
+            The last mile
+          </a>
+          .
         </P>
         <P>
           Every one of those was invisible to a test suite that only ever talked

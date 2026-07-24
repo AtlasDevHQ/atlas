@@ -177,11 +177,10 @@ export default function TheProcessIsTheRegion() {
           A workspace can migrate. Its data is exported, imported into the
           target region, and the copy in the source region is deleted after a
           seven-day grace period, which is the part that used to be a sentence
-          in the docs with no running code behind it. Now every internal table
-          is classified as moving with the workspace, staying behind, or
-          belonging to the platform, a CI check fails the build if somebody adds
-          a table without classifying it, and an hourly job performs the
-          deletions one transaction at a time. I wrote about finding that gap in{" "}
+          in the docs with no running code behind it. Every internal table now
+          declares where it belongs, a CI tripwire refuses any table that
+          doesn&apos;t, and a scheduled job carries the deletions out
+          transactionally. I wrote about finding that gap in{" "}
           <a href="/blog/the-last-mile" className="link-accent">
             The last mile
           </a>

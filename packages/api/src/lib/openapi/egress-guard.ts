@@ -27,13 +27,59 @@
  * the client → `OpenApiClientError`).
  */
 
+import dns from "node:dns";
+import net from "node:net";
+
 import { createLogger } from "@atlas/api/lib/logger";
-import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
+import { isBlockedResolvedAddress, isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
 
 const log = createLogger("openapi.egress-guard");
 
 /** Max redirect hops {@link guardedFetch} follows before giving up. */
 export const MAX_REDIRECTS = 5;
+
+/**
+ * A resolved, validated egress target address to connect to. Returned by
+ * {@link assertSafeEgressTarget} when the host was a DNS name (so the caller
+ * must **pin** this exact IP for the connect, defeating a rebind race); `null`
+ * when no pin applies — an IP-literal host (already validated in place) or the
+ * operator opt-out.
+ */
+export interface EgressPin {
+  /** The single validated IP literal to connect to. */
+  readonly address: string;
+  /** IP family — 6 needs bracketing when it is spliced back into a URL. */
+  readonly family: 4 | 6;
+}
+
+/**
+ * DNS resolver seam. Resolves a hostname to its A/AAAA records. Injectable so
+ * the egress guard is testable without touching the network (Atlas prefers a DI
+ * seam over `mock.module` on `node:dns`). The default resolves through
+ * `node:dns` `lookup` with `{ all: true }` — the same resolution the runtime's
+ * own `fetch` connect would perform.
+ */
+export type EgressLookup = (
+  hostname: string,
+) => Promise<ReadonlyArray<{ address: string; family: number }>>;
+
+const defaultEgressLookup: EgressLookup = (hostname) =>
+  dns.promises.lookup(hostname, { all: true });
+
+/**
+ * The genuine runtime `fetch`, captured at module load — before any test swaps
+ * `globalThis.fetch` or injects a `fetchImpl`. The connect-time DNS resolution +
+ * IP pin is bound to this identity: it runs when {@link guardedFetch} is about
+ * to hit the network through the real runtime fetch (production — where no code
+ * reassigns `globalThis.fetch`), and is skipped when a **test double** is in
+ * play (an injected `fetchImpl` or a swapped `globalThis.fetch`), which falls
+ * back to the sync guard. The whole existing consumer-test corpus uses a double,
+ * so it keeps its exact pre-#4779 behavior (no network resolution, no URL
+ * rewrite) while every production egress surface inherits the DNS guard. A test
+ * that WANTS to exercise the resolution injects an explicit `lookup`, which
+ * forces it on regardless of this identity check.
+ */
+const REAL_FETCH: typeof globalThis.fetch = globalThis.fetch;
 
 /**
  * A host-side fetch target was blocked by the SSRF guard. The offending URL is
@@ -83,12 +129,111 @@ export function assertBaseUrlAllowed(url: string): void {
   }
 }
 
+/**
+ * The connect-time SSRF chokepoint. The async counterpart to
+ * {@link assertBaseUrlAllowed}: it runs the same cheap sync first pass
+ * ({@link isSafeExternalUrl} — scheme, internal-hostname denylist, IP-literal
+ * ranges), then — for a **DNS-name host** — resolves the name and re-checks
+ * **every** resolved A/AAAA record against the private/loopback/link-local/CGNAT
+ * blocklist ({@link isBlockedResolvedAddress}) *before* any socket opens. This
+ * closes the DNS-blind gap the sync guard leaves open: a public hostname that
+ * resolves to an internal IP (`127.0.0.1.nip.io`, cloud metadata via a wildcard
+ * DNS, or a live DNS-rebind record) is rejected here, pre-connect (#4779).
+ *
+ * Returns an {@link EgressPin} for a DNS-name host — the single validated IP the
+ * caller must connect to so a *second* resolution (the runtime's own fetch)
+ * cannot swap in a different, internal address (TOCTOU / rebind). Returns `null`
+ * when no pin is needed: an IP-literal host (validated in place by the sync
+ * pass) or the operator opt-out (`ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true`).
+ *
+ * Throws {@link EgressBlockedError} when the sync pass rejects, resolution
+ * fails, resolution returns no records, or **any** resolved address is internal
+ * — fail closed on every branch.
+ */
+export async function assertSafeEgressTarget(
+  url: string,
+  options: { readonly lookup?: EgressLookup } = {},
+): Promise<EgressPin | null> {
+  // Operator opt-out: internal targets are legitimate on self-hosted. Skip the
+  // whole check (no resolution) exactly like `assertBaseUrlAllowed`.
+  if (isInternalEgressAllowed()) return null;
+
+  // Cheap first pass — scheme, internal-hostname denylist, and IP-literal
+  // ranges. Rejects literal internal IPs without a DNS round-trip.
+  if (!isSafeExternalUrl(url)) throw new EgressBlockedError(url);
+
+  // Safe to parse — `isSafeExternalUrl` already accepted it.
+  const parsed = new URL(url);
+  const host = parsed.hostname.toLowerCase().replace(/\.+$/, "");
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+
+  // IP-literal host: the sync pass already CIDR-checked it, and there is no name
+  // to resolve — connect directly (no pin).
+  if (net.isIP(bare) !== 0) return null;
+
+  // DNS-name host: resolve and validate every resolved address before connect.
+  const lookup = options.lookup ?? defaultEgressLookup;
+  let records: ReadonlyArray<{ address: string; family: number }>;
+  try {
+    records = await lookup(bare);
+  } catch (err) {
+    throw new EgressBlockedError(
+      url,
+      `DNS resolution failed (${err instanceof Error ? err.message : String(err)}).`,
+    );
+  }
+  if (records.length === 0) {
+    throw new EgressBlockedError(url, "DNS resolution returned no records.");
+  }
+  for (const rec of records) {
+    if (isBlockedResolvedAddress(rec.address)) {
+      throw new EgressBlockedError(
+        url,
+        "Hostname resolves to a private, loopback, link-local, or internal address.",
+      );
+    }
+  }
+  // Every record is public. Pin the first so the connect targets a validated IP
+  // rather than re-resolving (rebind defense).
+  const chosen = records[0];
+  return { address: chosen.address, family: chosen.family === 6 ? 6 : 4 };
+}
+
 /** Options for {@link guardedFetch}. */
 export interface GuardedFetchOptions {
   /** `fetch` override for tests. Defaults to `globalThis.fetch`. */
   readonly fetchImpl?: typeof globalThis.fetch;
   /** Max redirect hops to follow. Defaults to {@link MAX_REDIRECTS}. */
   readonly maxRedirects?: number;
+  /** DNS resolver override for tests. Defaults to a `node:dns` lookup. */
+  readonly lookup?: EgressLookup;
+}
+
+/**
+ * Rewrite a request to connect to a **pinned** validated IP while preserving TLS
+ * correctness. The URL's host becomes the IP (bracketed for IPv6, port kept),
+ * and a `Host` header carrying the original authority is injected — Bun's fetch
+ * uses that Host value for TLS SNI and certificate verification (so the cert is
+ * still validated against the original hostname), while the socket connects to
+ * the pinned IP. This is what defeats the rebind race: the address we validated
+ * is the address we connect to, with no second resolution in between.
+ *
+ * `pin === null` (IP-literal host or operator opt-out) leaves the request
+ * untouched.
+ */
+function applyEgressPin(
+  url: string,
+  init: RequestInit,
+  pin: EgressPin | null,
+): { url: string; init: RequestInit } {
+  if (pin === null) return { url, init };
+  const parsed = new URL(url);
+  const originalAuthority = parsed.host; // hostname[:port] — original name, for the Host header.
+  const literal = pin.family === 6 ? `[${pin.address}]` : pin.address;
+  parsed.host = parsed.port ? `${literal}:${parsed.port}` : literal;
+  const headers = new Headers(init.headers);
+  headers.set("host", originalAuthority);
+  return { url: parsed.toString(), init: { ...init, headers } };
 }
 
 /** 3xx statuses that carry a `Location` we would follow. */
@@ -191,14 +336,33 @@ export async function guardedFetch(
   const maxRedirects = options.maxRedirects ?? MAX_REDIRECTS;
   const originalOrigin = originOf(url);
 
+  // Resolve + validate + pin runs when the caller supplies a resolver
+  // (opt-in / the guard's own tests) OR when we are about to use the genuine
+  // runtime fetch (production). A test double — an injected `fetchImpl` or a
+  // swapped `globalThis.fetch` — falls back to the sync guard, keeping the whole
+  // existing consumer-test corpus behavior-identical (#4779).
+  const resolver: EgressLookup | undefined =
+    options.lookup ?? (fetchImpl === REAL_FETCH ? defaultEgressLookup : undefined);
+
   let currentUrl = url;
   let currentInit: RequestInit = { ...init, redirect: "manual" };
   for (let hop = 0; hop <= maxRedirects; hop++) {
     // Re-validate immediately before every request leaves the box — this is the
     // "final host" check the up-front guard cannot make for redirect targets.
-    assertBaseUrlAllowed(currentUrl);
+    // With a resolver active, additionally resolve a DNS-name host and reject
+    // (or pin) based on the resolved IPs (#4779); otherwise the sync guard.
+    let pin: EgressPin | null = null;
+    if (resolver) {
+      pin = await assertSafeEgressTarget(currentUrl, { lookup: resolver });
+    } else {
+      assertBaseUrlAllowed(currentUrl);
+    }
 
-    const response = await fetchImpl(currentUrl, currentInit);
+    // Connect to the pinned IP (rebind defense) while keeping `currentUrl` as
+    // the hostname URL, so relative-Location resolution and the credential
+    // origin comparison below still reason about the real target host.
+    const { url: fetchUrl, init: fetchInit } = applyEgressPin(currentUrl, currentInit, pin);
+    const response = await fetchImpl(fetchUrl, fetchInit);
     if (!isRedirectStatus(response.status)) return response;
 
     const location = response.headers.get("location");
@@ -228,6 +392,43 @@ export async function guardedFetch(
     currentUrl,
     `Exceeded the redirect cap (${maxRedirects}) — refusing to follow further.`,
   );
+}
+
+/**
+ * Adapt {@link guardedFetch} to the standard `fetch` signature so it can be
+ * handed to any client that takes a `fetch` override — notably the Vercel AI SDK
+ * (`createOpenAI({ fetch })`), which is the LIVE-AGENT outbound path for a
+ * workspace `custom` / `azure-openai` `baseUrl`. Without this the agent's
+ * inference request goes out through the SDK's own `fetch`, bypassing the SSRF
+ * guard entirely — the sync check at config-build time is DNS-blind (#4779).
+ *
+ * Only the `(input, init)` shape the SDK uses is supported: `input` may be a
+ * string, `URL`, or `Request` (the URL is extracted; the request's own body/
+ * headers/method are honored when present, with `init` taking precedence).
+ */
+export function createGuardedFetch(
+  options: GuardedFetchOptions = {},
+): typeof globalThis.fetch {
+  const guarded = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    if (typeof input === "string" || input instanceof URL) {
+      return guardedFetch(input.toString(), init ?? {}, options);
+    }
+    // A `Request` object: fold its fields into an init, letting an explicit
+    // `init` argument override, and read the URL from the request.
+    const req = input;
+    const merged: RequestInit = {
+      method: req.method,
+      headers: req.headers,
+      body: req.body,
+      signal: req.signal,
+      ...init,
+    };
+    return guardedFetch(req.url, merged, options);
+  };
+  return guarded as typeof globalThis.fetch;
 }
 
 /**

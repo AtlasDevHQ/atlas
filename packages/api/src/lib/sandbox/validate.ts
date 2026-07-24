@@ -145,7 +145,37 @@ export function isSafeExternalUrl(url: string): boolean {
     return true;
   }
 
-  // Not an IP literal — a DNS name we deliberately do not resolve.
+  // Not an IP literal — a DNS name we deliberately do not resolve. This
+  // function is synchronous (it backs a Zod `.refine()` in
+  // `admin-model-config.ts`, which cannot await), so a public name that
+  // resolves to a private IP passes here. The connect-time DNS check in
+  // `guardedFetch` (via {@link isBlockedResolvedAddress}) is the backstop that
+  // closes that gap (#4779) — this stays the cheap first pass.
+  return true;
+}
+
+/**
+ * True if a *resolved* IP address (an A/AAAA record returned by DNS, already an
+ * IP literal — never a hostname) falls in a blocked private / loopback /
+ * link-local / CGNAT / ULA range. This is the connect-time half of the SSRF
+ * guard: {@link isSafeExternalUrl} cannot resolve DNS (it is synchronous), so a
+ * public hostname that resolves to an internal IP slips past it — the egress
+ * path resolves the host and re-checks every resolved address through here
+ * immediately before connect (#4779).
+ *
+ * Reuses the same {@link PRIVATE_BLOCKLIST} + IPv4-embedded-in-IPv6 logic as the
+ * literal-IP path so there is exactly one IP-range SSRF primitive. A value that
+ * is not a parseable IP literal (a resolver should never return one) fails
+ * CLOSED — treated as blocked.
+ */
+export function isBlockedResolvedAddress(ip: string): boolean {
+  if (net.isIPv4(ip)) return PRIVATE_BLOCKLIST.check(ip, "ipv4");
+  if (net.isIPv6(ip)) {
+    if (PRIVATE_BLOCKLIST.check(ip, "ipv6")) return true;
+    const embedded = extractEmbeddedIPv4(ip);
+    return embedded !== null && PRIVATE_BLOCKLIST.check(embedded, "ipv4");
+  }
+  // Not a valid IP literal — a resolver returning this is anomalous; fail closed.
   return true;
 }
 

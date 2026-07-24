@@ -53,7 +53,7 @@ export interface EgressPin {
 }
 
 /** A resolved DNS record — the shape of one `dns.promises.lookup(_, {all:true})` entry. */
-interface ResolvedAddress {
+export interface ResolvedAddress {
   readonly address: string;
   readonly family: number;
 }

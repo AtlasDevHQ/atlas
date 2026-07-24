@@ -2,7 +2,7 @@
   {
     "name": "Railway",
     "purpose": "Cloud infrastructure (compute, storage, Postgres)",
-    "region": "Customer’s selected region — United States (Virginia), Europe (Netherlands), or Asia Pacific (Singapore)",
+    "region": "Customer’s selected region — United States, Europe, or Asia Pacific",
     "since": "2026-01",
     "changed_at": "2026-01-15"
   },

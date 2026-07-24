@@ -142,7 +142,7 @@ const TIERS: Tier[] = [
       "Unlimited seats & connections",
       "Default model: Sonnet 5",
       "BYOK for unlimited queries",
-      "8 integrations: 6 chat + Linear + GitHub (Google Chat coming soon)",
+      "8 integrations: Slack live; 5 more chat platforms + Linear + GitHub rolling out",
       "SSO, SCIM & custom roles",
       "IP allowlist & approval workflows",
       "PII masking & audit retention",
@@ -172,7 +172,7 @@ const CORE_SECTION: ComparisonSection = {
     { feature: "Default model", selfHosted: "Your choice", starter: "Haiku 4.5", pro: "Sonnet 5", business: "Sonnet 5" },
     { feature: "Seats", selfHosted: "Unlimited", starter: "Up to 10", pro: "Up to 25", business: "Unlimited" },
     { feature: "Database connections", selfHosted: "Unlimited", starter: "1", pro: "3", business: "Unlimited" },
-    { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "All 6 (Google Chat soon)" },
+    { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "Up to 6 (Slack live; more rolling out)" },
     { feature: "Past the included credit", selfHosted: "No limit (BYOK)", starter: "At cost, to spend cap", pro: "At cost, to spend cap", business: "At cost, to spend cap" },
   ],
 };

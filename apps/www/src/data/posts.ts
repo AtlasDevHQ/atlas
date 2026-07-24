@@ -16,6 +16,16 @@ export interface Post {
 
 export const POSTS: Post[] = [
   {
+    slug: "grounded-in-your-context",
+    title: "Grounded in your context",
+    description:
+      "Ask two tools what revenue was last quarter and you can get two different numbers. Atlas reads your definitions first: a YAML semantic layer you author, a Knowledge Base mirroring your own docs through ten vendor connectors, and the query patterns it keeps as people approve them.",
+    isoDate: "2026-07-28",
+    dateLabel: "July 28, 2026",
+    readingTime: "6 min read",
+    tag: "How it works",
+  },
+  {
     slug: "the-last-mile",
     title: "The last mile",
     description:

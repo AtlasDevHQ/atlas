@@ -21,12 +21,43 @@ import { hasInternalDB, internalQuery, getInternalDB } from "@atlas/api/lib/db/i
 import { getConfig } from "@atlas/api/lib/config";
 import { UnsafeRegionMigrationResetError } from "@atlas/api/lib/effect/errors";
 import { exportWorkspaceBundle } from "./export";
-import type { MigrationStatus, MigrationPhase, ExportBundle } from "@useatlas/types";
+import type { MigrationStatus, MigrationPhase, ExportBundle, ExportManifest, ImportResult } from "@useatlas/types";
 
 /** Days to wait before cleaning up source region data after migration. */
 const CLEANUP_GRACE_PERIOD_DAYS = 7;
 
 const log = createLogger("region-migration");
+
+/**
+ * Bundle sections whose exported count is reconciled against the target
+ * region's acknowledgement before cutover (#4767).
+ *
+ * The type bound is the point: a member must be a key of BOTH
+ * `manifest.counts` AND `ImportResult`, so the compiler rejects a
+ * manifest-only count (`messages`, `dashboardCards`, `dashboardUserDrafts`,
+ * `knowledgeLinks` — child rows the importer folds into their parent's
+ * counter and never reports separately). Reconciling one of those would
+ * compare against a counter that structurally does not exist and abort every
+ * migration.
+ *
+ * A new bundle section belongs here the moment it gets its own ImportResult
+ * counter — that is what makes "the target silently dropped it" a failure
+ * instead of a silent success.
+ */
+const RECONCILED_SECTIONS = [
+  "conversations",
+  "semanticEntities",
+  "learnedPatterns",
+  "settings",
+  "dashboards",
+  "knowledgeDocuments",
+  "scheduledTasks",
+  "agentSessionMemory",
+  "brainEpisodes",
+  "brainFacts",
+  "brainEdges",
+  "factAudienceMembers",
+] as const satisfies readonly (keyof ExportManifest["counts"] & keyof ImportResult)[];
 
 /**
  * Stale migration threshold: 5 minutes.
@@ -182,6 +213,46 @@ async function transferBundleToTarget(
       detail = `HTTP ${response.status} ${response.statusText}`;
     }
     return { ok: false, error: `Target region import failed: ${detail}` };
+  }
+
+  // A 200 is not proof the target understood the bundle. `z.object()` STRIPS
+  // unknown keys, so a target region running an older build silently drops
+  // every section it has no schema for, imports the rest, and answers 200 —
+  // after which this migration cuts over and schedules the destructive source
+  // cleanup. The dropped pillar is then deleted from the source after the
+  // grace period, with no error logged anywhere.
+  //
+  // Before #4767 the bundle VERSION was the guard: a v1 target rejected a v2
+  // bundle outright. The brain sections are deliberately optional-on-the-wire
+  // (so a pre-#4767 SOURCE can still migrate), which removes that guard —
+  // this reconciliation replaces it, and generalizes to every future section.
+  //
+  // Deployment reality that makes this a live hazard rather than a theoretical
+  // one: regions deploy independently, so a window where US has #4767 and EU
+  // does not is routine, not exceptional.
+  let acknowledged: Partial<Record<string, { imported?: number; skipped?: number }>>;
+  try {
+    acknowledged = await response.json() as typeof acknowledged;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `Target region returned an unreadable import result: ${msg}` };
+  }
+
+  for (const section of RECONCILED_SECTIONS) {
+    const expected = bundle.manifest.counts[section];
+    if (!expected) continue; // nothing exported ⇒ nothing to reconcile
+    const got = acknowledged[section];
+    const total = (got?.imported ?? 0) + (got?.skipped ?? 0);
+    if (total !== expected) {
+      return {
+        ok: false,
+        error:
+          `Target region accounted for ${got ? total : 0}/${expected} '${section}' rows. ` +
+          `The target is most likely running an older build that does not understand this ` +
+          `bundle section. Migration ${migrationId} aborted BEFORE cutover — no source data ` +
+          `has been deleted. Upgrade the target region and re-run the migration.`,
+      };
+    }
   }
 
   return { ok: true };

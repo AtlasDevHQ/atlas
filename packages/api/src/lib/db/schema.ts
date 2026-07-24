@@ -3191,6 +3191,11 @@ export const brainEpisodes = pgTable(
     // Dedupe key — makes re-ingest a no-op. Scoped per workspace + source
     // because two connectors can mint the same opaque source id.
     uniqueIndex("uq_brain_episodes_source_id").on(t.workspaceId, t.source, t.sourceId),
+    // Referent for the composite FKs from brain_facts / brain_edges. Adds no
+    // new uniqueness (id is the PK) — it exists so `(workspace_id, id)` has a
+    // unique index to point at, which is what lets those FKs prove that an
+    // episode and the rows referencing it share a workspace.
+    uniqueIndex("uq_brain_episodes_workspace_id").on(t.workspaceId, t.id),
     // Extraction drain, PARTIAL so the index holds only the backlog.
     index("idx_brain_episodes_extraction_queue")
       .on(t.workspaceId, t.ingestedAt)
@@ -3236,18 +3241,19 @@ export const brainFacts = pgTable(
     // The evidence. NOT NULL is "no-provenance-no-promotion" made structural:
     // every entry point onto the reconcile stage has an episode (connector
     // record, warehouse SQL+snapshot pin, human correction, lazily
-    // materialized session episode). RESTRICT so deleting evidence under a
-    // live fact fails loudly.
-    sourceEpisodeId: uuid("source_episode_id")
-      .notNull()
-      .references(() => brainEpisodes.id, { onDelete: "restrict" }),
+    // materialized session episode). The FK is COMPOSITE with workspaceId (see
+    // the table extras below) so the episode must be in the same workspace,
+    // and RESTRICT so deleting evidence under a live fact fails loudly.
+    sourceEpisodeId: uuid("source_episode_id").notNull(),
     // Actor, source pointer, and for warehouse-derived facts the PINNED SQL +
     // data snapshot (pinned, not a live view). Forks are recorded as
     // `derives-from` edges rather than by rewriting this.
     provenance: jsonb("provenance").notNull(),
-    // Content-mode lifecycle — every candidate lands `draft`, promoted only by
-    // the atomic publish endpoint. Registered with the content-mode registry
-    // in #4769.
+    // Content-mode lifecycle — DEFAULTS to `draft`, promoted by the atomic
+    // publish endpoint. Registered with the content-mode registry in #4769.
+    // A default, not an enforcement: human corrections land authoritative
+    // immediately, and a region import preserves the source's review status
+    // rather than demoting reviewed facts back to draft.
     status: text("status").notNull().default("draft"),
     // Self-contained principal set, derived at ingest, evaluated read-time
     // local. Grammar (parser in #4768):
@@ -3292,6 +3298,15 @@ export const brainFacts = pgTable(
       "chk_brain_facts_valid_interval",
       sql`valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from`,
     ),
+    // Composite FK — the episode must live in the SAME workspace as the fact,
+    // so a cross-tenant claim is unrepresentable rather than merely unlikely.
+    foreignKey({
+      name: "fk_brain_facts_episode",
+      columns: [t.workspaceId, t.sourceEpisodeId],
+      foreignColumns: [brainEpisodes.workspaceId, brainEpisodes.id],
+    }).onDelete("restrict"),
+    // Referent for brain_edges' composite endpoint FKs.
+    uniqueIndex("uq_brain_facts_workspace_id").on(t.workspaceId, t.id),
   ],
 );
 
@@ -3302,12 +3317,18 @@ export const brainFacts = pgTable(
 // whose endpoint silently vanished is exactly the corruption a provenance
 // graph must not tolerate.
 //
+// Endpoint KINDS are constrained per type, not merely documented: an
+// episode→episode `provenance` edge would satisfy a bare exactly-one-per-side
+// rule while being meaningless, and M2's walker assumes the shapes.
+//
 // Endpoint FKs CASCADE, deliberately asymmetric with the RESTRICT on
 // `brainFacts.sourceEpisodeId`. A fact's episode is its EVIDENCE and must not
 // be deletable under a live claim; an edge is a derived assertion ABOUT facts
 // and episodes, so once an endpoint is gone it is dangling structure and
-// should vanish with it. The asymmetry also keeps the #4458 cleanup sweep
-// sound — its column phase assumes CASCADE between in-scope tables.
+// should vanish with it. That asymmetry also keeps the #4458 cleanup sweep
+// sound: its column phase assumes CASCADE between in-scope tables, and
+// `brain_facts` — the one exception — is handled by phase instead (a `parent`
+// rule in cleanup.ts orders its delete ahead of brain_episodes).
 export const brainEdges = pgTable(
   "brain_edges",
   {
@@ -3315,16 +3336,17 @@ export const brainEdges = pgTable(
     workspaceId: text("workspace_id").notNull(),
     // supersedes (fact→fact, the M2 arbitration outcome) · in-tension-with
     // (fact→fact, genuine conflict — SURFACED with both provenances, never
-    // ranked) · derives-from (fork lineage) · provenance (evidence pointer).
+    // ranked) · derives-from (fact→fact|episode, fork lineage) · provenance
+    // (fact→episode, the evidence pointer).
     edgeType: text("edge_type").notNull(),
-    fromFactId: uuid("from_fact_id").references(() => brainFacts.id, { onDelete: "cascade" }),
-    fromEpisodeId: uuid("from_episode_id").references(() => brainEpisodes.id, {
-      onDelete: "cascade",
-    }),
-    toFactId: uuid("to_fact_id").references(() => brainFacts.id, { onDelete: "cascade" }),
-    toEpisodeId: uuid("to_episode_id").references(() => brainEpisodes.id, {
-      onDelete: "cascade",
-    }),
+    // Every committed type originates at a fact, so `fromEpisodeId` is
+    // currently always NULL. The column keeps the two sides symmetric for a
+    // future episode-rooted type; the endpoint-kinds CHECK is what stops one
+    // appearing by accident meanwhile.
+    fromFactId: uuid("from_fact_id"),
+    fromEpisodeId: uuid("from_episode_id"),
+    toFactId: uuid("to_fact_id"),
+    toEpisodeId: uuid("to_episode_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -3348,6 +3370,40 @@ export const brainEdges = pgTable(
       sql`num_nonnulls(from_fact_id, from_episode_id) = 1`,
     ),
     check("chk_brain_edges_to_endpoint", sql`num_nonnulls(to_fact_id, to_episode_id) = 1`),
+    // The per-type endpoint kinds documented above.
+    check(
+      "chk_brain_edges_endpoint_kinds",
+      sql`from_fact_id IS NOT NULL
+    AND CASE edge_type
+          WHEN 'provenance' THEN to_episode_id IS NOT NULL
+          WHEN 'derives-from' THEN TRUE
+          ELSE to_fact_id IS NOT NULL
+        END`,
+    ),
+    // Composite endpoint FKs — an edge can only join rows in its OWN
+    // workspace. Postgres's default MATCH SIMPLE skips the check when any
+    // referencing column is NULL, which is exactly right here: the unused side
+    // of each pair is simply not constrained.
+    foreignKey({
+      name: "fk_brain_edges_from_fact",
+      columns: [t.workspaceId, t.fromFactId],
+      foreignColumns: [brainFacts.workspaceId, brainFacts.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "fk_brain_edges_from_episode",
+      columns: [t.workspaceId, t.fromEpisodeId],
+      foreignColumns: [brainEpisodes.workspaceId, brainEpisodes.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "fk_brain_edges_to_fact",
+      columns: [t.workspaceId, t.toFactId],
+      foreignColumns: [brainFacts.workspaceId, brainFacts.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "fk_brain_edges_to_episode",
+      columns: [t.workspaceId, t.toEpisodeId],
+      foreignColumns: [brainEpisodes.workspaceId, brainEpisodes.id],
+    }).onDelete("cascade"),
   ],
 );
 

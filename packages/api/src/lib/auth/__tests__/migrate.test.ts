@@ -535,6 +535,12 @@ describe("migrateAuthTables", () => {
             // be in the already-applied set so this "all applied" test sees
             // zero new migrations.
             { name: "0179_drop_conversations_notebook_state.sql" },
+            // 0180 (#4767, ADR-0036) — brain substrate (episodes / facts /
+            // edges / fact_audience_member). Additive CREATE TABLE on
+            // Atlas-internal tables, no Better Auth involvement, so it runs
+            // in every auth mode — must be in the already-applied set so this
+            // "all applied" test sees zero new migrations.
+            { name: "0180_brain_substrate.sql" },
           ],
         };
       }

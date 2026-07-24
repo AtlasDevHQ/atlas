@@ -159,13 +159,19 @@ export const CLEANUP_TABLE_RULES = {
   scheduled_tasks: { kind: "column", column: "org_id" },
   agent_session_memory: { kind: "column", column: "org_id" },
   // Company brain (#4767, ADR-0036). Facts are scoped THROUGH their episode
-  // rather than by their own workspace_id — not for scoping (the column
-  // exists) but for PHASE: `brain_facts.source_episode_id` is the one
-  // RESTRICT FK among the in-scope tables, so the facts must be gone before
-  // the column phase deletes the episodes, or the sweep fails on any
-  // workspace that actually has a brain. Edges CASCADE from both endpoints
-  // and are already gone by then; their rule is kept explicit so the
-  // registry stays a complete map, and the DELETE is a harmless no-op.
+  // rather than by their own workspace_id — not for scoping but for PHASE:
+  // `brain_facts.source_episode_id` is the one RESTRICT FK among the in-scope
+  // tables, so the facts must be gone before the column phase deletes the
+  // episodes, or the sweep fails outright on any workspace that has a brain.
+  //
+  // The two predicates select the same rows because a composite FK
+  // (`fk_brain_facts_episode`) makes a fact and its episode share a workspace
+  // at rest — without that constraint this rule would silently leave residue
+  // behind, which is a residency-deletion promise quietly broken.
+  //
+  // Edges CASCADE from both endpoints, so the explicit DELETE is usually
+  // redundant; the rule is kept so the registry stays a complete map of every
+  // workspace-scoped table.
   brain_facts: {
     kind: "parent",
     fkColumn: "source_episode_id",

@@ -256,8 +256,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       await pool.query(`DELETE FROM dashboards WHERE org_id = $1`, [SOURCE_ORG]); // cascades cards + drafts
       await pool.query(`DELETE FROM knowledge_documents WHERE workspace_id = $1`, [SOURCE_ORG]); // cascades links
       await pool.query(`DELETE FROM scheduled_tasks WHERE org_id = $1`, [SOURCE_ORG]);
-      // Brain: edges first, then facts, then episodes — the FKs are RESTRICT,
-      // not CASCADE, precisely so evidence can't vanish under a live claim.
+      // Brain: facts before episodes — brain_facts.source_episode_id is the
+      // one RESTRICT FK here (evidence can't vanish under a live claim). The
+      // edge delete is belt-and-braces: those FKs CASCADE, so the rows are
+      // already gone once their endpoints are.
       await pool.query(`DELETE FROM brain_edges WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM brain_facts WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM brain_episodes WHERE workspace_id = $1`, [SOURCE_ORG]);
@@ -312,14 +314,17 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(brainFact.rows[0].source_episode_id).toBe(EPISODE_ID);
 
       // Invalidate-never-delete survives: the tombstoned claim is still here,
-      // still carrying the instant it stopped being true.
+      // still carrying the instant it stopped being true. Asserted as the
+      // EXACT instant, not merely non-null — an importer that stamped
+      // `new Date()` instead of forwarding the source value would pass a
+      // non-null check while silently rewriting bi-temporal history.
       const superseded = await pool.query<{ invalidated_at: Date | null; valid_to: Date | null }>(
         `SELECT invalidated_at, valid_to FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
         [SUPERSEDED_FACT_ID, TARGET_ORG],
       );
       expect(superseded.rows).toHaveLength(1);
-      expect(superseded.rows[0].invalidated_at).not.toBeNull();
-      expect(superseded.rows[0].valid_to).not.toBeNull();
+      expect(superseded.rows[0].invalidated_at?.toISOString()).toBe("2026-06-01T00:00:00.000Z");
+      expect(superseded.rows[0].valid_to?.toISOString()).toBe("2026-06-01T00:00:00.000Z");
 
       // The episode's grant (including its audience arm) and its extraction
       // stamp travel — the latter so the target doesn't re-queue an episode a
@@ -329,7 +334,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         [EPISODE_ID, TARGET_ORG],
       );
       expect(episode.rows[0].visible_to).toEqual(["org", "audience:eng"]);
-      expect(episode.rows[0].extracted_at).not.toBeNull();
+      // Exact instant: a re-stamped extracted_at is indistinguishable from a
+      // correct one under a non-null check, and it silently re-queues an
+      // episode a human already reviewed.
+      expect(episode.rows[0].extracted_at?.toISOString()).toBe("2026-06-01T00:05:00.000Z");
 
       // Audience membership moved, so the `audience:eng` grant still resolves
       // to a real person rather than denying everyone.
@@ -434,12 +442,37 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         scheduledTasks: { imported: 0, skipped: 1 },
         agentSessionMemory: { imported: 0, skipped: 1 },
         brainEpisodes: { imported: 0, skipped: 1 },
-        // Skipped WITH their episode — re-importing them would attach
-        // duplicate claims to an episode that already carries its own.
+        // Deduped on the FACT's own key, not the episode's — see the catch-up
+        // case below for why that distinction is load-bearing.
         brainFacts: { imported: 0, skipped: 2 },
         brainEdges: { imported: 0, skipped: 2 },
         factAudienceMembers: { imported: 0, skipped: 1 },
       });
+
+      // ── Catch-up import: an episode the target already has, carrying a
+      // fact it does NOT. An episode is immutable but its fact set GROWS
+      // (re-extraction, human corrections), so skipping facts wholesale
+      // because their episode existed would strand the new claim while
+      // reporting it as "skipped" — i.e. as already present.
+      const LATE_FACT_ID = "cccccccc-0000-4000-8000-00000000000c";
+      const catchUp = structuredClone(bundle);
+      catchUp.brainEpisodes![0].facts.push({
+        ...catchUp.brainEpisodes![0].facts[0],
+        id: LATE_FACT_ID,
+        object: "59",
+      });
+      const third = await runImport(catchUp);
+      expect(third.brainEpisodes).toEqual({ imported: 0, skipped: 1 });
+      expect(third.brainFacts).toEqual({ imported: 1, skipped: 2 });
+
+      const late = await pool.query<{ object: string; source_episode_id: string }>(
+        `SELECT object, source_episode_id FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
+        [LATE_FACT_ID, TARGET_ORG],
+      );
+      expect(late.rows).toHaveLength(1);
+      expect(late.rows[0].object).toBe("59");
+      // Attached to the episode the target already held.
+      expect(late.rows[0].source_episode_id).toBe(EPISODE_ID);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -659,8 +692,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         expect(await countIn(`SELECT count(*)::int AS n FROM brain_edges WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
         expect(await countIn(`SELECT count(*)::int AS n FROM fact_audience_member WHERE workspace_id = $1`, [CLEAN_ORG])).toBe(0);
         // The TARGET org's imported brain is untouched — the sweep is scoped
-        // to the migrated-away workspace, not to the tables.
-        expect(await countIn(`SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`, [TARGET_ORG])).toBe(2);
+        // to the migrated-away workspace, not to the tables. Three facts: the
+        // live one, the tombstoned one, and the catch-up fact from the
+        // round-trip block above.
+        expect(await countIn(`SELECT count(*)::int AS n FROM brain_facts WHERE workspace_id = $1`, [TARGET_ORG])).toBe(3);
 
         // Survivors: platform settings row, unattributable cache row, the
         // TARGET org's imported data (seeded by the round-trip test above —

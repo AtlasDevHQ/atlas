@@ -71,8 +71,10 @@ function scopeClause(columnRef: string, orgScope: string | null): string {
  * org-scoped settings, dashboards (cards + per-user drafts; share tokens
  * dropped — the owner re-shares in the target), knowledge documents (with
  * link graph + review status), scheduled-task definitions (next run
- * recomputed at import), and durable agent session memory. The returned
- * bundle is ready to POST to the target region's import endpoint.
+ * recomputed at import), durable agent session memory, and the company brain
+ * (#4767 — episodes with their facts nested, the typed edge graph, audience
+ * membership). The returned bundle is ready to POST to the target region's
+ * import endpoint.
  *
  * @param orgScope - Org id to export, or `null` to export rows with
  *   `org_id IS NULL` (no-auth self-hosted instances, CLI path).
@@ -232,6 +234,12 @@ export async function exportWorkspaceBundle(
     // four temporal columns. Exporting facts without those would land
     // unprovenanced, ungated claims in the target region, which is strictly
     // worse than not migrating them at all.
+    //
+    // Structurally empty on the `orgScope === null` path (the no-auth
+    // self-hosted / CLI export): all four brain tables declare `workspace_id
+    // NOT NULL`, so `IS NULL` matches nothing. That differs from
+    // `conversations.org_id`, which is nullable and does carry rows there —
+    // a no-auth instance has no workspace identity to hang a brain off.
     pool.query(
       `SELECT id, source, source_id, source_actor, body, locator, occurred_at,
               ingested_at, extracted_at, visible_to, created_at
@@ -242,6 +250,9 @@ export async function exportWorkspaceBundle(
     // Scoped via the episode join rather than the fact's own workspace_id, so
     // a fact travels iff its episode travels — the import-side NOT NULL FK
     // then resolves by construction (same discipline as session memory above).
+    // The two scopings agree because `fk_brain_facts_episode` is a composite
+    // FK on (workspace_id, source_episode_id): a fact hanging off another
+    // workspace's episode is unrepresentable, so the join can't widen scope.
     pool.query(
       `SELECT f.id, f.source_episode_id, f.subject, f.predicate, f.object,
               f.valid_from, f.valid_to, f.ingested_at, f.invalidated_at,
@@ -253,9 +264,11 @@ export async function exportWorkspaceBundle(
        ORDER BY f.source_episode_id, f.ingested_at, f.id ASC`,
       params,
     ),
-    // Edges are workspace-scoped directly: an edge's endpoints are always in
-    // the same workspace, and scoping through four nullable endpoint joins
-    // would be strictly harder to read for the same row set.
+    // Edges are workspace-scoped directly. Safe because the composite
+    // endpoint FKs (`fk_brain_edges_*`) pin every endpoint to the edge's own
+    // workspace — so this selects the same rows four nullable endpoint joins
+    // would, and cannot export an edge whose endpoint is absent from the
+    // bundle (which would fail the FK at import).
     pool.query(
       `SELECT edge_type, from_fact_id, from_episode_id, to_fact_id, to_episode_id,
               created_at

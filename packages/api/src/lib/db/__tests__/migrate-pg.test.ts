@@ -3162,16 +3162,29 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     return rows[0]!.id;
   }
 
-  /** Run a statement expected to violate a constraint; return the error. */
-  async function expectRejected(sql: string, params: unknown[]): Promise<Error> {
-    let err: Error | null = null;
+  /**
+   * Run a statement expected to violate `constraint`, and assert THAT
+   * constraint is what fired.
+   *
+   * Matching on the message with a `|23514|check constraint` alternation
+   * would be satisfied by any check violation on the table — so dropping the
+   * constraint under test and having a different one fire would still pass.
+   * pg's DatabaseError exposes `.constraint` directly, which makes the
+   * assertion exact for the same line count.
+   */
+  async function expectRejected(
+    constraint: string,
+    sql: string,
+    params: unknown[],
+  ): Promise<void> {
+    let err: (Error & { constraint?: string }) | null = null;
     try {
       await pool.query(sql, params);
     } catch (e) {
       err = e instanceof Error ? e : new Error(String(e));
     }
-    expect(err).not.toBeNull();
-    return err!;
+    expect(err, `expected ${constraint} to reject the statement`).not.toBeNull();
+    expect(err?.constraint ?? err?.message).toBe(constraint);
   }
 
   it("0180: episodes dedupe on (workspace, source, source_id) — re-ingest is a no-op, never an upsert (#4767)", async () => {
@@ -3203,12 +3216,12 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
 
     // A bare re-insert (no ON CONFLICT clause) is a hard 23505 — the UNIQUE
     // index is what makes dedupe structural rather than a call-site habit.
-    const err = await expectRejected(
+    await expectRejected(
+      "uq_brain_episodes_source_id",
       `INSERT INTO brain_episodes (workspace_id, source, source_id, body, visible_to)
        VALUES ($1, 'slack', 'slack-msg-1', 'dup', ARRAY['org'])`,
       [ws],
     );
-    expect(err.message).toMatch(/uq_brain_episodes_source_id|23505|duplicate key/i);
 
     // Same source_id under a DIFFERENT source is a different episode: two
     // connectors can mint the same opaque id without colliding.
@@ -3233,12 +3246,12 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
       ["neither", "", ""],
       ["both", ", body, locator", ", 'b', 'l'"],
     ] as const) {
-      const err = await expectRejected(
+      await expectRejected(
+        "chk_brain_episodes_body_xor_locator",
         `INSERT INTO brain_episodes (workspace_id, source, source_id, visible_to${cols})
          VALUES ($1, 'slack', 'x-${label}', ARRAY['org']${vals})`,
         [ws],
       );
-      expect(err.message).toMatch(/chk_brain_episodes_body_xor_locator|23514|check constraint/i);
     }
   }, PG_TEST_TIMEOUT_MS);
 
@@ -3254,18 +3267,18 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
        RETURNING status, predicate_cardinality`,
       [ws, episodeId],
     );
-    // Every candidate lands draft — the review gate, not a fast path.
+    // Every extraction candidate lands draft — the review gate, not a fast path.
     expect(rows[0]!.status).toBe("draft");
     // The conservative arm: coexist rather than supersede.
     expect(rows[0]!.predicate_cardinality).toBe("multi");
 
-    const err = await expectRejected(
+    await expectRejected(
+      "chk_brain_facts_status",
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to, status)
        VALUES ($1, 'acme', 'uses', 'mysql', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'], 'live')`,
       [ws, episodeId],
     );
-    expect(err.message).toMatch(/chk_brain_facts_status|23514|check constraint/i);
   }, PG_TEST_TIMEOUT_MS);
 
   it("0180: no-grant-no-promotion and no-provenance-no-promotion are unrepresentable at rest (#4767)", async () => {
@@ -3278,38 +3291,57 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
 
     // An EMPTY grant is the dangerous case, and the one NOT NULL alone misses:
     // it denies everyone, which reads as "hidden" but behaves as "unreviewed".
-    const emptyGrant = await expectRejected(
+    await expectRejected(
+      "chk_brain_facts_grant_nonempty",
       `${base} VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY[]::text[])`,
       [ws, episodeId],
     );
-    expect(emptyGrant.message).toMatch(/chk_brain_facts_grant_nonempty|23514|check constraint/i);
 
     // Likewise an empty JSON object — a claim with no evidence wearing the
     // shape of a real one.
-    const emptyProvenance = await expectRejected(
+    await expectRejected(
+      "chk_brain_facts_provenance_nonempty",
       `${base} VALUES ($1, 's', 'p', 'o', $2, '{}'::jsonb, ARRAY['org'])`,
       [ws, episodeId],
     );
-    expect(emptyProvenance.message).toMatch(
-      /chk_brain_facts_provenance_nonempty|23514|check constraint/i,
-    );
 
-    // And a fact with no episode at all: provenance made structural.
-    const noEpisode = await expectRejected(
-      `${base} VALUES ($1, 's', 'p', 'o', NULL, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
-      [ws],
-    );
-    expect(noEpisode.message).toMatch(/source_episode_id|23502|null value/i);
+    // And a fact with no episode at all: provenance made structural. NOT NULL
+    // has no constraint name, so this one matches on the message.
+    let nullErr: (Error & { column?: string }) | null = null;
+    try {
+      await pool.query(`${base} VALUES ($1, 's', 'p', 'o', NULL, '{"actor":"u1"}'::jsonb, ARRAY['org'])`, [ws]);
+    } catch (e) {
+      nullErr = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(nullErr).not.toBeNull();
+    expect(nullErr?.column ?? nullErr?.message).toMatch(/source_episode_id/);
 
     // The same empty-grant refusal holds for tier-3: episodes are gated too,
     // and are frequently more sensitive than the facts drawn from them.
-    const episodeGrant = await expectRejected(
+    await expectRejected(
+      "chk_brain_episodes_grant_nonempty",
       `INSERT INTO brain_episodes (workspace_id, source, source_id, body, visible_to)
        VALUES ($1, 'slack', 'no-grant', 'x', ARRAY[]::text[])`,
       [ws],
     );
-    expect(episodeGrant.message).toMatch(
-      /chk_brain_episodes_grant_nonempty|23514|check constraint/i,
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: a fact cannot hang off another workspace's episode (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const wsA = `ws-tenant-a-${stamp}`;
+    const wsB = `ws-tenant-b-${stamp}`;
+    const episodeB = await insertEpisode(wsB, `ep-${stamp}`);
+
+    // The composite FK is what makes the export's episode-join scoping and the
+    // cleanup sweep's parent-scoped delete agree. Without it, a fact in A
+    // hanging off B's episode is exported into the WRONG tenant's bundle and
+    // survives A's residency sweep entirely.
+    await expectRejected(
+      "fk_brain_facts_episode",
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
+      [wsA, episodeB],
     );
   }, PG_TEST_TIMEOUT_MS);
 
@@ -3328,7 +3360,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
       [ws, episodeId],
     );
 
-    const err = await expectRejected(
+    await expectRejected(
+      "chk_brain_facts_valid_interval",
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to,
           valid_from, valid_to)
@@ -3336,7 +3369,6 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
                now(), now() - interval '1 day')`,
       [ws, episodeId],
     );
-    expect(err.message).toMatch(/chk_brain_facts_valid_interval|23514|check constraint/i);
   }, PG_TEST_TIMEOUT_MS);
 
   it("0180: edges accept exactly the four committed types and reject a fifth (#4767)", async () => {
@@ -3375,15 +3407,15 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     expect(counted[0]!.n).toBe("4");
 
     // M2 extends the engine that walks these, never the list.
-    const unknown = await expectRejected(
+    await expectRejected(
+      "chk_brain_edges_type",
       `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
        VALUES ($1, 'contradicts', $2, $3)`,
       [ws, factA, factB],
     );
-    expect(unknown.message).toMatch(/chk_brain_edges_type|23514|check constraint/i);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("0180: an edge endpoint is a fact XOR an episode on each side (#4767)", async () => {
+  it("0180: an edge endpoint is a fact XOR an episode on EACH side (#4767)", async () => {
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     const ws = `ws-endpoint-${stamp}`;
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
@@ -3396,20 +3428,103 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     );
     const factId = factRows[0]!.id;
 
+    // Both cases use `derives-from`, the one type whose endpoint-kinds arm is
+    // unconditional — so the failure isolates to the constraint under test.
+    // (A `provenance` edge with no `to` endpoint violates BOTH this and
+    // chk_brain_edges_endpoint_kinds, which is covered in its own test below.)
+    //
+    // --- the `to` side ---
     // Dangling endpoint — an edge to nothing.
-    const dangling = await expectRejected(
-      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id) VALUES ($1, 'provenance', $2)`,
+    await expectRejected(
+      "chk_brain_edges_to_endpoint",
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id) VALUES ($1, 'derives-from', $2)`,
       [ws, factId],
     );
-    expect(dangling.message).toMatch(/chk_brain_edges_to_endpoint|23514|check constraint/i);
-
     // Two endpoints on one side — ambiguous about what the edge asserts.
-    const ambiguous = await expectRejected(
+    await expectRejected(
+      "chk_brain_edges_to_endpoint",
       `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id, to_episode_id)
        VALUES ($1, 'derives-from', $2, $2, $3)`,
       [ws, factId, episodeId],
     );
-    expect(ambiguous.message).toMatch(/chk_brain_edges_to_endpoint|23514|check constraint/i);
+
+    // --- the `from` side, which the CHECK constrains symmetrically ---
+    // Only the two-endpoints case isolates cleanly: a NULL `from_fact_id`
+    // also trips endpoint_kinds (every committed type originates at a fact),
+    // and that arm is asserted in the endpoint-kinds test instead.
+    await expectRejected(
+      "chk_brain_edges_from_endpoint",
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, from_episode_id, to_fact_id)
+       VALUES ($1, 'supersedes', $2, $3, $2)`,
+      [ws, factId, episodeId],
+    );
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: edge endpoint KINDS are constrained per type, not just documented (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-kinds-${stamp}`;
+    const episodeId = await insertEpisode(ws, `ep-${stamp}`);
+    const { rows: factRows } = await pool.query<{ id: string }>(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+       RETURNING id`,
+      [ws, episodeId],
+    );
+    const factId = factRows[0]!.id;
+
+    // `derives-from` is the one type legitimately allowed to point at either.
+    await pool.query(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_episode_id)
+       VALUES ($1, 'derives-from', $2, $3)`,
+      [ws, factId, episodeId],
+    );
+
+    // A `provenance` edge pointing at a fact is meaningless — it is the
+    // EVIDENCE pointer, and evidence is an episode.
+    await expectRejected(
+      "chk_brain_edges_endpoint_kinds",
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
+       VALUES ($1, 'provenance', $2, $2)`,
+      [ws, factId],
+    );
+    // Arbitration types compare CLAIMS, so they cannot point at an episode.
+    await expectRejected(
+      "chk_brain_edges_endpoint_kinds",
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_episode_id)
+       VALUES ($1, 'supersedes', $2, $3)`,
+      [ws, factId, episodeId],
+    );
+    // Every committed type originates at a fact.
+    await expectRejected(
+      "chk_brain_edges_endpoint_kinds",
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_episode_id, to_episode_id)
+       VALUES ($1, 'provenance', $2, $2)`,
+      [ws, episodeId],
+    );
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: an edge cannot join rows from another workspace (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const wsA = `ws-edge-a-${stamp}`;
+    const wsB = `ws-edge-b-${stamp}`;
+    const episodeA = await insertEpisode(wsA, `ep-a-${stamp}`);
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+       RETURNING id`,
+      [wsA, episodeA],
+    );
+    const factA = rows[0]!.id;
+
+    // Composite endpoint FK: workspace B cannot mint an edge into A's graph.
+    await expectRejected(
+      "fk_brain_edges_from_fact",
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_episode_id)
+       VALUES ($1, 'provenance', $2, $3)`,
+      [wsB, factA, episodeA],
+    );
   }, PG_TEST_TIMEOUT_MS);
 
   it("0180: deleting an episode out from under a live fact is refused (#4767)", async () => {
@@ -3425,8 +3540,36 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
 
     // RESTRICT, not CASCADE: evidence disappearing under a live claim must
     // fail loudly rather than quietly leave an unprovenanced fact standing.
-    const err = await expectRejected(`DELETE FROM brain_episodes WHERE id = $1`, [episodeId]);
-    expect(err.message).toMatch(/foreign key|23503|still referenced/i);
+    await expectRejected(
+      "fk_brain_facts_episode",
+      `DELETE FROM brain_episodes WHERE id = $1`,
+      [episodeId],
+    );
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: deleting a fact CASCADES its edges — they are derived, not evidence (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-cascade-${stamp}`;
+    const episodeId = await insertEpisode(ws, `ep-${stamp}`);
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+       RETURNING id`,
+      [ws, episodeId],
+    );
+    const factId = rows[0]!.id;
+    await pool.query(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_episode_id)
+       VALUES ($1, 'provenance', $2, $3)`,
+      [ws, factId, episodeId],
+    );
+
+    // The asymmetry with the RESTRICT above is the point — and it is what
+    // keeps the #4458 cleanup sweep's column phase sound.
+    await pool.query(`DELETE FROM brain_facts WHERE id = $1`, [factId]);
+    const remaining = await pool.query(`SELECT 1 FROM brain_edges WHERE workspace_id = $1`, [ws]);
+    expect(remaining.rowCount).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
 
   it("0180: fact_audience_member keys on (workspace, audience, user) for live revocation (#4767)", async () => {

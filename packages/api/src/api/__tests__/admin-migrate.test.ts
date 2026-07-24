@@ -831,6 +831,247 @@ describe("validateBundle — v2 sections (#4460)", () => {
   });
 });
 
+describe("validateBundle — company brain (#4767)", () => {
+  /** A minimal, valid brain payload: one episode, one fact, one edge, one member. */
+  function brainBundle(): ExportBundle {
+    const bundle = validV2Bundle();
+    return {
+      ...bundle,
+      brainEpisodes: [
+        {
+          id: "ep-1",
+          source: "slack",
+          sourceId: "C1/1.0",
+          sourceActor: "U-alice",
+          body: "pricing is $49/seat",
+          locator: null,
+          occurredAt: "2026-06-01T00:00:00Z",
+          ingestedAt: "2026-06-01T00:00:00Z",
+          extractedAt: "2026-06-01T00:05:00Z",
+          visibleTo: ["org"],
+          createdAt: "2026-06-01T00:00:00Z",
+          facts: [
+            {
+              id: "fact-1",
+              subject: "acme:pro",
+              predicate: "price_per_seat",
+              object: "49",
+              validFrom: "2026-06-01T00:00:00Z",
+              validTo: null,
+              ingestedAt: "2026-06-01T00:05:00Z",
+              invalidatedAt: null,
+              extractedAt: "2026-06-01T00:05:00Z",
+              provenance: { actor: "U-alice" },
+              status: "published",
+              visibleTo: ["org"],
+              predicateCardinality: "single",
+              createdAt: "2026-06-01T00:05:00Z",
+              updatedAt: "2026-06-01T00:05:00Z",
+            },
+          ],
+        },
+      ],
+      brainEdges: [
+        {
+          edgeType: "provenance",
+          fromFactId: "fact-1",
+          fromEpisodeId: null,
+          toFactId: null,
+          toEpisodeId: "ep-1",
+          createdAt: "2026-06-01T00:05:00Z",
+        },
+      ],
+      factAudienceMembers: [
+        { audienceId: "eng", userId: "u1", source: "slack", createdAt: "2026-06-01T00:00:00Z" },
+      ],
+    };
+  }
+
+  /** Mutate the single fact and expect rejection naming `expected`. */
+  function expectFactRejected(mutate: (fact: Record<string, unknown>) => void, expected: string) {
+    const bundle = brainBundle();
+    mutate(bundle.brainEpisodes![0].facts[0] as unknown as Record<string, unknown>);
+    const result = validateBundle(bundle);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain(expected);
+  }
+
+  it("accepts a well-formed brain payload", () => {
+    expect(validateBundle(brainBundle()).ok).toBe(true);
+  });
+
+  it("accepts a v2 bundle with NO brain sections — the mid-rollout contract", () => {
+    // A source region still running pre-#4767 code emits exactly this. If the
+    // brain sections were ever added to the v2 REQUIRED list, every migration
+    // out of a not-yet-upgraded region would start failing hard.
+    const bundle = validV2Bundle();
+    expect(validateBundle(bundle).ok).toBe(true);
+  });
+
+  // ── no-grant-no-promotion ────────────────────────────────────────────────
+  // An absent, empty, or blank-element grant must never be defaulted. The DB
+  // CHECK catches `[]`; it does NOT catch `[null]` or `['']`, which are the
+  // same denies-everyone state smuggled past it by the layer meant to
+  // front-run the constraint.
+  it("rejects a fact grant that is absent, empty, or has blank principals", () => {
+    for (const bad of [undefined, [], [null], [""], ["  "], [123]]) {
+      expectFactRejected((f) => { f.visibleTo = bad; }, "visibleTo");
+    }
+  });
+
+  it("rejects an episode grant that is absent, empty, or has blank principals", () => {
+    for (const bad of [undefined, [], [null], [""]]) {
+      const bundle = brainBundle();
+      (bundle.brainEpisodes![0] as unknown as Record<string, unknown>).visibleTo = bad;
+      const result = validateBundle(bundle);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("visibleTo");
+    }
+  });
+
+  // ── no-provenance-no-promotion ───────────────────────────────────────────
+  it("rejects a fact whose provenance is absent, empty, or not an object", () => {
+    for (const bad of [undefined, null, {}, [], "actor"]) {
+      expectFactRejected((f) => { f.provenance = bad; }, "provenance");
+    }
+  });
+
+  // ── content-mode + cardinality vocabularies ──────────────────────────────
+  it("rejects a fact with an unknown status or predicate cardinality", () => {
+    expectFactRejected((f) => { f.status = "live"; }, "status");
+    expectFactRejected((f) => { delete f.status; }, "status");
+    expectFactRejected((f) => { f.predicateCardinality = "one"; }, "predicateCardinality");
+    expectFactRejected((f) => { delete f.predicateCardinality; }, "predicateCardinality");
+  });
+
+  // ── NOT NULL timestamps ──────────────────────────────────────────────────
+  // node-pg binds `undefined` as NULL, and an explicit NULL overrides the
+  // column default — so an omitted timestamp is a 23502 that rolls back the
+  // entire import, not a silently-defaulted `now()`.
+  it("rejects a fact missing a NOT NULL timestamp", () => {
+    for (const field of ["ingestedAt", "createdAt", "updatedAt"]) {
+      expectFactRejected((f) => { delete f[field]; }, field);
+    }
+  });
+
+  it("rejects an episode missing a NOT NULL timestamp", () => {
+    for (const field of ["ingestedAt", "createdAt"]) {
+      const bundle = brainBundle();
+      delete (bundle.brainEpisodes![0] as unknown as Record<string, unknown>)[field];
+      const result = validateBundle(bundle);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain(field);
+    }
+  });
+
+  it("rejects a fact whose closed validity interval runs backwards", () => {
+    expectFactRejected((f) => {
+      f.validFrom = "2026-06-01T00:00:00Z";
+      f.validTo = "2026-01-01T00:00:00Z";
+    }, "precedes");
+  });
+
+  // ── episode body XOR locator ─────────────────────────────────────────────
+  it("rejects an episode carrying both a body and a locator, or neither", () => {
+    for (const [body, locator] of [
+      ["b", "l"],
+      [undefined, undefined],
+      [null, null],
+    ] as const) {
+      const bundle = brainBundle();
+      const e = bundle.brainEpisodes![0] as unknown as Record<string, unknown>;
+      e.body = body;
+      e.locator = locator;
+      const result = validateBundle(bundle);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainEpisodes[0]");
+    }
+  });
+
+  it("rejects an episode whose body is present but not a non-empty string", () => {
+    // The guard must reject the wrong TYPE rather than read it as "absent" —
+    // a numeric body would otherwise pass the XOR check and still be bound.
+    for (const bad of [5, "", {}]) {
+      const bundle = brainBundle();
+      const e = bundle.brainEpisodes![0] as unknown as Record<string, unknown>;
+      e.body = bad;
+      e.locator = null;
+      const result = validateBundle(bundle);
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  // ── edges ────────────────────────────────────────────────────────────────
+  it("rejects an unknown edge type", () => {
+    const bundle = brainBundle();
+    (bundle.brainEdges![0] as unknown as Record<string, unknown>).edgeType = "contradicts";
+    const result = validateBundle(bundle);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("edgeType");
+  });
+
+  it("rejects an edge with zero or two endpoints on a side", () => {
+    for (const patch of [
+      { toEpisodeId: null }, // zero on the `to` side
+      { toFactId: "fact-1" }, // two on the `to` side
+      { fromFactId: null }, // zero on the `from` side
+    ]) {
+      const bundle = brainBundle();
+      Object.assign(bundle.brainEdges![0] as unknown as Record<string, unknown>, patch);
+      const result = validateBundle(bundle);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainEdges[0]");
+    }
+  });
+
+  it("rejects an edge whose endpoint kind contradicts its type", () => {
+    // Mirrors chk_brain_edges_endpoint_kinds: `provenance` is the EVIDENCE
+    // pointer and must reach an episode; arbitration types compare claims.
+    const provenanceAtFact = brainBundle();
+    Object.assign(provenanceAtFact.brainEdges![0] as unknown as Record<string, unknown>, {
+      toEpisodeId: null,
+      toFactId: "fact-1",
+    });
+    expect(validateBundle(provenanceAtFact).ok).toBe(false);
+
+    const supersedesAtEpisode = brainBundle();
+    Object.assign(supersedesAtEpisode.brainEdges![0] as unknown as Record<string, unknown>, {
+      edgeType: "supersedes",
+    });
+    expect(validateBundle(supersedesAtEpisode).ok).toBe(false);
+  });
+
+  it("rejects an edge pointing at an id the bundle does not carry", () => {
+    // Edges import LAST, so a dangling endpoint would otherwise abort the
+    // transaction after every other pillar has already been written.
+    const bundle = brainBundle();
+    (bundle.brainEdges![0] as unknown as Record<string, unknown>).toEpisodeId = "ep-missing";
+    const result = validateBundle(bundle);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("not carried by this bundle");
+  });
+
+  it("rejects a malformed audience member", () => {
+    for (const field of ["audienceId", "userId", "source", "createdAt"]) {
+      const bundle = brainBundle();
+      delete (bundle.factAudienceMembers![0] as unknown as Record<string, unknown>)[field];
+      const result = validateBundle(bundle);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("factAudienceMembers[0]");
+    }
+  });
+
+  it("rejects non-array brain sections", () => {
+    for (const section of ["brainEpisodes", "brainEdges", "factAudienceMembers"] as const) {
+      const bundle = brainBundle();
+      (bundle as unknown as Record<string, unknown>)[section] = "nope";
+      const result = validateBundle(bundle);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain(section);
+    }
+  });
+});
+
 describe("importBundle — v2 sections (#4460)", () => {
   it("imports a dashboard with cards and drafts, preserving UUIDs and re-minting the share token", async () => {
     const { client, calls } = v2CaptureClient();

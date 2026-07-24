@@ -22,11 +22,20 @@
 -- scope — but every column and the edge-type enum it will need land NOW, so
 -- M2 is purely additive and never rewrites a table under live data.
 --
--- Two invariants are enforced by CHECK rather than by application code,
--- because ADR-0036 states them as absolutes ("no-provenance-no-promotion",
--- "no-grant-no-promotion"). A row that violates either is UNREPRESENTABLE AT
--- REST: there is no code path, present or future, that can persist a fact
--- with no provenance or an empty grant.
+-- ADR-0036 states two rules as absolutes ("no-provenance-no-promotion",
+-- "no-grant-no-promotion"), so they are CHECKs rather than application code:
+-- an empty grant array and an empty provenance object are refused AT REST,
+-- by every writer. Note the exact boundary — a non-empty but MALFORMED grant
+-- (`ARRAY[NULL]`, `ARRAY['']`, `['everyone']`) still lands here; that is
+-- #4768's parser and its deny+log path, not this CHECK's job.
+--
+-- Workspace containment is structural too: a fact's `(workspace_id,
+-- source_episode_id)` is a COMPOSITE FK onto the episode's `(workspace_id,
+-- id)`, and each edge endpoint composes the same way. A fact hanging off
+-- another workspace's episode would otherwise be exportable into the wrong
+-- tenant's bundle and invisible to the residency cleanup sweep — the sweep
+-- scopes facts through the episode. Nothing writes these tables yet, which
+-- makes this the cheapest possible moment to make it unrepresentable.
 
 -- ---------------------------------------------------------------------------
 -- brain_episodes — tier-3. Immutable, append-only, deduped by stable
@@ -36,11 +45,14 @@
 -- Append-only is the point, not an optimization: an episode is evidence, and
 -- evidence that can be edited after the fact cannot back a provenance claim.
 -- There is deliberately NO `updated_at` column — its absence is the signal.
--- Re-ingesting the same source record is a NO-OP (ON CONFLICT DO NOTHING at
--- the call site), never an upsert: the ADR-0030 connector engine's subtractive
--- archive + path-upsert half is bypassed entirely for episodes (that half
--- scopes to facts), because a chat message that was edited upstream is a NEW
--- episode, not a mutation of the old one.
+--
+-- Re-ingest must be a NO-OP rather than an upsert: the ADR-0030 connector
+-- engine's subtractive-archive + path-upsert half is bypassed entirely for
+-- episodes (that half scopes to facts), because a chat message edited
+-- upstream is a NEW episode, not a mutation of the old one. The connector
+-- that writes `ON CONFLICT (workspace_id, source, source_id) DO NOTHING`
+-- ships in #4770; the UNIQUE index below is what makes that the only
+-- available behaviour rather than a call-site convention.
 CREATE TABLE IF NOT EXISTS brain_episodes (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   -- Better-Auth organization id. Workspace-global, TEXT/no-FK like the other
@@ -98,6 +110,13 @@ CREATE TABLE IF NOT EXISTS brain_episodes (
 -- tenants) can legitimately mint the same opaque source id.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_brain_episodes_source_id
   ON brain_episodes (workspace_id, source, source_id);
+
+-- Referent for the composite FK from brain_facts / brain_edges. `id` is
+-- already the PK, so this adds no new uniqueness — it exists purely to give
+-- `(workspace_id, id)` a unique index to point at, which is what lets the FK
+-- prove an episode and the rows referencing it share a workspace.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_brain_episodes_workspace_id
+  ON brain_episodes (workspace_id, id);
 
 -- The extraction fiber's drain query: oldest-unextracted-first, per workspace.
 -- PARTIAL so the index holds only the backlog — once an episode is extracted
@@ -163,9 +182,12 @@ CREATE TABLE IF NOT EXISTS brain_facts (
   -- first-class authored episode, and a write-back proposal lazily
   -- materializes a session episode at propose time. A fact with no episode is
   -- a claim with no evidence, and there is no such thing here.
-  -- RESTRICT, not CASCADE: deleting the evidence under a live fact must fail
-  -- loudly. Episodes are append-only anyway, so this should never fire.
-  source_episode_id uuid NOT NULL REFERENCES brain_episodes (id) ON DELETE RESTRICT,
+  -- COMPOSITE FK with workspace_id (see the header): the episode must be in
+  -- the SAME workspace as the fact, so a cross-tenant claim is unrepresentable
+  -- rather than merely unlikely. RESTRICT, not CASCADE: deleting the evidence
+  -- under a live fact must fail loudly. Episodes are append-only anyway, so
+  -- this should never fire in normal operation.
+  source_episode_id uuid NOT NULL,
 
   -- Provenance payload — the actor, the source pointer, and for warehouse-
   -- derived facts the pinned SQL + data snapshot (pinned, NOT a live view: a
@@ -174,11 +196,17 @@ CREATE TABLE IF NOT EXISTS brain_facts (
   -- edges rather than by rewriting this.
   provenance jsonb NOT NULL,
 
-  -- Content-mode lifecycle. Every candidate lands `draft`; only the atomic
-  -- publish endpoint promotes it. The review gate IS the brain's conflict-
-  -- resolution mechanism (ADR-0036 §Temporal) — this column is where "trust
-  -- over breadth" stops being a slogan. Registered with the content-mode
-  -- registry in #4769.
+  -- Content-mode lifecycle. DEFAULTS to `draft`: an extraction candidate
+  -- lands there and is promoted only by the atomic publish endpoint. The
+  -- review gate IS the brain's conflict-resolution mechanism (ADR-0036
+  -- §Temporal) — this column is where "trust over breadth" stops being a
+  -- slogan. Registered with the content-mode registry in #4769.
+  --
+  -- A default, NOT an enforcement, and deliberately so: human corrections are
+  -- the second human-authoritative entry point and land authoritative
+  -- immediately (ADR-0036 §Temporal), and a region import preserves the source
+  -- workspace's review status verbatim rather than demoting reviewed facts
+  -- back to draft.
   status text NOT NULL DEFAULT 'draft',
 
   -- The ACL grant: a SELF-CONTAINED principal set, derived at ingest and
@@ -216,8 +244,17 @@ CREATE TABLE IF NOT EXISTS brain_facts (
     CHECK (jsonb_typeof(provenance) = 'object' AND provenance <> '{}'::jsonb),
   -- A closed validity interval must not run backwards.
   CONSTRAINT chk_brain_facts_valid_interval
-    CHECK (valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from)
+    CHECK (valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from),
+
+  CONSTRAINT fk_brain_facts_episode
+    FOREIGN KEY (workspace_id, source_episode_id)
+    REFERENCES brain_episodes (workspace_id, id) ON DELETE RESTRICT
 );
+
+-- Referent for brain_edges' composite endpoint FKs — see the note on
+-- uq_brain_episodes_workspace_id.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_brain_facts_workspace_id
+  ON brain_facts (workspace_id, id);
 
 -- Content-mode status filter (published-only read + admin/dev-mode overlay),
 -- mirroring idx_knowledge_documents_status.
@@ -254,11 +291,22 @@ CREATE INDEX IF NOT EXISTS idx_brain_facts_visible_to
 -- referential integrity — and an edge whose endpoint has silently vanished is
 -- precisely the corruption a provenance graph must not tolerate.
 --
---   supersedes      fact  → fact     the M2 arbitration outcome
---   in-tension-with fact  → fact     genuine coexisting conflict; SURFACED
---                                    with both provenances, never ranked
---   derives-from    fact  → fact/episode   fork lineage
---   provenance      fact  → episode   the evidence pointer
+-- Endpoint KINDS are constrained per type, not merely documented — M2's
+-- arbitration walker and #4773's retrieval both assume these shapes, and an
+-- episode→episode `provenance` edge would satisfy a bare exactly-one-per-side
+-- rule while being meaningless:
+--
+--   supersedes      fact  → fact          the M2 arbitration outcome
+--   in-tension-with fact  → fact          genuine coexisting conflict;
+--                                         SURFACED with both provenances,
+--                                         never ranked
+--   derives-from    fact  → fact|episode  fork lineage
+--   provenance      fact  → episode       the evidence pointer
+--
+-- Every type originates at a fact, so `from_episode_id` is currently always
+-- NULL. The column exists anyway: it keeps the two sides symmetric for a
+-- future episode-rooted type, and the CHECK is what stops one appearing by
+-- accident in the meantime.
 --
 -- Endpoint FKs CASCADE, deliberately asymmetric with the RESTRICT on
 -- brain_facts.source_episode_id. The asymmetry tracks what each reference
@@ -268,18 +316,20 @@ CREATE INDEX IF NOT EXISTS idx_brain_facts_visible_to
 -- once an endpoint is gone the edge is dangling structure, so it should
 -- vanish with it (CASCADE) rather than block the delete.
 --
--- This also keeps the #4458 source-cleanup sweep sound: that sweep's column
--- phase assumes every FK between in-scope tables is CASCADE, so a RESTRICT
--- here would make a workspace's post-migration cleanup fail on live data.
+-- That asymmetry also keeps the #4458 source-cleanup sweep sound. The sweep's
+-- column phase assumes CASCADE between in-scope tables; `brain_facts` is the
+-- one exception and is handled by PHASE instead (it carries a `parent` rule
+-- in cleanup.ts so its delete is ordered ahead of brain_episodes). A RESTRICT
+-- here would need the same treatment and doesn't have it.
 CREATE TABLE IF NOT EXISTS brain_edges (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id text NOT NULL,
   edge_type text NOT NULL,
 
-  from_fact_id uuid REFERENCES brain_facts (id) ON DELETE CASCADE,
-  from_episode_id uuid REFERENCES brain_episodes (id) ON DELETE CASCADE,
-  to_fact_id uuid REFERENCES brain_facts (id) ON DELETE CASCADE,
-  to_episode_id uuid REFERENCES brain_episodes (id) ON DELETE CASCADE,
+  from_fact_id uuid,
+  from_episode_id uuid,
+  to_fact_id uuid,
+  to_episode_id uuid,
 
   created_at timestamptz NOT NULL DEFAULT now(),
 
@@ -289,7 +339,33 @@ CREATE TABLE IF NOT EXISTS brain_edges (
   CONSTRAINT chk_brain_edges_from_endpoint
     CHECK (num_nonnulls(from_fact_id, from_episode_id) = 1),
   CONSTRAINT chk_brain_edges_to_endpoint
-    CHECK (num_nonnulls(to_fact_id, to_episode_id) = 1)
+    CHECK (num_nonnulls(to_fact_id, to_episode_id) = 1),
+  -- The per-type endpoint kinds from the table above.
+  CONSTRAINT chk_brain_edges_endpoint_kinds CHECK (
+    from_fact_id IS NOT NULL
+    AND CASE edge_type
+          WHEN 'provenance' THEN to_episode_id IS NOT NULL
+          WHEN 'derives-from' THEN TRUE
+          ELSE to_fact_id IS NOT NULL
+        END
+  ),
+
+  -- Composite endpoint FKs — an edge can only join rows in its OWN workspace.
+  -- Postgres's default MATCH SIMPLE skips the check when any referencing
+  -- column is NULL, which is exactly right for the nullable-endpoint design:
+  -- the unused side of each pair is simply not constrained.
+  CONSTRAINT fk_brain_edges_from_fact
+    FOREIGN KEY (workspace_id, from_fact_id)
+    REFERENCES brain_facts (workspace_id, id) ON DELETE CASCADE,
+  CONSTRAINT fk_brain_edges_from_episode
+    FOREIGN KEY (workspace_id, from_episode_id)
+    REFERENCES brain_episodes (workspace_id, id) ON DELETE CASCADE,
+  CONSTRAINT fk_brain_edges_to_fact
+    FOREIGN KEY (workspace_id, to_fact_id)
+    REFERENCES brain_facts (workspace_id, id) ON DELETE CASCADE,
+  CONSTRAINT fk_brain_edges_to_episode
+    FOREIGN KEY (workspace_id, to_episode_id)
+    REFERENCES brain_episodes (workspace_id, id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_brain_edges_from_fact

@@ -454,7 +454,7 @@ export interface ImportResult {
   knowledgeDocuments: { imported: number; skipped: number };
   scheduledTasks: { imported: number; skipped: number };
   agentSessionMemory: { imported: number; skipped: number };
-  /** Company brain (#4767) — episodes counted with their nested facts. */
+  /** Company brain (#4767). Facts are counted on their own key, not their episode's. */
   brainEpisodes: { imported: number; skipped: number };
   brainFacts: { imported: number; skipped: number };
   brainEdges: { imported: number; skipped: number };

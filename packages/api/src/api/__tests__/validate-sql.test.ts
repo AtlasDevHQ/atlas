@@ -68,6 +68,9 @@ void mock.module("@atlas/api/lib/tools/sql", () => ({
   validateSQL: mockValidateSQL,
   parserDatabase: mockParserDatabase,
   executeSQL: {},
+  // The route statically imports this cap for its request schema (#4780);
+  // mirror the real value so the schema constructs with a real `.max()` bound.
+  MAX_SQL_LEN: 100_000,
 }));
 
 const mockTableList: Mock<(sql: string, opts?: unknown) => string[]> = mock(
@@ -335,6 +338,27 @@ describe("POST /api/v1/validate-sql", () => {
 
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.error).toBe("validation_error");
+  });
+
+  it("returns 422 for sql over the max length bound (#4780 — parse DoS cap)", async () => {
+    // Mirror the execute-sql cap: an over-cap `sql` is rejected at the request
+    // schema BEFORE it ever reaches validateSQL / the node-sql-parser event loop.
+    const response = await app.fetch(makeRequest({ sql: `SELECT ${"a".repeat(100_001)}` }));
+    expect(response.status).toBe(422);
+
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe("validation_error");
+    // Short-circuited at validation — the parser pipeline never ran.
+    expect(mockValidateSQL).not.toHaveBeenCalled();
+  });
+
+  it("accepts sql at exactly the max length bound (#4780 — cap is inclusive)", async () => {
+    // Boundary guard: a payload AT the ceiling must pass the schema (catches an
+    // off-by-one that made the bound stricter than intended). No leading/trailing
+    // whitespace so `.trim()` leaves the length at exactly the cap.
+    const response = await app.fetch(makeRequest({ sql: "a".repeat(100_000) }));
+    expect(response.status).toBe(200);
+    expect(mockValidateSQL).toHaveBeenCalledTimes(1);
   });
 
   it("preserves schema qualifier for non-null schemas", async () => {

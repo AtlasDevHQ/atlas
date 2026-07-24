@@ -1085,6 +1085,18 @@ const getOrgEntityRoute = createRoute({
   },
 });
 
+/**
+ * Upper bound on a raw entity-YAML upload. Generous for any realistic semantic
+ * entity (a large entity with many dimensions/measures is a few tens of KB)
+ * while capping the payload a hostile admin can force through the js-yaml
+ * parser on the API event loop (#4780) — staging accepted a 3 MB body before
+ * this cap. The handler loads this string with `js-yaml`'s default `load`
+ * options, which impose no input-size or depth limit, so this char ceiling is
+ * the only pre-parse size guard. Enforced at the request schema, before the
+ * parse.
+ */
+const MAX_ENTITY_YAML_LEN = 256_000;
+
 const putOrgEntityRoute = createRoute({
   method: "put",
   path: "/semantic/org/entities/{name}",
@@ -1099,7 +1111,9 @@ const putOrgEntityRoute = createRoute({
       content: {
         "application/json": {
           schema: z.object({
-            yamlContent: z.string(),
+            yamlContent: z
+              .string()
+              .max(MAX_ENTITY_YAML_LEN, `yamlContent must be at most ${MAX_ENTITY_YAML_LEN} characters`),
             entityType: z.string().optional(),
             connectionId: z.string().optional(),
           }),

@@ -79,18 +79,16 @@ import {
 } from "@atlas/api/lib/mcp/action-policy";
 import type { ExecuteSqlRestResponse } from "@useatlas/types";
 import type { UserQueryOutcome } from "@atlas/api/lib/tools/sql";
+import { MAX_SQL_LEN } from "@atlas/api/lib/tools/sql";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("execute-sql-route");
 
-/**
- * Upper bound on a single SQL string. Generous for any realistic analytical
- * SELECT (deep CTE stacks, long IN lists) while capping the payload a hostile
- * client can force through the parser. Tunable if a real need surfaces.
- */
-const MAX_SQL_LEN = 100_000;
+// The `MAX_SQL_LEN` parser cap is shared with `validate-sql` from
+// `lib/tools/sql.ts` (the parse entrypoint it guards) so the two sibling
+// endpoints can't drift (#4780).
 
 // ---------------------------------------------------------------------------
 // Schemas

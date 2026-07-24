@@ -15,7 +15,7 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { Parser } from "node-sql-parser";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
-import { validateSQL, parserDatabase } from "@atlas/api/lib/tools/sql";
+import { validateSQL, parserDatabase, MAX_SQL_LEN } from "@atlas/api/lib/tools/sql";
 import { connections, detectDBType, ConnectionNotRegisteredError } from "@atlas/api/lib/db/connection";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
@@ -24,7 +24,14 @@ const log = createLogger("validate-sql");
 const parser = new Parser();
 
 export const ValidateSQLRequestSchema = z.object({
-  sql: z.string().trim().min(1, "sql must not be empty"),
+  // Cap the caller-authored SQL at the same ceiling `execute-sql` enforces
+  // (shared `MAX_SQL_LEN`): both feed the same `node-sql-parser` on the API
+  // event loop, so an unbounded string here is a parse-time DoS lever (#4780).
+  sql: z
+    .string()
+    .trim()
+    .min(1, "sql must not be empty")
+    .max(MAX_SQL_LEN, `sql must be at most ${MAX_SQL_LEN} characters`),
   connectionId: z.string().optional(),
 });
 

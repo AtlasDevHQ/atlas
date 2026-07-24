@@ -73,11 +73,11 @@ export default function TheLiveSecurityPass() {
         />
 
         <Lead>
-          Every query Atlas runs was written by a language model. The reason
-          that&apos;s a defensible thing to ship is that the safety sits in the
-          structure: a seven-layer pipeline stands between the model&apos;s
-          output and your database, and only tables named in your semantic layer
-          are reachable at all. I took that pipeline apart layer by layer in{" "}
+          A model writes every query Atlas runs, which puts the whole safety
+          burden on the structure around it. A seven-layer pipeline stands
+          between what the model emits and your database, and only tables named
+          in your semantic layer are reachable at all. I took that pipeline
+          apart layer by layer in{" "}
           <a href="/blog/seven-layers-and-a-sandbox" className="link-accent">
             Seven layers and a sandbox
           </a>

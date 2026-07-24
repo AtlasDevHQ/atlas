@@ -3,11 +3,11 @@
  *
  * The workspace CLI surface for read-only semantic-layer exploration — a thin
  * HTTP client over `POST /api/v1/explore`, authorized entirely by the `atlas
- * login` workspace credential. Runs a single read-only bash command
- * (ls/cat/grep/find/…) against ONLY the bound workspace's semantic layer; the
- * server sandboxes execution with read-only, path-traversal-protected access
- * scoped to `semantic/`, so writes, shell escapes, and traversal are rejected
- * server-side (the CLI does no command validation of its own).
+ * login` workspace credential. Runs a single bash command (ls/cat/grep/find/…)
+ * against ONLY the bound workspace's semantic layer; the server runs it in a
+ * sandboxed backend — read-only by isolation, not command validation, so writes
+ * stay inside the sandbox and never touch host files (there is no path jail, and
+ * the CLI does no command validation of its own).
  *
  * The dispatch + rendering live in the testable `runExplore` core (deps are
  * injected: the session, the API base URL, and `fetch`), so request shaping,
@@ -39,9 +39,9 @@ Options:
                       (unattended CI). Overrides ATLAS_API_KEY.
   --json              Machine-readable JSON output ({ "output": "..." })
 
-Only read-only commands run (ls/cat/grep/find/head/tail/wc/awk/sed/pipes). The
-server sandboxes execution scoped to the semantic layer — writes, shell escapes,
-and path traversal are rejected.
+Intended for read-only exploration (ls/cat/grep/find/head/tail/wc/awk/sed/pipes).
+The server runs the command in a sandboxed backend over the semantic layer —
+read-only by isolation, not command validation, so writes never touch host files.
 
 Authentication: \`atlas login\` for interactive use (ambient session reuse — no
 key needed), OR a workspace API key via --api-key / ATLAS_API_KEY for unattended

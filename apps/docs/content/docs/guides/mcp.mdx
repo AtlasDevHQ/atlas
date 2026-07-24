@@ -427,7 +427,7 @@ The agent run is capped by a **90-second server-side soft deadline** — MCP cli
 
 ### explore
 
-Read files from the semantic layer directory. Accepts bash commands scoped to the `semantic/` directory.
+Read files from the semantic layer directory. Accepts bash commands that run in a sandbox with the `semantic/` directory as the working directory.
 
 ```
 command: "cat catalog.yml"
@@ -435,7 +435,7 @@ command: "grep -r revenue entities/"
 command: "ls entities/"
 ```
 
-This is the same `explore` tool the agent uses — read-only, path-traversal protected.
+This is the same `explore` tool the agent uses — read-only by isolation, not command validation: it runs in an isolated sandbox where writes never touch host files (there is no path jail); on managed deployments the sandbox is additionally egress-blocked.
 
 ### executeSQL
 

@@ -1,9 +1,10 @@
 /**
  * Tests for `POST /api/v1/explore` (#4049 / ADR-0027 sibling endpoint).
  *
- * The explore REST endpoint exposes the read-only semantic-directory `explore`
- * capability (ls/cat/grep/find on `semantic/`, path-traversal protected,
- * sandboxed) over HTTP, reusing the shared `lib/tools/explore` facade.
+ * The explore REST endpoint exposes the `explore` capability (ls/cat/grep/find
+ * over the semantic layer, read-only by sandbox isolation — writes never touch
+ * host files; managed backends are additionally ephemeral + egress-blocked)
+ * over HTTP, reusing the shared `lib/tools/explore` facade.
  *
  * Per ADR-0027's shared gate-parity contract, `explore` is metadata-only:
  *   - NO billing gate (mirrors the MCP `explore` omitting `checksBilling`)

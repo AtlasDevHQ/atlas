@@ -77,12 +77,19 @@ export async function createNsjailBackend(
         );
       }
 
+      let stdoutRead: Awaited<ReturnType<typeof readLimited>>;
+      let stderrRead: Awaited<ReturnType<typeof readLimited>>;
       let stdout: string, stderr: string, exitCode: number;
       try {
-        [stdout, stderr] = await Promise.all([
+        // readLimited caps by bytes and reports whether it cut the stream; the
+        // tool seam surfaces truncation from that flag (encoding-independent),
+        // instead of re-deriving it from the decoded string length (#4785).
+        [stdoutRead, stderrRead] = await Promise.all([
           readLimited(proc.stdout, MAX_OUTPUT),
           readLimited(proc.stderr, MAX_OUTPUT),
         ]);
+        stdout = stdoutRead.text;
+        stderr = stderrRead.text;
         exitCode = await proc.exited;
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
@@ -114,7 +121,13 @@ export async function createNsjailBackend(
         );
       }
 
-      return { stdout, stderr, exitCode };
+      return {
+        stdout,
+        stderr,
+        exitCode,
+        stdoutTruncated: stdoutRead.truncated,
+        stderrTruncated: stderrRead.truncated,
+      };
     },
   };
 }

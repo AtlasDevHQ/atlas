@@ -15,7 +15,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Statement timeout** — PostgreSQL/MySQL get a session-level timeout. Default 30s, via `ATLAS_QUERY_TIMEOUT`
 
 ### Security (General)
-- [ ] **Path traversal protection** — Each explore backend enforces read-only access scoped to `semantic/`
+- [ ] **Explore is read-only by isolation, not a path jail** — Each explore backend is read-only *structurally* (ephemeral microVM / read-only bind mounts / in-memory overlay): shell writes and `..` traversal may succeed *inside* the sandbox but never touch host files, and there is no command allowlist or `semantic/`-scoped path check. See the fuller "read-only by isolation, not command validation" note under **Agent Tools**; don't lean on a path-traversal guard that isn't enforced (#4781)
 - [ ] **No secrets in responses** — Never expose connection strings, API keys, or stack traces to the user or agent
 - [ ] **Readonly DB connections** — PostgreSQL via validation; MySQL via read-only session variable; ClickHouse via `readonly: 1`
 - [ ] **Encrypted at rest** — New integration + datasource credentials use `encryptSecret` / `decryptSecret` from `db/secret-encryption.ts` (versioned AES-256-GCM). New credential table = one-line add to `INTEGRATION_TABLES` in `db/integration-tables.ts` + an `_encrypted` column. Datasource URLs use selective-field encryption (`encryptSecretFields`) keyed on the `config_schema` `secret: true` flag. The legacy `db/internal.ts` passthrough is frozen to two columns — no new call sites. See [ADR-0005](docs/adr/0005-integration-credentials-table.md), [ADR-0007](docs/adr/0007-unified-install-pipeline.md)

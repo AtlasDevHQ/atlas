@@ -134,10 +134,12 @@ export function createPythonNsjailBackend(nsjailPath: string): PythonBackend {
           }
         }
 
-        const [stdout, stderr] = await Promise.all([
+        const [stdoutRead, stderrRead] = await Promise.all([
           readLimited(proc.stdout, MAX_OUTPUT),
           readLimited(proc.stderr, MAX_OUTPUT),
         ]);
+        const stdout = stdoutRead.text;
+        const stderr = stderrRead.text;
         const exitCode = await proc.exited;
 
         log.debug({ execId, exitCode, stdoutLen: stdout.length }, "python nsjail execution finished");
@@ -158,8 +160,11 @@ export function createPythonNsjailBackend(nsjailPath: string): PythonBackend {
           }
         }
 
-        // No structured result — process errored before the wrapper could emit one
-        if (stdout.length >= MAX_OUTPUT) {
+        // No structured result — process errored before the wrapper could emit
+        // one. Use readLimited's byte-accurate truncation flag rather than the
+        // decoded string length, which under-counts multi-byte UTF-8 output and
+        // would misreport a truncated non-ASCII result as a generic failure.
+        if (stdoutRead.truncated) {
           return {
             success: false,
             error: "Python output exceeded 1 MB limit — the result was likely truncated. " +

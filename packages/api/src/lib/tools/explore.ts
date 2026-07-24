@@ -30,7 +30,7 @@ import { getSemanticRoot, ensureOrgModeSemanticRoot } from "@atlas/api/lib/seman
 import { getSetting } from "@atlas/api/lib/settings";
 import { getWorkspaceSandboxOverride } from "@atlas/api/lib/sandbox/workspace-override";
 import { useVercelSandbox, useSidecar } from "./backends/detect";
-import { capOutput } from "./backends/shared";
+import { capOutput, markCappedStream } from "./backends/shared";
 import {
   planSandboxSelection,
   runSandboxPlan,
@@ -667,14 +667,21 @@ export const explore = tool({
       );
 
       // Cap output at the tool seam so every backend is covered — nsjail caps
-      // at stream-read time, but Vercel/just-bash/plugin/BYOC backends return
+      // at stream-read time (and reports it via *Truncated so we mark the notice
+      // encoding-independently), but Vercel/just-bash/plugin/BYOC backends return
       // whole buffered outputs that would otherwise flow into agent context
-      // (and the MCP/REST explore surfaces) unbounded.
+      // (and the MCP/REST explore surfaces) unbounded, so capOutput bounds those.
       if (result.exitCode !== 0) {
-        return `Error (exit ${result.exitCode}):\n${capOutput(result.stderr)}`;
+        const stderr = result.stderrTruncated
+          ? markCappedStream(result.stderr, true)
+          : capOutput(result.stderr);
+        return `Error (exit ${result.exitCode}):\n${stderr}`;
       }
 
-      const output = capOutput(result.stdout) || "(no output)";
+      const capped = result.stdoutTruncated
+        ? markCappedStream(result.stdout, true)
+        : capOutput(result.stdout);
+      const output = capped || "(no output)";
       await dispatchHook("afterExplore", { command: execCommand, output });
 
       return output;

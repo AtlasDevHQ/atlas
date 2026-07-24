@@ -381,8 +381,9 @@ describe("createPythonNsjailBackend", () => {
   });
 
   it("detects stdout truncation and reports it", async () => {
-    // Simulate output that is exactly MAX_OUTPUT (1MB) — truncated
-    const bigOutput = "x".repeat(1024 * 1024);
+    // Simulate output that exceeds the 1 MB byte cap so readLimited reports it
+    // truncated (exactly-at-cap would be complete, not cut).
+    const bigOutput = "x".repeat(1024 * 1024 + 500);
     setSpawnResult(bigOutput, "", 0);
 
     const backend = createPythonNsjailBackend("/usr/local/bin/nsjail");

@@ -3135,6 +3135,348 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     );
     expect(rows[0]?.fts).toBe("'alpha':1A 'omega':2");
   }, PG_TEST_TIMEOUT_MS);
+
+  // -------------------------------------------------------------------------
+  // 0180 — brain substrate (#4767, ADR-0036)
+  // -------------------------------------------------------------------------
+  //
+  // These assert the invariants ADR-0036 states as absolutes, at the level
+  // where they're actually absolute. "No-grant-no-promotion" and
+  // "no-provenance-no-promotion" enforced in application code are conventions
+  // a future call site can forget; enforced by CHECK they are properties of
+  // the data. Each test therefore tries to write the forbidden row and
+  // requires Postgres to refuse it.
+
+  /** Insert a minimal valid episode and return its id. */
+  async function insertEpisode(
+    ws: string,
+    sourceId: string,
+    overrides: { source?: string; visibleTo?: string[] } = {},
+  ): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO brain_episodes (workspace_id, source, source_id, body, visible_to)
+       VALUES ($1, $2, $3, 'the thing that was said', $4)
+       RETURNING id`,
+      [ws, overrides.source ?? "slack", sourceId, overrides.visibleTo ?? ["org"]],
+    );
+    return rows[0]!.id;
+  }
+
+  /** Run a statement expected to violate a constraint; return the error. */
+  async function expectRejected(sql: string, params: unknown[]): Promise<Error> {
+    let err: Error | null = null;
+    try {
+      await pool.query(sql, params);
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    return err!;
+  }
+
+  it("0180: episodes dedupe on (workspace, source, source_id) — re-ingest is a no-op, never an upsert (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-ep-${stamp}`;
+    const id = await insertEpisode(ws, "slack-msg-1");
+
+    // The connector's actual write. ON CONFLICT DO NOTHING must leave the
+    // ORIGINAL row untouched: an episode is evidence, and a re-poll that
+    // rewrote the body would silently revise history under a live provenance
+    // claim. `DO NOTHING` returns no row, which is how the caller learns the
+    // record was already known.
+    const reInsert = await pool.query(
+      `INSERT INTO brain_episodes (workspace_id, source, source_id, body, visible_to)
+       VALUES ($1, 'slack', 'slack-msg-1', 'EDITED UPSTREAM', ARRAY['org'])
+       ON CONFLICT (workspace_id, source, source_id) DO NOTHING
+       RETURNING id`,
+      [ws],
+    );
+    expect(reInsert.rowCount).toBe(0);
+
+    const { rows } = await pool.query<{ id: string; body: string }>(
+      `SELECT id, body FROM brain_episodes WHERE workspace_id = $1`,
+      [ws],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.id).toBe(id);
+    expect(rows[0]!.body).toBe("the thing that was said");
+
+    // A bare re-insert (no ON CONFLICT clause) is a hard 23505 — the UNIQUE
+    // index is what makes dedupe structural rather than a call-site habit.
+    const err = await expectRejected(
+      `INSERT INTO brain_episodes (workspace_id, source, source_id, body, visible_to)
+       VALUES ($1, 'slack', 'slack-msg-1', 'dup', ARRAY['org'])`,
+      [ws],
+    );
+    expect(err.message).toMatch(/uq_brain_episodes_source_id|23505|duplicate key/i);
+
+    // Same source_id under a DIFFERENT source is a different episode: two
+    // connectors can mint the same opaque id without colliding.
+    await insertEpisode(ws, "slack-msg-1", { source: "notion" });
+    const after = await pool.query(`SELECT 1 FROM brain_episodes WHERE workspace_id = $1`, [ws]);
+    expect(after.rowCount).toBe(2);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: an episode carries a body XOR a locator — never both, never neither (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-xor-${stamp}`;
+
+    // By-reference: warehouse/KB-derived content that already has an
+    // authoritative home elsewhere.
+    await pool.query(
+      `INSERT INTO brain_episodes (workspace_id, source, source_id, locator, visible_to)
+       VALUES ($1, 'warehouse', 'q-1', 'snapshot://runs/1', ARRAY['org'])`,
+      [ws],
+    );
+
+    for (const [label, cols, vals] of [
+      ["neither", "", ""],
+      ["both", ", body, locator", ", 'b', 'l'"],
+    ] as const) {
+      const err = await expectRejected(
+        `INSERT INTO brain_episodes (workspace_id, source, source_id, visible_to${cols})
+         VALUES ($1, 'slack', 'x-${label}', ARRAY['org']${vals})`,
+        [ws],
+      );
+      expect(err.message).toMatch(/chk_brain_episodes_body_xor_locator|23514|check constraint/i);
+    }
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: facts default to draft and reject an unknown status (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-fact-${stamp}`;
+    const episodeId = await insertEpisode(ws, `ep-${stamp}`);
+
+    const { rows } = await pool.query<{ status: string; predicate_cardinality: string }>(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
+       VALUES ($1, 'acme', 'uses', 'postgres', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+       RETURNING status, predicate_cardinality`,
+      [ws, episodeId],
+    );
+    // Every candidate lands draft — the review gate, not a fast path.
+    expect(rows[0]!.status).toBe("draft");
+    // The conservative arm: coexist rather than supersede.
+    expect(rows[0]!.predicate_cardinality).toBe("multi");
+
+    const err = await expectRejected(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to, status)
+       VALUES ($1, 'acme', 'uses', 'mysql', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'], 'live')`,
+      [ws, episodeId],
+    );
+    expect(err.message).toMatch(/chk_brain_facts_status|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: no-grant-no-promotion and no-provenance-no-promotion are unrepresentable at rest (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-gate-${stamp}`;
+    const episodeId = await insertEpisode(ws, `ep-${stamp}`);
+
+    const base = `INSERT INTO brain_facts
+        (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)`;
+
+    // An EMPTY grant is the dangerous case, and the one NOT NULL alone misses:
+    // it denies everyone, which reads as "hidden" but behaves as "unreviewed".
+    const emptyGrant = await expectRejected(
+      `${base} VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY[]::text[])`,
+      [ws, episodeId],
+    );
+    expect(emptyGrant.message).toMatch(/chk_brain_facts_grant_nonempty|23514|check constraint/i);
+
+    // Likewise an empty JSON object — a claim with no evidence wearing the
+    // shape of a real one.
+    const emptyProvenance = await expectRejected(
+      `${base} VALUES ($1, 's', 'p', 'o', $2, '{}'::jsonb, ARRAY['org'])`,
+      [ws, episodeId],
+    );
+    expect(emptyProvenance.message).toMatch(
+      /chk_brain_facts_provenance_nonempty|23514|check constraint/i,
+    );
+
+    // And a fact with no episode at all: provenance made structural.
+    const noEpisode = await expectRejected(
+      `${base} VALUES ($1, 's', 'p', 'o', NULL, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
+      [ws],
+    );
+    expect(noEpisode.message).toMatch(/source_episode_id|23502|null value/i);
+
+    // The same empty-grant refusal holds for tier-3: episodes are gated too,
+    // and are frequently more sensitive than the facts drawn from them.
+    const episodeGrant = await expectRejected(
+      `INSERT INTO brain_episodes (workspace_id, source, source_id, body, visible_to)
+       VALUES ($1, 'slack', 'no-grant', 'x', ARRAY[]::text[])`,
+      [ws],
+    );
+    expect(episodeGrant.message).toMatch(
+      /chk_brain_episodes_grant_nonempty|23514|check constraint/i,
+    );
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: a closed validity interval cannot run backwards (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-temporal-${stamp}`;
+    const episodeId = await insertEpisode(ws, `ep-${stamp}`);
+
+    // An OPEN interval is the normal case — a live claim has no valid_to until
+    // a human promotion stamps one.
+    await pool.query(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to,
+          valid_from)
+       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'], now())`,
+      [ws, episodeId],
+    );
+
+    const err = await expectRejected(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to,
+          valid_from, valid_to)
+       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'],
+               now(), now() - interval '1 day')`,
+      [ws, episodeId],
+    );
+    expect(err.message).toMatch(/chk_brain_facts_valid_interval|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: edges accept exactly the four committed types and reject a fifth (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-edge-${stamp}`;
+    const episodeId = await insertEpisode(ws, `ep-${stamp}`);
+    const { rows: factRows } = await pool.query<{ id: string }>(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org']),
+              ($1, 's', 'p', 'o2', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+       RETURNING id`,
+      [ws, episodeId],
+    );
+    const [factA, factB] = [factRows[0]!.id, factRows[1]!.id];
+
+    // fact → fact for the arbitration/conflict types.
+    for (const type of ["supersedes", "in-tension-with", "derives-from"]) {
+      await pool.query(
+        `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
+         VALUES ($1, $2, $3, $4)`,
+        [ws, type, factA, factB],
+      );
+    }
+    // fact → episode for the evidence pointer.
+    await pool.query(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_episode_id)
+       VALUES ($1, 'provenance', $2, $3)`,
+      [ws, factA, episodeId],
+    );
+
+    const { rows: counted } = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM brain_edges WHERE workspace_id = $1`,
+      [ws],
+    );
+    expect(counted[0]!.n).toBe("4");
+
+    // M2 extends the engine that walks these, never the list.
+    const unknown = await expectRejected(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
+       VALUES ($1, 'contradicts', $2, $3)`,
+      [ws, factA, factB],
+    );
+    expect(unknown.message).toMatch(/chk_brain_edges_type|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: an edge endpoint is a fact XOR an episode on each side (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-endpoint-${stamp}`;
+    const episodeId = await insertEpisode(ws, `ep-${stamp}`);
+    const { rows: factRows } = await pool.query<{ id: string }>(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+       RETURNING id`,
+      [ws, episodeId],
+    );
+    const factId = factRows[0]!.id;
+
+    // Dangling endpoint — an edge to nothing.
+    const dangling = await expectRejected(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id) VALUES ($1, 'provenance', $2)`,
+      [ws, factId],
+    );
+    expect(dangling.message).toMatch(/chk_brain_edges_to_endpoint|23514|check constraint/i);
+
+    // Two endpoints on one side — ambiguous about what the edge asserts.
+    const ambiguous = await expectRejected(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id, to_episode_id)
+       VALUES ($1, 'derives-from', $2, $2, $3)`,
+      [ws, factId, episodeId],
+    );
+    expect(ambiguous.message).toMatch(/chk_brain_edges_to_endpoint|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: deleting an episode out from under a live fact is refused (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-restrict-${stamp}`;
+    const episodeId = await insertEpisode(ws, `ep-${stamp}`);
+    await pool.query(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
+      [ws, episodeId],
+    );
+
+    // RESTRICT, not CASCADE: evidence disappearing under a live claim must
+    // fail loudly rather than quietly leave an unprovenanced fact standing.
+    const err = await expectRejected(`DELETE FROM brain_episodes WHERE id = $1`, [episodeId]);
+    expect(err.message).toMatch(/foreign key|23503|still referenced/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: fact_audience_member keys on (workspace, audience, user) for live revocation (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-aud-${stamp}`;
+
+    await pool.query(
+      `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source)
+       VALUES ($1, 'eng-private', 'u1', 'slack'), ($1, 'eng-private', 'u2', 'slack')`,
+      [ws],
+    );
+
+    // Idempotent re-sync — a membership poll re-running must not duplicate.
+    const resync = await pool.query(
+      `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source)
+       VALUES ($1, 'eng-private', 'u1', 'slack')
+       ON CONFLICT (workspace_id, audience_id, user_id) DO NOTHING`,
+      [ws],
+    );
+    expect(resync.rowCount).toBe(0);
+
+    // Revocation flows through membership LIVE — no re-ingest of any fact.
+    // This is what the derive-at-ingest grant model buys back.
+    await pool.query(
+      `DELETE FROM fact_audience_member
+        WHERE workspace_id = $1 AND audience_id = 'eng-private' AND user_id = 'u2'`,
+      [ws],
+    );
+    const { rows } = await pool.query<{ user_id: string }>(
+      `SELECT user_id FROM fact_audience_member WHERE workspace_id = $1`,
+      [ws],
+    );
+    expect(rows.map((r) => r.user_id)).toEqual(["u1"]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: the grant columns are GIN-indexed for the push-down visibility predicate (#4767)", async () => {
+    // #4768 pushes visibility down as `visible_to && ARRAY[...principals]`.
+    // Without a GIN index that clause is a seq scan on every brain read, and
+    // the fail-closed predicate becomes the reason retrieval is slow — the
+    // usual pressure to "just filter after fetch", which is the thing T5
+    // explicitly forbids.
+    const { rows } = await pool.query<{ tablename: string; indexdef: string }>(
+      `SELECT tablename, indexdef FROM pg_indexes
+        WHERE schemaname = current_schema()
+          AND indexname IN ('idx_brain_facts_visible_to', 'idx_brain_episodes_visible_to')
+        ORDER BY tablename`,
+    );
+    expect(rows.map((r) => r.tablename)).toEqual(["brain_episodes", "brain_facts"]);
+    for (const row of rows) expect(row.indexdef).toContain("USING gin");
+  }, PG_TEST_TIMEOUT_MS);
 });
 
 // #2606 — source-level revert guard for the integration-store SQL formatter.

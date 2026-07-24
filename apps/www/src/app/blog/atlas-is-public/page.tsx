@@ -95,11 +95,11 @@ export default function AtlasIsPublic() {
 
         <H2>Sixty seconds, no signup</H2>
         <P>
-          The demo is the part you don&apos;t have to take on faith. It runs on
-          a seeded database with no account and nothing to install: ask it
-          something in plain English and watch the query it writes, the tables
-          it chose, and the answer it gives you. Everything described below is
-          running on that page.
+          The demo runs on a seeded database with no account and nothing to
+          install. Ask it something in plain English and watch the query it
+          writes, the tables it chose, and the answer it gives you. Everything
+          described below is running on that page, so you can check the claims
+          against the thing itself.
         </P>
 
         <H2>What it is, in four parts</H2>

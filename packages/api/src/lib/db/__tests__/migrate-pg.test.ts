@@ -3245,6 +3245,13 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     for (const [label, cols, vals] of [
       ["neither", "", ""],
       ["both", ", body, locator", ", 'b', 'l'"],
+      // An EMPTY string is refused outright rather than treated as absent.
+      // Were '' merely absent-equivalent, `body='x', locator=''` would be
+      // legal at rest while the importer still rejects it — the
+      // stricter-than-the-DB trap that makes a workspace unmigratable.
+      ["empty-body", ", body", ", ''"],
+      ["empty-locator", ", locator", ", ''"],
+      ["body-plus-empty-locator", ", body, locator", ", 'b', ''"],
     ] as const) {
       await expectRejected(
         "chk_brain_episodes_body_xor_locator",
@@ -3253,6 +3260,50 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
         [ws],
       );
     }
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0180: a grant of only NULL or empty principals is refused at rest (#4767)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-grant-${stamp}`;
+
+    // `cardinality > 0` alone would ACCEPT all three of these: they are
+    // non-empty arrays that grant access to nobody — the denies-everyone state
+    // wearing a non-empty shape. Pins the array_remove semantics (in
+    // particular that `array_remove(x, NULL)` really does strip NULLs), which
+    // the guard in admin-migrate.ts is written to mirror exactly.
+    for (const [label, grant] of [
+      ["null-only", `ARRAY[NULL]::text[]`],
+      ["empty-only", `ARRAY['']::text[]`],
+      ["null-and-empty", `ARRAY[NULL, '']::text[]`],
+    ] as const) {
+      await expectRejected(
+        "chk_brain_episodes_grant_nonempty",
+        `INSERT INTO brain_episodes (workspace_id, source, source_id, body, visible_to)
+         VALUES ($1, 'slack', 'g-${label}', 'x', ${grant})`,
+        [ws],
+      );
+    }
+
+    // One usable principal alongside junk is ACCEPTED — the importer must not
+    // be stricter than this, or a workspace Postgres stores becomes
+    // unmigratable.
+    const { rows } = await pool.query<{ visible_to: string[] }>(
+      `INSERT INTO brain_episodes (workspace_id, source, source_id, body, visible_to)
+       VALUES ($1, 'slack', 'g-mixed', 'x', ARRAY['org', NULL, '']::text[])
+       RETURNING visible_to`,
+      [ws],
+    );
+    expect(rows[0]!.visible_to).toEqual(["org", null as unknown as string, ""]);
+
+    // Same rule on the tier-2 half.
+    const episodeId = await insertEpisode(ws, `ep-${stamp}`);
+    await expectRejected(
+      "chk_brain_facts_grant_nonempty",
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY[NULL, '']::text[])`,
+      [ws, episodeId],
+    );
   }, PG_TEST_TIMEOUT_MS);
 
   it("0180: facts default to draft and reject an unknown status (#4767)", async () => {

@@ -68,11 +68,15 @@ const RECONCILED_SECTIONS = [
  * no-op — the target drops it, the guard doesn't look, and the source cleanup
  * deletes it after the grace period. That is precisely the failure the guard
  * exists to prevent, so it must be a compile error rather than a review catch.
+ *
+ * Bounded on `keyof ImportResult` ALONE, deliberately — not on the
+ * intersection the `satisfies` uses. Intersecting here would re-open the hole:
+ * a new section added to ImportResult but whose `counts:` line was forgotten
+ * would drop out of the intersection and pass unnoticed. Bounded this way it
+ * is forced into RECONCILED_SECTIONS, where the `satisfies` then fails until
+ * the manifest count exists — so both halves of the mistake are caught.
  */
-type UnreconciledSection = Exclude<
-  keyof ExportManifest["counts"] & keyof ImportResult,
-  (typeof RECONCILED_SECTIONS)[number]
->;
+type UnreconciledSection = Exclude<keyof ImportResult, (typeof RECONCILED_SECTIONS)[number]>;
 const _everySectionReconciled: [UnreconciledSection] extends [never] ? true : never = true;
 void _everySectionReconciled;
 
@@ -274,7 +278,17 @@ async function transferBundleToTarget(
     // top-level array (facts nest inside their episode), so it necessarily
     // trusts the manifest.
     const payload = (bundle as unknown as Record<string, unknown>)[section];
-    const expected = Array.isArray(payload) ? payload.length : bundle.manifest.counts[section];
+    const declared = bundle.manifest.counts[section];
+    const expected = Array.isArray(payload) ? payload.length : declared;
+    // The manifest is what both regions LOG and what the CLI prints, so a
+    // divergence between it and the payload must not pass unremarked even
+    // though reconciliation trusts the payload.
+    if (Array.isArray(payload) && declared !== undefined && declared !== payload.length) {
+      log.warn(
+        { migrationId, section, declared, actual: payload.length },
+        "Manifest count disagrees with the exported payload — reconciling against the payload; this is an exporter bug",
+      );
+    }
     if (expected === undefined) {
       return {
         ok: false,

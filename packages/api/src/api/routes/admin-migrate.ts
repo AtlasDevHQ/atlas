@@ -352,6 +352,17 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       if (!(BRAIN_EDGE_TYPES as readonly string[]).includes(e.edgeType as string)) {
         return { ok: false, error: `brainEdges[${i}].edgeType: must be one of ${BRAIN_EDGE_TYPES.join(", ")}.` };
       }
+      // A wrong-TYPED endpoint must be rejected, not counted as absent: the
+      // XOR below would score `{fromFactId: "…", fromEpisodeId: 5}` as valid,
+      // and the 5 would still be bound into a uuid column at the INSERT — a
+      // 22P02 aborting the whole transaction at the last import step. Same
+      // class as the episode body guard above.
+      for (const key of ["fromFactId", "fromEpisodeId", "toFactId", "toEpisodeId"] as const) {
+        const endpoint = e[key];
+        if (endpoint !== undefined && endpoint !== null && typeof endpoint !== "string") {
+          return { ok: false, error: `brainEdges[${i}].${key}: must be a string id or absent (a non-string endpoint aborts the import at INSERT time).` };
+        }
+      }
       // Exactly one endpoint per side — guards chk_brain_edges_{from,to}_endpoint.
       const fromCount = Number(typeof e.fromFactId === "string") + Number(typeof e.fromEpisodeId === "string");
       const toCount = Number(typeof e.toFactId === "string") + Number(typeof e.toEpisodeId === "string");

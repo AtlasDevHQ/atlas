@@ -102,17 +102,23 @@ CREATE TABLE IF NOT EXISTS brain_episodes (
   visible_to text[] NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
 
-  -- Body XOR locator — never both, never neither.
-  -- `nullif(…, '')` so an EMPTY body doesn't count as present: an episode
-  -- whose evidence is the empty string backs a provenance claim with nothing.
+  -- Body XOR locator — never both, never neither. An empty string is refused
+  -- outright rather than treated as absent: evidence that is '' backs a
+  -- provenance claim with nothing, and "'' means absent" would make
+  -- `body='x', locator=''` legal at rest while every reader has to remember
+  -- which emptiness counts.
   CONSTRAINT chk_brain_episodes_body_xor_locator
-    CHECK (num_nonnulls(nullif(body, ''), nullif(locator, '')) = 1),
+    CHECK (
+      num_nonnulls(body, locator) = 1
+      AND coalesce(body, 'x') <> ''
+      AND coalesce(locator, 'x') <> ''
+    ),
   -- No-grant-no-promotion, tier-3 half. A grant that denies everyone reads as
   -- "hidden" but behaves as "unreviewed" — refuse it at rest rather than let
   -- it mean two things. NULL and '' elements are refused for the same reason:
   -- they pass a bare cardinality test while granting access to nobody.
   CONSTRAINT chk_brain_episodes_grant_nonempty
-    CHECK (cardinality(array_remove(array_remove(visible_to, NULL), '')) > 0)
+    CHECK (cardinality(array_remove(array_remove(visible_to, NULL::text), '')) > 0)
 );
 
 -- The dedupe key. UNIQUE is what makes re-ingest a no-op rather than a
@@ -249,7 +255,7 @@ CREATE TABLE IF NOT EXISTS brain_facts (
   -- '' elements are refused too: they pass a bare cardinality test while
   -- granting access to nobody.
   CONSTRAINT chk_brain_facts_grant_nonempty
-    CHECK (cardinality(array_remove(array_remove(visible_to, NULL), '')) > 0),
+    CHECK (cardinality(array_remove(array_remove(visible_to, NULL::text), '')) > 0),
   -- No-provenance-no-promotion. NOT NULL alone would admit `'{}'::jsonb`,
   -- which is an empty claim wearing the shape of a real one.
   CONSTRAINT chk_brain_facts_provenance_nonempty

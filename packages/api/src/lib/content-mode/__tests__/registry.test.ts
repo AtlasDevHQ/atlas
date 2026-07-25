@@ -133,6 +133,7 @@ describe("promotedCountsFromReports over the REAL registry tuple", () => {
       { table: "prompt_collections", promoted: 3 },
       { table: "query_suggestions", promoted: 4 },
       { table: "knowledge_documents", promoted: 5 },
+      { table: "brain_facts", promoted: 6, refused: [] },
     ]);
     expect(counts).toEqual({
       connections: 1,
@@ -140,6 +141,7 @@ describe("promotedCountsFromReports over the REAL registry tuple", () => {
       prompts: 3,
       starterPrompts: 4,
       knowledgeDocuments: 5,
+      brainFacts: 6,
     });
   });
 });
@@ -309,6 +311,7 @@ describe("ContentModeRegistry.countAllDrafts", () => {
       entityEdits: 0,
       entityDeletes: 0,
       knowledgeDocuments: 0,
+      brainFacts: 0,
     });
     // Every `$N` token in the query must be `$1` — the registry passes a
     // single orgId param; a future exotic segment that introduces `$2`
@@ -448,6 +451,7 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     // 3. query_suggestions   → UPDATE (1 SQL)
     // 4. knowledge_documents → UPDATE (1 SQL)  [#4206]
     // 5. semantic_entities   → applyTombstones (2 SQL) + promoteDraftEntities (2 SQL)
+    // 6. brain_facts         → SELECT drafts FOR UPDATE + UPDATE promotable (2 SQL) [#4769]
     const { client, calls } = makeMockPoolClient([
       { rowCount: 3 }, // connections
       { rowCount: 2 }, // prompt_collections
@@ -459,6 +463,26 @@ describe("ContentModeRegistry.runPublishPhases", () => {
       // semantic_entities.promoteDraftEntities:
       { rowCount: 1 }, //                                        DELETE superseded published
       { rows: [{ id: "e3" }, { id: "e4" }, { id: "e5" }], rowCount: 3 }, // UPDATE promote
+      // brain_facts (#4769): one compliant draft, one with an unusable grant.
+      // The adapter classifies in TS (one grant grammar, no SQL restatement),
+      // so the refusal shows up as a shorter id list on the UPDATE below.
+      {
+        rows: [
+          {
+            id: "f-ok",
+            source_episode_id: "ep-1",
+            provenance: { actor: "test" },
+            visible_to: ["org"],
+          },
+          {
+            id: "f-ungranted",
+            source_episode_id: "ep-1",
+            provenance: { actor: "test" },
+            visible_to: ["everyone"],
+          },
+        ],
+      },
+      { rowCount: 1 }, //                                        UPDATE promote (only f-ok)
     ]);
 
     const reports = await Effect.runPromise(
@@ -480,6 +504,7 @@ describe("ContentModeRegistry.runPublishPhases", () => {
       "query_suggestions",
       "knowledge_documents",
       "semantic_entities",
+      "brain_facts",
     ]);
     expect(reports[0].promoted).toBe(3);
     expect(reports[1].promoted).toBe(2);
@@ -488,8 +513,12 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     // semantic_entities report composes both phases' counts.
     expect(reports[4].promoted).toBe(3);
     expect(reports[4].tombstonesApplied).toBe(2);
+    // brain_facts is the one adapter that can decline a row (#4769): the
+    // ungranted draft is refused and stays a draft; its sibling promotes.
+    expect(reports[5].promoted).toBe(1);
+    expect(reports[5].refused?.map((r) => r.rowId)).toEqual(["f-ungranted"]);
 
-    expect(calls).toHaveLength(8);
+    expect(calls).toHaveLength(10);
     expect(calls[0].sql).toContain("UPDATE workspace_plugins");
     expect(calls[1].sql).toContain("UPDATE prompt_collections");
     expect(calls[2].sql).toContain("UPDATE query_suggestions");
@@ -499,7 +528,16 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(calls[5].sql).toContain("draft_delete");
     expect(calls[6].sql).toMatch(/DELETE FROM semantic_entities/);
     expect(calls[7].sql).toContain("UPDATE semantic_entities");
-    for (const c of calls) expect(c.params).toEqual(["org-1"]);
+    // brain_facts: read the drafts under a lock, then promote by explicit id.
+    expect(calls[8].sql).toMatch(/FROM brain_facts/);
+    expect(calls[8].sql).toMatch(/FOR UPDATE/i);
+    expect(calls[9].sql).toContain("UPDATE brain_facts");
+
+    // Every phase is org-scoped on $1. The brain promote additionally binds the
+    // promotable id list on $2 — the refusal is enforced by which rows we ask
+    // Postgres to touch, so that second param is the gate, not a filter.
+    for (const c of calls.slice(0, 9)) expect(c.params).toEqual(["org-1"]);
+    expect(calls[9].params).toEqual(["org-1", ["f-ok"]]);
   });
 
   it("invokes simple and exotic adapters in tuple order with a non-failing exotic (test tuple)", async () => {

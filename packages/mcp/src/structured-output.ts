@@ -257,6 +257,7 @@ export const publishDatasourcesOutputShape = {
     prompts: z.number().int().nonnegative(),
     starterPrompts: z.number().int().nonnegative(),
     knowledgeDocuments: z.number().int().nonnegative(),
+    brainFacts: z.number().int().nonnegative(),
   }),
   deleted: z.object({ entities: z.number().int().nonnegative() }),
 } as const;

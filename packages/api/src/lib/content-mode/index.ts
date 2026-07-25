@@ -23,6 +23,7 @@ export {
   type ContentModeEntry,
   type SimpleModeTable,
   type ExoticModeAdapter,
+  type PromotionRefusal,
   type PromotionReport,
   ExoticReadFilterUnavailableError,
   PublishPhaseError,

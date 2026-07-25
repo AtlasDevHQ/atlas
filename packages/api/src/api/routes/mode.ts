@@ -66,6 +66,7 @@ const DraftCountsSchema = z.object({
   prompts: z.number().int().nonnegative(),
   starterPrompts: z.number().int().nonnegative(),
   knowledgeDocuments: z.number().int().nonnegative(),
+  brainFacts: z.number().int().nonnegative(),
 });
 
 const DraftSurfaceActivitySchema = z.object({
@@ -80,6 +81,7 @@ const DraftActivitySchema = z.object({
   prompts: DraftSurfaceActivitySchema,
   starterPrompts: DraftSurfaceActivitySchema,
   knowledgeDocuments: DraftSurfaceActivitySchema,
+  brainFacts: DraftSurfaceActivitySchema,
 });
 
 const ModeStatusSchema = z.object({
@@ -127,15 +129,21 @@ const getModeRoute = createRoute({
 // `queryEffect` so failures land in the Effect error channel.
 const DEMO_ACTIVE_SQL = demoInstallActiveSql(["published"]);
 
+/**
+ * Total drafts across every segment `countAllDrafts` returned.
+ *
+ * Sums `Object.values` rather than a hand-listed field chain. `counts` is
+ * derived from the registry tuple via `InferDraftCounts`, so a newly-registered
+ * surface widens it automatically — and a hand-listed sum would silently omit
+ * the new segment, leaving `hasDrafts: false` (no banner, no publish button)
+ * for a workspace whose ONLY drafts are on the new surface. Every value is a
+ * number by construction; the guard is for a driver returning a numeric as a
+ * string, which would otherwise concatenate.
+ */
 function totalDrafts(counts: ModeDraftCounts): number {
-  return (
-    counts.connections +
-    counts.entities +
-    counts.entityEdits +
-    counts.entityDeletes +
-    counts.prompts +
-    counts.starterPrompts +
-    counts.knowledgeDocuments
+  return Object.values(counts).reduce<number>(
+    (sum, v) => sum + (typeof v === "number" && Number.isFinite(v) ? v : 0),
+    0,
   );
 }
 
@@ -175,6 +183,9 @@ const DRAFT_ACTIVITY_SQL = `
   UNION ALL
   SELECT 'knowledgeDocuments' AS key, MAX(updated_at) AS at FROM knowledge_documents
    WHERE workspace_id = $1 AND status = 'draft'
+  UNION ALL
+  SELECT 'brainFacts' AS key, MAX(updated_at) AS at FROM brain_facts
+   WHERE workspace_id = $1 AND status = 'draft'
 `;
 
 /**
@@ -203,6 +214,7 @@ const ACTIVITY_SURFACE_KEYS = [
   "prompts",
   "starterPrompts",
   "knowledgeDocuments",
+  "brainFacts",
 ] as const satisfies ReadonlyArray<keyof ModeDraftActivity>;
 
 function buildDraftActivity(

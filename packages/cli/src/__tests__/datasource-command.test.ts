@@ -410,6 +410,48 @@ describe("runDatasource — publish (#4126)", () => {
     expect(text).toContain("12 knowledge documents");
   });
 
+  it("names brain facts in the summary (#4769)", async () => {
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 0,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 1,
+      },
+      deleted: { entities: 0 },
+    });
+    const { io, out } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    const text = out.join("\n");
+    expect(text).not.toContain("Nothing to publish");
+    // Singular, and named — an admin who published one reviewed fact should be
+    // told that is what happened.
+    expect(text).toContain("1 brain fact");
+  });
+
+  it("counts a segment this build has never heard of toward 'something happened'", async () => {
+    // Reverse deploy-overlap: a NEWER API promotes a surface this CLI predates.
+    // The total must still be non-zero — reporting "Nothing to publish" for a
+    // publish that promoted rows is the milestone-#81 under-report, inverted.
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 0,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+        somethingNewer: 4,
+      },
+      deleted: { entities: 0 },
+    });
+    const { io, out } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    expect(out.join("\n")).not.toContain("Nothing to publish");
+  });
+
   it("--json emits the publish response with the validated core normalized", async () => {
     // A realistic REST response from an OLDER API (no `knowledgeDocuments`) —
     // the client validates + overlays the parsed core, so `--json` emits the
@@ -425,7 +467,7 @@ describe("runDatasource — publish (#4126)", () => {
     expect(code).toBe(0);
     expect(JSON.parse(out.join("\n"))).toEqual({
       ...body,
-      promoted: { ...body.promoted, knowledgeDocuments: 0 },
+      promoted: { ...body.promoted, knowledgeDocuments: 0, brainFacts: 0 },
     });
   });
 

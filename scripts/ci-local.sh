@@ -195,6 +195,7 @@ launch twenty-resolver           bash scripts/check-twenty-resolver-imports.sh
 launch no-admin-plugin           bash scripts/check-no-admin-plugin.sh
 launch streaming-cors            bash scripts/check-streaming-cors.sh
 launch no-legacy-connections     bash scripts/check-no-legacy-connections-sql.sh
+launch brain-fact-promotion      bash scripts/check-brain-fact-promotion.sh
 launch test-discipline           bash scripts/check-test-discipline.sh
 launch settings-readers          bash scripts/check-settings-readers.sh
 launch saas-env-doc              bash scripts/check-saas-env-doc.sh

@@ -26,6 +26,13 @@ export interface ModeDraftCounts {
   readonly starterPrompts: number;
   /** Draft hosted-OKF knowledge documents (status = 'draft'), #4206 / ADR-0028. */
   readonly knowledgeDocuments: number;
+  /**
+   * Draft company-brain facts awaiting review (status = 'draft'), #4769 /
+   * ADR-0036. Includes facts the publish endpoint will REFUSE to promote —
+   * a refused fact stays a draft, so it stays counted here until it is fixed
+   * or retracted.
+   */
+  readonly brainFacts: number;
 }
 
 /**
@@ -47,6 +54,7 @@ export interface ModeDraftActivity {
   readonly prompts: { readonly lastEditedAt: string | null };
   readonly starterPrompts: { readonly lastEditedAt: string | null };
   readonly knowledgeDocuments: { readonly lastEditedAt: string | null };
+  readonly brainFacts: { readonly lastEditedAt: string | null };
 }
 
 /**
@@ -93,6 +101,13 @@ export interface PublishPromotedCounts {
   readonly starterPrompts: number;
   /** Hosted-OKF knowledge documents promoted (#4206, ADR-0028). */
   readonly knowledgeDocuments: number;
+  /**
+   * Company-brain facts promoted (#4769, ADR-0036). Counts only facts that
+   * PASSED the structural refusals — a fact missing provenance or a usable
+   * grant is left a draft and reported under
+   * {@link PublishResult} consumers' warning surfaces instead.
+   */
+  readonly brainFacts: number;
 }
 
 /**

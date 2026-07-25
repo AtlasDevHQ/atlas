@@ -847,7 +847,14 @@ describe("publishWorkspaceDrafts (#4126)", () => {
     // old flat `deletedEntities`. The non-zero knowledgeDocuments pins the
     // "knowledge_documents" report lookup — a table-name typo would read 0 here.
     expect(result).toEqual({
-      promoted: { connections: 1, entities: 2, prompts: 0, starterPrompts: 3, knowledgeDocuments: 5 },
+      promoted: {
+        connections: 1,
+        entities: 2,
+        prompts: 0,
+        starterPrompts: 3,
+        knowledgeDocuments: 5,
+        brainFacts: 0,
+      },
       deleted: { entities: 1 },
     });
     const sqlLog = publishClientQueries.map((q) => q.sql.trim().toUpperCase());
@@ -886,6 +893,7 @@ describe("publishWorkspaceDrafts (#4126)", () => {
       prompts: 0,
       starterPrompts: 0,
       knowledgeDocuments: 0,
+      brainFacts: 0,
     });
   });
 });

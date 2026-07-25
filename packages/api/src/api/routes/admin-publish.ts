@@ -12,6 +12,12 @@
  *    3b. Connections.
  *    3c. Prompt collections.
  *    3d. Starter-prompt suggestions (`query_suggestions`) — #1478.
+ *    3e. Knowledge documents (`knowledge_documents`) — #4206 / ADR-0028.
+ *    3f. Company-brain facts (`brain_facts`) — #4769 / ADR-0036. The only
+ *        phase that can REFUSE an individual row: a fact missing provenance or
+ *        a usable grant is left `draft` and reported under
+ *        `warnings.refusedDrafts`. The refusal quarantines the claim, not the
+ *        transaction — see `lib/content-mode/adapters/brain-facts.ts`.
  * 4. If `archiveConnections` is provided, archive those connections and
  *    cascade to their entities. When the archive list includes the reserved
  *    `__demo__` ID, also archive the built-in demo prompt collections whose
@@ -76,6 +82,7 @@ const PublishResponseSchema = z.object({
     prompts: z.number().int().nonnegative(),
     starterPrompts: z.number().int().nonnegative(),
     knowledgeDocuments: z.number().int().nonnegative(),
+    brainFacts: z.number().int().nonnegative(),
   }),
   deleted: z.object({
     entities: z.number().int().nonnegative(),
@@ -106,6 +113,32 @@ const PublishResponseSchema = z.object({
           ),
         }),
       ),
+      /**
+       * Draft rows the review gate REFUSED to promote. Each stays `draft` and is
+       * re-offered on the next publish, so this is the actionable half of
+       * "never stamps it published": without it the admin would read an
+       * unqualified success while some drafts silently did not go live.
+       *
+       * Collected from EVERY registry adapter's `PromotionReport.refused`, not
+       * from one named table — `brain_facts` (#4769, ADR-0036) is the only
+       * adapter that can refuse today, and hand-listing it here is exactly the
+       * layout that let knowledge documents ship under-reported in milestone
+       * #81. `surface` names the physical table so a second refusing adapter
+       * stays attributable.
+       *
+       * Optional so an older client (and the deploy-overlap window) sees no
+       * shape change.
+       */
+      refusedDrafts: z
+        .array(
+          z.object({
+            id: z.string(),
+            surface: z.string(),
+            reasons: z.array(z.string()),
+            detail: z.string(),
+          }),
+        )
+        .optional(),
     })
     .optional(),
 });
@@ -135,7 +168,10 @@ const publishRoute = createRoute({
   description:
     "Atomically promote every `draft` and apply every `draft_delete` tombstone " +
     "for the active org, optionally archiving the specified connections. " +
-    "After a successful response, no draft or tombstone rows remain for the org.",
+    "After a successful response, no draft or tombstone rows remain for the org — " +
+    "EXCEPT any listed in `warnings.refusedDrafts`, which the review gate declined " +
+    "to promote (a company-brain fact missing provenance or a usable grant). Those " +
+    "stay `draft`, stay in `draftCounts`, and are re-offered on the next publish.",
   request: {
     body: {
       content: { "application/json": { schema: PublishRequestSchema } },
@@ -221,6 +257,12 @@ adminPublish.openapi(publishRoute, async (c) =>
 
     // ── Transaction ────────────────────────────────────────────────
     let promoted: PublishPromotedCounts;
+    let refusedDrafts: ReadonlyArray<{
+      readonly id: string;
+      readonly surface: string;
+      readonly reasons: readonly string[];
+      readonly detail: string;
+    }>;
     let deletedEntityCount: number;
     let archivedConnectionCount: number;
     let archivedEntityCount: number;
@@ -299,6 +341,19 @@ adminPublish.openapi(publishRoute, async (c) =>
       // surface is reported here without a hand-edit (#81 arch review: the
       // hand-listed fan-out layout is what let knowledge ship under-reported).
       promoted = promotedCountsFromReports(CONTENT_MODE_TABLES, tx.reports);
+      // Draft rows an adapter declined to promote (#4769). They stayed `draft`
+      // and the transaction still committed — a refusal quarantines the row,
+      // not the workspace's whole publish. Swept across every report rather
+      // than read off one named table, so a future refusing adapter is
+      // reported without a hand-edit here.
+      refusedDrafts = tx.reports.flatMap((r) =>
+        (r.refused ?? []).map((refusal) => ({
+          id: refusal.rowId,
+          surface: r.table,
+          reasons: refusal.reasons,
+          detail: refusal.detail,
+        })),
+      );
       deletedEntityCount =
         tx.reports.find((r) => r.table === "semantic_entities")?.tombstonesApplied ?? 0;
       archivedConnectionCount = tx.archived.connections;
@@ -339,6 +394,8 @@ adminPublish.openapi(publishRoute, async (c) =>
         promotedPrompts: promoted.prompts,
         promotedStarterPrompts: promoted.starterPrompts,
         promotedKnowledgeDocuments: promoted.knowledgeDocuments,
+        promotedBrainFacts: promoted.brainFacts,
+        refusedDrafts: refusedDrafts.length,
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
         archivedEntities: archivedEntityCount,
@@ -353,6 +410,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         orgId,
         actorId: authResult.user?.id,
         promoted,
+        refusedDrafts: refusedDrafts.length,
         deleted: { entities: deletedEntityCount },
         archived: {
           connections: archivedConnectionCount,
@@ -470,6 +528,51 @@ adminPublish.openapi(publishRoute, async (c) =>
       );
     }
 
+    if (refusedDrafts.length > 0) {
+      log.warn(
+        {
+          requestId,
+          orgId,
+          refusedCount: refusedDrafts.length,
+          refused: refusedDrafts.map((r) => ({
+            id: r.id,
+            surface: r.surface,
+            reasons: r.reasons,
+          })),
+        },
+        "Publish committed, but the review gate refused to promote one or more drafts — they remain drafts",
+      );
+    }
+
+    // `warnings` is emitted when EITHER warning has content, and each key is
+    // present only when its own list is non-empty. A caller that reads one and
+    // not the other therefore can't be tricked by an empty sibling array into
+    // rendering an empty banner.
+    const warnings: NonNullable<PublishResponse["warnings"]> | undefined =
+      incompleteLayers.length > 0 || refusedDrafts.length > 0
+        ? {
+            incompleteLayers: incompleteLayers.map((l) => ({
+              connectionGroupId: l.connectionGroupId,
+              totalTables: l.totalTables,
+              failedCount: l.failedCount,
+              failedTables: l.failedTables.map((f) => ({
+                table: f.table,
+                error: f.error,
+              })),
+            })),
+            ...(refusedDrafts.length > 0
+              ? {
+                  refusedDrafts: refusedDrafts.map((r) => ({
+                    id: r.id,
+                    surface: r.surface,
+                    reasons: [...r.reasons],
+                    detail: r.detail,
+                  })),
+                }
+              : {}),
+          }
+        : undefined;
+
     const response: PublishResponse = {
       promoted,
       deleted: { entities: deletedEntityCount },
@@ -478,21 +581,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         entities: archivedEntityCount,
         prompts: archivedPromptCount,
       },
-      ...(incompleteLayers.length > 0
-        ? {
-            warnings: {
-              incompleteLayers: incompleteLayers.map((l) => ({
-                connectionGroupId: l.connectionGroupId,
-                totalTables: l.totalTables,
-                failedCount: l.failedCount,
-                failedTables: l.failedTables.map((f) => ({
-                  table: f.table,
-                  error: f.error,
-                })),
-              })),
-            },
-          }
-        : {}),
+      ...(warnings ? { warnings } : {}),
     };
     return c.json(response, 200);
   }),

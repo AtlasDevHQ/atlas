@@ -13,11 +13,12 @@
  *
  * Ordering matches the publish dependency chain, top-down as the admin reads
  * it: connections define data sources, entities expose them, prompts reference
- * them, starter prompts are the empty-state surface, and knowledge documents
- * are descriptive context.
+ * them, starter prompts are the empty-state surface, knowledge documents are
+ * descriptive context, and brain facts are the extracted claims drawn on top of
+ * all of it.
  */
 
-import { BookText, Database, FileText, Layers, Lightbulb, type LucideIcon } from "lucide-react";
+import { BookText, Brain, Database, FileText, Layers, Lightbulb, type LucideIcon } from "lucide-react";
 import { totalDraftCount } from "@/ui/lib/draft-counts";
 import type { ModeDraftCounts, ModeDraftActivity } from "@useatlas/types/mode";
 
@@ -90,6 +91,16 @@ export const CONTENT_SURFACES = [
     chipSingular: "knowledge document",
     chipPlural: "knowledge documents",
     icon: BookText,
+  },
+  {
+    key: "brainFacts",
+    countKeys: ["brainFacts"],
+    title: "Brain facts",
+    singular: "Brain fact",
+    plural: "Brain facts",
+    chipSingular: "brain fact",
+    chipPlural: "brain facts",
+    icon: Brain,
   },
 ] as const satisfies ReadonlyArray<ContentSurfaceDescriptor>;
 

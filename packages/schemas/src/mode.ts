@@ -21,6 +21,10 @@ export const PublishPromotedCountsSchema = z.object({
   // an older API omits the field, and the CLI parsing that response must not
   // fail — absent means "that surface promoted nothing".
   knowledgeDocuments: z.number().int().nonnegative().default(0),
+  // `.default(0)` for the same reason: company-brain facts joined the promoted
+  // counts in #4769 (ADR-0036), and a CLI parsing an older API's response must
+  // read "that surface promoted nothing", not fail.
+  brainFacts: z.number().int().nonnegative().default(0),
 }) satisfies z.ZodType<PublishPromotedCounts, unknown>;
 
 export const PublishResultSchema = z.object({

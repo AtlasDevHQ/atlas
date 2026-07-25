@@ -322,8 +322,12 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     expect(report.corroborated).toBe(1);
     expect(await facts()).toHaveLength(1);
     const provenanceEdges = (await edges()).filter((e) => e.edge_type === "provenance");
-    expect(provenanceEdges.map((e) => e.to_episode_id).toSorted()).toEqual(
-      [first.id, second.id].toSorted(),
+    // Explicit comparator: these are uuid strings, and `toSorted()` with no
+    // argument sorts by UTF-16 code unit, which `require-array-sort-compare`
+    // refuses precisely because that is a different order than a reader assumes.
+    const byId = (a: string | null, b: string | null) => (a ?? "").localeCompare(b ?? "");
+    expect(provenanceEdges.map((e) => e.to_episode_id).toSorted(byId)).toEqual(
+      [first.id, second.id].toSorted(byId),
     );
   });
 

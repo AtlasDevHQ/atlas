@@ -547,6 +547,70 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
   );
 
   it(
+    "two concurrent publishes cannot double-count or drop a draft (FOR UPDATE)",
+    async () => {
+      // The invariant: under concurrency each draft is promoted exactly once
+      // and reported by exactly one publisher — never double-counted, never
+      // promoted-but-unreported. This is the only read-then-write adapter and
+      // there is no advisory or table lock anywhere else in the publish path,
+      // so it is worth a real race rather than the string-match on "FOR UPDATE"
+      // that was the only coverage before.
+      //
+      // MUTATION-TESTED, and the result corrected the adapter's comment: the
+      // `FOR UPDATE` lock and the promote UPDATE's `status = 'draft'` predicate
+      // are REDUNDANT. Removing either one alone leaves this test green (each
+      // independently makes the second publisher promote nothing); removing
+      // BOTH makes it fail with `promoted: 2`, a double-promote. So this test
+      // pins the INVARIANT, not either mechanism — if you delete one of them,
+      // this will not catch you, and the adapter comment says so.
+      const ws = "ws-concurrent";
+      const ep = await seedEpisode(ws, "concurrent");
+      const a = await seedDraftFact({ workspaceId: ws, episodeId: ep, subject: "c-a" });
+      const b = await seedDraftFact({ workspaceId: ws, episodeId: ep, subject: "c-b" });
+
+      const first = await pool.connect();
+      const second = await pool.connect();
+      try {
+        await first.query("BEGIN");
+        await second.query("BEGIN");
+
+        // Publisher 1 classifies and locks both drafts.
+        const report1 = await Effect.runPromise(promoteBrainFacts(first, ws));
+        expect(report1.promoted).toBe(2);
+
+        // Publisher 2 starts while 1 still holds the lock. Its SELECT ... FOR
+        // UPDATE must BLOCK rather than read the pre-promotion snapshot; if it
+        // did not, it would classify the same two rows and race the UPDATE.
+        let secondSettled = false;
+        const race = Effect.runPromise(promoteBrainFacts(second, ws)).then((r) => {
+          secondSettled = true;
+          return r;
+        });
+        // Give it a real chance to finish if it were NOT blocking.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(secondSettled).toBe(false);
+
+        await first.query("COMMIT");
+
+        // Once the lock is released, publisher 2 sees the COMMITTED state:
+        // both rows are `published`, so there is nothing left to promote. The
+        // work is reported exactly once, by exactly one publisher.
+        const report2 = await race;
+        expect(report2.promoted).toBe(0);
+        expect(report2.refused).toEqual([]);
+        await second.query("COMMIT");
+      } finally {
+        first.release();
+        second.release();
+      }
+
+      expect(await statusOf(a)).toBe("published");
+      expect(await statusOf(b)).toBe("published");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "leaves archived facts alone — promotion is draft→published, never a resurrection",
     async () => {
       const ws = "ws-archived";

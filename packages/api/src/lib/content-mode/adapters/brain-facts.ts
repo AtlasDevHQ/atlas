@@ -90,11 +90,22 @@ export function brainFactStatusClause(mode: AtlasMode | undefined, alias: string
  * Draft facts awaiting review, with exactly the columns the refusal rules read.
  *
  * `FOR UPDATE` because this adapter is read-then-write, which the simple
- * entries are not: without the lock, a concurrent publish on the same workspace
- * could promote a row between our classification and our UPDATE, and our
- * `status='draft'` guard would then silently drop it from BOTH runs' promoted
- * counts. The lock is workspace-scoped and held only for the rest of the
- * caller's transaction.
+ * entries are not: it serializes two concurrent publishes on the same
+ * workspace, so the second one classifies the state the first COMMITTED rather
+ * than a snapshot taken mid-flight. The lock is workspace-scoped and held only
+ * for the rest of the caller's transaction.
+ *
+ * Be precise about what it buys, because the obvious claim is wrong and was
+ * written here first: it is NOT the only thing standing between two publishers
+ * and a double-promote. The promote UPDATE's own `status = 'draft'` predicate
+ * is re-evaluated against the committed row version after it unblocks, so it
+ * independently matches zero rows the second time. The two are REDUNDANT — a
+ * live-PG race (`promotion-pg.test.ts`) confirms that removing either one alone
+ * still promotes each draft exactly once, and only removing BOTH double-counts.
+ * Both are kept: the guard makes the UPDATE correct standalone, and the lock
+ * makes the read-then-write actually serial rather than correct-by-coincidence
+ * of the guard — which also stops both publishers logging grant anomalies for
+ * the same rows.
  *
  * Unbounded by design: the row set is exactly what `draftCounts.brainFacts`
  * already reports and what the publish preview already lists in full, so a
@@ -212,7 +223,10 @@ export function promoteBrainFacts(
       // token does real work — yet the author plainly believed the second token
       // did something. `acl.ts` calls this the read-time seam it cannot reach
       // from a push-down predicate; promotion is the one place holding every
-      // draft's grant, so it is where the other half of that gap closes (#4797).
+      // draft's grant, so it is where the observable half of that gap narrows.
+      // NOT closed: #4797 stays open for `brain_episodes` (gated by the same
+      // predicate, but never promoted, so it has no equivalent seam) and for
+      // facts that arrive already `published` through the region import.
       if (Array.isArray(row.visible_to)) {
         logGrantAnomalies(row.visible_to as readonly unknown[], {
           table: BRAIN_FACTS_TABLE,

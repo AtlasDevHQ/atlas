@@ -58,6 +58,7 @@ import {
   logGrantAnomalies,
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
+import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
 import { BRAIN_FACT_REVIEW_STATUSES, type BrainFactStatusFilter } from "@useatlas/schemas";
 import type {
@@ -92,33 +93,15 @@ export interface BrainCandidateReader {
 }
 
 /**
- * The reviewer's identity could not be turned into a usable principal set.
- *
- * Thrown rather than answered with an empty queue, which is the whole point.
- * `principalTokens` seeds `org` unconditionally for both `authenticated` and
- * `unauthenticated-local` readers, so `deny-all` is reachable ONLY from an
- * `unresolved` origin, a missing `workspaceId`, or an origin arriving through a
- * cast — every one of which is an upstream defect, not a reviewer who happens
- * to be entitled to nothing.
- *
- * The failure this prevents: an auth regression drops the session user, the
- * queue renders its reassuring "Nothing to review" empty state, and the
- * reviewer clicks the button that publishes every unreviewed draft in the
- * workspace. A 500 with a
- * requestId is the honest answer; `resolvePrincipalContext` gives the same
- * reasoning for propagating its own lookup failures rather than degrading.
+ * Re-exported from its home in `reader-context.ts`, where it sits beside the
+ * other "this reader's identity is broken" failure. Kept exported here because
+ * this module is where the review surface's callers already reach for it, and
+ * because the throw sites below are the ones that raise it.
  */
-export class BrainReaderUnresolvedError extends Error {
-  constructor(
-    readonly workspaceId: string,
-    readonly origin: BrainPrincipalContext["origin"],
-  ) {
-    super(
-      `brain review: reader identity resolved to no usable principals (workspace ${workspaceId}, origin ${origin}) — refusing to report an empty queue`,
-    );
-    this.name = "BrainReaderUnresolvedError";
-  }
-}
+export { BrainReaderUnresolvedError };
+
+/** Surface tag carried on this module's `BrainReaderUnresolvedError` throws. */
+const REVIEW_SURFACE = "review";
 
 /**
  * Longest episode body served inline.
@@ -630,7 +613,7 @@ export async function loadFactCandidates(
     requestId,
   });
   if (acl.decision === "deny-all") {
-    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin);
+    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, REVIEW_SURFACE);
   }
 
   const { where, params } = candidateWhere(options, acl.sql, acl.params);
@@ -787,7 +770,7 @@ async function loadEpisodes(
     // Unreachable — the caller already threw on the same decision against
     // `brain_facts`, and both arms derive from the same principal set. Kept
     // because that reasoning is about the CALLER, not about this function.
-    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin);
+    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, REVIEW_SURFACE);
   }
 
   const params: unknown[] = [...acl.params, ids];
@@ -925,7 +908,7 @@ async function loadTensions(
     // counterpart unresolved and therefore rendered as "a conflicting claim
     // you are not allowed to see" — fabricated ACL withholding, and the one
     // arm a reviewer cannot tell apart from the real thing.
-    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin);
+    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, REVIEW_SURFACE);
   }
 
   const visible = new Map<string, FactRow>();
@@ -1005,7 +988,7 @@ export async function loadFactCandidateSummary(
     requestId,
   });
   if (acl.decision === "deny-all") {
-    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin);
+    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, REVIEW_SURFACE);
   }
 
   const result = await db.query(
@@ -1091,7 +1074,7 @@ export async function retractFactCandidate(
     requestId,
   });
   if (acl.decision === "deny-all") {
-    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin);
+    throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, REVIEW_SURFACE);
   }
 
   const params: unknown[] = [...acl.params, factId];

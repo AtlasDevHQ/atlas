@@ -44,7 +44,7 @@ segment (`atlas.scheduler.oauth_state_cleanup`, not `oauthStateCleanup`).
 
 One deliberate exception: the final segment of `atlas.tool.<name>` is a
 verbatim tool identifier, not an operation phrase — it must match the name the
-model calls and the SDK's `ai.toolCall.name` — so `atlas.tool.searchKnowledge`
+model calls and the SDK's `ai.toolCall.name` — so `atlas.tool.searchBrain`
 is intentional, not the `healthCheckAll` class of drift below.
 
 The `atlas.` prefix is what makes prefix-filtered dashboards work, so it is the
@@ -99,7 +99,7 @@ Every tool handed to the agent is wrapped in an **`atlas.tool.<name>`** span by
 SDK. Every *executable* tool is wrapped; client-side / provider-executed tools
 (no `execute`) pass through untouched. **Adding a tool requires no telemetry
 code**: registering it is what traces it. (#4464 exists because the previous
-per-tool convention left `searchKnowledge`, `createDashboard`,
+per-tool convention left `searchBrain`, `createDashboard`,
 `executeRestOperation` and the action tools with no `atlas.*` segment at all —
 only the tools that remembered to self-instrument had one.)
 

@@ -1,5 +1,6 @@
 /**
- * Real-Postgres coverage for `searchKnowledge` (#4210). Mirrors the
+ * Real-Postgres coverage for the knowledge-document store (#4210; moved out
+ * of the tools layer by #4773). Mirrors the
  * `knowledge-lifecycle-pg.test.ts` harness: skips when `TEST_DATABASE_URL` is
  * unset, runs every migration into a unique per-test schema, ingests real OKF
  * bundles, and executes the REAL search + 1-hop expansion SQL against the live
@@ -24,9 +25,9 @@ import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
 import { ingestBundleIntoCollection, type IngestClient } from "@atlas/api/lib/knowledge/ingest";
 import {
   buildSearchQuery,
-  searchKnowledgeCore,
+  searchKnowledgeDocuments,
   type KnowledgeQueryExec,
-} from "@atlas/api/lib/tools/search-knowledge";
+} from "@atlas/api/lib/knowledge/search";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -39,7 +40,7 @@ function docsFrom(files: Record<string, string>) {
   return parseLenientBundle(extracted.files).docs;
 }
 
-describeIfPg("searchKnowledge against the live schema", () => {
+describeIfPg("knowledge document store against the live schema", () => {
   let pool: Pool;
   let client: IngestClient;
   let exec: KnowledgeQueryExec;
@@ -100,13 +101,13 @@ describeIfPg("searchKnowledge against the live schema", () => {
   });
 
   it("full-text search returns matches with a highlighted snippet and provenance", async () => {
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "published",
       filters: { query: "replica lag", limit: 10, expand: false },
       exec,
     });
-    const eu = res.results.find((r) => r.path === "runbooks/eu.md");
+    const eu = res.documents.find((r) => r.path === "runbooks/eu.md");
     expect(eu).toBeDefined();
     expect(eu!.provenance.type).toBe("Runbook");
     expect(eu!.provenance.status).toBe("published");
@@ -115,51 +116,51 @@ describeIfPg("searchKnowledge against the live schema", () => {
   }, PG_TEST_TIMEOUT_MS);
 
   it("published mode hides draft documents; developer mode surfaces them", async () => {
-    const published = await searchKnowledgeCore({
+    const published = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "published",
       filters: { query: "replica", limit: 10, expand: false },
       exec,
     });
-    expect(published.results.some((r) => r.path === "runbooks/secret.md")).toBe(false);
+    expect(published.documents.some((r) => r.path === "runbooks/secret.md")).toBe(false);
 
-    const developer = await searchKnowledgeCore({
+    const developer = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "developer",
       filters: { query: "replica", limit: 10, expand: false },
       exec,
     });
-    const secret = developer.results.find((r) => r.path === "runbooks/secret.md");
+    const secret = developer.documents.find((r) => r.path === "runbooks/secret.md");
     expect(secret).toBeDefined();
     expect(secret!.provenance.status).toBe("draft");
   }, PG_TEST_TIMEOUT_MS);
 
   it("frontmatter filters narrow by type and tag (GIN jsonb containment)", async () => {
-    const byTag = await searchKnowledgeCore({
+    const byTag = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "published",
       filters: { tags: ["eu"], limit: 10, expand: false },
       exec,
     });
-    expect(byTag.results.map((r) => r.path)).toEqual(["runbooks/eu.md"]);
+    expect(byTag.documents.map((r) => r.path)).toEqual(["runbooks/eu.md"]);
 
-    const byType = await searchKnowledgeCore({
+    const byType = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "published",
       filters: { type: "Document", limit: 10, expand: false },
       exec,
     });
-    expect(byType.results.map((r) => r.path)).toEqual(["glossary/replica.md"]);
+    expect(byType.documents.map((r) => r.path)).toEqual(["glossary/replica.md"]);
   }, PG_TEST_TIMEOUT_MS);
 
   it("1-hop expansion returns outbound neighbors of the matched seed", async () => {
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "published",
       filters: { query: "failover", limit: 10, expand: true },
       exec,
     });
-    expect(res.results.map((r) => r.path)).toContain("runbooks/eu.md");
+    expect(res.documents.map((r) => r.path)).toContain("runbooks/eu.md");
     const neighbor = res.neighbors.find((n) => n.path === "glossary/replica.md");
     expect(neighbor).toBeDefined();
     expect(neighbor!.direction).toContain("outbound");
@@ -168,21 +169,21 @@ describeIfPg("searchKnowledge against the live schema", () => {
   }, PG_TEST_TIMEOUT_MS);
 
   it("1-hop expansion returns inbound neighbors (the doc that links to the seed)", async () => {
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "published",
       // Match only replica.md by a term unique to it.
       filters: { query: "delay between primary", limit: 10, expand: true },
       exec,
     });
-    expect(res.results.map((r) => r.path)).toContain("glossary/replica.md");
+    expect(res.documents.map((r) => r.path)).toContain("glossary/replica.md");
     const neighbor = res.neighbors.find((n) => n.path === "runbooks/eu.md");
     expect(neighbor).toBeDefined();
     expect(neighbor!.direction).toContain("inbound");
   }, PG_TEST_TIMEOUT_MS);
 
   it("recency ordering (no query) returns the newest document first", async () => {
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "published",
       filters: { limit: 10, expand: false },
@@ -192,9 +193,9 @@ describeIfPg("searchKnowledge against the live schema", () => {
     // 2026-05-28 frontmatter timestamp; replica.md has none and falls back to
     // its ingest time (the same-run ingest, ~now = 2026-07+), so replica.md is
     // the newer of the two and must sort first — this asserts the ORDER BY DESC.
-    expect(res.results.length).toBe(2);
-    expect(res.results[0].path).toBe("glossary/replica.md");
-    expect(res.results[1].path).toBe("runbooks/eu.md");
+    expect(res.documents.length).toBe(2);
+    expect(res.documents[0].path).toBe("glossary/replica.md");
+    expect(res.documents[1].path).toBe("runbooks/eu.md");
   }, PG_TEST_TIMEOUT_MS);
 
   it("a draft neighbor never leaks into published-mode expansion; developer mode surfaces it", async () => {
@@ -217,19 +218,19 @@ describeIfPg("searchKnowledge against the live schema", () => {
     await publish("gate", "gate/open.md");
     // gate/hidden.md stays draft.
 
-    const pub = await searchKnowledgeCore({
+    const pub = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "published",
       filters: { query: "unique-gate-token", limit: 10, expand: true },
       exec,
     });
-    expect(pub.results.map((r) => r.path)).toEqual(["gate/linker.md"]);
+    expect(pub.documents.map((r) => r.path)).toEqual(["gate/linker.md"]);
     // Expansion RAN (the published neighbor came back) — the draft one was
     // excluded by status, not by the expansion failing.
     expect(pub.neighbors.map((n) => n.path)).toContain("gate/open.md");
     expect(pub.neighbors.map((n) => n.path)).not.toContain("gate/hidden.md");
 
-    const dev = await searchKnowledgeCore({
+    const dev = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "developer",
       filters: { query: "unique-gate-token", limit: 10, expand: true },
@@ -248,20 +249,20 @@ describeIfPg("searchKnowledge against the live schema", () => {
       [ws],
     );
     for (const mode of ["published", "developer"] as const) {
-      const expanded = await searchKnowledgeCore({
+      const expanded = await searchKnowledgeDocuments({
         workspaceId: ws,
         mode,
         filters: { query: "unique-gate-token", limit: 10, expand: true },
         exec,
       });
       expect(expanded.neighbors.map((n) => n.path)).not.toContain("gate/open.md");
-      const direct = await searchKnowledgeCore({
+      const direct = await searchKnowledgeDocuments({
         workspaceId: ws,
         mode,
         filters: { query: "published neighbor body", limit: 10, expand: false },
         exec,
       });
-      expect(direct.results.map((r) => r.path)).not.toContain("gate/open.md");
+      expect(direct.documents.map((r) => r.path)).not.toContain("gate/open.md");
     }
   }, PG_TEST_TIMEOUT_MS);
 
@@ -277,7 +278,7 @@ describeIfPg("searchKnowledge against the live schema", () => {
     });
     for (const p of ["hub/a.md", "hub/b.md", "hub/shared.md"]) await publish("hub", p);
 
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "published",
       filters: { query: "unique-alpha-token", limit: 10, expand: true },
@@ -285,7 +286,7 @@ describeIfPg("searchKnowledge against the live schema", () => {
     });
     // Both hubs match the seed query; the shared doc is a single neighbor row
     // whose `via` names both seeds (array_agg DISTINCT dedup).
-    expect(res.results.map((r) => r.path).sort()).toEqual(["hub/a.md", "hub/b.md"]);
+    expect(res.documents.map((r) => r.path).sort()).toEqual(["hub/a.md", "hub/b.md"]);
     const shared = res.neighbors.filter((n) => n.path === "hub/shared.md");
     expect(shared).toHaveLength(1);
     expect([...shared[0].via].sort()).toEqual(["hub/a.md", "hub/b.md"]);
@@ -314,13 +315,13 @@ describeIfPg("searchKnowledge against the live schema", () => {
     await publish("weights", "weights/description-hit.md");
     await publish("weights", "weights/body-hit.md");
 
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: ws,
       mode: "published",
       filters: { query: "zephyrite", collection: "weights", limit: 10, expand: false },
       exec,
     });
-    expect(res.results.map((r) => r.path)).toEqual([
+    expect(res.documents.map((r) => r.path)).toEqual([
       "weights/title-hit.md",
       "weights/description-hit.md",
       "weights/body-hit.md",
@@ -366,13 +367,13 @@ describeIfPg("searchKnowledge against the live schema", () => {
 
     // And the plan is not just chosen but correct: the query itself finds
     // exactly the one matching document among 30,001.
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: wsBulk,
       mode: "published",
       filters: { query: "replica lag", limit: 10, expand: false },
       exec,
     });
-    expect(res.results.map((r) => r.path)).toEqual(["target.md"]);
+    expect(res.documents.map((r) => r.path)).toEqual(["target.md"]);
     // 30k generated-column inserts + ANALYZE can be slow on CI Postgres —
     // double the standard budget.
   }, PG_TEST_TIMEOUT_MS * 2);

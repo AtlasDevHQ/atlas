@@ -3,7 +3,7 @@
  * shape, projection, normalizers, and content-mode gating for knowledge reads.
  *
  * Three agent-/admin-facing readers consume it (the per-mode disk mirror + the
- * system-prompt ToC in `mirror.ts`, the `searchKnowledge` tool, and the
+ * system-prompt ToC in `mirror.ts`, the `searchBrain` tool, and the
  * `/admin/knowledge` routes). Before this module each hand-built its own SELECT,
  * row type, and timestamp/tags normalizers over the same table — a schema change
  * meant three edits and two separate real-Postgres drift tests, or silent drift.

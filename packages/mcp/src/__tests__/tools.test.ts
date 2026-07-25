@@ -128,7 +128,7 @@ describe("MCP tools", () => {
     mockCheckAgentBillingGate.mockClear();
   });
 
-  it("lists explore + executeSQL + the four typed semantic tools (#2020)", async () => {
+  it("lists explore + executeSQL + searchBrain + the four typed semantic tools (#2020, #4773)", async () => {
     const { client } = await createTestClient();
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
@@ -138,6 +138,10 @@ describe("MCP tools", () => {
       "explore",
       "listEntities",
       "runMetric",
+      // #4773 — ADDITIVE. `searchKnowledge` was never on this surface, so the
+      // rename removes no MCP tool name; the stability contract's
+      // frozen-tool-name rule is untouched.
+      "searchBrain",
       "searchGlossary",
     ]);
   });

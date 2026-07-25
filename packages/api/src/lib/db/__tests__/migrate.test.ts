@@ -240,7 +240,10 @@ describe("runMigrations", () => {
     //   Plus 0180 (brain substrate — brain_episodes / brain_facts /
     //   brain_edges / fact_audience_member, the first net-new company-brain
     //   code, ADR-0036, #4767) = 181.
-    expect(count).toBe(181);
+    //   Plus 0181 (brain_facts.fts / brain_episodes.fts stored generated
+    //   tsvectors + GIN indexes for the `searchBrain` lexical tier, ADR-0036,
+    //   #4773) = 182.
+    expect(count).toBe(182);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -450,6 +453,7 @@ describe("runMigrations", () => {
         "0178_region_migrations_source_cleaned_at.sql",
         "0179_drop_conversations_notebook_state.sql",
         "0180_brain_substrate.sql",
+        "0181_brain_fts.sql",
       ],
     });
 

@@ -98,7 +98,11 @@ Published knowledge is served to the agent **OKF-native** — no translation lay
 
 - **Browsing.** Published documents are mirrored per-workspace into the agent's sandboxed, read-only filesystem under a `knowledge/<collection>/…` subtree. The agent walks them with the same explore tools it uses for the semantic layer (`ls`, `cat`, `grep`), following `index.md` navigation — the document body you uploaded, verbatim, under the normalized frontmatter described above.
 - **Orientation.** A size-capped table of contents for your collections rides in the agent's system prompt, so it knows what knowledge exists without searching for it. Collections past the cap are omitted from the prompt but stay fully browsable.
-- **Search at scale.** The `searchKnowledge` tool layers three tiers over the same documents: structured frontmatter filters (`type`, `tags`, `collection`, recency), full-text search with highlighted snippets, and one-hop expansion along the links between documents. Results carry provenance (path, collection, title).
+- **Search at scale.** The `searchBrain` tool layers three tiers over the same documents: structured frontmatter filters (`type`, `tags`, `collection`, recency), full-text search with highlighted snippets, and one-hop expansion along the links between documents. Results carry provenance (path, collection, title) and are labelled `tier: "document"`.
+
+  <Callout type="info">
+    `searchBrain` was called `searchKnowledge` before it grew beyond documents. It now fuses your knowledge collections with the company brain's reviewed facts and raw source records, labelling every result with its trust tier — documents behave exactly as described here and are one of the three stores it reads. If your `atlas.config.ts` lists `searchKnowledge` under `tools`, it is still accepted and normalized with a startup warning; update it to `searchBrain`.
+  </Callout>
 
 Knowledge content is framed to the agent as third-party descriptive material — context to draw on, never instructions to follow — and the hard boundaries above mean even a malicious document cannot reach the SQL whitelist, pinned metrics, or glossary gating.
 

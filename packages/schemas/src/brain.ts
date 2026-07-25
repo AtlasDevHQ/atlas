@@ -35,6 +35,7 @@ import type {
   BrainFactRetractResponse,
   BrainFactReviewStatus,
   BrainFactTensionView,
+  BrainResultTier,
 } from "@useatlas/types";
 
 /** Mirrors `BRAIN_FACT_STATUSES` in `packages/api/src/lib/brain/types.ts`. */
@@ -57,6 +58,39 @@ export const BRAIN_ENTITY_ROLES = [
   "subject",
   "object",
 ] as const satisfies readonly BrainEntityRole[];
+
+/**
+ * The `searchBrain` result classes (#4773) — the runtime half of
+ * {@link BrainResultTier}.
+ *
+ * Here rather than in `@useatlas/types` for the reason stated in the module
+ * header: a value export there forces a publish-first merge dance. This tuple
+ * is what an `include` filter validates against, so it has to exist at runtime.
+ *
+ * Ordered by ADR-0036's trust ordering (fact 2 → episode 3 → the
+ * outside-the-ordering document class), which is ALSO the deterministic
+ * tiebreak `fuseRankedLists` applies to equally-relevant rows. One list, so the
+ * two cannot drift into disagreeing about which of two tied rows comes first.
+ */
+export const BRAIN_RESULT_TIERS = [
+  "fact",
+  "raw-episode",
+  "document",
+] as const satisfies readonly BrainResultTier[];
+
+/** Compile error if a class joins the union without joining the tuple. */
+type _BrainResultTiersCovered = [
+  Exclude<BrainResultTier, (typeof BRAIN_RESULT_TIERS)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainResultTiersCovered: _BrainResultTiersCovered = true;
+void _brainResultTiersCovered;
+
+/** Narrow an untrusted `include[]` element to the shared vocabulary. */
+export function isBrainResultTier(value: unknown): value is BrainResultTier {
+  return typeof value === "string" && (BRAIN_RESULT_TIERS as readonly string[]).includes(value);
+}
 
 /**
  * Review-queue status filter. `all` is a QUERY value only — it is not a fact

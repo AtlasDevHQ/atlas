@@ -40,8 +40,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
-import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
-import { resolvePrincipalContext } from "@atlas/api/lib/brain/acl";
+import { resolveBrainReaderContext } from "@atlas/api/lib/brain/reader-context";
 import {
   CANDIDATE_PAGE_MAX,
   loadFactCandidateSummary,
@@ -49,7 +48,7 @@ import {
   retractFactCandidate,
 } from "@atlas/api/lib/brain/candidates";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import type { AtlasRole, AtlasUser } from "@atlas/api/lib/auth/types";
+import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { AuthMode } from "@useatlas/types";
 import {
   BRAIN_FACT_STATUS_FILTERS,
@@ -102,18 +101,17 @@ function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown):
 /**
  * Resolve the reviewer's principal context for one request.
  *
- * `resolveEffectiveRole` — never `getUserRole` — because the latter back-fills
- * an auth-mode DEFAULT whose `simple-key` arm is `admin`, which would mint
- * `role:admin` + `role:member` tokens for every holder of a shared API key out
- * of nothing. `acl.ts` documents that trap on `ResolvePrincipalInput.resolvedRole`.
+ * The resolution itself lives in `lib/brain/reader-context.ts` (#4773), shared
+ * with `searchBrain`: it re-resolves the role against the workspace being read
+ * (`member.role` is per-org, #2890), and it THROWS rather than degrading when a
+ * session that carries a role cannot have it re-resolved — the silent partial
+ * ACL narrowing that would otherwise render as a smaller, entirely plausible
+ * backlog with a publish button above it. That module's header has the full
+ * reasoning; duplicating it in two route files is how the two would drift into
+ * handling it differently.
  *
- * The role travels WITH the org it was resolved against, so a role resolved
- * against a different workspace can be detected rather than silently trusted.
- *
- * `user` is typed `AtlasUser` rather than a structural subset: `AtlasUser.role`
- * is already `AtlasRole | undefined`, so widening it to `string` here would
- * force a cast back — a cast on a security-relevant value, in a codebase that
- * has a recorded footgun about exactly this field (#2890).
+ * All this wrapper adds is the Effect boundary: the thrown error becomes a
+ * typed failure `runEffect` maps to a 500 with a requestId.
  */
 function reviewerContext(
   mode: AuthMode,
@@ -122,44 +120,8 @@ function reviewerContext(
   requestId: string,
 ) {
   return Effect.tryPromise({
-    try: async () => {
-      const userId = user?.id;
-      let resolvedRole: AtlasRole | undefined;
-      if (userId) {
-        resolvedRole = await resolveEffectiveRole(user?.role, userId, orgId);
-        // `resolveEffectiveRole` returns `undefined` for BOTH "no member row"
-        // and "the member lookup threw" — it catches, by design, so its
-        // original callers fail closed to least privilege.
-        //
-        // Here that is a SILENT PARTIAL ACL DEGRADATION and has to be caught.
-        // Losing the role drops this reviewer's `role:` tokens while leaving
-        // the context `authenticated`, so `aclVisibilityClause` still returns
-        // `grant-match` and `BrainReaderUnresolvedError` never fires. Every
-        // fact granted only to `role:admin`/`role:member` vanishes from BOTH
-        // the queue and the vitals, so the two agree and the incident is
-        // invisible from either direction: a smaller, self-consistent,
-        // entirely plausible backlog, with a publish button above it.
-        //
-        // `adminAuth` has already proved the session carries a workspace role
-        // and `requireOrgContext` that the org is active, so losing it here is
-        // an anomaly rather than a routine branch. `acl.ts` states the same
-        // rule for the audience half: database failures PROPAGATE, because
-        // silently downgrading a reader mid-incident reports success while
-        // doing it.
-        if (!resolvedRole && user?.role && user.role !== "platform_admin") {
-          throw new Error(
-            `brain review: could not re-resolve the reviewer's org role for workspace ${orgId} (session role ${user.role}) — refusing to serve a queue narrowed by a failed role lookup`,
-          );
-        }
-      }
-      return resolvePrincipalContext(getInternalDB(), {
-        workspaceId: orgId,
-        mode,
-        userId,
-        resolvedRole: resolvedRole ? { role: resolvedRole, orgId } : undefined,
-        requestId,
-      });
-    },
+    try: () =>
+      resolveBrainReaderContext(getInternalDB(), { workspaceId: orgId, mode, user, requestId }),
     catch: (err) => (err instanceof Error ? err : new Error(String(err))),
   });
 }

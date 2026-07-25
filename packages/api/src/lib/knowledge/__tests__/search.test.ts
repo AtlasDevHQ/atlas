@@ -1,20 +1,20 @@
 /**
- * Unit coverage for `searchKnowledge` (#4210) — the pure query builders and the
- * injected-executor core. The real FTS + graph SQL is exercised against live
- * Postgres in `knowledge-search-pg.test.ts`; here we assert the SQL shape
- * (parameterization, status gating, FTS vs recency branch) and the row → result
- * mapping without a database.
+ * Unit coverage for the knowledge-document STORE (#4210, moved out of the tools
+ * layer by #4773) — the pure query builders and the injected-executor reader.
+ * The real FTS + graph SQL is exercised against live Postgres in
+ * `search-pg.test.ts`; here we assert the SQL shape (parameterization, status
+ * gating, FTS vs recency branch) and the row → labeled-result mapping without a
+ * database.
  */
 
 import { describe, expect, it } from "bun:test";
 import {
   buildSearchQuery,
   buildNeighborQuery,
-  searchKnowledgeCore,
-  normalizeFilters,
+  searchKnowledgeDocuments,
   type KnowledgeQueryExec,
   type KnowledgeSearchFilters,
-} from "@atlas/api/lib/tools/search-knowledge";
+} from "@atlas/api/lib/knowledge/search";
 
 const WS = "ws-1";
 
@@ -91,36 +91,6 @@ describe("buildSearchQuery", () => {
   });
 });
 
-describe("normalizeFilters", () => {
-  it("defaults limit to 10 and expand to true", () => {
-    const f = normalizeFilters({});
-    expect(f.limit).toBe(10);
-    expect(f.expand).toBe(true);
-  });
-
-  it("clamps limit to [1, 50] and floors fractional values", () => {
-    expect(normalizeFilters({ limit: 999 }).limit).toBe(50);
-    expect(normalizeFilters({ limit: 0 }).limit).toBe(1);
-    expect(normalizeFilters({ limit: 2.7 }).limit).toBe(2);
-  });
-
-  it("trims tags, drops blanks, and collapses an all-blank list to undefined", () => {
-    expect(normalizeFilters({ tags: [" ops ", "", "  "] }).tags).toEqual(["ops"]);
-    expect(normalizeFilters({ tags: ["", "   "] }).tags).toBeUndefined();
-  });
-
-  it("coerces blank string filters to undefined", () => {
-    const f = normalizeFilters({ type: "  ", collection: "", since: "   " });
-    expect(f.type).toBeUndefined();
-    expect(f.collection).toBeUndefined();
-    expect(f.since).toBeUndefined();
-  });
-
-  it("respects an explicit expand: false", () => {
-    expect(normalizeFilters({ expand: false }).expand).toBe(false);
-  });
-});
-
 describe("buildNeighborQuery", () => {
   it("expands outbound + inbound edges, re-applies the status clause to the neighbor, excludes seeds", () => {
     const { sql, params } = buildNeighborQuery(WS, "published", ["a", "b"]);
@@ -156,7 +126,7 @@ function fakeExec(batches: Record<string, unknown>[][]): {
   return { exec, calls };
 }
 
-describe("searchKnowledgeCore", () => {
+describe("searchKnowledgeDocuments", () => {
   const seedRow = {
     id: "doc-1",
     path: "runbooks/eu.md",
@@ -176,14 +146,19 @@ describe("searchKnowledgeCore", () => {
 
   it("maps rows into provenance-carrying results", async () => {
     const { exec } = fakeExec([[seedRow]]);
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: WS,
       mode: "published",
       filters: filters({ query: "replica", expand: false }),
       exec,
     });
-    expect(res.results).toHaveLength(1);
-    expect(res.results[0]).toEqual({
+    expect(res.documents).toHaveLength(1);
+    // Fully labeled at the projection seam — `tier`/`trustTier` are written
+    // here, not by the caller, which is what makes an unlabeled document row
+    // unconstructible in practice as well as in the type.
+    expect(res.documents[0]).toEqual({
+      tier: "document",
+      trustTier: null,
       path: "runbooks/eu.md",
       collection: "runbooks",
       title: "EU",
@@ -203,18 +178,18 @@ describe("searchKnowledgeCore", () => {
 
   it("parses jsonb tags handed back as a raw string", async () => {
     const { exec } = fakeExec([[{ ...seedRow, tags: '["eu","ops"]' }]]);
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: WS,
       mode: "published",
       filters: filters({ expand: false }),
       exec,
     });
-    expect(res.results[0].provenance.tags).toEqual(["eu", "ops"]);
+    expect(res.documents[0].provenance.tags).toEqual(["eu", "ops"]);
   });
 
   it("does NOT run the expansion query when expand is false", async () => {
     const { exec, calls } = fakeExec([[seedRow]]);
-    await searchKnowledgeCore({
+    await searchKnowledgeDocuments({
       workspaceId: WS,
       mode: "published",
       filters: filters({ expand: false }),
@@ -225,14 +200,14 @@ describe("searchKnowledgeCore", () => {
 
   it("skips the expansion query when there are no seed documents", async () => {
     const { exec, calls } = fakeExec([[]]);
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: WS,
       mode: "published",
       filters: filters({ expand: true }),
       exec,
     });
     expect(calls).toHaveLength(1);
-    expect(res.results).toEqual([]);
+    expect(res.documents).toEqual([]);
     expect(res.neighbors).toEqual([]);
   });
 
@@ -257,7 +232,7 @@ describe("searchKnowledgeCore", () => {
       anchors: ["glossary"],
     };
     const { exec, calls } = fakeExec([[seedRow], [neighborRow]]);
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: WS,
       mode: "published",
       filters: filters({ query: "replica", expand: true }),
@@ -287,7 +262,7 @@ describe("searchKnowledgeCore", () => {
       anchors: null,
     };
     const { exec } = fakeExec([[seedRow], [neighborRow]]);
-    const res = await searchKnowledgeCore({
+    const res = await searchKnowledgeDocuments({
       workspaceId: WS,
       mode: "published",
       filters: filters({ expand: true }),

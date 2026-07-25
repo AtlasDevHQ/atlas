@@ -25,11 +25,13 @@ import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import type { RawWorkspaceModelConfig } from "@atlas/api/lib/auth/credentials";
 import type { ModelRouterShape } from "@atlas/api/lib/effect/services";
 
-// Module-top env, read at import time by `enterprise-config.ts` — forces
-// `ConditionalEELayer` to lazy-import the mocked `@atlas/ee/layers` aggregator
-// below. Without it the no-op default fires, every test sees `available: false`,
-// and the EE-unavailable assertion would pass for the wrong reason. `??=` per
-// the test-discipline rule (the module-load contract, not teardown).
+// Set before the first `runEnterprise` call, because `getEnterpriseRuntime()`
+// memoizes `ConditionalEELayer` for the process lifetime and that layer decides
+// ONCE — at first build — whether to import `@atlas/ee/layers` at all. Without
+// it the no-op default wins forever, every test sees `available: false`, and the
+// EE-unavailable assertion below would pass for the wrong reason.
+// (`enterprise-config.ts::isEnterpriseEnabled`, which gates the probe under
+// test, reads the same var per call.) `??=` per the test-discipline rule.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
 // ---------------------------------------------------------------------------
@@ -112,6 +114,31 @@ describe("resolveExtractionModel", () => {
     // every BYO workspace's entire backlog onto Atlas's own key, unattended.
     routerAvailable = false;
     expect(await resolveExtractionModel(WORKSPACE)).toBeNull();
+
+    // The control, in the same test so the two branches are shown to DIFFER:
+    // identical inputs but an available router falls through to the platform
+    // default. Without it, `toBeNull()` alone could be satisfied by any of the
+    // function's other three null paths.
+    routerAvailable = true;
+    expect(await resolveExtractionModel(WORKSPACE)).not.toBeNull();
+  });
+
+  test("a self-hosted install still gets the platform default", async () => {
+    // The complementary arm, and the reason the probe is gated rather than
+    // unconditional: on self-hosted there IS no EE layer, so `available: false`
+    // is correct and expected. Refusing there would stall every self-hosted
+    // drain forever, under an ERROR line claiming it was an enterprise
+    // deployment.
+    const prior = process.env.ATLAS_ENTERPRISE_ENABLED;
+    delete process.env.ATLAS_ENTERPRISE_ENABLED;
+    try {
+      routerAvailable = false;
+      routerConfig = null;
+      expect(await resolveExtractionModel(WORKSPACE)).not.toBeNull();
+    } finally {
+      if (prior === undefined) delete process.env.ATLAS_ENTERPRISE_ENABLED;
+      else process.env.ATLAS_ENTERPRISE_ENABLED = prior;
+    }
   });
 
   test("refuses when the configuration cannot be read", async () => {
@@ -226,6 +253,9 @@ describe("llmFactExtractor", () => {
     });
 
     expect(calls[0]?.prompt).toContain("[truncated at 8000 characters]");
+    // The marker alone would pass if the `slice` were dropped — then the model
+    // would receive the whole 9,000 characters AND a claim that it did not.
+    expect(calls[0]?.prompt.length).toBeLessThan(9_000);
   });
 
   test("leaves a body under the cap unmarked", async () => {
@@ -299,12 +329,22 @@ describe("fetch and extraction stay decoupled", () => {
     const { Glob } = await import("bun");
     const root = new URL("../ingest/", import.meta.url).pathname;
     const offenders: string[] = [];
+    let scanned = 0;
+    // All three import forms. A `from "…"` -only pattern would miss
+    // `await import(...)` and `require(...)` — which is how the PRODUCTION
+    // consumer imports this module (`layers.ts`), and therefore the idiom
+    // whoever added the fast-path would reach for first.
+    const importsExtract = /(from\s+|import\(\s*|require\(\s*)["'][^"']*brain\/extract["']/;
     for await (const file of new Glob("**/*.ts").scan({ cwd: root, absolute: true })) {
       if (file.includes("__tests__")) continue;
+      scanned++;
       const source = await Bun.file(file).text();
-      if (/from\s+["'][^"']*brain\/extract["']/.test(source)) offenders.push(file);
+      if (importsExtract.test(source)) offenders.push(file);
     }
     expect(offenders).toEqual([]);
+    // A moved or renamed directory would otherwise make this pass having read
+    // nothing at all.
+    expect(scanned).toBeGreaterThan(0);
   });
 });
 

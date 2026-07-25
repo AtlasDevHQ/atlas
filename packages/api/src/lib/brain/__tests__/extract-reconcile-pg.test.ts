@@ -598,6 +598,85 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     expect(await facts()).toHaveLength(2);
   });
 
+  it("keeps corroboration inside the tenant, in the SQL and not just the caller", async () => {
+    // Three predicates ride on this: the corroboration lookup, the tension
+    // lookup, and the stamp. Dropping `workspace_id =` from the first turns a
+    // dedupe into a cross-tenant read — tenant B's re-observation attaches a
+    // provenance edge to tenant A's fact, and A's fact then cites evidence A
+    // cannot see. The unit suite's fake implements the filter in TypeScript, so
+    // it proves the parameter is PASSED and says nothing about the SQL text.
+    const mine = await insertEpisode({ sourceId: "C01:tenant-a" });
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO brain_episodes
+         (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
+       VALUES ('ws-other-tenant', 'slack', 'C01:tenant-b', 'U999', 'same claim', now(), ARRAY['org'])
+       RETURNING id`,
+    );
+    const theirs: ReconcileEpisodeRef = {
+      id: rows[0]!.id,
+      workspaceId: "ws-other-tenant",
+      source: "slack",
+      sourceId: "C01:tenant-b",
+      sourceActor: "U999",
+      occurredAt: new Date("2026-06-21T09:00:00.000Z"),
+      visibleTo: ["org"],
+    };
+
+    await reconcileFacts({ episode: mine, candidates: [candidate()], producer: "p", extractedAt: new Date() });
+    const other = await reconcileFacts({
+      episode: theirs,
+      candidates: [candidate()],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+
+    expect(other.created).toBe(1);
+    const stored = await facts();
+    expect(stored).toHaveLength(2);
+    // Each fact cites only its OWN tenant's evidence.
+    const all = await edges();
+    for (const fact of stored) {
+      const evidence = all.filter((e) => e.from_fact_id === fact.id);
+      expect(evidence).toHaveLength(1);
+    }
+
+    await pool.query(`DELETE FROM brain_facts WHERE workspace_id = 'ws-other-tenant'`);
+    await pool.query(`DELETE FROM brain_episodes WHERE workspace_id = 'ws-other-tenant'`);
+  });
+
+  it("counts CONSECUTIVE failures, so a success between them clears the ledger", async () => {
+    // Without the `delete` on the success path this counts TOTAL failures, and
+    // an episode that 429s twice, succeeds, then 429s once more would be
+    // quarantined — exactly the transient-vs-deterministic conflation the
+    // ledger exists to avoid.
+    const episode = await insertEpisode();
+    let calls = 0;
+    const flaky: FactExtractor = () => {
+      calls++;
+      return calls === 3
+        ? Promise.resolve([candidate()])
+        : Promise.reject(new Error("transient"));
+    };
+
+    await cycleWith(flaky); // fail 1
+    await cycleWith(flaky); // fail 2
+    await cycleWith(flaky); // success — clears the ledger AND stamps
+    expect(await extractedAtOf(episode.id)).not.toBeNull();
+
+    // Re-queue and fail twice more; a TOTAL counter would quarantine on the
+    // second of these, a consecutive one keeps calling the model.
+    await pool.query(`UPDATE brain_episodes SET extracted_at = NULL WHERE id = $1`, [episode.id]);
+    const failAgain: FactExtractor = () => {
+      calls++;
+      return Promise.reject(new Error("transient"));
+    };
+    await cycleWith(failAgain);
+    const second = await cycleWith(failAgain);
+
+    expect(second.skipped.quarantined).toBe(0);
+    expect(second.failed).toBe(1);
+  });
+
   it("two reconciles racing on one claim produce ONE fact", async () => {
     // What the per-workspace advisory lock is FOR. The unit suite proves the
     // statement is issued; only a real transaction proves it serializes a

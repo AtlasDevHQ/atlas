@@ -74,8 +74,9 @@
  * `provenance` edge to the new episode and no second fact row appears. That is
  * what makes re-running extraction over an already-extracted window a no-op
  * (acceptance criterion 5) and what lets `extract.ts` stamp the queue marker
- * AFTER the commit — a crash in that window costs a repeated LLM call, never a
- * duplicated belief.
+ * AFTER the commit — a crash in that window costs a repeated LLM call and, when
+ * the producer reproduces its own output, no duplicated belief. That proviso is
+ * load-bearing; see the byte-exactness note below for what a paraphrase costs.
  *
  * Two writers racing on the same claim would defeat a bare read-then-insert, so
  * the transaction opens by taking a per-workspace transaction-scoped advisory
@@ -117,6 +118,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { logGrantAnomalies } from "@atlas/api/lib/brain/acl";
 // The write-side "does this grant name anyone?" predicate, imported rather than
 // re-spelled: `isUsableGrant`'s own docstring exists so the ingest screen and
 // this one can never disagree about what usable MEANS, and two `parseGrant(...)
@@ -327,6 +329,17 @@ export type ReconcileOutcome =
   | { readonly kind: "blocked"; readonly reason: ReconcileBlockReason };
 
 export interface ReconcileReport {
+  /**
+   * Set when the EPISODE was refused wholesale, INDEPENDENT of how many
+   * candidates were offered.
+   *
+   * Without it, a pre-flighting caller that passes an empty candidate list gets
+   * a report byte-identical to a clean "nothing to do" — every counter zero,
+   * because `blocked[reason]` is `candidates.length`. A safety refusal that
+   * reads as success is the one shape this stage must not return, and the
+   * entry-point-agnostic contract means callers that pre-flight are expected.
+   */
+  readonly episodeBlocked?: ReconcileBlockReason;
   readonly created: number;
   readonly corroborated: number;
   /** Created facts carrying `provenance.provisional` — a subset of `created`. */
@@ -487,11 +500,14 @@ export async function reconcileFacts(
   const episodeBlock = classifyEpisodeForReconcile(episode, request.sourcePrincipal);
   if (episodeBlock !== null) {
     const reason = episodeBlock.reason;
-    // Silent when there was nothing to block: a caller that pre-flighted and
-    // passed no candidates has already logged, and a second identical warn per
-    // episode would train an operator to skim them.
-    if (candidates.length > 0) {
-      log.warn(
+    // Downgraded, never silent, when there was nothing to block: a caller that
+    // pre-flighted and passed no candidates has already logged, and a second
+    // identical warn per episode would train an operator to skim them — but
+    // dropping the line entirely would leave a safety refusal with no trace at
+    // all. The verdict also travels in `episodeBlocked` regardless.
+    const level = candidates.length > 0 ? "warn" : "debug";
+    {
+      log[level](
         {
           workspaceId: episode.workspaceId,
           episodeId: episode.id,
@@ -506,6 +522,7 @@ export async function reconcileFacts(
     }
     blocked[reason] = candidates.length;
     return {
+      episodeBlocked: reason,
       created: 0,
       corroborated: 0,
       provisional: 0,
@@ -517,6 +534,18 @@ export async function reconcileFacts(
   // Non-null past the gate above, which blocks the whole episode when the
   // principal cannot be resolved.
   const sourcePrincipal = resolvedPrincipal(episode, request.sourcePrincipal);
+  // `isUsableGrant` above answers "can ANY reader match this?" and discards the
+  // rest of the parse. The half it discards is the one that bites in practice:
+  // a grant like `['user:abc', 'everyone']` passes on its valid token while
+  // carrying a second one whose author believed it was doing something, and the
+  // resulting fact is narrower than intended FOREVER (grants are immutable per
+  // fact version). `logGrantAnomalies` is the seam `acl.ts` built for exactly
+  // this, and this is the write path that holds the row.
+  logGrantAnomalies(episode.visibleTo, {
+    table: "brain_episodes",
+    rowId: episode.id,
+    workspaceId: episode.workspaceId,
+  });
   // Non-string elements (a `null` off `pg`) are inert in the overlap predicate
   // and cannot survive the jsonb round-trip as themselves; dropping them keeps
   // the stored grant readable while the usable-principal check above is what
@@ -689,7 +718,7 @@ export interface EpisodeBlock {
 }
 
 /**
- * The three episode-level safety refusals, in the order they are cheapest.
+ * The three episode-level safety refusals, most consequential first.
  *
  * Exported and pure so a caller can pre-flight BEFORE spending anything on
  * producing candidates: `extract.ts` runs it ahead of the model call, which is
@@ -827,10 +856,10 @@ async function writeCandidate(
     occurredAt: isoOrNull(episode.occurredAt),
     extractedAt: isoOrNull(ctx.extractedAt),
     reconciledAt: ctx.now().toISOString(),
-    ...(Object.keys(item.entityIds).length > 0 ? { entityIds: item.entityIds } : {}),
+    ...entityIdFragment(item.entityIds),
     // Present ONLY when it is true, so a reviewer's filter on the key is not
     // fooled by every fact carrying `provisional: false`.
-    ...(provisional ? { provisional: true as const, unresolved: item.unresolved } : {}),
+    ...provisionalFragment(provisional, item.unresolved),
   } satisfies BrainFactProvenance;
 
   const cardinality: PredicateCardinality = item.candidate.predicateCardinality ?? "multi";
@@ -896,6 +925,28 @@ async function writeCandidate(
   }
 
   return { kind: "created", factId, provisional, tensionEdges };
+}
+
+/**
+ * The two optional halves of the payload, built through ANNOTATED helpers.
+ *
+ * Not inlined as `...(cond ? { … } : {})`. A conditional spread is exempt from
+ * excess-property checking, so `satisfies BrainFactProvenance` on the enclosing
+ * literal catches a renamed REQUIRED key and nothing at all on these two — which
+ * are precisely the keys #4772's review surface filters on. An annotated
+ * fragment restores the check.
+ */
+function provisionalFragment(
+  provisional: boolean,
+  unresolved: readonly EntityRole[],
+): Pick<BrainFactProvenance, "provisional" | "unresolved"> {
+  return provisional ? { provisional: true, unresolved } : {};
+}
+
+function entityIdFragment(
+  entityIds: Partial<Record<EntityRole, string>>,
+): Pick<BrainFactProvenance, "entityIds"> {
+  return Object.keys(entityIds).length > 0 ? { entityIds } : {};
 }
 
 function rowId(row: unknown): string | null {

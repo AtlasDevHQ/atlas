@@ -3429,9 +3429,10 @@ export async function withDemoSeedLock<T>(
 /**
  * Numeric namespace for the per-subscription Stripe webhook lock — the
  * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`.
- * Distinct from the last-admin (`3158`), chat-install (`3001`) and
- * lead-outbox (`2870`) two-arg namespaces. Value is this guard's issue
- * number (#3445).
+ * Distinct from the last-admin (`3158`), chat-install (`3001`), lead-outbox
+ * (`2870`), demo-seed (`3683`), knowledge-install (`4235`) and brain-reconcile
+ * (`4771`) two-arg namespaces; all seven are pairwise distinct. Value is this
+ * guard's issue number (#3445).
  */
 const STRIPE_SUBSCRIPTION_LOCK_NAMESPACE = 3445;
 

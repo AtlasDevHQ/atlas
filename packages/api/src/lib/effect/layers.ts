@@ -2350,6 +2350,14 @@ export function makeSchedulerLive(
           "atlas.brain.facts_blocked": result.factsBlocked,
           "atlas.brain.blocked_episodes": result.blockedEpisodes,
           "atlas.brain.failed": result.failed,
+          // The three skip reasons are the fiber's most alert-worthy outcomes
+          // and the span is the alertable surface. Without them,
+          // "EE failed to load and every BYO workspace's backlog is stalled"
+          // and "25 chat messages contained no durable fact" render identically
+          // as `inspected: 25, extracted: 0, failed: 0`.
+          "atlas.brain.skipped_model_unavailable": result.skipped.model_unavailable,
+          "atlas.brain.skipped_no_body": result.skipped.no_body,
+          "atlas.brain.skipped_quarantined": result.skipped.quarantined,
         }),
         onTickFailure: {
           level: "warn",

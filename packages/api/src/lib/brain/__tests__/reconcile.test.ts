@@ -62,7 +62,8 @@ interface StoredEdge {
 class FakeBrainStore {
   readonly facts: StoredFact[] = [];
   readonly edges: StoredEdge[] = [];
-  readonly locks: string[] = [];
+  /** Full `pg_advisory_xact_lock` params — the namespace matters as much as the key. */
+  readonly locks: unknown[][] = [];
   transactions = 0;
   private seq = 0;
 
@@ -80,7 +81,7 @@ class FakeBrainStore {
   ): Promise<{ rows: readonly unknown[] }> {
     switch (sql) {
       case RECONCILE_LOCK_SQL: {
-        this.locks.push(String(params[1]));
+        this.locks.push(params);
         return { rows: [] };
       }
       case CORROBORATION_LOOKUP_SQL: {
@@ -551,7 +552,11 @@ describe("the draft candidate", () => {
     });
 
     expect(store.transactions).toBe(1);
-    expect(store.locks).toEqual([WORKSPACE]);
+    // The NAMESPACE is asserted, not just the key: `4771` is what keeps a
+    // reconcile from serializing behind an unrelated per-workspace guard, and
+    // four sibling files now record that the seven two-arg namespaces are
+    // pairwise distinct. Swapping it for another guard's number must fail here.
+    expect(store.locks).toEqual([[4771, WORKSPACE]]);
     expect(store.facts).toHaveLength(3);
   });
 

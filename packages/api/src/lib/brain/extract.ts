@@ -64,19 +64,22 @@
  * ## Head-of-line, stated because it is a real bound
  *
  * The drain is `ORDER BY ingested_at LIMIT N`, so a queued episode occupies one
- * of N slots until something takes it off the queue. Exactly two classes are
- * stamped without producing a fact, and both are DECISIONS rather than guesses:
- * a by-reference episode M1 has no fetcher for, and an episode the reconcile
- * gate refuses wholesale. Everything else retries.
+ * of N slots until something takes it off the queue. An episode is stamped once
+ * its extraction pass COMPLETES — including a pass that found no claim at all,
+ * which is the common case and must not head-of-line block on small talk. Two
+ * further classes are stamped without ever calling a model, and both are
+ * DECISIONS rather than guesses: a by-reference episode M1 has no fetcher for,
+ * and an episode the reconcile gate refuses wholesale. Only a pass that THREW
+ * retries.
  *
  * A deterministically-failing episode therefore keeps its slot indefinitely —
  * stamping it would be a silent drop on a guess, which is the thing this
  * module's whole ordering avoids. What IS bounded is the SPEND: after
- * {@link QUARANTINE_AFTER_FAILURES} consecutive failures the process stops
- * calling a model for it and logs at ERROR. So the honest statement of the
- * bound is: N permanently-failing episodes at the head of the queue WOULD
- * starve it, cheaply and loudly, until an operator acts on the error log or the
- * process restarts.
+ * {@link QUARANTINE_AFTER_FAILURES} consecutive failures the episode moves to a
+ * widening probe backoff and logs at ERROR, so it costs at most one model call
+ * per window instead of one per tick. So the honest statement of the bound is:
+ * N permanently-failing episodes at the head of the queue WOULD starve it,
+ * cheaply and loudly, until an operator acts on the recurring error.
  */
 
 import { Effect } from "effect";
@@ -142,14 +145,39 @@ const EXTRACTION_TIMEOUT_MS = 60_000;
 
 /**
  * Consecutive failures after which this process stops calling a model for an
- * episode. Bounds SPEND on a deterministically-failing episode (a body that
- * always trips a content filter, a model id that 404s) without pretending a
- * few failures prove permanence.
+ * episode every tick. Bounds SPEND on a deterministically-failing episode (a
+ * body that always trips a content filter, a model id that 404s) without
+ * pretending a few failures prove permanence.
  */
 const QUARANTINE_AFTER_FAILURES = 3;
 
 /**
- * Episode id → consecutive failures, for the life of the process.
+ * First probe interval after quarantine, doubling per subsequent failure up to
+ * {@link QUARANTINE_PROBE_MAX_SHIFT}.
+ *
+ * Quarantine is PROBING, not absorbing, and the difference is the whole design.
+ * An absorbing quarantine has one exit — a process restart — and the only
+ * evidence available to enter it is "failed three times", which a fifteen-minute
+ * provider outage produces just as readily as a poisoned body. So an absorbing
+ * version would let a transient upstream fault permanently disable extraction
+ * fleet-wide, silently, until someone redeployed. Backing off and re-probing
+ * costs one model call per episode per window and makes a repaired model
+ * self-healing.
+ */
+const QUARANTINE_PROBE_BASE_MS = 30 * 60 * 1000;
+
+/** Backoff ceiling: 2^5 × 30 min = 16 h between probes. */
+const QUARANTINE_PROBE_MAX_SHIFT = 5;
+
+/** What the ledger remembers about one struggling episode. */
+interface QuarantineEntry {
+  failures: number;
+  /** Epoch ms of the most recent failure — the backoff window's origin. */
+  lastFailureAt: number;
+}
+
+/**
+ * Episode id → consecutive-failure state, for the life of the process.
  *
  * Module-level so it survives across ticks, in-memory so it needs no migration
  * — the same trade the BYOT catalog refresh made for its backoff state. A
@@ -158,7 +186,7 @@ const QUARANTINE_AFTER_FAILURES = 3;
  * nobody re-examines. Bounded by {@link FAILURE_LEDGER_CAP} so a pathological
  * backlog cannot grow it without limit.
  */
-const failureLedger = new Map<string, number>();
+const failureLedger = new Map<string, QuarantineEntry>();
 
 /** Ledger entries retained. Far above `BATCH_SIZE`; a bound, not a policy. */
 const FAILURE_LEDGER_CAP = 1_000;
@@ -403,13 +431,20 @@ export interface ResolvedExtractionModel {
  *     `null` for every workspace, which is indistinguishable from "this
  *     workspace has no BYO config" — so an EE module that failed to load would
  *     have silently moved every BYO workspace's whole backlog onto Atlas's own
- *     key. Probed explicitly, exactly as the BYOT catalog refresh does.
+ *     key. Probed explicitly, as the BYOT catalog refresh does — with one
+ *     difference: it probes unconditionally and caches the verdict per pod,
+ *     while this gates the probe on `isEnterpriseEnabled()` so a self-hosted
+ *     install (legitimately `available: false`, no EE by design) still gets the
+ *     platform default rather than a permanent refusal.
  *   - **A config that reads but cannot be built.** `getModelFromWorkspaceConfig`
  *     throws on a malformed bedrock bundle, a missing `baseUrl`, a gateway row
  *     with no key; `getModel()` throws when the platform provider is
- *     unconfigured. Left outside the guard those escaped as a per-episode
- *     throw — counted as a transient failure and retried forever, which is the
- *     wrong verdict for a fault only an admin can fix.
+ *     STRUCTURALLY unconfigured (gateway with no key, openai-compatible with no
+ *     base URL — a merely missing anthropic/openai key still surfaces at call
+ *     time and lands in the failure ledger instead). Left outside the guard
+ *     those escaped as a per-episode throw — counted as a transient failure and
+ *     retried forever, which is the wrong verdict for a fault only an admin can
+ *     fix.
  */
 export async function resolveExtractionModel(
   workspaceId: string,
@@ -508,6 +543,12 @@ export interface BrainExtractionCycleResult {
    * what it would actually mean.
    */
   blockedEpisodes: number;
+  /**
+   * Which refusal, by reason. `blockedEpisodes: 25` says grant derivation might
+   * be broken; this says whether it is the grant or the actor — the difference
+   * between two very different investigations, and free to record.
+   */
+  blocked: Record<ReconcileBlockReason, number>;
   /** By reason — a `Record` so a new reason is a compile error, not a miscount. */
   skipped: Record<ExtractionSkipReason, number>;
   /** Episodes whose pass threw — left queued for the next cycle. */
@@ -545,6 +586,12 @@ function emptyResult(): BrainExtractionCycleResult {
     blockedEpisodes: 0,
     // Fresh per call — `runPeriodicDbCycle` mutates the result in place, so a
     // shared object would accumulate across ticks.
+    blocked: {
+      NO_PROVENANCE: 0,
+      NO_GRANT: 0,
+      SOURCE_PRINCIPAL_UNRESOLVED: 0,
+      MALFORMED_CLAIM: 0,
+    },
     skipped: { model_unavailable: 0, no_body: 0, quarantined: 0 },
     failed: 0,
   };
@@ -575,17 +622,47 @@ export function runBrainExtractionCycle(
     return resolved;
   };
 
+  // ONE binding, threaded into both halves — `extractEpisode` reads it and
+  // `tallyEpisode` writes it, and they have to be the same object.
+  const failures = failureLedger;
+  const charged: string[] = [];
+
   return runPeriodicDbCycle<EpisodeRow, EpisodeOutcome, BrainExtractionCycleResult>({
     log,
     label: "Brain extraction",
     emptyResult,
     failureResult: (error) => ({ ...emptyResult(), status: "failure", error }),
     scan: () => internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE]),
-    applyRow: (row) => extractEpisode(row, { extract, modelFor, reconcile, now, failures: failureLedger }),
+    applyRow: (row) => extractEpisode(row, { extract, modelFor, reconcile, now, failures }),
     defectOutcome: (error) => ({ kind: "failed", error }),
-    tally: (result, row, outcome) => tallyEpisode(result, row, outcome),
+    tally: (result, row, outcome) => tallyEpisode(result, row, outcome, failures, now, charged),
     emitCycleAudit,
-  });
+  }).pipe(
+    Effect.map((result) => {
+      // An OUTAGE is not evidence about any episode. When every episode the
+      // tick actually attempted failed, the common cause is upstream — a
+      // provider 5xx, a rate-limit storm, an exhausted pool — and charging each
+      // one a strike would quarantine a whole batch of perfectly good episodes
+      // after three bad ticks. Cheaper and more honest than classifying
+      // individual errors: if none of them worked, blame the world, not the
+      // rows. A single failing row among successes is still charged.
+      const attempted = result.failed + result.extracted + result.blockedEpisodes;
+      if (charged.length > 0 && attempted > 1 && result.failed === attempted) {
+        for (const id of charged) {
+          const entry = failures.get(id);
+          if (entry === undefined) continue;
+          if (entry.failures <= 1) failures.delete(id);
+          else failures.set(id, { ...entry, failures: entry.failures - 1 });
+        }
+        log.warn(
+          { attempted, workspaces: new Set(charged).size },
+          "brain extraction: every episode this tick failed — treating it as an upstream outage rather than counting a strike against each episode",
+        );
+      }
+      charged.length = 0;
+      return result;
+    }),
+  );
 }
 
 interface ApplyDeps {
@@ -593,12 +670,36 @@ interface ApplyDeps {
   readonly modelFor: (workspaceId: string) => Promise<ResolvedExtractionModel | null>;
   readonly reconcile: typeof reconcileFacts;
   readonly now: () => Date;
-  /** Consecutive-failure ledger for this process — see the quarantine note. */
-  readonly failures: Map<string, number>;
+  /**
+   * Consecutive-failure ledger — see the quarantine note. THE SAME map the
+   * tally writes to: `runBrainExtractionCycle` binds one object into both
+   * halves, because a ledger read through one map and written through another
+   * would leave quarantine permanently disarmed with nothing to notice it.
+   */
+  readonly failures: Map<string, QuarantineEntry>;
+}
+
+/**
+ * Is this episode inside its quarantine backoff window? Reading and writing the
+ * ledger stay in this file's two halves — see {@link ApplyDeps.failures}.
+ */
+function isQuarantined(entry: QuarantineEntry | undefined, now: Date): boolean {
+  if (entry === undefined || entry.failures < QUARANTINE_AFTER_FAILURES) return false;
+  const shift = Math.min(entry.failures - QUARANTINE_AFTER_FAILURES, QUARANTINE_PROBE_MAX_SHIFT);
+  return now.getTime() - entry.lastFailureAt < QUARANTINE_PROBE_BASE_MS * 2 ** shift;
 }
 
 /** Extract → reconcile → stamp, for one episode. */
 async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<EpisodeOutcome> {
+  // FIRST, before any other work: a quarantined episode should cost nothing at
+  // all this tick, not merely no model call. (It was below the grant guard
+  // once, which meant a permanently-drifted row re-logged an ERROR every five
+  // minutes forever.) Falling THROUGH once the backoff elapses is what keeps
+  // quarantine a backoff rather than a terminal state — a repaired model heals
+  // itself without a redeploy.
+  if (isQuarantined(deps.failures.get(row.id), deps.now())) {
+    return { kind: "skipped", reason: "quarantined" };
+  }
   // `visible_to` is `text[] NOT NULL` (0180), so a non-array here is QUERY
   // DRIFT — a changed SELECT, a driver surprise — not bad tenant data. Coercing
   // it to `[]` would assert "this episode grants nobody", which the reconcile
@@ -607,19 +708,20 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
   // message blaming the tenant's grant. Refused as a retryable failure instead,
   // and named for what it is. (`promotion.ts` splits the same two causes into
   // `GRANT_NOT_AN_ARRAY` vs `GRANT_UNUSABLE` for this exact reason.)
-  if (!isUnknownArray(row.visible_to)) {
+  const visibleTo = row.visible_to;
+  if (!isUnknownArray(visibleTo)) {
     log.error(
       {
         workspaceId: row.workspace_id,
         episodeId: row.id,
-        received: typeof row.visible_to,
+        received: typeof visibleTo,
       },
       "brain extraction: an episode's grant did not load as an array — this is an Atlas bug, not a problem with the episode; leaving it queued",
     );
     return { kind: "failed", error: "visible_to did not load as an array" };
   }
 
-  const episode = toEpisodeRef(row);
+  const episode = toEpisodeRef(row, visibleTo);
 
   if (row.body === null || row.body.trim() === "") {
     // By-reference evidence (a warehouse/KB locator). Nothing in M1 can fetch
@@ -631,6 +733,7 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
       "brain extraction: episode is stored by reference and has no body to extract from — marking it extracted so it cannot block the queue",
     );
     await stampExtracted(episode);
+    deps.failures.delete(episode.id);
     return { kind: "skipped", reason: "no_body" };
   }
 
@@ -654,21 +757,8 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
       `brain extraction: no fact can safely be drawn from this episode — ${episodeBlock.detail}; marking it extracted without calling a model`,
     );
     await stampExtracted(episode);
+    deps.failures.delete(episode.id);
     return { kind: "blocked", reason: episodeBlock.reason };
-  }
-
-  // An episode that has failed on every recent attempt stops costing model
-  // calls. In-memory and per-process, matching the BYOT catalog refresh's
-  // backoff precedent ("pod restart resets the backoff state — acceptable
-  // trade-off vs the migration that a persistent counter would require"), and
-  // deliberately NOT a stamp: "failed three times in this process" is not proof
-  // of "unextractable forever", and stamping on a guess is the silent drop this
-  // module's ordering exists to avoid. It still holds a queue slot — the bound
-  // is on SPEND, not on the head of the queue. The ERROR log is the operator's
-  // cue that a slot is stuck.
-  const priorFailures = deps.failures.get(episode.id) ?? 0;
-  if (priorFailures >= QUARANTINE_AFTER_FAILURES) {
-    return { kind: "skipped", reason: "quarantined" };
   }
 
   const resolved = await deps.modelFor(episode.workspaceId);
@@ -712,10 +802,13 @@ async function stampExtracted(episode: ReconcileEpisodeRef): Promise<void> {
  * degrade to "no event time" rather than reach `toISOString()` and throw
  * mid-transaction. `visible_to`'s ELEMENTS are passed through untouched —
  * `parseGrant` is built to read them straight off the driver, `null` entries and
- * all. Whether the column loaded as an array at all is settled by the caller,
- * which refuses the episode rather than coercing (see `extractEpisode`).
+ * all. Whether the column loaded as an ARRAY is settled before this call and
+ * arrives as an argument, deliberately: read off `row` it needed a `?? []`
+ * fallback here, and that fallback silently asserts "grants nobody", which
+ * reconcile blocks as NO_GRANT and the caller then STAMPS. As a parameter, the
+ * guard in `extractEpisode` is the only way to obtain one.
  */
-function toEpisodeRef(row: EpisodeRow): ReconcileEpisodeRef {
+function toEpisodeRef(row: EpisodeRow, visibleTo: readonly unknown[]): ReconcileEpisodeRef {
   return {
     id: row.id,
     workspaceId: row.workspace_id,
@@ -723,8 +816,7 @@ function toEpisodeRef(row: EpisodeRow): ReconcileEpisodeRef {
     sourceId: row.source_id,
     sourceActor: row.source_actor,
     occurredAt: toDate(row.occurred_at),
-    // Non-array is unreachable here: `extractEpisode` refuses the row first.
-    visibleTo: isUnknownArray(row.visible_to) ? row.visible_to : [],
+    visibleTo,
   };
 }
 
@@ -738,6 +830,10 @@ function tallyEpisode(
   result: BrainExtractionCycleResult,
   row: EpisodeRow,
   outcome: EpisodeOutcome,
+  ledger: Map<string, QuarantineEntry>,
+  now: () => Date,
+  /** Ids incremented this tick — the outage rollback's working set. */
+  charged: string[],
 ): void {
   switch (outcome.kind) {
     case "extracted": {
@@ -750,6 +846,7 @@ function tallyEpisode(
     }
     case "blocked": {
       result.blockedEpisodes++;
+      result.blocked[outcome.reason]++;
       return;
     }
     case "skipped": {
@@ -760,22 +857,27 @@ function tallyEpisode(
     }
     case "failed": {
       result.failed++;
-      const failures = (failureLedger.get(row.id) ?? 0) + 1;
-      // Evict oldest-first (insertion order) rather than refusing to record —
-      // dropping the NEW entry would make the cap silently disable quarantine
-      // for exactly the pathological backlog it exists to survive.
-      if (!failureLedger.has(row.id) && failureLedger.size >= FAILURE_LEDGER_CAP) {
-        const oldest = failureLedger.keys().next();
-        if (!oldest.done) failureLedger.delete(oldest.value);
+      const failures = (ledger.get(row.id)?.failures ?? 0) + 1;
+      // `delete` before `set` so insertion order tracks RECENCY: `Map.set` on an
+      // existing key leaves it in place, which would make the cap evict the
+      // longest-failing entry — the one whose count is doing the most work.
+      ledger.delete(row.id);
+      if (ledger.size >= FAILURE_LEDGER_CAP) {
+        // Evict oldest-first rather than refusing to record — dropping the NEW
+        // entry would silently disable quarantine for exactly the pathological
+        // backlog the cap exists to survive.
+        const oldest = ledger.keys().next();
+        if (!oldest.done) ledger.delete(oldest.value);
       }
-      failureLedger.set(row.id, failures);
-      if (failures === QUARANTINE_AFTER_FAILURES) {
-        // ERROR, once, at the threshold: from here the episode holds a queue
-        // slot but costs nothing, and only an operator can tell whether that is
-        // a bad message or a broken model.
+      ledger.set(row.id, { failures, lastFailureAt: now().getTime() });
+      charged.push(row.id);
+      // Re-armed, not one-shot: the condition is ongoing, so `>=` with a modulo
+      // keeps a recurring ERROR in the log instead of one archaeological line
+      // that scrolled away days before anyone looked.
+      if (failures >= QUARANTINE_AFTER_FAILURES && failures % QUARANTINE_AFTER_FAILURES === 0) {
         log.error(
           { workspaceId: row.workspace_id, episodeId: row.id, failures, err: outcome.error },
-          "brain extraction: episode has failed every attempt in this process — no further model calls will be made for it until a restart",
+          "brain extraction: episode keeps failing — it is holding a queue slot and will only be retried on a widening backoff until the cause is fixed",
         );
         return;
       }
@@ -813,7 +915,10 @@ function emitCycleAudit(result: BrainExtractionCycleResult): void {
       scope: "platform",
       systemActor: BRAIN_EXTRACTION_ACTOR,
       status: result.status,
-      metadata: { ...result },
+      // Deep-ish copy of the two counter records: `{ ...result }` alone would
+      // ALIAS them, so a future skeleton that emitted mid-cycle would log a
+      // snapshot that keeps changing after it was taken.
+      metadata: { ...result, blocked: { ...result.blocked }, skipped: { ...result.skipped } },
     });
   } catch (err) {
     log.error(

@@ -139,6 +139,51 @@ export interface BrainFact {
 }
 
 /**
+ * Which side of a subject-predicate-object claim an entity sits on. Spelled
+ * once so the resolver seam, the provisional flag, and the stored provenance
+ * cannot drift into three stringly-typed spellings of the same two words.
+ */
+export type EntityRole = "subject" | "object";
+
+/**
+ * The shape written into `brain_facts.provenance` (#4771).
+ *
+ * The column is `jsonb`, so nothing at rest enforces this — which is exactly
+ * why it is named. There is one writer (the reconcile stage) and at least three
+ * readers already scheduled (#4772's review surface, which must filter on
+ * `provisional`; #4773's `searchBrain`; and the promotion classifier, which
+ * reads the column as `unknown`). Without a named shape, renaming a key is a
+ * silently blank field in a UI rather than a compile error.
+ *
+ * `provisional` / `unresolved` are OPTIONAL and written only when true, so a
+ * reviewer's filter on the key is not defeated by every fact carrying
+ * `provisional: false`. Producer-specific extras (a model id, a confidence, a
+ * warehouse fact's pinned SQL) are the index signature; they are merged UNDER
+ * the structural keys, so a producer can enrich the payload but never restate
+ * where the claim came from.
+ */
+export interface BrainFactProvenance {
+  /** Connector class of the evidence — mirrors `brain_episodes.source`. */
+  readonly source: string;
+  readonly sourceId: string;
+  readonly episodeId: string;
+  /** The principal that asserted the claim. Never null past the block gate. */
+  readonly actor: string | null;
+  /** What produced the candidate — `extraction:v1`, `write-back`, `human`. */
+  readonly producer: string;
+  /** ISO-8601, or null when the source exposed no event time. */
+  readonly occurredAt: string | null;
+  /** ISO-8601 of the extraction pass; null for an authored claim. */
+  readonly extractedAt: string | null;
+  readonly reconciledAt: string;
+  /** Present only for the sides a resolver returned an id for. */
+  readonly entityIds?: Partial<Record<EntityRole, string>>;
+  readonly provisional?: true;
+  readonly unresolved?: readonly EntityRole[];
+  readonly [key: string]: unknown;
+}
+
+/**
  * A typed edge. Each endpoint is a fact OR an episode — exactly one of the two
  * id columns is set, enforced by `chk_brain_edges_{from,to}_endpoint`.
  */

@@ -134,7 +134,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_brain_episodes_source_id
 CREATE UNIQUE INDEX IF NOT EXISTS uq_brain_episodes_workspace_id
   ON brain_episodes (workspace_id, id);
 
--- The extraction fiber's drain query: oldest-unextracted-first, per workspace.
+-- The extraction fiber's backlog. The delivered drain (#4771) is
+-- oldest-unextracted-first ACROSS workspaces, so it uses this index for the
+-- `extracted_at IS NULL` PREDICATE and sorts for its ordering; the leading
+-- `workspace_id` serves a per-workspace backlog read instead.
 -- PARTIAL so the index holds only the backlog — once an episode is extracted
 -- it leaves the index, which keeps the queue scan proportional to work
 -- remaining rather than to history.
@@ -413,8 +416,11 @@ CREATE INDEX IF NOT EXISTS idx_brain_edges_workspace_type
 --
 -- Deliberately NOT Better Auth teams: Atlas has none, and "group" in this
 -- codebase means a connection-group (a set of datasources), not a set of
--- people. Populated by #4771's source-membership entity resolution; consumed
--- by #4768's visibility predicate.
+-- people. Consumed by #4768's visibility predicate. Population is #4801's
+-- membership sync — #4771 shipped the reconcile stage, which INHERITS an
+-- episode's grant rather than deriving one from source membership, so until
+-- #4801 lands this table is empty and a private channel's `audience:` resolves
+-- to nobody (fail-closed, and repairable by writing rows alone).
 CREATE TABLE IF NOT EXISTS fact_audience_member (
   workspace_id text NOT NULL,
   -- The source-derived audience identifier, WITHOUT the `audience:` prefix

@@ -42,6 +42,7 @@ import {
   type ReconcileEpisodeRef,
 } from "@atlas/api/lib/brain/reconcile";
 import {
+  _resetBrainExtractionFailures,
   runBrainExtractionCycle,
   type FactExtractor,
   type ResolvedExtractionModel,
@@ -105,6 +106,11 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     await pool.query("DELETE FROM brain_edges");
     await pool.query("DELETE FROM brain_facts");
     await pool.query("DELETE FROM brain_episodes");
+    await pool.query("DELETE FROM admin_action_log");
+    // The quarantine ledger is module-level and survives between tests; a
+    // process restart is what clears it in production, and this is the test's
+    // equivalent. Without it, a later test inherits an earlier one's failures.
+    _resetBrainExtractionFailures();
   });
 
   // ── helpers ─────────────────────────────────────────────────────────────
@@ -127,12 +133,16 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       visibleTo = ["org"],
       extractedAt = null,
     } = overrides;
+    // The stored `occurred_at` is the SAME value the returned ref carries — a
+    // `now()` here would make the ref a near-miss of the row it describes, and
+    // any assertion about provenance `occurredAt` silently wrong.
+    const occurredAt = new Date("2026-06-21T09:00:00.000Z");
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_episodes
          (workspace_id, source, source_id, source_actor, body, locator, occurred_at, visible_to, extracted_at)
-       VALUES ($1, 'slack', $2, $3, $4, $5, now(), $6::text[], $7::timestamptz)
+       VALUES ($1, 'slack', $2, $3, $4, $5, $6::timestamptz, $7::text[], $8::timestamptz)
        RETURNING id`,
-      [WORKSPACE, sourceId, sourceActor, body, locator, visibleTo, extractedAt],
+      [WORKSPACE, sourceId, sourceActor, body, locator, occurredAt.toISOString(), visibleTo, extractedAt],
     );
     return {
       id: rows[0]!.id,
@@ -140,7 +150,7 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       source: "slack",
       sourceId,
       sourceActor,
-      occurredAt: new Date("2026-06-21T09:00:00.000Z"),
+      occurredAt,
       visibleTo,
     };
   }
@@ -163,6 +173,21 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       `SELECT edge_type, from_fact_id, to_episode_id, to_fact_id FROM brain_edges ORDER BY created_at, id`,
     );
     return rows;
+  }
+
+  /** Poll for the fire-and-forget audit row. See the audit test for why. */
+  async function waitForAuditRows(
+    actionType: string,
+  ): Promise<{ status: string; actor_id: string | null }[]> {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const { rows } = await pool.query<{ status: string; actor_id: string | null }>(
+        `SELECT status, actor_id FROM admin_action_log WHERE action_type = $1`,
+        [actionType],
+      );
+      if (rows.length > 0) return rows;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return [];
   }
 
   async function extractedAtOf(episodeId: string): Promise<Date | null> {
@@ -210,16 +235,16 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
   it("rolls the WHOLE episode back when one candidate's write fails", async () => {
     // The invariant is "no half-formed rows", which means half-formed BATCHES
     // too: a reviewer must never inherit two of three claims from a pass that
-    // did not finish. Forced by a subject long enough to be fine and an object
-    // that violates nothing — so instead we break the write itself by aiming
-    // the second candidate at a cardinality the CHECK refuses.
+    // did not finish. The failure is induced by aiming the SECOND candidate at
+    // a cardinality `chk_brain_facts_predicate_cardinality` refuses, so what is
+    // proven is that the FIRST candidate's already-succeeded write is undone.
     const episode = await insertEpisode();
+    const first = candidate();
     await expect(
       reconcileFacts({
         episode,
         candidates: [
-          candidate(),
-          // `chk_brain_facts_predicate_cardinality` refuses this.
+          first,
           candidate({
             object: "Fridays",
             predicateCardinality: "sometimes" as FactCandidate["predicateCardinality"],
@@ -229,10 +254,23 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
         producer: "extraction:v1",
         extractedAt: new Date(),
       }),
-    ).rejects.toThrow();
+      // Anchored: an unanchored `toThrow()` would also pass if the FIRST
+      // candidate started failing for an unrelated reason, in which case
+      // nothing was ever written and the rollback claim is untested.
+    ).rejects.toThrow(/predicate_cardinality/);
 
     expect(await facts()).toHaveLength(0);
     expect(await edges()).toHaveLength(0);
+
+    // Control: that same first candidate on its own DOES land, so the empty
+    // table above is a rollback and not a candidate that never worked.
+    await reconcileFacts({
+      episode,
+      candidates: [first],
+      producer: "extraction:v1",
+      extractedAt: new Date(),
+    });
+    expect(await facts()).toHaveLength(1);
   });
 
   it("blocks an episode whose grant no reader can match, and writes nothing", async () => {
@@ -335,11 +373,25 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
 
   it("drains the queue, stages drafts, and stamps the episode", async () => {
     const episode = await insertEpisode();
-    const result = await cycleWith(oneFact);
+    const seen: { modelId: string; body: string; episodeId: string }[] = [];
+    const result = await cycleWith((input) => {
+      seen.push({ modelId: input.modelId, body: input.body, episodeId: input.episode.id });
+      return Promise.resolve([candidate()]);
+    });
 
     expect(result).toMatchObject({ status: "success", inspected: 1, extracted: 1, factsCreated: 1 });
     expect(await extractedAtOf(episode.id)).not.toBeNull();
     expect(await facts()).toHaveLength(1);
+    // The resolved model reaches the extractor — the piece every other fiber
+    // test injects past, and the reason `detail.model` in provenance is
+    // trustworthy at all.
+    expect(seen).toEqual([
+      { modelId: "fake-model", body: "the deploy window is Thursdays", episodeId: episode.id },
+    ]);
+    // The event time round-trips into provenance rather than being re-derived.
+    expect((await facts())[0]!.provenance).toMatchObject({
+      occurredAt: "2026-06-21T09:00:00.000Z",
+    });
   });
 
   it("re-running over an already-extracted window is a no-op", async () => {
@@ -383,7 +435,8 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
     const byRef = await insertEpisode({ body: null, locator: "warehouse://snapshot/1" });
     const result = await cycleWith(oneFact);
 
-    expect(result).toMatchObject({ inspected: 1, extracted: 0, skippedNoBody: 1 });
+    expect(result).toMatchObject({ inspected: 1, extracted: 0 });
+    expect(result.skipped.no_body).toBe(1);
     expect(await extractedAtOf(byRef.id)).not.toBeNull();
     expect(await facts()).toHaveLength(0);
   });
@@ -397,21 +450,168 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       runBrainExtractionCycle({ extract: oneFact, resolveModel: async () => null }),
     );
 
-    expect(result).toMatchObject({ inspected: 1, extracted: 0, skippedModelUnavailable: 1 });
+    expect(result).toMatchObject({ inspected: 1, extracted: 0 });
+    expect(result.skipped.model_unavailable).toBe(1);
     expect(await extractedAtOf(episode.id)).toBeNull();
     expect(await facts()).toHaveLength(0);
   });
 
-  it("stamps an episode whose candidates were all blocked", async () => {
-    // Blocking is a DECISION, not a failure: retrying it forever would re-log
-    // the same refusal every cycle and burn a queue slot. The episode itself is
-    // never deleted, so the evidence survives for a later, smarter pass.
+  it("refuses an unsafe episode BEFORE calling a model, and stamps it", async () => {
+    // Two claims in one. Blocking is a DECISION, not a failure: retrying it
+    // forever would re-log the same refusal every cycle and hold a queue slot,
+    // so it is stamped (the evidence itself is never deleted). And the refusal
+    // is pre-flighted, so an episode from which no safe fact can be drawn costs
+    // ZERO model calls rather than one per pass — `extractorCalls` is the
+    // assertion, since a post-hoc block would look identical in the database.
     const episode = await insertEpisode({ visibleTo: ["everyone"] });
-    const result = await cycleWith(oneFact);
+    let extractorCalls = 0;
+    const result = await cycleWith(() => {
+      extractorCalls++;
+      return Promise.resolve([candidate()]);
+    });
 
-    expect(result).toMatchObject({ extracted: 1, factsCreated: 0, factsBlocked: 1 });
+    expect(extractorCalls).toBe(0);
+    expect(result).toMatchObject({ blockedEpisodes: 1, extracted: 0, factsCreated: 0 });
     expect(await extractedAtOf(episode.id)).not.toBeNull();
     expect(await facts()).toHaveLength(0);
+  });
+
+  it("stops calling a model for an episode that fails every attempt", async () => {
+    // The spend bound. Retry-forever is right for a 429 and wrong for a body
+    // that deterministically trips a content filter — and nothing in the
+    // failure itself distinguishes them, so the ledger counts consecutive
+    // failures instead of guessing. Deliberately NOT a stamp: three failures in
+    // one process is not proof of "unextractable forever", and stamping on that
+    // guess is the silent drop the whole ordering avoids.
+    const poison = await insertEpisode({ body: "explode" });
+    let calls = 0;
+    const exploding: FactExtractor = () => {
+      calls++;
+      return Promise.reject(new Error("model refused"));
+    };
+
+    for (let i = 0; i < 3; i++) await cycleWith(exploding);
+    expect(calls).toBe(3);
+
+    const quarantined = await cycleWith(exploding);
+    expect(quarantined).toMatchObject({ inspected: 1, failed: 0 });
+    expect(quarantined.skipped.quarantined).toBe(1);
+    // No fourth model call…
+    expect(calls).toBe(3);
+    // …and still queued, so a restart (or a fix) picks it back up.
+    expect(await extractedAtOf(poison.id)).toBeNull();
+  });
+
+  it("stamps an episode whose extraction found nothing to claim", async () => {
+    // The modal case in production: most chat contains no durable fact. If an
+    // empty-candidate short-circuit ever landed before the stamp, the drain
+    // would head-of-line block on small talk forever.
+    const episode = await insertEpisode({ body: "morning all" });
+    const result = await cycleWith(() => Promise.resolve([]));
+
+    expect(result).toMatchObject({ extracted: 1, factsCreated: 0, blockedEpisodes: 0 });
+    expect(await extractedAtOf(episode.id)).not.toBeNull();
+  });
+
+  it("emits a cycle audit row on every terminal path", async () => {
+    // The row's ABSENCE over a window is the "the fiber stopped" signal, so it
+    // has to be emitted even when there was nothing to do — and the system
+    // actor has to pass `assertSystemActor`, which validates at RUNTIME and
+    // silently drops the row when it does not.
+    await cycleWith(oneFact);
+    // `logAdminAction` is fire-and-forget by contract, so the row lands just
+    // after the cycle resolves. Polling here is not only how the assertion
+    // works — it is also what keeps the suite's `DROP SCHEMA … CASCADE` from
+    // racing an in-flight INSERT and logging a spurious failure.
+    const rows = await waitForAuditRows("brain.extraction_cycle");
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("success");
+    // The system actor is validated at RUNTIME by `assertSystemActor`, which
+    // drops the row (with a warn) when it does not match — so a malformed
+    // actor would destroy the "absence means the fiber stopped" invariant
+    // while every other test stayed green.
+    expect(rows[0]!.actor_id).toBe("system:brain-extraction");
+  });
+
+  it("leaves the episode queued when the reconcile transaction itself fails", async () => {
+    // The stamp is the LAST thing that happens, and this is what that ordering
+    // buys: a database fault during reconcile must leave the queue marker
+    // untouched so the claim is re-derived, rather than stamping past evidence
+    // whose facts never committed.
+    const episode = await insertEpisode();
+    const result = await Effect.runPromise(
+      runBrainExtractionCycle({
+        extract: oneFact,
+        resolveModel: async () => FAKE_MODEL,
+        reconcile: () => Promise.reject(new Error("deadlock detected")),
+      }),
+    );
+
+    expect(result).toMatchObject({ inspected: 1, extracted: 0, failed: 1 });
+    expect(await extractedAtOf(episode.id)).toBeNull();
+    expect(await facts()).toHaveLength(0);
+  });
+
+  it("corroborates a PUBLISHED fact rather than minting a fresh draft duplicate", async () => {
+    // The corroboration lookup is deliberately not filtered by review state.
+    // Adding `AND status = 'draft'` to it would leave every test above green
+    // while every re-observation of an already-reviewed claim queued a new
+    // draft for a human to re-approve — the review queue would fill with work
+    // somebody already did.
+    const first = await insertEpisode({ sourceId: "C01:pub-1" });
+    const second = await insertEpisode({ sourceId: "C01:pub-2" });
+    await reconcileFacts({ episode: first, candidates: [candidate()], producer: "p", extractedAt: new Date() });
+    await pool.query(`UPDATE brain_facts SET status = 'published'`);
+
+    const report = await reconcileFacts({
+      episode: second,
+      candidates: [candidate()],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+
+    expect(report.corroborated).toBe(1);
+    const stored = await facts();
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.status).toBe("published");
+    expect((await edges()).filter((e) => e.edge_type === "provenance")).toHaveLength(2);
+  });
+
+  it("does not let a RETRACTED fact absorb a re-observation", async () => {
+    // `invalidated_at IS NULL` in the lookup. A tombstoned claim corroborating
+    // a fresh observation would resurrect a belief by side-effect — and, worse,
+    // silently: the new evidence would attach to a fact no reader can see.
+    const first = await insertEpisode({ sourceId: "C01:ret-1" });
+    const second = await insertEpisode({ sourceId: "C01:ret-2" });
+    await reconcileFacts({ episode: first, candidates: [candidate()], producer: "p", extractedAt: new Date() });
+    await pool.query(`UPDATE brain_facts SET invalidated_at = now()`);
+
+    const report = await reconcileFacts({
+      episode: second,
+      candidates: [candidate()],
+      producer: "p",
+      extractedAt: new Date(),
+    });
+
+    expect(report.created).toBe(1);
+    expect(await facts()).toHaveLength(2);
+  });
+
+  it("two reconciles racing on one claim produce ONE fact", async () => {
+    // What the per-workspace advisory lock is FOR. The unit suite proves the
+    // statement is issued; only a real transaction proves it serializes a
+    // read-then-insert that would otherwise interleave into two rows.
+    const a = await insertEpisode({ sourceId: "C01:race-a" });
+    const b = await insertEpisode({ sourceId: "C01:race-b" });
+
+    await Promise.all([
+      reconcileFacts({ episode: a, candidates: [candidate()], producer: "p", extractedAt: new Date() }),
+      reconcileFacts({ episode: b, candidates: [candidate()], producer: "p", extractedAt: new Date() }),
+    ]);
+
+    expect(await facts()).toHaveLength(1);
+    expect((await edges()).filter((e) => e.edge_type === "provenance")).toHaveLength(2);
   });
 
   it("an empty queue is a clean success", async () => {

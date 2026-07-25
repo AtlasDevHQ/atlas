@@ -6,7 +6,8 @@
  * `mock.module()`, no database. What they pin is the part a real-Postgres test
  * cannot make legible: which failure BLOCKS, which failure FLAGS, and exactly
  * what a reviewer ends up holding. The storage-level claims (the CHECKs, the
- * FKs, real transaction rollback, real concurrency) live in the `-pg` sibling.
+ * FKs, real transaction rollback, two overlapping reconciles racing for one
+ * claim) live in the `-pg` sibling.
  *
  * The block-vs-flag asymmetry is the reason this file exists at all. Both
  * directions are failure modes with names:
@@ -238,9 +239,12 @@ describe("block: no usable grant", () => {
   });
 
   test("blocks a grant of only null / empty elements", async () => {
-    // Legal at rest per the CHECK's `array_remove` test? No — but `pg` can hand
-    // these back on a hand-edited import bundle, and `parseGrant` counts them
-    // as malformed rather than throwing. Either way: nobody can read it.
+    // `chk_brain_episodes_grant_nonempty` refuses this AT REST, so it cannot
+    // arrive from the database. It can arrive from an entry point that has not
+    // stored anything yet — a write-back proposal, a human correction being
+    // pre-flighted — which is exactly the caller class this stage is built to
+    // be agnostic about. `parseGrant` counts the elements as malformed rather
+    // than throwing; either way nobody can read the result.
     const store = new FakeBrainStore();
     const report = await run(store, { episode: episode({ visibleTo: [null, ""] }) });
     expect(report.blocked.NO_GRANT).toBe(1);
@@ -549,6 +553,84 @@ describe("the draft candidate", () => {
     expect(store.transactions).toBe(1);
     expect(store.locks).toEqual([WORKSPACE]);
     expect(store.facts).toHaveLength(3);
+  });
+
+  test("outcomes come back in input order, one per candidate", async () => {
+    // #4772's review surface will zip this against what it submitted; a report
+    // that silently compacted the blocked entries would misattribute every
+    // verdict after the first refusal.
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      candidates: [candidate({ predicate: "   " }), candidate(), candidate({ object: "Fridays" })],
+    });
+
+    expect(report.outcomes.map((o) => o.kind)).toEqual(["blocked", "created", "created"]);
+  });
+
+  test("a failed provenance edge takes the fact down with it", async () => {
+    // "A fact never exists without its evidence pointer" is the criterion, and
+    // it is one `try/catch` away from being false: swallowing the edge failure
+    // to 'avoid losing the fact' would write precisely the no-provenance row
+    // the rule forbids, and every other test here would stay green.
+    const store = new FakeBrainStore();
+    const failing: ReconcileTransactionRunner = async (fn) =>
+      fn({
+        query: async (sql, params) => {
+          if (sql === INSERT_PROVENANCE_EDGE_SQL) throw new Error("edge insert failed");
+          return store.runner((tx) => tx.query(sql, params ?? []));
+        },
+      });
+
+    await expect(
+      reconcileFacts(
+        {
+          episode: episode(),
+          candidates: [candidate()],
+          producer: "extraction:v1",
+          extractedAt: new Date(),
+        },
+        { withTransaction: failing },
+      ),
+    ).rejects.toThrow("edge insert failed");
+  });
+
+  test("identity is byte-exact — canonicalizing is the resolver's job, not this stage's", async () => {
+    const store = new FakeBrainStore();
+    await run(store, { candidates: [candidate({ subject: "Alice" })] });
+    await run(store, {
+      episode: episode({ id: "ep-2" }),
+      candidates: [candidate({ subject: "alice" })],
+    });
+
+    // Two facts, not one. A `lower()` comparison here would quietly take the
+    // "are these the same entity?" decision away from the seam that exists to
+    // make it — and make it globally, for every workspace, with no reviewer.
+    expect(store.facts).toHaveLength(2);
+  });
+
+  test("surrounding whitespace is trimmed, so it never forks a claim", async () => {
+    const store = new FakeBrainStore();
+    await run(store);
+    const second = await run(store, {
+      episode: episode({ id: "ep-2" }),
+      candidates: [candidate({ subject: "  deploy window  ", object: " Thursdays " })],
+    });
+
+    expect(second.corroborated).toBe(1);
+    expect(store.facts).toHaveLength(1);
+  });
+
+  test("corroboration is scoped to the workspace", async () => {
+    const store = new FakeBrainStore();
+    await run(store);
+    const other = await run(store, {
+      episode: episode({ id: "ep-2", workspaceId: "ws-other" }),
+    });
+
+    // Same claim, different tenant — a corroboration across that line would be
+    // a cross-tenant read dressed as a dedupe.
+    expect(other.created).toBe(1);
+    expect(store.facts).toHaveLength(2);
   });
 
   test("no candidates is a no-op, not an empty transaction", async () => {

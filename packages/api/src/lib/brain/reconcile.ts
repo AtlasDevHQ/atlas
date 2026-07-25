@@ -44,7 +44,10 @@
  *     could repair into a safe one. Nothing is written; the reason is counted
  *     and logged. (A blocked candidate is not a silent drop: the episode stays
  *     in `brain_episodes` forever, so the evidence is never lost — only the
- *     unsafe derived claim is refused.)
+ *     unsafe derived claim is refused.) Those three are the ADR's; there is a
+ *     fourth this module adds, `MALFORMED_CLAIM` — a proposal that is not a
+ *     claim at all. See {@link RECONCILE_BLOCK_REASONS} for why it blocks
+ *     rather than flags.
  *   - **Flag provisional** — a QUALITY failure. Subject or object entity
  *     resolution failed. The claim is still written as a draft, with
  *     `provenance.provisional = true` naming the unresolved side, because the
@@ -90,22 +93,53 @@
  * `Alice` and `alice` are one entity stays the ENTITY RESOLVER's job. A
  * `lower()` comparison here would silently take that decision away from the
  * seam that exists to make it.
+ *
+ * The cost of byte-exactness, stated because it is easy to over-read the
+ * paragraph above: dedupe is only as good as the producer's determinism. Two
+ * passes that phrase one claim differently ("is" vs "is on") are two claims
+ * here, and a pass whose entity resolution CHANGES between runs will miss its
+ * own earlier row. The reviewer collapses those; nothing in this stage can.
+ * `extract.ts` pins its model call to `temperature: 0` for exactly this reason.
+ *
+ * ## What this slice does NOT do
+ *
+ * A fact's grant is INHERITED from its episode verbatim — a claim is never more
+ * visible than the evidence behind it. Deriving a grant from source membership
+ * (a chat channel's roster → `audience:` + a `fact_audience_member` sync) is the
+ * INGEST seam's job for the episode (`ingest/grant.ts`), and the membership sync
+ * that makes a private channel's `audience:` resolve to real people is not in
+ * this slice at all — see #4801. Until it lands, a private channel's episodes
+ * and the facts drawn from them are visible to nobody, which is the fail-closed
+ * direction and repairable with no rewrite (the grant already names the
+ * audience; only the membership rows are missing).
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
-import { parseGrant } from "@atlas/api/lib/brain/acl";
-import type { PredicateCardinality } from "@atlas/api/lib/brain/types";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+// The write-side "does this grant name anyone?" predicate, imported rather than
+// re-spelled: `isUsableGrant`'s own docstring exists so the ingest screen and
+// this one can never disagree about what usable MEANS, and two `parseGrant(...)
+// .principals.length === 0` sites would be exactly that disagreement waiting to
+// happen. It lives under `ingest/` for historical reasons but is a pure
+// grant-vocabulary helper with no ingest state.
+import { isUsableGrant } from "@atlas/api/lib/brain/ingest/grant";
+import type {
+  BrainFactProvenance,
+  EntityRole,
+  PredicateCardinality,
+} from "@atlas/api/lib/brain/types";
 
 const log = createLogger("brain.reconcile");
 
 /**
- * `classkey` for the per-workspace reconcile advisory lock — the issue number,
- * matching the convention the other two-arg namespaces follow (last-admin
- * `3158`, chat-install `3001`, demo-seed `3683`). Distinct from every one of
- * them so a reconcile never serializes against an unrelated guard on the same
- * workspace; a `hashtext` collision inside this namespace costs extra
- * serialization, never correctness.
+ * `classkey` for the per-workspace reconcile advisory lock — the `classkey` arg
+ * of the two-arg `pg_advisory_xact_lock(int4, int4)`, valued at this issue's
+ * number per the house convention. Distinct from every other two-arg user
+ * (`lead-outbox` 2870, chat-install 3001, stripe-subscription 3445, last-admin
+ * 3158, demo-seed 3683, knowledge-install 4235) so a reconcile never serializes
+ * behind an unrelated guard on the same workspace; a `hashtext` collision
+ * INSIDE this namespace costs extra serialization, never correctness.
  */
 const RECONCILE_LOCK_NAMESPACE = 4771;
 
@@ -195,12 +229,18 @@ export interface ResolvedEntity {
  * that returns `null` (or throws) flags the candidate provisional rather than
  * dropping it — and retrofitting that asymmetry after a real resolver lands
  * would mean changing behaviour under live data instead of adding a resolver.
+ *
+ * Invoked BEFORE the transaction opens (one `Promise.all` per candidate), which
+ * is load-bearing for the DB-backed resolver this seam anticipates: it may check
+ * out its own connection safely, whereas doing so inside the reconcile
+ * transaction is the bounded-pool starvation deadlock
+ * {@link withBrainTransaction} warns about.
  */
 export type EntityResolver = (
   surface: string,
   context: {
     readonly workspaceId: string;
-    readonly role: "subject" | "object";
+    readonly role: EntityRole;
   },
 ) => Promise<ResolvedEntity | null> | ResolvedEntity | null;
 
@@ -342,9 +382,16 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
     LIMIT 1`;
 
 /**
- * The draft insert. `visible_to` travels as jsonb → `text[]` for the same
- * reason the episode insert does: a `text[]` bind of a per-row array is not
- * expressible as a parallel-array `unnest`.
+ * The draft insert.
+ *
+ * `visible_to` travels as jsonb → `text[]` rather than as a native array bind.
+ * NOT for the episode insert's reason — that one is a batch
+ * `jsonb_array_elements` where per-row grants would need a ragged `text[][]`,
+ * and this is a single-row `VALUES` where a plain `$9::text[]` would work
+ * through `pg`. The reason here is {@link ReconcileExecutor}: its `query` takes
+ * `unknown[]`, and it is structurally satisfied by both the `pg` client and a
+ * test literal. Keeping every parameter a JSON scalar means no driver-specific
+ * array marshalling can leak into that seam.
  */
 export const INSERT_FACT_SQL = `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, valid_from, extracted_at,
@@ -429,23 +476,34 @@ export async function reconcileFacts(
 
   // ── Episode-level gate ────────────────────────────────────────────────
   // These are properties of the EVIDENCE, so one failure blocks every candidate
-  // hanging off it. Evaluated before any connection is checked out: a batch that
-  // cannot produce a single safe row must not open a transaction.
-  const episodeBlock = classifyEpisode(episode, request.sourcePrincipal);
+  // hanging off it — and it is evaluated before any connection is checked out,
+  // so an episode that can produce no safe row never opens a transaction. (A
+  // batch whose candidates are ALL individually malformed still does; only the
+  // episode-level verdict is knowable this early.)
+  //
+  // A caller holding the episode before it has spent anything on producing
+  // candidates should pre-flight this itself — `extract.ts` does, so a
+  // grant-less episode costs no model call.
+  const episodeBlock = classifyEpisodeForReconcile(episode, request.sourcePrincipal);
   if (episodeBlock !== null) {
     const reason = episodeBlock.reason;
-    log.warn(
-      {
-        workspaceId: episode.workspaceId,
-        episodeId: episode.id,
-        source: episode.source,
-        sourceId: episode.sourceId,
-        producer,
-        reason,
-        candidates: candidates.length,
-      },
-      `brain reconcile: blocked every candidate from this episode — ${episodeBlock.detail}`,
-    );
+    // Silent when there was nothing to block: a caller that pre-flighted and
+    // passed no candidates has already logged, and a second identical warn per
+    // episode would train an operator to skim them.
+    if (candidates.length > 0) {
+      log.warn(
+        {
+          workspaceId: episode.workspaceId,
+          episodeId: episode.id,
+          source: episode.source,
+          sourceId: episode.sourceId,
+          producer,
+          reason,
+          candidates: candidates.length,
+        },
+        `brain reconcile: blocked every candidate from this episode — ${episodeBlock.detail}`,
+      );
+    }
     blocked[reason] = candidates.length;
     return {
       created: 0,
@@ -470,7 +528,7 @@ export async function reconcileFacts(
   }
 
   // ── Per-candidate preparation (no database) ───────────────────────────
-  const prepared: (PreparedCandidate | { readonly blockedReason: ReconcileBlockReason })[] = [];
+  const prepared: PreparedEntry[] = [];
   for (const candidate of candidates) {
     const subject = candidate.subject.trim();
     const predicate = candidate.predicate.trim();
@@ -488,7 +546,7 @@ export async function reconcileFacts(
         "brain reconcile: blocked a candidate with a blank subject, predicate, or object — a claim with an empty column asserts nothing",
       );
       blocked.MALFORMED_CLAIM++;
-      prepared.push({ blockedReason: RECONCILE_BLOCK_REASONS.malformedClaim });
+      prepared.push({ kind: "blocked", reason: RECONCILE_BLOCK_REASONS.malformedClaim });
       continue;
     }
 
@@ -497,11 +555,12 @@ export async function reconcileFacts(
       tryResolve(resolveEntity, object, episode.workspaceId, "object", episode.id),
     ]);
 
-    const unresolved: string[] = [];
+    const unresolved: EntityRole[] = [];
     if (resolvedSubject === null) unresolved.push("subject");
     if (resolvedObject === null) unresolved.push("object");
 
     prepared.push({
+      kind: "prepared",
       subject: resolvedSubject?.canonical ?? subject,
       predicate,
       object: resolvedObject?.canonical ?? object,
@@ -532,8 +591,8 @@ export async function reconcileFacts(
     await tx.query(RECONCILE_LOCK_SQL, [RECONCILE_LOCK_NAMESPACE, episode.workspaceId]);
     const results: ReconcileOutcome[] = [];
     for (const item of prepared) {
-      if ("blockedReason" in item) {
-        results.push({ kind: "blocked", reason: item.blockedReason });
+      if (item.kind === "blocked") {
+        results.push({ kind: "blocked", reason: item.reason });
         continue;
       }
       results.push(
@@ -555,11 +614,22 @@ export async function reconcileFacts(
   let corroborated = 0;
   let provisional = 0;
   for (const outcome of outcomes) {
-    if (outcome.kind === "created") {
-      created++;
-      if (outcome.provisional) provisional++;
-    } else if (outcome.kind === "corroborated") {
-      corroborated++;
+    // Exhaustive, with a `never` binding: a fourth outcome arm must be counted
+    // somewhere, and the compiler is the only reviewer that never forgets.
+    switch (outcome.kind) {
+      case "created":
+        created++;
+        if (outcome.provisional) provisional++;
+        break;
+      case "corroborated":
+        corroborated++;
+        break;
+      case "blocked":
+        break;
+      default: {
+        const unexpected: never = outcome;
+        throw new Error(`Unhandled reconcile outcome: ${JSON.stringify(unexpected)}`);
+      }
     }
   }
 
@@ -571,19 +641,27 @@ export async function reconcileFacts(
 // ---------------------------------------------------------------------------
 
 interface PreparedCandidate {
+  readonly kind: "prepared";
   readonly subject: string;
   readonly predicate: string;
   readonly object: string;
-  /** `"subject"` / `"object"` — empty when both resolved. */
-  readonly unresolved: readonly string[];
-  readonly entityIds: Record<string, string>;
+  /** Empty when both sides resolved. */
+  readonly unresolved: readonly EntityRole[];
+  readonly entityIds: Partial<Record<EntityRole, string>>;
   readonly candidate: FactCandidate;
 }
 
-function unresolvedCount(
-  prepared: readonly (PreparedCandidate | { readonly blockedReason: ReconcileBlockReason })[],
-): number {
-  return prepared.filter((p) => !("blockedReason" in p) && p.unresolved.length > 0).length;
+/**
+ * A discriminated union rather than an `in`-probed pair: the transaction loop
+ * switches on `kind`, so a third preparation outcome is a compile error there
+ * instead of a silently-skipped candidate.
+ */
+type PreparedEntry =
+  | PreparedCandidate
+  | { readonly kind: "blocked"; readonly reason: ReconcileBlockReason };
+
+function unresolvedCount(prepared: readonly PreparedEntry[]): number {
+  return prepared.filter((p) => p.kind === "prepared" && p.unresolved.length > 0).length;
 }
 
 /**
@@ -604,11 +682,25 @@ function resolvedPrincipal(
   return actor === "" ? null : `${episode.source}:${actor}`;
 }
 
-/** The three episode-level safety refusals, in the order they are cheapest. */
-function classifyEpisode(
+/** An episode-level refusal: the reason, plus prose an operator can act on. */
+export interface EpisodeBlock {
+  readonly reason: ReconcileBlockReason;
+  readonly detail: string;
+}
+
+/**
+ * The three episode-level safety refusals, in the order they are cheapest.
+ *
+ * Exported and pure so a caller can pre-flight BEFORE spending anything on
+ * producing candidates: `extract.ts` runs it ahead of the model call, which is
+ * the difference between a grant-less episode costing one LLM call and costing
+ * nothing. `reconcileFacts` runs it again regardless — a pre-flight is an
+ * optimization, never the enforcement.
+ */
+export function classifyEpisodeForReconcile(
   episode: ReconcileEpisodeRef,
-  explicitPrincipal: string | null | undefined,
-): { readonly reason: ReconcileBlockReason; readonly detail: string } | null {
+  explicitPrincipal?: string | null,
+): EpisodeBlock | null {
   if (episode.id.trim() === "") {
     return {
       reason: RECONCILE_BLOCK_REASONS.noProvenance,
@@ -616,8 +708,9 @@ function classifyEpisode(
     };
   }
   // The load-bearing one. See the module header: NOT the 0180 CHECK's
-  // non-empty test, because that admits a grant that grants nobody.
-  if (parseGrant(episode.visibleTo).principals.length === 0) {
+  // non-empty test, because that admits a grant that grants nobody. The
+  // predicate is the ingest seam's, imported rather than restated.
+  if (!isUsableGrant(episode.visibleTo)) {
     return {
       reason: RECONCILE_BLOCK_REASONS.noGrant,
       detail:
@@ -647,7 +740,7 @@ async function tryResolve(
   resolver: EntityResolver,
   surface: string,
   workspaceId: string,
-  role: "subject" | "object",
+  role: EntityRole,
   episodeId: string,
 ): Promise<ResolvedEntity | null> {
   try {
@@ -660,7 +753,7 @@ async function tryResolve(
         workspaceId,
         episodeId,
         role,
-        err: err instanceof Error ? err.message : String(err),
+        err: errorMessage(err),
       },
       "brain reconcile: entity resolver threw — treating the entity as unresolved and flagging the candidate provisional",
     );
@@ -699,6 +792,11 @@ async function writeCandidate(
     // own grant; that is safe because `brain_episodes` is ACL-gated in its own
     // right by the same predicate, so walking the edge cannot read an episode
     // the reader is not entitled to.)
+    //
+    // Nor its CARDINALITY: a claim first stored `multi` and re-asserted `single`
+    // stays `multi` and earns no tension edges. Upgrading it would supersede by
+    // side-effect from a corroboration, and supersession is M2's — deliberately
+    // not a stage that runs unattended on every re-observation.
     const edge = await tx.query(INSERT_PROVENANCE_EDGE_SQL, [
       episode.workspaceId,
       existingId,
@@ -708,7 +806,12 @@ async function writeCandidate(
   }
 
   const provisional = item.unresolved.length > 0;
-  const provenance: Record<string, unknown> = {
+  // `satisfies`, not a bare object literal: the payload has three downstream
+  // readers already scheduled (#4772's review surface filters on `provisional`,
+  // #4773's retrieval, #4769's classifier) and `jsonb` enforces nothing at rest,
+  // so the named shape is the only thing that turns a renamed key into a compile
+  // error rather than a blank field in a UI.
+  const provenance = {
     // Producer detail first so the structural keys below always win — a
     // producer may enrich the payload, never rewrite where the claim came from.
     ...(item.candidate.detail ?? {}),
@@ -717,14 +820,18 @@ async function writeCandidate(
     episodeId: episode.id,
     actor: ctx.sourcePrincipal,
     producer: ctx.producer,
-    occurredAt: episode.occurredAt?.toISOString() ?? null,
-    extractedAt: ctx.extractedAt?.toISOString() ?? null,
+    // Through the same guard as the other two timestamps: an INVALID Date's
+    // `toISOString()` throws synchronously, and this call sits inside the
+    // transaction, so an unguarded one would roll a whole episode back over a
+    // bad event time the nullable column is already built to absorb.
+    occurredAt: isoOrNull(episode.occurredAt),
+    extractedAt: isoOrNull(ctx.extractedAt),
     reconciledAt: ctx.now().toISOString(),
     ...(Object.keys(item.entityIds).length > 0 ? { entityIds: item.entityIds } : {}),
     // Present ONLY when it is true, so a reviewer's filter on the key is not
     // fooled by every fact carrying `provisional: false`.
-    ...(provisional ? { provisional: true, unresolved: item.unresolved } : {}),
-  };
+    ...(provisional ? { provisional: true as const, unresolved: item.unresolved } : {}),
+  } satisfies BrainFactProvenance;
 
   const cardinality: PredicateCardinality = item.candidate.predicateCardinality ?? "multi";
   const validFrom = ctx.item.candidate.validFrom ?? null;
@@ -841,7 +948,9 @@ export const withBrainTransaction: ReconcileTransactionRunner = async <T>(
     await client.query("ROLLBACK").catch((rbErr: unknown) => {
       rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
       log.warn(
-        { err: rollbackErr.message },
+        // Scrubbed: a pg error can carry a credentialed connection URL, and a
+        // log line is the one place it must not appear verbatim.
+        { err: errorMessage(rollbackErr) },
         "brain reconcile: ROLLBACK failed — the client will be destroyed",
       );
     });

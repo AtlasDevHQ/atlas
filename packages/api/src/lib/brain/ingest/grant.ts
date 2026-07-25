@@ -91,9 +91,10 @@ export interface ChatChannelVisibility {
  *   so revocation flows through membership live rather than waiting for
  *   re-ingest.
  *
- *   Membership population is #4771's (the issue's "channel-membership read for
- *   #4771's grant derivation"), so until it lands a private channel's episodes
- *   are visible to NOBODY. That is the fail-closed direction and it is
+ *   Membership population is #4801's, split out of #4771 (which shipped the
+ *   reconcile stage — it INHERITS this grant onto every fact drawn from the
+ *   episode and derives nothing further). Until it lands a private channel's
+ *   episodes, and the facts drawn from them, are visible to NOBODY. That is the fail-closed direction and it is
  *   REPAIRABLE — populating membership makes existing rows visible with no
  *   rewrite, because the grant names the audience and the membership is the
  *   live half. Contrast the failure this module exists to prevent: a

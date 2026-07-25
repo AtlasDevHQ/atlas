@@ -2348,6 +2348,7 @@ export function makeSchedulerLive(
           "atlas.brain.facts_created": result.factsCreated,
           "atlas.brain.facts_corroborated": result.factsCorroborated,
           "atlas.brain.facts_blocked": result.factsBlocked,
+          "atlas.brain.blocked_episodes": result.blockedEpisodes,
           "atlas.brain.failed": result.failed,
         }),
         onTickFailure: {

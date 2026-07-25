@@ -450,11 +450,15 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
       last_sync_at: string;
       status: string;
       error: string | null;
+      coverage_incomplete: boolean;
+      coverage_detail: string | null;
     }>(
       `SELECT collection_id,
               to_char(last_sync_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_sync_at,
               status,
-              error
+              error,
+              (report -> 'coverageIncomplete') = 'true'::jsonb AS coverage_incomplete,
+              report -> 'warnings' ->> 0                        AS coverage_detail
          FROM knowledge_sync_state
         WHERE workspace_id = $1`,
       [ws],
@@ -462,6 +466,40 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     expect(projection.rows).toHaveLength(1);
     expect(projection.rows[0]?.collection_id).toBe("synced-docs");
     expect(projection.rows[0]?.last_sync_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    // The #4770 coverage flag, read against the live schema. `report` is
+    // free-form JSONB written by more than one engine, so the comparison must
+    // survive whatever else lands in it — a `::boolean` CAST would raise on any
+    // value outside Postgres's boolean vocabulary and fault the ENTIRE
+    // collection list for the workspace off one malformed row.
+    // A bundle-sync row carries `report = NULL`, so the comparison yields SQL
+    // NULL rather than false — which the route maps with `=== true`. Asserting
+    // the NULL rather than papering over it is the point: it is the shape the
+    // route's mapping has to survive.
+    expect(projection.rows[0]?.coverage_incomplete).toBeNull();
+    expect(projection.rows[0]?.coverage_detail).toBeNull();
+    for (const report of [
+      `'{"coverageIncomplete": true}'`,
+      `'{"coverageIncomplete": "partial"}'`,
+      `'{"coverageIncomplete": {"nested": 1}}'`,
+      `'{}'`,
+      `NULL`,
+    ]) {
+      await pool.query(
+        `UPDATE knowledge_sync_state SET report = ${report}::jsonb
+          WHERE workspace_id = $1 AND collection_id = 'synced-docs'`,
+        [ws],
+      );
+      const row = await pool.query<{ coverage_incomplete: boolean | null }>(
+        `SELECT (report -> 'coverageIncomplete') = 'true'::jsonb AS coverage_incomplete
+           FROM knowledge_sync_state
+          WHERE workspace_id = $1 AND collection_id = 'synced-docs'`,
+        [ws],
+      );
+      // Never throws; anything that is not literal JSON `true` reads as
+      // not-incomplete (and a NULL report yields SQL NULL, which the route maps
+      // to false).
+      expect(row.rows[0]?.coverage_incomplete ?? false).toBe(report.includes("true"));
+    }
   }, PG_TEST_TIMEOUT_MS);
 
   it("installs a notion-knowledge connector collection against the live schema (#4378)", async () => {

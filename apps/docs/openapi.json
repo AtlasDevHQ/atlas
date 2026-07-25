@@ -56334,7 +56334,8 @@
                               "intercom",
                               "front",
                               "helpscout",
-                              "freshdesk"
+                              "freshdesk",
+                              "slack-history"
                             ]
                           },
                           "description": {
@@ -56388,12 +56389,23 @@
                                   "string",
                                   "null"
                                 ]
+                              },
+                              "coverageIncomplete": {
+                                "type": "boolean"
+                              },
+                              "coverageDetail": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
                               }
                             },
                             "required": [
                               "lastSyncAt",
                               "status",
-                              "error"
+                              "error",
+                              "coverageIncomplete",
+                              "coverageDetail"
                             ]
                           },
                           "documents": {

@@ -933,7 +933,9 @@ describe("publish_datasources (#4126)", () => {
     const client = await createTestClient();
     const res = await client.callTool({ name: "publish_datasources", arguments: {} });
     const body = JSON.parse(getContentText(res.content));
-    expect(body.refusedDrafts).toEqual(publishResult.refusedDrafts);
+    expect(body.refusedDrafts).toEqual(
+      (publishResult as { refusedDrafts: unknown }).refusedDrafts,
+    );
     // Mirrored into structuredContent and valid against the declared schema —
     // otherwise the SDK would reject the result outright.
     expect(res.structuredContent).toEqual(body);

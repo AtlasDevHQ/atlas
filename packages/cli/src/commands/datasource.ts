@@ -601,8 +601,12 @@ async function runPublish(
       return 0;
     }
     const promoted = asRecord(result.promoted);
-    const at = (key: string): number =>
-      typeof promoted[key] === "number" ? (promoted[key] as number) : 0;
+    const at = (key: string): number => {
+      // Bind once: `promoted[key]` twice makes the narrowing invisible to the
+      // reader and forces a cast the compiler doesn't actually need.
+      const value = promoted[key];
+      return typeof value === "number" ? value : 0;
+    };
     // The publish also tombstones stale entities superseded by the promotion
     // (`deleted.entities`). Count it toward "did anything happen?" so a
     // deletion-only publish isn't mislabeled a clean no-op.
@@ -632,8 +636,11 @@ async function runPublish(
         const n = at(s.key);
         return `${n} ${n === 1 ? s.singular : s.plural}`;
       });
-      const last = clauses.pop()!;
-      io.out(`Published ${clauses.join(", ")}, and ${last}.`);
+      // `PUBLISH_SURFACES` is a non-empty literal, but its `ReadonlyArray<>`
+      // annotation erases that — so read the last element by index rather than
+      // asserting `pop()!` is defined.
+      const last = clauses[clauses.length - 1] ?? "";
+      io.out(`Published ${clauses.slice(0, -1).join(", ")}, and ${last}.`);
     }
     if (deletedEntities > 0) {
       io.out(

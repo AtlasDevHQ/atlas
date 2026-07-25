@@ -139,6 +139,47 @@ run_fixture "Drizzle update of invalidated_at passes" pass \
   "packages/api/src/lib/brain/retract.ts" \
 'await db.update(brainFacts).set({ invalidatedAt: new Date() }).where(eq(brainFacts.id, id));'
 
+# (q) The UPSERT shape — the one the original suite missed, and the one
+#     ADR-0030's connector engine actually writes. No table name follows
+#     `UPDATE`; `status` is absent from the INSERT column list.
+run_fixture "ON CONFLICT … DO UPDATE SET status fails" fail \
+  "packages/api/src/lib/brain/connector.ts" \
+'await db.query(`INSERT INTO brain_facts (id, workspace_id, subject) VALUES ($1,$2,$3)
+  ON CONFLICT (id) DO UPDATE SET status = '"'"'published'"'"'`);'
+
+# (r) The same upsert WITHOUT touching status → must PASS. Re-ingest of a fact
+#     body is legitimate; only the review state is gated.
+run_fixture "ON CONFLICT … DO UPDATE of a non-status column passes" pass \
+  "packages/api/src/lib/brain/connector.ts" \
+'await db.query(`INSERT INTO brain_facts (id, workspace_id, object) VALUES ($1,$2,$3)
+  ON CONFLICT (id) DO UPDATE SET object = EXCLUDED.object`);'
+
+# (s) A SCHEMA-QUALIFIED update → must FAIL.
+run_fixture "schema-qualified UPDATE fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE public.brain_facts SET status = '"'"'published'"'"' WHERE id = $1`);'
+
+# (t) A POSITIONAL insert (no column list) → must FAIL. Grep cannot tell whether
+#     it sets status, and a positional insert into a 17-column table is
+#     unreviewable regardless.
+run_fixture "column-less positional INSERT fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`INSERT INTO brain_facts VALUES ($1,$2,$3,'"'"'published'"'"')`);'
+
+# (u) A one-shot backfill under db/migrations/scripts/ → must FAIL. CLAUDE.md
+#     says backfills live exactly there, and an `--exclude-dir=migrations`
+#     swallowed the whole path until this was probed.
+run_fixture "backfill under db/migrations/scripts/ is NOT exempt" fail \
+  "packages/api/src/lib/db/migrations/scripts/0180-backfill.ts" \
+'await db.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE workspace_id = $1`);'
+
+# (v) The over-breadth the docstring admits: a retraction that FILTERS on status
+#     is refused too. Pinned so the behaviour is a stated decision rather than a
+#     surprise — loosening it must be a deliberate edit that fails this fixture.
+run_fixture "retraction that merely FILTERS on status is refused (documented over-breadth)" fail \
+  "packages/api/src/lib/brain/retract.ts" \
+'await db.query(`UPDATE brain_facts SET invalidated_at = now() WHERE id = $1 AND status = '"'"'published'"'"'`);'
+
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

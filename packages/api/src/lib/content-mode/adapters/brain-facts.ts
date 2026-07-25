@@ -51,13 +51,23 @@ const log = createLogger("brain-facts-publish");
  * callers (e.g. `admin-publish.ts`) use to find this adapter's report.
  *
  * `tables.ts` deliberately spells the same string as a LITERAL rather than
- * importing this: `port.ts → tables.ts → adapters/* → port.ts` is a live ESM
- * cycle, so at the moment the tuple is constructed this module is still
- * initializing and a `const` binding is in its temporal dead zone. The tuple
- * may therefore reference only hoisted function DECLARATIONS from here, never
- * consts — the same constraint `semantic-entities.ts` satisfies by spelling its
- * key literally too. `adapters/__tests__/brain-facts.test.ts` asserts the two
- * spellings agree, which is what makes the duplication safe.
+ * importing this. `port.ts → tables.ts → adapters/* → port.ts` is a live ESM
+ * cycle, and whether this module has finished initializing when the tuple is
+ * constructed DEPENDS ON WHICH MODULE THE GRAPH IS ENTERED THROUGH: enter via
+ * `port.ts` and the adapter body has already run, so a `const` resolves fine;
+ * enter via this adapter (as `adapters/__tests__/brain-facts.test.ts` does) and
+ * the tuple is built while this module is mid-initialization, putting a `const`
+ * in its temporal dead zone. That entry order is not something a caller
+ * controls, so the tuple may reference only hoisted function DECLARATIONS from
+ * here. Do not "verify" this by importing `port.ts` first and concluding the
+ * comment is wrong — that is the order that happens to work.
+ *
+ * (`semantic-entities.ts` also spells its key literally, but that is not
+ * evidence either way: it exports no key const to import in the first place.)
+ *
+ * `adapters/__tests__/brain-facts.test.ts` asserts the two spellings agree,
+ * which is what makes the duplication safe — a test is the only pin available
+ * once the import is off the table.
  */
 export const BRAIN_FACTS_TABLE = "brain_facts" as const;
 

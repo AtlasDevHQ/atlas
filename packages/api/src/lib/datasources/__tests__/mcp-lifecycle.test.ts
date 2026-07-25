@@ -838,6 +838,25 @@ describe("publishWorkspaceDrafts (#4126)", () => {
       if (/UPDATE\s+knowledge_documents\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
         return { rows: [], rowCount: 5 };
       }
+      // Brain facts promote NON-ZERO for the same reason knowledge does: a
+      // broken `promotedKey` mapping would also read 0, so a zero fixture
+      // cannot tell success from the bug it is meant to catch.
+      if (/FROM\s+brain_facts/i.test(sql)) {
+        return {
+          rows: [
+            {
+              id: "f1",
+              subject: "acme",
+              predicate: "uses",
+              object: "postgres",
+              source_episode_id: "ep-1",
+              provenance: { actor: "test" },
+              visible_to: ["org"],
+            },
+          ],
+        };
+      }
+      if (/UPDATE\s+brain_facts/i.test(sql)) return { rows: [], rowCount: 1 };
       return { rows: [] };
     };
 
@@ -853,7 +872,7 @@ describe("publishWorkspaceDrafts (#4126)", () => {
         prompts: 0,
         starterPrompts: 3,
         knowledgeDocuments: 5,
-        brainFacts: 0,
+        brainFacts: 1,
       },
       deleted: { entities: 1 },
     });

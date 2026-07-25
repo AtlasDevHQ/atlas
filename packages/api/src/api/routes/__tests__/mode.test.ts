@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
+import type { ModeDraftCounts } from "@useatlas/types/mode";
 import { Context, Effect, Layer } from "effect";
 import {
   MockInternalDB,
@@ -92,23 +93,30 @@ void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
 let mockHasInternalDBValue = true;
 const mockHasInternalDB: Mock<() => boolean> = mock(() => mockHasInternalDBValue);
 
-interface DraftCountFixture {
-  connections: number;
-  entities: number;
-  entityEdits: number;
-  entityDeletes: number;
-  prompts: number;
-  starterPrompts: number;
-}
+/**
+ * Draft counts the mocked registry reports back, one field per `ModeDraftCounts`
+ * segment.
+ *
+ * Keyed by `keyof ModeDraftCounts` rather than a hand-listed field set, and
+ * `Required<>` so a NEW registry segment is a compile error here. Without that,
+ * a new segment silently reports 0 in every test — which is exactly the state
+ * that would let a `totalDrafts` / activity-segment regression pass unnoticed,
+ * the thing several tests in this file exist to catch.
+ */
+type DraftCountFixture = Required<Record<keyof ModeDraftCounts, number>>;
 
-let draftFixture: DraftCountFixture = {
+const ZERO_DRAFTS: DraftCountFixture = {
   connections: 0,
   entities: 0,
   entityEdits: 0,
   entityDeletes: 0,
   prompts: 0,
   starterPrompts: 0,
+  knowledgeDocuments: 0,
+  brainFacts: 0,
 };
+
+let draftFixture: DraftCountFixture = { ...ZERO_DRAFTS };
 let demoActiveFixture = false;
 
 // ContentModeRegistry.countAllDrafts emits one UNION ALL query with column
@@ -123,14 +131,9 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Recor
       return [{ active: demoActiveFixture }];
     }
     if (sql.includes("UNION ALL") && sql.includes("draft")) {
-      return [
-        { key: "connections", n: draftFixture.connections },
-        { key: "entities", n: draftFixture.entities },
-        { key: "entityEdits", n: draftFixture.entityEdits },
-        { key: "entityDeletes", n: draftFixture.entityDeletes },
-        { key: "prompts", n: draftFixture.prompts },
-        { key: "starterPrompts", n: draftFixture.starterPrompts },
-      ];
+      // Derived from the fixture's own keys, so a segment added to
+       // `ModeDraftCounts` flows through without a second hand-edit here.
+      return Object.entries(draftFixture).map(([key, n]) => ({ key, n }));
     }
     return [];
   },
@@ -257,7 +260,7 @@ describe("GET /api/v1/mode — mode resolution", () => {
   beforeEach(() => {
     asAdmin();
     mockHasInternalDBValue = true;
-    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
+    draftFixture = { ...ZERO_DRAFTS, connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
     demoActiveFixture = false;
     demoIndustryFixture = undefined;
   });
@@ -306,7 +309,7 @@ describe("GET /api/v1/mode — mode resolution", () => {
 describe("GET /api/v1/mode — canToggle by role", () => {
   beforeEach(() => {
     mockHasInternalDBValue = true;
-    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
+    draftFixture = { ...ZERO_DRAFTS, connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
     demoActiveFixture = false;
     demoIndustryFixture = undefined;
   });
@@ -344,7 +347,7 @@ describe("GET /api/v1/mode — demo state", () => {
   beforeEach(() => {
     asAdmin();
     mockHasInternalDBValue = true;
-    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
+    draftFixture = { ...ZERO_DRAFTS, connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
   });
 
   it("returns demoIndustry from settings", async () => {
@@ -386,7 +389,7 @@ describe("GET /api/v1/mode — draft counts", () => {
   });
 
   it("returns draftCounts=null and hasDrafts=false when no drafts exist", async () => {
-    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
+    draftFixture = { ...ZERO_DRAFTS, connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
     const res = await request("/api/v1/mode");
     const data = await json(res);
     expect(data.draftCounts).toBeNull();
@@ -394,7 +397,7 @@ describe("GET /api/v1/mode — draft counts", () => {
   });
 
   it("returns draftCounts and hasDrafts=true when any draft exists", async () => {
-    draftFixture = { connections: 1, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
+    draftFixture = { ...ZERO_DRAFTS, connections: 1, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
     const res = await request("/api/v1/mode");
     const data = await json(res) as { hasDrafts: boolean; draftCounts: Record<string, number> | null };
     expect(data.hasDrafts).toBe(true);
@@ -402,8 +405,8 @@ describe("GET /api/v1/mode — draft counts", () => {
     expect(data.draftCounts!.connections).toBe(1);
   });
 
-  it("includes all six draft fields with the expected counts", async () => {
-    draftFixture = { connections: 2, entities: 7, entityEdits: 3, entityDeletes: 1, prompts: 4, starterPrompts: 5 };
+  it("includes every draft field with the expected counts", async () => {
+    draftFixture = { ...ZERO_DRAFTS, connections: 2, entities: 7, entityEdits: 3, entityDeletes: 1, prompts: 4, starterPrompts: 5 };
     const res = await request("/api/v1/mode");
     const data = await json(res) as { draftCounts: Record<string, number> };
     expect(data.draftCounts).toMatchObject({
@@ -422,11 +425,7 @@ describe("GET /api/v1/mode — draft counts", () => {
   // without failing any other assertion. Pin the key end-to-end.
   it("reports draftCounts.starterPrompts when only starter-prompt drafts exist", async () => {
     draftFixture = {
-      connections: 0,
-      entities: 0,
-      entityEdits: 0,
-      entityDeletes: 0,
-      prompts: 0,
+      ...ZERO_DRAFTS,
       starterPrompts: 3,
     };
     const res = await request("/api/v1/mode");
@@ -452,6 +451,48 @@ describe("GET /api/v1/mode — draft counts", () => {
     expect(unionCall).toBeDefined();
     expect(unionCall).toContain("FROM query_suggestions");
     expect(unionCall).toContain("status = 'draft'");
+  });
+
+  it("reports draftCounts.brainFacts when ONLY brain-fact drafts exist (#4769)", async () => {
+    // Same regression class as the starter-prompts guard above, for the segment
+    // this milestone added — AND the guard for `totalDrafts`, which was rewritten
+    // to sum `Object.values` precisely so a new segment can't be omitted. A
+    // hand-listed sum would report `hasDrafts: false` here: no banner, no publish
+    // button, for a workspace that genuinely has pending review work.
+    draftFixture = {
+      ...ZERO_DRAFTS,
+      starterPrompts: 0,
+      knowledgeDocuments: 0,
+      brainFacts: 4,
+    };
+    const res = await request("/api/v1/mode");
+    const data = (await json(res)) as {
+      hasDrafts: boolean;
+      draftCounts: Record<string, number> | null;
+      draftActivity: Record<string, unknown> | null;
+    };
+    expect(data.hasDrafts).toBe(true);
+    expect(data.draftCounts?.brainFacts).toBe(4);
+    expect(data.draftActivity).not.toBeNull();
+  });
+
+  it("scopes the brain_facts activity segment by workspace_id and excludes retracted drafts (#4769)", async () => {
+    // Two hazards in one hand-written segment. (1) `brain_facts` is keyed on
+    // `workspace_id`, not `org_id` — the #4206 copy-paste trap below, which 500s
+    // the endpoint at runtime while every registry-driven count assertion still
+    // passes. (2) `invalidated_at IS NULL` must match `brainFactsCountSql`, the
+    // preview, and the promote UPDATE: without it a workspace whose only drafts
+    // are RETRACTED reports `brainFacts: 0` with a real `lastEditedAt`, and the
+    // two halves of one display surface disagree about whether work is pending.
+    await request("/api/v1/mode");
+    const calls = mockInternalQuery.mock.calls.map(([sql]) => String(sql));
+    const activityCall = calls.find(
+      (sql) => sql.includes("MAX(updated_at)") && sql.includes("'brainFacts'"),
+    );
+    expect(activityCall).toBeDefined();
+    expect(activityCall).toContain("FROM brain_facts");
+    expect(activityCall).toContain("workspace_id = $1");
+    expect(activityCall).toContain("invalidated_at IS NULL");
   });
 
   it("scopes the knowledge_documents activity segment by workspace_id, not org_id (#4206)", async () => {
@@ -495,7 +536,7 @@ describe("GET /api/v1/mode — error handling", () => {
   beforeEach(() => {
     asAdmin();
     mockHasInternalDBValue = true;
-    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
+    draftFixture = { ...ZERO_DRAFTS, connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
     demoActiveFixture = false;
     demoIndustryFixture = undefined;
   });

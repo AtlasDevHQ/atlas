@@ -23,7 +23,7 @@ import {
   makeService,
   type ContentModeRegistryService,
 } from "../registry";
-import { promotedCountsFromReports } from "../promoted";
+import { collectRefusals, promotedCountsFromReports } from "../promoted";
 import type { ContentModeEntry, PromotionReport } from "../port";
 import {
   ExoticReadFilterUnavailableError,
@@ -124,6 +124,73 @@ const _assertPromotedEqualsWire: Equal<
   InferPromotedCounts<typeof CONTENT_MODE_TABLES>
 > = true;
 void _assertPromotedEqualsWire;
+
+describe("collectRefusals (#4769)", () => {
+  it("sweeps every adapter's refusals and attributes each to its surface", () => {
+    expect(
+      collectRefusals([
+        { table: "knowledge_documents", promoted: 3 },
+        {
+          table: "brain_facts",
+          promoted: 1,
+          refused: [{ rowId: "f1", reasons: ["GRANT_UNUSABLE"], detail: "d1" }],
+        },
+        {
+          table: "future_table",
+          promoted: 0,
+          refused: [{ rowId: "r9", reasons: ["OTHER"], detail: "d2" }],
+        },
+      ]),
+    ).toEqual([
+      { id: "f1", surface: "brain_facts", reasons: ["GRANT_UNUSABLE"], detail: "d1" },
+      { id: "r9", surface: "future_table", reasons: ["OTHER"], detail: "d2" },
+    ]);
+  });
+
+  it("treats absent and empty `refused` alike — both contribute nothing", () => {
+    // The DISTINCTION between them is meaningful on the report (`undefined` =
+    // this table cannot refuse; `[]` = it can and didn't), but it must not leak
+    // into the wire list, where both mean "nothing to report".
+    expect(
+      collectRefusals([
+        { table: "a", promoted: 1 },
+        { table: "b", promoted: 2, refused: [] },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("caps the report and says so rather than truncating silently", () => {
+    // A runaway producer can refuse thousands of facts, each carrying a detail
+    // that interpolates its grant verbatim. Bounding the REPORT keeps one
+    // publish response from becoming multi-megabyte; every refused row is still
+    // a draft and still counted, which is what the synthetic entry states.
+    const many = Array.from({ length: 250 }, (_, i) => ({
+      rowId: `f${i}`,
+      reasons: ["GRANT_UNUSABLE"],
+      detail: `detail ${i}`,
+    }));
+    const out = collectRefusals([{ table: "brain_facts", promoted: 0, refused: many }]);
+
+    expect(out).toHaveLength(101);
+    expect(out.slice(0, 100).map((r) => r.id)).toEqual(many.slice(0, 100).map((r) => r.rowId));
+    const overflow = out[100];
+    expect(overflow.reasons).toEqual(["REPORT_TRUNCATED"]);
+    expect(overflow.detail).toContain("150 further drafts");
+    // The overflow entry must not read as a real row a reader could go fix.
+    expect(overflow.id).toBe("(truncated)");
+  });
+
+  it("does not cap when the list fits exactly", () => {
+    const exactly = Array.from({ length: 100 }, (_, i) => ({
+      rowId: `f${i}`,
+      reasons: ["X"],
+      detail: "d",
+    }));
+    const out = collectRefusals([{ table: "brain_facts", promoted: 0, refused: exactly }]);
+    expect(out).toHaveLength(100);
+    expect(out.some((r) => r.reasons.includes("REPORT_TRUNCATED"))).toBe(false);
+  });
+});
 
 describe("promotedCountsFromReports over the REAL registry tuple", () => {
   it("projects physical-table reports onto the wire keys (incl. the table-alias and promotedKey mappings)", () => {

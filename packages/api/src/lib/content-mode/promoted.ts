@@ -34,7 +34,7 @@ const log = createLogger("content-mode-promoted");
 export function collectRefusals(
   reports: ReadonlyArray<PromotionReport>,
 ): readonly PublishRefusedDraft[] {
-  return reports.flatMap((report) =>
+  const all = reports.flatMap((report) =>
     (report.refused ?? []).map((refusal) => ({
       id: refusal.rowId,
       surface: report.table,
@@ -42,7 +42,38 @@ export function collectRefusals(
       detail: refusal.detail,
     })),
   );
+  if (all.length <= MAX_REPORTED_REFUSALS) return all;
+
+  // Cap the REPORT, never the promotion. Every refused row was still left a
+  // draft and is still counted — this only bounds how many are enumerated in
+  // one JSON response and one log line. A buggy extraction fiber can refuse
+  // thousands of facts, each carrying a `detail` that interpolates its grant
+  // tokens verbatim; unbounded, that is a multi-megabyte response and a log
+  // line to match. Truncating SILENTLY would be the worse failure, so the
+  // overflow is reported as a synthetic entry rather than dropped.
+  const shown = all.slice(0, MAX_REPORTED_REFUSALS);
+  const hidden = all.length - shown.length;
+  log.warn(
+    { totalRefused: all.length, reported: shown.length, hidden },
+    "collectRefusals: refusal list truncated for reporting — every refused row is still a draft and still counted",
+  );
+  return [
+    ...shown,
+    {
+      id: "(truncated)",
+      surface: "(all)",
+      reasons: ["REPORT_TRUNCATED"],
+      detail: `${hidden} further draft${hidden === 1 ? " was" : "s were"} also refused and are not listed here. They remain drafts and are still counted in the pending-changes total; see the server logs for the full list.`,
+    },
+  ];
 }
+
+/**
+ * How many refusals one publish response enumerates. Well above any plausible
+ * hand-authored backlog, low enough that a runaway producer cannot turn a
+ * publish response into a multi-megabyte payload.
+ */
+const MAX_REPORTED_REFUSALS = 100;
 
 /**
  * One promoted count per registered entry, keyed by the entry's wire key

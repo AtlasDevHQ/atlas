@@ -185,8 +185,15 @@ const DRAFT_ACTIVITY_SQL = `
    WHERE workspace_id = $1 AND status = 'draft'
   UNION ALL
   SELECT 'brainFacts' AS key, MAX(updated_at) AS at FROM brain_facts
-   WHERE workspace_id = $1 AND status = 'draft'
+   WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL
 `;
+
+// `invalidated_at IS NULL` above is NOT optional polish: `brainFactsCountSql`,
+// the publish preview, and the promote UPDATE all exclude retracted facts
+// (#4769), so omitting it here would make a workspace whose only remaining
+// drafts are retracted report `brainFacts: 0` with a real `lastEditedAt` —
+// the two halves of one display surface (`content-surfaces.ts` folds them into
+// a single descriptor) disagreeing about whether anything is pending.
 
 /**
  * Coerce a pg `timestamptz` value to an ISO-8601 string. `pg` returns
@@ -217,17 +224,35 @@ const ACTIVITY_SURFACE_KEYS = [
   "brainFacts",
 ] as const satisfies ReadonlyArray<keyof ModeDraftActivity>;
 
+// `satisfies` alone catches a TYPO but permits an OMISSION — a subset still
+// satisfies `ReadonlyArray<keyof …>`. Hono does not validate responses, so a
+// forgotten key would ship a missing required field with every test green.
+// This gate makes the omission a compile error, mirroring `_AllCountKeysClaimed`
+// in `web/src/ui/lib/content-surfaces.ts`.
+type _AllActivityKeysCovered = [keyof ModeDraftActivity] extends [
+  (typeof ACTIVITY_SURFACE_KEYS)[number],
+]
+  ? true
+  : never;
+const _allActivityKeysCovered: _AllActivityKeysCovered = true;
+void _allActivityKeysCovered;
+
 function buildDraftActivity(
   rows: ReadonlyArray<{ key: string; at: unknown }>,
 ): ModeDraftActivity {
-  const result: Record<string, { lastEditedAt: string | null }> = {};
+  // Keyed by the surface union rather than `string`, so the single cast on the
+  // return is a widening of a fully-populated record — not the `as unknown as`
+  // double cast this replaced, which erased whatever `_AllActivityKeysCovered`
+  // above had just proved.
+  type ActivityKey = (typeof ACTIVITY_SURFACE_KEYS)[number];
+  const result = {} as Record<ActivityKey, { lastEditedAt: string | null }>;
   for (const k of ACTIVITY_SURFACE_KEYS) result[k] = { lastEditedAt: null };
   const allowed = new Set<string>(ACTIVITY_SURFACE_KEYS);
   for (const row of rows) {
     if (!allowed.has(row.key)) continue;
-    result[row.key] = { lastEditedAt: toIsoOrNull(row.at) };
+    result[row.key as ActivityKey] = { lastEditedAt: toIsoOrNull(row.at) };
   }
-  return result as unknown as ModeDraftActivity;
+  return result;
 }
 
 // ---------------------------------------------------------------------------

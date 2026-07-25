@@ -1,7 +1,7 @@
 /**
- * The fact class's promotion refusals — "no-provenance-no-promotion" (T4) and
- * "no-grant-no-promotion" (T5) evaluated at the review gate (#4769, ADR-0036
- * §Temporal, conflict & provenance).
+ * The fact class's promotion refusals evaluated at the review gate (#4769):
+ * "no-provenance-no-promotion" (T4, ADR-0036 §Temporal, conflict & provenance)
+ * and "no-grant-no-promotion" (T5, ADR-0036 §Access control & residency).
  *
  * Pure classification only. The transactional half — the SELECT, the scoped
  * UPDATE, and the `PromotionReport` — lives in
@@ -27,10 +27,11 @@
  *     element in `visible_to`.
  *
  * So `PROVENANCE_MISSING` and `PROVENANCE_EMPTY` are DEFENSE IN DEPTH: no draft
- * row can reach them today, and the live-PG test asserts exactly that (the
- * CHECK is what refuses, and it refuses at INSERT). They exist because the seam
- * must survive a future CHECK relaxation, and because a rule ADR-0036 states as
- * an absolute should be enforced where the promotion decision is made, not only
+ * row can reach them today, and the live-PG test asserts exactly that — the
+ * SCHEMA is what refuses, at INSERT (`NOT NULL` + the FK for the missing
+ * episode, the CHECK for the empty payload). They exist because the seam must
+ * survive a future schema relaxation, and because a rule ADR-0036 states as an
+ * absolute should be enforced where the promotion decision is made, not only
  * where the bytes land.
  *
  * `GRANT_UNUSABLE` is different — it is a LIVE gap, and the reason this module
@@ -38,22 +39,56 @@
  * including one outside the grant grammar: `visible_to = ['everyone']` is
  * legally storable, has cardinality 1, and grants NOBODY access, because
  * enforcement is array overlap against reader tokens and no reader token is
- * ever malformed (see `acl.ts`). The CHECK cannot be tightened — `acl.ts`'s
- * header forbids any Atlas-side rule stricter than it, since a row Postgres
- * stores but Atlas refuses is a workspace that cannot be migrated between
- * regions. Promotion is the right place for the stricter rule instead: refusing
- * to PROMOTE is not refusing to STORE, so the row stays exportable, importable,
- * and fixable, while never being stamped "reviewed and trusted" when it is in
- * fact invisible to every reader. This closes at the promotion seam the
- * residual gap `acl.ts` names and tracks on #4797.
+ * ever malformed (see `acl.ts`).
+ *
+ * ## Why the stricter rule belongs HERE and not in the CHECK
+ *
+ * Read `acl.ts`'s rule precisely, because a loose paraphrase of it would
+ * condemn this whole module: what it forbids is a stricter REJECTION AT REST
+ * OR AT IMPORT — nothing in `acl.ts` may refuse a grant the CHECK admits, and
+ * its named counterpart is `grantProblem` in `admin-migrate.ts`. It says
+ * outright that its own parser is "deliberately stricter than both". So the
+ * rule is not that Atlas may never be stricter than Postgres; it is that
+ * Atlas may never make a legally-stored row unstorable or unimportable —
+ * because such a row is a workspace that cannot be migrated between regions,
+ * and the failure would surface at cutover.
+ *
+ * A promotion refusal is neither a rejection at rest nor at import. The row
+ * stays stored, exportable, importable, and fixable; it is simply not stamped
+ * "reviewed and trusted" while it is invisible to every reader. That is
+ * precisely why the stricter rule is legitimate at this seam and would not be
+ * legitimate as a tightened CHECK.
+ *
+ * The corollary, worth stating because it is easy to miss: `GRANT_UNUSABLE` is
+ * an invariant of the PROMOTION PATH, not of published facts. A region import
+ * writes `status` verbatim (`admin-migrate.ts`, the guard's one allowlisted
+ * writer), so a workspace can legitimately arrive carrying an already-published
+ * fact whose grant this classifier would refuse. That asymmetry is deliberate —
+ * an importer stricter than the CHECK is the exact failure the rule above
+ * forbids — and `promotion-pg.test.ts` pins it so a future "fix" of one side
+ * has to argue with a test.
+ *
+ * This NARROWS the residual gap `acl.ts` names and tracks on #4797; it does not
+ * close it. Still open there: `brain_episodes` (gated by the same predicate but
+ * never promoted, so it has no equivalent seam) and facts that arrive already
+ * `published` through the import path above.
  */
 
 import { parseGrant } from "@atlas/api/lib/brain/acl";
 import type { PromotionRefusal } from "@atlas/api/lib/content-mode/port";
 
 /**
- * The refusal codes, as a closed vocabulary rather than free strings so
- * #4772's review surface can branch on them and a typo is a compile error.
+ * The refusal codes, as a closed vocabulary rather than free strings.
+ *
+ * The compile-time benefit is real but scoped to `@atlas/api`: a typo here is a
+ * type error, and an API-side consumer (#4772's review surface, insofar as it
+ * lives in the API) can branch exhaustively via {@link FactRefusal}. `@atlas/web`
+ * may never import `@atlas/api` (CLAUDE.md § Code Style), so the web surface
+ * reads `reasons` as plain strings off the wire and has no compile-time link to
+ * this list — which is exactly why every refusal also carries a prose `detail`
+ * the UI can render without knowing any code. If a future surface needs to
+ * branch on these in the browser, the vocabulary moves to `@useatlas/types`
+ * first.
  */
 export const FACT_REFUSAL_REASONS = {
   /** `source_episode_id` is absent — the evidence pointer is the provenance. */
@@ -98,6 +133,22 @@ export interface DraftFactRow {
   readonly visible_to: unknown;
 }
 
+/**
+ * A refusal from THIS classifier, with `reasons` narrowed to the closed
+ * vocabulary above.
+ *
+ * `PromotionRefusal` types `reasons` as `readonly string[]` because it is the
+ * generic port shape shared by every adapter (and teaching `port.ts` this
+ * table's vocabulary would deepen the `port → tables → adapters → port` cycle
+ * for no gain). But returning the widened type from here would defeat the whole
+ * point of `FACT_REFUSAL_REASONS` being closed: #4772's review surface imports
+ * this function directly and must be able to branch exhaustively. Narrowing on
+ * the way out costs nothing — it still assigns to `PromotionRefusal`.
+ */
+export interface FactRefusal extends PromotionRefusal {
+  readonly reasons: readonly FactRefusalReason[];
+}
+
 /** A non-null, non-array object — what `jsonb_typeof(...) = 'object'` means. */
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -114,13 +165,15 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
  * Returns `null` when the fact is promotable — the common case, and the one
  * that must be cheap.
  */
-export function classifyFactForPromotion(row: DraftFactRow): PromotionRefusal | null {
+export function classifyFactForPromotion(row: DraftFactRow): FactRefusal | null {
   const reasons: FactRefusalReason[] = [];
   const details: string[] = [];
 
-  // Defense in depth — `source_episode_id uuid NOT NULL` makes this
-  // unreachable today. `.trim()` guards a hand-authored import bundle that
-  // smuggled whitespace through as a "present" id.
+  // Defense in depth — `source_episode_id uuid NOT NULL` plus the composite FK
+  // make this unreachable from the database, and `uuid` cannot hold whitespace.
+  // The `.trim()` is therefore about the OTHER caller: this classifier is pure
+  // and #4772 may pre-flight a candidate that has not been inserted yet, where
+  // a whitespace-only id is an ordinary form-input mistake.
   if (typeof row.source_episode_id !== "string" || row.source_episode_id.trim() === "") {
     reasons.push(FACT_REFUSAL_REASONS.provenanceMissing);
     details.push("it has no source episode, so the claim has no evidence behind it");

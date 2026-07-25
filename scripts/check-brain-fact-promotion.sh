@@ -10,22 +10,43 @@
 # not merely duplicate logic; it would bypass the no-provenance / no-grant
 # refusals and stamp trust on a claim nothing checked.
 #
-# WHAT IS REFUSED
-#   - `UPDATE brain_facts … SET … status …`   (any status mutation)
-#   - `INSERT INTO brain_facts (… status …)`  (any status-naming insert)
-#   - `db.update(brainFacts).set({ status … })` (the Drizzle write-builder form)
+# WHAT IS REFUSED (each has a fixture in the adversarial suite)
+#   - `UPDATE [schema.]brain_facts … SET … status …`
+#   - `INSERT INTO [schema.]brain_facts (… status …)`
+#   - `INSERT INTO … brain_facts … ON CONFLICT … DO UPDATE SET … status …`
+#     — the path-upsert shape ADR-0030's connector engine uses, and therefore
+#     the single most likely way #4770/#4771 would reach this column. It names
+#     no table after `UPDATE` and no `status` in the column list, so it evaded
+#     both of the patterns above until it was called out.
+#   - `INSERT INTO brain_facts VALUES (…)` with NO column list — positional, so
+#     whether it sets `status` is unknowable by grep. Refused on principle:
+#     a positional insert into a 17-column table is unreviewable anyway.
+#   - `db.update(brainFacts).set({ status … })` — the Drizzle write-builder.
 #
-# WHAT THIS GATE CANNOT SEE, stated plainly so nobody mistakes it for a proof of
-# more than it is: a table name assembled at runtime (`UPDATE ${t} SET status`)
-# is ungreppable by construction. Today the codebase writes this table only as
-# raw SQL through `pg` — there are no Drizzle write-builder call sites at all
-# (`schema.ts`'s `brainFacts` pgTable exists for migration generation and the
-# drift check) — so the ORM pattern below is a tripwire for a style that does
-# not exist yet rather than a filter on current code. The structural half of the
-# guarantee is `adapters/__tests__/brain-facts.test.ts`, which asserts the
-# registry entry stays `exotic`: flipping it to `simple` would route promotion
-# through the registry's blanket UPDATE and bypass every refusal without any
-# file in this scan changing.
+# Matching is case-INSENSITIVE for the SQL forms (keyword casing is a style
+# choice, not a security boundary) and accepts an optional schema qualifier and
+# double-quoted identifier.
+#
+# WHAT THIS GATE STILL CANNOT SEE. Stated in full so nobody reads the list above
+# as a completeness proof:
+#   - A table name assembled at runtime (`UPDATE ${t} SET status`) — ungreppable
+#     by construction.
+#   - A statement whose `SET … status` is more than 400 characters past the
+#     table name (the window bound below).
+#   - Any language or file type outside `--include` (`.ts`/`.tsx`/`.js`).
+# The structural half of the guarantee is therefore NOT this script: it is
+# `adapters/__tests__/brain-facts.test.ts`, which asserts the registry entry
+# stays `exotic`. Flipping it to `simple` would route promotion through the
+# registry's blanket UPDATE and bypass every refusal without any file in this
+# scan changing.
+#
+# NOTE the deliberate over-breadth: the UPDATE pattern fires on `status`
+# anywhere in the 400-char window, INCLUDING a WHERE clause. So
+# `UPDATE brain_facts SET invalidated_at = now() WHERE … status = 'published'`
+# is refused even though it mutates no status. That is the safe direction for a
+# security gate — but it means a legitimate retraction that FILTERS on status
+# (which #4772/#4773 may well want) needs an allowlist entry with a rationale,
+# not a quiet regex loosening.
 #
 # An INSERT that does NOT name `status` is fine and is the expected shape for
 # every writer: migration 0180 defaults the column to `draft`, so the ingest
@@ -46,10 +67,20 @@
 #     It is a restore of a prior gate decision, not a new one; the import's own
 #     `grantProblem` validation is paired with the 0180 CHECK.
 #
-# Comments are stripped before matching so prose like this file's own docstring,
-# or an explanatory comment in a source file, cannot trip the gate. Tests and
-# migrations are excluded at the directory/pattern level: the migration IS the
-# schema, and tests must be able to construct published fixtures.
+# Comments are stripped before matching so an explanatory comment in a source
+# file cannot trip the gate. (Not this file — a `.sh` under `scripts/` is in
+# neither the search roots nor `--include`, so the gate can never scan itself.)
+# Two caveats on the stripping, which is the shared sed from check-ee-imports.sh:
+# an UNTERMINATED `/*` truncates the rest of the file, which hides real
+# offenders below it — the safe direction is the one it does NOT take, so treat
+# a suspiciously clean result on a file with odd comment syntax with suspicion.
+#
+# Tests are excluded by filename pattern: a fixture must be able to construct a
+# published row. `db/migrations/` is NOT excluded by directory — the `.sql`
+# migrations are already out of scope via `--include`, and excluding the
+# directory would have let a one-shot backfill under
+# `db/migrations/scripts/*.ts` (where CLAUDE.md says they live) write this
+# column with no gate at all.
 #
 # A regression here means a new promotion path appeared. Route it through
 # `promoteBrainFacts` (or, if it is genuinely a restore-not-a-decision like the
@@ -91,7 +122,6 @@ CANDIDATES=$(grep -rlE 'brain_facts|\bbrainFacts\b' "${EXISTING_ROOTS[@]}" \
   --exclude='*.test.tsx' \
   --exclude='*.spec.ts' \
   --exclude='*.spec.tsx' \
-  --exclude-dir='migrations' \
   --exclude-dir='__tests__' \
   --exclude-dir='__mocks__' \
   --exclude-dir='__test-utils__' \
@@ -108,8 +138,16 @@ STRIP_COMMENTS='sed -E "s#/\*([^*]|\*+[^*/])*\*+/##g; /\/\*/,/\*\// d; s#//.*\$#
 # matching. The bounded `.{0,400}` keeps the UPDATE…SET…status window from
 # spanning into an unrelated later statement in the same file.
 # Quoted identifiers (`UPDATE "brain_facts"`) are admitted by the optional quote.
-UPDATE_PATTERN='UPDATE[[:space:]]+"?brain_facts"?\b.{0,400}\bSET\b.{0,400}\bstatus\b'
-INSERT_PATTERN='INSERT[[:space:]]+INTO[[:space:]]+"?brain_facts"?[[:space:]]*\([^)]*\bstatus\b'
+# `(\w+\.)?` admits a schema qualifier (`public.brain_facts`); `"?` admits a
+# quoted identifier. Both were live evasions before they were probed.
+QUALIFIED='"?([a-zA-Z_][a-zA-Z0-9_]*\.)?"?brain_facts"?'
+UPDATE_PATTERN="UPDATE[[:space:]]+${QUALIFIED}\b.{0,400}\bSET\b.{0,400}\bstatus\b"
+INSERT_PATTERN="INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]*\([^)]*\bstatus\b"
+# The upsert form: no table follows UPDATE, and `status` is absent from the
+# INSERT column list — it appears only in the conflict action.
+UPSERT_PATTERN="INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b.{0,600}\bDO[[:space:]]+UPDATE[[:space:]]+SET\b.{0,400}\bstatus\b"
+# A column-less INSERT is positional: grep cannot tell whether it sets status.
+POSITIONAL_PATTERN="INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]+VALUES\b"
 # Drizzle write-builder: `.update(brainFacts)` … `.set({ … status … })`.
 ORM_PATTERN='\.update\([[:space:]]*brainFacts[[:space:]]*\).{0,400}\.set\([^)]{0,400}\bstatus\b'
 
@@ -131,6 +169,8 @@ if [ -n "$CANDIDATES" ]; then
     # is meaning), so it is tested separately.
     if echo "$FLAT" | grep -qiE "$UPDATE_PATTERN" \
       || echo "$FLAT" | grep -qiE "$INSERT_PATTERN" \
+      || echo "$FLAT" | grep -qiE "$UPSERT_PATTERN" \
+      || echo "$FLAT" | grep -qiE "$POSITIONAL_PATTERN" \
       || echo "$FLAT" | grep -qE "$ORM_PATTERN"; then
       OFFENDERS="${OFFENDERS}${f}"$'\n'
     fi

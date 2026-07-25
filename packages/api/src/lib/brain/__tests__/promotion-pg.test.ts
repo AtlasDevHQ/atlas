@@ -12,8 +12,10 @@
  *      file would say so by failing.
  *   2. **Is the UNREFUSABLE state actually unreachable?** The provenance rules
  *      are defense in depth, and the honest way to test that is to assert the
- *      CHECK is what refuses — at INSERT — rather than inserting an impossible
+ *      SCHEMA is what refuses — at INSERT — rather than inserting an impossible
  *      row to watch the adapter reject it. There is no such row to insert.
+ *      (`NOT NULL` + the composite FK for a missing episode; a CHECK for the
+ *      empty payload — they are different mechanisms and the tests say which.)
  *   3. **Does the gate actually gate reads?** `ContentModeRegistry.readFilter`
  *      emits text; only a query proves a draft fact is invisible in published
  *      mode and visible in the developer overlay.
@@ -30,7 +32,14 @@ import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
-import { promoteBrainFacts } from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import {
+  brainFactsCountSql,
+  promoteBrainFacts,
+} from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import {
+  aclVisibilityClause,
+  resolvePrincipalContext,
+} from "@atlas/api/lib/brain/acl";
 import { FACT_REFUSAL_REASONS } from "@atlas/api/lib/brain/promotion";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -115,7 +124,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     "an entirely-malformed grant is STORABLE — the refusal has something real to refuse",
     async () => {
       // `chk_brain_facts_grant_nonempty` requires one non-NULL, non-'' element;
-      // it does NOT require a element in the grant GRAMMAR, and it must never
+      // it does NOT require an element in the grant GRAMMAR, and it must never
       // be tightened (`acl.ts`: a row Postgres stores but Atlas refuses is a
       // workspace that cannot be migrated between regions). So `['everyone']`
       // lands at rest, grants nobody access, and is exactly the row the
@@ -370,6 +379,169 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
 
       expect(await statusOf(ours)).toBe("published");
       expect(await statusOf(notOurs)).toBe("draft");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "every grant form it ACCEPTS is genuinely visible to some reader",
+    async () => {
+      // The refusal's whole justification is "it would be invisible to every
+      // reader" — which makes the CONVERSE the thing that must be pinned. Today
+      // that is asserted only against `parseGrant`; if `parseGrant` and
+      // `aclVisibilityClause` ever drift, promotion would publish a fact nobody
+      // can see and every existing test would stay green. So: publish each
+      // accepted grant form, then read it back through the ENFORCING predicate.
+      const ws = "ws-visible";
+      const ep = await seedEpisode(ws, "visible");
+      await seedDraftFact({ workspaceId: ws, episodeId: ep, subject: "g-org", visibleTo: ["org"] });
+      await seedDraftFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "g-role",
+        visibleTo: ["role:admin"],
+      });
+      await seedDraftFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "g-user",
+        visibleTo: ["user:u1"],
+      });
+      await seedDraftFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "g-aud",
+        visibleTo: ["audience:exec"],
+      });
+      await pool.query(
+        `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source)
+         VALUES ($1, 'exec', 'u1', 'test')`,
+        [ws],
+      );
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const report = await Effect.runPromise(promoteBrainFacts(client, ws));
+        expect(report.promoted).toBe(4);
+        expect(report.refused).toEqual([]);
+        await client.query("COMMIT");
+      } finally {
+        client.release();
+      }
+
+      // An owner in `exec` satisfies all four arms (owner ⊇ admin via
+      // `impliedRoles`), so every promoted fact must come back.
+      const reader = await resolvePrincipalContext(pool, {
+        workspaceId: ws,
+        mode: "managed",
+        userId: "u1",
+        resolvedRole: { role: "owner", orgId: ws },
+      });
+      const clause = aclVisibilityClause(reader, {
+        table: "brain_facts",
+        alias: "f",
+        paramIndex: 1,
+      });
+      const { rows } = await pool.query<{ subject: string }>(
+        `SELECT f.subject FROM brain_facts f
+          WHERE ${clause.sql} AND f.status = 'published'
+          ORDER BY f.subject COLLATE "C"`,
+        [...clause.params],
+      );
+      expect(rows.map((r) => r.subject)).toEqual(["g-aud", "g-org", "g-role", "g-user"]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "GRANT_UNUSABLE is an invariant of the PROMOTION PATH, not of published facts",
+    async () => {
+      // Deliberate asymmetry, pinned so a future "fix" of one side has to argue
+      // with a test. A region import writes `status` verbatim (the guard's one
+      // allowlisted writer) and its own validation mirrors the 0180 CHECK, not
+      // `parseGrant` — because an importer stricter than the CHECK would make a
+      // legally-stored workspace unmigratable, which `acl.ts` forbids. So a
+      // published fact with an unusable grant CAN exist; what cannot happen is
+      // this gate creating one.
+      const ws = "ws-asymmetry";
+      const ep = await seedEpisode(ws, "asymmetry");
+      const imported = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "imported",
+        visibleTo: ["everyone"],
+        status: "published",
+      });
+      expect(await statusOf(imported)).toBe("published");
+
+      // The same grant, arriving as a draft, is refused by promotion.
+      const viaGate = await seedDraftFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "via-gate",
+        visibleTo: ["everyone"],
+      });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const report = await Effect.runPromise(promoteBrainFacts(client, ws));
+        expect(report.refused?.map((r) => r.rowId)).toEqual([viaGate]);
+        await client.query("COMMIT");
+      } finally {
+        client.release();
+      }
+      expect(await statusOf(viaGate)).toBe("draft");
+      // And the imported one is untouched — promotion never revisits it.
+      expect(await statusOf(imported)).toBe("published");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "a RETRACTED draft is neither promoted, counted, nor previewed",
+    async () => {
+      // `invalidated_at` is the tombstone; retraction is not a status flip
+      // (ADR-0036: supersession is not deletion). All four brain_facts surfaces
+      // must agree, or an excluded row becomes a backlog nobody is told about.
+      const ws = "ws-retracted";
+      const ep = await seedEpisode(ws, "retracted");
+      const live = await seedDraftFact({ workspaceId: ws, episodeId: ep, subject: "live-draft" });
+      const gone = await seedDraftFact({ workspaceId: ws, episodeId: ep, subject: "retracted-draft" });
+      await pool.query(`UPDATE brain_facts SET invalidated_at = now() WHERE id = $1`, [gone]);
+
+      // (1) draftCounts — the exact SQL the registry emits for this segment.
+      const counted = await pool.query<{ n: number }>(brainFactsCountSql("$1"), [ws]);
+      expect(counted.rows[0]!.n).toBe(1);
+
+      // (2) the publish preview projection, run against the live schema. The
+      // route has no unit test, so a bad column here 500s it in production
+      // (the #4209 lesson from the knowledge surface).
+      const previewed = await pool.query<{ id: string; label: string }>(
+        `SELECT id::text AS id,
+                subject || ' ' || predicate || ' ' || object AS label,
+                updated_at
+           FROM brain_facts
+          WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL
+          ORDER BY updated_at DESC`,
+        [ws],
+      );
+      expect(previewed.rows.map((r) => r.id)).toEqual([live]);
+      expect(previewed.rows[0]!.label).toBe("live-draft is thing");
+
+      // (3) promotion.
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const report = await Effect.runPromise(promoteBrainFacts(client, ws));
+        expect(report.promoted).toBe(1);
+        expect(report.refused).toEqual([]);
+        await client.query("COMMIT");
+      } finally {
+        client.release();
+      }
+      expect(await statusOf(live)).toBe("published");
+      expect(await statusOf(gone)).toBe("draft");
     },
     PG_TEST_TIMEOUT_MS,
   );

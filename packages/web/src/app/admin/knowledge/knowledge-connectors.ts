@@ -1,6 +1,7 @@
 import {
   BookMarked,
   BookText,
+  Brain,
   Cloud,
   FileUp,
   Globe,
@@ -50,6 +51,7 @@ const SLUG_TO_SOURCE: Readonly<Record<string, KnowledgeCollectionSource>> = {
   front: "front",
   helpscout: "helpscout",
   freshdesk: "freshdesk",
+  "slack-history": "slack-history",
 };
 
 /**
@@ -79,6 +81,7 @@ const CONNECTOR_ICONS: Readonly<Record<string, LucideIcon>> = {
   front: Inbox,
   helpscout: LifeBuoy,
   freshdesk: Headset,
+  "slack-history": Brain,
 };
 
 /** Tile icon for a slug; a future connector falls back to the generic glyph. */
@@ -124,4 +127,8 @@ export const KNOWLEDGE_DISPLAY_ORDER: readonly string[] = [
   "front",
   "helpscout",
   "freshdesk",
+  // #4770: a brain SOURCE, not a document mirror. Last in the picker because
+  // it is the odd one out — its collection reports zero documents, since its
+  // rows land in `brain_episodes` rather than `knowledge_documents`.
+  "slack-history",
 ];

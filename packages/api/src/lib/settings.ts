@@ -1708,6 +1708,23 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+  {
+    // Company-brain chat ingest backfill window (#4770, ADR-0036 §Ingestion) —
+    // how far back a chat channel with no stored mark reads on its first pass.
+    // The operator's lever when a first sync hits the per-sync record cap: the
+    // cap warning names this knob. Read per cycle by
+    // `lib/brain/ingest/slack/connector.ts::getChatBackfillWindowMs`.
+    key: "ATLAS_BRAIN_CHAT_BACKFILL_DAYS",
+    section: "Knowledge Base",
+    label: "Chat History Backfill (days)",
+    description:
+      "How much history a newly-connected chat channel reads on its first sync (default 7). Lower it when a first sync reports that a channel has more history than one cycle can read; already-synced channels are unaffected. Hot-reloaded; non-positive values fall back to the default.",
+    type: "number",
+    default: "7",
+    envVar: "ATLAS_BRAIN_CHAT_BACKFILL_DAYS",
+    scope: "platform",
+    saasVisible: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------

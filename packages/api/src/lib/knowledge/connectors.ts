@@ -174,6 +174,8 @@ export class ConnectorRateLimitError extends Error {
 // Registry — catalog id → connector, read by the sync cycle walk
 // ---------------------------------------------------------------------------
 
+import { claimCatalogIngestTarget, _resetCatalogIngestClaims } from "./catalog-claims";
+
 const VENDOR_SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
 const registry = new Map<string, KnowledgeSyncConnector>();
@@ -195,6 +197,9 @@ export function registerKnowledgeSyncConnector(connector: KnowledgeSyncConnector
       `Knowledge sync connector for catalog id "${connector.catalogId}" is already registered`,
     );
   }
+  // One catalog id, one ingest target — see `catalog-claims.ts` for why the
+  // check lives there and not as a peek into the brain registry.
+  claimCatalogIngestTarget(connector.catalogId, "knowledge-documents");
   registry.set(connector.catalogId, connector);
 }
 
@@ -210,4 +215,5 @@ export function listKnowledgeSyncConnectorCatalogIds(): string[] {
 /** Test-only: clear the registry (tests register fixtures per-suite, never at module top-level). */
 export function _resetKnowledgeSyncConnectors(): void {
   registry.clear();
+  _resetCatalogIngestClaims("knowledge-documents");
 }

@@ -12,7 +12,7 @@
  * references the content-mode publish machinery).
  */
 
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { zipSync, strToU8 } from "fflate";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 
@@ -230,7 +230,40 @@ void mock.module("@atlas/api/lib/semantic/sync", () => ({
   },
 }));
 
+// The brain episode engine (#4770) — stubbed so the cycle's THIRD dispatch arm
+// is observable here. Mock-all-exports: `episode-sync.ts` exports exactly this.
+const brainSyncCalls: { workspaceId: string; installId: string; source: string }[] = [];
+let BRAIN_SYNC_STATUS: "success" | "error" = "success";
+void mock.module("@atlas/api/lib/brain/ingest/episode-sync", () => ({
+  syncBrainEpisodeSource: async (params: {
+    connector: { source: string };
+    workspaceId: string;
+    installId: string;
+  }) => {
+    brainSyncCalls.push({
+      workspaceId: params.workspaceId,
+      installId: params.installId,
+      source: params.connector.source,
+    });
+    return {
+      installId: params.installId,
+      status: BRAIN_SYNC_STATUS,
+      mode: "reconciliation" as const,
+      syncedAt: "2026-07-01T00:00:00.000Z",
+      error: null,
+      episodes: null,
+      coverageIncomplete: false,
+      warnings: [],
+      highWaterMark: null,
+    };
+  },
+}));
+
 const { syncCollection, runKnowledgeSyncCycle } = await import("@atlas/api/lib/knowledge/sync");
+const {
+  _resetBrainSourceConnectors,
+  registerBrainSourceConnector,
+} = await import("@atlas/api/lib/brain/ingest/types");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -795,6 +828,15 @@ describe("syncCollection — endpoint auth", () => {
 // ── Cycle ────────────────────────────────────────────────────────────────────
 
 describe("runKnowledgeSyncCycle", () => {
+  // Cleanup in `afterEach`, never at the end of an `it`: a failing assertion
+  // would otherwise leave the brain registry populated and `BRAIN_SYNC_STATUS`
+  // pinned to "error" for every later test in the file, turning one real
+  // failure into a cascade that misdirects the debugging.
+  afterEach(() => {
+    _resetBrainSourceConnectors();
+    BRAIN_SYNC_STATUS = "success";
+  });
+
   it("walks every enabled install, isolating per-collection failures", async () => {
     INSTALL_ROWS = [
       { workspace_id: ORG, install_id: "good", catalog_id: "catalog:bundle-sync", config: baseConfig() },
@@ -820,6 +862,71 @@ describe("runKnowledgeSyncCycle", () => {
     const result = await runKnowledgeSyncCycle();
     expect(result).toEqual({ inspected: 0, succeeded: 0, failed: 0, queryFailed: true });
     expect(stateWrites).toHaveLength(0);
+  });
+
+  // ── The ingest-target fork point (#4770, ADR-0036 §Ingestion) ─────────────
+  //
+  // The brain arm is the only thing that makes the Slack source run at all. If
+  // its catalog id never reached the install query, or the walk routed it to
+  // the DOCUMENT engine, the source would silently never sync and the cycle
+  // would report a clean `inspected: 0` — a green, silent no-op.
+
+  it("routes a registered brain source to the episode engine, not the document one", async () => {
+    _resetBrainSourceConnectors();
+    registerBrainSourceConnector({
+      catalogId: "catalog:fixture-brain",
+      source: "fixture",
+      createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
+    });
+    brainSyncCalls.length = 0;
+    INSTALL_ROWS = [
+      { workspace_id: ORG, install_id: "chat", catalog_id: "catalog:fixture-brain", config: {} },
+    ];
+
+    const result = await runKnowledgeSyncCycle();
+    expect(result).toEqual({ inspected: 1, succeeded: 1, failed: 0, queryFailed: false });
+    expect(brainSyncCalls).toEqual([
+      { workspaceId: ORG, installId: "chat", source: "fixture" },
+    ]);
+    // The document engine writes its own state row; the brain engine's stub
+    // does not, so an empty state-write list proves the document arm was not
+    // taken as well.
+    expect(stateWrites).toHaveLength(0);
+  });
+
+  it("includes brain-source catalog ids in the install query", async () => {
+    _resetBrainSourceConnectors();
+    registerBrainSourceConnector({
+      catalogId: "catalog:fixture-brain",
+      source: "fixture",
+      createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
+    });
+    INSTALL_ROWS = [];
+    internalQuery.mockClear();
+    await runKnowledgeSyncCycle();
+    const installsCall = internalQuery.mock.calls.find((call) =>
+      String(call[0]).includes("SELECT workspace_id, install_id"),
+    );
+    expect(installsCall?.[1]?.[0]).toContain("catalog:fixture-brain");
+    _resetBrainSourceConnectors();
+  });
+
+  it("counts a failing brain source without sinking the rest of the cycle", async () => {
+    _resetBrainSourceConnectors();
+    registerBrainSourceConnector({
+      catalogId: "catalog:fixture-brain",
+      source: "fixture",
+      createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
+    });
+    BRAIN_SYNC_STATUS = "error";
+    INSTALL_ROWS = [
+      { workspace_id: ORG, install_id: "chat", catalog_id: "catalog:fixture-brain", config: {} },
+      { workspace_id: ORG, install_id: "good", catalog_id: "catalog:bundle-sync", config: baseConfig() },
+    ];
+    const { impl } = fetchReturning(fakeResponse({ bytes: zipBundle({ "a.md": "# a" }) }));
+
+    const result = await runKnowledgeSyncCycle({ fetchImpl: impl });
+    expect(result).toEqual({ inspected: 2, succeeded: 1, failed: 1, queryFailed: false });
   });
 });
 

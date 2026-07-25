@@ -63,6 +63,11 @@ import { HelpScoutFormInstallHandler, HELPSCOUT_SLUG } from "./helpscout-form-ha
 import { registerHelpScoutKnowledgeConnector } from "@atlas/api/lib/knowledge/helpscout/connector";
 import { FreshdeskFormInstallHandler, FRESHDESK_SLUG } from "./freshdesk-form-handler";
 import { registerFreshdeskKnowledgeConnector } from "@atlas/api/lib/knowledge/freshdesk/connector";
+import {
+  SlackHistoryFormInstallHandler,
+  SLACK_HISTORY_SLUG,
+} from "./slack-history-form-handler";
+import { registerSlackHistoryConnector } from "@atlas/api/lib/brain/ingest/slack/connector";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -382,6 +387,21 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(FRESHDESK_SLUG, new FreshdeskFormInstallHandler());
   registerFreshdeskKnowledgeConnector();
   log.info("Registered FreshdeskFormInstallHandler + knowledge sync connector");
+  // Company Brain (Slack history) — the built-in `slack-history` BRAIN SOURCE
+  // install (#4770, ADR-0036 §Ingestion & connectors). Knowledge-pillar like
+  // its neighbours (which is what lets it reuse the collection install spine,
+  // the sync bookkeeping, and the one cycle walk verbatim), but it ingests
+  // tier-3 EPISODES rather than knowledge documents — the cycle walk routes it
+  // on that ingest target. Like `salesforce-knowledge` it collects NO secret:
+  // the connector reuses the workspace's existing Slack OAuth install
+  // (`chat_cache`), so no new Slack app is registered. Registering the FORM
+  // handler + the SOURCE together keeps a half-wired deploy from having an
+  // installable card whose scheduled sync has no registered client. No env
+  // gate: the install fails loudly and actionably ("connect Slack first",
+  // "invite the bot to the channel") on a workspace that isn't ready.
+  registerFormHandler(SLACK_HISTORY_SLUG, new SlackHistoryFormInstallHandler());
+  registerSlackHistoryConnector();
+  log.info("Registered SlackHistoryFormInstallHandler + brain source connector");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

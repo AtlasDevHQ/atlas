@@ -6,8 +6,8 @@
  * `mock.module()`, no database. What they pin is the part a real-Postgres test
  * cannot make legible: which failure BLOCKS, which failure FLAGS, and exactly
  * what a reviewer ends up holding. The storage-level claims (the CHECKs, the
- * FKs, real transaction rollback, two overlapping reconciles racing for one
- * claim) live in the `-pg` sibling.
+ * real transaction rollback, two overlapping reconciles racing for one claim,
+ * cross-tenant scoping) live in the `-pg` sibling.
  *
  * The block-vs-flag asymmetry is the reason this file exists at all. Both
  * directions are failure modes with names:

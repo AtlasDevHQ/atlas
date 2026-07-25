@@ -169,11 +169,44 @@ const QUARANTINE_PROBE_BASE_MS = 30 * 60 * 1000;
 /** Backoff ceiling: 2^5 × 30 min = 16 h between probes. */
 const QUARANTINE_PROBE_MAX_SHIFT = 5;
 
-/** What the ledger remembers about one struggling episode. */
+/**
+ * Re-emit the quarantine ERROR every Nth failure.
+ *
+ * Its OWN constant rather than a reuse of {@link QUARANTINE_AFTER_FAILURES}:
+ * they answer different questions, and tuning the threshold for spend would
+ * otherwise silently retune the log cadence — at the 16 h probe ceiling, a
+ * threshold of 10 would mean one ERROR every six days.
+ */
+const QUARANTINE_ERROR_EVERY = 3;
+
+/**
+ * What the ledger remembers about one struggling episode.
+ *
+ * `readonly` because every write replaces the whole entry: an in-place
+ * `entry.failures++` would advance the count while leaving `lastFailureAt`
+ * describing an older failure, and the backoff reads both.
+ */
 interface QuarantineEntry {
-  failures: number;
+  readonly failures: number;
   /** Epoch ms of the most recent failure — the backoff window's origin. */
-  lastFailureAt: number;
+  readonly lastFailureAt: number;
+  /**
+   * True once this episode's strike has been forgiven as an outage.
+   *
+   * THE cap that keeps the outage refund from being self-fulfilling. A failing
+   * episode is never stamped, so it stays at the head of the drain — and once
+   * the healthy episodes ahead of it have drained, "every episode this tick
+   * failed" is simply what a poisoned queue looks like, every tick, forever. An
+   * uncapped refund therefore un-charges the same strikes it just charged and
+   * quarantine can never be reached: measured over a simulated day, two
+   * poisoned episodes went from 25 model calls total to 576 and climbing.
+   *
+   * Forgiving each episode exactly ONCE keeps both properties: a genuine outage
+   * costs every episode zero net strikes on its first bad tick, and a
+   * deterministically-failing batch still ratchets into quarantine one tick
+   * later than it otherwise would.
+   */
+  readonly refunded?: true;
 }
 
 /**
@@ -461,7 +494,17 @@ export async function resolveExtractionModel(
     return { routingUnavailable: false, config } as const;
   });
 
-  let resolved: { routingUnavailable: boolean; config?: RawWorkspaceModelConfig | null };
+  // A UNION, not a widened record. `{ routingUnavailable: boolean; config?: … }`
+  // makes `{ routingUnavailable: false }` with no `config` representable — and
+  // that value falls straight through to `getModel()` below, which is the
+  // "silently bill the platform key for a BYO workspace" failure this whole
+  // function exists to prevent. The producer already returns the union; only
+  // the annotation was throwing it away.
+  type RoutingProbe =
+    | { readonly routingUnavailable: true }
+    | { readonly routingUnavailable: false; readonly config: RawWorkspaceModelConfig | null };
+
+  let resolved: RoutingProbe;
   try {
     resolved = await runEnterprise(program);
   } catch (err) {
@@ -480,7 +523,8 @@ export async function resolveExtractionModel(
     return null;
   }
 
-  const config = resolved.config ?? null;
+  // No `?? null` — past the gate above the union guarantees the field.
+  const config = resolved.config;
   try {
     if (config) {
       return {
@@ -496,7 +540,12 @@ export async function resolveExtractionModel(
     const model = getModel();
     return { model, modelId: typeof model === "string" ? model : model.modelId };
   } catch (err) {
-    log.warn(
+    // ERROR, matching the routing-unavailable arm: a config that reads but
+    // cannot be built is non-transient by definition, and every tick from here
+    // stalls this workspace's whole backlog until a human edits configuration.
+    // (The READ failure above stays `warn` — a decrypt or an internal-DB blip
+    // can clear on its own.)
+    log.error(
       { workspaceId, byo: config !== null, err: errorMessage(err) },
       "brain extraction: the configured model could not be built — leaving this workspace's episodes queued until the configuration is repaired",
     );
@@ -515,9 +564,9 @@ export const EXTRACTION_SKIP_REASONS = [
   /** Stored by reference (`locator`), which M1 has no fetcher for. Stamped. */
   "no_body",
   /**
-   * Failed on every recent attempt, so this process has stopped calling a model
-   * for it — see {@link QUARANTINE_AFTER_FAILURES}. Still queued; still retried
-   * after a restart.
+   * Failed on every recent attempt, so this tick did not call a model for it —
+   * see {@link QUARANTINE_AFTER_FAILURES}. Still queued, and re-probed once the
+   * widening backoff elapses, so a repaired model heals it without a restart.
    */
   "quarantined",
 ] as const;
@@ -553,6 +602,14 @@ export interface BrainExtractionCycleResult {
   skipped: Record<ExtractionSkipReason, number>;
   /** Episodes whose pass threw — left queued for the next cycle. */
   failed: number;
+  /**
+   * Strikes forgiven this tick because every attempted episode failed.
+   *
+   * Nonzero says "we chose not to count this against the episodes", which is
+   * exactly the state an operator needs distinguished from "nothing was wrong"
+   * when asking why quarantine has not engaged.
+   */
+  outageRefunded: number;
   /** Present only on the scan-fault path, mirroring the other DB cycles. */
   error?: string;
 }
@@ -584,6 +641,7 @@ function emptyResult(): BrainExtractionCycleResult {
     factsProvisional: 0,
     factsBlocked: 0,
     blockedEpisodes: 0,
+    outageRefunded: 0,
     // Fresh per call — `runPeriodicDbCycle` mutates the result in place, so a
     // shared object would accumulate across ticks.
     blocked: {
@@ -610,59 +668,101 @@ export function runBrainExtractionCycle(
   const reconcile = deps.reconcile ?? reconcileFacts;
   const now = deps.now ?? (() => new Date());
 
-  // Resolved once per WORKSPACE per cycle, not once per episode: a decrypt is
-  // not free and a workspace usually contributes a run of adjacent episodes.
-  // Cycle-scoped so a key repaired between ticks takes effect on the next one.
-  const models = new Map<string, ResolvedExtractionModel | null>();
-  const modelFor = async (workspaceId: string): Promise<ResolvedExtractionModel | null> => {
-    const cached = models.get(workspaceId);
-    if (cached !== undefined) return cached;
-    const resolved = await resolveModel(workspaceId);
-    models.set(workspaceId, resolved);
-    return resolved;
-  };
+  // `Effect.suspend` so the per-tick mutable state below is allocated per RUN
+  // rather than per construction. The scheduler builds a fresh Effect every tick
+  // today, so this is belt-and-braces — but hoisting that call to a `const` is
+  // an obviously-equivalent-looking refactor that would silently turn the model
+  // cache into a process-lifetime one and make `charged` cumulative across
+  // ticks, un-charging strikes from rows a later tick never touched.
+  return Effect.suspend(() => {
+    // Resolved once per WORKSPACE per cycle, not once per episode: a decrypt is
+    // not free and a workspace usually contributes a run of adjacent episodes.
+    // Cycle-scoped so a key repaired between ticks takes effect on the next one.
+    const models = new Map<string, ResolvedExtractionModel | null>();
+    const modelFor = async (workspaceId: string): Promise<ResolvedExtractionModel | null> => {
+      const cached = models.get(workspaceId);
+      if (cached !== undefined) return cached;
+      const resolved = await resolveModel(workspaceId);
+      models.set(workspaceId, resolved);
+      return resolved;
+    };
 
-  // ONE binding, threaded into both halves — `extractEpisode` reads it and
-  // `tallyEpisode` writes it, and they have to be the same object.
-  const failures = failureLedger;
-  const charged: string[] = [];
+    // ONE binding, threaded into both halves — `extractEpisode` reads it and
+    // `tallyEpisode` writes it, and they have to be the same object.
+    const failures = failureLedger;
+    const charged: { episodeId: string; workspaceId: string }[] = [];
 
-  return runPeriodicDbCycle<EpisodeRow, EpisodeOutcome, BrainExtractionCycleResult>({
-    log,
-    label: "Brain extraction",
-    emptyResult,
-    failureResult: (error) => ({ ...emptyResult(), status: "failure", error }),
-    scan: () => internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE]),
-    applyRow: (row) => extractEpisode(row, { extract, modelFor, reconcile, now, failures }),
-    defectOutcome: (error) => ({ kind: "failed", error }),
-    tally: (result, row, outcome) => tallyEpisode(result, row, outcome, failures, now, charged),
-    emitCycleAudit,
-  }).pipe(
-    Effect.map((result) => {
-      // An OUTAGE is not evidence about any episode. When every episode the
-      // tick actually attempted failed, the common cause is upstream — a
-      // provider 5xx, a rate-limit storm, an exhausted pool — and charging each
-      // one a strike would quarantine a whole batch of perfectly good episodes
-      // after three bad ticks. Cheaper and more honest than classifying
-      // individual errors: if none of them worked, blame the world, not the
-      // rows. A single failing row among successes is still charged.
+    /**
+     * Forgive one strike each when the whole tick failed, then emit the cycle
+     * row.
+     *
+     * An OUTAGE is not evidence about any episode. When every episode a tick
+     * attempted failed, the common cause is upstream — a provider 5xx, a
+     * rate-limit storm, an exhausted pool — and charging each one a strike would
+     * quarantine a batch of perfectly good episodes after three bad ticks.
+     * Cheaper and more honest than classifying individual errors: if none of
+     * them worked, blame the world, not the rows. A single failing row among
+     * successes is still charged, and the per-episode `refunded` cap keeps a
+     * genuinely poisoned batch from being forgiven forever.
+     *
+     * FUSED with the audit emit deliberately: the skeleton calls
+     * `emitCycleAudit` after the last row and before returning, which is the
+     * only hook that runs with the tick's full verdict in hand and still ahead
+     * of the audit write. Refunding afterwards would leave every audit row
+     * claiming `outageRefunded: 0` — a lie in the one place an operator reads
+     * it.
+     */
+    const settleAndAudit = (result: BrainExtractionCycleResult): void => {
       const attempted = result.failed + result.extracted + result.blockedEpisodes;
-      if (charged.length > 0 && attempted > 1 && result.failed === attempted) {
-        for (const id of charged) {
-          const entry = failures.get(id);
-          if (entry === undefined) continue;
-          if (entry.failures <= 1) failures.delete(id);
-          else failures.set(id, { ...entry, failures: entry.failures - 1 });
+      if (charged.length > 0 && result.failed === attempted) {
+        let refunded = 0;
+        for (const { episodeId } of charged) {
+          const entry = failures.get(episodeId);
+          if (entry === undefined || entry.refunded === true) continue;
+          refunded++;
+          // Decremented to zero, NEVER deleted. Deleting would discard the
+          // `refunded` marker with the entry, so the next tick would forgive the
+          // same episode again — and again — which is the uncapped behaviour
+          // this cap exists to prevent. A zero-failure entry is inert
+          // (`isQuarantined` is false) and is cleared for real by any path that
+          // stamps the episode.
+          failures.set(episodeId, {
+            ...entry,
+            failures: entry.failures - 1,
+            refunded: true,
+          });
         }
-        log.warn(
-          { attempted, workspaces: new Set(charged).size },
-          "brain extraction: every episode this tick failed — treating it as an upstream outage rather than counting a strike against each episode",
-        );
+        if (refunded > 0) {
+          result.outageRefunded = refunded;
+          log.warn(
+            {
+              attempted,
+              refunded,
+              // Genuinely workspaces, not episode ids. The two differ, and the
+              // difference is the discriminator that matters: an upstream
+              // outage crosses tenants, one bad body class does not.
+              workspaces: new Set(charged.map((c) => c.workspaceId)).size,
+            },
+            "brain extraction: every episode this tick failed — forgiving one strike each rather than counting an upstream outage against the episodes",
+          );
+        }
       }
       charged.length = 0;
-      return result;
-    }),
-  );
+      emitCycleAudit(result);
+    };
+
+    return runPeriodicDbCycle<EpisodeRow, EpisodeOutcome, BrainExtractionCycleResult>({
+      log,
+      label: "Brain extraction",
+      emptyResult,
+      failureResult: (error) => ({ ...emptyResult(), status: "failure", error }),
+      scan: () => internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE]),
+      applyRow: (row) => extractEpisode(row, { extract, modelFor, reconcile, now, failures }),
+      defectOutcome: (error) => ({ kind: "failed", error }),
+      tally: (result, row, outcome) => tallyEpisode(result, row, outcome, failures, now, charged),
+      emitCycleAudit: settleAndAudit,
+    });
+  });
 }
 
 interface ApplyDeps {
@@ -783,6 +883,24 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
     extractedAt,
   });
 
+  // The stage refused the whole episode despite our pre-flight passing. It
+  // cannot happen while this path passes no `sourcePrincipal` (the two gates
+  // then see identical inputs) — but `ReconcileRequest` exists to let a caller
+  // supply one, and the moment anything here does, an unread `episodeBlocked`
+  // would be recorded as a successful extraction and STAMPED: a safety refusal
+  // permanently consuming the evidence, counted as success. Read it instead.
+  if (report.episodeBlocked !== undefined) {
+    log.warn(
+      {
+        workspaceId: episode.workspaceId,
+        episodeId: episode.id,
+        reason: report.episodeBlocked,
+      },
+      "brain extraction: the reconcile stage refused this episode after the pre-flight passed — the two gates disagreed, which is an Atlas bug; leaving it queued",
+    );
+    return { kind: "blocked", reason: report.episodeBlocked };
+  }
+
   // Only after the reconcile transaction has COMMITTED. See the module header
   // on why the reverse order is not merely slower but unsafe.
   await stampExtracted(episode);
@@ -832,8 +950,8 @@ function tallyEpisode(
   outcome: EpisodeOutcome,
   ledger: Map<string, QuarantineEntry>,
   now: () => Date,
-  /** Ids incremented this tick — the outage rollback's working set. */
-  charged: string[],
+  /** Episodes charged a strike this tick — the outage rollback's working set. */
+  charged: { episodeId: string; workspaceId: string }[],
 ): void {
   switch (outcome.kind) {
     case "extracted": {
@@ -841,7 +959,14 @@ function tallyEpisode(
       result.factsCreated += outcome.report.created;
       result.factsCorroborated += outcome.report.corroborated;
       result.factsProvisional += outcome.report.provisional;
-      result.factsBlocked += Object.values(outcome.report.blocked).reduce((a, b) => a + b, 0);
+      // Fold the per-reason breakdown rather than only its sum: `factsBlocked:
+      // 12` says candidates were refused, `blocked.MALFORMED_CLAIM: 12` says the
+      // extractor is emitting empty triples, and those send an investigation to
+      // different files.
+      for (const [reason, count] of Object.entries(outcome.report.blocked)) {
+        result.blocked[reason as ReconcileBlockReason] += count;
+        result.factsBlocked += count;
+      }
       return;
     }
     case "blocked": {
@@ -857,7 +982,8 @@ function tallyEpisode(
     }
     case "failed": {
       result.failed++;
-      const failures = (ledger.get(row.id)?.failures ?? 0) + 1;
+      const entry = ledger.get(row.id);
+      const failures = (entry?.failures ?? 0) + 1;
       // `delete` before `set` so insertion order tracks RECENCY: `Map.set` on an
       // existing key leaves it in place, which would make the cap evict the
       // longest-failing entry — the one whose count is doing the most work.
@@ -869,12 +995,12 @@ function tallyEpisode(
         const oldest = ledger.keys().next();
         if (!oldest.done) ledger.delete(oldest.value);
       }
-      ledger.set(row.id, { failures, lastFailureAt: now().getTime() });
-      charged.push(row.id);
+      ledger.set(row.id, { ...entry, failures, lastFailureAt: now().getTime() });
+      charged.push({ episodeId: row.id, workspaceId: row.workspace_id });
       // Re-armed, not one-shot: the condition is ongoing, so `>=` with a modulo
       // keeps a recurring ERROR in the log instead of one archaeological line
       // that scrolled away days before anyone looked.
-      if (failures >= QUARANTINE_AFTER_FAILURES && failures % QUARANTINE_AFTER_FAILURES === 0) {
+      if (failures >= QUARANTINE_AFTER_FAILURES && failures % QUARANTINE_ERROR_EVERY === 0) {
         log.error(
           { workspaceId: row.workspace_id, episodeId: row.id, failures, err: outcome.error },
           "brain extraction: episode keeps failing — it is holding a queue slot and will only be retried on a widening backoff until the cause is fixed",

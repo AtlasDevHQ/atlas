@@ -505,21 +505,18 @@ export async function reconcileFacts(
     // identical warn per episode would train an operator to skim them — but
     // dropping the line entirely would leave a safety refusal with no trace at
     // all. The verdict also travels in `episodeBlocked` regardless.
-    const level = candidates.length > 0 ? "warn" : "debug";
-    {
-      log[level](
-        {
-          workspaceId: episode.workspaceId,
-          episodeId: episode.id,
-          source: episode.source,
-          sourceId: episode.sourceId,
-          producer,
-          reason,
-          candidates: candidates.length,
-        },
-        `brain reconcile: blocked every candidate from this episode — ${episodeBlock.detail}`,
-      );
-    }
+    const detail = {
+      workspaceId: episode.workspaceId,
+      episodeId: episode.id,
+      source: episode.source,
+      sourceId: episode.sourceId,
+      producer,
+      reason,
+      candidates: candidates.length,
+    };
+    const message = `brain reconcile: blocked every candidate from this episode — ${episodeBlock.detail}`;
+    if (candidates.length > 0) log.warn(detail, message);
+    else log.debug(detail, message);
     blocked[reason] = candidates.length;
     return {
       episodeBlocked: reason,

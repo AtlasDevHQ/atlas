@@ -2358,6 +2358,7 @@ export function makeSchedulerLive(
           "atlas.brain.skipped_model_unavailable": result.skipped.model_unavailable,
           "atlas.brain.skipped_no_body": result.skipped.no_body,
           "atlas.brain.skipped_quarantined": result.skipped.quarantined,
+          "atlas.brain.outage_refunded": result.outageRefunded,
         }),
         onTickFailure: {
           level: "warn",

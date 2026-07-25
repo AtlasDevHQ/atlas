@@ -19,13 +19,15 @@
  *      Acceptance criterion 5, and the thing that makes work-then-stamp safe.
  *      It rests on the corroboration lookup + the edge's `NOT EXISTS` guard
  *      running against real rows.
- *   4. **Do the queue mechanics hold?** The drain reads
- *      `idx_brain_episodes_extraction_queue`'s predicate, a completed pass
- *      stamps `extracted_at`, and a FAILED pass does not — the difference
- *      between "retried next cycle" and "silently dropped".
- *   5. **Do the CHECKs the block-stage stands in front of actually fire?** The
- *      blocked cases assert both that the stage refused AND that nothing
- *      reached the table.
+ *   4. **Do the queue mechanics hold?** A completed pass stamps `extracted_at`
+ *      and a FAILED pass does not — the difference between "retried next cycle"
+ *      and "silently dropped". (What the drain's index does for the query is a
+ *      planner question no test here asks.)
+ *   5. **Does the stage refuse BEFORE the row reaches a table whose CHECKs
+ *      would happily accept it?** `['everyone']` is precisely the grant the
+ *      0180 CHECK does not catch, which is why the stage blocks upstream — so
+ *      the blocked cases assert both that it refused AND that nothing reached
+ *      the table.
  *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_4771_scratch
@@ -490,16 +492,66 @@ describeIfPg("brain extraction + reconcile (real Postgres)", () => {
       return Promise.reject(new Error("model refused"));
     };
 
-    for (let i = 0; i < 3; i++) await cycleWith(exploding);
-    expect(calls).toBe(3);
+    // FOUR ticks, not three: the first all-failed tick is forgiven as a possible
+    // outage (one free pass per episode, see the refund cap), so the three
+    // strikes that reach the threshold start on tick 2.
+    for (let i = 0; i < 4; i++) await cycleWith(exploding);
+    expect(calls).toBe(4);
 
     const quarantined = await cycleWith(exploding);
     expect(quarantined).toMatchObject({ inspected: 1, failed: 0 });
     expect(quarantined.skipped.quarantined).toBe(1);
-    // No fourth model call…
-    expect(calls).toBe(3);
+    // No fifth model call…
+    expect(calls).toBe(4);
     // …and still queued, so a restart (or a fix) picks it back up.
     expect(await extractedAtOf(poison.id)).toBeNull();
+  });
+
+  it("still quarantines when the WHOLE batch is poisoned", async () => {
+    // The regression the single-episode test above structurally cannot catch.
+    // A failing episode is never stamped, so it stays at the head of the drain —
+    // and once the healthy episodes ahead of it have gone, "every episode this
+    // tick failed" is just what a poisoned queue looks like, on every tick. An
+    // uncapped outage refund therefore un-charges the strikes it just charged
+    // and quarantine becomes unreachable: measured over a simulated day, two
+    // poisoned episodes went from 25 model calls total to 576 and climbing.
+    await insertEpisode({ sourceId: "C01:poison-a", body: "explode" });
+    await insertEpisode({ sourceId: "C01:poison-b", body: "explode" });
+    let calls = 0;
+    const exploding: FactExtractor = () => {
+      calls++;
+      return Promise.reject(new Error("model refused"));
+    };
+
+    // Tick 1 charges a strike each and refunds both (a genuine outage looks
+    // exactly like this, and costs nothing). Ticks 2-4 charge again; the
+    // per-episode cap means those strikes STAY.
+    for (let i = 0; i < 4; i++) await cycleWith(exploding);
+    const quiet = await cycleWith(exploding);
+
+    expect(quiet.skipped.quarantined).toBe(2);
+    const callsBefore = calls;
+    await cycleWith(exploding);
+    // …and no further model calls while the backoff holds.
+    expect(calls).toBe(callsBefore);
+  });
+
+  it("forgives one strike each when a whole tick fails, so an outage costs nothing", async () => {
+    // The other half of the same rule. Two episodes, one bad tick, then a good
+    // one: neither may carry a strike out of the outage.
+    await insertEpisode({ sourceId: "C01:outage-a" });
+    await insertEpisode({ sourceId: "C01:outage-b" });
+    let failNext = true;
+    const flaky: FactExtractor = () =>
+      failNext ? Promise.reject(new Error("provider 503")) : Promise.resolve([candidate()]);
+
+    const outage = await cycleWith(flaky);
+    expect(outage).toMatchObject({ failed: 2, outageRefunded: 2 });
+
+    failNext = false;
+    const recovered = await cycleWith(flaky);
+    expect(recovered).toMatchObject({ extracted: 2, failed: 0 });
+    expect(recovered.skipped.quarantined).toBe(0);
   });
 
   it("stamps an episode whose extraction found nothing to claim", async () => {

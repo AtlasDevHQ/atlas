@@ -16,14 +16,15 @@
  *   - NULL and `''` elements inside a stored grant. Migration 0180's CHECK
  *     tolerates them (it requires one USABLE principal, not that all are), so
  *     they reach the predicate — and `ARRAY[''] && ARRAY['']` is TRUE.
- *   - Cross-tenant audience collision. Audience ids are workspace-scoped and
- *     not globally unique; two tenants minting `engineering` is normal.
- *   - That the predicate stays INDEXABLE against the GIN index the migration
- *     created for it. A rewrite to `EXISTS (SELECT … unnest(visible_to))`
- *     would pass every row-level assertion and quietly become a seq scan.
+ *   - Cross-tenant audience collision, in both directions: a colliding grant
+ *     (the predicate's job) and a colliding MEMBERSHIP row (the audience
+ *     lookup's job — the one leak workspace containment cannot catch, because
+ *     the stolen token gets applied inside the reader's own tenant).
+ *   - That the grant match stays a pushed-down array overlap rather than a
+ *     per-row subplan.
  *
  * Opt in locally with:
- *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/atlas_dev
+ *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -43,15 +44,17 @@ const describeIfPg = TEST_DB_URL ? describe : describe.skip;
 const PG_TEST_TIMEOUT_MS = 60_000;
 
 const WS = "ws-acl-pg";
-const OTHER_WS = "ws-acl-pg-other";
+const EPISODE_WS = "ws-acl-pg-episodes";
 
-function ctx(partial: Partial<BrainPrincipalContext> = {}): BrainPrincipalContext {
+type AuthedContext = Extract<BrainPrincipalContext, { origin: "authenticated" }>;
+
+function ctx(partial: Partial<AuthedContext> = {}): BrainPrincipalContext {
   return {
+    origin: "authenticated",
     workspaceId: WS,
     userId: "user-1",
     role: "member",
     audienceIds: [],
-    origin: "authenticated",
     ...partial,
   };
 }
@@ -111,16 +114,128 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
     return rows.map((r) => r.label);
   }
 
+  /**
+   * The parity matrix, shared by both gated tables. Every grant is legal at
+   * rest under `chk_brain_*_grant_nonempty` — including the ones that grant
+   * nobody anything, which is the half a stricter parser would have made
+   * unrepresentable and therefore untested.
+   */
+  const GRANTS: ReadonlyArray<{ label: string; visibleTo: (string | null)[] }> = [
+    { label: "org-wide", visibleTo: ["org"] },
+    { label: "members", visibleTo: ["role:member"] },
+    { label: "admins", visibleTo: ["role:admin"] },
+    { label: "owners", visibleTo: ["role:owner"] },
+    { label: "u1-only", visibleTo: ["user:user-1"] },
+    { label: "u2-only", visibleTo: ["user:user-2"] },
+    { label: "aud-eng", visibleTo: ["audience:eng"] },
+    { label: "aud-exec", visibleTo: ["audience:exec"] },
+    { label: "mixed", visibleTo: ["user:user-2", "audience:eng"] },
+    // Malformed-but-legal: `everyone` reads as public and grants nobody.
+    { label: "malformed", visibleTo: ["everyone"] },
+    // A valid token beside a malformed one — passes on the valid half only.
+    { label: "half-malformed", visibleTo: ["everyone", "user:user-1"] },
+    // NULL / '' elements alongside one usable principal. The CHECK admits
+    // this; `ARRAY[''] && ARRAY['']` is TRUE, so an empty reader token would
+    // match here. `principalTokens` never emits one.
+    { label: "padded", visibleTo: ["org", null, ""] },
+    { label: "empty-only-plus-user", visibleTo: ["", "user:user-2"] },
+    // A bare prefix is itself malformed and legal at rest — an unguarded
+    // reader arm emitting `user:` would raw-match this.
+    { label: "bare-prefix", visibleTo: ["user:", "audience:"] },
+    // Case variants must NOT match — enforcement is byte-exact.
+    { label: "shouty", visibleTo: ["ORG"] },
+  ];
+
+  function readersFor(workspaceId: string): ReadonlyArray<{
+    name: string;
+    ctx: BrainPrincipalContext;
+    /** Absolute expectation — what this reader must see, independent of the mirror. */
+    expected: string[];
+  }> {
+    const base = { workspaceId, userId: "user-1" } as const;
+    return [
+      {
+        name: "member/no-audience",
+        ctx: { ...base, origin: "authenticated", role: "member", audienceIds: [] },
+        expected: ["half-malformed", "members", "org-wide", "padded", "u1-only"],
+      },
+      {
+        name: "admin",
+        ctx: { ...base, origin: "authenticated", role: "admin", audienceIds: [] },
+        expected: ["admins", "half-malformed", "members", "org-wide", "padded", "u1-only"],
+      },
+      {
+        name: "owner",
+        ctx: { ...base, origin: "authenticated", role: "owner", audienceIds: [] },
+        expected: [
+          "admins",
+          "half-malformed",
+          "members",
+          "org-wide",
+          "owners",
+          "padded",
+          "u1-only",
+        ],
+      },
+      {
+        name: "member in eng",
+        ctx: { ...base, origin: "authenticated", role: "member", audienceIds: ["eng"] },
+        expected: [
+          "aud-eng",
+          "half-malformed",
+          "members",
+          "mixed",
+          "org-wide",
+          "padded",
+          "u1-only",
+        ],
+      },
+      {
+        name: "other user",
+        ctx: { ...base, origin: "authenticated", userId: "user-9", role: "member", audienceIds: [] },
+        expected: ["members", "org-wide", "padded"],
+      },
+      {
+        name: "auth:none local",
+        ctx: {
+          origin: "unauthenticated-local",
+          workspaceId,
+          userId: null,
+          role: null,
+          audienceIds: [],
+        },
+        expected: ["org-wide", "padded"],
+      },
+      {
+        name: "unresolved",
+        // The deny arm, composed into a REAL query rather than only asserted
+        // in memory — the clause's own doc warns that arity mismatches "fail
+        // at execution, which is late".
+        ctx: { origin: "unresolved", workspaceId, userId: null, role: null, audienceIds: [] },
+        expected: [],
+      },
+    ];
+  }
+
   beforeAll(async () => {
-    pool = new Pool({ connectionString: TEST_DB_URL });
-    pool.on("connect", (client) => {
-      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
-        console.error(
-          `acl-visibility-pg: SET search_path failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
+    // `search_path` is baked into the connection string rather than SET from an
+    // unawaited `pool.on("connect")` handler: server-side at startup, so there
+    // is no window in which a checked-out client is still pointed at `public`,
+    // and no failure path that logs and then silently runs 180 migrations
+    // against the developer's real database. Same pattern as
+    // `api/__tests__/admin-last-admin-pg.test.ts`.
+    pool = new Pool({
+      connectionString: TEST_DB_URL,
+      options: `-c search_path="${schemaName}",public`,
     });
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    // The schema must exist before any pooled client sets search_path to it,
+    // so this one connection opts out via an explicit fresh pool.
+    const bootstrap = new Pool({ connectionString: TEST_DB_URL });
+    try {
+      await bootstrap.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    } finally {
+      await bootstrap.end();
+    }
     await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
   }, PG_TEST_TIMEOUT_MS);
 
@@ -133,78 +248,37 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
   it(
     "selects exactly the rows `isVisibleTo` predicts, for every grant × reader pair",
     async () => {
-      // The parity matrix. Every grant here is legal at rest under
-      // `chk_brain_facts_grant_nonempty` — including the ones that grant
-      // nobody anything, which is the half a stricter parser would have made
-      // unrepresentable and therefore untested.
-      const grants: ReadonlyArray<{ subject: string; visibleTo: (string | null)[] }> = [
-        { subject: "org-wide", visibleTo: ["org"] },
-        { subject: "members", visibleTo: ["role:member"] },
-        { subject: "admins", visibleTo: ["role:admin"] },
-        { subject: "owners", visibleTo: ["role:owner"] },
-        { subject: "u1-only", visibleTo: ["user:user-1"] },
-        { subject: "u2-only", visibleTo: ["user:user-2"] },
-        { subject: "aud-eng", visibleTo: ["audience:eng"] },
-        { subject: "aud-exec", visibleTo: ["audience:exec"] },
-        { subject: "mixed", visibleTo: ["user:user-2", "audience:eng"] },
-        // Malformed-but-legal: `everyone` reads as public and grants nobody.
-        { subject: "malformed", visibleTo: ["everyone"] },
-        // A valid token beside a malformed one — passes on the valid half only.
-        { subject: "half-malformed", visibleTo: ["everyone", "user:user-1"] },
-        // NULL / '' elements alongside one usable principal. The CHECK admits
-        // this; `ARRAY[''] && ARRAY['']` is TRUE, so an empty reader token
-        // would match here. `principalTokens` never emits one.
-        { subject: "padded", visibleTo: ["org", null, ""] },
-        { subject: "empty-only-plus-user", visibleTo: ["", "user:user-2"] },
-        // Case variants must NOT match — enforcement is byte-exact.
-        { subject: "shouty", visibleTo: ["ORG"] },
-      ];
-
       const episode = await seedEpisode(WS, "parity", ["org"]);
-      for (const g of grants) {
+      for (const g of GRANTS) {
         await seedFact({
           workspaceId: WS,
           episodeId: episode,
-          subject: g.subject,
+          subject: g.label,
           visibleTo: g.visibleTo,
         });
       }
 
-      const readers: ReadonlyArray<{ name: string; ctx: BrainPrincipalContext }> = [
-        { name: "member/no-audience", ctx: ctx({ role: "member" }) },
-        { name: "admin", ctx: ctx({ role: "admin" }) },
-        { name: "owner", ctx: ctx({ role: "owner" }) },
-        { name: "member in eng", ctx: ctx({ role: "member", audienceIds: ["eng"] }) },
-        { name: "other user", ctx: ctx({ role: "member", userId: "user-9" }) },
-        { name: "auth:none local", ctx: ctx({ role: null, userId: null, origin: "unauthenticated-local" }) },
-      ];
-
-      for (const reader of readers) {
+      for (const reader of readersFor(WS)) {
         const fromSql = await selectVisible(reader.ctx, "brain_facts");
-        const fromMirror = grants
-          .filter((g) => isVisibleTo(g.visibleTo, reader.ctx))
-          .map((g) => g.subject)
+        const fromMirror = GRANTS.filter((g) =>
+          isVisibleTo({ workspaceId: WS, visibleTo: g.visibleTo }, reader.ctx),
+        )
+          .map((g) => g.label)
           .toSorted();
+
+        // Parity — but parity alone is circular (both sides derive tokens from
+        // `principalTokens`), so every reader also carries an ABSOLUTE
+        // expectation. A token-derivation bug moves both sides together and is
+        // caught only by the second assertion.
         expect({ reader: reader.name, rows: fromSql }).toEqual({
           reader: reader.name,
           rows: fromMirror,
         });
+        expect({ reader: reader.name, rows: fromSql }).toEqual({
+          reader: reader.name,
+          rows: reader.expected,
+        });
       }
-
-      // Spot-check the absolute claims the matrix is supposed to encode, so a
-      // mirror that broke in the SAME way as the SQL still fails here.
-      expect(await selectVisible(ctx({ role: "member" }), "brain_facts")).toEqual([
-        "half-malformed",
-        "members",
-        "org-wide",
-        "padded",
-        "u1-only",
-      ]);
-      expect(await selectVisible(ctx({ role: "owner" }), "brain_facts")).toContain("admins");
-      expect(await selectVisible(ctx({ role: "member" }), "brain_facts")).not.toContain(
-        "malformed",
-      );
-      expect(await selectVisible(ctx({ role: "member" }), "brain_facts")).not.toContain("shouty");
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -212,18 +286,17 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
   it(
     "gates tier-3 episodes on the same grammar — raw source is often more sensitive than the facts",
     async () => {
-      await seedEpisode(OTHER_WS, "ep-org", ["org"]);
-      await seedEpisode(OTHER_WS, "ep-exec", ["audience:exec"]);
-      await seedEpisode(OTHER_WS, "ep-u2", ["user:user-2"]);
-
-      const reader = ctx({ workspaceId: OTHER_WS, role: "member" });
-      expect(await selectVisible(reader, "brain_episodes")).toEqual(["ep-org"]);
-      expect(
-        await selectVisible(
-          ctx({ workspaceId: OTHER_WS, role: "member", audienceIds: ["exec"] }),
-          "brain_episodes",
-        ),
-      ).toEqual(["ep-exec", "ep-org"]);
+      // The migration itself notes episodes are "frequently MORE sensitive
+      // than the facts extracted from it", so the full matrix runs over both
+      // tables rather than giving tier-3 a three-row happy path.
+      for (const g of GRANTS) {
+        await seedEpisode(EPISODE_WS, g.label, g.visibleTo);
+      }
+      for (const reader of readersFor(EPISODE_WS)) {
+        expect({ reader: reader.name, rows: await selectVisible(reader.ctx, "brain_episodes") }).toEqual(
+          { reader: reader.name, rows: reader.expected },
+        );
+      }
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -254,6 +327,51 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
 
       const readerInA = ctx({ workspaceId: wsA, audienceIds: ["engineering"] });
       expect(await selectVisible(readerInA, "brain_facts")).toEqual(["a-secret"]);
+      // The in-memory mirror must agree — an earlier cut took a bare grant and
+      // answered TRUE here.
+      expect(
+        isVisibleTo({ workspaceId: wsB, visibleTo: ["audience:engineering"] }, readerInA),
+      ).toBe(false);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "scopes the audience-membership lookup to the workspace — the one leak containment cannot catch",
+    async () => {
+      // If this query ever returned another workspace's memberships, the
+      // reader would acquire `audience:finance` and immediately read their OWN
+      // tenant's `audience:finance` facts. The predicate's workspace
+      // containment is powerless there: the stolen token is applied inside the
+      // right tenant. This is the module's only cross-tenant-sensitive read.
+      const home = `${WS}-membership-home`;
+      const foreign = `${WS}-membership-foreign`;
+      await pool.query(
+        `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source)
+         VALUES ($1, 'exec', 'user-1', 'test'),
+                ($2, 'finance', 'user-1', 'test')`,
+        [home, foreign],
+      );
+
+      const resolved = await resolvePrincipalContext(pool, {
+        workspaceId: home,
+        mode: "managed",
+        userId: "user-1",
+        role: "member",
+        roleResolvedForOrgId: home,
+      });
+      expect(resolved.audienceIds).toEqual(["exec"]);
+
+      const episode = await seedEpisode(home, "membership-scope", ["org"]);
+      await seedFact({
+        workspaceId: home,
+        episodeId: episode,
+        subject: "home-finance",
+        visibleTo: ["audience:finance"],
+      });
+      // The foreign membership must not unlock the home tenant's like-named
+      // audience.
+      expect(await selectVisible(resolved, "brain_facts")).toEqual([]);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -276,8 +394,8 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
       const v2 = await seedFact({
         workspaceId: wsV,
         episodeId: episode,
-        subject: "v2-wide",
-        visibleTo: ["org"],
+        subject: "v2-superseding",
+        visibleTo: ["audience:exec"],
       });
       await pool.query(
         `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
@@ -285,16 +403,25 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
         [wsV, v2, v1],
       );
 
-      // A plain member sees only the widened CURRENT version. The superseded
-      // one keeps its own narrower grant — supersession is not deletion, and
-      // it is not declassification either.
       const member = ctx({ workspaceId: wsV, role: "member" });
-      expect(await selectVisible(member, "brain_facts")).toEqual(["v2-wide"]);
-
-      // And the exec still sees both, as-of-now membership against each
-      // version's own frozen grant.
       const exec = ctx({ workspaceId: wsV, role: "member", audienceIds: ["exec"] });
-      expect(await selectVisible(exec, "brain_facts")).toEqual(["v1-narrow", "v2-wide"]);
+      // Both versions start narrow.
+      expect(await selectVisible(member, "brain_facts")).toEqual([]);
+      expect(await selectVisible(exec, "brain_facts")).toEqual(["v1-narrow", "v2-superseding"]);
+
+      // Now WIDEN the current version — the actual mutation the criterion is
+      // about. Without it the test is just "two rows filter independently",
+      // which is trivially true of any per-row column and would pass against
+      // an implementation that DID have the retroactive-rewrite property.
+      await pool.query(
+        `UPDATE brain_facts SET visible_to = ARRAY['org']::text[] WHERE id = $1`,
+        [v2],
+      );
+
+      // The superseded version keeps its own frozen grant. Supersession is not
+      // deletion, and widening the successor is not declassification.
+      expect(await selectVisible(member, "brain_facts")).toEqual(["v2-superseding"]);
+      expect(await selectVisible(exec, "brain_facts")).toEqual(["v1-narrow", "v2-superseding"]);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -320,12 +447,14 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
         [wsR],
       );
 
-      const before = await resolvePrincipalContext(pool, {
+      const input = {
         workspaceId: wsR,
         mode: "managed",
         userId: "user-1",
         role: "member",
-      });
+        roleResolvedForOrgId: wsR,
+      } as const;
+      const before = await resolvePrincipalContext(pool, input);
       expect(before.audienceIds).toEqual(["exec"]);
       expect(await selectVisible(before, "brain_facts")).toEqual(["exec-only"]);
 
@@ -333,12 +462,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
         `DELETE FROM fact_audience_member WHERE workspace_id = $1 AND user_id = 'user-1'`,
         [wsR],
       );
-      const after = await resolvePrincipalContext(pool, {
-        workspaceId: wsR,
-        mode: "managed",
-        userId: "user-1",
-        role: "member",
-      });
+      const after = await resolvePrincipalContext(pool, input);
       // The fact's `visible_to` never changed. Only membership did.
       expect(await selectVisible(after, "brain_facts")).toEqual([]);
     },
@@ -346,7 +470,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
   );
 
   it(
-    "composes as one of four AND-ed gates — failing any one hides the row",
+    "composes as one of four AND-ed gates — each is independently load-bearing",
     async () => {
       // ADR-0036: residency-invariant (by construction — the process IS the
       // region) AND org/group reach AND content mode AND the grant. The status
@@ -371,7 +495,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
         alias: "f",
         paramIndex: 2,
       });
-      const { rows } = await pool.query<{ subject: string }>(
+      const composed = await pool.query<{ subject: string }>(
         `SELECT f.subject
            FROM brain_facts f
           WHERE f.workspace_id = $1
@@ -380,17 +504,39 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
           ORDER BY 1`,
         [wsC, ...clause.params],
       );
-      expect(rows.map((r) => r.subject)).toEqual(["all-gates-pass"]);
+      expect(composed.rows.map((r) => r.subject)).toEqual(["all-gates-pass"]);
 
-      // And each gate is load-bearing on its own: drop the ACL clause and the
-      // grant-gated row reappears, which is what makes this a real AND rather
-      // than three clauses one of which happens to be redundant.
+      // Each gate is load-bearing ON ITS OWN — drop one at a time and a
+      // different row reappears. Without these controls the composed query
+      // above would pass even if two of the three clauses were inert.
       const withoutAcl = await pool.query<{ subject: string }>(
         `SELECT f.subject FROM brain_facts f
           WHERE f.workspace_id = $1 AND f.status = 'published' ORDER BY 1`,
         [wsC],
       );
       expect(withoutAcl.rows.map((r) => r.subject)).toEqual(["all-gates-pass", "fails-grant"]);
+
+      const withoutMode = await pool.query<{ subject: string }>(
+        `SELECT f.subject FROM brain_facts f WHERE f.workspace_id = $1 AND ${clause.sql} ORDER BY 1`,
+        [wsC, ...clause.params],
+      );
+      expect(withoutMode.rows.map((r) => r.subject)).toEqual(["all-gates-pass", "fails-mode"]);
+
+      // The reach gate is spelled `workspace_id = $1`, which the ACL clause
+      // already enforces — so dropping the caller's copy changes nothing here.
+      // That redundancy is the deliberate "safe standalone" property, and this
+      // asserts it rather than leaving the reader to wonder whether the gate
+      // was simply inert.
+      const soloClause = aclVisibilityClause(reader, {
+        table: "brain_facts",
+        alias: "f",
+        paramIndex: 1,
+      });
+      const withoutReach = await pool.query<{ subject: string }>(
+        `SELECT f.subject FROM brain_facts f WHERE f.status = 'published' AND ${soloClause.sql} ORDER BY 1`,
+        [...soloClause.params],
+      );
+      expect(withoutReach.rows.map((r) => r.subject)).toEqual(["all-gates-pass"]);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -422,7 +568,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
   );
 
   it(
-    "keeps the grant match a pushed-down array-overlap the planner can serve from an index",
+    "keeps the grant match a pushed-down array overlap the planner can serve from an index",
     async () => {
       // The whole point of push-down is that the grant match happens IN the
       // scan. A rewrite to `EXISTS (SELECT 1 FROM unnest(t.visible_to) …)`
@@ -433,8 +579,8 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
       // `idx_brain_facts_visible_to` (GIN) only wins when the grant is the
       // selective half; on a query that also pins `workspace_id` the planner
       // will usually lead with a btree on workspace_id and apply the overlap
-      // as a filter — that is correct, and asserting an index NAME here would
-      // be asserting a cost estimate over a handful of test rows.
+      // as a filter — that is correct, and asserting an index NAME on the real
+      // shape would be asserting a cost estimate over a handful of test rows.
       const clause = aclVisibilityClause(ctx(), {
         table: "brain_facts",
         alias: "t",
@@ -445,12 +591,6 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
         // `SET LOCAL` outside a transaction is a no-op that only warns, so the
         // BEGIN is load-bearing, not tidiness.
         await client.query("BEGIN");
-        // Set search_path explicitly rather than leaning on the pool's
-        // `connect` handler: that handler fires its SET without being awaited,
-        // so on a freshly-checked-out client it can still be in flight here —
-        // and an EXPLAIN that resolved against `public` would report on tables
-        // this test never created.
-        await client.query(`SET LOCAL search_path TO "${schemaName}"`);
         await client.query("SET LOCAL enable_seqscan = off");
         const { rows } = await client.query<{ "QUERY PLAN": string }>(
           `EXPLAIN SELECT t.id FROM brain_facts t WHERE ${clause.sql}`,
@@ -458,7 +598,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
         );
         const plan = rows.map((r) => r["QUERY PLAN"]).join("\n");
         // The overlap survives into the plan verbatim, as a scan-level
-        // condition on the column.
+        // condition on the column…
         expect(plan).toMatch(/visible_to && /);
         // …and never as a subquery or a set-returning function, which is what
         // every non-pushed-down rewrite of this predicate looks like.
@@ -466,9 +606,11 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
         expect(plan).not.toContain("unnest");
         expect(plan).not.toContain("Seq Scan");
 
-        // The GIN index IS reachable for the grant half on its own — proven by
-        // asking for exactly that half, which is the query shape #4773 issues
-        // once a workspace has more than a handful of facts.
+        // Separately: the migration's GIN index really is usable for `&&`.
+        // This bare-overlap query is a TEST-ONLY probe — `aclVisibilityClause`
+        // always carries workspace containment, so #4773 never issues this
+        // shape. Under `enable_seqscan = off` it proves only that the index
+        // and this predicate's operator agree, which is the durable claim.
         const ginPlan = await client.query<{ "QUERY PLAN": string }>(
           `EXPLAIN SELECT t.id FROM brain_facts t WHERE t.visible_to && $1::text[]`,
           [clause.params[1]],

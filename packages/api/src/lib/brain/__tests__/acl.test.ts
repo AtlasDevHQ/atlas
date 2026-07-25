@@ -2,11 +2,13 @@
  * Unit coverage for the brain ACL grammar, principal resolution, and the
  * fail-closed push-down predicate (#4768, ADR-0036 §Access control).
  *
- * The real-Postgres half — that the emitted SQL actually selects the rows this
- * file says it should, and that `isVisibleTo` agrees with `&&` token for token
- * — lives in `acl-visibility-pg.test.ts`. Both halves are load-bearing: this
- * one pins the DECISIONS, that one pins the SQL, and a bug in either shows up
- * as a row the wrong person can read.
+ * Three files cover this module, because it makes three separable claims:
+ *   - this one pins the DECISIONS (which branch fires, what SQL comes out);
+ *   - `acl-visibility-pg.test.ts` pins what that SQL actually SELECTS against
+ *     real Postgres, and that `isVisibleTo` agrees with `&&` token for token;
+ *   - `acl-logging.test.ts` pins that every deny and every override is
+ *     LOGGED — "deny + log" is the acceptance criterion, and the log half is
+ *     otherwise deletable without a single test going red.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -31,15 +33,39 @@ import {
 
 const WS = "ws-acl-test";
 
-function ctx(partial: Partial<BrainPrincipalContext> = {}): BrainPrincipalContext {
+type AuthedContext = Extract<BrainPrincipalContext, { origin: "authenticated" }>;
+
+/** An authenticated reader. The default arm — most tests want this. */
+function ctx(partial: Partial<AuthedContext> = {}): BrainPrincipalContext {
   return {
+    origin: "authenticated",
     workspaceId: WS,
     userId: "user-1",
     role: "member",
     audienceIds: [],
-    origin: "authenticated",
     ...partial,
   };
+}
+
+/** `auth: none` — the deployment has declared there is no identity. */
+function localCtx(workspaceId = WS): BrainPrincipalContext {
+  return {
+    origin: "unauthenticated-local",
+    workspaceId,
+    userId: null,
+    role: null,
+    audienceIds: [],
+  };
+}
+
+/** An authenticated request whose identity could not be established. */
+function unresolvedCtx(workspaceId = WS): BrainPrincipalContext {
+  return { origin: "unresolved", workspaceId, userId: null, role: null, audienceIds: [] };
+}
+
+/** A row in `ctx`'s own workspace unless told otherwise. */
+function row(visibleTo: readonly unknown[], workspaceId = WS) {
+  return { workspaceId, visibleTo };
 }
 
 describe("grant grammar (#4768)", () => {
@@ -145,8 +171,8 @@ describe("parseGrant (#4768)", () => {
 });
 
 describe("principal tokens (#4768)", () => {
-  it("always seeds `org`", () => {
-    expect(principalTokens(ctx({ role: null, userId: null }))).toEqual([ORG_PRINCIPAL]);
+  it("always seeds `org` for a reader that has any access at all", () => {
+    expect(principalTokens(localCtx())).toEqual([ORG_PRINCIPAL]);
   });
 
   it("expands roles monotonically: owner ⊇ admin ⊇ member", () => {
@@ -162,16 +188,36 @@ describe("principal tokens (#4768)", () => {
     ]);
   });
 
+  it("grants no role principals for a role outside ORG_ROLES", () => {
+    // Unreachable through the type; reachable through a cast or a future role
+    // addition. Must deny, not fall out of the switch as `undefined` and turn
+    // the caller's `for…of` into an unattributed TypeError.
+    const rogue = "superuser" as unknown as "owner";
+    expect(impliedRoles(rogue)).toEqual([]);
+    expect(principalTokens(ctx({ role: rogue }))).toEqual([
+      ORG_PRINCIPAL,
+      `${USER_PREFIX}user-1`,
+    ]);
+  });
+
+  it("grants nothing at all to an unresolved reader", () => {
+    expect(principalTokens(unresolvedCtx())).toEqual([]);
+  });
+
+  it("grants nothing at all when there is no workspace", () => {
+    expect(principalTokens(ctx({ workspaceId: "" }))).toEqual([]);
+  });
+
   it("lets an owner read a `role:member` fact", () => {
     // Exact-match role grants would hide member-scoped facts from the
     // workspace OWNER — a hole that reads as a bug every time it is hit.
-    expect(isVisibleTo(["role:member"], ctx({ role: "owner" }))).toBe(true);
-    expect(isVisibleTo(["role:admin"], ctx({ role: "owner" }))).toBe(true);
+    expect(isVisibleTo(row(["role:member"]), ctx({ role: "owner" }))).toBe(true);
+    expect(isVisibleTo(row(["role:admin"]), ctx({ role: "owner" }))).toBe(true);
   });
 
   it("does not let a member read a `role:admin` fact", () => {
-    expect(isVisibleTo(["role:admin"], ctx({ role: "member" }))).toBe(false);
-    expect(isVisibleTo(["role:owner"], ctx({ role: "member" }))).toBe(false);
+    expect(isVisibleTo(row(["role:admin"]), ctx({ role: "member" }))).toBe(false);
+    expect(isVisibleTo(row(["role:owner"]), ctx({ role: "member" }))).toBe(false);
   });
 
   it("prefixes audience ids, which are stored unprefixed", () => {
@@ -183,10 +229,11 @@ describe("principal tokens (#4768)", () => {
     expect(tokens).not.toContain("eng");
   });
 
-  it("never emits an empty-string token", () => {
-    // `ARRAY[''] && ARRAY['']` is TRUE in Postgres, and a stored `''` element
-    // is legal at rest — so an empty reader token would match a grant that
-    // grants nobody anything.
+  it("never emits an empty token or a bare prefix", () => {
+    // Two hazards, not one. `ARRAY[''] && ARRAY['']` is TRUE and a stored `''`
+    // element is legal at rest; and a bare `user:` is itself MALFORMED, so
+    // emitting one would break the "no reader token is ever malformed"
+    // invariant that makes the permissive parser safe.
     const tokens = principalTokens(ctx({ userId: "", audienceIds: ["", "ok"] }));
     expect(tokens).not.toContain("");
     expect(tokens).not.toContain(USER_PREFIX);
@@ -195,14 +242,44 @@ describe("principal tokens (#4768)", () => {
   });
 
   it("matches user grants only for the named user", () => {
-    expect(isVisibleTo(["user:user-1"], ctx({ userId: "user-1" }))).toBe(true);
-    expect(isVisibleTo(["user:user-2"], ctx({ userId: "user-1" }))).toBe(false);
+    expect(isVisibleTo(row(["user:user-1"]), ctx({ userId: "user-1" }))).toBe(true);
+    expect(isVisibleTo(row(["user:user-2"]), ctx({ userId: "user-1" }))).toBe(false);
   });
 
   it("treats malformed stored tokens as granting nobody", () => {
     for (const grant of [["everyone"], ["public"], ["ORG"], [""], [null]]) {
-      expect(isVisibleTo(grant, ctx({ role: "owner", audienceIds: ["eng"] }))).toBe(false);
+      expect(isVisibleTo(row(grant), ctx({ role: "owner", audienceIds: ["eng"] }))).toBe(false);
     }
+  });
+});
+
+describe("isVisibleTo mirrors the predicate's denies, not just its matches (#4768)", () => {
+  // The first cut of this helper took a bare grant and skipped both gates, so
+  // it answered TRUE exactly where the SQL answers FALSE. A mirror that is
+  // permissive where the predicate denies is worse than no mirror.
+  it("denies a row from another workspace even on a matching token", () => {
+    // Audience ids collide across tenants by design — this is the leak the
+    // predicate's redundant workspace containment exists to stop.
+    const reader = ctx({ audienceIds: ["engineering"] });
+    expect(isVisibleTo(row(["audience:engineering"], "other-ws"), reader)).toBe(false);
+    expect(isVisibleTo(row(["audience:engineering"], WS), reader)).toBe(true);
+  });
+
+  it("denies an org-granted row to an unresolved reader", () => {
+    expect(isVisibleTo(row(["org"]), unresolvedCtx())).toBe(false);
+    expect(aclVisibilityClause(unresolvedCtx(), { table: "brain_facts", paramIndex: 1 }).decision)
+      .toBe("deny-all");
+  });
+
+  it("denies when the reader has no workspace", () => {
+    expect(isVisibleTo(row(["org"], ""), ctx({ workspaceId: "" }))).toBe(false);
+  });
+
+  it("gives `auth: none` the org principal only", () => {
+    expect(isVisibleTo(row(["org"]), localCtx())).toBe(true);
+    expect(isVisibleTo(row(["role:owner"]), localCtx())).toBe(false);
+    expect(isVisibleTo(row(["audience:eng"]), localCtx())).toBe(false);
+    expect(isVisibleTo(row(["user:user-1"]), localCtx())).toBe(false);
   });
 });
 
@@ -216,15 +293,32 @@ describe("resolvePrincipalContext (#4768)", () => {
     } satisfies AudienceMembershipReader;
   }
 
+  const authed = {
+    workspaceId: WS,
+    mode: "managed",
+    userId: "user-1",
+    role: "member",
+    roleResolvedForOrgId: WS,
+  } as const;
+
   it("reads audience membership locally, scoped to workspace + user", async () => {
-    let seen: unknown[] | undefined;
+    let seenSql: string | undefined;
+    let seenParams: unknown[] | undefined;
     const resolved = await resolvePrincipalContext(
-      reader([{ audience_id: "eng" }, { audience_id: "exec" }], (_sql, params) => {
-        seen = params;
+      reader([{ audience_id: "eng" }, { audience_id: "exec" }], (sql, params) => {
+        seenSql = sql;
+        seenParams = params;
       }),
-      { workspaceId: WS, mode: "managed", userId: "user-1", role: "member" },
+      authed,
     );
-    expect(seen).toEqual([WS, "user-1"]);
+    expect(seenParams).toEqual([WS, "user-1"]);
+    // The workspace predicate is the module's only cross-tenant-sensitive read
+    // — a membership row from another tenant hands this reader a token that
+    // then matches their OWN tenant's facts, which the predicate's workspace
+    // containment cannot catch.
+    expect(seenSql).toContain("workspace_id = $1");
+    expect(seenSql).toContain("user_id = $2");
+    expect(seenSql).not.toContain("OR");
     expect(resolved.audienceIds).toEqual(["eng", "exec"]);
     expect(resolved.origin).toBe("authenticated");
   });
@@ -232,7 +326,7 @@ describe("resolvePrincipalContext (#4768)", () => {
   it("drops non-string / empty audience ids rather than minting a bare prefix", async () => {
     const resolved = await resolvePrincipalContext(
       reader([{ audience_id: "eng" }, { audience_id: null }, { audience_id: "" }, {}]),
-      { workspaceId: WS, mode: "managed", userId: "user-1", role: "member" },
+      authed,
     );
     expect(resolved.audienceIds).toEqual(["eng"]);
   });
@@ -243,37 +337,88 @@ describe("resolvePrincipalContext (#4768)", () => {
       reader([], () => {
         queried = true;
       }),
-      { workspaceId: WS, mode: "none", userId: undefined, role: undefined },
+      {
+        workspaceId: WS,
+        mode: "none",
+        userId: undefined,
+        role: undefined,
+        roleResolvedForOrgId: undefined,
+      },
     );
     expect(queried).toBe(false);
     expect(resolved.origin).toBe("unauthenticated-local");
     expect(principalTokens(resolved)).toEqual([ORG_PRINCIPAL]);
     // Narrowed content stays hidden even from the local operator.
-    expect(isVisibleTo(["role:owner"], resolved)).toBe(false);
-    expect(isVisibleTo(["audience:eng"], resolved)).toBe(false);
-    expect(isVisibleTo(["org"], resolved)).toBe(true);
+    expect(isVisibleTo(row(["role:owner"]), resolved)).toBe(false);
+    expect(isVisibleTo(row(["audience:eng"]), resolved)).toBe(false);
+    expect(isVisibleTo(row(["org"]), resolved)).toBe(true);
+  });
+
+  it("resolves the other authenticated modes without special-casing them", async () => {
+    for (const mode of ["simple-key", "byot"] as const) {
+      const resolved = await resolvePrincipalContext(reader([{ audience_id: "eng" }]), {
+        ...authed,
+        mode,
+      });
+      expect(resolved.origin).toBe("authenticated");
+      expect(principalTokens(resolved)).toEqual([
+        ORG_PRINCIPAL,
+        `${ROLE_PREFIX}member`,
+        `${USER_PREFIX}user-1`,
+        `${AUDIENCE_PREFIX}eng`,
+      ]);
+    }
+  });
+
+  it("resolves `unresolved` for an unrecognised auth mode", async () => {
+    const resolved = await resolvePrincipalContext(reader([]), {
+      ...authed,
+      mode: "quantum" as unknown as "managed",
+    });
+    expect(resolved.origin).toBe("unresolved");
   });
 
   it("maps a bare platform_admin to no org-role principal", async () => {
     const resolved = await resolvePrincipalContext(reader([]), {
-      workspaceId: WS,
-      mode: "managed",
+      ...authed,
       userId: "op-1",
       role: "platform_admin",
     });
     expect(resolved.role).toBeNull();
     expect(principalTokens(resolved)).toEqual([ORG_PRINCIPAL, `${USER_PREFIX}op-1`]);
-    expect(isVisibleTo(["role:admin"], resolved)).toBe(false);
+    expect(isVisibleTo(row(["role:admin"]), resolved)).toBe(false);
+  });
+
+  it("drops role grants when the role was resolved against a different org", async () => {
+    // `member.role` is per-org (#2890). A role carried over from the session's
+    // ACTIVE org while reading a DIFFERENT workspace would grant `role:` tokens
+    // — and audit-override entitlement — derived from another tenant.
+    const resolved = await resolvePrincipalContext(reader([]), {
+      ...authed,
+      role: "owner",
+      roleResolvedForOrgId: "some-other-org",
+    });
+    expect(resolved.role).toBeNull();
+    expect(principalTokens(resolved)).not.toContain(`${ROLE_PREFIX}owner`);
+    expect(
+      aclVisibilityClause(resolved, {
+        table: "brain_facts",
+        paramIndex: 1,
+        override: { reason: "audit" },
+      }).decision,
+    ).toBe("override-refused");
+  });
+
+  it("keeps role grants when the role was resolved against the read target", async () => {
+    const resolved = await resolvePrincipalContext(reader([]), { ...authed, role: "owner" });
+    expect(resolved.role).toBe("owner");
+    expect(principalTokens(resolved)).toContain(`${ROLE_PREFIX}owner`);
   });
 
   it("resolves `unresolved` when an authenticated request carries no user id", async () => {
-    const resolved = await resolvePrincipalContext(reader([]), {
-      workspaceId: WS,
-      mode: "managed",
-      userId: undefined,
-      role: "admin",
-    });
+    const resolved = await resolvePrincipalContext(reader([]), { ...authed, userId: undefined });
     expect(resolved.origin).toBe("unresolved");
+    expect(principalTokens(resolved)).toEqual([]);
   });
 
   it("propagates database failures instead of silently downgrading the reader", async () => {
@@ -282,14 +427,9 @@ describe("resolvePrincipalContext (#4768)", () => {
     const failing: AudienceMembershipReader = {
       query: () => Promise.reject(new Error("connection terminated")),
     };
-    await expect(
-      resolvePrincipalContext(failing, {
-        workspaceId: WS,
-        mode: "managed",
-        userId: "user-1",
-        role: "member",
-      }),
-    ).rejects.toThrow("connection terminated");
+    await expect(resolvePrincipalContext(failing, authed)).rejects.toThrow(
+      "connection terminated",
+    );
   });
 });
 
@@ -309,9 +449,6 @@ describe("aclVisibilityClause (#4768)", () => {
   });
 
   it("scopes to the workspace even though callers already do — audience ids collide across tenants", () => {
-    // Two tenants can both mint `audience:engineering`. Without the redundant
-    // containment, a reader in tenant A holding that token would match tenant
-    // B's fact if the caller's own scoping were missing or accidentally OR-ed.
     const clause = aclVisibilityClause(ctx(), { table: "brain_episodes", paramIndex: 1 });
     expect(clause.sql).toContain("brain_episodes.workspace_id = $1");
   });
@@ -331,12 +468,9 @@ describe("aclVisibilityClause (#4768)", () => {
   });
 
   it("denies outright when the reader is unresolved", () => {
-    const clause = aclVisibilityClause(ctx({ origin: "unresolved" }), {
-      table: "brain_facts",
-      paramIndex: 1,
-    });
+    const clause = aclVisibilityClause(unresolvedCtx(), { table: "brain_facts", paramIndex: 1 });
     expect(clause.decision).toBe("deny-all");
-    expect(clause.sql).toBe("FALSE");
+    expect(clause.sql).toBe("(FALSE)");
     expect(clause.params).toEqual([]);
   });
 
@@ -346,7 +480,24 @@ describe("aclVisibilityClause (#4768)", () => {
       paramIndex: 1,
     });
     expect(clause.decision).toBe("deny-all");
-    expect(clause.sql).toBe("FALSE");
+    expect(clause.sql).toBe("(FALSE)");
+  });
+
+  it("parenthesises every arm so composition can never re-associate", () => {
+    const clauses = [
+      aclVisibilityClause(ctx(), { table: "brain_facts", paramIndex: 1 }),
+      aclVisibilityClause(unresolvedCtx(), { table: "brain_facts", paramIndex: 1 }),
+      aclVisibilityClause(ctx({ role: "admin" }), {
+        table: "brain_facts",
+        paramIndex: 1,
+        override: { reason: "audit" },
+      }),
+    ];
+    for (const clause of clauses) {
+      expect(clause.sql.startsWith("(")).toBe(true);
+      expect(clause.sql.endsWith(")")).toBe(true);
+      expect(clause.sql.trimStart().startsWith("AND")).toBe(false);
+    }
   });
 
   it("rejects a non-identifier alias rather than interpolating it", () => {
@@ -367,10 +518,7 @@ describe("aclVisibilityClause (#4768)", () => {
   });
 
   it("declares its own arity — callers advance by params.length, never a constant", () => {
-    const deny = aclVisibilityClause(ctx({ origin: "unresolved" }), {
-      table: "brain_facts",
-      paramIndex: 1,
-    });
+    const deny = aclVisibilityClause(unresolvedCtx(), { table: "brain_facts", paramIndex: 1 });
     const normal = aclVisibilityClause(ctx(), { table: "brain_facts", paramIndex: 1 });
     const override = aclVisibilityClause(ctx({ role: "admin" }), {
       table: "brain_facts",
@@ -390,13 +538,14 @@ describe("aclVisibilityClause (#4768)", () => {
 });
 
 describe("audit override (#4768, ADR-0036 — region-scoped, no super-admin)", () => {
-  it("bypasses grants for a workspace owner/admin, still scoped to the workspace", () => {
+  it("bypasses grants for an authenticated workspace owner/admin, still workspace-scoped", () => {
     for (const role of ["owner", "admin"] as const) {
       const clause = aclVisibilityClause(ctx({ role }), {
         table: "brain_facts",
         alias: "f",
         paramIndex: 2,
-        override: { reason: "GDPR subject access request", requestId: "req-1" },
+        override: { reason: "GDPR subject access request" },
+        requestId: "req-1",
       });
       expect(clause.decision).toBe("audit-override");
       expect(clause.sql).toBe("(f.workspace_id = $2)");
@@ -426,20 +575,42 @@ describe("audit override (#4768, ADR-0036 — region-scoped, no super-admin)", (
     expect(clause.decision).toBe("override-refused");
   });
 
-  it("refuses an override from `auth: none` and from an unresolved reader", () => {
+  it("refuses an override from `auth: none` even if the arm carried a role", () => {
+    // The union makes `{ origin: "unauthenticated-local", role: "owner" }`
+    // unconstructible, which is the point — the flat shape typechecked and
+    // earned a workspace-wide bypass on a deployment with no identity at all.
+    // The entitlement check requires `authenticated` regardless.
     expect(
-      aclVisibilityClause(
-        ctx({ role: null, userId: null, origin: "unauthenticated-local" }),
-        { table: "brain_facts", paramIndex: 1, override: { reason: "local" } },
-      ).decision,
+      aclVisibilityClause(localCtx(), {
+        table: "brain_facts",
+        paramIndex: 1,
+        override: { reason: "local" },
+      }).decision,
     ).toBe("override-refused");
+  });
+
+  it("denies (does not merely refuse) an override from an unresolved reader", () => {
     expect(
-      aclVisibilityClause(ctx({ origin: "unresolved" }), {
+      aclVisibilityClause(unresolvedCtx(), {
         table: "brain_facts",
         paramIndex: 1,
         override: { reason: "x" },
       }).decision,
     ).toBe("deny-all");
+  });
+
+  it("refuses an override with an empty or whitespace reason", () => {
+    // "Required — an unexplained override is not one" must be enforced, not
+    // merely asserted in prose.
+    for (const reason of ["", "   ", "\t\n"]) {
+      expect(
+        aclVisibilityClause(ctx({ role: "owner" }), {
+          table: "brain_facts",
+          paramIndex: 1,
+          override: { reason },
+        }).decision,
+      ).toBe("override-refused");
+    }
   });
 });
 
@@ -448,11 +619,11 @@ describe("no /ee coupling (#4768 acceptance — T8)", () => {
     // The minimal ACL is CORE and fail-closed: a self-hosted build with no
     // enterprise package must gate the brain identically. Corrector-masking
     // and the richer enterprise surfaces layer ON TOP; they never supply the
-    // primitive. `scripts/check-ee-imports.sh` is the repo-wide guard — this
-    // pins the specific file the acceptance criterion names.
-    const source = await Bun.file(
-      new URL("../acl.ts", import.meta.url).pathname,
-    ).text();
-    expect(source).not.toContain("@atlas/ee");
+    // primitive. `scripts/check-ee-imports.sh` is the repo-wide gate (and the
+    // one that catches indirect coupling); this pins the file #4768's Key
+    // files section names, as intent documentation.
+    const source = await Bun.file(new URL("../acl.ts", import.meta.url).pathname).text();
+    expect(source).not.toMatch(/from\s+["']@atlas\/ee/);
+    expect(source).not.toMatch(/import\(["']@atlas\/ee/);
   });
 });

@@ -30,8 +30,9 @@
  * surface stays self-consistent, so the incident is invisible from all of them:
  * a smaller, entirely plausible answer. Critically, the obvious guard —
  * "did the session carry a role we then failed to re-resolve?" — does NOT
- * work, because post-#2890 a plain member's `AtlasUser.role` is frequently
- * ABSENT, and a session-time member-table failure is exactly what erases it.
+ * work: `AtlasUser.role` can be absent, and a session-time member-table failure
+ * is one of the things that erases it — so the guard is blindest in precisely
+ * the case it exists for.
  * So this module calls {@link resolveEffectiveRoleStrict}, which propagates the
  * lookup failure instead of encoding it as `undefined`, and converts it to
  * {@link BrainRoleUnresolvedError}.
@@ -45,10 +46,13 @@
  * role is forwarded ONLY when `fromMemberRow` says it came from this org's
  * `member` row; otherwise role grants are dropped and the event logged.
  *
- * `platform_admin` short-circuits before the lookup and reports
- * `fromMemberRow: false`, so it is dropped here — correctly: a platform role is
- * not an org role and confers no brain grant (`acl.ts` says the same). It is
- * exempt from the throw for the same reason: no lookup ran, so none failed.
+ * Both halves fall out of asking ONE narrow question — "what is this user's
+ * role in this workspace's `member` table?" — with the session role
+ * deliberately not passed in. A bare `platform_admin` therefore grants nothing
+ * (correct: a cross-tenant platform role is not an org role, and `acl.ts` says
+ * the same), while a platform admin who genuinely holds `member.role = 'admin'`
+ * in this workspace keeps that grant rather than losing it to a short-circuit
+ * that never consulted the table.
  */
 
 import {
@@ -182,7 +186,17 @@ export async function resolveBrainReaderContext(
   if (userId) {
     let resolution: EffectiveRoleResolution;
     try {
-      resolution = await resolveEffectiveRoleStrict(user?.role, userId, workspaceId);
+      // `undefined` for the session role, DELIBERATELY. This module wants one
+      // answer — "what is this user's role in THIS workspace's member table" —
+      // and passing the session role would give the resolver two other ways to
+      // answer: `platform_admin` short-circuits before the lookup, and a
+      // no-member-row falls back to whatever the session carried. Both would
+      // arrive as a role we then have to decide not to trust. Asking the
+      // narrow question directly means `fromMemberRow` is the only outcome
+      // that can grant anything, and a platform admin who genuinely holds
+      // `member.role = 'admin'` here keeps that grant instead of losing it to
+      // the short-circuit.
+      resolution = await resolveEffectiveRoleStrict(undefined, userId, workspaceId);
     } catch (err) {
       if (err instanceof MemberRoleLookupError) {
         throw new BrainRoleUnresolvedError(workspaceId, userId, { cause: err });
@@ -192,13 +206,13 @@ export async function resolveBrainReaderContext(
     if (resolution.fromMemberRow && resolution.role) {
       resolvedRole = { role: resolution.role, orgId: workspaceId };
     } else if (resolution.role) {
-      // A role that did NOT come from this org's member row — a session role
-      // carried in from elsewhere, or a cross-tenant `platform_admin`. Neither
-      // is an org grant HERE, and forwarding it stamped with `orgId:
-      // workspaceId` would assert to `resolvePrincipalContext` that it was
-      // resolved against this workspace, defeating its mismatch check. Dropped,
-      // and logged: a reader who expected `role:` visibility and does not have
-      // it should be explicable from the logs.
+      // Reachable only if the resolver gains another non-member-row arm — this
+      // module passes no session role, so today the fallback has nothing to
+      // fall back TO. Forwarding such a role stamped `orgId: workspaceId` would
+      // assert to `resolvePrincipalContext` that it was resolved against this
+      // workspace, defeating its cross-org mismatch check. Dropped, and logged:
+      // a reader who expected `role:` visibility and does not have it should be
+      // explicable from the logs.
       log.warn(
         { workspaceId, userId, role: resolution.role, requestId },
         "brain read: reader's role did not come from this workspace's member row — dropping role grants",

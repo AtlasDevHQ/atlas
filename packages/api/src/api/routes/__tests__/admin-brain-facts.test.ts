@@ -41,17 +41,41 @@ void mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: { brainFact: { retract: "brain_fact.retract" } },
 }));
 
-// Records the role it was handed so a test can prove the ROLE SOURCE, which is
+// Records the role lookup so a test can prove the ROLE SOURCE, which is
 // otherwise invisible: passing `getUserRole` here instead would still return a
 // role and still produce a working queue — just one with fabricated grants.
+//
+// `reader-context.ts` (#4773) drives the STRICT resolver, so this harness models
+// its contract rather than the catching one: a member-table failure THROWS
+// `MemberRoleLookupError`, and a role is only a grant when `fromMemberRow`.
+// Modelling the failure as `undefined` — which is what the catching resolver
+// returns — would exercise a path the reader no longer has.
+//
+// Both exports are stubbed: `mock.module` is file-global, so a partial factory
+// link-fails the moment anything in the graph reaches the missing name.
+class MemberRoleLookupError extends Error {}
 let effectiveRoleCalls: Array<{ userRole: unknown; userId: string; orgId: string | undefined }> = [];
-/** `undefined` models the fail-closed arm `resolveEffectiveRole` takes on a DB error. */
-let roleLookupResult: string | undefined = "admin";
+/** The member row this workspace's lookup finds. `null` models "no member row". */
+let memberRoleResult: string | null = "admin";
+/** Set to make the member-table lookup FAIL, the arm that must refuse the read. */
+let memberLookupFails = false;
 void mock.module("@atlas/api/lib/auth/effective-role", () => ({
   resolveEffectiveRole: async (userRole: unknown, userId: string, orgId: string | undefined) => {
     effectiveRoleCalls.push({ userRole, userId, orgId });
-    return roleLookupResult;
+    return memberLookupFails ? undefined : (memberRoleResult ?? userRole);
   },
+  resolveEffectiveRoleStrict: async (
+    userRole: unknown,
+    userId: string,
+    orgId: string | undefined,
+  ) => {
+    effectiveRoleCalls.push({ userRole, userId, orgId });
+    if (memberLookupFails) throw new MemberRoleLookupError("member lookup failed");
+    return memberRoleResult === null
+      ? { role: userRole, fromMemberRow: false }
+      : { role: memberRoleResult, fromMemberRow: true };
+  },
+  MemberRoleLookupError,
 }));
 
 let listCalls: Array<Record<string, unknown>> = [];
@@ -130,7 +154,8 @@ const { adminBrainFacts } = await import("../admin-brain-facts");
 beforeEach(() => {
   auditRows.length = 0;
   effectiveRoleCalls = [];
-  roleLookupResult = "admin";
+  memberRoleResult = "admin";
+  memberLookupFails = false;
   listCalls = [];
   listResponse = { candidates: [], total: 0, tensionsTruncated: false };
   retractResult = { id: "fact-1", invalidatedAt: "2026-07-01T00:00:00.000Z" };
@@ -181,14 +206,18 @@ describe("reviewer identity", () => {
   it("derives the principal set from the effective role, with the org it came from", async () => {
     await adminBrainFacts.request("/");
 
+    // The session role is deliberately NOT passed: the reader asks the member
+    // table one narrow question about THIS workspace, so a session role could
+    // only give the resolver other ways to answer it (a `platform_admin`
+    // short-circuit, a no-member-row fallback) that this surface must not trust.
     expect(effectiveRoleCalls[0]).toEqual({
-      userRole: "member",
+      userRole: undefined,
       userId: "user-1",
       orgId: CURRENT_ORG,
     });
     // The resolved role reaches the read model as a real principal context —
-    // `admin` from `resolveEffectiveRole`, not the `member` on the session — so
-    // the queue is scoped to what this reviewer may actually see.
+    // `admin` from the member table, not the `member` on the session — so the
+    // queue is scoped to what this reviewer may actually see.
     expect(listCalls[0]?.ctx).toEqual({
       origin: "authenticated",
       workspaceId: CURRENT_ORG,
@@ -209,17 +238,26 @@ describe("reviewer identity", () => {
     expect(listCalls[0]?.ctx).toMatchObject({ origin: "unresolved", userId: null });
   });
 
-  it("refuses to serve a queue narrowed by a failed role lookup", async () => {
-    // `resolveEffectiveRole` CATCHES a member-table failure and returns
-    // undefined. Proceeding would drop this reviewer's `role:` tokens while
-    // leaving the context `authenticated` — so the ACL still matches, no
+  it("refuses to serve a queue narrowed by a FAILED role lookup", async () => {
+    // Proceeding would drop this reviewer's `role:` tokens while leaving the
+    // context `authenticated` — so the ACL still matches, no
     // BrainReaderUnresolvedError fires, and every `role:`-granted fact silently
     // vanishes from BOTH the queue and the vitals. Self-consistent, plausible,
     // and wrong.
-    roleLookupResult = undefined;
+    memberLookupFails = true;
     const res = await adminBrainFacts.request("/");
     expect(res.status).toBe(500);
     expect(listCalls).toHaveLength(0);
+  });
+
+  it("serves the queue with NO role grants when the reviewer has no member row", async () => {
+    // Distinct from the failure above, and the distinction is the point: "this
+    // user is not a member here" is an answer, "the lookup broke" is not. The
+    // first narrows correctly, the second must refuse.
+    memberRoleResult = null;
+    const res = await adminBrainFacts.request("/");
+    expect(res.status).toBe(200);
+    expect(listCalls[0]?.ctx).toMatchObject({ origin: "authenticated", role: null });
   });
 
   it("never requests an audit override", async () => {

@@ -8,7 +8,7 @@
  *
  * Why it is worth a file: every one of these log calls could be deleted and
  * `search.test.ts` would stay green, because the RESULTS are unaffected. They
- * are the only artifact of three separate degradations —
+ * are the ONLY artifact of three degradations —
  *
  *   - a grant that passed the predicate on one valid token while carrying junk
  *     the author believed was doing something (`acl.ts` calls read-time the
@@ -16,6 +16,11 @@
  *   - a `visible_to` that did not decode as an array at all, i.e. drift on the
  *     ACL's own column, which skips the seam above entirely;
  *   - a truncated conflict list, which renders as "nothing contradicts this".
+ *
+ * — and the only ATTRIBUTION for two more, where the caller can see the effect
+ * but not the cause: a counter that failed to decode (visible as
+ * `corroborationCount: 0`, indistinguishable from a genuinely uncorroborated
+ * claim) and a row dropped for a missing id (visible only as an absence).
  */
 
 import { beforeEach, describe, expect, it, mock } from "bun:test";

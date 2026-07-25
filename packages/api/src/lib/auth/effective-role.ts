@@ -16,19 +16,24 @@
  * short-circuits before the member-table lookup; otherwise `member.role`
  * wins outright (no more `max(user.role, member.role)` level comparison).
  *
- * Used in two places that must stay in lockstep:
- *   1. `validateManaged` — populates `authResult.user.role` for server-side
- *      `requireAdminAuth` checks on Atlas's own /api/v1/admin/* routes.
- *   2. `customSession` plugin — populates `session.user.effectiveRole` so
- *      the client (`useUserRole`) can hide/show admin chrome consistently.
+ * Two entry points, and picking the wrong one is a security decision:
  *
- * Returns the resolved role on success, `undefined` when neither side yields
- * one. On a member-table lookup ERROR it returns `undefined` (least privilege)
- * — the intrinsic fail-closed direction: a transient DB blip down-privileges an
- * org admin (bounces them from the console) rather than over-granting, and does
- * so regardless of what `userRole` the caller passed (no longer relying on it
- * being a non-admin default). Platform admins are unaffected — they
- * short-circuit before the lookup.
+ *   - {@link resolveEffectiveRole} — the original. Returns the resolved role, or
+ *     `undefined` when neither side yields one AND when the member-table lookup
+ *     ERRORS. That catch is the intrinsic fail-closed direction for its callers:
+ *     a transient DB blip down-privileges an org admin (bounces them from the
+ *     console) rather than over-granting, regardless of what `userRole` was
+ *     passed. Its callers are the AUTHENTICATION surfaces — `validateManaged`
+ *     (server-side `requireAdminAuth` on /api/v1/admin/*), the `customSession`
+ *     plugin (`session.user.effectiveRole`, which drives admin chrome), the
+ *     agent-auth verifier, and the MCP actor binders.
+ *   - {@link resolveEffectiveRoleStrict} — for callers that turn the role into
+ *     per-row ACL GRANTS (#4773's brain readers). It propagates the lookup
+ *     failure and reports whether the role came from this org's member row.
+ *     Collapsing either distinction there is a SILENT change to a result set,
+ *     which is a different failure from a bounced admin: nobody sees it.
+ *
+ * `platform_admin` short-circuits before the lookup on both paths.
  */
 
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
@@ -123,8 +128,15 @@ export async function resolveEffectiveRole(
   } catch (err) {
     // log.error (not warn): a member-table read failure on the hot auth path
     // is a real production signal, and it down-privileges an org admin.
+    //
+    // Unwrap to the CAUSE. `resolveEffectiveRoleStrict` wraps the driver error
+    // in `MemberRoleLookupError`, whose own message only restates the userId and
+    // orgId already in this payload — logging it would leave an operator able to
+    // see that the lookup broke but not whether it was a pool exhaustion, a
+    // statement timeout, a reset connection, or a missing relation.
+    const cause = err instanceof MemberRoleLookupError ? err.cause : err;
     log.error(
-      { err: err instanceof Error ? err.message : String(err), userId, orgId: activeOrganizationId },
+      { err: cause instanceof Error ? cause.message : String(cause), userId, orgId: activeOrganizationId },
       "Failed to look up org member role — failing closed to least privilege (org admins down-privileged)",
     );
     // Intrinsic fail-closed: the member lookup was ATTEMPTED (we have an active

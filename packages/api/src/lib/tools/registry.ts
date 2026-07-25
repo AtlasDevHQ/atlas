@@ -254,7 +254,7 @@ function registerCoreTools(
   // execute-time-gated tools — it reads the workspace, mode, and principal set
   // from request context inside `execute`, so it stays discoverable everywhere
   // without a boot-time gate. Its four degraded paths each carry a
-  // machine-readable `reason` (see the header on `search-brain.ts`): no
+  // machine-readable `BrainToolReason` (see the header on `search-brain.ts`): no
   // internal DB, an unresolvable reader, and a failed search return a
   // user-facing `{ error }`; only "no active workspace" returns an empty result
   // set, and even that one is labelled `unavailable` rather than left bare.

@@ -73,7 +73,11 @@ import {
 import { SEARCH_BRAIN_TOOL_DESCRIPTION } from "@atlas/api/lib/tools/descriptions";
 import { BRAIN_RESULT_TIERS, isBrainResultTier } from "@useatlas/schemas";
 import type { AtlasMode } from "@useatlas/types/auth";
-import type { BrainResultTier, BrainSearchResponse } from "@useatlas/types";
+import type {
+  BrainResultTier,
+  BrainSearchResponse,
+  BrainSearchUnavailable,
+} from "@useatlas/types";
 
 const log = createLogger("search-brain");
 
@@ -116,9 +120,7 @@ const READER_UNRESOLVED_MESSAGE =
  * `{ results: [] }` on every call, forever, and the agent concludes the company
  * brain is empty.
  */
-function emptyResponse(unavailable: BrainToolReason | null = null): BrainSearchResponse & {
-  unavailable: BrainToolReason | null;
-} {
+function emptyResponse(unavailable: BrainSearchUnavailable | null = null): BrainSearchResponse {
   const store = { queried: false } as const;
   return {
     results: [],
@@ -136,6 +138,7 @@ Use the searchBrain tool for decisions, rationale, ownership, policy, and histor
 - Every result is labelled: \`tier: "fact"\` (reviewed claim), \`"raw-episode"\` (the source record), \`"document"\` (hosted knowledge). Cite the tier and the provenance when you use one — a raw episode is what someone SAID, not what is true
 - An episode tagged \`extraction: "pending"\` has not been distilled into facts yet; quote it as raw evidence
 - \`tensions\` lists conflicting claims in both directions and is deliberately unranked — surface both sides, never pick a winner
+- If the response carries \`unavailable\`, the brain could NOT be searched (e.g. no workspace is bound). Say so — do NOT report it as "nothing is known"
 - Read-only, and never the SQL whitelist, metrics, or glossary. For quantitative current state use \`executeSQL\`; for the on-disk semantic layer use \`explore\``;
 
 /**
@@ -295,7 +298,16 @@ export const searchBrain = tool({
       // somebody remembering to extend this condition.
       if (err instanceof BrainReaderIdentityError) {
         log.error(
-          { err: err.message, errorName: err.name, workspaceId, requestId },
+          {
+            err: err.message,
+            errorName: err.name,
+            // The wrapper's message names the workspace and the user, both
+            // already in this payload; the driver error underneath is the only
+            // text that says WHAT broke.
+            cause: err.cause instanceof Error ? err.cause.message : undefined,
+            workspaceId,
+            requestId,
+          },
           "searchBrain refused: reader identity could not be resolved",
         );
         return {

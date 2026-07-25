@@ -38,6 +38,17 @@ void mock.module("@atlas/api/lib/auth/effective-role", () => ({
     // forces this to undefined; the stdio arm forwards the real value).
     return Promise.resolve(userRole);
   },
+  // ALL value exports — a partial factory link-fails the moment anything in the
+  // graph reaches a missing name (#4773 added `resolveEffectiveRoleStrict`).
+  resolveEffectiveRoleStrict: (
+    userRole: AtlasRole | undefined,
+    userId: string,
+    activeOrganizationId: string | undefined,
+  ) => {
+    resolveCalls.push({ userRole, userId, activeOrganizationId });
+    return Promise.resolve({ role: userRole, fromMemberRow: userRole !== undefined });
+  },
+  MemberRoleLookupError: class MemberRoleLookupError extends Error {},
 }));
 
 const { resolveMcpActorRole } = await import("../bind-actor.js");

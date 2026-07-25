@@ -192,9 +192,20 @@ void mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
 const mockResolveEffectiveRole: Mock<
   (userRole: unknown, userId: string, orgId: string | undefined) => Promise<unknown>
 > = mock(async (userRole: unknown) => userRole);
+// ALL value exports — a partial factory link-fails the moment anything in the
+// graph reaches a missing name (#4773 added `resolveEffectiveRoleStrict`).
 void mock.module("@atlas/api/lib/auth/effective-role", () => ({
   resolveEffectiveRole: (userRole: unknown, userId: string, orgId: string | undefined) =>
     mockResolveEffectiveRole(userRole, userId, orgId),
+  resolveEffectiveRoleStrict: async (
+    userRole: unknown,
+    userId: string,
+    orgId: string | undefined,
+  ) => {
+    const role = await mockResolveEffectiveRole(userRole, userId, orgId);
+    return { role, fromMemberRow: role !== undefined };
+  },
+  MemberRoleLookupError: class MemberRoleLookupError extends Error {},
 }));
 
 // #3345 — forced-password-change gate at the MCP edge. Defaults to

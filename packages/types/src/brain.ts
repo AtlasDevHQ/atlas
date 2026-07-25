@@ -512,6 +512,17 @@ export type BrainSearchStoreReport =
       readonly truncated: boolean;
     };
 
+/**
+ * Why a response is empty because the read could not RUN, as opposed to
+ * running and matching nothing.
+ *
+ * Mirrors the tool-layer reason vocabulary, narrowed to the values that can
+ * accompany a shaped result. Carried on the wire because a bare
+ * `{ results: [] }` reads as "the brain knows nothing" — the single most likely
+ * thing a caller will conclude, and the one this surface exists to prevent.
+ */
+export type BrainSearchUnavailable = "no_workspace";
+
 export interface BrainSearchResponse {
   /** Fused across every queried store, relevance-ordered, every row labeled. */
   readonly results: readonly BrainSearchResult[];
@@ -529,6 +540,14 @@ export interface BrainSearchResponse {
    * are incomplete. See {@link BrainFactCandidateListResponse.tensionsTruncated}.
    */
   readonly tensionsTruncated: boolean;
+  /**
+   * Set when the brain could not be searched at all. Absent on a real read.
+   *
+   * Distinct from an empty `results`: one means "searched, matched nothing",
+   * the other means "could not search". Reachable in practice — an unbound
+   * stdio MCP actor has no workspace and takes this path on every call.
+   */
+  readonly unavailable?: BrainSearchUnavailable | null;
 }
 
 /**

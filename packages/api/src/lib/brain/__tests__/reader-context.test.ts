@@ -2,17 +2,24 @@
  * Unit coverage for brain reader-identity resolution (#4773).
  *
  * This module exists to catch two failures that are invisible from every
- * surface that would suffer them, so the tests are all negatives:
+ * surface that would suffer them, so most of these probe a guard rather than
+ * a happy path:
  *
  *   - a member-table FAILURE must refuse the read, not silently strip the
  *     reader's `role:` tokens. The trap is that the obvious guard ("did the
  *     session carry a role we then failed to re-resolve?") does not work:
- *     post-#2890 a plain member's `AtlasUser.role` is frequently ABSENT, and a
- *     session-time lookup failure is exactly what erases it. The first test
- *     below is the one that fails against that guard.
+ *     `AtlasUser.role` can be absent, and a session-time lookup failure is one
+ *     of the things that erases it — so the guard is blindest in precisely the
+ *     case it exists for. "REFUSES when the
+ *     member lookup fails and the session carries no role" is the test that
+ *     fails against that guard.
  *   - a role that did NOT come from this workspace's member row must not be
  *     forwarded as if it had. That direction is fail-OPEN — it would mint
  *     `role:` ACL tokens in a workspace the reader is not a member of.
+ *
+ * Both fall out of the module asking ONE narrow question of the member table
+ * with the session role deliberately withheld, which is also why a platform
+ * admin who happens to be a real member keeps their grant.
  *
  * `resolveEffectiveRoleStrict` reads through `internalQuery`, so this file
  * mocks `db/internal` (all exports, via the sanctioned helper). The audience
@@ -109,10 +116,10 @@ describe("resolveBrainReaderContext", () => {
   });
 
   it("DROPS a role that did not come from this workspace's member row", async () => {
-    // Fail-open direction. With no member row, `resolveEffectiveRole` returns
-    // the session role verbatim; stamping it `orgId: workspaceId` would tell
-    // `resolvePrincipalContext` it was resolved here and mint `role:admin`
-    // tokens for a workspace this reader is not a member of.
+    // Fail-open direction. `resolveEffectiveRole`'s no-member-row arm returns
+    // the caller's session role verbatim; stamping THAT `orgId: workspaceId`
+    // would tell `resolvePrincipalContext` it was resolved here and mint
+    // `role:admin` tokens for a workspace this reader is not a member of.
     memberRows = [];
     const ctx = await resolveBrainReaderContext(audienceDb, {
       workspaceId: WS,
@@ -123,13 +130,29 @@ describe("resolveBrainReaderContext", () => {
     expect(ctx.role).toBeNull();
   });
 
-  it("drops a bare platform_admin — a platform role is not an org grant", async () => {
+  it("grants a BARE platform_admin nothing — a platform role is not an org grant", async () => {
+    memberRows = [];
     const ctx = await resolveBrainReaderContext(audienceDb, {
       workspaceId: WS,
       mode: "managed",
       user: user({ role: "platform_admin" }),
     });
     expect(ctx.role).toBeNull();
+  });
+
+  it("keeps the member role of a platform_admin who IS a member of this workspace", async () => {
+    // `resolveEffectiveRoleStrict` short-circuits on a `platform_admin` session
+    // role BEFORE the member lookup, which would report `fromMemberRow: false`
+    // and drop a grant this reader demonstrably holds. This module sidesteps
+    // that by not passing the session role at all — it asks the member table
+    // the one question it actually cares about.
+    memberRows = [{ role: "owner" }];
+    const ctx = await resolveBrainReaderContext(audienceDb, {
+      workspaceId: WS,
+      mode: "managed",
+      user: user({ role: "platform_admin" }),
+    });
+    expect(ctx.role).toBe("owner");
   });
 
   it("resolves `unauthenticated-local` in auth:none WITHOUT touching the member table", async () => {

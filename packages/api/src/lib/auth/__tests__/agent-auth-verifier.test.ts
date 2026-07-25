@@ -29,11 +29,24 @@ void mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
 // assert the org-role-only boundary (userRole must be undefined).
 const roleCalls: Array<[unknown, string, string | undefined]> = [];
 let roleResult: unknown = undefined;
+// Mock ALL value exports (mock.module is file-global; a partial factory works
+// right up until something in the import graph reaches a missing name, and then
+// fails at LINK time in a file that has nothing to do with this one — which is
+// exactly what #4773's `resolveEffectiveRoleStrict` did to two suites).
 void mock.module("@atlas/api/lib/auth/effective-role", () => ({
   resolveEffectiveRole: async (userRole: unknown, userId: string, orgId: string | undefined) => {
     roleCalls.push([userRole, userId, orgId]);
     return roleResult;
   },
+  resolveEffectiveRoleStrict: async (
+    userRole: unknown,
+    userId: string,
+    orgId: string | undefined,
+  ) => {
+    roleCalls.push([userRole, userId, orgId]);
+    return { role: roleResult, fromMemberRow: roleResult !== undefined };
+  },
+  MemberRoleLookupError: class MemberRoleLookupError extends Error {},
 }));
 
 import { resolveAgentAuthActor } from "@atlas/api/lib/auth/agent-auth-verifier";

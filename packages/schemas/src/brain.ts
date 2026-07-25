@@ -88,7 +88,7 @@ const _brainResultTiersCovered: _BrainResultTiersCovered = true;
 void _brainResultTiersCovered;
 
 /**
- * Compile error if the tuple's ORDER changes.
+ * Compile error if the tuple's ORDER or arity changes.
  *
  * Membership and completeness are pinned above; sequence is not, and sequence
  * is load-bearing — `tierRank` in `lib/brain/search.ts` reads the fused

@@ -304,8 +304,9 @@ describe("fail-closed", () => {
     // the statement would pass no matter what. The real proof that the row
     // cannot come back is in `search-pg.test.ts`, against live Postgres.
     //
-    // What IS worth pinning here: nothing runs after the query that could drop
-    // a row, so the WHERE is the only filter there is.
+    // What IS worth pinning here: exactly one statement is issued — no second
+    // pass, no follow-up filtering query. The only post-query row drop in this
+    // module is the `id`-drift guard, which is not ACL-conditioned.
     expect(db.calls).toHaveLength(1);
   });
 

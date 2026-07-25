@@ -16,8 +16,8 @@ import {
   MemberRoleLookupError,
   resolveEffectiveRole,
   resolveEffectiveRoleStrict,
-  rootCause,
 } from "../effective-role";
+import { rootCause } from "@atlas/api/lib/error-cause";
 import {
   buildCustomSessionPayload,
   canGenerateSCIMToken,
@@ -176,33 +176,6 @@ describe("resolveEffectiveRoleStrict()", () => {
   });
 });
 
-describe("rootCause()", () => {
-  it("walks a multi-level chain to the driver error", () => {
-    // Two deep is the real shape on the brain path:
-    // BrainRoleUnresolvedError → MemberRoleLookupError → driver error. A single
-    // `err.cause` stops at the middle link, whose message carries no new
-    // information.
-    const driver = new Error("statement timeout");
-    const middle = new Error("wrapper", { cause: driver });
-    const outer = new Error("outer", { cause: middle });
-    expect(rootCause(outer)).toBe(driver);
-  });
-
-  it("returns the error itself when there is no cause, and terminates on a cycle", () => {
-    const bare = new Error("bare");
-    expect(rootCause(bare)).toBe(bare);
-
-    const a = new Error("a");
-    const b = new Error("b", { cause: a });
-    (a as { cause?: unknown }).cause = b;
-    // A log helper must not be able to hang a request. Terminating at all is
-    // the assertion; WHICH link of the cycle it stops on is arbitrary.
-    // (`.not.toThrow()` is unusable here — bun reads a RETURNED Error as a
-    // throw — so assert on the value instead.)
-    const resolved = rootCause(a);
-    expect(resolved === a || resolved === b).toBe(true);
-  });
-});
 
 describe("buildCustomSessionPayload()", () => {
   beforeEach(() => {

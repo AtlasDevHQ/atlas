@@ -65,7 +65,7 @@ import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { getInternalDB, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
-import { rootCause } from "@atlas/api/lib/auth/effective-role";
+import { rootCauseMessage } from "@atlas/api/lib/error-cause";
 import { searchBrainCore, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT } from "@atlas/api/lib/brain/search";
 import {
   BrainReaderIdentityError,
@@ -162,11 +162,6 @@ Use the searchBrain tool for decisions, rationale, ownership, policy, and histor
  * operator grepping blind — the server-side `log.error` is the only other
  * trace, and nothing correlates the two without this.
  */
-function causeMessage(err: Error): string | undefined {
-  const cause = rootCause(err);
-  return cause instanceof Error && cause !== err ? cause.message : undefined;
-}
-
 function withRequestId(message: string, requestId: string | undefined): string {
   return requestId ? `${message} (request ${requestId})` : message;
 }
@@ -325,7 +320,7 @@ export const searchBrain = tool({
             // error), and the middle link's message only restates the workspace
             // and user already in this payload — so a single unwrap logs
             // nothing new and the driver text never surfaces.
-            cause: causeMessage(err),
+            cause: rootCauseMessage(err),
             workspaceId,
             requestId,
           },

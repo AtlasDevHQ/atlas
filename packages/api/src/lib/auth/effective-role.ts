@@ -40,29 +40,12 @@ import type { AtlasRole } from "@atlas/api/lib/auth/types";
 import { parseRole } from "@atlas/api/lib/auth/permissions";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+// From a dedicated, unmocked module ON PURPOSE: four test files `mock.module`
+// this one, and a pure utility exported from here forces every partial factory
+// to grow a stub for it — which is how #4773 link-failed two suites twice.
+import { rootCause } from "@atlas/api/lib/error-cause";
 
 const log = createLogger("auth:effective-role");
-
-/**
- * The deepest `cause` in an error chain.
- *
- * Depth matters and is not fixed: a brain read wraps twice
- * (`BrainRoleUnresolvedError` → `MemberRoleLookupError` → driver error), the
- * resolver below wraps once. A hard-coded `err.cause` logs the WRAPPER's
- * message from the two-deep site — which only restates ids the payload already
- * carries — so the driver text that says what actually broke never lands
- * anywhere. Walk instead of guessing the depth.
- */
-export function rootCause(err: unknown): unknown {
-  let current = err;
-  // Bounded: `cause` chains are built by this codebase, but a cycle would spin
-  // forever and a log helper must not be able to hang a request.
-  for (let depth = 0; depth < 8; depth++) {
-    if (!(current instanceof Error) || current.cause === undefined) return current;
-    current = current.cause;
-  }
-  return current;
-}
 
 /**
  * A member-table lookup failed. Thrown only by

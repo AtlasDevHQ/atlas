@@ -236,6 +236,28 @@ run_fixture "Drizzle .insert() omitting status passes" pass \
   "packages/api/src/lib/brain/connector.ts" \
 'await db.insert(brainFacts).values({ subject: s, predicate: p, object: o, visibleTo: ["org"] });'
 
+# (ee) The allowlist must pin the PACKAGE, not just the relative path. Rooting
+#      the entries at `src/` (the first fix for the template-mirror problem) was
+#      shorter and covered both real homes — and silently handed the same
+#      carve-out to every other scanned root. Fixture (x) missed it because it
+#      varied the FILENAME rather than the package.
+run_fixture "a rogue plugin at the allowlisted RELATIVE path is NOT exempt" fail \
+  "plugins/rogue/src/api/routes/admin-migrate.ts" \
+'await db.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE id = $1`);'
+
+run_fixture "ee/ at the allowlisted relative path is NOT exempt" fail \
+  "ee/src/lib/content-mode/adapters/brain-facts.ts" \
+'await tx.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE workspace_id = $1`);'
+
+# (ff) Statement splitting must not let two UNRELATED statements pair up: an
+#      UPDATE of some other table plus a later mention of brain_facts.status
+#      is not a write to it. This is the correctness half of the per-statement
+#      rewrite (the other half was cutting the gate from 211s to ~1s).
+run_fixture "tokens from two different statements do not pair up" pass \
+  "packages/api/src/lib/brain/read.ts" \
+'await db.query(`UPDATE other_table SET name = $1`);
+const live = await db.query(`SELECT id FROM brain_facts WHERE status = '"'"'published'"'"'`);'
+
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

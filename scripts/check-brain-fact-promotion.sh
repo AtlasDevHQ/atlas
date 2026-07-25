@@ -43,13 +43,16 @@
 # registry's blanket UPDATE and bypass every refusal without any file in this
 # scan changing.
 #
-# NOTE the deliberate over-breadth: the UPDATE pattern fires on `status`
-# anywhere in the 400-char window, INCLUDING a WHERE clause. So
-# `UPDATE brain_facts SET invalidated_at = now() WHERE … status = 'published'`
-# is refused even though it mutates no status. That is the safe direction for a
-# security gate — but it means a legitimate retraction that FILTERS on status
-# (which #4772/#4773 may well want) needs an allowlist entry with a rationale,
-# not a quiet regex loosening.
+# NOTE the deliberate over-breadth. Matching is per-STATEMENT, and within a
+# statement the rules ask only "does it touch the table AND mention `status`" —
+# so `status` in a WHERE clause counts. Both of these are refused even though
+# neither mutates the review state:
+#   UPDATE brain_facts SET invalidated_at = now() WHERE … status = 'published'
+#   INSERT INTO brain_facts (…) SELECT … WHERE status = 'draft'
+# That is the safe direction for a security gate. A legitimate case — a
+# retraction or backfill that FILTERS on status, which #4772/#4773 may well
+# want — needs an allowlist entry WITH a rationale, not a quiet loosening. Both
+# shapes have fixtures, so relaxing this has to fail a test first.
 #
 # An INSERT that does NOT name `status` is fine and is the expected shape for
 # every writer: migration 0180 defaults the column to `draft`, so the ingest
@@ -91,15 +94,23 @@
 
 set -euo pipefail
 
-# Matched as a path SUFFIX, and deliberately rooted at `src/` rather than at the
-# package: `create-atlas/scripts/prepare-templates.sh` mirrors these same files
-# into `create-atlas/templates/*/src/` (gitignored, generated), so a
-# `packages/api/`-prefixed entry would exempt the original and flag its own copy.
-# The scan covers `create-atlas` on purpose — a template that grew a rogue writer
-# must still fail — so the allowlist has to name the FILE, not one of its homes.
+# Matched as GLOBS against the full path, naming each file's two real homes:
+# the source of truth under `packages/api/`, and the gitignored copy that
+# `create-atlas/scripts/prepare-templates.sh` mirrors into
+# `create-atlas/templates/*/src/`. The scan covers `create-atlas` on purpose — a
+# template that grew a rogue writer must still fail — so both spellings have to
+# be listed.
+#
+# Deliberately NOT a bare `src/...` suffix, even though that is shorter and
+# covers both. It would exempt those two relative paths in EVERY scanned root,
+# so a `plugins/anything/src/api/routes/admin-migrate.ts` would inherit the
+# region-import carve-out for free. A carve-out has to name the file it trusts,
+# not a shape any package can adopt.
 ALLOWLIST=(
-  "src/lib/content-mode/adapters/brain-facts.ts"
-  "src/api/routes/admin-migrate.ts"
+  "packages/api/src/lib/content-mode/adapters/brain-facts.ts"
+  "packages/api/src/api/routes/admin-migrate.ts"
+  "create-atlas/templates/*/src/lib/content-mode/adapters/brain-facts.ts"
+  "create-atlas/templates/*/src/api/routes/admin-migrate.ts"
 )
 
 # `BRAIN_PROMOTION_ROOT` points the scan at a throwaway tree — used ONLY by the
@@ -143,61 +154,96 @@ CANDIDATES=$(grep -rlE 'brain_facts|\bbrainFacts\b' "${EXISTING_ROOTS[@]}" \
 # Same comment-stripping program as check-ee-imports.sh / the legacy-SQL gate.
 STRIP_COMMENTS='sed -E "s#/\*([^*]|\*+[^*/])*\*+/##g; /\/\*/,/\*\// d; s#//.*\$##"'
 
-# SQL spans lines inside template literals, so flatten whitespace before
-# matching. The bounded `.{0,400}` keeps the UPDATE…SET…status window from
-# spanning into an unrelated later statement in the same file.
-# Quoted identifiers (`UPDATE "brain_facts"`) are admitted by the optional quote.
-# `(\w+\.)?` admits a schema qualifier (`public.brain_facts`); `"?` admits a
-# quoted identifier. Both were live evasions before they were probed.
-# Each identifier may independently be quoted, so `"public"."brain_facts"` and
-# `public.brain_facts` and `"brain_facts"` all match. An earlier single leading
-# `"?` consumed the quote and then could not match the qualifier's closing one.
+# Once a file is split into STATEMENTS (below), "these two tokens belong to the
+# same statement" is structural — so each rule is a set of cheap independent
+# greps AND-ed together, not one regex with `.{0,400}`-style windows.
+#
+# That is not only simpler, it is why this gate is fast. The window form was
+# catastrophically backtracking: a single pattern took 1.6s on `schema.ts`
+# alone, and the whole gate ran >200s in `/ci` stage 1.
+#
+# `QUALIFIED` admits an optional schema qualifier with either identifier
+# independently quoted, so `public.brain_facts`, `"public"."brain_facts"`, and
+# `"brain_facts"` all match. `ORM_TABLE` does the same for a namespace-qualified
+# Drizzle reference (`schema.brainFacts`).
 QUALIFIED='("?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?brain_facts"?'
-UPDATE_PATTERN="UPDATE[[:space:]]+${QUALIFIED}\b.{0,400}\bSET\b.{0,400}\bstatus\b"
-# `(AS[[:space:]]+\w+[[:space:]]*)?` admits the alias form
-# `INSERT INTO brain_facts AS f (…, status) VALUES …`, which is valid Postgres.
-INSERT_PATTERN="INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]*(AS[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*)?\([^)]*\bstatus\b"
-# The upsert form: no table follows UPDATE, and `status` is absent from the
-# INSERT column list — it appears only in the conflict action.
-UPSERT_PATTERN="INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b.{0,600}\bDO[[:space:]]+UPDATE[[:space:]]+SET\b.{0,400}\bstatus\b"
-# A column-less INSERT is positional: grep cannot tell whether it sets status.
-POSITIONAL_PATTERN="INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]+VALUES\b"
-# Drizzle write-builders. `ORM_TABLE` admits a namespace-qualified reference
-# (`schema.brainFacts`), which a bare `brainFacts` match cannot see.
 ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
-# `.update(brainFacts) … .set({ … status … })`
-ORM_UPDATE_PATTERN="\.update\([[:space:]]*${ORM_TABLE}[[:space:]]*\).{0,400}\.set\([^)]{0,400}\bstatus\b"
-# `.insert(brainFacts).values({ … status … })` — the ORM twin of the raw-SQL
-# INSERT-naming-status form. Without it the two spellings of one write disagree:
-# the SQL half is refused and the ORM half sails through. This is also the shape
-# an ingest fiber (#4770/#4771) is most likely to reach for.
-ORM_INSERT_PATTERN="\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\).{0,600}\bstatus\b"
 
+# Does one statement write `brain_facts.status`? Echoes nothing; exit 0 = yes.
+statement_writes_status() {
+  local stmt="$1"
+
+  # Raw SQL — UPDATE … SET … status
+  if grep -qiE "UPDATE[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
+    && grep -qiE '\bSET\b' <<<"$stmt" \
+    && grep -qiE '\bstatus\b' <<<"$stmt"; then
+    return 0
+  fi
+
+  # Raw SQL — INSERT INTO brain_facts … status. Covers BOTH the column-list form
+  # and `ON CONFLICT … DO UPDATE SET status`, because within one statement they
+  # are the same question. Deliberately over-broad: an INSERT that merely reads
+  # `status` in a sub-SELECT also trips this. That is the safe direction, and a
+  # legitimate case wants an allowlist entry with a rationale, not a loosening.
+  if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b" <<<"$stmt" \
+    && grep -qiE '\bstatus\b' <<<"$stmt"; then
+    return 0
+  fi
+
+  # Raw SQL — a column-less positional INSERT. `status` cannot appear by name,
+  # so this is refused on shape: a positional insert into a 17-column table is
+  # unreviewable regardless of whether it happens to set the review state.
+  if grep -qiE "INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]+VALUES\b" <<<"$stmt"; then
+    return 0
+  fi
+
+  # Drizzle write-builders, both halves. The insert half matters as much as the
+  # update half: without it the ORM and raw-SQL spellings of one write would
+  # disagree, and the ORM insert is the shape an ingest fiber reaches for.
+  if grep -qE "\.update\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
+    && grep -qE '\.set\(' <<<"$stmt" \
+    && grep -qE '\bstatus\b' <<<"$stmt"; then
+    return 0
+  fi
+  if grep -qE "\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\)" <<<"$stmt" \
+    && grep -qE '\bstatus\b' <<<"$stmt"; then
+    return 0
+  fi
+
+  return 1
+}
 
 OFFENDERS=""
 if [ -n "$CANDIDATES" ]; then
   while IFS= read -r f; do
     [ -z "$f" ] && continue
-    # Suffix match, not equality, so the fixture suite can stage the same
-    # repo-relative paths under a temporary root.
+    # Glob match against a `*/`-prefixed pattern, so the fixture suite can stage
+    # the same repo-relative paths under a temporary root while the pattern
+    # still pins the package. `$a` is intentionally unquoted — it IS the glob.
     allowed=0
     for a in "${ALLOWLIST[@]}"; do
-      [[ "$f" == *"$a" ]] && allowed=1 && break
+      # shellcheck disable=SC2053
+      [[ "$f" == $a || "$f" == */$a ]] && allowed=1 && break
     done
     [ "$allowed" -eq 1 ] && continue
-    FLAT=$(eval "$STRIP_COMMENTS \"\$f\"" | tr '\n' ' ')
-    # `-i`: SQL keyword casing is a style choice, not a security boundary — a
-    # lowercase `update brain_facts set status` must not slip past. The ORM
-    # pattern is case-SENSITIVE (it matches TypeScript identifiers, where case
-    # is meaning), so it is tested separately.
-    if echo "$FLAT" | grep -qiE "$UPDATE_PATTERN" \
-      || echo "$FLAT" | grep -qiE "$INSERT_PATTERN" \
-      || echo "$FLAT" | grep -qiE "$UPSERT_PATTERN" \
-      || echo "$FLAT" | grep -qiE "$POSITIONAL_PATTERN" \
-      || echo "$FLAT" | grep -qE "$ORM_UPDATE_PATTERN" \
-      || echo "$FLAT" | grep -qE "$ORM_INSERT_PATTERN"; then
-      OFFENDERS="${OFFENDERS}${f}"$'\n'
-    fi
+    # Split into STATEMENTS, then keep only those naming the table. Two reasons:
+    #
+    #   CORRECTNESS — each rule above AND-s independent tokens, which only means
+    #   "in the same write" because the unit here is a statement. Per-file, an
+    #   UPDATE on one table could pair with a `status` belonging to another.
+    #
+    #   COST — `schema.ts` is a candidate (it holds the `brainFacts` pgTable) and
+    #   is 167KB; the statement filter cuts what the rules ever see to a handful
+    #   of short lines. Atlas SQL is single-statement by rule, so a `;` inside a
+    #   query literal is not a case this has to handle.
+    while IFS= read -r stmt; do
+      [ -z "$stmt" ] && continue
+      if statement_writes_status "$stmt"; then
+        OFFENDERS="${OFFENDERS}${f}"$'\n'
+        break
+      fi
+    done < <(eval "$STRIP_COMMENTS \"\$f\"" | tr '\n' ' ' | tr ';' '\n' \
+      | grep -iE 'brain_facts|brainFacts' || true)
   done <<<"$CANDIDATES"
 fi
 

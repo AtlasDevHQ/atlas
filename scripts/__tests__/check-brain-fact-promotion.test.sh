@@ -180,6 +180,21 @@ run_fixture "retraction that merely FILTERS on status is refused (documented ove
   "packages/api/src/lib/brain/retract.ts" \
 'await db.query(`UPDATE brain_facts SET invalidated_at = now() WHERE id = $1 AND status = '"'"'published'"'"'`);'
 
+# (w) The GENERATED template mirror of an allowlisted file → must PASS.
+#     `prepare-templates.sh` copies packages/api sources into
+#     `create-atlas/templates/*/src/` (gitignored). Allowlisting by
+#     `packages/api/`-prefixed path exempted the original and then failed on its
+#     own copy — caught by /ci, not by these fixtures, which is why it is one now.
+run_fixture "generated template mirror of an allowlisted file passes" pass \
+  "create-atlas/templates/docker/src/lib/content-mode/adapters/brain-facts.ts" \
+'await tx.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE workspace_id = $1`);'
+
+# (x) A template file that is NOT allowlisted → must still FAIL. The scan covers
+#     create-atlas deliberately; the allowlist widening must not exempt the tree.
+run_fixture "a NON-allowlisted template file still fails" fail \
+  "create-atlas/templates/docker/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE id = $1`);'
+
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

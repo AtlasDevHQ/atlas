@@ -88,9 +88,15 @@
 
 set -euo pipefail
 
+# Matched as a path SUFFIX, and deliberately rooted at `src/` rather than at the
+# package: `create-atlas/scripts/prepare-templates.sh` mirrors these same files
+# into `create-atlas/templates/*/src/` (gitignored, generated), so a
+# `packages/api/`-prefixed entry would exempt the original and flag its own copy.
+# The scan covers `create-atlas` on purpose — a template that grew a rogue writer
+# must still fail — so the allowlist has to name the FILE, not one of its homes.
 ALLOWLIST=(
-  "packages/api/src/lib/content-mode/adapters/brain-facts.ts"
-  "packages/api/src/api/routes/admin-migrate.ts"
+  "src/lib/content-mode/adapters/brain-facts.ts"
+  "src/api/routes/admin-migrate.ts"
 )
 
 # `BRAIN_PROMOTION_ROOT` points the scan at a throwaway tree — used ONLY by the

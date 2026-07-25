@@ -32,6 +32,7 @@ import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import {
+  USER_PREFIX,
   aclVisibilityClause,
   isVisibleTo,
   resolvePrincipalContext,
@@ -149,6 +150,15 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
     { label: "bare-prefix", visibleTo: ["user:", "audience:"] },
     // Case variants must NOT match — enforcement is byte-exact.
     { label: "shouty", visibleTo: ["ORG"] },
+    // Array-literal metacharacters. `visible_to` binds as a JS array through
+    // `$n::text[]`; if that serialization ever stopped quoting, `user:a,org`
+    // would split into `user:a` AND `org` — a token the reader never held,
+    // granting the workspace's entire public set. Fail-OPEN, and invisible to
+    // every assertion above. node-pg quotes correctly today; this pins it.
+    { label: "comma-token", visibleTo: [`${USER_PREFIX}user-1,org`] },
+    { label: "quote-token", visibleTo: [`${USER_PREFIX}q"uote`] },
+    { label: "backslash-token", visibleTo: [`${USER_PREFIX}back\\slash`] },
+    { label: "brace-token", visibleTo: [`${USER_PREFIX}{braced}`] },
   ];
 
   function readersFor(workspaceId: string): ReadonlyArray<{
@@ -210,6 +220,20 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
           audienceIds: [],
         },
         expected: ["org-wide", "padded"],
+      },
+      {
+        name: "metacharacter user",
+        // Holds the comma-bearing id verbatim. It must match `comma-token`
+        // and NOTHING else — in particular not `org-wide`, which is what a
+        // split-on-comma serialization bug would hand it.
+        ctx: {
+          ...base,
+          origin: "authenticated",
+          userId: "user-1,org",
+          role: null,
+          audienceIds: [],
+        },
+        expected: ["comma-token", "org-wide", "padded"],
       },
       {
         name: "unresolved",

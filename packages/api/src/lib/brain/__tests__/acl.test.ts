@@ -217,6 +217,17 @@ describe("principal tokens (#4768)", () => {
     expect(clause.decision).toBe("deny-all");
     expect(clause.sql).toBe("(FALSE)");
     expect(isVisibleTo(row(["org"]), rogue)).toBe(false);
+
+    // The override branch runs BEFORE the token backstop, so it is the arm
+    // where a permissive fallthrough would have been worth the most. Pin it:
+    // entitlement requires `origin === "authenticated"`, so a rogue origin is
+    // refused and then denied outright.
+    const withOverride = aclVisibilityClause(
+      { ...rogue, role: "owner" } as unknown as BrainPrincipalContext,
+      { table: "brain_facts", paramIndex: 1, override: { reason: "audit" } },
+    );
+    expect(withOverride.decision).toBe("deny-all");
+    expect(withOverride.sql).toBe("(FALSE)");
   });
 
   it("grants nothing at all when there is no workspace", () => {
@@ -342,8 +353,10 @@ describe("resolvePrincipalContext (#4768)", () => {
     // — a membership row from another tenant hands this reader a token that
     // then matches their OWN tenant's facts, which the predicate's workspace
     // containment cannot catch.
-    expect(seenSql).toContain("workspace_id = $1");
-    expect(seenSql).toContain("user_id = $2");
+    // Positive form, deliberately: the earlier `not.toContain("OR")` guard was
+    // a tripwire rather than a check ("ORDER BY" contains "OR"). This pins the
+    // AND-composition itself, and cannot be tripped by a benign addition.
+    expect(seenSql).toMatch(/workspace_id = \$1\s+AND\s+user_id = \$2/);
     expect(resolved.audienceIds).toEqual(["eng", "exec"]);
     expect(resolved.origin).toBe("authenticated");
   });

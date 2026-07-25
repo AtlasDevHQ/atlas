@@ -33,10 +33,10 @@
  *
  * **Reader side** — a reader whose principal set cannot be resolved gets
  * `FALSE`, not "everything" and not "the public subset". Every deny in
- * `aclVisibilityClause` is logged. `isVisibleTo` logs only the two denies that
- * indicate a BUG upstream (a cross-workspace ask, an unusable principal set);
- * an ordinary no-overlap answer stays silent, because it is called per row and
- * would flood the signal at read volume.
+ * `aclVisibilityClause` is logged. `isVisibleTo` logs only the three denies
+ * that indicate a BUG UPSTREAM — a cross-workspace ask, a row with no grant
+ * array, an unusable principal set — and stays silent on an ordinary
+ * no-overlap answer, which is the common case and is evaluated per row.
  *
  * **Stored side** — a malformed token (`everyone`, `team:eng`, `ROLE:admin`)
  * is invisible by CONSTRUCTION: the predicate is array overlap against the
@@ -52,7 +52,7 @@
  * (`['everyone']`) is correctly invisible and is logged by nobody, because no
  * reader ever holds the row. Closing that needs a write-time or sweep-time
  * observer (#4771's deriver, or a `registerPeriodicFiber` scan) and is
- * deliberately out of this slice — tracked on #4773.
+ * deliberately out of this slice — tracked on #4797.
  *
  * ## The one thing that must never become stricter
  *
@@ -111,6 +111,16 @@ export type BrainPrincipal =
 /** Narrow an arbitrary string to an org role without a cast. */
 function isOrgRole(value: string): value is OrgRole {
   return ORG_ROLES.some((role) => role === value);
+}
+
+/**
+ * `Array.isArray` narrows to `any[]`, which would make the grant elements
+ * implicitly `any` in the one line that performs the actual overlap — and
+ * would stop rejecting a future simplification to a bare `tokens.has(token)`.
+ * This keeps them `unknown`.
+ */
+function isUnknownArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
 }
 
 /**
@@ -445,16 +455,25 @@ export async function resolvePrincipalContext(
   const audienceIds = result.rows
     .map((row) =>
       typeof row === "object" && row !== null && "audience_id" in row
-        ? (row as { audience_id: unknown }).audience_id
+        ? row.audience_id
         : undefined,
     )
     .filter((id): id is string => typeof id === "string" && id.length > 0);
   if (audienceIds.length !== result.rows.length) {
-    // `fact_audience_member.audience_id` is `text NOT NULL`, so a dropped row
-    // can only mean the query or the row shape changed (an added alias, a
-    // join). Silently returning fewer memberships would quietly strip a
-    // reader's audience grants — the same silent downgrade this function
+    // Two different faults land here and an operator must be able to tell them
+    // apart. A row with no `audience_id` key at all is QUERY DRIFT (an added
+    // alias, a join) — diff the SQL. A row that has the column but an unusable
+    // value is a DATA defect: `audience_id` is `text NOT NULL` but 0180 adds no
+    // non-empty CHECK, so `''` is legally storable and points at the deriver
+    // (#4771), not at this query. Reporting both as "the query changed" would
+    // send that investigation to the wrong file.
+    //
+    // Either way, silently returning fewer memberships would strip a reader's
+    // audience grants with no signal — the same silent downgrade this function
     // refuses to perform on a DB error.
+    const missingColumn = result.rows.filter(
+      (row) => !(typeof row === "object" && row !== null && "audience_id" in row),
+    ).length;
     log.warn(
       {
         workspaceId,
@@ -462,8 +481,12 @@ export async function resolvePrincipalContext(
         requestId,
         returned: result.rows.length,
         usable: audienceIds.length,
+        missingColumn,
+        unusableValue: result.rows.length - audienceIds.length - missingColumn,
       },
-      "brain ACL: audience membership rows dropped by narrowing — the membership query shape changed",
+      missingColumn > 0
+        ? "brain ACL: audience membership rows lack an audience_id column — the membership query shape changed"
+        : "brain ACL: audience membership rows carry an unusable audience_id — the writer stored an empty id",
     );
   }
 
@@ -624,7 +647,7 @@ export function isVisibleTo(row: AclGatedRow, ctx: BrainPrincipalContext): boole
     );
     return false;
   }
-  if (!Array.isArray(row.visibleTo)) {
+  if (!isUnknownArray(row.visibleTo)) {
     // Typed `readonly unknown[]`, but rows arrive off `pg` as `visible_to` and
     // a caller that maps `workspaceId` correctly and this field by mistake
     // would otherwise get a bare `TypeError` from a security primitive.
@@ -639,6 +662,13 @@ export function isVisibleTo(row: AclGatedRow, ctx: BrainPrincipalContext): boole
     // An unusable principal set is a bug upstream, not a routine answer — the
     // SQL path logs it and so does this one. The ordinary no-overlap deny
     // below stays silent on purpose: it is the common case, per row.
+    //
+    // This condition is per READER, not per row, so a caller looping a result
+    // set emits one identical line per row. That is bounded (this is the
+    // mirror, used by review surfaces and exporters over a page of rows — the
+    // hot retrieval path is the SQL predicate, which logs once) and it is a
+    // signal you want loud. A caller that loops should still hoist
+    // `principalTokens(ctx).length === 0` above the loop and skip it entirely.
     log.warn(
       { table: row.table, workspaceId: ctx.workspaceId, origin: ctx.origin, userId: ctx.userId },
       "brain ACL: reader resolved to no principals — denying",
@@ -747,16 +777,16 @@ export type AclDecision = AclClause["decision"];
 const SAFE_ALIAS = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * Frozen, not merely `readonly`. `readonly` is compile-time only, and this one
- * object is returned by reference from every deny in the process — so a single
- * type-violating caller mutating `.params` would poison every subsequent
- * denied read for every tenant on the instance, surfacing as a Postgres bind
- * error that points at the caller's query rather than at the mutation.
- * `lib/auth/types.ts` freezes `createAtlasUser`'s result for the same reason.
+ * The deny template. `nextParamIndex` depends on the caller's `paramIndex`, so
+ * `denyAll` spreads this into a fresh clause per call rather than returning it.
  *
- * `nextParamIndex` is filled in per call — it depends on the caller's
- * `paramIndex` — so the deny arm is built from this template rather than
- * returned directly.
+ * `params` is therefore the one part still shared by reference across every
+ * deny in the process — and it is frozen, because `readonly` is compile-time
+ * only. A type-violating `.push` on it would otherwise poison every subsequent
+ * denied read for every tenant on the instance, surfacing as a Postgres bind
+ * error pointing at the caller's query rather than at the mutation. Frozen, it
+ * throws at the mutation site instead. `lib/auth/types.ts` freezes
+ * `createAtlasUser`'s result for the same reason.
  */
 const DENY_ALL = Object.freeze({
   sql: "(FALSE)",

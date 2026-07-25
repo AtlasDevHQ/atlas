@@ -5,6 +5,11 @@
  * nothing under the mirrored `knowledge/` subtree can extend the SQL table
  * whitelist, register as a pinned metric, or gate the agent via the glossary.
  *
+ * That "descriptive only" is scoped to the DOCUMENT class by ADR-0028's
+ * 2026-07-25 amendment (#4774): reviewed brain facts are tier-2 authoritative
+ * for their class. They are a separate substrate with its own tables, so
+ * nothing below changes — these tests are, and remain, about documents.
+ *
  * These assert against the SAME on-disk semantic root the explore tool mounts:
  * a knowledge document crafted to impersonate an entity/metric/glossary term is
  * invisible to every semantic-layer scanner, because those scan

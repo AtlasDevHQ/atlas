@@ -1,7 +1,9 @@
 /**
  * Knowledge Base feature section (#4226) — the fourth pillar, shipped v0.0.40.
  * Copy stays plain-language and mirrors the trust story: knowledge *informs*
- * answers, the semantic layer stays the only authoritative surface. The pane
+ * answers, the semantic layer stays the only authoritative surface. That claim
+ * is document-scoped (ADR-0028's 2026-07-25 amendment, #4774); the rendered
+ * copy below never claimed more, so it needed no rewording. The pane
  * shows a real hosted document — OKF markdown + the `atlas:` provenance block
  * is the at-rest truth (ADR-0028); the "published" chip is admin UI state, so
  * it rides in the pane chrome, not the file body.

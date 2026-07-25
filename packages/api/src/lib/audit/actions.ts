@@ -612,6 +612,17 @@ export const ADMIN_ACTIONS = {
     uninstall: "knowledge.uninstall",
   },
   /**
+   * Company brain (#4771, ADR-0036). `extractionCycle` is the per-tick row the
+   * async extraction fiber emits on EVERY terminal path — including the
+   * nothing-to-do one — so the ABSENCE of a row over a window is the "the fiber
+   * stopped" signal, the same forensic invariant
+   * `model_config.catalog_refresh_cycle` carries. Platform-scoped: one tick
+   * drains episodes across workspaces, so no single org owns the row.
+   */
+  brain: {
+    extractionCycle: "brain.extraction_cycle",
+  },
+  /**
    * Without these entries a compromised admin could shrink retentionDays
    * and hard-delete the audit trail leaving zero forensic record.
    *

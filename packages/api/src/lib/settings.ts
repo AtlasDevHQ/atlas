@@ -1725,6 +1725,26 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+  {
+    // Company-brain extraction fiber (#4771, ADR-0036 §Ingestion). Default OFF
+    // while the brain milestone is in flight: the review surface (#4772) is
+    // what makes an extracted fact usable, so until it lands the fiber would
+    // spend model budget filling a queue nobody can read. Platform-scoped
+    // because the fiber is process-wide and drains every workspace's episodes.
+    // Read at fiber-registration time by
+    // `lib/brain/extract.ts::isBrainExtractionEnabled`, so a change takes
+    // effect on the next boot rather than on the next tick.
+    key: "ATLAS_BRAIN_EXTRACTION_ENABLED",
+    section: "Knowledge Base",
+    label: "Company Brain Extraction",
+    description:
+      "Draw fact candidates from stored chat episodes with the workspace's configured model and stage them as drafts for review. Off by default; episodes keep being stored either way, so turning it on later extracts the backlog rather than losing it. Applies at restart.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_BRAIN_EXTRACTION_ENABLED",
+    scope: "platform",
+    saasVisible: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------

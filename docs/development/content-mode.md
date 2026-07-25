@@ -39,7 +39,15 @@ Partial failure rolls every table back — **never** stamp a content table's dra
 
 `GRANT_UNUSABLE` is the **live** rule and the reason the refusal isn't ceremony. The 0180 CHECK deliberately admits any non-empty element, including one outside the grant grammar: `visible_to = ['everyone']` is legally storable and grants *nobody* access, because enforcement is array overlap against reader tokens and no reader token is ever malformed. The CHECK **cannot** be tightened — `acl.ts` forbids any Atlas-side rule stricter than it, since a row Postgres stores but Atlas refuses is a workspace that can't be migrated between regions. Promotion is the right home for the stricter rule: refusing to *promote* is not refusing to *store*, so the row stays exportable and fixable while never being stamped "reviewed and trusted" when it is invisible to every reader.
 
-**Refuse the row, never the workspace.** A refused fact stays `draft` and the transaction still commits. Failing the shared transaction was rejected: facts arrive continuously from the extraction fiber, so one deriver bug would wedge a tenant's *entire* publish — every prompt, entity, and connection — until somebody hand-edited the database. The refused row stays counted in `draftCounts.brainFacts`, stays listed in the publish preview, is re-offered next publish, and is surfaced to the admin as `warnings.refusedFacts[]` on the publish response (the Publish modal keeps itself open and renders them). A refusal that only reached the server log would be a silent partial publish from the admin's side.
+**Refuse the row, never the workspace.** A refused fact stays `draft` and the transaction still commits. Failing the shared transaction was rejected: facts arrive continuously from the extraction fiber, so one deriver bug would wedge a tenant's *entire* publish — every prompt, entity, and connection — until somebody hand-edited the database. The refused row stays counted in `draftCounts.brainFacts`, stays listed in the publish preview, and is re-offered next publish. A refusal that only reached the server log would be a silent partial publish, so it is reported on **every** publish surface under one name — `refusedDrafts[]`, top-level in the shared `PublishResult` core (the #4156 discipline), swept from every adapter's `PromotionReport.refused` by `collectRefusals`:
+
+| Surface | How a refusal reaches the caller |
+| --- | --- |
+| `POST /api/v1/admin/publish` | `refusedDrafts[]` → the Publish modal stays open and renders `RefusedDraftsBanner` |
+| MCP `publish_datasources` | `refusedDrafts[]` in `structuredContent`, so an agent cannot relay `published: true` as unqualified success |
+| `atlas datasource publish` | each `detail` printed to **stderr** (exit stays 0 — the publish did commit) |
+
+A retracted draft (`invalidated_at IS NOT NULL`) is excluded from promotion, from `draftCounts`, and from the preview — consistently, so an excluded row never becomes an unpromotable backlog nobody is told about.
 
 **Not registered, deliberately:** `brain_episodes` has no `status` column at all — episodes are append-only *evidence*, and evidence is not review-gated; only the claims drawn from it are. `brain_edges` is derived structure whose visibility follows its endpoints, content-mode-exempt for the same reason `knowledge_links` is.
 

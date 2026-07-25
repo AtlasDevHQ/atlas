@@ -907,6 +907,47 @@ describe("publish_datasources (#4126)", () => {
     expect(body.deleted).toEqual({ entities: 0 });
   });
 
+  it("passes refused drafts through so an agent cannot report a false success (#4769)", async () => {
+    // The failure this closes: #4771's fiber produces a fact with an unusable
+    // grant, an agent publishes over MCP, sees `published: true`, and tells a
+    // human "published successfully" while the claim is still a draft.
+    publishResult = {
+      promoted: {
+        connections: 0,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      },
+      deleted: { entities: 0 },
+      refusedDrafts: [
+        {
+          id: "fact-1",
+          surface: "brain_facts",
+          reasons: ["GRANT_UNUSABLE"],
+          detail: '"acme uses postgres" (fact-1) was not published — its grant has no usable principal.',
+        },
+      ],
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "publish_datasources", arguments: {} });
+    const body = JSON.parse(getContentText(res.content));
+    expect(body.refusedDrafts).toEqual(publishResult.refusedDrafts);
+    // Mirrored into structuredContent and valid against the declared schema —
+    // otherwise the SDK would reject the result outright.
+    expect(res.structuredContent).toEqual(body);
+    expect(publishDatasourcesOutputSchema.safeParse(res.structuredContent).success).toBe(true);
+  });
+
+  it("omits refusedDrafts entirely when nothing was refused", async () => {
+    // Omitted, not `[]`: a client branches on presence.
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "publish_datasources", arguments: {} });
+    const body = JSON.parse(getContentText(res.content));
+    expect(body).not.toHaveProperty("refusedDrafts");
+  });
+
   it("requires a bound workspace — refused before the lib call", async () => {
     const NO_ORG_ACTOR = createAtlasUser("u_noorg2", "managed", "noorg2@test", { role: "admin" });
     const client = await createTestClient(NO_ORG_ACTOR);

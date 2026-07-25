@@ -470,12 +470,18 @@ describe("ContentModeRegistry.runPublishPhases", () => {
         rows: [
           {
             id: "f-ok",
+            subject: "acme",
+            predicate: "uses",
+            object: "postgres",
             source_episode_id: "ep-1",
             provenance: { actor: "test" },
             visible_to: ["org"],
           },
           {
             id: "f-ungranted",
+            subject: "acme",
+            predicate: "prefers",
+            object: "mysql",
             source_episode_id: "ep-1",
             provenance: { actor: "test" },
             visible_to: ["everyone"],

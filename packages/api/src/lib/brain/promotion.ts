@@ -62,6 +62,14 @@ export const FACT_REFUSAL_REASONS = {
   provenanceEmpty: "PROVENANCE_EMPTY",
   /** Every `visible_to` token is outside the grant grammar — grants nobody. */
   grantUnusable: "GRANT_UNUSABLE",
+  /**
+   * `visible_to` did not arrive as an array at all. `visible_to text[] NOT NULL`
+   * (0180) makes that impossible from the database, so this is QUERY DRIFT — a
+   * changed SELECT, a mapping mistake — not bad tenant data. Kept distinct from
+   * `GRANT_UNUSABLE` because the two send an investigation to opposite places:
+   * one says fix the fact, the other says fix the code.
+   */
+  grantNotAnArray: "GRANT_NOT_AN_ARRAY",
 } as const;
 
 export type FactRefusalReason =
@@ -76,6 +84,15 @@ export type FactRefusalReason =
  */
 export interface DraftFactRow {
   readonly id: string;
+  /**
+   * The SPO claim, for the refusal message. A UUID alone is not actionable —
+   * #4772's review surface has not shipped, and the publish PREVIEW (which does
+   * render the claim) is a different response the admin cannot cross-reference
+   * from a publish result.
+   */
+  readonly subject: string;
+  readonly predicate: string;
+  readonly object: string;
   readonly source_episode_id: string | null;
   readonly provenance: unknown;
   readonly visible_to: unknown;
@@ -120,29 +137,70 @@ export function classifyFactForPromotion(row: DraftFactRow): PromotionRefusal | 
   // SQL predicate would let the two drift, and the enforcing side (Postgres
   // `&&` against reader tokens) is downstream of THIS parser's notion of a
   // usable principal, not of any SQL restatement of it.
-  const grant = Array.isArray(row.visible_to) ? (row.visible_to as readonly unknown[]) : [];
-  const parsed = parseGrant(grant);
-  if (parsed.principals.length === 0) {
-    reasons.push(FACT_REFUSAL_REASONS.grantUnusable);
+  //
+  // A non-array `visible_to` is refused too (fail-closed either way), but under
+  // its own code: coercing it to `[]` and reporting "carries no grant" would
+  // tell an admin their data is wrong when in fact the query is.
+  if (!Array.isArray(row.visible_to)) {
+    reasons.push(FACT_REFUSAL_REASONS.grantNotAnArray);
     details.push(
-      parsed.malformed.length > 0
-        ? `every token in its grant is outside the grammar (${parsed.malformed.map((t) => JSON.stringify(t)).join(", ")}), so it would be invisible to every reader`
-        : "it carries no grant, so it would be invisible to every reader",
+      "its grant did not load as an array, which means the draft-facts query returned an unexpected shape — this is an Atlas bug, not a problem with the fact",
     );
+  } else {
+    const parsed = parseGrant(row.visible_to as readonly unknown[]);
+    if (parsed.principals.length === 0) {
+      reasons.push(FACT_REFUSAL_REASONS.grantUnusable);
+      details.push(
+        parsed.malformed.length > 0
+          ? `its grant contains no usable principal — ${describeMalformed(parsed.malformed)} — so it would be invisible to every reader. ${GRANT_GRAMMAR_HINT}`
+          : `it carries no grant, so it would be invisible to every reader. ${GRANT_GRAMMAR_HINT}`,
+      );
+    }
   }
 
   if (reasons.length === 0) return null;
 
+  // Some details already end in a sentence (the grant arm appends the grammar
+  // hint); normalize so the joined prose never reads "…behind it Fix it".
+  const because = details.join("; and ");
+  const reason = because.endsWith(".") ? because : `${because}.`;
+
   return {
     rowId: row.id,
     reasons,
-    detail: `Fact ${row.id} was not published because ${details.join("; and ")}. Fix it (or retract it) and publish again — it is still a draft.`,
+    detail: `"${row.subject} ${row.predicate} ${row.object}" (${row.id}) was not published because ${reason} Fix it (or retract it) and publish again — it is still a draft.`,
   };
 }
 
 /**
- * Valid grant tokens, for the message an admin reads next to a refusal. Stated
- * here rather than rebuilt in the UI so the grammar has one prose home.
+ * Render malformed grant tokens for an admin.
+ *
+ * `parseGrant` reports every NON-STRING element (a NULL smuggled in by a
+ * hand-authored import bundle) as `''`, which is also what a genuine
+ * empty-string element reports as — so a raw `JSON.stringify` join renders
+ * `[null, null]` as `"", ""` and sends the reader looking for empty strings
+ * that aren't there. Name the empty class instead of quoting it.
+ */
+function describeMalformed(malformed: readonly string[]): string {
+  const named = malformed.filter((t) => t.length > 0);
+  const emptyCount = malformed.length - named.length;
+  const parts: string[] = [];
+  if (named.length > 0) {
+    parts.push(`${named.map((t) => JSON.stringify(t)).join(", ")} ${named.length === 1 ? "is not a principal" : "are not principals"}`);
+  }
+  if (emptyCount > 0) {
+    parts.push(`${emptyCount} empty or null entr${emptyCount === 1 ? "y" : "ies"}`);
+  }
+  return parts.join("; ");
+}
+
+/**
+ * Valid grant tokens, in prose, appended to every `GRANT_UNUSABLE` refusal.
+ *
+ * Stated here rather than in the UI so the grammar has ONE prose home next to
+ * the parser it describes — and so every surface that renders a refusal
+ * (`detail` is passed through verbatim by the web modal, the CLI, and the MCP
+ * tool) tells the reader the same thing about how to fix it.
  */
 export const GRANT_GRAMMAR_HINT =
   "A grant must contain at least one of: `org`, `role:owner`, `role:admin`, `role:member`, `user:<id>`, or `audience:<name>`.";

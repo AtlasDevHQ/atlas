@@ -46,8 +46,8 @@ interface IncompleteLayer {
  * is `brain_facts` (#4769 / ADR-0036) — a fact missing provenance or a usable
  * grant, where publishing would stamp "reviewed and trusted" on a claim with no
  * evidence, or one invisible to every reader. Mirrors
- * `warnings.refusedDrafts[]` in the `/api/v1/admin/publish` response. The row
- * stays a draft and is re-offered on the next publish.
+ * `refusedDrafts[]` in the `/api/v1/admin/publish` response. The row stays a
+ * draft and is re-offered on the next publish.
  *
  * `detail` is rendered verbatim: the API writes the actionable sentence, so the
  * reason vocabulary can grow without a matching copy change here.
@@ -64,9 +64,14 @@ interface RefusedDraft {
 interface PublishResponseData {
   readonly warnings?: {
     readonly incompleteLayers: ReadonlyArray<IncompleteLayer>;
-    /** Optional: absent from an older API during a deploy-overlap window. */
-    readonly refusedDrafts?: ReadonlyArray<RefusedDraft>;
   };
+  /**
+   * Top-level, part of the shared `PublishResult` core (#4156 discipline) —
+   * REST, MCP, and the CLI all report refusals under this one name. Optional:
+   * absent when nothing was refused, and from an older API during a
+   * deploy-overlap window.
+   */
+  readonly refusedDrafts?: ReadonlyArray<RefusedDraft>;
 }
 
 interface DraftRow {
@@ -97,9 +102,15 @@ interface PublishPreviewData {
  *
  * Opens from the {@link PendingChangesPill} popover. Fetches the per-surface
  * draft inventory from `/api/v1/admin/publish-preview`, then POSTs to
- * `/api/v1/admin/publish` on confirm. Errors keep the modal open so the
- * admin sees the failure with the request id (rollback is already atomic
- * server-side — partial state is impossible).
+ * `/api/v1/admin/publish` on confirm. Errors keep the modal open so the admin
+ * sees the failure with the request id — a FAILED publish rolls back atomically
+ * server-side, so there is no half-applied state to reconcile.
+ *
+ * A SUCCEEDED publish can still be partial, and that is deliberate (#4769): the
+ * review gate refuses individual drafts (a brain fact with no provenance or no
+ * usable grant) and commits the rest, so those rows are still drafts afterwards.
+ * The modal stays open on that outcome too and renders {@link RefusedDraftsBanner} —
+ * closing with a bare "Published successfully" would hide it.
  */
 export function PublishModal({
   open,
@@ -145,7 +156,7 @@ export function PublishModal({
       // that some tables are now live but NOT queryable, or that some drafts
       // are still drafts. Otherwise close as before.
       const layers = result.data?.warnings?.incompleteLayers ?? [];
-      const refused = result.data?.warnings?.refusedDrafts ?? [];
+      const refused = result.data?.refusedDrafts ?? [];
       if (layers.length > 0 || refused.length > 0) {
         setIncompleteLayers(layers);
         setRefusedDrafts(refused);

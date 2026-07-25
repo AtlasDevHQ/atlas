@@ -19,6 +19,7 @@ import { describe, expect, it } from "bun:test";
 import {
   classifyFactForPromotion,
   FACT_REFUSAL_REASONS,
+  GRANT_GRAMMAR_HINT,
   type DraftFactRow,
 } from "@atlas/api/lib/brain/promotion";
 
@@ -26,6 +27,9 @@ import {
 function validRow(over: Partial<DraftFactRow> = {}): DraftFactRow {
   return {
     id: "11111111-1111-4111-8111-111111111111",
+    subject: "acme",
+    predicate: "uses",
+    object: "postgres",
     source_episode_id: "22222222-2222-4222-8222-222222222222",
     provenance: { actor: "slack:U123", messageTs: "1700000000.0001" },
     visible_to: ["org"],
@@ -82,11 +86,45 @@ describe("classifyFactForPromotion — GRANT_UNUSABLE (the live rule)", () => {
   it.each([
     ["an empty array", []],
     ["NULL and '' elements only", [null, ""]],
-    ["a non-array value", "org"],
   ])("refuses %s", (_label, visibleTo) => {
     expect(
       classifyFactForPromotion(validRow({ visible_to: visibleTo }))?.reasons,
     ).toEqual([FACT_REFUSAL_REASONS.grantUnusable]);
+  });
+
+  it("names the empty/null class instead of quoting it as an empty string", () => {
+    // `parseGrant` reports every non-string element as `''`, so a raw
+    // `JSON.stringify` join renders `[null, null]` as `"", ""` and sends the
+    // reader hunting for empty strings that are not in their data.
+    const refusal = classifyFactForPromotion(validRow({ visible_to: [null, null] }));
+    expect(refusal?.detail).toContain("2 empty or null entries");
+    expect(refusal?.detail).not.toContain('""');
+  });
+
+  it("tells the admin what a valid grant looks like", () => {
+    // The refusal is only actionable if it says what to do next.
+    const refusal = classifyFactForPromotion(validRow({ visible_to: ["everyone"] }));
+    expect(refusal?.detail).toContain(GRANT_GRAMMAR_HINT);
+  });
+});
+
+describe("classifyFactForPromotion — GRANT_NOT_AN_ARRAY (query drift, not bad data)", () => {
+  it.each([
+    ["a bare string", "org"],
+    ["null", null],
+    ["undefined", undefined],
+    ["a number", 7],
+  ])("refuses %s under its own code", (_label, visibleTo) => {
+    // `visible_to text[] NOT NULL` makes this unreachable from the database, so
+    // it is an Atlas bug. Reporting it as GRANT_UNUSABLE would tell the admin
+    // their fact is wrong and send the investigation to the wrong place.
+    const refusal = classifyFactForPromotion(validRow({ visible_to: visibleTo }));
+    expect(refusal?.reasons).toEqual([FACT_REFUSAL_REASONS.grantNotAnArray]);
+    expect(refusal?.detail).toContain("Atlas bug");
+  });
+
+  it("still fails CLOSED — a shape it cannot parse is never promoted", () => {
+    expect(classifyFactForPromotion(validRow({ visible_to: "org" }))).not.toBeNull();
   });
 });
 
@@ -126,10 +164,21 @@ describe("classifyFactForPromotion — reporting", () => {
     ]);
   });
 
-  it("names the fact and says it is still a draft", () => {
+  it("names the CLAIM, not just the uuid, and says it is still a draft", () => {
     const refusal = classifyFactForPromotion(validRow({ visible_to: ["everyone"] }));
-    // The two things an admin needs: which row, and that nothing was lost.
+    // A uuid alone is unactionable: #4772's review surface has not shipped and
+    // the publish preview (which renders the claim) is a different response.
+    expect(refusal?.detail).toContain("acme uses postgres");
     expect(refusal?.detail).toContain(validRow().id);
     expect(refusal?.detail).toContain("still a draft");
+  });
+
+  it("reads as sentences — no run-on where two rules join", () => {
+    // The grant arm ends in a full sentence (the grammar hint); the provenance
+    // arms do not. Without normalization the join produced "…behind it Fix it".
+    const refusal = classifyFactForPromotion(
+      validRow({ source_episode_id: null, visible_to: ["org"] }),
+    );
+    expect(refusal?.detail).toContain("evidence behind it. Fix it");
   });
 });

@@ -254,7 +254,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
                 subject || ' ' || predicate || ' ' || object AS label,
                 updated_at
            FROM brain_facts
-          WHERE workspace_id = $1 AND status = 'draft'
+          WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL
           ORDER BY updated_at DESC`,
         [orgId],
       ),

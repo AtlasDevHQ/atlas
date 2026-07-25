@@ -35,6 +35,7 @@
 import { Effect } from "effect";
 import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logGrantAnomalies } from "@atlas/api/lib/brain/acl";
 import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
 import {
   PublishPhaseError,
@@ -92,12 +93,16 @@ export function brainFactStatusClause(mode: AtlasMode | undefined, alias: string
  */
 export const DRAFT_FACTS_SQL = `
   SELECT id::text AS id,
+         subject,
+         predicate,
+         object,
          source_episode_id::text AS source_episode_id,
          provenance,
          visible_to
     FROM brain_facts
    WHERE workspace_id = $1
      AND status = 'draft'
+     AND invalidated_at IS NULL
    ORDER BY ingested_at
      FOR UPDATE
 `;
@@ -115,12 +120,13 @@ export const PROMOTE_FACTS_SQL = `
      SET status = 'published', updated_at = now()
    WHERE workspace_id = $1
      AND status = 'draft'
+     AND invalidated_at IS NULL
      AND id = ANY($2::uuid[])
 `;
 
 /** Draft count for the `brainFacts` segment of `/api/v1/mode` `draftCounts`. */
 export function brainFactsCountSql(orgParam: string): string {
-  return `SELECT 'brainFacts' AS key, COUNT(*)::int AS n FROM brain_facts WHERE workspace_id = ${orgParam} AND status = 'draft'`;
+  return `SELECT 'brainFacts' AS key, COUNT(*)::int AS n FROM brain_facts WHERE workspace_id = ${orgParam} AND status = 'draft' AND invalidated_at IS NULL`;
 }
 
 /**
@@ -136,8 +142,15 @@ function toDraftFactRow(row: unknown): DraftFactRow | null {
   if (typeof row !== "object" || row === null) return null;
   const r = row as Record<string, unknown>;
   if (typeof r.id !== "string" || r.id === "") return null;
+  // SPO columns are `text NOT NULL`, so the fallback is unreachable from the
+  // database — it exists so a shape change degrades the refusal MESSAGE rather
+  // than throwing from inside a publish transaction.
+  const text = (value: unknown): string => (typeof value === "string" ? value : "?");
   return {
     id: r.id,
+    subject: text(r.subject),
+    predicate: text(r.predicate),
+    object: text(r.object),
     source_episode_id: typeof r.source_episode_id === "string" ? r.source_episode_id : null,
     provenance: r.provenance,
     visible_to: r.visible_to,
@@ -180,8 +193,24 @@ export function promoteBrainFacts(
         );
       }
       const refusal = classifyFactForPromotion(row);
-      if (refusal) refused.push(refusal);
-      else promotableIds.push(row.id);
+      if (refusal) {
+        refused.push(refusal);
+        continue;
+      }
+      // Promotable, but its grant may still carry junk alongside a valid token
+      // (`['user:u1', 'everyone']`): enforceable, so NOT a refusal — the valid
+      // token does real work — yet the author plainly believed the second token
+      // did something. `acl.ts` calls this the read-time seam it cannot reach
+      // from a push-down predicate; promotion is the one place holding every
+      // draft's grant, so it is where the other half of that gap closes (#4797).
+      if (Array.isArray(row.visible_to)) {
+        logGrantAnomalies(row.visible_to as readonly unknown[], {
+          table: BRAIN_FACTS_TABLE,
+          rowId: row.id,
+          workspaceId: orgId,
+        });
+      }
+      promotableIds.push(row.id);
     }
 
     // Skip the round trip when there is nothing to promote — a workspace with
@@ -199,6 +228,24 @@ export function promoteBrainFacts(
       // only one of the two from reporting a false zero. Mirrors
       // `promoteSimpleTable` in the registry.
       promoted = result.rowCount ?? result.rows?.length ?? 0;
+      if (promoted !== promotableIds.length) {
+        // `FOR UPDATE` pins every classified row for the rest of this
+        // transaction, so the UPDATE must touch exactly the ids we passed.
+        // A divergence means the lock did not hold, a row changed status
+        // underneath us, or the driver under-reported `rowCount` — and the
+        // consequence is rows that are neither promoted-and-counted nor
+        // refused-and-reported, i.e. the silent under-report this whole
+        // adapter exists to prevent. Never silent.
+        log.warn(
+          {
+            workspaceId: orgId,
+            expected: promotableIds.length,
+            actual: promoted,
+            rowCount: result.rowCount,
+          },
+          "brain publish: promoted count does not match the classified-promotable set — some drafts may be unaccounted for",
+        );
+      }
     }
 
     if (refused.length > 0) {

@@ -111,6 +111,32 @@ export interface PublishPromotedCounts {
 }
 
 /**
+ * A draft the review gate REFUSED to promote (#4769, ADR-0036).
+ *
+ * Today the only refusing surface is `brain_facts`: a company-brain fact
+ * missing provenance, or carrying a grant with no usable principal, is left
+ * `draft` rather than stamped reviewed-and-trusted. The row is quarantined, not
+ * the publish — the transaction still commits, and the row stays in
+ * {@link ModeDraftCounts} and in the publish preview so it is re-offered next
+ * time.
+ *
+ * Part of the SHARED core rather than a REST-only extra: a refusal is a thing
+ * the caller must be told about on EVERY surface, and #4156 exists because
+ * publish surfaces that each invented their own field name drifted. One name,
+ * one location, all three surfaces.
+ */
+export interface PublishRefusedDraft {
+  /** Primary key of the refused row. */
+  readonly id: string;
+  /** Physical table it belongs to, e.g. `brain_facts`. */
+  readonly surface: string;
+  /** Machine-readable refusal codes, one per broken rule. */
+  readonly reasons: readonly string[];
+  /** Human-readable, actionable explanation. Safe to render verbatim. */
+  readonly detail: string;
+}
+
+/**
  * Shared wire type for the atomic publish operation's result — the single
  * shape every publish surface keys off (#4156). Returned by the atomic publish
  * endpoint (`POST /api/v1/admin/publish`), the MCP `publish_datasources` tool,
@@ -132,4 +158,13 @@ export interface PublishResult {
     /** Published entities superseded/removed by the promotion's tombstones. */
     readonly entities: number;
   };
+  /**
+   * Drafts the review gate declined to promote (#4769). Omitted when nothing
+   * was refused, so an older API — and a surface with no refusing adapter —
+   * reads as "nothing to report" rather than an empty-array false positive.
+   *
+   * A caller reporting publish success MUST surface these: they are the
+   * difference between "everything went live" and "everything except these".
+   */
+  readonly refusedDrafts?: readonly PublishRefusedDraft[];
 }

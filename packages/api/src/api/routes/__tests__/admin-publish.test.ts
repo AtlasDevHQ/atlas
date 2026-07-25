@@ -13,13 +13,21 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect } from "effect";
-import { promotedCountsFromReports } from "@atlas/api/lib/content-mode/promoted";
+import {
+  collectRefusals,
+  promotedCountsFromReports,
+} from "@atlas/api/lib/content-mode/promoted";
+import type { PromotionReport } from "@atlas/api/lib/content-mode/port";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 
 const CURRENT_ORG = "org-1";
 
 // Canned per-table promotion reports the registry spy returns (mutable per test).
-let REPORTS: Array<{ table: string; promoted: number; tombstonesApplied?: number }> = [];
+// The real `PromotionReport`, not a local restatement: `refused` (#4769) was
+// added to the port, and a hand-written shape here would have silently accepted
+// fixtures the production type rejects — or worse, kept compiling after a
+// rename.
+let REPORTS: PromotionReport[] = [];
 // When set, runPublishPhases fails — exercises the rollback + 500 path.
 let PHASES_THROW = false;
 
@@ -86,8 +94,10 @@ void mock.module("@atlas/api/lib/content-mode", () => ({
     { kind: "simple", key: "starterPrompts", table: "query_suggestions" },
     { kind: "simple", key: "knowledgeDocuments", table: "knowledge_documents" },
     { kind: "exotic", key: "semantic_entities", promotedKey: "entities" },
+    { kind: "exotic", key: "brain_facts", promotedKey: "brainFacts" },
   ],
   promotedCountsFromReports,
+  collectRefusals,
   makeService: () => ({
     runPublishPhases: () =>
       Effect.try({
@@ -161,6 +171,7 @@ describe("POST /api/v1/admin/publish — promoted counts projection", () => {
       prompts: 4,
       starterPrompts: 5,
       knowledgeDocuments: 6,
+      brainFacts: 0,
     });
     expect(body.deleted).toEqual({ entities: 3 });
     expect(txControl).toEqual(["BEGIN", "COMMIT"]);
@@ -190,6 +201,95 @@ describe("POST /api/v1/admin/publish — promoted counts projection", () => {
       promotedConnections: 0,
       promotedPrompts: 0,
       promotedStarterPrompts: 0,
+    });
+  });
+});
+
+describe("POST /api/v1/admin/publish — refused drafts (#4769)", () => {
+  const REFUSAL = {
+    rowId: "fact-1",
+    reasons: ["GRANT_UNUSABLE"],
+    detail: '"acme uses postgres" (fact-1) was not published because its grant contains no usable principal.',
+  };
+
+  it("surfaces every refusal at the TOP LEVEL of the response, not under warnings", async () => {
+    // The whole point of criterion 2: a refused draft must reach the admin.
+    // Top-level because it belongs to the shared PublishResult core (#4156) —
+    // REST, MCP, and the CLI must all spell it the same way.
+    REPORTS = [
+      { table: "knowledge_documents", promoted: 2 },
+      { table: "brain_facts", promoted: 1, refused: [REFUSAL] },
+    ];
+    const res = await publish();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      refusedDrafts?: Array<{ id: string; surface: string; reasons: string[]; detail: string }>;
+      warnings?: Record<string, unknown>;
+    };
+    expect(body.refusedDrafts).toEqual([
+      {
+        id: "fact-1",
+        surface: "brain_facts",
+        reasons: ["GRANT_UNUSABLE"],
+        detail: REFUSAL.detail,
+      },
+    ]);
+    // Not nested under `warnings` — that block stays for incompleteLayers.
+    expect(body.warnings).toBeUndefined();
+  });
+
+  it("still COMMITS — a refusal quarantines the row, not the workspace's publish", async () => {
+    // The design decision this slice turns on. Failing the transaction would
+    // let one bad fact wedge every other pending draft in the workspace.
+    REPORTS = [
+      { table: "workspace_plugins", promoted: 3 },
+      { table: "brain_facts", promoted: 0, refused: [REFUSAL] },
+    ];
+    const res = await publish();
+    expect(res.status).toBe(200);
+    expect(txControl).toEqual(["BEGIN", "COMMIT"]);
+    const body = (await res.json()) as { promoted: Record<string, number> };
+    expect(body.promoted.connections).toBe(3);
+  });
+
+  it("OMITS the field entirely when nothing was refused", async () => {
+    // Omitted, not `[]`: a client branches on presence, and an empty array
+    // would be indistinguishable from an API that predates refusals.
+    REPORTS = [{ table: "brain_facts", promoted: 5, refused: [] }];
+    const res = await publish();
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("refusedDrafts");
+  });
+
+  it("sweeps EVERY adapter's refusals, not just one named table", async () => {
+    // Registry-derived, so a second refusing adapter is reported with no edit
+    // here — the milestone-#81 under-report lesson applied to refusals.
+    REPORTS = [
+      { table: "brain_facts", promoted: 0, refused: [REFUSAL] },
+      {
+        table: "some_future_table",
+        promoted: 0,
+        refused: [{ rowId: "row-9", reasons: ["OTHER"], detail: "nope" }],
+      },
+    ];
+    const res = await publish();
+    const body = (await res.json()) as { refusedDrafts?: Array<{ surface: string }> };
+    expect(body.refusedDrafts?.map((r) => r.surface)).toEqual([
+      "brain_facts",
+      "some_future_table",
+    ]);
+  });
+
+  it("records ids and reasons in the DURABLE audit row, not just a count", async () => {
+    // `log.warn` rotates; `audit_log` does not. "3 drafts were refused" six
+    // months later is unactionable.
+    REPORTS = [{ table: "brain_facts", promoted: 0, refused: [REFUSAL] }];
+    await publish();
+    expect(auditCalls[0].metadata).toMatchObject({
+      refusedDraftCount: 1,
+      refusedDrafts: [
+        { id: "fact-1", surface: "brain_facts", reasons: ["GRANT_UNUSABLE"] },
+      ],
     });
   });
 });

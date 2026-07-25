@@ -1,6 +1,6 @@
 #!/bin/bash
-# Prove there is no path that promotes a company-brain fact outside the atomic
-# publish endpoint (#4769, ADR-0036 — acceptance criterion 4).
+# Refuse any write to `brain_facts.status` outside the atomic publish endpoint
+# (#4769, ADR-0036 — acceptance criterion 4). Scope + blind spots below.
 #
 # `brain_facts.status` is the fact class's review gate. ADR-0036 makes the gate
 # the brain's conflict-resolution mechanism, which only holds if `draft →
@@ -13,6 +13,19 @@
 # WHAT IS REFUSED
 #   - `UPDATE brain_facts … SET … status …`   (any status mutation)
 #   - `INSERT INTO brain_facts (… status …)`  (any status-naming insert)
+#   - `db.update(brainFacts).set({ status … })` (the Drizzle write-builder form)
+#
+# WHAT THIS GATE CANNOT SEE, stated plainly so nobody mistakes it for a proof of
+# more than it is: a table name assembled at runtime (`UPDATE ${t} SET status`)
+# is ungreppable by construction. Today the codebase writes this table only as
+# raw SQL through `pg` — there are no Drizzle write-builder call sites at all
+# (`schema.ts`'s `brainFacts` pgTable exists for migration generation and the
+# drift check) — so the ORM pattern below is a tripwire for a style that does
+# not exist yet rather than a filter on current code. The structural half of the
+# guarantee is `adapters/__tests__/brain-facts.test.ts`, which asserts the
+# registry entry stays `exotic`: flipping it to `simple` would route promotion
+# through the registry's blanket UPDATE and bypass every refusal without any
+# file in this scan changing.
 #
 # An INSERT that does NOT name `status` is fine and is the expected shape for
 # every writer: migration 0180 defaults the column to `draft`, so the ingest
@@ -67,9 +80,10 @@ if [ ${#EXISTING_ROOTS[@]} -eq 0 ]; then
   exit 2
 fi
 
-# Candidate files: anything mentioning the table at all. Cheap pre-filter; the
-# precise (multi-line, comment-stripped) match happens per file below.
-CANDIDATES=$(grep -rl 'brain_facts' "${EXISTING_ROOTS[@]}" \
+# Candidate files: anything naming the table in EITHER spelling — the raw-SQL
+# `brain_facts` or the Drizzle export `brainFacts`. Cheap pre-filter; the precise
+# (multi-line, comment-stripped) match happens per file below.
+CANDIDATES=$(grep -rlE 'brain_facts|\bbrainFacts\b' "${EXISTING_ROOTS[@]}" \
   --include='*.ts' \
   --include='*.tsx' \
   --include='*.js' \
@@ -93,8 +107,11 @@ STRIP_COMMENTS='sed -E "s#/\*([^*]|\*+[^*/])*\*+/##g; /\/\*/,/\*\// d; s#//.*\$#
 # SQL spans lines inside template literals, so flatten whitespace before
 # matching. The bounded `.{0,400}` keeps the UPDATE…SET…status window from
 # spanning into an unrelated later statement in the same file.
-UPDATE_PATTERN='UPDATE[[:space:]]+brain_facts\b.{0,400}\bSET\b.{0,400}\bstatus\b'
-INSERT_PATTERN='INSERT[[:space:]]+INTO[[:space:]]+brain_facts[[:space:]]*\([^)]*\bstatus\b'
+# Quoted identifiers (`UPDATE "brain_facts"`) are admitted by the optional quote.
+UPDATE_PATTERN='UPDATE[[:space:]]+"?brain_facts"?\b.{0,400}\bSET\b.{0,400}\bstatus\b'
+INSERT_PATTERN='INSERT[[:space:]]+INTO[[:space:]]+"?brain_facts"?[[:space:]]*\([^)]*\bstatus\b'
+# Drizzle write-builder: `.update(brainFacts)` … `.set({ … status … })`.
+ORM_PATTERN='\.update\([[:space:]]*brainFacts[[:space:]]*\).{0,400}\.set\([^)]{0,400}\bstatus\b'
 
 OFFENDERS=""
 if [ -n "$CANDIDATES" ]; then
@@ -108,7 +125,13 @@ if [ -n "$CANDIDATES" ]; then
     done
     [ "$allowed" -eq 1 ] && continue
     FLAT=$(eval "$STRIP_COMMENTS \"\$f\"" | tr '\n' ' ')
-    if echo "$FLAT" | grep -qE "$UPDATE_PATTERN" || echo "$FLAT" | grep -qE "$INSERT_PATTERN"; then
+    # `-i`: SQL keyword casing is a style choice, not a security boundary — a
+    # lowercase `update brain_facts set status` must not slip past. The ORM
+    # pattern is case-SENSITIVE (it matches TypeScript identifiers, where case
+    # is meaning), so it is tested separately.
+    if echo "$FLAT" | grep -qiE "$UPDATE_PATTERN" \
+      || echo "$FLAT" | grep -qiE "$INSERT_PATTERN" \
+      || echo "$FLAT" | grep -qE "$ORM_PATTERN"; then
       OFFENDERS="${OFFENDERS}${f}"$'\n'
     fi
   done <<<"$CANDIDATES"
@@ -138,4 +161,4 @@ if [ -n "$OFFENDERS" ]; then
   exit 1
 fi
 
-echo "Brain-fact promotion check passed — the atomic publish endpoint is the only promotion path."
+echo "Brain-fact promotion check passed — no status write to brain_facts outside the atomic publish endpoint."

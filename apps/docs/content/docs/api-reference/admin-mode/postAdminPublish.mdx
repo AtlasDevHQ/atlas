@@ -12,9 +12,9 @@ _openapi:
           Atomically promote every `draft` and apply every `draft_delete`
           tombstone for the active org, optionally archiving the specified
           connections. After a successful response, no draft or tombstone rows
-          remain for the org — EXCEPT any listed in `warnings.refusedDrafts`,
-          which the review gate declined to promote (a company-brain fact
-          missing provenance or a usable grant). Those stay `draft`, stay in
+          remain for the org — EXCEPT any listed in `refusedDrafts`, which the
+          review gate declined to promote (a company-brain fact missing
+          provenance or a usable grant). Those stay `draft`, stay in
           `draftCounts`, and are re-offered on the next publish.
 ---
 

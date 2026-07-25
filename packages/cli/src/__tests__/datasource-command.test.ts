@@ -431,6 +431,57 @@ describe("runDatasource — publish (#4126)", () => {
     expect(text).toContain("1 brain fact");
   });
 
+  it("surfaces refused drafts on stderr — a partial publish is never silent (#4769)", async () => {
+    // The publish committed (exit 0 is right), but some drafts did NOT go live.
+    // `0 brain facts` in the success sentence is indistinguishable from "this
+    // workspace has no facts", so without this the partial publish is invisible.
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 1,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      },
+      deleted: { entities: 0 },
+      refusedDrafts: [
+        {
+          id: "fact-1",
+          surface: "brain_facts",
+          reasons: ["GRANT_UNUSABLE"],
+          detail: '"acme uses postgres" (fact-1) was not published because its grant has no usable principal.',
+        },
+      ],
+    });
+    const { io, out, err } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    const errText = err.join("\n");
+    expect(errText).toContain("1 draft was NOT published");
+    // The API's actionable sentence is relayed verbatim.
+    expect(errText).toContain("acme uses postgres");
+    expect(errText).toContain("still drafts");
+    // The success line stays on stdout — the two streams say different things.
+    expect(out.join("\n")).toContain("1 datasource");
+  });
+
+  it("says nothing about refusals when there were none", async () => {
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 1,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      },
+      deleted: { entities: 0 },
+    });
+    const { io, err } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    expect(err.join("\n")).not.toContain("NOT published");
+  });
+
   it("counts a segment this build has never heard of toward 'something happened'", async () => {
     // Reverse deploy-overlap: a NEWER API promotes a surface this CLI predates.
     // The total must still be non-zero — reporting "Nothing to publish" for a

@@ -640,6 +640,28 @@ async function runPublish(
         `Pruned ${deletedEntities} stale entit${deletedEntities === 1 ? "y" : "ies"} superseded by this publish.`,
       );
     }
+    // #4769 — drafts the review gate REFUSED to promote. On `io.err`, not
+    // `io.out`: the publish committed (exit 0 is correct), but this is the one
+    // part of the outcome the operator has to act on, and a `0 brain facts` in
+    // the success sentence above is indistinguishable from "this workspace has
+    // no facts". Printing nothing would make a partial publish invisible.
+    const refused = Array.isArray(asRecord(result).refusedDrafts)
+      ? (asRecord(result).refusedDrafts as ReadonlyArray<unknown>)
+      : [];
+    if (refused.length > 0) {
+      io.err(
+        `\n${refused.length} draft${refused.length === 1 ? " was" : "s were"} NOT published — the review gate held ${refused.length === 1 ? "it" : "them"} back:`,
+      );
+      for (const entry of refused) {
+        const detail = asRecord(entry).detail;
+        // `detail` is the API's actionable sentence; fall back to the id so a
+        // shape change degrades to "something was refused", never to silence.
+        io.err(
+          `  - ${typeof detail === "string" && detail ? detail : `refused draft ${String(asRecord(entry).id ?? "(unknown id)")}`}`,
+        );
+      }
+      io.err("  Fix or retract them and publish again — they are still drafts.");
+    }
     io.out("  This is atomic and workspace-wide — every pending draft just went live, not only");
     io.out(`  ${id ? `"${id}"` : "the datasource you may have had in mind"}.`);
     return 0;

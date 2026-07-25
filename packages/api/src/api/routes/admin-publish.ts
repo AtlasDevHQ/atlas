@@ -16,7 +16,7 @@
  *    3f. Company-brain facts (`brain_facts`) — #4769 / ADR-0036. The only
  *        phase that can REFUSE an individual row: a fact missing provenance or
  *        a usable grant is left `draft` and reported under
- *        `warnings.refusedDrafts`. The refusal quarantines the claim, not the
+ *        `refusedDrafts`. The refusal quarantines the claim, not the
  *        transaction — see `lib/content-mode/adapters/brain-facts.ts`.
  * 4. If `archiveConnections` is provided, archive those connections and
  *    cascade to their entities. When the archive list includes the reserved
@@ -28,7 +28,11 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
-import type { PublishPromotedCounts, PublishResult } from "@useatlas/types";
+import type {
+  PublishPromotedCounts,
+  PublishRefusedDraft,
+  PublishResult,
+} from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { withInternalTransaction } from "@atlas/api/lib/db/with-internal-transaction";
@@ -41,6 +45,7 @@ import {
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   CONTENT_MODE_TABLES,
+  collectRefusals,
   makeService,
   promotedCountsFromReports,
 } from "@atlas/api/lib/content-mode";
@@ -113,33 +118,30 @@ const PublishResponseSchema = z.object({
           ),
         }),
       ),
-      /**
-       * Draft rows the review gate REFUSED to promote. Each stays `draft` and is
-       * re-offered on the next publish, so this is the actionable half of
-       * "never stamps it published": without it the admin would read an
-       * unqualified success while some drafts silently did not go live.
-       *
-       * Collected from EVERY registry adapter's `PromotionReport.refused`, not
-       * from one named table — `brain_facts` (#4769, ADR-0036) is the only
-       * adapter that can refuse today, and hand-listing it here is exactly the
-       * layout that let knowledge documents ship under-reported in milestone
-       * #81. `surface` names the physical table so a second refusing adapter
-       * stays attributable.
-       *
-       * Optional so an older client (and the deploy-overlap window) sees no
-       * shape change.
-       */
-      refusedDrafts: z
-        .array(
-          z.object({
-            id: z.string(),
-            surface: z.string(),
-            reasons: z.array(z.string()),
-            detail: z.string(),
-          }),
-        )
-        .optional(),
     })
+    .optional(),
+  /**
+   * Draft rows the review gate REFUSED to promote (#4769, ADR-0036). Each stays
+   * `draft` and is re-offered on the next publish, so this is the actionable
+   * half of "never stamps it published": without it the admin would read an
+   * unqualified success while some drafts silently did not go live.
+   *
+   * TOP-LEVEL, not under `warnings`, because it belongs to the SHARED
+   * `PublishResult` core — REST, the MCP tool, and the CLI must all report a
+   * refusal under one name in one place. Surfaces that each invented their own
+   * spelling are exactly what #4156 unified.
+   *
+   * Omitted (not `[]`) when nothing was refused.
+   */
+  refusedDrafts: z
+    .array(
+      z.object({
+        id: z.string(),
+        surface: z.string(),
+        reasons: z.array(z.string()),
+        detail: z.string(),
+      }),
+    )
     .optional(),
 });
 
@@ -169,7 +171,7 @@ const publishRoute = createRoute({
     "Atomically promote every `draft` and apply every `draft_delete` tombstone " +
     "for the active org, optionally archiving the specified connections. " +
     "After a successful response, no draft or tombstone rows remain for the org — " +
-    "EXCEPT any listed in `warnings.refusedDrafts`, which the review gate declined " +
+    "EXCEPT any listed in `refusedDrafts`, which the review gate declined " +
     "to promote (a company-brain fact missing provenance or a usable grant). Those " +
     "stay `draft`, stay in `draftCounts`, and are re-offered on the next publish.",
   request: {
@@ -257,12 +259,7 @@ adminPublish.openapi(publishRoute, async (c) =>
 
     // ── Transaction ────────────────────────────────────────────────
     let promoted: PublishPromotedCounts;
-    let refusedDrafts: ReadonlyArray<{
-      readonly id: string;
-      readonly surface: string;
-      readonly reasons: readonly string[];
-      readonly detail: string;
-    }>;
+    let refusedDrafts: readonly PublishRefusedDraft[];
     let deletedEntityCount: number;
     let archivedConnectionCount: number;
     let archivedEntityCount: number;
@@ -343,17 +340,9 @@ adminPublish.openapi(publishRoute, async (c) =>
       promoted = promotedCountsFromReports(CONTENT_MODE_TABLES, tx.reports);
       // Draft rows an adapter declined to promote (#4769). They stayed `draft`
       // and the transaction still committed — a refusal quarantines the row,
-      // not the workspace's whole publish. Swept across every report rather
-      // than read off one named table, so a future refusing adapter is
-      // reported without a hand-edit here.
-      refusedDrafts = tx.reports.flatMap((r) =>
-        (r.refused ?? []).map((refusal) => ({
-          id: refusal.rowId,
-          surface: r.table,
-          reasons: refusal.reasons,
-          detail: refusal.detail,
-        })),
-      );
+      // not the workspace's whole publish. `collectRefusals` is shared with the
+      // MCP lib seam so the two publish paths cannot report differently.
+      refusedDrafts = collectRefusals(tx.reports);
       deletedEntityCount =
         tx.reports.find((r) => r.table === "semantic_entities")?.tombstonesApplied ?? 0;
       archivedConnectionCount = tx.archived.connections;
@@ -395,7 +384,16 @@ adminPublish.openapi(publishRoute, async (c) =>
         promotedStarterPrompts: promoted.starterPrompts,
         promotedKnowledgeDocuments: promoted.knowledgeDocuments,
         promotedBrainFacts: promoted.brainFacts,
-        refusedDrafts: refusedDrafts.length,
+        // ids + reasons, not just a count: the audit_log row is the DURABLE
+        // record, and `log.warn` rotates. "3 drafts were refused" six months
+        // later is unactionable. `detail` is deliberately dropped — it is
+        // rendered prose, reconstructible from `reasons`.
+        refusedDrafts: refusedDrafts.map((r) => ({
+          id: r.id,
+          surface: r.surface,
+          reasons: r.reasons,
+        })),
+        refusedDraftCount: refusedDrafts.length,
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
         archivedEntities: archivedEntityCount,
@@ -544,35 +542,6 @@ adminPublish.openapi(publishRoute, async (c) =>
       );
     }
 
-    // `warnings` is emitted when EITHER warning has content, and each key is
-    // present only when its own list is non-empty. A caller that reads one and
-    // not the other therefore can't be tricked by an empty sibling array into
-    // rendering an empty banner.
-    const warnings: NonNullable<PublishResponse["warnings"]> | undefined =
-      incompleteLayers.length > 0 || refusedDrafts.length > 0
-        ? {
-            incompleteLayers: incompleteLayers.map((l) => ({
-              connectionGroupId: l.connectionGroupId,
-              totalTables: l.totalTables,
-              failedCount: l.failedCount,
-              failedTables: l.failedTables.map((f) => ({
-                table: f.table,
-                error: f.error,
-              })),
-            })),
-            ...(refusedDrafts.length > 0
-              ? {
-                  refusedDrafts: refusedDrafts.map((r) => ({
-                    id: r.id,
-                    surface: r.surface,
-                    reasons: [...r.reasons],
-                    detail: r.detail,
-                  })),
-                }
-              : {}),
-          }
-        : undefined;
-
     const response: PublishResponse = {
       promoted,
       deleted: { entities: deletedEntityCount },
@@ -581,7 +550,33 @@ adminPublish.openapi(publishRoute, async (c) =>
         entities: archivedEntityCount,
         prompts: archivedPromptCount,
       },
-      ...(warnings ? { warnings } : {}),
+      ...(incompleteLayers.length > 0
+        ? {
+            warnings: {
+              incompleteLayers: incompleteLayers.map((l) => ({
+                connectionGroupId: l.connectionGroupId,
+                totalTables: l.totalTables,
+                failedCount: l.failedCount,
+                failedTables: l.failedTables.map((f) => ({
+                  table: f.table,
+                  error: f.error,
+                })),
+              })),
+            },
+          }
+        : {}),
+      // Omitted, not `[]`, when nothing was refused — so a client can branch on
+      // presence without an empty-array false positive.
+      ...(refusedDrafts.length > 0
+        ? {
+            refusedDrafts: refusedDrafts.map((r) => ({
+              id: r.id,
+              surface: r.surface,
+              reasons: [...r.reasons],
+              detail: r.detail,
+            })),
+          }
+        : {}),
     };
     return c.json(response, 200);
   }),

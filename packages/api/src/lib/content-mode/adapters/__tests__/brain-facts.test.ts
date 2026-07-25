@@ -11,11 +11,12 @@
  * what it reports, and that it never issues the UPDATE for a refused row.
  */
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { Effect } from "effect";
 import {
   BRAIN_FACTS_TABLE,
   brainFactStatusClause,
+  brainFactsCountSql,
   promoteBrainFacts,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
@@ -52,6 +53,9 @@ const EPISODE = "22222222-2222-4222-8222-222222222222";
 function draft(id: string, over: Record<string, unknown> = {}) {
   return {
     id,
+    subject: "acme",
+    predicate: "uses",
+    object: "postgres",
     source_episode_id: EPISODE,
     provenance: { actor: "slack:U1" },
     visible_to: ["org"],
@@ -135,6 +139,42 @@ describe("promoteBrainFacts", () => {
     const { tx, calls } = txWithDrafts([draft("a")]);
     await run(promoteBrainFacts(tx, "ws-1"));
     expect(calls[1].sql).toContain("status = 'draft'");
+  });
+
+  it("excludes RETRACTED drafts from both statements", async () => {
+    // A fact with `invalidated_at` set is a retracted claim; promoting it would
+    // stamp "reviewed and trusted" on something already withdrawn. Excluded in
+    // the SELECT *and* the UPDATE so the two cannot disagree, and — critically —
+    // in `brainFactsCountSql` too, so an excluded row does not become a
+    // permanent unpromotable backlog nobody is told about.
+    const { tx, calls } = txWithDrafts([draft("a")]);
+    await run(promoteBrainFacts(tx, "ws-1"));
+    for (const call of calls) expect(call.sql).toContain("invalidated_at IS NULL");
+  });
+
+  it("keeps the draft count in lockstep with what promotion considers", () => {
+    expect(brainFactsCountSql("$1")).toContain("invalidated_at IS NULL");
+    expect(brainFactsCountSql("$1")).toContain("status = 'draft'");
+  });
+
+  it("reports a grant that is partly malformed but still enforceable", async () => {
+    // `['user:u1','everyone']` is PROMOTABLE — the valid token does real work —
+    // so it is not a refusal. But the author plainly believed `everyone` did
+    // something, and `acl.ts` names this the read-time seam a push-down
+    // predicate cannot reach (#4797). Promotion is the one place holding every
+    // draft's grant, so it is where the observation lands.
+    const warnings: unknown[] = [];
+    const spy = spyOn(console, "warn").mockImplementation((...args) => {
+      warnings.push(args);
+    });
+    try {
+      const { tx } = txWithDrafts([draft("mixed", { visible_to: ["user:u1", "everyone"] })]);
+      const report = await run(promoteBrainFacts(tx, "ws-1"));
+      expect(report.promoted).toBe(1);
+      expect(report.refused).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

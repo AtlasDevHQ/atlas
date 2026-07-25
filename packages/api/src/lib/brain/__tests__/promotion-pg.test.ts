@@ -279,6 +279,10 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
       expect(report.promoted).toBe(2);
       expect(report.refused?.map((r) => r.rowId)).toEqual([bad]);
       expect(report.refused?.[0]?.reasons).toEqual([FACT_REFUSAL_REASONS.grantUnusable]);
+      // The message names the CLAIM, read back out of the database — a uuid
+      // alone would leave the admin nothing to look for.
+      expect(report.refused?.[0]?.detail).toContain("bad is thing");
+      expect(report.refused?.[0]?.detail).toContain("everyone");
 
       // The commit stands — the refusal quarantined the claim, not the publish.
       expect(await statusOf(good)).toBe("published");

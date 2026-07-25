@@ -105,6 +105,40 @@ run_fixture "a .test.ts fixture is excluded" pass \
   "packages/api/src/lib/brain/__tests__/seed.test.ts" \
 'await pool.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE id = $1`);'
 
+# (k) LOWERCASE SQL → must FAIL. Keyword casing is a style choice, not a
+#     security boundary; a case-sensitive guard would be trivially evaded.
+run_fixture "lowercase SQL still fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`update brain_facts set status = '"'"'published'"'"' where workspace_id = $1`);'
+
+# (l) A QUOTED identifier → must FAIL.
+run_fixture "quoted table identifier still fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE "brain_facts" SET status = '"'"'published'"'"' WHERE id = $1`);'
+
+# (m) An ALIASED update → must FAIL.
+run_fixture "aliased UPDATE still fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE brain_facts AS f SET status = '"'"'published'"'"' WHERE f.id = $1`);'
+
+# (n) The Drizzle write-builder form → must FAIL. No such call site exists today
+#     (the codebase writes this table only as raw SQL), so this is a tripwire
+#     for a style change — exactly the shape a grep-only guard would miss.
+run_fixture "Drizzle write-builder form fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(brainFacts).set({ status: "published" }).where(eq(brainFacts.id, id));'
+
+# (o) A Drizzle SELECT naming the table → must PASS. The pre-filter now matches
+#     `brainFacts`, so a read must not be caught by the widened net.
+run_fixture "Drizzle select on brainFacts passes" pass \
+  "packages/api/src/lib/brain/read.ts" \
+'const rows = await db.select().from(brainFacts).where(eq(brainFacts.status, "published"));'
+
+# (p) A non-status Drizzle update (retraction) → must PASS.
+run_fixture "Drizzle update of invalidated_at passes" pass \
+  "packages/api/src/lib/brain/retract.ts" \
+'await db.update(brainFacts).set({ invalidatedAt: new Date() }).where(eq(brainFacts.id, id));'
+
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -15,7 +15,7 @@ On [app.useatlas.dev](https://app.useatlas.dev) there is nothing to set up — t
 
 ## Concepts
 
-**Descriptive, never authoritative.** Knowledge Base content *informs* the agent's answers; it never *governs* them. Nothing in a knowledge document ever runs as SQL, extends the table whitelist, overrides a pinned metric, or gates the agent — the [semantic layer](/semantic-layer) remains the sole authoritative context surface. This boundary is structural (separate tables, separate agent-visible subtree, enforced by tests), not a convention.
+**Knowledge documents are descriptive, never authoritative.** Knowledge Base content *informs* the agent's answers; it never *governs* them. Nothing in a knowledge document ever runs as SQL, extends the table whitelist, overrides a pinned metric, or gates the agent — the [semantic layer](/semantic-layer) remains the sole authority over what can be queried, what a metric means, and what the agent must clarify first. This boundary is structural (separate tables, separate agent-visible subtree, enforced by tests), not a convention.
 
 **Collections.** A collection is the unit of knowledge organization: a named, independently searchable document tree. Each collection is one Knowledge Base install — like datasources, you can install many, and the typical split is one collection per product or corpus so the agent needn't wade through unrelated knowledge. Documents belong to exactly one collection, and uploads upsert into the tree by path. Collections are workspace-global; if a document concerns one environment or region ("this runbook covers the EU replica"), express that with tags, not separate scoping.
 

@@ -2,7 +2,7 @@
  * The content-mode lifecycle vocabulary for knowledge documents — the CHECK
  * constraint on `knowledge_documents.status` (migration 0162) admits exactly
  * these values. Lives here (not inside any single consumer) so it names the
- * pillar's status vocabulary once; `searchKnowledge` narrows DB read-backs
+ * pillar's status vocabulary once; `searchBrain` narrows DB read-backs
  * through it today, while the ingest core and admin routes carry their own
  * inline fail-closed comparisons against the same literals.
  */

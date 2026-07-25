@@ -62,6 +62,12 @@ Use this whenever a metric exists for what the user asked — never re-derive me
 
 Don't use this when no metric id matches; fall back to \`executeSQL\` with a query pattern from \`describeEntity\`. Avoid passing \`filters\` — pass-through is reserved for future work and is rejected today.`;
 
+export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the company brain — one fused, trust-labeled read over three stores. \`tier: "fact"\` is a claim promoted through human review; \`tier: "raw-episode"\` is the source record behind it; \`tier: "document"\` is hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. Facts and documents carry \`provenance\`; episodes carry \`source\`/\`sourceId\`. Retracted claims are always excluded, drafts outside developer mode — check \`status\`. An episode awaiting extraction is tagged \`extraction: "pending"\`. Conflicting facts surface as unranked \`tensions\` both ways: report both, never pick a winner. An \`unavailable\` field means the brain could not be searched — never report that as "nothing known". Example: \`{ "query": "who owns billing", "limit": 5 }\`.
+
+Use this when the question is about decisions, rationale, ownership, or policy — what people wrote down, not what a warehouse counts.
+
+Don't use this for quantitative current state; that is \`executeSQL\`. Avoid it for the semantic layer — that is \`explore\`.`;
+
 export const QUERY_TOOL_DESCRIPTION = `Ask Atlas's server-side analyst agent a natural-language question; it explores the semantic layer, writes and runs the SELECTs itself, and returns a prose \`answer\` plus every SQL statement it ran and the result rows. This is the recommended path for question-answering — the agent knows the catalog, glossary, canonical metrics, joins, and RLS, so it composes better SQL than a generic client writing raw SQL blind. It runs a second server-side LLM and spends Atlas plan tokens; prefer it when answer quality matters. Example call: \`{ "question": "top 5 products by revenue last quarter" }\`. Example response: \`{ "answer": "...", "sql": ["SELECT ..."], "data": [...] }\`.
 
 Use this when the user asks a data question in words and you want a high-quality answer without hand-writing SQL.
@@ -126,6 +132,20 @@ export const RUN_METRIC_ERROR_CODES = [
   "billing_blocked",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
+// #4773 — `searchBrain`. Reads the INTERNAL Postgres only (brain substrate +
+// knowledge documents), never a datasource, so no billing gate and none of the
+// datasource codes (`rls_denied`, `query_timeout`) can surface. What does:
+// `forbidden` for a reader whose identity resolved to no usable principals —
+// the fail-closed ACL deny, which is an upstream defect and must NOT read to
+// the agent as "the brain knows nothing" — and, independently, from the
+// dispatch gate's own `minRole` denial, which never reaches the tool body.
+// Plus the per-client rate limit and the catch-all.
+export const SEARCH_BRAIN_ERROR_CODES = [
+  "forbidden",
+  "rate_limited",
+  "internal_error",
+] as const satisfies readonly AtlasMcpToolErrorCode[];
+
 // #4094 — the NL-agent `query` tool. Its datasource work happens inside the
 // agent loop (executeSQL swallows per-query SQL failures into the answer, so
 // no validation/rls/timeout code surfaces at the tool boundary). What DOES

@@ -1936,7 +1936,7 @@ export const knowledgeDocuments = pgTable(
     atlasIngestedAt: timestamp("atlas_ingested_at", { withTimezone: true }),
     // Content-mode lifecycle — defaults `draft` (the review gate).
     status: text("status").notNull().default("draft"),
-    // Stored generated FTS vector for the searchKnowledge lexical tier
+    // Stored generated FTS vector for the document-store lexical tier
     // (#4222, migration 0167). Weighted title A / description B / body D;
     // STORED (not VIRTUAL — PG 18's bare default) so the GIN index below
     // can be built on it. Expression mirrors 0167 (same tokens — keep the
@@ -3186,6 +3186,18 @@ export const brainEpisodes = pgTable(
     // are gated — raw episodes are often *more* sensitive than their facts.
     visibleTo: text("visible_to").array().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Stored generated FTS vector for the `searchBrain` tier-3 lexical read
+    // (#4773, migration 0181). Locator B / body D; `source_actor` is
+    // deliberately absent (opaque source principals dilute ranking without
+    // contributing matchable language). STORED — not PG 18's bare VIRTUAL
+    // default — so the GIN index below can be built on it. Expression mirrors
+    // 0181; keep the two in lockstep.
+    fts: tsvector("fts")
+      .notNull()
+      .generatedAlwaysAs(
+        sql`setweight(to_tsvector('english', coalesce(locator, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(body, '')), 'D')`,
+      ),
   },
   (t) => [
     // Dedupe key — makes re-ingest a no-op. Scoped per workspace + source
@@ -3203,6 +3215,8 @@ export const brainEpisodes = pgTable(
     index("idx_brain_episodes_source").on(t.workspaceId, t.source, t.occurredAt),
     // Array-overlap lookups for the fail-closed push-down predicate (#4768).
     index("idx_brain_episodes_visible_to").using("gin", t.visibleTo),
+    // Lexical tier-3 retrieval (#4773, migration 0181).
+    index("idx_brain_episodes_fts").using("gin", t.fts),
     // An empty string is refused outright rather than treated as absent:
     // evidence that is '' backs a provenance claim with nothing, and
     // "'' means absent" would leave `body='x', locator=''` legal at rest.
@@ -3280,6 +3294,20 @@ export const brainFacts = pgTable(
     predicateCardinality: text("predicate_cardinality").notNull().default("multi"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // Stored generated FTS vector for the `searchBrain` tier-2 lexical read
+    // (#4773, migration 0181). Subject/object A (the entities a retrieval
+    // query is usually about), predicate B. No underscore handling: the
+    // default parser emits `_` as a blank, so a snake_case predicate already
+    // tokenizes to the same lexemes as its spaced spelling — see 0181 for why
+    // indexing it twice was actively harmful. STORED, not PG 18's bare VIRTUAL
+    // default. Expression mirrors 0181; keep the two in lockstep.
+    fts: tsvector("fts")
+      .notNull()
+      .generatedAlwaysAs(
+        sql`setweight(to_tsvector('english', coalesce(subject, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(object, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(predicate, '')), 'B')`,
+      ),
   },
   (t) => [
     index("idx_brain_facts_status").on(t.workspaceId, t.status),
@@ -3291,6 +3319,8 @@ export const brainFacts = pgTable(
     index("idx_brain_facts_valid_from").on(t.workspaceId, t.validFrom),
     index("idx_brain_facts_source_episode").on(t.sourceEpisodeId),
     index("idx_brain_facts_visible_to").using("gin", t.visibleTo),
+    // Lexical tier-2 retrieval (#4773, migration 0181).
+    index("idx_brain_facts_fts").using("gin", t.fts),
     check("chk_brain_facts_status", sql`status IN ('draft', 'published', 'archived')`),
     check(
       "chk_brain_facts_predicate_cardinality",

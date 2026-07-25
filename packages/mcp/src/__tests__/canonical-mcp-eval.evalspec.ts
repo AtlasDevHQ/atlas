@@ -603,6 +603,7 @@ describe("MCP path canonical eval (#2074)", () => {
         "query",
         "restore_datasource",
         "runMetric",
+        "searchBrain",
         "searchGlossary",
         "test_datasource",
       ]);

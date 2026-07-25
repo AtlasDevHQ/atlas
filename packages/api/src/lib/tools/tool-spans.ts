@@ -4,7 +4,7 @@
  * Before this wrapper only the tools that remembered to self-instrument
  * (`atlas.sql.execute`, `atlas.explore`, `atlas.python.execute`,
  * `atlas.profile.table`) carried an `atlas.*` segment of their own;
- * `searchKnowledge`, `createDashboard`, `executeRestOperation` and the action
+ * `searchKnowledge` (now `searchBrain`), `createDashboard`, `executeRestOperation` and the action
  * tools had none, so latency could not be attributed within a turn by the
  * `atlas.`-prefixed views. Wrapping at the seam makes the span a property of
  * *being registered* rather than of each tool's own diligence: a newly
@@ -63,7 +63,7 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
  * successful spans (the tool answered) but must still be countable, so the
  * outcome rides as an attribute instead of the span status.
  *
- * Two envelopes are recognized: a string `error` field (`searchKnowledge`,
+ * Two envelopes are recognized: a string `error` field (`searchBrain`,
  * `profileTable`, `proposeAmendment`, …) and `success: false` (`executeSQL`).
  * KNOWN GAP, deliberate — two shapes read as `false` here:
  *   - tools that discriminate on their own vocabulary (`sendEmail` /

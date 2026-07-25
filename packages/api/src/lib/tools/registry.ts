@@ -18,7 +18,7 @@ import {
   QUERY_SALESFORCE_DESCRIPTION,
   isSalesforceOAuthConfigured,
 } from "@atlas/api/lib/integrations/salesforce-tool";
-import { searchKnowledge, SEARCH_KNOWLEDGE_DESCRIPTION } from "./search-knowledge";
+import { searchBrain, SEARCH_BRAIN_DESCRIPTION } from "./search-brain";
 import { withToolSpans } from "./tool-spans";
 
 export type { AtlasAction, DashboardUrlResolver };
@@ -247,17 +247,25 @@ function registerCoreTools(
     });
   }
 
-  // #4210 — layered knowledge-base search (frontmatter filter + Postgres FTS +
-  // 1-hop graph expansion). Registered globally like the other execute-time-gated
-  // tools: it reads the workspace + mode from request context inside execute — so
-  // it stays discoverable everywhere without a boot-time gate. The two degraded
-  // paths have deliberately different shapes: no active workspace returns an empty
-  // result set (`{ results: [], neighbors: [] }`), while a deployment with no
-  // internal DB returns a user-facing `{ error }`.
+  // #4773 — the fused company-brain read (ADR-0036), which SUPERSEDES the
+  // #4210 `searchKnowledge` registration: hosted documents are now one of three
+  // stores (reviewed facts · raw episodes · documents), every result trust-tier
+  // and provenance labeled. Registered globally like the other
+  // execute-time-gated tools — it reads the workspace, mode, and principal set
+  // from request context inside `execute`, so it stays discoverable everywhere
+  // without a boot-time gate. Its four degraded paths each carry a
+  // machine-readable `BrainToolReason` (see the header on `search-brain.ts`): no
+  // internal DB, an unresolvable reader, and a failed search return a
+  // user-facing `{ error }`; only "no active workspace" returns an empty result
+  // set, and even that one is labelled `unavailable` rather than left bare.
+  //
+  // The old name is handled at the CONFIG seam, not here — see
+  // {@link RENAMED_TOOLS}. Registering both spellings would hand the agent two
+  // names for one capability.
   registry.register({
-    name: "searchKnowledge",
-    description: SEARCH_KNOWLEDGE_DESCRIPTION,
-    tool: searchKnowledge,
+    name: "searchBrain",
+    description: SEARCH_BRAIN_DESCRIPTION,
+    tool: searchBrain,
   });
 
   // First per-Workspace lazy-plugin tool (#2698). Registered globally
@@ -342,6 +350,30 @@ nonDashboardRegistry.freeze();
  *   coexistence note in `integrations/email-tool.ts`).
  */
 export const INTENTIONAL_TOOL_SHADOWS: ReadonlySet<string> = new Set(["sendEmailReport"]);
+
+/**
+ * Tool names that were RENAMED, mapped old → new (#4773).
+ *
+ * Consumed by `validateToolConfig` only. The registry itself never registers an
+ * old name: an agent-visible tool name carries no stability contract
+ * (`shared/reference/stability.mdx`), and two names for one capability is a
+ * worse tool surface than one.
+ *
+ * `atlas.config.ts` is a different contract. `validateToolConfig` THROWS on an
+ * unknown name, so a self-hoster whose config listed `searchKnowledge` would
+ * fail to BOOT on a patch upgrade — a rename inside Atlas turning into an
+ * outage in someone else's deployment. So the old spelling is accepted at that
+ * seam, normalized to the new one, and warned about once at startup.
+ *
+ * An entry is removed when the deprecation window closes, at which point the
+ * old spelling goes back to being a boot-time `Unknown tool(s)` error naming
+ * the available set.
+ */
+export const RENAMED_TOOLS: Readonly<Partial<Record<string, string>>> = {
+  // #4773 — `searchKnowledge` became `searchBrain` when hosted documents
+  // stopped being the whole tool and became one of three fused stores.
+  searchKnowledge: "searchBrain",
+};
 
 /**
  * Operator remediation copy for known tool-name collisions, keyed by tool

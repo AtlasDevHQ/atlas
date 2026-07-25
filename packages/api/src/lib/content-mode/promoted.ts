@@ -34,16 +34,26 @@ const log = createLogger("content-mode-promoted");
 /**
  * The result of sweeping every adapter's refusals.
  *
- * `total` is the TRUE count and `reported` may be shorter — a struct rather than
- * a bare array precisely so a caller cannot mistake `reported.length` for the
- * number of rows that were refused. The first cut of the cap returned only the
- * array, and the durable audit row immediately began recording the capped
- * length: a silent under-count in the one record that is supposed to outlive
- * the logs.
+ * `total` is the TRUE count; `reported` may be shorter. A struct rather than a
+ * bare array precisely so a caller cannot mistake `reported.length` for the
+ * number of rows refused — the first cut returned only the array, and the
+ * durable audit row immediately began recording the capped length. The SECOND
+ * cut kept the array-only wire shape and papered over it with a synthetic
+ * "(truncated)" entry, which just moved the same lie to the UI: both renderers
+ * counted the list and said "101 drafts were not published" when 250 were.
+ *
+ * So there is no synthetic entry. Every element of `reported` is a REAL refused
+ * row a reader can go look up, and the count lives in its own field.
  */
 export interface RefusalSweep {
-  /** Wire-safe list, capped at {@link MAX_REPORTED_REFUSALS} (+1 overflow marker). */
+  /** Real refused rows, capped at {@link MAX_REPORTED_REFUSALS}. For the wire. */
   readonly reported: readonly PublishRefusedDraft[];
+  /**
+   * Every refused row, uncapped. For the DURABLE audit record, where the
+   * payload-size argument behind the cap simply does not apply (it is a jsonb
+   * column, not an HTTP response) and "which rows" is the whole point.
+   */
+  readonly all: readonly PublishRefusedDraft[];
   /** How many rows were ACTUALLY refused, regardless of the cap. */
   readonly total: number;
 }
@@ -57,42 +67,24 @@ export function collectRefusals(reports: ReadonlyArray<PromotionReport>): Refusa
       detail: refusal.detail,
     })),
   );
-  if (all.length <= MAX_REPORTED_REFUSALS) return { reported: all, total: all.length };
+  if (all.length <= MAX_REPORTED_REFUSALS) return { reported: all, all, total: all.length };
 
-  // Cap the REPORT, never the promotion. Every refused row was still left a
-  // draft and is still counted in `draftCounts` — this only bounds how many are
-  // enumerated in one JSON response. A buggy extraction fiber can refuse
-  // thousands of facts, each carrying a `detail` that interpolates its grant
-  // tokens verbatim; unbounded, that is a multi-megabyte response. Truncating
-  // SILENTLY would be the worse failure, so the overflow is both reported as a
-  // synthetic entry and preserved exactly in `total`.
-  const shown = all.slice(0, MAX_REPORTED_REFUSALS);
-  const hidden = all.length - shown.length;
+  // Cap the enumerated LIST, never the count and never the promotion. Every
+  // refused row is still a draft and still in `draftCounts`; this only bounds
+  // how many are spelled out in one JSON response. A buggy extraction fiber can
+  // refuse thousands of facts, each carrying a `detail` that interpolates its
+  // grant tokens verbatim — unbounded, that is a multi-megabyte payload.
   log.warn(
-    { totalRefused: all.length, reported: shown.length, hidden },
-    "collectRefusals: refusal list truncated for reporting — every refused row is still a draft and still counted",
+    { totalRefused: all.length, reported: MAX_REPORTED_REFUSALS },
+    "collectRefusals: refusal LIST truncated for the response — the count is unaffected and every refused row is still a draft",
   );
-  return {
-    reported: [
-      ...shown,
-      {
-        // Deliberately not a uuid: a consumer that renders each entry shows a
-        // sentence, and one that tries to look this row up must fail obviously
-        // rather than 404 on a plausible-looking id.
-        id: "(truncated)",
-        surface: "(all)",
-        reasons: ["REPORT_TRUNCATED"],
-        detail: `${hidden} further draft${hidden === 1 ? " was" : "s were"} also refused and are not listed here. They remain drafts and are still counted in the pending-changes total; see the server logs for the full list.`,
-      },
-    ],
-    total: all.length,
-  };
+  return { reported: all.slice(0, MAX_REPORTED_REFUSALS), all, total: all.length };
 }
 
 /**
  * How many refusals one publish response enumerates. Well above any plausible
  * hand-authored backlog, low enough that a runaway producer cannot turn a
- * publish response into a multi-megabyte payload.
+ * publish response into a multi-megabyte payload. The COUNT is never capped.
  */
 const MAX_REPORTED_REFUSALS = 100;
 

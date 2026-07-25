@@ -465,6 +465,85 @@ describe("runDatasource — publish (#4126)", () => {
     expect(out.join("\n")).toContain("1 datasource");
   });
 
+  it("prints the TRUE refusal count, not the capped list length (#4769)", async () => {
+    // The API caps `refusedDrafts` at 100 and carries the real count in
+    // `refusedDraftTotal`. Counting the list would under-report exactly when the
+    // backlog is worst — the defect that survived two fix rounds because no test
+    // pinned what the renderers print on truncation.
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 0,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      },
+      deleted: { entities: 0 },
+      refusedDrafts: Array.from({ length: 100 }, (_, i) => ({
+        id: `f${i}`,
+        surface: "brain_facts",
+        reasons: ["GRANT_UNUSABLE"],
+        detail: `detail ${i}`,
+      })),
+      refusedDraftTotal: 250,
+    });
+    const { io, err } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    const errText = err.join("\n");
+    expect(errText).toContain("250 drafts were NOT published");
+    expect(errText).not.toContain("100 drafts were NOT published");
+    // And it says the list is partial rather than implying it is everything.
+    expect(errText).toContain("150 more");
+  });
+
+  it("falls back to the list length when an older API omits the total", async () => {
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 0,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      },
+      deleted: { entities: 0 },
+      refusedDrafts: [
+        { id: "f1", surface: "brain_facts", reasons: ["GRANT_UNUSABLE"], detail: "d" },
+      ],
+    });
+    const { io, err } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    expect(err.join("\n")).toContain("1 draft was NOT published");
+  });
+
+  it("never reports 'Nothing to publish' when drafts were REFUSED (#4769)", async () => {
+    // An all-refused publish has every promoted count at 0, so the
+    // nothing-to-publish early return fired and printed "no pending drafts in
+    // this workspace" over a backlog of blocked ones — the single most
+    // misleading line this command could emit, and the exact shape a buggy
+    // extraction fiber produces.
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 0,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      },
+      deleted: { entities: 0 },
+      refusedDrafts: [
+        { id: "f1", surface: "brain_facts", reasons: ["GRANT_UNUSABLE"], detail: "bad grant" },
+      ],
+      refusedDraftTotal: 1,
+    });
+    const { io, out, err } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    expect(out.join("\n")).not.toContain("Nothing to publish");
+    expect(err.join("\n")).toContain("1 draft was NOT published");
+  });
+
   it("says nothing about refusals when there were none", async () => {
     const { fetchImpl } = stubFetch(200, {
       promoted: {

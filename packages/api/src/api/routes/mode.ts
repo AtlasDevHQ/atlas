@@ -229,6 +229,12 @@ const ACTIVITY_SURFACE_KEYS = [
 // forgotten key would ship a missing required field with every test green.
 // This gate makes the omission a compile error, mirroring `_AllCountKeysClaimed`
 // in `web/src/ui/lib/content-surfaces.ts`.
+//
+// What it does NOT prove: that `DRAFT_ACTIVITY_SQL` emits a UNION arm per key.
+// Add a key here and to the type but forget the SQL and you ship a well-formed
+// response whose `lastEditedAt` is permanently null — quieter than a missing
+// field, not louder. That half is covered by the per-segment route tests in
+// `__tests__/mode.test.ts`, which assert the arm's table and scope column.
 type _AllActivityKeysCovered = [keyof ModeDraftActivity] extends [
   (typeof ACTIVITY_SURFACE_KEYS)[number],
 ]

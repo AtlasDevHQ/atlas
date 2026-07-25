@@ -165,6 +165,18 @@ export interface PublishResult {
    *
    * A caller reporting publish success MUST surface these: they are the
    * difference between "everything went live" and "everything except these".
+   *
+   * CAPPED at 100 entries so a runaway producer cannot make this response
+   * unboundedly large. Every element is a real row; when the list is capped,
+   * {@link PublishResult.refusedDraftTotal} exceeds its length. COUNT OFF
+   * `refusedDraftTotal`, NOT `refusedDrafts.length` — they differ exactly when
+   * it matters most.
    */
   readonly refusedDrafts?: readonly PublishRefusedDraft[];
+  /**
+   * How many drafts were refused in total — never capped. Present whenever
+   * `refusedDrafts` is. Equal to `refusedDrafts.length` in the overwhelmingly
+   * common case, and larger when the list was truncated.
+   */
+  readonly refusedDraftTotal?: number;
 }

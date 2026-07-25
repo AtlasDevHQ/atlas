@@ -297,11 +297,24 @@ describe("POST /api/v1/admin/publish — refused drafts (#4769)", () => {
       },
     ];
     const res = await publish();
-    const body = (await res.json()) as { refusedDrafts?: unknown[] };
-    // Response is capped (100 + the overflow marker)…
-    expect(body.refusedDrafts).toHaveLength(101);
-    // …the audit is not.
+    const body = (await res.json()) as {
+      refusedDrafts?: Array<{ id: string }>;
+      refusedDraftTotal?: number;
+    };
+    // The LIST is capped, and every entry in it is a REAL row — no synthetic
+    // "(truncated)" marker, which an earlier cut used and which taught both
+    // renderers to print the capped number as the refusal count.
+    expect(body.refusedDrafts).toHaveLength(100);
+    expect(body.refusedDrafts?.every((r) => r.id.startsWith("f"))).toBe(true);
+    // The COUNT is not capped — on the wire…
+    expect(body.refusedDraftTotal).toBe(250);
+    // …and in the durable audit row, which additionally stores every id,
+    // because the payload-size argument behind the cap is about an HTTP
+    // response and this is a jsonb column.
     expect(auditCalls[0].metadata).toMatchObject({ refusedDraftCount: 250 });
+    expect((auditCalls[0].metadata as { refusedDrafts: unknown[] }).refusedDrafts).toHaveLength(
+      250,
+    );
   });
 
   it("records ids and reasons in the DURABLE audit row, not just a count", async () => {

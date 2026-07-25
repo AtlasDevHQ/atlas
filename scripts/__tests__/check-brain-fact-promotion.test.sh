@@ -195,6 +195,47 @@ run_fixture "a NON-allowlisted template file still fails" fail \
   "create-atlas/templates/docker/src/lib/brain/rogue.ts" \
 'await db.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE id = $1`);'
 
+# ── Shapes a second reviewer found by staging its own trees. Every one of these
+#    EVADED the guard when it already had 22 green fixtures — which is the whole
+#    argument for probing a gate adversarially instead of trusting its suite.
+
+# (y) Drizzle INSERT naming status. The ORM half had no tripwire at all while
+#     the raw-SQL equivalent (fixture c) was refused — one write, two spellings,
+#     opposite verdicts. Most plausible shape for #4770/#4771's ingest fiber.
+run_fixture "Drizzle .insert().values({status}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.insert(brainFacts).values({ status: "published", subject: s });'
+
+# (z) The Drizzle upsert — the ORM twin of fixture (q).
+run_fixture "Drizzle .insert().onConflictDoUpdate({set:{status}}) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.insert(brainFacts).values(v).onConflictDoUpdate({ set: { status: "published" } });'
+
+# (aa) A namespace-qualified table reference — `\.update\(brainFacts` could not
+#      see `schema.brainFacts`.
+run_fixture "Drizzle update on a namespace-qualified table fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.update(schema.brainFacts).set({ status: "published" });'
+
+# (bb) Quoted AND schema-qualified together. The old single leading `"?`
+#      consumed the quote, so the qualifier group could never match the closing
+#      one — the docstring claimed both were accepted; only either was.
+run_fixture "quoted schema-qualified UPDATE fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`UPDATE "public"."brain_facts" SET status = $1`);'
+
+# (cc) The INSERT alias form, which is valid Postgres.
+run_fixture "INSERT INTO … AS f (…, status) fails" fail \
+  "packages/api/src/lib/brain/rogue.ts" \
+'await db.query(`INSERT INTO brain_facts AS f (id, status) VALUES ($1,$2)`);'
+
+# (dd) The legitimate ORM ingest — insert WITHOUT status → must PASS. This is
+#      the shape #4770/#4771 should write, and the widened insert pattern must
+#      not block it.
+run_fixture "Drizzle .insert() omitting status passes" pass \
+  "packages/api/src/lib/brain/connector.ts" \
+'await db.insert(brainFacts).values({ subject: s, predicate: p, object: o, visibleTo: ["org"] });'
+
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -140,6 +140,12 @@ const PublishResponseSchema = z.object({
       }),
     )
     .optional(),
+  /**
+   * How many drafts were refused IN TOTAL — never capped, unlike the list
+   * above. Count off this, not `refusedDrafts.length`: they differ exactly when
+   * the backlog is worst, which is when an accurate number matters most.
+   */
+  refusedDraftTotal: z.number().int().nonnegative().optional(),
 });
 
 export type PublishResponse = z.infer<typeof PublishResponseSchema>;
@@ -385,13 +391,15 @@ adminPublish.openapi(publishRoute, async (c) =>
         // record, and `log.warn` rotates. "3 drafts were refused" six months
         // later is unactionable. `detail` is deliberately dropped — it is
         // rendered prose, reconstructible from `reasons`.
-        refusedDrafts: refusals.reported.map((r) => ({
+        // Uncapped ids + reasons. The response cap exists to bound an HTTP
+        // payload; this is a jsonb column, and the comment above is only true
+        // if the ids actually make it into the row. `detail` is dropped — it is
+        // rendered prose, reconstructible from `reasons`.
+        refusedDrafts: refusals.all.map((r) => ({
           id: r.id,
           surface: r.surface,
           reasons: r.reasons,
         })),
-        // The TRUE count, not `reported.length` — the wire list is capped and
-        // the audit row is the durable record.
         refusedDraftCount: refusals.total,
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
@@ -566,7 +574,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         : {}),
       // Omitted, not `[]`, when nothing was refused — so a client can branch on
       // presence without an empty-array false positive.
-      ...(refusals.reported.length > 0
+      ...(refusals.total > 0
         ? {
             refusedDrafts: refusals.reported.map((r) => ({
               id: r.id,
@@ -574,6 +582,7 @@ adminPublish.openapi(publishRoute, async (c) =>
               reasons: [...r.reasons],
               detail: r.detail,
             })),
+            refusedDraftTotal: refusals.total,
           }
         : {}),
     };

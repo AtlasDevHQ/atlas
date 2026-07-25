@@ -79,6 +79,25 @@ export const BRAIN_FACTS_TABLE = "brain_facts" as const;
  *
  * `alias` is interpolated, so callers must pass a plain identifier they control
  * — same contract as `resolveStatusClause` and `aclVisibilityClause`.
+ *
+ * ## It gates REVIEW STATUS ONLY — retraction is a separate axis
+ *
+ * This clause deliberately does NOT filter `invalidated_at`, unlike the four
+ * promotion-side paths (`DRAFT_FACTS_SQL`, `PROMOTE_FACTS_SQL`,
+ * `brainFactsCountSql`, and the publish preview), which all exclude retracted
+ * rows. The asymmetry is intentional and load-bearing in both directions:
+ * ADR-0036 keeps a retracted fact READABLE so "what we believed on Monday"
+ * still answers correctly, and supersession is explicitly not deletion — so a
+ * content-mode filter that also swallowed tombstones would break as-of reads.
+ * Promotion is the opposite case: stamping "reviewed and trusted" on a claim
+ * already withdrawn is never right.
+ *
+ * THE CONSEQUENCE FOR CALLERS, stated because composing the two advertised
+ * seams is the obvious thing to do and is not sufficient: a CURRENT-BELIEF read
+ * (#4773's `searchBrain`) must AND `invalidated_at IS NULL` itself, on top of
+ * this clause and `aclVisibilityClause`. `idx_brain_facts_subject` is partial on
+ * exactly that predicate, so the index is built for it. Omit it and the agent is
+ * served retracted claims.
  */
 export function brainFactStatusClause(mode: AtlasMode | undefined, alias: string): string {
   return mode === "developer"

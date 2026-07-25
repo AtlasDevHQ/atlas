@@ -496,9 +496,10 @@ describe("GET /api/v1/mode — draft counts", () => {
   });
 
   it("scopes the knowledge_documents activity segment by workspace_id, not org_id (#4206)", async () => {
-    // DRAFT_ACTIVITY_SQL is a hand-written route constant. The knowledge
-    // segment is the ONLY one keyed on `workspace_id` (every sibling uses
-    // `org_id`), so a copy-paste typo to `org_id` would 500 the endpoint at
+    // DRAFT_ACTIVITY_SQL is a hand-written route constant. This segment is
+    // keyed on `workspace_id` while most siblings use `org_id` (as of #4769,
+    // `brain_facts` is the other one), so a copy-paste typo to `org_id`
+    // would 500 the endpoint at
     // runtime (`column "org_id" does not exist`) while passing every
     // registry-driven count assertion. Pin the segment's table + scope column.
     await request("/api/v1/mode");

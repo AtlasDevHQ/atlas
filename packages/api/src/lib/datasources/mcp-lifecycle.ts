@@ -301,7 +301,9 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
       deleted: { entities: entitiesReport?.tombstonesApplied ?? 0 },
       // Omitted, not `[]`, when nothing was refused — matches the REST route so
       // a client can branch on presence identically on both surfaces.
-      ...(refusals.reported.length > 0 ? { refusedDrafts: refusals.reported } : {}),
+      ...(refusals.total > 0
+        ? { refusedDrafts: refusals.reported, refusedDraftTotal: refusals.total }
+        : {}),
     };
 
     if (refusals.total > 0) {

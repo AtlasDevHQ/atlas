@@ -47,9 +47,14 @@ Read `acl.ts`'s constraint precisely, because a loose paraphrase would condemn t
 
 | Surface | How a refusal reaches the caller |
 | --- | --- |
-| `POST /api/v1/admin/publish` | `refusedDrafts[]` → the Publish modal stays open and renders `RefusedDraftsBanner` |
-| MCP `publish_datasources` | `refusedDrafts[]` in `structuredContent`, so an agent cannot relay `published: true` as unqualified success |
+| `POST /api/v1/admin/publish` | `refusedDrafts[]` + `refusedDraftTotal` → the Publish modal stays open and renders `RefusedDraftsBanner` |
+| MCP `publish_datasources` | both fields in `structuredContent`, so an agent cannot relay `published: true` as unqualified success |
 | `atlas datasource publish` | each `detail` printed to **stderr** (exit stays 0 — the publish did commit) |
+| `audit_log` | every refused id + reasons, **uncapped** — the durable record, since `log.warn` rotates |
+
+**The list is capped; the count never is.** `refusedDrafts[]` stops at 100 entries so a runaway producer can't make one response unboundedly large — but every entry is a *real* row, and `refusedDraftTotal` carries the true number. **Count off `refusedDraftTotal`, never `refusedDrafts.length`:** they differ exactly when the backlog is worst. An earlier cut appended a synthetic `(truncated)` marker row instead, which simply moved the under-count from the audit row into the UI headline. Both renderers now read the total and say "showing the first N of M".
+
+Note the CLI's nothing-to-publish guard has to account for refusals too: an all-refused publish has every promoted count at zero, and the guard would otherwise print "no pending drafts in this workspace" over a backlog of blocked ones.
 
 A retracted draft (`invalidated_at IS NOT NULL`) is excluded from promotion, from `draftCounts`, and from the preview — consistently, so an excluded row never becomes an unpromotable backlog nobody is told about.
 

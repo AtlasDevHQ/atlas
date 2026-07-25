@@ -623,7 +623,23 @@ async function runPublish(
       (sum, v) => sum + (typeof v === "number" && Number.isFinite(v) ? v : 0),
       0,
     );
-    if (promotedTotal === 0 && deletedEntities === 0) {
+    // #4769 — drafts the review gate REFUSED to promote. Read BEFORE the
+    // nothing-to-publish guard: a publish where every draft was refused has
+    // `promotedTotal === 0`, and the early return would have said "no pending
+    // drafts in this workspace" over a backlog of blocked ones. That is the
+    // most misleading thing this command could print, and it is the shape a
+    // buggy extraction fiber produces.
+    const refused = Array.isArray(asRecord(result).refusedDrafts)
+      ? (asRecord(result).refusedDrafts as ReadonlyArray<unknown>)
+      : [];
+    // The LIST is capped at 100 by the API; the TOTAL is not. Counting the list
+    // would under-report exactly when the backlog is worst.
+    const refusedTotal =
+      typeof asRecord(result).refusedDraftTotal === "number"
+        ? (asRecord(result).refusedDraftTotal as number)
+        : refused.length;
+
+    if (promotedTotal === 0 && deletedEntities === 0 && refusedTotal === 0) {
       io.out("Nothing to publish — no pending drafts in this workspace.");
       return 0;
     }
@@ -647,17 +663,13 @@ async function runPublish(
         `Pruned ${deletedEntities} stale entit${deletedEntities === 1 ? "y" : "ies"} superseded by this publish.`,
       );
     }
-    // #4769 — drafts the review gate REFUSED to promote. On `io.err`, not
-    // `io.out`: the publish committed (exit 0 is correct), but this is the one
-    // part of the outcome the operator has to act on, and a `0 brain facts` in
-    // the success sentence above is indistinguishable from "this workspace has
-    // no facts". Printing nothing would make a partial publish invisible.
-    const refused = Array.isArray(asRecord(result).refusedDrafts)
-      ? (asRecord(result).refusedDrafts as ReadonlyArray<unknown>)
-      : [];
-    if (refused.length > 0) {
+    // On `io.err`, not `io.out`: the publish committed (exit 0 is correct), but
+    // this is the one part of the outcome the operator has to act on, and a
+    // `0 brain facts` in the success sentence above is indistinguishable from
+    // "this workspace has no facts".
+    if (refusedTotal > 0) {
       io.err(
-        `\n${refused.length} draft${refused.length === 1 ? " was" : "s were"} NOT published — the review gate held ${refused.length === 1 ? "it" : "them"} back:`,
+        `\n${refusedTotal} draft${refusedTotal === 1 ? " was" : "s were"} NOT published — the review gate held ${refusedTotal === 1 ? "it" : "them"} back:`,
       );
       for (const entry of refused) {
         const detail = asRecord(entry).detail;
@@ -666,6 +678,9 @@ async function runPublish(
         io.err(
           `  - ${typeof detail === "string" && detail ? detail : `refused draft ${String(asRecord(entry).id ?? "(unknown id)")}`}`,
         );
+      }
+      if (refusedTotal > refused.length) {
+        io.err(`  … and ${refusedTotal - refused.length} more (see the server logs).`);
       }
       io.err("  Fix or retract them and publish again — they are still drafts.");
     }

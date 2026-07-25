@@ -966,7 +966,13 @@ export function registerDatasourceTools(
             // these, or it will claim facts went live that are still drafts.
             // Omitted (not `[]`) when nothing was refused, matching REST.
             ...(result.refusedDrafts && result.refusedDrafts.length > 0
-              ? { refusedDrafts: result.refusedDrafts }
+              ? {
+                  refusedDrafts: result.refusedDrafts,
+                  // The list is capped at 100; this is not. An agent relaying a
+                  // count to a human must use this one.
+                  refusedDraftTotal:
+                    result.refusedDraftTotal ?? result.refusedDrafts.length,
+                }
               : {}),
           };
           return {

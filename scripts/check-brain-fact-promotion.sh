@@ -21,7 +21,10 @@
 #   - `INSERT INTO brain_facts VALUES (…)` with NO column list — positional, so
 #     whether it sets `status` is unknowable by grep. Refused on principle:
 #     a positional insert into a 17-column table is unreviewable anyway.
-#   - `db.update(brainFacts).set({ status … })` — the Drizzle write-builder.
+#   - `db.update([schema.]brainFacts).set({ status … })` and
+#     `db.insert([schema.]brainFacts).values({ … status … })` — both Drizzle
+#     write-builder halves, including the `.onConflictDoUpdate({ set: { status
+#     … } })` upsert (covered by the insert pattern's window).
 #
 # Matching is case-INSENSITIVE for the SQL forms (keyword casing is a style
 # choice, not a security boundary) and accepts an optional schema qualifier and
@@ -146,16 +149,30 @@ STRIP_COMMENTS='sed -E "s#/\*([^*]|\*+[^*/])*\*+/##g; /\/\*/,/\*\// d; s#//.*\$#
 # Quoted identifiers (`UPDATE "brain_facts"`) are admitted by the optional quote.
 # `(\w+\.)?` admits a schema qualifier (`public.brain_facts`); `"?` admits a
 # quoted identifier. Both were live evasions before they were probed.
-QUALIFIED='"?([a-zA-Z_][a-zA-Z0-9_]*\.)?"?brain_facts"?'
+# Each identifier may independently be quoted, so `"public"."brain_facts"` and
+# `public.brain_facts` and `"brain_facts"` all match. An earlier single leading
+# `"?` consumed the quote and then could not match the qualifier's closing one.
+QUALIFIED='("?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?brain_facts"?'
 UPDATE_PATTERN="UPDATE[[:space:]]+${QUALIFIED}\b.{0,400}\bSET\b.{0,400}\bstatus\b"
-INSERT_PATTERN="INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]*\([^)]*\bstatus\b"
+# `(AS[[:space:]]+\w+[[:space:]]*)?` admits the alias form
+# `INSERT INTO brain_facts AS f (…, status) VALUES …`, which is valid Postgres.
+INSERT_PATTERN="INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]*(AS[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*)?\([^)]*\bstatus\b"
 # The upsert form: no table follows UPDATE, and `status` is absent from the
 # INSERT column list — it appears only in the conflict action.
 UPSERT_PATTERN="INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}\b.{0,600}\bDO[[:space:]]+UPDATE[[:space:]]+SET\b.{0,400}\bstatus\b"
 # A column-less INSERT is positional: grep cannot tell whether it sets status.
 POSITIONAL_PATTERN="INSERT[[:space:]]+INTO[[:space:]]+${QUALIFIED}[[:space:]]+VALUES\b"
-# Drizzle write-builder: `.update(brainFacts)` … `.set({ … status … })`.
-ORM_PATTERN='\.update\([[:space:]]*brainFacts[[:space:]]*\).{0,400}\.set\([^)]{0,400}\bstatus\b'
+# Drizzle write-builders. `ORM_TABLE` admits a namespace-qualified reference
+# (`schema.brainFacts`), which a bare `brainFacts` match cannot see.
+ORM_TABLE='([a-zA-Z_$][a-zA-Z0-9_$]*\.)?brainFacts'
+# `.update(brainFacts) … .set({ … status … })`
+ORM_UPDATE_PATTERN="\.update\([[:space:]]*${ORM_TABLE}[[:space:]]*\).{0,400}\.set\([^)]{0,400}\bstatus\b"
+# `.insert(brainFacts).values({ … status … })` — the ORM twin of the raw-SQL
+# INSERT-naming-status form. Without it the two spellings of one write disagree:
+# the SQL half is refused and the ORM half sails through. This is also the shape
+# an ingest fiber (#4770/#4771) is most likely to reach for.
+ORM_INSERT_PATTERN="\.insert\([[:space:]]*${ORM_TABLE}[[:space:]]*\).{0,600}\bstatus\b"
+
 
 OFFENDERS=""
 if [ -n "$CANDIDATES" ]; then
@@ -177,7 +194,8 @@ if [ -n "$CANDIDATES" ]; then
       || echo "$FLAT" | grep -qiE "$INSERT_PATTERN" \
       || echo "$FLAT" | grep -qiE "$UPSERT_PATTERN" \
       || echo "$FLAT" | grep -qiE "$POSITIONAL_PATTERN" \
-      || echo "$FLAT" | grep -qE "$ORM_PATTERN"; then
+      || echo "$FLAT" | grep -qE "$ORM_UPDATE_PATTERN" \
+      || echo "$FLAT" | grep -qE "$ORM_INSERT_PATTERN"; then
       OFFENDERS="${OFFENDERS}${f}"$'\n'
     fi
   done <<<"$CANDIDATES"

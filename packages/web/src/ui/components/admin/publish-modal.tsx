@@ -72,6 +72,11 @@ interface PublishResponseData {
    * deploy-overlap window.
    */
   readonly refusedDrafts?: ReadonlyArray<RefusedDraft>;
+  /**
+   * TRUE refusal count — never capped, unlike `refusedDrafts` (100 max). Count
+   * off this; the list length under-reports exactly when the backlog is worst.
+   */
+  readonly refusedDraftTotal?: number;
 }
 
 interface DraftRow {
@@ -136,6 +141,8 @@ export function PublishModal({
   // `incompleteLayers`: the publish committed, but reporting an unqualified
   // success would hide that some drafts deliberately did not go live.
   const [refusedDrafts, setRefusedDrafts] = useState<ReadonlyArray<RefusedDraft>>([]);
+  // Separate from the list because the list is capped — see `refusedDraftTotal`.
+  const [refusedTotal, setRefusedTotal] = useState(0);
 
   // Reset error + warning state whenever the modal opens — a previous attempt
   // shouldn't leave a banner showing the next time the admin opens the modal.
@@ -144,6 +151,7 @@ export function PublishModal({
       reset();
       setIncompleteLayers([]);
       setRefusedDrafts([]);
+      setRefusedTotal(0);
     }
   }, [open, reset]);
 
@@ -157,12 +165,15 @@ export function PublishModal({
       // are still drafts. Otherwise close as before.
       const layers = result.data?.warnings?.incompleteLayers ?? [];
       const refused = result.data?.refusedDrafts ?? [];
-      if (layers.length > 0 || refused.length > 0) {
+      // `?? refused.length` covers an older API that predates the total.
+      const refusedCount = result.data?.refusedDraftTotal ?? refused.length;
+      if (layers.length > 0 || refusedCount > 0) {
         setIncompleteLayers(layers);
         setRefusedDrafts(refused);
+        setRefusedTotal(refusedCount);
         toast.warning(
-          refused.length > 0
-            ? `Published, but ${refused.length === 1 ? "1 draft was" : `${refused.length} drafts were`} not published`
+          refusedCount > 0
+            ? `Published, but ${refusedCount === 1 ? "1 draft was" : `${refusedCount} drafts were`} not published`
             : `Published, but ${layers.length === 1 ? "a layer is" : `${layers.length} layers are`} incomplete`,
         );
       } else {
@@ -174,7 +185,7 @@ export function PublishModal({
   }
 
   /** True once publish committed with something the admin must read first. */
-  const hasPostPublishWarning = incompleteLayers.length > 0 || refusedDrafts.length > 0;
+  const hasPostPublishWarning = incompleteLayers.length > 0 || refusedTotal > 0;
 
   const total = data ? totalRows(data) : 0;
   const sections = data ? buildSections(data) : [];
@@ -243,7 +254,9 @@ export function PublishModal({
           <IncompleteLayersBanner layers={incompleteLayers} />
         )}
 
-        {refusedDrafts.length > 0 && <RefusedDraftsBanner drafts={refusedDrafts} />}
+        {refusedTotal > 0 && (
+          <RefusedDraftsBanner drafts={refusedDrafts} total={refusedTotal} />
+        )}
 
         <DialogFooter>
           {hasPostPublishWarning ? (
@@ -286,7 +299,14 @@ export function PublishModal({
  * or publish one that is invisible to every reader. Each stays a draft and is
  * re-offered on the next publish, so this is a repairable backlog, not a loss.
  */
-function RefusedDraftsBanner({ drafts }: { drafts: ReadonlyArray<RefusedDraft> }) {
+function RefusedDraftsBanner({
+  drafts,
+  total,
+}: {
+  drafts: ReadonlyArray<RefusedDraft>;
+  /** May exceed `drafts.length` — the API caps the list at 100, never the count. */
+  total: number;
+}) {
   return (
     <div
       role="alert"
@@ -295,8 +315,7 @@ function RefusedDraftsBanner({ drafts }: { drafts: ReadonlyArray<RefusedDraft> }
       <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <div className="min-w-0 space-y-1">
         <p className="font-medium">
-          Published, but {drafts.length === 1 ? "1 draft was" : `${drafts.length} drafts were`} not
-          published
+          Published, but {total === 1 ? "1 draft was" : `${total} drafts were`} not published
         </p>
         <p className="opacity-90">
           Each is missing the evidence or the audience it needs to be trusted, so the review gate
@@ -309,6 +328,12 @@ function RefusedDraftsBanner({ drafts }: { drafts: ReadonlyArray<RefusedDraft> }
             </li>
           ))}
         </ul>
+        {total > drafts.length && (
+          <p className="opacity-90">
+            Showing the first {drafts.length} of {total}. The rest are in the server logs and
+            are all still drafts.
+          </p>
+        )}
       </div>
     </div>
   );

@@ -277,6 +277,8 @@ export const publishDatasourcesOutputShape = {
       }),
     )
     .optional(),
+  /** Uncapped refusal count — the list above is capped at 100. Count off this. */
+  refusedDraftTotal: z.number().int().nonnegative().optional(),
 } as const;
 
 /** Zod objects for validating a result against the declared output schema. */

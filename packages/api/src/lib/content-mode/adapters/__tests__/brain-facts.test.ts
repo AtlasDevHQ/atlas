@@ -11,7 +11,7 @@
  * what it reports, and that it never issues the UPDATE for a refused row.
  */
 
-import { describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { Effect } from "effect";
 import {
   BRAIN_FACTS_TABLE,
@@ -157,24 +157,27 @@ describe("promoteBrainFacts", () => {
     expect(brainFactsCountSql("$1")).toContain("status = 'draft'");
   });
 
-  it("reports a grant that is partly malformed but still enforceable", async () => {
+  it("promotes a grant that is partly malformed but still enforceable", async () => {
     // `['user:u1','everyone']` is PROMOTABLE — the valid token does real work —
-    // so it is not a refusal. But the author plainly believed `everyone` did
-    // something, and `acl.ts` names this the read-time seam a push-down
-    // predicate cannot reach (#4797). Promotion is the one place holding every
-    // draft's grant, so it is where the observation lands.
-    const warnings: unknown[] = [];
-    const spy = spyOn(console, "warn").mockImplementation((...args) => {
-      warnings.push(args);
-    });
-    try {
-      const { tx } = txWithDrafts([draft("mixed", { visible_to: ["user:u1", "everyone"] })]);
-      const report = await run(promoteBrainFacts(tx, "ws-1"));
-      expect(report.promoted).toBe(1);
-      expect(report.refused).toEqual([]);
-    } finally {
-      spy.mockRestore();
-    }
+    // so it is not a refusal. The `logGrantAnomalies` OBSERVATION that comes
+    // with it is asserted in `brain-facts-logging.test.ts`, which is the file
+    // that mocks the logger; this one deliberately runs unmocked.
+    const { tx } = txWithDrafts([draft("mixed", { visible_to: ["user:u1", "everyone"] })]);
+    const report = await run(promoteBrainFacts(tx, "ws-1"));
+    expect(report.promoted).toBe(1);
+    expect(report.refused).toEqual([]);
+  });
+
+  it("falls back to rows.length when the driver omits rowCount", async () => {
+    // Test doubles that populate only `rows` must not report a false zero.
+    const tx: ModeTxClient = {
+      query: async (sql) =>
+        /^\s*UPDATE/i.test(sql)
+          ? { rows: [{ id: "a" }, { id: "b" }] }
+          : { rows: [draft("a"), draft("b")] },
+    };
+    const report = await run(promoteBrainFacts(tx, "ws-1"));
+    expect(report.promoted).toBe(2);
   });
 });
 

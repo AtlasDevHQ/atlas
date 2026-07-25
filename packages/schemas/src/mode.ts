@@ -48,4 +48,7 @@ export const PublishResultSchema = z.object({
   promoted: PublishPromotedCountsSchema,
   deleted: z.object({ entities: z.number().int().nonnegative() }),
   refusedDrafts: z.array(PublishRefusedDraftSchema).optional(),
+  // Never capped — see `PublishResult.refusedDraftTotal`. A client counting
+  // `refusedDrafts.length` under-reports exactly when the backlog is worst.
+  refusedDraftTotal: z.number().int().nonnegative().optional(),
 }) satisfies z.ZodType<PublishResult, unknown>;

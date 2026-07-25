@@ -16,8 +16,12 @@
  * the failure "deny + log" is written to prevent.
  *
  * Spy installed via `mock.module` before the dynamic import, mirroring
- * `lib/__tests__/config-deploy-mode-warning.test.ts`. All logger exports are
- * mocked, per the mock-all-exports rule.
+ * `lib/__tests__/config-deploy-mode-warning.test.ts` (which mocks only the
+ * four exports its own graph touches). Every VALUE export of `lib/logger.ts`
+ * is stubbed here instead, per the mock-all-exports rule: a partial factory
+ * works right up until some module in the import graph reaches one of the
+ * missing names, and then fails at link time with `Export named 'X' not found`
+ * in a file that has nothing to do with this one.
  */
 
 import { beforeEach, describe, expect, it, mock } from "bun:test";
@@ -35,6 +39,14 @@ void mock.module("@atlas/api/lib/logger", () => ({
   getLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, level: "info" }),
   setLogLevel: () => true,
   getRequestContext: () => undefined,
+  // The rest of lib/logger.ts's value exports. Unused by this file's graph
+  // today; present so widening that graph can't break the link.
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T): T => fn(),
+  redactPaths: [] as string[],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (obj: unknown) => obj,
+  hashShareToken: (token: string) => token,
 }));
 
 const {
@@ -97,7 +109,9 @@ describe("reader-side denies are logged (#4768)", () => {
   });
 
   it("logs when a reader is asked about a row outside their workspace", () => {
-    expect(isVisibleTo({ workspaceId: "other-ws", visibleTo: ["org"] }, ctx())).toBe(false);
+    expect(
+      isVisibleTo({ table: "brain_facts", workspaceId: "other-ws", visibleTo: ["org"] }, ctx()),
+    ).toBe(false);
     expect(warns()).toHaveLength(1);
     expect(warns()[0]!.message).toContain("outside the reader's workspace");
     expect(payloads()[0]).toMatchObject({ rowWorkspaceId: "other-ws", readerWorkspaceId: WS });
@@ -106,8 +120,12 @@ describe("reader-side denies are logged (#4768)", () => {
   it("does not log on the ordinary allow and deny paths", () => {
     // A grant that simply doesn't match is not an anomaly — logging it would
     // make the signal useless at any real read volume.
-    expect(isVisibleTo({ workspaceId: WS, visibleTo: ["role:admin"] }, ctx())).toBe(false);
-    expect(isVisibleTo({ workspaceId: WS, visibleTo: ["org"] }, ctx())).toBe(true);
+    expect(
+      isVisibleTo({ table: "brain_facts", workspaceId: WS, visibleTo: ["role:admin"] }, ctx()),
+    ).toBe(false);
+    expect(
+      isVisibleTo({ table: "brain_facts", workspaceId: WS, visibleTo: ["org"] }, ctx()),
+    ).toBe(true);
     aclVisibilityClause(ctx(), { table: "brain_facts", paramIndex: 1 });
     expect(warns()).toHaveLength(0);
   });
@@ -191,8 +209,7 @@ describe("resolution-side anomalies are logged (#4768)", () => {
       workspaceId: WS,
       mode: "managed",
       userId: undefined,
-      role: "admin",
-      roleResolvedForOrgId: WS,
+      resolvedRole: { role: "admin", orgId: WS },
       requestId: "req-13",
     });
     expect(resolved.origin).toBe("unresolved");
@@ -206,8 +223,7 @@ describe("resolution-side anomalies are logged (#4768)", () => {
       workspaceId: WS,
       mode: "managed",
       userId: "user-1",
-      role: "owner",
-      roleResolvedForOrgId: "some-other-org",
+      resolvedRole: { role: "owner", orgId: "some-other-org" },
       requestId: "req-14",
     });
     expect(resolved.role).toBeNull();
@@ -219,13 +235,46 @@ describe("resolution-side anomalies are logged (#4768)", () => {
     });
   });
 
+  it("logs when audience rows are dropped by narrowing", async () => {
+    // `audience_id` is `text NOT NULL`, so a dropped row can only mean the
+    // query or the row shape changed. Silently returning fewer memberships
+    // would strip a reader's audience grants with no signal — the same silent
+    // downgrade this function refuses to perform on a DB error.
+    const drifted = { query: async () => ({ rows: [{ aud: "eng" }, { audience_id: "exec" }] }) };
+    const resolved = await resolvePrincipalContext(drifted, {
+      workspaceId: WS,
+      mode: "managed",
+      userId: "user-1",
+      resolvedRole: { role: "member", orgId: WS },
+      requestId: "req-15",
+    });
+    expect(resolved.audienceIds).toEqual(["exec"]);
+    expect(warns()).toHaveLength(1);
+    expect(warns()[0]!.message).toContain("membership query shape changed");
+    expect(payloads()[0]).toMatchObject({ returned: 2, usable: 1, requestId: "req-15" });
+  });
+
+  it("logs an unrecognised principal origin", () => {
+    const rogue = { ...ctx(), origin: "service" } as unknown as Parameters<
+      typeof aclVisibilityClause
+    >[0];
+    expect(aclVisibilityClause(rogue, { table: "brain_facts", paramIndex: 1 }).decision).toBe(
+      "deny-all",
+    );
+    // Two lines: the `principalTokens` default, then the clause's own backstop
+    // — which is the arm that makes an out-of-union origin observable at all.
+    expect(warns().map((w) => w.message)).toEqual([
+      expect.stringContaining("unrecognised principal origin"),
+      expect.stringContaining("resolved to no principals"),
+    ]);
+  });
+
   it("logs an unrecognised auth mode", async () => {
     const resolved = await resolvePrincipalContext(db, {
       workspaceId: WS,
       mode: "quantum" as unknown as "managed",
       userId: "user-1",
-      role: undefined,
-      roleResolvedForOrgId: undefined,
+      resolvedRole: undefined,
     });
     expect(resolved.origin).toBe("unresolved");
     expect(warns()[0]!.message).toContain("unrecognised auth mode");

@@ -21,29 +21,38 @@
  * Tiers 2 and 3 only — `brain_facts` and `brain_episodes`. Tier-1 warehouse
  * facts are computed live through the semantic layer and gated by warehouse
  * RLS; double-gating them here would mean two systems that must agree about
- * the same row and will eventually not. `AclGatedTable` constrains the NAMED
- * target so a tier-1 table cannot be requested — note that it constrains the
- * name, not the emitted SQL, which is built from `alias`; an alias pointed at
- * some other relation produces a predicate that fails loudly at runtime (no
- * `visible_to` column) rather than one that quietly gates the wrong thing.
+ * the same row and will eventually not. There IS no tier-1 table — migration
+ * 0180 stores none — so what `AclGatedTable` actually prevents is aiming this
+ * predicate at some OTHER relation. It constrains the NAMED target, not the
+ * emitted SQL, which is built from `alias`: an alias pointed elsewhere
+ * produces a predicate that fails loudly at runtime (no `visible_to` column)
+ * rather than one that quietly gates the wrong thing. `table` is otherwise
+ * used only for the default alias and for log payloads.
  *
  * ## Fail-closed, in both directions
  *
  * **Reader side** — a reader whose principal set cannot be resolved gets
- * `FALSE`, not "everything" and not "the public subset". Every reader-side
- * deny in this module is logged.
+ * `FALSE`, not "everything" and not "the public subset". Every deny in
+ * `aclVisibilityClause` is logged. `isVisibleTo` logs only the two denies that
+ * indicate a BUG upstream (a cross-workspace ask, an unusable principal set);
+ * an ordinary no-overlap answer stays silent, because it is called per row and
+ * would flood the signal at read volume.
  *
  * **Stored side** — a malformed token (`everyone`, `team:eng`, `ROLE:admin`)
  * is invisible by CONSTRUCTION: the predicate is array overlap against the
  * reader's tokens, and no reader token is ever malformed, so a malformed grant
  * token can match nothing. That invariant is load-bearing and is why
- * `principalTokens` guards every arm on non-empty input. It also means the
+ * `principalTokens` guards its `user:`/`audience:` arms. It also means the
  * parser can be permissive without being unsafe.
  *
  * Stored-side anomalies are logged only where a caller invokes
  * `logGrantAnomalies` on rows it already holds — see that function's comment
  * for why that is the only honest read-time seam a push-down predicate leaves
- * open. #4773 is expected to call it on its result set.
+ * open. NOTE THE RESIDUAL GAP: a grant that is ENTIRELY malformed
+ * (`['everyone']`) is correctly invisible and is logged by nobody, because no
+ * reader ever holds the row. Closing that needs a write-time or sweep-time
+ * observer (#4771's deriver, or a `registerPeriodicFiber` scan) and is
+ * deliberately out of this slice — tracked on #4773.
  *
  * ## The one thing that must never become stricter
  *
@@ -72,7 +81,7 @@ const log = createLogger("brain-acl");
 // ██  The gated tables
 // ══════════════════════════════════════════════════════════════════════
 
-/** The tier-2/3 tables this predicate may gate. Tier-1 is not spellable. */
+/** The tier-2/3 tables this predicate may gate. See the header on tier-1. */
 export const ACL_GATED_TABLES = ["brain_facts", "brain_episodes"] as const;
 export type AclGatedTable = (typeof ACL_GATED_TABLES)[number];
 
@@ -87,7 +96,7 @@ export type AclGatedTable = (typeof ACL_GATED_TABLES)[number];
  */
 export const ORG_PRINCIPAL = "org" as const;
 
-/** Prefixes of the parameterised arms. Exported so writers format, not concat. */
+/** Prefixes of the parameterised arms. Exported so writers never hardcode the literal. */
 export const ROLE_PREFIX = "role:" as const;
 export const USER_PREFIX = "user:" as const;
 export const AUDIENCE_PREFIX = "audience:" as const;
@@ -101,7 +110,7 @@ export type BrainPrincipal =
 
 /** Narrow an arbitrary string to an org role without a cast. */
 function isOrgRole(value: string): value is OrgRole {
-  return (ORG_ROLES as readonly string[]).includes(value);
+  return ORG_ROLES.some((role) => role === value);
 }
 
 /**
@@ -206,8 +215,9 @@ export function parseGrant(grant: readonly unknown[]): ParsedGrant {
  * A push-down predicate cannot log the rows it excluded — it never sees them,
  * which is the point. So the seam is here: a caller that ALREADY holds a row
  * (the review surface, the exporter, `searchBrain`'s result set) passes its
- * grant through and any malformed token is surfaced. This costs nothing — no
- * extra fetch — and catches the case that actually matters in practice: a
+ * grant through and any malformed token is surfaced. No extra fetch — it
+ * parses grants the caller already holds — and it catches the case that
+ * actually matters in practice: a
  * grant like `['user:abc', 'everyone']` that PASSES the predicate on its valid
  * token while carrying a second one the author believed was doing something.
  *
@@ -304,7 +314,7 @@ export type BrainPrincipalContext =
  * literal, with no `mock.module()` and no top-level singleton to mutate.
  */
 export interface AudienceMembershipReader {
-  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }>;
 }
 
 /**
@@ -317,6 +327,10 @@ export interface AudienceMembershipReader {
  * another workspace would hand this reader a token that then matches their
  * OWN tenant's facts — a leak the visibility predicate's workspace containment
  * cannot catch, because the token is being applied inside the right tenant.
+ *
+ * `DISTINCT` is belt-and-braces: the PK `(workspace_id, audience_id, user_id)`
+ * already makes a duplicate row unrepresentable. It survives a future PK
+ * relaxation without silently doubling the token list.
  */
 export const AUDIENCE_MEMBERSHIP_SQL = `
   SELECT DISTINCT audience_id
@@ -330,27 +344,30 @@ export interface ResolvePrincipalInput {
   readonly mode: AuthMode;
   readonly userId: string | undefined;
   /**
-   * The reader's role **in `workspaceId`** — i.e. the org-plugin `member.role`
-   * for that org, as produced by `resolveEffectiveRole(userRole, userId,
-   * workspaceId)` from `lib/auth/effective-role.ts`.
+   * The reader's role AND the org it was resolved against, as one value.
    *
-   * NOT `getUserRole(user)` from `lib/auth/permissions.ts`. That helper
+   * They travel together because they are only meaningful together.
+   * `member.role` is per-org (#2890), so a role resolved against the session's
+   * ACTIVE org while reading a DIFFERENT workspace would grant `role:` tokens —
+   * and audit-override entitlement — derived from another tenant. Carrying
+   * `orgId` alongside makes that mismatch detectable instead of invisible: on
+   * mismatch the role grants are dropped and the event logged. As two separate
+   * fields, "a role with no provenance" and "provenance for no role" were both
+   * constructible; as one object neither is.
+   *
+   * `role` must come from `resolveEffectiveRole(userRole, userId, orgId)` in
+   * `lib/auth/effective-role.ts`, or from `AtlasUser.role` raw.
+   *
+   * NOT from `getUserRole(user)` in `lib/auth/permissions.ts`. That helper
    * back-fills an auth-mode DEFAULT, and its `simple-key` default is `admin` —
    * so passing it would mint `role:admin` + `role:member` tokens AND
    * audit-override entitlement for every holder of a shared API key, out of
-   * nothing. `AtlasUser.role` raw is safe; the defaulting helper is not.
-   */
-  readonly role: AtlasRole | undefined;
-  /**
-   * The org `role` was resolved against. Must equal `workspaceId`.
+   * nothing.
    *
-   * `member.role` is per-org (#2890), so a `role` resolved against the
-   * session's ACTIVE org while reading a DIFFERENT workspace would grant
-   * `role:` tokens — and audit-override entitlement — derived from another
-   * tenant. Naming the org here makes that mismatch detectable instead of
-   * invisible; on mismatch the role grants are dropped and the event logged.
+   * Required-with-`undefined` rather than optional: omitting a reader's role
+   * must be a deliberate keystroke, not a forgotten one.
    */
-  readonly roleResolvedForOrgId: string | undefined;
+  readonly resolvedRole: { readonly role: AtlasRole; readonly orgId: string } | undefined;
   /** Correlates this module's log lines with the originating request. */
   readonly requestId?: string;
 }
@@ -368,11 +385,12 @@ export async function resolvePrincipalContext(
   db: AudienceMembershipReader,
   input: ResolvePrincipalInput,
 ): Promise<BrainPrincipalContext> {
-  const { workspaceId, mode, userId, role, roleResolvedForOrgId, requestId } = input;
+  const { workspaceId, mode, userId, resolvedRole, requestId } = input;
 
-  // An exhaustive switch rather than `mode === "none"`, so a fifth AuthMode
-  // forces a conscious decision instead of silently inheriting the
-  // authenticated arm.
+  // A switch rather than `mode === "none"`, so a fifth AuthMode cannot silently
+  // inherit the authenticated arm. The `never` binding in `default` is what
+  // makes that a COMPILE error rather than only a runtime deny — a `default`
+  // arm on its own would have swallowed the new mode quietly.
   switch (mode) {
     case "none":
       return {
@@ -387,8 +405,9 @@ export async function resolvePrincipalContext(
     case "byot":
       break;
     default: {
+      const unexpected: never = mode;
       log.warn(
-        { workspaceId, mode, requestId },
+        { workspaceId, mode: unexpected, requestId },
         "brain ACL: unrecognised auth mode — reader identity is unresolvable",
       );
       return { origin: "unresolved", workspaceId, userId: null, role: null, audienceIds: [] };
@@ -409,14 +428,14 @@ export async function resolvePrincipalContext(
   }
 
   let orgRole: OrgRole | null = null;
-  if (role !== undefined) {
-    if (roleResolvedForOrgId !== workspaceId) {
+  if (resolvedRole) {
+    if (resolvedRole.orgId !== workspaceId) {
       log.warn(
-        { workspaceId, roleResolvedForOrgId, userId, requestId },
+        { workspaceId, roleResolvedForOrgId: resolvedRole.orgId, userId, requestId },
         "brain ACL: role was resolved against a different org than the read target — dropping role grants",
       );
-    } else if (isOrgRole(role)) {
-      orgRole = role;
+    } else if (isOrgRole(resolvedRole.role)) {
+      orgRole = resolvedRole.role;
     }
     // Anything else is a platform role (`platform_admin`), which is not an org
     // grant. Falls through as `null` — deliberately, not by omission.
@@ -424,8 +443,29 @@ export async function resolvePrincipalContext(
 
   const result = await db.query(AUDIENCE_MEMBERSHIP_SQL, [workspaceId, userId]);
   const audienceIds = result.rows
-    .map((row) => (row as { audience_id?: unknown }).audience_id)
+    .map((row) =>
+      typeof row === "object" && row !== null && "audience_id" in row
+        ? (row as { audience_id: unknown }).audience_id
+        : undefined,
+    )
     .filter((id): id is string => typeof id === "string" && id.length > 0);
+  if (audienceIds.length !== result.rows.length) {
+    // `fact_audience_member.audience_id` is `text NOT NULL`, so a dropped row
+    // can only mean the query or the row shape changed (an added alias, a
+    // join). Silently returning fewer memberships would quietly strip a
+    // reader's audience grants — the same silent downgrade this function
+    // refuses to perform on a DB error.
+    log.warn(
+      {
+        workspaceId,
+        userId,
+        requestId,
+        returned: result.rows.length,
+        usable: audienceIds.length,
+      },
+      "brain ACL: audience membership rows dropped by narrowing — the membership query shape changed",
+    );
+  }
 
   return { origin: "authenticated", workspaceId, userId, role: orgRole, audienceIds };
 }
@@ -454,13 +494,17 @@ export function impliedRoles(role: OrgRole): readonly OrgRole[] {
       return ["admin", "member"];
     case "member":
       return ["member"];
-    default:
-      // Unreachable through the type, reachable through a cast or a future
-      // ORG_ROLES addition. Deny the role grants loudly rather than fall out
-      // of the switch as `undefined` — which the caller's `for…of` would turn
-      // into an unattributed `TypeError` from a security primitive.
-      log.warn({ role }, "brain ACL: unknown org role — granting no role principals");
+    default: {
+      // The `never` binding makes a future ORG_ROLES addition a COMPILE error
+      // rather than a silent read-time deny of a legitimate role. The runtime
+      // arm still stands for the value that arrives through a cast: deny the
+      // role grants loudly rather than fall out of the switch as `undefined`,
+      // which the caller's `for…of` would turn into an unattributed
+      // `TypeError` from a security primitive.
+      const unexpected: never = role;
+      log.warn({ role: unexpected }, "brain ACL: unknown org role — granting no role principals");
       return [];
+    }
   }
 }
 
@@ -476,36 +520,69 @@ export function impliedRoles(role: OrgRole): readonly OrgRole[] {
  * predicate, which is exactly the defect the review panel found in the first
  * cut of this module.
  *
- * Never contains `''` or a bare prefix. Two distinct hazards:
- *   - `ARRAY[''] && ARRAY['']` is TRUE in Postgres, and a stored `''` element
- *     is legal at rest, so an empty reader token would match a grant that
- *     grants nobody anything.
- *   - An unguarded `user:`/`audience:` arm emits the BARE PREFIX (`user:`),
- *     which `parsePrincipal` classifies as malformed — and a malformed reader
- *     token could raw-match a malformed STORED token, breaking the module
- *     header's load-bearing "no reader token is ever malformed" invariant.
- * Both are why every arm below is guarded, not tidiness.
+ * The output property is that no token is ever `''` or a bare prefix. The `''`
+ * half is free — every arm emits either a constant or a prefixed value — but
+ * it is worth stating, because `ARRAY[''] && ARRAY['']` is TRUE in Postgres and
+ * a stored `''` element is legal at rest. The GUARDS exist for the other half:
+ * an unguarded `user:`/`audience:` arm emits the BARE PREFIX (`user:`), which
+ * `parsePrincipal` classifies as malformed — and a malformed reader token could
+ * raw-match a malformed STORED token, breaking the module header's load-bearing
+ * "no reader token is ever malformed" invariant.
+ *
+ * The `origin` switch is exhaustive with a DENYING default. An earlier cut
+ * spelled the same logic as `if (origin !== "authenticated") return [ORG]`,
+ * which handed an unrecognised origin — one from a cast, or from a
+ * checkpoint rehydrated under an older shape — the workspace's entire
+ * org-granted fact set, unlogged. A permissive fallthrough on the discriminant
+ * that decides whether a reader is authenticated at all is the worst place in
+ * the module to have one.
  */
 export function principalTokens(ctx: BrainPrincipalContext): readonly string[] {
-  if (ctx.origin === "unresolved" || !ctx.workspaceId) return [];
+  if (!ctx.workspaceId) return [];
 
-  const tokens: string[] = [ORG_PRINCIPAL];
-  if (ctx.origin !== "authenticated") return tokens;
-
-  if (ctx.role) {
-    for (const role of impliedRoles(ctx.role)) tokens.push(`${ROLE_PREFIX}${role}`);
+  switch (ctx.origin) {
+    case "unresolved":
+      return [];
+    case "unauthenticated-local":
+      return [ORG_PRINCIPAL];
+    case "authenticated": {
+      const tokens: string[] = [ORG_PRINCIPAL];
+      if (ctx.role) {
+        for (const role of impliedRoles(ctx.role)) tokens.push(`${ROLE_PREFIX}${role}`);
+      }
+      if (ctx.userId) tokens.push(`${USER_PREFIX}${ctx.userId}`);
+      for (const audienceId of ctx.audienceIds) {
+        // Stored WITHOUT the prefix in `fact_audience_member` — the prefix
+        // belongs to the grammar, not to the identity — so it is added here.
+        if (audienceId.length > 0) tokens.push(`${AUDIENCE_PREFIX}${audienceId}`);
+      }
+      return tokens;
+    }
+    default: {
+      // Compile error if a fourth arm is added without a decision here; deny
+      // at runtime for anything that arrives through a cast.
+      const unexpected: never = ctx;
+      log.warn(
+        {
+          origin: (unexpected as { origin?: unknown }).origin,
+          workspaceId: (unexpected as { workspaceId?: unknown }).workspaceId,
+        },
+        "brain ACL: unrecognised principal origin — granting no principals",
+      );
+      return [];
+    }
   }
-  if (ctx.userId) tokens.push(`${USER_PREFIX}${ctx.userId}`);
-  for (const audienceId of ctx.audienceIds) {
-    // Stored WITHOUT the prefix in `fact_audience_member` — the prefix belongs
-    // to the grammar, not to the identity — so it is added here, once.
-    if (audienceId.length > 0) tokens.push(`${AUDIENCE_PREFIX}${audienceId}`);
-  }
-  return tokens;
 }
 
-/** A row this module can answer a visibility question about. */
+/**
+ * A row this module can answer a visibility question about.
+ *
+ * Carries `table` for the same reason `aclVisibilityClause` takes it: the SQL
+ * path cannot be aimed at a non-gated relation, and the mirror should not be
+ * either. It also lets the cross-workspace warning name what was asked about.
+ */
 export interface AclGatedRow {
+  readonly table: AclGatedTable;
   readonly workspaceId: string;
   readonly visibleTo: readonly unknown[];
 }
@@ -537,6 +614,7 @@ export function isVisibleTo(row: AclGatedRow, ctx: BrainPrincipalContext): boole
   if (row.workspaceId !== ctx.workspaceId) {
     log.warn(
       {
+        table: row.table,
         rowWorkspaceId: row.workspaceId,
         readerWorkspaceId: ctx.workspaceId,
         origin: ctx.origin,
@@ -546,28 +624,33 @@ export function isVisibleTo(row: AclGatedRow, ctx: BrainPrincipalContext): boole
     );
     return false;
   }
+  if (!Array.isArray(row.visibleTo)) {
+    // Typed `readonly unknown[]`, but rows arrive off `pg` as `visible_to` and
+    // a caller that maps `workspaceId` correctly and this field by mistake
+    // would otherwise get a bare `TypeError` from a security primitive.
+    log.warn(
+      { table: row.table, workspaceId: row.workspaceId, origin: ctx.origin },
+      "brain ACL: row carries no grant array — denying",
+    );
+    return false;
+  }
   const tokens = new Set(principalTokens(ctx));
-  if (tokens.size === 0) return false;
+  if (tokens.size === 0) {
+    // An unusable principal set is a bug upstream, not a routine answer — the
+    // SQL path logs it and so does this one. The ordinary no-overlap deny
+    // below stays silent on purpose: it is the common case, per row.
+    log.warn(
+      { table: row.table, workspaceId: ctx.workspaceId, origin: ctx.origin, userId: ctx.userId },
+      "brain ACL: reader resolved to no principals — denying",
+    );
+    return false;
+  }
   return row.visibleTo.some((token) => typeof token === "string" && tokens.has(token));
 }
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  The fail-closed push-down predicate
 // ══════════════════════════════════════════════════════════════════════
-
-/**
- * Why a clause is the shape it is. Observable so a caller can log it and a
- * test can assert the branch rather than pattern-matching SQL text.
- */
-export type AclDecision =
-  /** Normal path — workspace containment AND grant overlap. */
-  | "grant-match"
-  /** An entitled workspace admin's audit read. Workspace containment only. */
-  | "audit-override"
-  /** An override was requested by a reader not entitled to one. Falls back to `grant-match` SQL. */
-  | "override-refused"
-  /** No workspace, an unresolvable reader identity, or no usable principal. `(FALSE)`. */
-  | "deny-all";
 
 /**
  * A region- and workspace-scoped admin/audit read.
@@ -615,30 +698,76 @@ export interface AclClauseOptions {
  * A discriminated union on `decision` because the parameter ARITY VARIES by
  * branch, and the type has that information: a caller who switches on
  * `decision` gets the arity from the compiler instead of from a comment.
- * Regardless, advance your own placeholder counter by `params.length` and
- * never by a constant — Postgres rejects a bind that supplies more parameters
- * than the statement references, so guessing fails loudly, but it fails at
- * execution, which is late.
+ *
+ * `nextParamIndex` is the first placeholder the caller may use AFTER this
+ * clause — always `paramIndex + params.length`. Composing from it makes the
+ * rule mechanical rather than readable-and-forgettable; Postgres rejects a
+ * bind that supplies more parameters than the statement references, so
+ * counting by hand fails loudly, but it fails at execution, which is late.
  *
  * `sql` is always parenthesised and carries no leading `AND`.
  */
 export type AclClause =
-  | { readonly decision: "deny-all"; readonly sql: string; readonly params: readonly [] }
+  /** No workspace, an unresolvable reader identity, or no usable principal. */
+  | {
+      readonly decision: "deny-all";
+      readonly sql: string;
+      readonly params: readonly [];
+      readonly nextParamIndex: number;
+    }
+  /** An entitled workspace admin's audit read. Workspace containment only. */
   | {
       readonly decision: "audit-override";
       readonly sql: string;
       readonly params: readonly [workspaceId: string];
+      readonly nextParamIndex: number;
     }
+  /**
+   * `grant-match` is the normal path — workspace containment AND grant
+   * overlap. `override-refused` is the same SQL, reached because an override
+   * was requested by a reader not entitled to one.
+   */
   | {
       readonly decision: "grant-match" | "override-refused";
       readonly sql: string;
       readonly params: readonly [workspaceId: string, tokens: readonly string[]];
+      readonly nextParamIndex: number;
     };
+
+/**
+ * Why a clause is the shape it is. Observable so a caller can log it and a
+ * test can assert the branch rather than pattern-matching SQL text.
+ *
+ * Derived, never hand-listed: a duplicated literal union drifts silently the
+ * first time a fifth decision is added to one of the two.
+ */
+export type AclDecision = AclClause["decision"];
 
 /** A SQL identifier safe to interpolate as an alias. */
 const SAFE_ALIAS = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-const DENY_ALL: AclClause = { sql: "(FALSE)", params: [], decision: "deny-all" };
+/**
+ * Frozen, not merely `readonly`. `readonly` is compile-time only, and this one
+ * object is returned by reference from every deny in the process — so a single
+ * type-violating caller mutating `.params` would poison every subsequent
+ * denied read for every tenant on the instance, surfacing as a Postgres bind
+ * error that points at the caller's query rather than at the mutation.
+ * `lib/auth/types.ts` freezes `createAtlasUser`'s result for the same reason.
+ *
+ * `nextParamIndex` is filled in per call — it depends on the caller's
+ * `paramIndex` — so the deny arm is built from this template rather than
+ * returned directly.
+ */
+const DENY_ALL = Object.freeze({
+  sql: "(FALSE)",
+  params: Object.freeze([]) as readonly [],
+  decision: "deny-all",
+}) satisfies Omit<Extract<AclClause, { decision: "deny-all" }>, "nextParamIndex">;
+
+/** The deny clause, carrying the caller's untouched placeholder cursor. */
+function denyAll(paramIndex: number): AclClause {
+  return { ...DENY_ALL, nextParamIndex: paramIndex };
+}
 
 /**
  * The fail-closed, push-down visibility predicate. AND this into the WHERE
@@ -681,7 +810,7 @@ export function aclVisibilityClause(
     );
   }
 
-  // Both deny arms record whether an override was ATTEMPTED. An operator
+  // Every deny arm records whether an override was ATTEMPTED. An operator
   // reading "identity could not be resolved" must be able to tell that
   // somebody also tried to invoke a workspace-wide ACL bypass — attempted
   // privilege escalation is exactly the event you want in the log.
@@ -696,20 +825,25 @@ export function aclVisibilityClause(
     // No workspace means no tenant boundary to enforce, and a predicate with
     // no tenant boundary is worse than none at all.
     log.warn(denyContext, "brain ACL: principal context has no workspace — denying all rows");
-    return DENY_ALL;
+    return denyAll(paramIndex);
   }
   if (ctx.origin === "unresolved") {
     log.warn(
       { ...denyContext, workspaceId: ctx.workspaceId },
       "brain ACL: reader identity could not be resolved — denying all rows",
     );
-    return DENY_ALL;
+    return denyAll(paramIndex);
   }
 
   const workspaceClause = `${alias}.workspace_id = $${paramIndex}`;
 
   if (override) {
-    const reason = override.reason.trim();
+    // Typed `string`, but the value originates in a request (a query param, a
+    // JSON body, an admin form). An un-narrowed `.trim()` would turn an
+    // override probe into an unattributed 500 instead of a logged refusal —
+    // i.e. into an error where the correct answer is a recorded escalation
+    // attempt.
+    const reason = typeof override.reason === "string" ? override.reason.trim() : "";
     const entitled =
       ctx.origin === "authenticated" &&
       !!ctx.userId &&
@@ -733,6 +867,7 @@ export function aclVisibilityClause(
         sql: `(${workspaceClause})`,
         params: [ctx.workspaceId],
         decision: "audit-override",
+        nextParamIndex: paramIndex + 1,
       };
     }
     // Refused, not fatal: the reader still sees what their own grants allow.
@@ -747,22 +882,26 @@ export function aclVisibilityClause(
 
   const tokens = principalTokens(ctx);
   if (tokens.length === 0) {
-    // Reachable whenever `principalTokens` denies — today that is exactly the
-    // two arms handled above, so this is a backstop rather than a distinct
-    // cause. It is written out anyway: `visible_to && ARRAY[]` is already
-    // FALSE in Postgres, so the ROW-level outcome would be identical, but it
-    // would be a silent, unlogged deny reported as `grant-match`. The explicit
-    // arm exists to make the deny OBSERVABLE, not because the SQL would leak.
+    // Reachable whenever `principalTokens` denies. The two arms above cover
+    // its known causes; this one also catches its `default` — an `origin`
+    // outside the union, arriving through a cast — which has no earlier check
+    // and would otherwise be the module's one unlogged path.
+    //
+    // `visible_to && ARRAY[]` is already FALSE in Postgres, so the ROW-level
+    // outcome of omitting this arm would be identical. It exists to make the
+    // deny OBSERVABLE — otherwise it would be a silent, unlogged deny reported
+    // as `grant-match` — not because the SQL would leak.
     log.warn(
-      { table, workspaceId: ctx.workspaceId, userId: ctx.userId, origin: ctx.origin, requestId },
+      { ...denyContext, workspaceId: ctx.workspaceId },
       "brain ACL: reader resolved to no principals — denying all rows",
     );
-    return DENY_ALL;
+    return denyAll(paramIndex);
   }
 
   return {
     sql: `(${workspaceClause} AND ${alias}.visible_to && $${paramIndex + 1}::text[])`,
     params: [ctx.workspaceId, tokens],
     decision: override ? "override-refused" : "grant-match",
+    nextParamIndex: paramIndex + 2,
   };
 }

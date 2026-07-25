@@ -108,7 +108,12 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
     const clause = aclVisibilityClause(reader, { table, alias: "t", paramIndex: 1, override });
     const label = table === "brain_facts" ? "subject" : "source_id";
     const { rows } = await pool.query<{ label: string }>(
-      `SELECT ${label} AS label FROM ${table} t WHERE ${clause.sql} ORDER BY 1`,
+      // `COLLATE "C"` so the DB's sort matches the JS `toSorted()` / hardcoded
+      // arrays these results are compared against. The labels are hyphenated,
+      // which is exactly where glibc's punctuation-ignoring collation diverges
+      // from byte order. It names the column rather than the `1` ordinal —
+      // `COLLATE` on an ordinal is a 42804.
+      `SELECT ${label} AS label FROM ${table} t WHERE ${clause.sql} ORDER BY t.${label} COLLATE "C"`,
       [...clause.params],
     );
     return rows.map((r) => r.label);
@@ -221,8 +226,8 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
     // `search_path` is baked into the connection string rather than SET from an
     // unawaited `pool.on("connect")` handler: server-side at startup, so there
     // is no window in which a checked-out client is still pointed at `public`,
-    // and no failure path that logs and then silently runs 180 migrations
-    // against the developer's real database. Same pattern as
+    // and no failure path that logs and then silently runs the whole migration
+    // set against the developer's real database. Same pattern as
     // `api/__tests__/admin-last-admin-pg.test.ts`.
     pool = new Pool({
       connectionString: TEST_DB_URL,
@@ -261,7 +266,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
       for (const reader of readersFor(WS)) {
         const fromSql = await selectVisible(reader.ctx, "brain_facts");
         const fromMirror = GRANTS.filter((g) =>
-          isVisibleTo({ workspaceId: WS, visibleTo: g.visibleTo }, reader.ctx),
+          isVisibleTo({ table: "brain_facts", workspaceId: WS, visibleTo: g.visibleTo }, reader.ctx),
         )
           .map((g) => g.label)
           .toSorted();
@@ -330,7 +335,10 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
       // The in-memory mirror must agree — an earlier cut took a bare grant and
       // answered TRUE here.
       expect(
-        isVisibleTo({ workspaceId: wsB, visibleTo: ["audience:engineering"] }, readerInA),
+        isVisibleTo(
+          { table: "brain_facts", workspaceId: wsB, visibleTo: ["audience:engineering"] },
+          readerInA,
+        ),
       ).toBe(false);
     },
     PG_TEST_TIMEOUT_MS,
@@ -357,8 +365,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
         workspaceId: home,
         mode: "managed",
         userId: "user-1",
-        role: "member",
-        roleResolvedForOrgId: home,
+        resolvedRole: { role: "member", orgId: home },
       });
       expect(resolved.audienceIds).toEqual(["exec"]);
 
@@ -379,10 +386,11 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
   it(
     "keeps grants immutable per fact version — widening the current one does not widen a superseded one",
     async () => {
-      // ADR-0036: a read of "what we believed Monday" evaluates MONDAY's grant
-      // against as-of-now membership. That is why the grant is a column on the
-      // fact and not a join to a policy table — a policy table would
-      // retroactively rewrite who could see history.
+      // ADR-0036 §Access control: a read of "what we believed Monday"
+      // evaluates MONDAY's grant against as-of-now membership. Migration
+      // 0180's own rationale supplies the schema half — the grant is a COLUMN
+      // on the fact rather than a join to a policy table, because a policy
+      // table would retroactively rewrite who could see history.
       const wsV = `${WS}-versions`;
       const episode = await seedEpisode(wsV, "versioned", ["org"]);
       const v1 = await seedFact({
@@ -451,8 +459,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
         workspaceId: wsR,
         mode: "managed",
         userId: "user-1",
-        role: "member",
-        roleResolvedForOrgId: wsR,
+        resolvedRole: { role: "member", orgId: wsR },
       } as const;
       const before = await resolvePrincipalContext(pool, input);
       expect(before.audienceIds).toEqual(["exec"]);
@@ -501,39 +508,42 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
           WHERE f.workspace_id = $1
             AND f.status = 'published'
             AND ${clause.sql}
-          ORDER BY 1`,
+          ORDER BY f.subject COLLATE "C"`,
         [wsC, ...clause.params],
       );
       expect(composed.rows.map((r) => r.subject)).toEqual(["all-gates-pass"]);
 
-      // Each gate is load-bearing ON ITS OWN — drop one at a time and a
-      // different row reappears. Without these controls the composed query
-      // above would pass even if two of the three clauses were inert.
+      // Drop-one controls. The ACL and content-mode gates are each
+      // independently load-bearing: remove either and a row the composed query
+      // excluded comes back. The third clause — the caller's own
+      // `workspace_id = $1` reach stand-in — is REDUNDANT with the ACL
+      // clause's own containment, so dropping it changes nothing; the control
+      // below asserts that redundancy rather than a filter, which is the whole
+      // point of the predicate being safe standalone.
+      //
+      // ADR-0022 reach is connection-group scoped, not workspace scoped, so
+      // the real fourth gate lands with #4773's `resolveReachableGroups`;
+      // residency is invariant by construction and has no clause at all.
       const withoutAcl = await pool.query<{ subject: string }>(
         `SELECT f.subject FROM brain_facts f
-          WHERE f.workspace_id = $1 AND f.status = 'published' ORDER BY 1`,
+          WHERE f.workspace_id = $1 AND f.status = 'published' ORDER BY f.subject COLLATE "C"`,
         [wsC],
       );
       expect(withoutAcl.rows.map((r) => r.subject)).toEqual(["all-gates-pass", "fails-grant"]);
 
       const withoutMode = await pool.query<{ subject: string }>(
-        `SELECT f.subject FROM brain_facts f WHERE f.workspace_id = $1 AND ${clause.sql} ORDER BY 1`,
+        `SELECT f.subject FROM brain_facts f WHERE f.workspace_id = $1 AND ${clause.sql} ORDER BY f.subject COLLATE "C"`,
         [wsC, ...clause.params],
       );
       expect(withoutMode.rows.map((r) => r.subject)).toEqual(["all-gates-pass", "fails-mode"]);
 
-      // The reach gate is spelled `workspace_id = $1`, which the ACL clause
-      // already enforces — so dropping the caller's copy changes nothing here.
-      // That redundancy is the deliberate "safe standalone" property, and this
-      // asserts it rather than leaving the reader to wonder whether the gate
-      // was simply inert.
       const soloClause = aclVisibilityClause(reader, {
         table: "brain_facts",
         alias: "f",
         paramIndex: 1,
       });
       const withoutReach = await pool.query<{ subject: string }>(
-        `SELECT f.subject FROM brain_facts f WHERE f.status = 'published' AND ${soloClause.sql} ORDER BY 1`,
+        `SELECT f.subject FROM brain_facts f WHERE f.status = 'published' AND ${soloClause.sql} ORDER BY f.subject COLLATE "C"`,
         [...soloClause.params],
       );
       expect(withoutReach.rows.map((r) => r.subject)).toEqual(["all-gates-pass"]);

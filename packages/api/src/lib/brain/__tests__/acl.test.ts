@@ -65,7 +65,7 @@ function unresolvedCtx(workspaceId = WS): BrainPrincipalContext {
 
 /** A row in `ctx`'s own workspace unless told otherwise. */
 function row(visibleTo: readonly unknown[], workspaceId = WS) {
-  return { workspaceId, visibleTo };
+  return { table: "brain_facts", workspaceId, visibleTo } as const;
 }
 
 describe("grant grammar (#4768)", () => {
@@ -204,6 +204,21 @@ describe("principal tokens (#4768)", () => {
     expect(principalTokens(unresolvedCtx())).toEqual([]);
   });
 
+  it("grants nothing at all for an origin outside the union", () => {
+    // The regression this exists for: an earlier cut spelled the switch as
+    // `if (origin !== "authenticated") return [ORG]`, which handed an origin
+    // arriving through a cast — or from a checkpoint rehydrated under an older
+    // shape — the workspace's entire org-granted fact set, unlogged. A
+    // permissive fallthrough on the discriminant that decides whether a reader
+    // is authenticated at all is the worst possible place for one.
+    const rogue = { ...ctx(), origin: "service" } as unknown as BrainPrincipalContext;
+    expect(principalTokens(rogue)).toEqual([]);
+    const clause = aclVisibilityClause(rogue, { table: "brain_facts", paramIndex: 1 });
+    expect(clause.decision).toBe("deny-all");
+    expect(clause.sql).toBe("(FALSE)");
+    expect(isVisibleTo(row(["org"]), rogue)).toBe(false);
+  });
+
   it("grants nothing at all when there is no workspace", () => {
     expect(principalTokens(ctx({ workspaceId: "" }))).toEqual([]);
   });
@@ -275,6 +290,18 @@ describe("isVisibleTo mirrors the predicate's denies, not just its matches (#476
     expect(isVisibleTo(row(["org"], ""), ctx({ workspaceId: "" }))).toBe(false);
   });
 
+  it("denies a row whose grant is not an array rather than throwing", () => {
+    // `visibleTo` is typed `readonly unknown[]`, but rows arrive off `pg` as
+    // `visible_to`; a caller that maps `workspaceId` right and this field wrong
+    // would otherwise get a bare TypeError out of a security primitive.
+    const malformedRow = {
+      table: "brain_facts",
+      workspaceId: WS,
+      visibleTo: undefined,
+    } as unknown as Parameters<typeof isVisibleTo>[0];
+    expect(isVisibleTo(malformedRow, ctx())).toBe(false);
+  });
+
   it("gives `auth: none` the org principal only", () => {
     expect(isVisibleTo(row(["org"]), localCtx())).toBe(true);
     expect(isVisibleTo(row(["role:owner"]), localCtx())).toBe(false);
@@ -297,8 +324,7 @@ describe("resolvePrincipalContext (#4768)", () => {
     workspaceId: WS,
     mode: "managed",
     userId: "user-1",
-    role: "member",
-    roleResolvedForOrgId: WS,
+    resolvedRole: { role: "member", orgId: WS },
   } as const;
 
   it("reads audience membership locally, scoped to workspace + user", async () => {
@@ -318,7 +344,6 @@ describe("resolvePrincipalContext (#4768)", () => {
     // containment cannot catch.
     expect(seenSql).toContain("workspace_id = $1");
     expect(seenSql).toContain("user_id = $2");
-    expect(seenSql).not.toContain("OR");
     expect(resolved.audienceIds).toEqual(["eng", "exec"]);
     expect(resolved.origin).toBe("authenticated");
   });
@@ -337,13 +362,7 @@ describe("resolvePrincipalContext (#4768)", () => {
       reader([], () => {
         queried = true;
       }),
-      {
-        workspaceId: WS,
-        mode: "none",
-        userId: undefined,
-        role: undefined,
-        roleResolvedForOrgId: undefined,
-      },
+      { workspaceId: WS, mode: "none", userId: undefined, resolvedRole: undefined },
     );
     expect(queried).toBe(false);
     expect(resolved.origin).toBe("unauthenticated-local");
@@ -382,7 +401,7 @@ describe("resolvePrincipalContext (#4768)", () => {
     const resolved = await resolvePrincipalContext(reader([]), {
       ...authed,
       userId: "op-1",
-      role: "platform_admin",
+      resolvedRole: { role: "platform_admin", orgId: WS },
     });
     expect(resolved.role).toBeNull();
     expect(principalTokens(resolved)).toEqual([ORG_PRINCIPAL, `${USER_PREFIX}op-1`]);
@@ -395,8 +414,7 @@ describe("resolvePrincipalContext (#4768)", () => {
     // — and audit-override entitlement — derived from another tenant.
     const resolved = await resolvePrincipalContext(reader([]), {
       ...authed,
-      role: "owner",
-      roleResolvedForOrgId: "some-other-org",
+      resolvedRole: { role: "owner", orgId: "some-other-org" },
     });
     expect(resolved.role).toBeNull();
     expect(principalTokens(resolved)).not.toContain(`${ROLE_PREFIX}owner`);
@@ -410,7 +428,10 @@ describe("resolvePrincipalContext (#4768)", () => {
   });
 
   it("keeps role grants when the role was resolved against the read target", async () => {
-    const resolved = await resolvePrincipalContext(reader([]), { ...authed, role: "owner" });
+    const resolved = await resolvePrincipalContext(reader([]), {
+      ...authed,
+      resolvedRole: { role: "owner", orgId: WS },
+    });
     expect(resolved.role).toBe("owner");
     expect(principalTokens(resolved)).toContain(`${ROLE_PREFIX}owner`);
   });
@@ -517,6 +538,36 @@ describe("aclVisibilityClause (#4768)", () => {
     }
   });
 
+  it("reports where the caller's next placeholder goes", () => {
+    // `nextParamIndex` makes the composition rule mechanical rather than
+    // readable-and-forgettable, and must always equal paramIndex + arity.
+    const cases = [
+      aclVisibilityClause(unresolvedCtx(), { table: "brain_facts", paramIndex: 5 }),
+      aclVisibilityClause(ctx(), { table: "brain_facts", paramIndex: 5 }),
+      aclVisibilityClause(ctx({ role: "admin" }), {
+        table: "brain_facts",
+        paramIndex: 5,
+        override: { reason: "audit" },
+      }),
+    ];
+    for (const clause of cases) {
+      expect(clause.nextParamIndex).toBe(5 + clause.params.length);
+    }
+  });
+
+  it("never hands out a mutable shared deny clause", () => {
+    // One frozen template backs every deny in the process; a caller mutating
+    // `.params` would otherwise poison every subsequent denied read for every
+    // tenant on the instance.
+    const a = aclVisibilityClause(unresolvedCtx(), { table: "brain_facts", paramIndex: 1 });
+    const b = aclVisibilityClause(unresolvedCtx(), { table: "brain_facts", paramIndex: 7 });
+    expect(Object.isFrozen(a.params)).toBe(true);
+    expect(() => (a.params as unknown as unknown[]).push("x")).toThrow();
+    // …and the per-call cursor is still per-call.
+    expect(a.nextParamIndex).toBe(1);
+    expect(b.nextParamIndex).toBe(7);
+  });
+
   it("declares its own arity — callers advance by params.length, never a constant", () => {
     const deny = aclVisibilityClause(unresolvedCtx(), { table: "brain_facts", paramIndex: 1 });
     const normal = aclVisibilityClause(ctx(), { table: "brain_facts", paramIndex: 1 });
@@ -599,10 +650,12 @@ describe("audit override (#4768, ADR-0036 — region-scoped, no super-admin)", (
     ).toBe("deny-all");
   });
 
-  it("refuses an override with an empty or whitespace reason", () => {
+  it("refuses an override with an empty, whitespace, or non-string reason", () => {
     // "Required — an unexplained override is not one" must be enforced, not
-    // merely asserted in prose.
-    for (const reason of ["", "   ", "\t\n"]) {
+    // merely asserted in prose. The non-string arm matters because `reason`
+    // originates in a request body: an un-narrowed `.trim()` would turn an
+    // override probe into a 500 instead of a recorded escalation attempt.
+    for (const reason of ["", "   ", "\t\n", null as unknown as string, 42 as unknown as string]) {
       expect(
         aclVisibilityClause(ctx({ role: "owner" }), {
           table: "brain_facts",

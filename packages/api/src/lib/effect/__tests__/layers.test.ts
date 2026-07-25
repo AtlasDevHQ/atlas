@@ -467,6 +467,9 @@ describe("makeSchedulerLive", () => {
         // #4457 — scheduled internal-DB backups (BackupsManager Tag tick;
         // cadence-window claim in the DB).
         "scheduled_backup",
+        // #4771 — company-brain extraction drain (ADR-0036): a fourth
+        // `runPeriodicDbCycle` job, gated OFF by default.
+        "brain_extraction",
       ],
     },
   ] as const;

@@ -118,8 +118,12 @@ function isOrgRole(value: string): value is OrgRole {
  * implicitly `any` in the one line that performs the actual overlap — and
  * would stop rejecting a future simplification to a bare `tokens.has(token)`.
  * This keeps them `unknown`.
+ *
+ * Exported (#4771) so the extraction drain narrows a `text[]` off the driver
+ * with the same guard rather than re-introducing the `as` cast this exists to
+ * remove.
  */
-function isUnknownArray(value: unknown): value is readonly unknown[] {
+export function isUnknownArray(value: unknown): value is readonly unknown[] {
   return Array.isArray(value);
 }
 
@@ -464,8 +468,9 @@ export async function resolvePrincipalContext(
     // apart. A row with no `audience_id` key at all is QUERY DRIFT (an added
     // alias, a join) — diff the SQL. A row that has the column but an unusable
     // value is a DATA defect: `audience_id` is `text NOT NULL` but 0180 adds no
-    // non-empty CHECK, so `''` is legally storable and points at the deriver
-    // (#4771), not at this query. Reporting both as "the query changed" would
+    // non-empty CHECK, so `''` is legally storable and points at whatever wrote
+    // the membership row (#4801's sync), not at this query. Reporting both as
+    // "the query changed" would
     // send that investigation to the wrong file.
     //
     // Either way, silently returning fewer memberships would strip a reader's

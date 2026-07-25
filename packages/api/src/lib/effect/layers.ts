@@ -224,8 +224,9 @@ function withFiberDeathLog<A, E, R>(
 //     `expert_scheduler`, `promote_decay`, `billing_reconcile`,
 //     `stripe_teardown_sweep`, `unclaimed_grace_reap`, `overage_report`,
 //     the three #4195 DB/refresh jobs `byot_catalog_refresh`,
-//     `openapi_spec_refresh`, `openapi_install_rediscover`, and
-//     `scheduled_backup` (#4457 — the internal-DB backup cycle). Spanned by
+//     `openapi_spec_refresh`, `openapi_install_rediscover`,
+//     `scheduled_backup` (#4457 — the internal-DB backup cycle), and
+//     `brain_extraction` (#4771 — the company-brain episode drain). Spanned by
 //     #2987 (+#3423 for billing_reconcile, #3992 for overage_report, #4195
 //     for the DB/refresh trio) — identical rationale and wrap shape.
 //     `unclaimed_grace_reap` (#3796), the three #4195 jobs, and
@@ -300,6 +301,11 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   byot_catalog_refresh: "atlas.scheduler.byot_catalog_refresh",
   openapi_spec_refresh: "atlas.scheduler.openapi_spec_refresh",
   openapi_install_rediscover: "atlas.scheduler.openapi_install_rediscover",
+  // #4771 — the company-brain extraction drain (ADR-0036). Another
+  // `runPeriodicDbCycle` job: scan `brain_episodes` with `extracted_at IS
+  // NULL`, extract → reconcile → stamp, one episode at a time. Attaches its
+  // cycle counts via `spanResultAttributes`.
+  brain_extraction: "atlas.scheduler.brain_extraction",
   // #4457 — internal-DB scheduled backups. The tick claims the current
   // cadence window atomically (partial UNIQUE index on
   // `backups.scheduled_window`), then create→verify→purge through the
@@ -2297,6 +2303,68 @@ export function makeSchedulerLive(
           message: "BYOT catalog refresh tick failed — will retry next interval",
         },
         startLog: "BYOT catalog refresh scheduler started",
+      });
+
+      // ── Periodic fiber: company-brain extraction (#4771, ADR-0036) ────────
+      // Drains `brain_episodes` where `extracted_at IS NULL`: extract fact
+      // candidates with the workspace's own model (BYO key rides the agent's
+      // seam), reconcile them into fully-formed drafts, then stamp the queue
+      // marker. Deliberately SEPARATE from the connector cadence — episode
+      // freshness must never block on LLM latency or 429s — and gated OFF by
+      // default until the review surface (#4772) can read what it produces.
+      // Cycle body is the shared `runPeriodicDbCycle` skeleton.
+      yield* registerPeriodicFiber({
+        name: "brain_extraction",
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as byot_catalog_refresh)
+          const { getBrainExtractionIntervalMs } = require("@atlas/api/lib/brain/extract") as {
+            getBrainExtractionIntervalMs: () => number;
+          };
+          return getBrainExtractionIntervalMs();
+        },
+        gate: {
+          check: () => {
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- same reason
+            const { isBrainExtractionEnabled } = require("@atlas/api/lib/brain/extract") as {
+              isBrainExtractionEnabled: () => boolean;
+            };
+            return hasInternalDB() && isBrainExtractionEnabled();
+          },
+          skipLog:
+            "Company-brain extraction not started — needs an internal database and ATLAS_BRAIN_EXTRACTION_ENABLED",
+        },
+        tick: Effect.tryPromise({
+          try: () => import("@atlas/api/lib/brain/extract"),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(Effect.flatMap((m) => m.runBrainExtractionCycle())),
+        spanResultAttributes: (result) => ({
+          "atlas.brain.status": result.status,
+          "atlas.brain.inspected": result.inspected,
+          "atlas.brain.extracted": result.extracted,
+          "atlas.brain.facts_created": result.factsCreated,
+          "atlas.brain.facts_corroborated": result.factsCorroborated,
+          "atlas.brain.facts_blocked": result.factsBlocked,
+          "atlas.brain.blocked_episodes": result.blockedEpisodes,
+          "atlas.brain.failed": result.failed,
+          // The three skip reasons are the fiber's most alert-worthy outcomes
+          // and the span is the alertable surface. Without them,
+          // "EE failed to load and every BYO workspace's backlog is stalled"
+          // and "25 chat messages contained no durable fact" render identically
+          // as `inspected: 25, extracted: 0, failed: 0`.
+          "atlas.brain.skipped_model_unavailable": result.skipped.model_unavailable,
+          "atlas.brain.skipped_no_body": result.skipped.no_body,
+          "atlas.brain.skipped_quarantined": result.skipped.quarantined,
+          "atlas.brain.outage_refunded": result.outageRefunded,
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Company-brain extraction tick failed — will retry next interval",
+        },
+        startLog: "Company-brain extraction scheduler started",
       });
 
       // ── Periodic fiber: shared OpenAPI spec refresh (#2970, Tier-1; #4195) ──

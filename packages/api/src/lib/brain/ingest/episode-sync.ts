@@ -40,12 +40,18 @@
  *
  * Not "enumerate the full set so absences can be archived" — nothing is
  * archived. ADR-0036 §Ingestion repurposes the cadence to **re-run extraction**
- * (#4771) over a wider window; the fetch side may or may not do anything
- * different, and the Slack source deliberately does not (see its client's
- * header). The mode is still decided and recorded here, because it is the
- * engine's decision to make and #4771 reads the same clock. A pass the client
- * flags `coverageIncomplete` does NOT advance that clock, so whatever is due
- * stays due.
+ * over a wider window; the fetch side may or may not do anything different, and
+ * the Slack source deliberately does not (see its client's header). The mode is
+ * still decided and recorded here because it is the engine's decision to make,
+ * and a pass the client flags `coverageIncomplete` does NOT advance that clock,
+ * so whatever is due stays due.
+ *
+ * The RE-EXTRACTION consumer is not built yet. #4771 shipped the extraction
+ * fiber as a drain of `extracted_at IS NULL` on its own fixed clock; it reads
+ * nothing from `knowledge_sync_state` and never revisits a stamped episode. So
+ * the reconcile cadence currently decides only what the FETCH does — re-reading
+ * this clock is what a "re-extract the last N days with a better model" pass
+ * would hook into.
  *
  * Like the engine it forks, `syncBrainEpisodeSource` NEVER throws: every
  * failure becomes a `status: "error"` outcome so one bad source can't sink the

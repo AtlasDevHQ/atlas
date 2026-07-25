@@ -77,7 +77,9 @@
  * module's whole ordering avoids. What IS bounded is the SPEND: after
  * {@link QUARANTINE_AFTER_FAILURES} consecutive failures the episode moves to a
  * widening probe backoff and logs at ERROR, so it costs at most one model call
- * per window instead of one per tick. So the honest statement of the bound is:
+ * per window instead of one per tick — PER PROCESS. The ledger is in-memory and
+ * this fiber has no leader election, so a fleet of R replicas each runs its own
+ * ramp: read every spend figure here as ×R on SaaS. So the honest statement of the bound is:
  * N permanently-failing episodes at the head of the queue WOULD starve it,
  * cheaply and loudly, until an operator acts on the recurring error.
  */
@@ -713,7 +715,11 @@ export function runBrainExtractionCycle(
      * it.
      */
     const settleAndAudit = (result: BrainExtractionCycleResult): void => {
-      const attempted = result.failed + result.extracted + result.blockedEpisodes;
+      // Only outcomes that ACTUALLY called a model are evidence about the
+      // model. A pre-flight block is reached before `modelFor`, so counting it
+      // here would let one workspace's un-attributable actors silently disable
+      // the outage refund for the whole fleet.
+      const attempted = result.failed + result.extracted;
       if (charged.length > 0 && result.failed === attempted) {
         let refunded = 0;
         for (const { episodeId } of charged) {
@@ -744,6 +750,20 @@ export function runBrainExtractionCycle(
               workspaces: new Set(charged.map((c) => c.workspaceId)).size,
             },
             "brain extraction: every episode this tick failed — forgiving one strike each rather than counting an upstream outage against the episodes",
+          );
+        } else {
+          // The third state, and the one an operator investigating "why did my
+          // whole backlog just quarantine" needs most: a total-failure tick
+          // whose strikes we deliberately let stand because every episode had
+          // already spent its one refund. Without this it renders as
+          // `outageRefunded: 0` — byte-identical to a mixed tick.
+          log.warn(
+            {
+              attempted,
+              charged: charged.length,
+              workspaces: new Set(charged.map((c) => c.workspaceId)).size,
+            },
+            "brain extraction: every episode this tick failed, but each had already spent its one outage refund — the strikes stand and quarantine will engage",
           );
         }
       }
@@ -890,7 +910,7 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
   // would be recorded as a successful extraction and STAMPED: a safety refusal
   // permanently consuming the evidence, counted as success. Read it instead.
   if (report.episodeBlocked !== undefined) {
-    log.warn(
+    log.error(
       {
         workspaceId: episode.workspaceId,
         episodeId: episode.id,
@@ -898,7 +918,15 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
       },
       "brain extraction: the reconcile stage refused this episode after the pre-flight passed — the two gates disagreed, which is an Atlas bug; leaving it queued",
     );
-    return { kind: "blocked", reason: report.episodeBlocked };
+    // `failed`, NOT `blocked`. Everywhere else in this file `blocked` means "a
+    // stamped decision"; this path is unstamped and re-attempted, so labelling
+    // it `blocked` would route it around the failure ledger and spend one model
+    // call per tick forever with no bound — the exact class the ledger exists to
+    // cap. Charging it a strike also makes the gate disagreement escalate.
+    return {
+      kind: "failed",
+      error: `reconcile refused the episode post-flight: ${report.episodeBlocked}`,
+    };
   }
 
   // Only after the reconcile transaction has COMMITTED. See the module header
@@ -989,11 +1017,33 @@ function tallyEpisode(
       // longest-failing entry — the one whose count is doing the most work.
       ledger.delete(row.id);
       if (ledger.size >= FAILURE_LEDGER_CAP) {
-        // Evict oldest-first rather than refusing to record — dropping the NEW
-        // entry would silently disable quarantine for exactly the pathological
-        // backlog the cap exists to survive.
-        const oldest = ledger.keys().next();
-        if (!oldest.done) ledger.delete(oldest.value);
+        // Unreachable while the drain is `LIMIT BATCH_SIZE` over a queue whose
+        // head never advances past a failure — the ledger cannot exceed
+        // BATCH_SIZE. Stated because a future drain change (a bigger batch, a
+        // workspace-fair walk) wakes this branch up, and it must not wake up
+        // silently.
+        //
+        // Evict by OLDEST FAILURE, not by insertion order: a quarantined entry
+        // is skipped rather than re-`set`, so its insertion position freezes at
+        // the front and insertion-order eviction would drop the DEEPEST backoff
+        // first — silently disarming the quarantine that was doing the most
+        // work, and restoring its refund eligibility along with it.
+        let victim: string | undefined;
+        let oldest = Infinity;
+        for (const [id, candidate] of ledger) {
+          if (candidate.lastFailureAt < oldest) {
+            oldest = candidate.lastFailureAt;
+            victim = id;
+          }
+        }
+        if (victim !== undefined) {
+          const dropped = ledger.get(victim);
+          ledger.delete(victim);
+          log.warn(
+            { episodeId: victim, failures: dropped?.failures, cap: FAILURE_LEDGER_CAP },
+            "brain extraction: failure ledger at capacity — dropping an episode's strike history, so its quarantine is disarmed and it will be attempted every tick again",
+          );
+        }
       }
       ledger.set(row.id, { ...entry, failures, lastFailureAt: now().getTime() });
       charged.push({ episodeId: row.id, workspaceId: row.workspace_id });
@@ -1001,9 +1051,20 @@ function tallyEpisode(
       // keeps a recurring ERROR in the log instead of one archaeological line
       // that scrolled away days before anyone looked.
       if (failures >= QUARANTINE_AFTER_FAILURES && failures % QUARANTINE_ERROR_EVERY === 0) {
+        // The deadline, not just the policy. Repairing the cause does NOT
+        // shorten the current window, so an operator who fixes a broken model
+        // and watches nothing happen needs to know whether the fiber is dead or
+        // merely waiting — and until when.
+        const shift = Math.min(
+          failures - QUARANTINE_AFTER_FAILURES,
+          QUARANTINE_PROBE_MAX_SHIFT,
+        );
+        const nextProbeAt = new Date(
+          now().getTime() + QUARANTINE_PROBE_BASE_MS * 2 ** shift,
+        ).toISOString();
         log.error(
-          { workspaceId: row.workspace_id, episodeId: row.id, failures, err: outcome.error },
-          "brain extraction: episode keeps failing — it is holding a queue slot and will only be retried on a widening backoff until the cause is fixed",
+          { workspaceId: row.workspace_id, episodeId: row.id, failures, nextProbeAt, err: outcome.error },
+          "brain extraction: episode keeps failing — it holds a queue slot and is next retried at nextProbeAt; fixing the cause does not shorten that window, restart the process to retry sooner",
         );
         return;
       }

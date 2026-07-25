@@ -189,20 +189,46 @@ describeIfPg("searchBrain against the live schema", () => {
   );
 
   it(
-    "matches a snake_case predicate through the underscore-split half of the fact vector",
+    "matches a snake_case predicate by its spaced spelling, and ranks a subject hit above a predicate-only hit",
     async () => {
-      // 0181 indexes the predicate twice, raw and underscore-split, because the
-      // default parser does not split on `_`. Without the second copy this
-      // query matches nothing.
+      // Two properties of 0181's expression, both easy to break silently.
+      //
+      // 1. Snake_case predicates are matchable as words. This works because the
+      //    default parser emits `_` as a blank — NOT because of any special
+      //    handling in the expression. Switching `text_search_config`, or
+      //    "helpfully" pre-joining the predicate, breaks it.
+      // 2. Subject/object are weight A and the predicate is weight B, so a
+      //    claim ABOUT an entity outranks one that merely uses the same word as
+      //    its relation. This is the assertion that would have caught the
+      //    duplicated predicate term the first cut of 0181 shipped: indexing it
+      //    twice doubled its position count and inflated `ts_rank` on exactly
+      //    the hits this ordering is meant to demote.
       const ep = await seedEpisode({ sourceId: "fts-pred", body: "unrelated evidence" });
-      const fact = await seedFact({
+      // Seeded subject-first ON PURPOSE. Ties fall through to
+      // `f.ingested_at DESC`, so if the A/B weighting ever collapsed, the
+      // NEWER row would lead — and seeding the subject hit last would let this
+      // test pass on recency alone. This order makes a weight collapse fail.
+      const subjectHit = await seedFact({
+        subject: "escalates",
+        predicate: "documented_in",
+        object: "the incident policy",
+        episodeId: ep,
+      });
+      const predicateOnly = await seedFact({
         subject: "Zephyr",
-        predicate: "reports_to",
+        predicate: "escalates_to",
         object: "Quill",
         episodeId: ep,
       });
-      const res = await search(outsider(), { query: "reports to", include: ["fact"] });
-      expect(ids(res.results)).toContain(fact);
+
+      const spaced = await search(outsider(), { query: "escalates to", include: ["fact"] });
+      expect(ids(spaced.results)).toContain(predicateOnly);
+
+      const ranked = await search(outsider(), { query: "escalates", include: ["fact"] });
+      const order = ids(ranked.results);
+      expect(order).toContain(subjectHit);
+      expect(order).toContain(predicateOnly);
+      expect(order.indexOf(subjectHit)).toBeLessThan(order.indexOf(predicateOnly));
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -226,7 +252,10 @@ describeIfPg("searchBrain against the live schema", () => {
       expect(ids(denied.results)).not.toContain(restricted);
       // Not a post-fetch drop: the store reports it never MATCHED the row, so
       // there is no count or latency signal that it exists.
-      expect(denied.stores.facts.matched).toBe(0);
+      const deniedFacts = denied.stores.fact;
+      expect(deniedFacts.queried).toBe(true);
+      if (!deniedFacts.queried) throw new Error("unreachable");
+      expect(deniedFacts.matched).toBe(0);
 
       // Non-vacuity — the fixture really is reachable, just not by that reader.
       const allowed = await search(insider(), { query: "Bluebird" });

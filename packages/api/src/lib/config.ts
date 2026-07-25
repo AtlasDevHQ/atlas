@@ -1670,7 +1670,12 @@ export async function validateToolConfig(
   const toolRegistry = registry ?? defaultRegistry;
 
   for (let i = 0; i < config.tools.length; i++) {
-    const renamedTo = RENAMED_TOOLS[config.tools[i]];
+    // `Object.hasOwn` rather than a bare index: `RENAMED_TOOLS` is an object
+    // literal, so a config listing `"constructor"` would otherwise reach
+    // `Object.prototype` and yield a truthy non-string.
+    const renamedTo = Object.hasOwn(RENAMED_TOOLS, config.tools[i])
+      ? RENAMED_TOOLS[config.tools[i]]
+      : undefined;
     // Only accept the old spelling when the NEW one actually resolves — a stale
     // rename entry pointing at a tool that no longer exists must surface as the
     // ordinary unknown-tool error naming the available set, not as a silent

@@ -17,8 +17,10 @@
  *
  * ## The formula, and an honest note about M1
  *
- * Reciprocal rank fusion — an item's score is `Σ 1/(k + position)` over every
- * list it appears in. Position-based, deliberately: a store's `ts_rank` is
+ * Reciprocal rank fusion — an item's score is `Σ 1/(k + rank)` over every list
+ * it appears in, with `rank` 1-based (the implementation spells it
+ * `k + position + 1` because `position` is the 0-based array index).
+ * Position-based, deliberately: a store's `ts_rank` is
  * normalized against its OWN corpus, so comparing a fact's 0.19 to a
  * document's 0.31 is pseudo-precision. Rank position is the only quantity the
  * three stores agree on the meaning of.
@@ -50,9 +52,10 @@ export const RRF_K = 60;
 /**
  * One store's ranked candidates, best first.
  *
- * `label` names the producer (`facts:lexical`, `documents:dense`) and appears
- * only in diagnostics — fusion itself is label-blind, so adding M4's dense
- * lists cannot change how the existing lexical ones are weighted.
+ * `label` names the producer (`facts:lexical`, `documents:dense`). Fusion
+ * itself is label-blind — adding M4's dense lists cannot change how the
+ * existing lexical ones are weighted — so this is carried for the caller's
+ * diagnostics and for reading a fused page's provenance, not for the formula.
  */
 export interface RankedList<T> {
   readonly label: string;

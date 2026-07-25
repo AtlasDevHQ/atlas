@@ -35,7 +35,14 @@
  *
  * ## How the four ADR-0036 gates land here, honestly
  *
- *   - **ACL grant** — composed explicitly, per store, via `aclVisibilityClause`.
+ *   - **ACL grant** — composed explicitly via `aclVisibilityClause` on the two
+ *     BRAIN stores. The document store has none, and that is ADR-0028's
+ *     position rather than an omission here: `knowledge_documents` carries no
+ *     per-row grant column to push a predicate against (see the header on
+ *     `lib/knowledge/search.ts`). So a fused page mixes rows gated on two
+ *     different axes — which is precisely why every row carries its tier: the
+ *     label IS the statement of what gated the row. An unresolvable reader is
+ *     still refused for the whole read, documents included.
  *   - **Residency** — invariant by construction; the process is the region.
  *   - **Content mode** — `brainFactStatusClause` for facts,
  *     `knowledgeStatusClause` for documents. Episodes have NO status column:
@@ -50,22 +57,24 @@
  *
  * ## Push-down, and why the fail-closed test is written as a negative
  *
- * Every predicate above is in the WHERE of its store's statement — including
- * the FTS match, the ranking expression, and the LIMIT. A filter applied after
- * ranking leaks existence through result counts and latency even when the rows
- * never render, which is why "no post-fetch filtering" is an ACL requirement
- * and not a performance note. The corollary for tests: a reader who should see
- * nothing must produce a query that CAN return nothing.
+ * Every predicate above is in the WHERE of its store's statement, and the FTS
+ * match, the ranking expression, and the LIMIT all sit above that same WHERE. A
+ * filter applied after ranking leaks existence through result counts and
+ * latency even when the rows never render, which is why "no post-fetch
+ * filtering" is an ACL requirement and not a performance note. The corollary
+ * for tests: a reader who should see nothing must produce a query that CAN
+ * return nothing.
  *
  * ## The episode is gated in its own right
  *
  * `brain_episodes` carries its own grant, derived independently of any fact's.
  * A claim extracted from a private channel can be granted `org` while the
  * message stays restricted to that channel's audience. This slice RETURNS
- * episodes as a first-class result class, so the episode predicate is
- * load-bearing here in a way it was not on the review surface: it is a fresh
- * `aclVisibilityClause` against `brain_episodes`, never the fact's decision
- * carried over.
+ * episodes as a TOP-LEVEL result class rather than as evidence attached to a
+ * fact, so the episode predicate now decides what appears at all, not merely
+ * what is redacted inside a row. It is a fresh `aclVisibilityClause` against
+ * `brain_episodes`, never the fact's decision carried over — the same posture
+ * `candidates.ts` takes for the review surface's evidence view.
  *
  * ## Scope
  *
@@ -95,6 +104,7 @@ import { BRAIN_RESULT_TIERS } from "@useatlas/schemas";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type {
   BrainDocumentNeighbor,
+  BrainEpisodeExtraction,
   BrainEpisodeResult,
   BrainFactResult,
   BrainFactTensionDirection,
@@ -140,6 +150,11 @@ export const TENSION_FANOUT_CAP = 200;
  * `pg.PoolClient`, so callers pass their existing handle straight through and
  * tests pass a literal — no `mock.module()`, no singleton to mutate. Mirrors
  * `BrainCandidateReader` / `AudienceMembershipReader`.
+ *
+ * `searchBrainCore` issues its three store reads concurrently, which assumes a
+ * POOL. `node-postgres` serializes queries on a single client, so passing a
+ * `PoolClient` silently degrades the fan-out to sequential — correct, just
+ * slower, and worth knowing before blaming the query.
  */
 export interface BrainSearchReader {
   query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }>;
@@ -151,7 +166,14 @@ export interface BrainSearchOptions {
   readonly mode: AtlasMode;
   /** Free-text lexical query. Blank/absent ⇒ recency-ordered browse per store. */
   readonly query?: string;
-  /** Which stores to read. Defaults to all three. An empty list reads none. */
+  /**
+   * Which stores to read. Defaults to all three; an empty list reads none.
+   *
+   * NOTE the tool wrapper overrides that last case: `normalizeSearchInput`
+   * turns an empty or fully-unrecognized `include` into `undefined` (all
+   * three), because a typo returning an empty page is indistinguishable from an
+   * empty brain. A non-tool caller passing `[]` gets the literal reading.
+   */
   readonly include?: readonly BrainResultTier[];
   /** OKF frontmatter narrowing — document store only. */
   readonly type?: string;
@@ -181,9 +203,22 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
-function count(value: unknown): number {
+/**
+ * Counter off `pg`, with the drift arm LOGGED.
+ *
+ * `0` is the conservative value but not a harmless one: `corroborationCount: 0`
+ * on a corroborated claim understates the evidence behind it, which on a
+ * trust-labeled surface is the same class of harm the `cardinality` fallback
+ * logs for.
+ */
+function count(value: unknown, field: string, workspaceId: string): number {
   const n = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+  if (Number.isFinite(n) && n >= 0) return Math.trunc(n);
+  log.warn(
+    { workspaceId, field, value },
+    "brain search: counter column did not decode as a non-negative number — reporting 0, which understates it",
+  );
+  return 0;
 }
 
 /**
@@ -408,7 +443,7 @@ function toFactResult(
     ingestedAt: iso(row.ingested_at),
     snippet: str(row.snippet),
     provenance: projectProvenance(row.provenance, row.source_episode_id),
-    corroborationCount: count(row.corroboration_count),
+    corroborationCount: count(row.corroboration_count, "corroboration_count", workspaceId),
     tensions,
   };
 }
@@ -417,6 +452,14 @@ function toEpisodeResult(row: Record<string, unknown>, id: string): BrainEpisode
   const body = typeof row.body === "string" ? row.body : null;
   const bodyTruncated = body !== null && body.length > EPISODE_BODY_MAX_CHARS;
   const extractedAt = iso(row.extracted_at);
+  // The committed edge behavior, as ONE value: `extracted_at IS NULL` ⇒ the
+  // extraction pass has not run, so the row is raw and says so. Built as a pair
+  // because `BrainEpisodeExtraction` is a union — the label and the timestamp
+  // cannot be set to disagree.
+  const extraction: BrainEpisodeExtraction =
+    extractedAt === null
+      ? { extraction: "pending", extractedAt: null }
+      : { extraction: "complete", extractedAt };
   return {
     tier: "raw-episode",
     trustTier: 3,
@@ -435,10 +478,7 @@ function toEpisodeResult(row: Record<string, unknown>, id: string): BrainEpisode
     occurredAt: iso(row.occurred_at),
     ingestedAt: iso(row.ingested_at),
     snippet: str(row.snippet),
-    // The committed edge behavior. `extracted_at IS NULL` ⇒ the extraction pass
-    // has not run, so the row is raw and says so.
-    extraction: extractedAt === null ? "pending" : "complete",
-    extractedAt,
+    ...extraction,
   };
 }
 
@@ -619,7 +659,10 @@ function resultKey(result: BrainSearchResult): string {
  * order so the tuple and the tiebreak cannot disagree.
  */
 function tierRank(tier: BrainResultTier): number {
-  return BRAIN_RESULT_TIERS.indexOf(tier);
+  const index = BRAIN_RESULT_TIERS.indexOf(tier);
+  // `-1` would sort an unknown tier FIRST — i.e. most trusted. Unreachable from
+  // the type; matched to `resultKey`'s posture for a value arriving via a cast.
+  return index === -1 ? BRAIN_RESULT_TIERS.length : index;
 }
 
 function tiebreak(a: BrainSearchResult, b: BrainSearchResult): number {
@@ -628,8 +671,11 @@ function tiebreak(a: BrainSearchResult, b: BrainSearchResult): number {
   return resultKey(a).localeCompare(resultKey(b));
 }
 
-function emptyStore(): BrainSearchStoreReport {
-  return { queried: false, matched: 0, truncated: false };
+const UNQUERIED_STORE: BrainSearchStoreReport = { queried: false };
+
+/** `matched` is the store's contribution BEFORE the global limit clamps the page. */
+function queriedStore(matched: number, limit: number): BrainSearchStoreReport {
+  return { queried: true, matched, truncated: matched >= limit };
 }
 
 // ---------------------------------------------------------------------------
@@ -660,20 +706,21 @@ export async function searchBrainCore(
   const wantEpisodes = include.has("raw-episode");
   const wantDocuments = include.has("document");
 
-  // Both brain stores derive a clause from the same context, so `deny-all` on
-  // one implies it on the other. Resolve the fact clause first and refuse
-  // there — a single refusal point beats two identical guards, and it fires
-  // even when the caller narrowed `include` to episodes only.
-  const factAcl =
-    wantFacts || wantEpisodes
-      ? aclVisibilityClause(ctx, {
-          table: "brain_facts",
-          alias: "f",
-          paramIndex: 1,
-          requestId,
-        })
-      : null;
-  if (factAcl?.decision === "deny-all") {
+  // Resolved UNCONDITIONALLY, before any store runs, and the refusal is the
+  // single gate for the whole read. Deliberately not scoped to
+  // `wantFacts || wantEpisodes`: an unresolvable reader identity is an upstream
+  // defect, not a permission boundary, and serving such a reader the document
+  // store — which carries no per-row grant of its own — because they happened
+  // to pass `include: ["document"]` would make the refusal a function of the
+  // caller's arguments. Both brain stores derive from this same context, so one
+  // decision covers all three.
+  const factAcl = aclVisibilityClause(ctx, {
+    table: "brain_facts",
+    alias: "f",
+    paramIndex: 1,
+    requestId,
+  });
+  if (factAcl.decision === "deny-all") {
     throw new BrainReaderUnresolvedError(ctx.workspaceId, ctx.origin, SEARCH_SURFACE);
   }
 
@@ -691,7 +738,7 @@ export async function searchBrainCore(
   // them concurrently is what keeps a fused page as fast as its slowest store
   // rather than as slow as their sum.
   const [factRows, episodeRows, documentStore] = await Promise.all([
-    wantFacts && factAcl
+    wantFacts
       ? (async (acl: typeof factAcl) => {
           const built = buildFactQuery(mode, {
             query: options.query,
@@ -740,7 +787,20 @@ export async function searchBrainCore(
       : null,
   ]);
 
-  const facts = factRows ?? [];
+  // Same treatment the episode rows get below, and for the same reason: `id` is
+  // the PK cast to text in the SELECT, so a missing one is query drift rather
+  // than tenant data. It matters MORE on this path — a non-string `id` would
+  // reach `loadTensions`' `$2::uuid[]` and fail the whole read with the generic
+  // message, and would collapse every malformed row onto one `fact:undefined`
+  // fusion key.
+  const facts = (factRows ?? []).filter((row) => {
+    if (typeof row.id === "string" && row.id !== "") return true;
+    log.warn(
+      { workspaceId: ctx.workspaceId, requestId },
+      "brain search: fact row has no usable id — the fact query shape changed; dropping the row",
+    );
+    return false;
+  });
   const factIds = facts.map((r) => r.id);
   const tensions = wantFacts
     ? await loadTensions(db, factIds, ctx, requestId)
@@ -760,6 +820,14 @@ export async function searchBrainCore(
         workspaceId: ctx.workspaceId,
         requestId,
       });
+    } else {
+      // `visible_to text[] NOT NULL`, so a non-array is drift on the ACL's own
+      // column. Never silent: it means the grant observation seam skipped a row
+      // it was supposed to inspect.
+      log.warn(
+        { workspaceId: ctx.workspaceId, rowId: row.id, requestId, actualType: typeof row.visible_to },
+        "brain search: fact `visible_to` did not decode as an array — the grant could not be inspected",
+      );
     }
     return toFactResult(row, ctx.workspaceId, tensions.views.get(row.id) ?? []);
   });
@@ -784,6 +852,11 @@ export async function searchBrainCore(
         workspaceId: ctx.workspaceId,
         requestId,
       });
+    } else {
+      log.warn(
+        { workspaceId: ctx.workspaceId, rowId: id, requestId, actualType: typeof raw.visible_to },
+        "brain search: episode `visible_to` did not decode as an array — the grant could not be inspected",
+      );
     }
     episodeResults.push(toEpisodeResult(raw, id));
   }
@@ -805,27 +878,16 @@ export async function searchBrainCore(
     results: fused,
     neighbors,
     stores: {
-      facts: wantFacts
-        ? {
-            queried: true,
-            matched: factResults.length,
-            truncated: factResults.length >= limit,
-          }
-        : emptyStore(),
-      episodes: wantEpisodes
-        ? {
-            queried: true,
-            matched: episodeResults.length,
-            truncated: episodeResults.length >= limit,
-          }
-        : emptyStore(),
-      documents: wantDocuments
-        ? {
-            queried: true,
-            matched: documents.length,
-            truncated: documentStore?.truncated ?? false,
-          }
-        : emptyStore(),
+      fact: wantFacts ? queriedStore(factResults.length, limit) : UNQUERIED_STORE,
+      "raw-episode": wantEpisodes
+        ? queriedStore(episodeResults.length, limit)
+        : UNQUERIED_STORE,
+      // The document store reports its OWN truncation — it applies the seed
+      // limit inside `searchKnowledgeDocuments`, so the row count here is
+      // already post-limit and `>= limit` would be a second, redundant guess.
+      document: wantDocuments
+        ? { queried: true, matched: documents.length, truncated: documentStore?.truncated ?? false }
+        : UNQUERIED_STORE,
     },
     tensionsTruncated: tensions.truncated,
   };

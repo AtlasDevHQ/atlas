@@ -87,6 +87,25 @@ type _BrainResultTiersCovered = [
 const _brainResultTiersCovered: _BrainResultTiersCovered = true;
 void _brainResultTiersCovered;
 
+/**
+ * Compile error if the tuple's ORDER changes.
+ *
+ * Membership and completeness are pinned above; sequence is not, and sequence
+ * is load-bearing — `tierRank` in `lib/brain/search.ts` reads the fused
+ * tiebreak straight off this array. Alphabetizing the tuple would leave every
+ * other gate green while silently making documents win every tie against a
+ * reviewed fact. Reordering is a real decision; make it here, deliberately.
+ */
+type _BrainResultTierOrder = typeof BRAIN_RESULT_TIERS extends readonly [
+  "fact",
+  "raw-episode",
+  "document",
+]
+  ? true
+  : never;
+const _brainResultTierOrder: _BrainResultTierOrder = true;
+void _brainResultTierOrder;
+
 /** Narrow an untrusted `include[]` element to the shared vocabulary. */
 export function isBrainResultTier(value: unknown): value is BrainResultTier {
   return typeof value === "string" && (BRAIN_RESULT_TIERS as readonly string[]).includes(value);

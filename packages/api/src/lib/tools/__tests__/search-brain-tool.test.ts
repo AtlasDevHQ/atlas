@@ -2,9 +2,11 @@
  * Execute-wrapper coverage for the `searchBrain` tool (#4773) — the guards and
  * context wiring that live OUTSIDE the pure `searchBrainCore` (unit-tested with
  * an injected reader in `lib/brain/__tests__/search.test.ts`):
- *   - the three degraded paths, which have deliberately DIFFERENT shapes:
- *     no internal DB ⇒ `{ error }`, no workspace ⇒ a shaped empty response,
- *     unresolvable reader identity ⇒ `{ error }` that says "refused",
+ *   - the four degraded paths, each carrying a machine-readable `reason`:
+ *     no internal DB / unresolvable reader / failed search ⇒ `{ error, reason }`,
+ *     no workspace ⇒ a shaped empty response LABELLED `unavailable`. The
+ *     `reason` is what the MCP edge branches on, so a copy edit to the prose
+ *     cannot silently reclassify an ACL refusal,
  *   - the fail-closed `mode` default (missing context ⇒ published, never drafts),
  *   - `normalizeSearchInput` applied end-to-end (limit clamp, `include` filter),
  *   - the error catch: a thrown query is logged and mapped to a generic,
@@ -118,21 +120,26 @@ describe("searchBrain tool.execute", () => {
     mockHasInternalDB = false;
     const res = await run({ query: "x" });
     expect(res.error).toContain("internal database");
+    expect(res.reason).toBe("no_internal_db");
     expect(queryCalls).toHaveLength(0);
   });
 
-  it("returns a shaped empty response (not an error) when there is no active workspace", async () => {
+  it("labels the no-workspace empty response `unavailable` rather than leaving it bare", async () => {
+    // Reachable in practice: an unbound stdio MCP actor (`system:mcp`) has no
+    // `activeOrganizationId` and takes this path on every call. A bare
+    // `{ results: [] }` there reads as "the company brain is empty", forever.
     mockRequestContext = { user: {} };
     const res = await run({ query: "x" });
     expect(res.error).toBeUndefined();
     expect(res.results).toEqual([]);
     expect(res.neighbors).toEqual([]);
+    expect(res.unavailable).toBe("no_workspace");
     // Every store is still reported — an omitted `stores` block would read as
     // "the shape changed" rather than "nothing was searched".
     expect(res.stores).toEqual({
-      facts: { queried: false, matched: 0, truncated: false },
-      episodes: { queried: false, matched: 0, truncated: false },
-      documents: { queried: false, matched: 0, truncated: false },
+      fact: { queried: false },
+      "raw-episode": { queried: false },
+      document: { queried: false },
     });
     expect(queryCalls).toHaveLength(0);
   });
@@ -200,11 +207,17 @@ describe("searchBrain tool.execute", () => {
     // Reporting that as an empty brain is what sends the agent to answer from
     // its own priors, so the tool must say the read was refused.
     mockAuthMode = "simple-key";
-    mockRequestContext = { user: { activeOrganizationId: "ws-1" } };
+    mockRequestContext = { requestId: "req-1", user: { activeOrganizationId: "ws-1" } };
     const res = await run({ query: "x" });
     expect(res.error).toContain("refused");
     expect(res.error).toContain("not an empty knowledge base");
+    // The machine-readable half — this is what the MCP edge branches on, and
+    // what stops a copy edit to the prose above from silently demoting an ACL
+    // refusal to a generic internal error.
+    expect(res.reason).toBe("reader_unresolved");
     expect(res.results).toBeUndefined();
+    // The request id is quotable, so the refusal correlates to the server log.
+    expect(res.error).toContain("req-1");
     expect(loggedError).toBeDefined();
   });
 
@@ -214,6 +227,7 @@ describe("searchBrain tool.execute", () => {
     };
     const res = await run({ query: "x" });
     expect(res.error).toContain("Company-brain search failed");
+    expect(res.reason).toBe("search_failed");
     // The raw exception (which carries a connection string) must not leak.
     expect(JSON.stringify(res)).not.toContain("postgres://");
     expect(loggedError).toBeDefined();

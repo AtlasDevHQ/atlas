@@ -95,8 +95,9 @@ export interface BrainCandidateReader {
 /**
  * Re-exported from its home in `reader-context.ts`, where it sits beside the
  * other "this reader's identity is broken" failure. Kept exported here because
- * this module is where the review surface's callers already reach for it, and
- * because the throw sites below are the ones that raise it.
+ * this module is where the review surface's callers already reach for it; the
+ * throw sites below are the review surface's, and `lib/brain/search.ts` raises
+ * the same class from its own.
  */
 export { BrainReaderUnresolvedError };
 

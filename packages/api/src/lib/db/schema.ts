@@ -1936,7 +1936,7 @@ export const knowledgeDocuments = pgTable(
     atlasIngestedAt: timestamp("atlas_ingested_at", { withTimezone: true }),
     // Content-mode lifecycle — defaults `draft` (the review gate).
     status: text("status").notNull().default("draft"),
-    // Stored generated FTS vector for the searchKnowledge lexical tier
+    // Stored generated FTS vector for the document-store lexical tier
     // (#4222, migration 0167). Weighted title A / description B / body D;
     // STORED (not VIRTUAL — PG 18's bare default) so the GIN index below
     // can be built on it. Expression mirrors 0167 (same tokens — keep the
@@ -3296,17 +3296,17 @@ export const brainFacts = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     // Stored generated FTS vector for the `searchBrain` tier-2 lexical read
     // (#4773, migration 0181). Subject/object A (the entities a retrieval
-    // query is usually about), predicate B — indexed twice, raw and
-    // underscore-split, because machine-derived predicates are snake_case and
-    // the default parser does not split on `_`. STORED, not PG 18's bare
-    // VIRTUAL default. Expression mirrors 0181; keep the two in lockstep.
+    // query is usually about), predicate B. No underscore handling: the
+    // default parser emits `_` as a blank, so a snake_case predicate already
+    // tokenizes to the same lexemes as its spaced spelling — see 0181 for why
+    // indexing it twice was actively harmful. STORED, not PG 18's bare VIRTUAL
+    // default. Expression mirrors 0181; keep the two in lockstep.
     fts: tsvector("fts")
       .notNull()
       .generatedAlwaysAs(
         sql`setweight(to_tsvector('english', coalesce(subject, '')), 'A') ||
     setweight(to_tsvector('english', coalesce(object, '')), 'A') ||
-    setweight(to_tsvector('english', coalesce(predicate, '')), 'B') ||
-    setweight(to_tsvector('english', replace(coalesce(predicate, ''), '_', ' ')), 'B')`,
+    setweight(to_tsvector('english', coalesce(predicate, '')), 'B')`,
       ),
   },
   (t) => [

@@ -62,7 +62,7 @@ Use this whenever a metric exists for what the user asked — never re-derive me
 
 Don't use this when no metric id matches; fall back to \`executeSQL\` with a query pattern from \`describeEntity\`. Avoid passing \`filters\` — pass-through is reserved for future work and is rejected today.`;
 
-export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the company brain — one fused read over three stores, every result trust-labeled. \`tier: "fact"\` is a claim promoted through a human review gate; \`tier: "raw-episode"\` is the source record behind it; \`tier: "document"\` is hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. Every row carries \`provenance\`; weigh it by where it came from. Reads current belief — retracted and unreviewed claims are excluded. An episode awaiting extraction returns tagged \`extraction: "pending"\` with its source id. Conflicting facts surface as unranked \`tensions\` both ways: report both, never pick a winner. Example call: \`{ "query": "who owns billing", "limit": 5 }\`.
+export const SEARCH_BRAIN_TOOL_DESCRIPTION = `Search the company brain — one fused read over three stores, every result trust-labeled. \`tier: "fact"\` is a claim promoted through a human review gate; \`tier: "raw-episode"\` is the source record behind it; \`tier: "document"\` is hosted knowledge — ${KNOWLEDGE_TRUST_FRAMING}. Facts and documents carry \`provenance\`; an episode carries its \`source\` and \`sourceId\` directly. Reads current belief — retracted claims are always excluded, and unreviewed drafts outside developer mode, so check \`status\`. An episode awaiting extraction returns tagged \`extraction: "pending"\` with its source id. Conflicting facts surface as unranked \`tensions\` both ways: report both, never pick a winner. Example call: \`{ "query": "who owns billing", "limit": 5 }\`.
 
 Use this when the question is about decisions, rationale, ownership, policy, or history — what people wrote down, not what a warehouse counts.
 
@@ -137,8 +137,9 @@ export const RUN_METRIC_ERROR_CODES = [
 // datasource codes (`rls_denied`, `query_timeout`) can surface. What does:
 // `forbidden` for a reader whose identity resolved to no usable principals —
 // the fail-closed ACL deny, which is an upstream defect and must NOT read to
-// the agent as "the brain knows nothing" — plus the per-client rate limit and
-// the catch-all.
+// the agent as "the brain knows nothing" — and, independently, from the
+// dispatch gate's own `minRole` denial, which never reaches the tool body.
+// Plus the per-client rate limit and the catch-all.
 export const SEARCH_BRAIN_ERROR_CODES = [
   "forbidden",
   "rate_limited",

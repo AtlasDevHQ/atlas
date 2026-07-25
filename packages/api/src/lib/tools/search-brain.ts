@@ -32,19 +32,32 @@
  *      nothing is removed and the frozen-tool-name rule is untouched;
  *      `searchBrain` is a new tool on that surface.
  *
- * ## Degraded paths have deliberately different shapes
+ * ## Degraded paths, and why none of them is a bare empty result
  *
- *   - **No internal database** — a user-facing `{ error }`. The brain lives
- *     entirely in the internal Postgres; without one there is nothing to search
- *     and no amount of retrying changes that.
- *   - **No active workspace** — an empty, fully-shaped response plus a debug
- *     log. The brain is workspace-scoped, so this is "nothing to search" rather
- *     than a failure, and the agent should move on instead of retrying.
- *   - **Unresolvable reader identity** — an `{ error }`, NEVER an empty result
- *     set. `BrainReaderUnresolvedError` and `BrainRoleUnresolvedError` both
- *     mean the ACL narrowed on a defect; reporting that as "the brain holds
- *     nothing about this" would send the agent to answer from its own priors,
- *     which is the exact failure a trust-labeled surface exists to prevent.
+ * Every degraded path carries a machine-readable {@link BrainToolReason}.
+ * That field is the contract with the MCP edge, which maps it to a typed error
+ * envelope — an earlier cut recovered the same distinction by prefix-matching
+ * the English prose across a package boundary, so a copy edit would have
+ * silently demoted an ACL refusal to `internal_error`.
+ *
+ *   - **No internal database** (`no_internal_db`) — a user-facing `{ error }`.
+ *     The brain lives entirely in the internal Postgres; without one there is
+ *     nothing to search and no amount of retrying changes that.
+ *   - **No active workspace** (`no_workspace`) — a fully-shaped EMPTY response
+ *     carrying `unavailable: "no_workspace"`. Shaped rather than an error
+ *     because a workspace-less deployment is a legitimate configuration the
+ *     agent loop should move past, not retry — but NOT bare, because a bare
+ *     `{ results: [] }` reads as "the brain knows nothing" and is the single
+ *     most likely thing an agent will believe. This path is reachable in
+ *     practice: an unbound stdio MCP actor (`system:mcp`, no
+ *     `activeOrganizationId`) takes it on every call.
+ *   - **Unresolvable reader identity** (`reader_unresolved`) — an `{ error }`,
+ *     NEVER an empty result set. Every `BrainReaderIdentityError` means the ACL
+ *     narrowed on a defect; reporting that as "the brain holds nothing about
+ *     this" would send the agent to answer from its own priors, which is the
+ *     exact failure a trust-labeled surface exists to prevent.
+ *   - **Anything else** (`search_failed`) — a generic, secret-free `{ error }`
+ *     with retry guidance.
  */
 
 import { tool } from "ai";
@@ -54,38 +67,65 @@ import { getInternalDB, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { searchBrainCore, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT } from "@atlas/api/lib/brain/search";
 import {
-  BrainReaderUnresolvedError,
-  BrainRoleUnresolvedError,
+  BrainReaderIdentityError,
   resolveBrainReaderContext,
 } from "@atlas/api/lib/brain/reader-context";
 import { SEARCH_BRAIN_TOOL_DESCRIPTION } from "@atlas/api/lib/tools/descriptions";
-import { BRAIN_RESULT_TIERS } from "@useatlas/schemas";
+import { BRAIN_RESULT_TIERS, isBrainResultTier } from "@useatlas/schemas";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type { BrainResultTier, BrainSearchResponse } from "@useatlas/types";
 
 const log = createLogger("search-brain");
 
 /**
- * Message returned when the reader's identity could not be resolved.
+ * Why a call degraded — the discriminator every consumer branches on.
+ *
+ * Machine-readable on purpose: the MCP edge turns `reader_unresolved` into a
+ * `forbidden` envelope and the rest into `internal_error`, and it must not
+ * recover that from prose it does not own.
+ */
+export const BRAIN_TOOL_REASONS = {
+  noInternalDb: "no_internal_db",
+  noWorkspace: "no_workspace",
+  readerUnresolved: "reader_unresolved",
+  searchFailed: "search_failed",
+} as const;
+
+export type BrainToolReason = (typeof BRAIN_TOOL_REASONS)[keyof typeof BRAIN_TOOL_REASONS];
+
+/**
+ * Prose for the identity refusal.
  *
  * Says the read was REFUSED, not that nothing matched. An agent that reads
  * "no results" stops looking; an agent that reads "could not be established"
  * surfaces the problem to the user, which is what should happen when the ACL
- * narrowed because of a defect upstream.
+ * narrowed because of a defect upstream. Carried alongside
+ * `reason: "reader_unresolved"` — the prose is for the human, the reason is the
+ * contract.
  */
 const READER_UNRESOLVED_MESSAGE =
   "Company-brain search was refused: your identity could not be resolved for this workspace, " +
   "so results cannot be filtered safely. This is a configuration or session problem, not an " +
   "empty knowledge base — do not treat it as 'nothing is known'. Report it and continue without brain results.";
 
-/** The fully-shaped empty response — every store reported, nothing invented. */
-function emptyResponse(): BrainSearchResponse {
-  const store = { queried: false, matched: 0, truncated: false } as const;
+/**
+ * The fully-shaped empty response — every store reported, nothing invented.
+ *
+ * `unavailable` is the difference between "searched, found nothing" and "could
+ * not search". Without it an unbound stdio MCP actor gets a `200`-shaped
+ * `{ results: [] }` on every call, forever, and the agent concludes the company
+ * brain is empty.
+ */
+function emptyResponse(unavailable: BrainToolReason | null = null): BrainSearchResponse & {
+  unavailable: BrainToolReason | null;
+} {
+  const store = { queried: false } as const;
   return {
     results: [],
     neighbors: [],
-    stores: { facts: store, episodes: store, documents: store },
+    stores: { fact: store, "raw-episode": store, document: store },
     tensionsTruncated: false,
+    unavailable,
   };
 }
 
@@ -97,6 +137,17 @@ Use the searchBrain tool for decisions, rationale, ownership, policy, and histor
 - An episode tagged \`extraction: "pending"\` has not been distilled into facts yet; quote it as raw evidence
 - \`tensions\` lists conflicting claims in both directions and is deliberately unranked — surface both sides, never pick a winner
 - Read-only, and never the SQL whitelist, metrics, or glossary. For quantitative current state use \`executeSQL\`; for the on-disk semantic layer use \`explore\``;
+
+/**
+ * Append the request id so the user has something to quote.
+ *
+ * These messages are the only thing standing between an incident and an
+ * operator grepping blind — the server-side `log.error` is the only other
+ * trace, and nothing correlates the two without this.
+ */
+function withRequestId(message: string, requestId: string | undefined): string {
+  return requestId ? `${message} (request ${requestId})` : message;
+}
 
 export interface SearchBrainInput {
   query?: string;
@@ -130,9 +181,7 @@ export function normalizeSearchInput(input: SearchBrainInput): {
   const rawLimit = input.limit ?? DEFAULT_SEARCH_LIMIT;
   const limit = Math.max(1, Math.min(MAX_SEARCH_LIMIT, Math.floor(rawLimit)));
   const tags = input.tags?.map((t) => t.trim()).filter((t) => t !== "");
-  const include = input.include?.filter((t): t is BrainResultTier =>
-    (BRAIN_RESULT_TIERS as readonly string[]).includes(t),
-  );
+  const include = input.include?.filter(isBrainResultTier);
   if (input.include && include && include.length !== input.include.length) {
     log.debug(
       { requested: input.include, recognized: include },
@@ -202,23 +251,29 @@ export const searchBrain = tool({
       return {
         error:
           "Company-brain search is unavailable — this deployment has no internal database configured.",
+        reason: BRAIN_TOOL_REASONS.noInternalDb,
       };
     }
     if (!workspaceId) {
       // The brain is workspace-scoped; without a workspace there is nothing to
-      // search. An empty result set (not an error) so the agent moves on rather
-      // than retrying — but logged, since a misconfigured deployment that lost
-      // workspace context would otherwise be indistinguishable from an empty
-      // brain. Same shape `searchKnowledge` used for the same reason.
-      log.debug(
-        { hasRequestContext: Boolean(reqCtx) },
-        "searchBrain: no active workspace in request context — returning empty results",
+      // search. Shaped-empty rather than an error so the agent loop moves on —
+      // but LABELLED, so "could not search" is distinguishable from "searched,
+      // found nothing", and at `warn` rather than `debug` because the reachable
+      // cause is a misconfiguration (an unbound stdio MCP actor, or a
+      // deployment that lost workspace context), not a routine state.
+      log.warn(
+        { hasRequestContext: Boolean(reqCtx), requestId: reqCtx?.requestId },
+        "searchBrain: no active workspace in request context — the brain cannot be searched",
       );
-      return emptyResponse();
+      return emptyResponse(BRAIN_TOOL_REASONS.noWorkspace);
     }
 
-    const db = getInternalDB();
     try {
+      // Inside the try: `hasInternalDB()` was checked above, but a pool torn
+      // down between the two (shutdown, re-init, config reload) would otherwise
+      // throw straight out of `execute` and reach the agent as a raw error,
+      // bypassing every degraded shape this module defines.
+      const db = getInternalDB();
       const ctx = await resolveBrainReaderContext(db, {
         workspaceId,
         mode: detectAuthMode(),
@@ -232,24 +287,33 @@ export const searchBrain = tool({
         requestId: reqCtx?.requestId,
       });
     } catch (err) {
-      // The two identity failures are reported as a REFUSAL, distinctly from a
-      // generic search failure — see the module header on why an empty result
-      // set would be the dangerous answer here.
-      if (err instanceof BrainReaderUnresolvedError || err instanceof BrainRoleUnresolvedError) {
+      const requestId = reqCtx?.requestId;
+      // Identity failures are reported as a REFUSAL, distinctly from a generic
+      // search failure — see the module header on why an empty result set would
+      // be the dangerous answer here. ONE `instanceof` against the shared base,
+      // so a future identity failure is covered by construction rather than by
+      // somebody remembering to extend this condition.
+      if (err instanceof BrainReaderIdentityError) {
         log.error(
-          { err: err.message, workspaceId, requestId: reqCtx?.requestId },
+          { err: err.message, errorName: err.name, workspaceId, requestId },
           "searchBrain refused: reader identity could not be resolved",
         );
-        return { error: READER_UNRESOLVED_MESSAGE };
+        return {
+          error: withRequestId(READER_UNRESOLVED_MESSAGE, requestId),
+          reason: BRAIN_TOOL_REASONS.readerUnresolved,
+        };
       }
       log.error(
-        { err: err instanceof Error ? err.message : String(err), workspaceId },
+        { err: err instanceof Error ? err.message : String(err), workspaceId, requestId },
         "searchBrain failed",
       );
       return {
-        error:
+        error: withRequestId(
           "Company-brain search failed. Retry with a simpler query or fewer filters; " +
-          "if it persists, the brain store may be temporarily unavailable.",
+            "if it persists, the brain store may be temporarily unavailable.",
+          requestId,
+        ),
+        reason: BRAIN_TOOL_REASONS.searchFailed,
       };
     }
   },

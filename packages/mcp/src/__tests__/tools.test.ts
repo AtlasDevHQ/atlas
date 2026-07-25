@@ -44,6 +44,34 @@ void mock.module("@atlas/api/lib/tools/sql", () => ({
   },
 }));
 
+// --- searchBrain (#4773) ---
+// The MCP edge maps the tool's `{ error, reason }` onto a typed envelope, and
+// `reader_unresolved` MUST arrive as `forbidden` rather than as "the brain knows
+// nothing". Mock all value exports of the module so the reason vocabulary comes
+// from the real source — a test that retyped the strings would pin nothing.
+const { BRAIN_TOOL_REASONS: REAL_BRAIN_TOOL_REASONS } = await import(
+  "@atlas/api/lib/tools/search-brain"
+);
+const mockSearchBrainExecute = mock<(...args: unknown[]) => Promise<unknown>>(async () => ({
+  results: [],
+  neighbors: [],
+  stores: {
+    fact: { queried: true, matched: 0, truncated: false },
+    "raw-episode": { queried: true, matched: 0, truncated: false },
+    document: { queried: true, matched: 0, truncated: false },
+  },
+  tensionsTruncated: false,
+}));
+void mock.module("@atlas/api/lib/tools/search-brain", () => ({
+  BRAIN_TOOL_REASONS: REAL_BRAIN_TOOL_REASONS,
+  SEARCH_BRAIN_DESCRIPTION: "Search the company brain",
+  normalizeSearchInput: (input: Record<string, unknown>) => input,
+  searchBrain: {
+    description: "Search the company brain",
+    execute: mockSearchBrainExecute,
+  },
+}));
+
 // --- Action-policy gate mock (gate 1, #4095) ---
 // executeSQL now declares actionCategory "raw_sql", so the dispatch gate
 // consults the per-workspace policy. Default all-allowed (these tests have no
@@ -126,6 +154,7 @@ describe("MCP tools", () => {
     billingGateVerdict = { allowed: true };
     blockedCategories = new Set();
     mockCheckAgentBillingGate.mockClear();
+    mockSearchBrainExecute.mockClear();
   });
 
   it("lists explore + executeSQL + searchBrain + the four typed semantic tools (#2020, #4773)", async () => {
@@ -978,4 +1007,71 @@ describe("MCP tools", () => {
     });
   });
 
+
+  // --- searchBrain dispatch (#4773) ---
+
+  describe("searchBrain", () => {
+    it("returns the fused payload as JSON on success", async () => {
+      const { client } = await createTestClient();
+      const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });
+      expect(result.isError).toBeFalsy();
+      const payload = JSON.parse(getContentText(result.content));
+      expect(payload.stores.fact.queried).toBe(true);
+      expect(payload.results).toEqual([]);
+    });
+
+    it("maps an identity refusal to `forbidden`, NOT to an empty page", async () => {
+      // The load-bearing mapping. An empty success here would tell the agent
+      // the company brain knows nothing about the subject, and it would answer
+      // from its own priors — the failure a trust-labeled surface exists to
+      // prevent. Branching is on `reason`, so rewording the prose cannot
+      // silently demote this to `internal_error`.
+      mockSearchBrainExecute.mockResolvedValueOnce({
+        error: "Company-brain search was refused: ...",
+        reason: REAL_BRAIN_TOOL_REASONS.readerUnresolved,
+      });
+      const { client } = await createTestClient();
+      const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });
+      expect(result.isError).toBe(true);
+      const envelope = parseAtlasMcpToolError(getContentText(result.content));
+      expect(envelope?.code).toBe("forbidden");
+      // Correlatable: the refusal is documented as an upstream defect, and the
+      // request id is the only handle an operator has on the matching log line.
+      expect(envelope?.request_id).toBeTruthy();
+    });
+
+    it("maps every other degraded reason to `internal_error`", async () => {
+      mockSearchBrainExecute.mockResolvedValueOnce({
+        error: "Company-brain search failed.",
+        reason: REAL_BRAIN_TOOL_REASONS.searchFailed,
+      });
+      const { client } = await createTestClient();
+      const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });
+      expect(result.isError).toBe(true);
+      const envelope = parseAtlasMcpToolError(getContentText(result.content));
+      expect(envelope?.code).toBe("internal_error");
+      expect(envelope?.request_id).toBeTruthy();
+    });
+
+    it("passes the shaped `unavailable` empty response through rather than swallowing it", async () => {
+      // The unbound trusted-transport actor's path. It is not an error — the
+      // tool genuinely has no workspace to search — but the label has to survive
+      // to the agent, or the answer is indistinguishable from an empty brain.
+      mockSearchBrainExecute.mockResolvedValueOnce({
+        results: [],
+        neighbors: [],
+        stores: {
+          fact: { queried: false },
+          "raw-episode": { queried: false },
+          document: { queried: false },
+        },
+        tensionsTruncated: false,
+        unavailable: REAL_BRAIN_TOOL_REASONS.noWorkspace,
+      });
+      const { client } = await createTestClient();
+      const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(getContentText(result.content)).unavailable).toBe("no_workspace");
+    });
+  });
 });

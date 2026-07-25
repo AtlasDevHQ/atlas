@@ -99,7 +99,7 @@ Every tool handed to the agent is wrapped in an **`atlas.tool.<name>`** span by
 SDK. Every *executable* tool is wrapped; client-side / provider-executed tools
 (no `execute`) pass through untouched. **Adding a tool requires no telemetry
 code**: registering it is what traces it. (#4464 exists because the previous
-per-tool convention left `searchBrain`, `createDashboard`,
+per-tool convention left `searchKnowledge` (now `searchBrain`), `createDashboard`,
 `executeRestOperation` and the action tools with no `atlas.*` segment at all —
 only the tools that remembered to self-instrument had one.)
 

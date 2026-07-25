@@ -34,22 +34,27 @@
 -- both take weight A; the predicate is the relation and takes B, so a claim
 -- ABOUT an entity outranks a claim that merely uses the same relation word.
 --
--- The predicate is indexed twice, raw and underscore-split. Predicates are
--- machine-derived and reliably snake_case (`account_owner`, `reports_to`),
--- and the default parser does not split on `_` — so `account_owner` and
--- `account owner` produce disjoint lexemes and only one spelling would ever
--- match. Indexing both makes the tool robust to whichever the agent types.
--- `replace()` and `to_tsvector(regconfig, text)` are both immutable, so the
--- expression is legal in a generated column, and `||` dedupes the overlap
--- when a predicate contains no underscore.
+-- Predicates are machine-derived and reliably snake_case (`account_owner`,
+-- `reports_to`), and NO special handling is needed for that: the default
+-- parser emits `_` as a `blank` token, so `to_tsvector('english',
+-- 'account_owner')` is `'account':1 'owner':2` — byte-identical to
+-- `'account owner'`. Both spellings match through the plain expression.
+--
+-- An earlier cut of this migration also indexed
+-- `replace(predicate, '_', ' ')` on the theory that the parser did not split
+-- on `_`. It does. The extra term added no matchability and was not inert: `||`
+-- merges a repeated lexeme's ENTRY but concatenates its POSITIONS
+-- (`'report':1B,2B`), which inflates `ts_rank` on predicate hits by ~25% and
+-- works directly against the A-over-B separation the paragraph above exists to
+-- create. Don't re-add it without measuring; `search-pg.test.ts` pins both the
+-- snake_case match and the subject-outranks-predicate ordering.
 --
 -- NOT NULL: every input is coalesced, so the expression is provably never NULL.
 ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS fts tsvector
   GENERATED ALWAYS AS (
     setweight(to_tsvector('english', coalesce(subject, '')), 'A') ||
     setweight(to_tsvector('english', coalesce(object, '')), 'A') ||
-    setweight(to_tsvector('english', coalesce(predicate, '')), 'B') ||
-    setweight(to_tsvector('english', replace(coalesce(predicate, ''), '_', ' ')), 'B')
+    setweight(to_tsvector('english', coalesce(predicate, '')), 'B')
   ) STORED NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_brain_facts_fts

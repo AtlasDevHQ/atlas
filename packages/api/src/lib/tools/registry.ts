@@ -253,10 +253,11 @@ function registerCoreTools(
   // and provenance labeled. Registered globally like the other
   // execute-time-gated tools — it reads the workspace, mode, and principal set
   // from request context inside `execute`, so it stays discoverable everywhere
-  // without a boot-time gate. The three degraded paths have deliberately
-  // different shapes (see the header on `search-brain.ts`): no internal DB and
-  // an unresolvable reader both return a user-facing `{ error }`; only "no
-  // active workspace" returns an empty result set.
+  // without a boot-time gate. Its four degraded paths each carry a
+  // machine-readable `reason` (see the header on `search-brain.ts`): no
+  // internal DB, an unresolvable reader, and a failed search return a
+  // user-facing `{ error }`; only "no active workspace" returns an empty result
+  // set, and even that one is labelled `unavailable` rather than left bare.
   //
   // The old name is handled at the CONFIG seam, not here — see
   // {@link RENAMED_TOOLS}. Registering both spellings would hand the agent two
@@ -368,7 +369,7 @@ export const INTENTIONAL_TOOL_SHADOWS: ReadonlySet<string> = new Set(["sendEmail
  * old spelling goes back to being a boot-time `Unknown tool(s)` error naming
  * the available set.
  */
-export const RENAMED_TOOLS: Readonly<Record<string, string>> = {
+export const RENAMED_TOOLS: Readonly<Partial<Record<string, string>>> = {
   // #4773 — `searchKnowledge` became `searchBrain` when hosted documents
   // stopped being the whole tool and became one of three fused stores.
   searchKnowledge: "searchBrain",

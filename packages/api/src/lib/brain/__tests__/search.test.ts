@@ -254,19 +254,25 @@ describe("fail-closed", () => {
     expect(db.calls).toHaveLength(0);
   });
 
-  it("refuses even when the caller narrowed `include` to episodes only", async () => {
-    const db = reader();
-    await expect(
-      searchBrainCore(db, {
-        ctx: { origin: "unresolved", workspaceId: WS, userId: null, role: null, audienceIds: [] },
-        mode: "published",
-        include: ["raw-episode"],
-        limit: 10,
-        expand: false,
-      }),
-    ).rejects.toBeInstanceOf(BrainReaderUnresolvedError);
-    expect(db.calls).toHaveLength(0);
-  });
+  // The refusal must not be a function of the caller's arguments. The document
+  // store carries no per-row grant, so an `include` that reaches only it once
+  // slipped past the guard entirely and served an unresolvable reader a normal
+  // page — a permission decision made by a query parameter.
+  for (const include of [["raw-episode"], ["document"], []] as const) {
+    it(`refuses when the caller narrowed include to ${JSON.stringify(include)}`, async () => {
+      const db = reader();
+      await expect(
+        searchBrainCore(db, {
+          ctx: { origin: "unresolved", workspaceId: WS, userId: null, role: null, audienceIds: [] },
+          mode: "published",
+          include,
+          limit: 10,
+          expand: false,
+        }),
+      ).rejects.toBeInstanceOf(BrainReaderUnresolvedError);
+      expect(db.calls).toHaveLength(0);
+    });
+  }
 
   it("a reader entitled to nothing produces a query that CAN return nothing", async () => {
     // The negative form the acceptance criterion asks for: not "we dropped the
@@ -292,8 +298,15 @@ describe("fail-closed", () => {
     expect(factCall.sql).toContain("f.visible_to && $2::text[]");
     expect(factCall.params[1]).toEqual(["org"]);
     // Postgres evaluates `ARRAY['audience:secret'] && ARRAY['org']` as FALSE,
-    // so such a row is excluded by the WHERE. Nothing downstream filters.
-    expect(factCall.sql).not.toContain("audience:secret");
+    // so such a row is excluded by the WHERE. What makes this a NEGATIVE rather
+    // than a claim about the SQL text is the bound array above — the tokens are
+    // parameters, never interpolated, so asserting the literal is absent from
+    // the statement would pass no matter what. The real proof that the row
+    // cannot come back is in `search-pg.test.ts`, against live Postgres.
+    //
+    // What IS worth pinning here: nothing runs after the query that could drop
+    // a row, so the WHERE is the only filter there is.
+    expect(db.calls).toHaveLength(1);
   });
 
   it("reads the episode store through a FRESH episode predicate, not the fact's", async () => {
@@ -338,6 +351,38 @@ describe("trust labeling", () => {
     const byTier = new Map<string, BrainSearchResult>(res.results.map((r) => [r.tier, r]));
     expect(byTier.get("fact")?.trustTier).toBe(2);
     expect(byTier.get("raw-episode")?.trustTier).toBe(3);
+  });
+
+  it("orders a fused cohort by trust tier — the fact leads, the episode follows", async () => {
+    // The one place trust touches ordering. Swapping `tierRank`'s subtraction
+    // would leave every other assertion in this file green: `search.test.ts`
+    // otherwise reads results through a Map, and `fusion.test.ts` exercises a
+    // synthetic tiebreak rather than this one.
+    const db = reader([
+      { match: SQL.factPage, rows: [factRow()] },
+      { match: SQL.episodePage, rows: [episodeRow()] },
+    ]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact", "raw-episode"],
+      limit: 10,
+      expand: false,
+    });
+    expect(res.results.map((r) => r.tier)).toEqual(["fact", "raw-episode"]);
+  });
+
+  it("clamps an over-large limit in the core, not only in the tool wrapper", async () => {
+    const db = reader();
+    await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["fact"],
+      limit: 9_999,
+      expand: false,
+    });
+    const call = db.calls.find((c) => c.sql.includes(SQL.factPage))!;
+    expect(call.params[call.params.length - 1]).toBe(50);
   });
 
   it("returns an unextracted episode tagged `pending`, with its stable source id", async () => {
@@ -409,6 +454,47 @@ describe("trust labeling", () => {
     expect(res.results).toHaveLength(1);
   });
 
+  it("labels and fuses DOCUMENT rows through the adapted executor", async () => {
+    // The document store speaks a different port shape — a flat array, not
+    // `{ rows }` — so `searchBrainCore` adapts the handle. Nothing else in this
+    // file exercises that adapter, the document `resultKey` namespacing, or the
+    // neighbours passthrough.
+    const docRow = {
+      id: "doc-1",
+      path: "runbooks/eu.md",
+      collection_id: "runbooks",
+      title: "EU",
+      description: null,
+      type: "Runbook",
+      tags: ["ops"],
+      resource: null,
+      atlas_source: "upload",
+      atlas_ingested_at: null,
+      timestamp: null,
+      status: "published",
+      snippet: "…**replica** lag…",
+      rank: 0.4,
+    };
+    const db = reader([{ match: "FROM knowledge_documents kd", rows: [docRow] }]);
+    const res = await searchBrainCore(db, {
+      ctx: ctx(),
+      mode: "published",
+      include: ["document"],
+      limit: 10,
+      expand: false,
+    });
+    expect(res.results).toHaveLength(1);
+    const row = res.results[0];
+    expect(row.tier).toBe("document");
+    if (row.tier !== "document") throw new Error("unreachable");
+    // `trustTier: null` is the honest answer: descriptive prose has no position
+    // in ADR-0036's truth ordering. A number here would claim it does.
+    expect(row.trustTier).toBeNull();
+    expect(row.path).toBe("runbooks/eu.md");
+    expect(row.provenance.status).toBe("published");
+    expect(res.stores.document).toEqual({ queried: true, matched: 1, truncated: false });
+  });
+
   it("reports each store's contribution, including stores it did not query", async () => {
     const db = reader([{ match: SQL.factPage, rows: [factRow()] }]);
     const res = await searchBrainCore(db, {
@@ -418,9 +504,9 @@ describe("trust labeling", () => {
       limit: 10,
       expand: false,
     });
-    expect(res.stores.facts).toEqual({ queried: true, matched: 1, truncated: false });
-    expect(res.stores.episodes.queried).toBe(false);
-    expect(res.stores.documents.queried).toBe(false);
+    expect(res.stores.fact).toEqual({ queried: true, matched: 1, truncated: false });
+    expect(res.stores["raw-episode"].queried).toBe(false);
+    expect(res.stores.document.queried).toBe(false);
   });
 
   it("flags a store that filled its page — silent truncation reads as 'nothing else exists'", async () => {
@@ -432,7 +518,10 @@ describe("trust labeling", () => {
       limit: 2,
       expand: false,
     });
-    expect(res.stores.facts.truncated).toBe(true);
+    const facts = res.stores.fact;
+    expect(facts.queried).toBe(true);
+    if (!facts.queried) throw new Error("unreachable");
+    expect(facts.truncated).toBe(true);
   });
 
   it("coerces an out-of-vocabulary status to the CONSERVATIVE arm", async () => {

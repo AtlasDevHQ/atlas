@@ -16,33 +16,47 @@
  * role is re-resolved here against the workspace actually being read, and
  * handed down with its `orgId` attached.
  *
- * ## The failure this exists to catch
+ * ## Two failures, opposite directions, both invisible by default
  *
- * `resolveEffectiveRole` returns `undefined` for BOTH "no member row" and "the
- * member lookup threw" — it catches by design, so its original callers fail
- * closed to least privilege (a DB blip bounces an org admin out of the console
- * rather than over-granting).
+ * `resolveEffectiveRole` CATCHES member-table failures and returns `undefined`
+ * — by design, so its own callers fail closed to least privilege (a DB blip
+ * bounces an org admin out of the console rather than over-granting).
  *
- * For a brain reader that same behavior is a SILENT PARTIAL ACL DEGRADATION.
- * Losing the role drops the reader's `role:` tokens while leaving the context
- * `authenticated`: `aclVisibilityClause` still returns `grant-match`, no deny
- * fires, `BrainReaderUnresolvedError` never throws — and every fact granted
- * only to `role:admin` / `role:member` vanishes from the result set. The
- * surfaces stay self-consistent, so the incident is invisible from any of
- * them: a smaller, entirely plausible answer.
+ * For a reader that turns the role into ACL GRANTS, that catch is a **silent
+ * partial narrowing**. Losing the role drops the reader's `role:` tokens while
+ * leaving the context `authenticated`: `aclVisibilityClause` still returns
+ * `grant-match`, no deny fires, `BrainReaderUnresolvedError` never throws — and
+ * every fact granted only to `role:admin` / `role:member` vanishes. Every
+ * surface stays self-consistent, so the incident is invisible from all of them:
+ * a smaller, entirely plausible answer. Critically, the obvious guard —
+ * "did the session carry a role we then failed to re-resolve?" — does NOT
+ * work, because post-#2890 a plain member's `AtlasUser.role` is frequently
+ * ABSENT, and a session-time member-table failure is exactly what erases it.
+ * So this module calls {@link resolveEffectiveRoleStrict}, which propagates the
+ * lookup failure instead of encoding it as `undefined`, and converts it to
+ * {@link BrainRoleUnresolvedError}.
  *
- * Hence {@link BrainRoleUnresolvedError}. A session that carries a workspace
- * role and cannot have it re-resolved is an anomaly, not a routine branch, and
- * the honest answer is a 500 with a requestId — the same reasoning
- * `resolvePrincipalContext` gives for propagating its own audience-lookup
- * failures rather than degrading quietly.
+ * The opposite failure is a **widening**, and it is the one a reader is most
+ * likely to get wrong. `resolveEffectiveRole`'s no-member-row arm returns the
+ * caller's SESSION role verbatim. Stamping that role with
+ * `orgId: workspaceId` would tell `resolvePrincipalContext` it was resolved
+ * against the workspace being read — defeating its cross-org mismatch check —
+ * and mint `role:` tokens in a workspace the reader is not a member of. So the
+ * role is forwarded ONLY when `fromMemberRow` says it came from this org's
+ * `member` row; otherwise role grants are dropped and the event logged.
  *
- * `platform_admin` is exempt: it is a cross-tenant platform role that
- * short-circuits before the member lookup and confers no org grant either way,
- * so its absence from the member table is expected rather than anomalous.
+ * `platform_admin` short-circuits before the lookup and reports
+ * `fromMemberRow: false`, so it is dropped here — correctly: a platform role is
+ * not an org role and confers no brain grant (`acl.ts` says the same). It is
+ * exempt from the throw for the same reason: no lookup ran, so none failed.
  */
 
-import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
+import {
+  MemberRoleLookupError,
+  resolveEffectiveRoleStrict,
+  type EffectiveRoleResolution,
+} from "@atlas/api/lib/auth/effective-role";
+import { createLogger } from "@atlas/api/lib/logger";
 import {
   resolvePrincipalContext,
   type AudienceMembershipReader,
@@ -50,6 +64,23 @@ import {
 } from "@atlas/api/lib/brain/acl";
 import type { AtlasRole, AtlasUser } from "@atlas/api/lib/auth/types";
 import type { AuthMode } from "@useatlas/types";
+
+const log = createLogger("brain-reader-context");
+
+/**
+ * Base for every "this reader's identity is broken" failure.
+ *
+ * Exists so a consumer can write ONE `instanceof` instead of enumerating the
+ * subclasses. The enumeration was the bug waiting to happen: `searchBrain` maps
+ * these to a `forbidden` refusal and everything else to a generic
+ * "search failed", so a third identity failure added here would silently fall
+ * into the generic arm and reach an MCP agent as `internal_error` — quietly
+ * un-doing the guarantee this module exists to provide.
+ */
+export class BrainReaderIdentityError extends Error {}
+
+/** Closed diagnostic vocabulary for which surface refused a read. */
+export type BrainReadSurface = "read" | "review" | "search";
 
 /**
  * The reader's identity could not be turned into a usable principal set, so
@@ -75,12 +106,12 @@ import type { AuthMode } from "@useatlas/types";
  * throwing structurally identical errors from two files is how they drift into
  * being caught differently.
  */
-export class BrainReaderUnresolvedError extends Error {
+export class BrainReaderUnresolvedError extends BrainReaderIdentityError {
   constructor(
     readonly workspaceId: string,
     readonly origin: BrainPrincipalContext["origin"],
     /** Which read surface refused. Diagnostics only — never branched on. */
-    readonly surface = "read",
+    readonly surface: BrainReadSurface = "read",
   ) {
     super(
       `brain ${surface}: reader identity resolved to no usable principals (workspace ${workspaceId}, origin ${origin}) — refusing to serve an empty result set`,
@@ -91,20 +122,22 @@ export class BrainReaderUnresolvedError extends Error {
 
 /**
  * The reader's org role could not be re-resolved against the workspace being
- * read, for a session that demonstrably carries one.
+ * read, because the member-table lookup FAILED.
  *
  * Thrown rather than degraded — see the module header. Distinct from
  * {@link BrainReaderUnresolvedError}, which covers the reader who resolved to
  * NO principals at all: that one is detectable from the clause decision, this
  * one is invisible there by construction.
  */
-export class BrainRoleUnresolvedError extends Error {
+export class BrainRoleUnresolvedError extends BrainReaderIdentityError {
   constructor(
     readonly workspaceId: string,
-    readonly sessionRole: AtlasRole,
+    readonly userId: string,
+    options?: { cause?: unknown },
   ) {
     super(
-      `brain read: could not re-resolve the reader's org role for workspace ${workspaceId} (session role ${sessionRole}) — refusing to serve a result set narrowed by a failed role lookup`,
+      `brain read: the org-role lookup for workspace ${workspaceId} failed (user ${userId}) — refusing to serve a result set narrowed by a failed role lookup`,
+      options,
     );
     this.name = "BrainRoleUnresolvedError";
   }
@@ -121,8 +154,8 @@ export interface BrainReaderContextInput {
 /**
  * Resolve a brain reader's principal context for one workspace.
  *
- * @throws {BrainRoleUnresolvedError} when a session carrying a workspace role
- *   cannot have it re-resolved — a silent ACL narrowing if left unreported.
+ * @throws {BrainRoleUnresolvedError} when the member-table lookup fails — a
+ *   silent ACL narrowing if left unreported.
  */
 export async function resolveBrainReaderContext(
   db: AudienceMembershipReader,
@@ -131,19 +164,47 @@ export async function resolveBrainReaderContext(
   const { workspaceId, mode, user, requestId } = input;
   const userId = user?.id;
 
-  let resolvedRole: AtlasRole | undefined;
+  // `none` short-circuits BEFORE the lookup. `resolvePrincipalContext` discards
+  // the role entirely in that mode (the context is `unauthenticated-local`), so
+  // running it could only produce an avoidable hard failure — refusing a read
+  // over a role nothing was going to use.
+  if (mode === "none") {
+    return resolvePrincipalContext(db, {
+      workspaceId,
+      mode,
+      userId,
+      resolvedRole: undefined,
+      requestId,
+    });
+  }
+
+  let resolvedRole: { role: AtlasRole; orgId: string } | undefined;
   if (userId) {
-    resolvedRole = await resolveEffectiveRole(user?.role, userId, workspaceId);
-    if (!resolvedRole && user?.role && user.role !== "platform_admin") {
-      throw new BrainRoleUnresolvedError(workspaceId, user.role);
+    let resolution: EffectiveRoleResolution;
+    try {
+      resolution = await resolveEffectiveRoleStrict(user?.role, userId, workspaceId);
+    } catch (err) {
+      if (err instanceof MemberRoleLookupError) {
+        throw new BrainRoleUnresolvedError(workspaceId, userId, { cause: err });
+      }
+      throw err;
+    }
+    if (resolution.fromMemberRow && resolution.role) {
+      resolvedRole = { role: resolution.role, orgId: workspaceId };
+    } else if (resolution.role) {
+      // A role that did NOT come from this org's member row — a session role
+      // carried in from elsewhere, or a cross-tenant `platform_admin`. Neither
+      // is an org grant HERE, and forwarding it stamped with `orgId:
+      // workspaceId` would assert to `resolvePrincipalContext` that it was
+      // resolved against this workspace, defeating its mismatch check. Dropped,
+      // and logged: a reader who expected `role:` visibility and does not have
+      // it should be explicable from the logs.
+      log.warn(
+        { workspaceId, userId, role: resolution.role, requestId },
+        "brain read: reader's role did not come from this workspace's member row — dropping role grants",
+      );
     }
   }
 
-  return resolvePrincipalContext(db, {
-    workspaceId,
-    mode,
-    userId,
-    resolvedRole: resolvedRole ? { role: resolvedRole, orgId: workspaceId } : undefined,
-    requestId,
-  });
+  return resolvePrincipalContext(db, { workspaceId, mode, userId, resolvedRole, requestId });
 }

@@ -301,7 +301,7 @@ export interface BrainFactCandidateSummary {
  * {@link BrainSearchResult}.
  *
  * Not the same axis as ADR-0036's numeric trust tiers, which is why both are
- * carried. `TRUST_TIERS` (warehouse 1 > fact 2 > episode 3) orders how
+ * carried. `TRUST_TIERS` (`packages/api/src/lib/brain/types.ts`; warehouse 1 > fact 2 > episode 3) orders how
  * authoritative a TRUTH CLAIM is; tier 1 has no row representation anywhere
  * (warehouse facts resolve live through the semantic layer and are
  * `executeSQL`'s), so it can never appear here.
@@ -392,7 +392,7 @@ export interface BrainFactResult {
 }
 
 /** tier-3 — raw source content. Source-of-truth for what was said, never for what is true. */
-export interface BrainEpisodeResult {
+interface BrainEpisodeResultBase {
   readonly tier: "raw-episode";
   /** `TRUST_TIERS.episode`. */
   readonly trustTier: 3;
@@ -413,9 +413,23 @@ export interface BrainEpisodeResult {
   readonly occurredAt: string | null;
   readonly ingestedAt: string | null;
   readonly snippet: string | null;
-  readonly extraction: BrainEpisodeExtractionState;
-  readonly extractedAt: string | null;
 }
+
+/**
+ * Whether an extraction pass has run — and its timestamp, as ONE value.
+ *
+ * A union rather than `{ extraction; extractedAt: string | null }` because the
+ * two are fully derived from each other, and the flat pair makes
+ * `{ extraction: "complete", extractedAt: null }` spellable. Today one producer
+ * derives one from the other correctly; "an invariant enforced by a producer's
+ * diligence" is exactly what this file refuses for episode visibility and
+ * provenance, and the same treatment costs nothing here.
+ */
+export type BrainEpisodeExtraction =
+  | { readonly extraction: "pending"; readonly extractedAt: null }
+  | { readonly extraction: "complete"; readonly extractedAt: string };
+
+export type BrainEpisodeResult = BrainEpisodeResultBase & BrainEpisodeExtraction;
 
 /** Where a fused KB document came from. Mirrors the OKF `atlas:` provenance extension. */
 export interface BrainDocumentProvenance {
@@ -471,32 +485,45 @@ export interface BrainDocumentNeighbor extends BrainDocumentResult {
  */
 export type BrainSearchResult = BrainFactResult | BrainEpisodeResult | BrainDocumentResult;
 
-/** Per-store reporting for one fused read — what ran, what it found, what it capped. */
-export interface BrainSearchStoreReport {
-  /** True when the store was queried at all (`include` narrows the set). */
-  readonly queried: boolean;
-  /** Rows the store contributed to the fused set, BEFORE the global limit. */
-  readonly matched: number;
-  /**
-   * True when the store returned a full page and may hold more.
-   *
-   * Reported rather than implied: a fused read that silently truncates one
-   * store reads as "that store had nothing else", which for a conflict-bearing
-   * substrate is the same failure `tensionsTruncated` exists to prevent.
-   */
-  readonly truncated: boolean;
-}
+/**
+ * Per-store reporting for one fused read — what ran, what it found, what it
+ * capped.
+ *
+ * A union rather than `queried: boolean` beside two always-present numbers,
+ * because `{ queried: false, matched: 7 }` is representable in the flat shape
+ * and means nothing. Consumers must narrow before reading `matched`, which is
+ * correct: `matched: 0` on a store that was never queried is a number that
+ * would be read as "this store had nothing".
+ */
+export type BrainSearchStoreReport =
+  | { readonly queried: false }
+  | {
+      readonly queried: true;
+      /** Rows the store contributed to the fused set, BEFORE the global limit. */
+      readonly matched: number;
+      /**
+       * True when the store returned a full page and may hold more.
+       *
+       * Reported rather than implied: a fused read that silently truncates one
+       * store reads as "that store had nothing else", which for a
+       * conflict-bearing substrate is the same failure `tensionsTruncated`
+       * exists to prevent.
+       */
+      readonly truncated: boolean;
+    };
 
 export interface BrainSearchResponse {
   /** Fused across every queried store, relevance-ordered, every row labeled. */
   readonly results: readonly BrainSearchResult[];
   /** 1-hop KB link-graph expansion of the matched documents. Empty when `expand` is off. */
   readonly neighbors: readonly BrainDocumentNeighbor[];
-  readonly stores: {
-    readonly facts: BrainSearchStoreReport;
-    readonly episodes: BrainSearchStoreReport;
-    readonly documents: BrainSearchStoreReport;
-  };
+  /**
+   * Keyed by {@link BrainResultTier}, not by three hand-written names. Adding a
+   * fourth result class then fails to compile HERE too, instead of being the
+   * one place in the slice where "add a class" slips through — the tier tuple's
+   * exhaustiveness pin and `resultKey`'s `never` arm already catch the rest.
+   */
+  readonly stores: Readonly<Record<BrainResultTier, BrainSearchStoreReport>>;
   /**
    * True when the `in-tension-with` fan-out cap bit, so some facts' `tensions`
    * are incomplete. See {@link BrainFactCandidateListResponse.tensionsTruncated}.

@@ -4,7 +4,7 @@
  * Before this wrapper only the tools that remembered to self-instrument
  * (`atlas.sql.execute`, `atlas.explore`, `atlas.python.execute`,
  * `atlas.profile.table`) carried an `atlas.*` segment of their own;
- * `searchBrain`, `createDashboard`, `executeRestOperation` and the action
+ * `searchKnowledge` (now `searchBrain`), `createDashboard`, `executeRestOperation` and the action
  * tools had none, so latency could not be attributed within a turn by the
  * `atlas.`-prefixed views. Wrapping at the seam makes the span a property of
  * *being registered* rather than of each tool's own diligence: a newly

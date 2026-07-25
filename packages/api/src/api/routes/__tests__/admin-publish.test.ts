@@ -280,6 +280,30 @@ describe("POST /api/v1/admin/publish — refused drafts (#4769)", () => {
     ]);
   });
 
+  it("audits the TRUE refusal count even when the wire list is capped", async () => {
+    // The cap bounds the RESPONSE, not the truth. An earlier cut passed the
+    // capped array's length straight into the audit row, so a 250-refusal
+    // publish recorded "101" — a silent under-count in the one record designed
+    // to outlive the rotating logs.
+    REPORTS = [
+      {
+        table: "brain_facts",
+        promoted: 0,
+        refused: Array.from({ length: 250 }, (_, i) => ({
+          rowId: `f${i}`,
+          reasons: ["GRANT_UNUSABLE"],
+          detail: `detail ${i}`,
+        })),
+      },
+    ];
+    const res = await publish();
+    const body = (await res.json()) as { refusedDrafts?: unknown[] };
+    // Response is capped (100 + the overflow marker)…
+    expect(body.refusedDrafts).toHaveLength(101);
+    // …the audit is not.
+    expect(auditCalls[0].metadata).toMatchObject({ refusedDraftCount: 250 });
+  });
+
   it("records ids and reasons in the DURABLE audit row, not just a count", async () => {
     // `log.warn` rotates; `audit_log` does not. "3 drafts were refused" six
     // months later is unactionable.

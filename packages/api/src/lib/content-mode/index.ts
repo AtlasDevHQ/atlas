@@ -33,4 +33,8 @@ export {
 
 export { CONTENT_MODE_TABLES } from "./tables";
 export type { InferDraftCounts, InferPromotedCounts } from "./infer";
-export { collectRefusals, promotedCountsFromReports } from "./promoted";
+export {
+  collectRefusals,
+  promotedCountsFromReports,
+  type RefusalSweep,
+} from "./promoted";

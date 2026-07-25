@@ -141,10 +141,13 @@ describe("collectRefusals (#4769)", () => {
           refused: [{ rowId: "r9", reasons: ["OTHER"], detail: "d2" }],
         },
       ]),
-    ).toEqual([
-      { id: "f1", surface: "brain_facts", reasons: ["GRANT_UNUSABLE"], detail: "d1" },
-      { id: "r9", surface: "future_table", reasons: ["OTHER"], detail: "d2" },
-    ]);
+    ).toEqual({
+      reported: [
+        { id: "f1", surface: "brain_facts", reasons: ["GRANT_UNUSABLE"], detail: "d1" },
+        { id: "r9", surface: "future_table", reasons: ["OTHER"], detail: "d2" },
+      ],
+      total: 2,
+    });
   });
 
   it("treats absent and empty `refused` alike — both contribute nothing", () => {
@@ -156,7 +159,7 @@ describe("collectRefusals (#4769)", () => {
         { table: "a", promoted: 1 },
         { table: "b", promoted: 2, refused: [] },
       ]),
-    ).toEqual([]);
+    ).toEqual({ reported: [], total: 0 });
   });
 
   it("caps the report and says so rather than truncating silently", () => {
@@ -171,13 +174,21 @@ describe("collectRefusals (#4769)", () => {
     }));
     const out = collectRefusals([{ table: "brain_facts", promoted: 0, refused: many }]);
 
-    expect(out).toHaveLength(101);
-    expect(out.slice(0, 100).map((r) => r.id)).toEqual(many.slice(0, 100).map((r) => r.rowId));
-    const overflow = out[100];
+    expect(out.reported).toHaveLength(101);
+    expect(out.reported.slice(0, 100).map((r) => r.id)).toEqual(
+      many.slice(0, 100).map((r) => r.rowId),
+    );
+    const overflow = out.reported[100];
     expect(overflow.reasons).toEqual(["REPORT_TRUNCATED"]);
     expect(overflow.detail).toContain("150 further drafts");
     // The overflow entry must not read as a real row a reader could go fix.
     expect(overflow.id).toBe("(truncated)");
+    // THE POINT of the struct return: `total` is the TRUE count, not the capped
+    // length. The audit row keys off this, and a durable record that says "101
+    // refused" when 250 were is a silent under-count in the one place meant to
+    // outlive the logs.
+    expect(out.total).toBe(250);
+    expect(out.total).not.toBe(out.reported.length);
   });
 
   it("does not cap when the list fits exactly", () => {
@@ -187,8 +198,9 @@ describe("collectRefusals (#4769)", () => {
       detail: "d",
     }));
     const out = collectRefusals([{ table: "brain_facts", promoted: 0, refused: exactly }]);
-    expect(out).toHaveLength(100);
-    expect(out.some((r) => r.reasons.includes("REPORT_TRUNCATED"))).toBe(false);
+    expect(out.reported).toHaveLength(100);
+    expect(out.total).toBe(100);
+    expect(out.reported.some((r) => r.reasons.includes("REPORT_TRUNCATED"))).toBe(false);
   });
 });
 

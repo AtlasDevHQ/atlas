@@ -293,7 +293,7 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
     // identical `runPublishPhases`, so a refusal reported by one and dropped by
     // the other would let an MCP caller read `published: true` over facts that
     // are still drafts.
-    const refusedDrafts = collectRefusals(reports);
+    const refusals = collectRefusals(reports);
     const result: PublishWorkspaceDraftsResult = {
       promoted: promotedCountsFromReports(CONTENT_MODE_TABLES, reports),
       // #4156 — `deleted.entities` (shared shape), NOT the old flat
@@ -301,15 +301,15 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
       deleted: { entities: entitiesReport?.tombstonesApplied ?? 0 },
       // Omitted, not `[]`, when nothing was refused — matches the REST route so
       // a client can branch on presence identically on both surfaces.
-      ...(refusedDrafts.length > 0 ? { refusedDrafts } : {}),
+      ...(refusals.reported.length > 0 ? { refusedDrafts: refusals.reported } : {}),
     };
 
-    if (refusedDrafts.length > 0) {
+    if (refusals.total > 0) {
       log.warn(
         {
           orgId,
-          refusedCount: refusedDrafts.length,
-          refused: refusedDrafts.map((r) => ({
+          refusedCount: refusals.total,
+          refused: refusals.reported.map((r) => ({
             id: r.id,
             surface: r.surface,
             reasons: r.reasons,

@@ -28,11 +28,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
-import type {
-  PublishPromotedCounts,
-  PublishRefusedDraft,
-  PublishResult,
-} from "@useatlas/types";
+import type { PublishPromotedCounts, PublishResult } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { withInternalTransaction } from "@atlas/api/lib/db/with-internal-transaction";
@@ -48,6 +44,7 @@ import {
   collectRefusals,
   makeService,
   promotedCountsFromReports,
+  type RefusalSweep,
 } from "@atlas/api/lib/content-mode";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -259,7 +256,7 @@ adminPublish.openapi(publishRoute, async (c) =>
 
     // ── Transaction ────────────────────────────────────────────────
     let promoted: PublishPromotedCounts;
-    let refusedDrafts: readonly PublishRefusedDraft[];
+    let refusals: RefusalSweep;
     let deletedEntityCount: number;
     let archivedConnectionCount: number;
     let archivedEntityCount: number;
@@ -342,7 +339,7 @@ adminPublish.openapi(publishRoute, async (c) =>
       // and the transaction still committed — a refusal quarantines the row,
       // not the workspace's whole publish. `collectRefusals` is shared with the
       // MCP lib seam so the two publish paths cannot report differently.
-      refusedDrafts = collectRefusals(tx.reports);
+      refusals = collectRefusals(tx.reports);
       deletedEntityCount =
         tx.reports.find((r) => r.table === "semantic_entities")?.tombstonesApplied ?? 0;
       archivedConnectionCount = tx.archived.connections;
@@ -388,12 +385,14 @@ adminPublish.openapi(publishRoute, async (c) =>
         // record, and `log.warn` rotates. "3 drafts were refused" six months
         // later is unactionable. `detail` is deliberately dropped — it is
         // rendered prose, reconstructible from `reasons`.
-        refusedDrafts: refusedDrafts.map((r) => ({
+        refusedDrafts: refusals.reported.map((r) => ({
           id: r.id,
           surface: r.surface,
           reasons: r.reasons,
         })),
-        refusedDraftCount: refusedDrafts.length,
+        // The TRUE count, not `reported.length` — the wire list is capped and
+        // the audit row is the durable record.
+        refusedDraftCount: refusals.total,
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
         archivedEntities: archivedEntityCount,
@@ -408,7 +407,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         orgId,
         actorId: authResult.user?.id,
         promoted,
-        refusedDrafts: refusedDrafts.length,
+        refusedDrafts: refusals.total,
         deleted: { entities: deletedEntityCount },
         archived: {
           connections: archivedConnectionCount,
@@ -526,13 +525,13 @@ adminPublish.openapi(publishRoute, async (c) =>
       );
     }
 
-    if (refusedDrafts.length > 0) {
+    if (refusals.total > 0) {
       log.warn(
         {
           requestId,
           orgId,
-          refusedCount: refusedDrafts.length,
-          refused: refusedDrafts.map((r) => ({
+          refusedCount: refusals.total,
+          refused: refusals.reported.map((r) => ({
             id: r.id,
             surface: r.surface,
             reasons: r.reasons,
@@ -567,9 +566,9 @@ adminPublish.openapi(publishRoute, async (c) =>
         : {}),
       // Omitted, not `[]`, when nothing was refused — so a client can branch on
       // presence without an empty-array false positive.
-      ...(refusedDrafts.length > 0
+      ...(refusals.reported.length > 0
         ? {
-            refusedDrafts: refusedDrafts.map((r) => ({
+            refusedDrafts: refusals.reported.map((r) => ({
               id: r.id,
               surface: r.surface,
               reasons: [...r.reasons],

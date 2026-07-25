@@ -401,6 +401,17 @@ export function buildEpisodeQuery(options: {
 // Row projection
 // ---------------------------------------------------------------------------
 
+/**
+ * A `brain_facts` row off `pg`.
+ *
+ * `subject` / `predicate` / `object` are typed `string` and read without
+ * narrowing — the ONE place in this module that trusts a column, justified by
+ * `text NOT NULL` in migration 0180. Stated because the file is otherwise
+ * uniformly `unknown`-in, and because `loadTensions` reads the same three
+ * columns off the same table and narrows them: that asymmetry existed by
+ * accident and is now deliberate on both sides, with the tension path narrowing
+ * only because its rows arrive through a differently-shaped projection.
+ */
 interface FactRow {
   readonly id: string;
   readonly subject: string;

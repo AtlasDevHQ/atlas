@@ -115,11 +115,12 @@ describe("resolveBrainReaderContext", () => {
     ).rejects.toBeInstanceOf(BrainReaderIdentityError);
   });
 
-  it("DROPS a role that did not come from this workspace's member row", async () => {
-    // Fail-open direction. `resolveEffectiveRole`'s no-member-row arm returns
-    // the caller's session role verbatim; stamping THAT `orgId: workspaceId`
-    // would tell `resolvePrincipalContext` it was resolved here and mint
-    // `role:admin` tokens for a workspace this reader is not a member of.
+  it("grants nothing to a reader with NO member row, whatever their session claims", async () => {
+    // The fail-open direction, closed STRUCTURALLY rather than by a guard:
+    // because this module withholds the session role, `resolveEffectiveRoleStrict`
+    // has nothing to fall back to and `fromMemberRow` is the only thing that can
+    // produce a role at all. A session `admin` from another workspace therefore
+    // cannot mint `role:admin` tokens here — there is no path that carries it.
     memberRows = [];
     const ctx = await resolveBrainReaderContext(audienceDb, {
       workspaceId: WS,
@@ -138,6 +139,35 @@ describe("resolveBrainReaderContext", () => {
       user: user({ role: "platform_admin" }),
     });
     expect(ctx.role).toBeNull();
+  });
+
+  it("grants nothing when the member row's role is outside the vocabulary", async () => {
+    // Drift on the role column, distinct from "no member row". The reader must
+    // still lose its `role:` grants — but `resolveEffectiveRoleStrict` logs the
+    // stored value, because at this layer the two are indistinguishable and a
+    // reader silently missing every `role:`-granted fact needs a trail.
+    memberRows = [{ role: "superuser" }];
+    const ctx = await resolveBrainReaderContext(audienceDb, {
+      workspaceId: WS,
+      mode: "managed",
+      user: user({ role: "admin" }),
+    });
+    expect(ctx.role).toBeNull();
+  });
+
+  it("refuses a platform_admin's read too when the member lookup fails", async () => {
+    // Behaviour change worth pinning: a `platform_admin` used to short-circuit
+    // BEFORE the lookup, so it could not fail. This module asks the member table
+    // for everyone, so a blip now refuses their read as well — fail-closed, and
+    // deliberate.
+    memberLookupError = new Error("connection reset by peer");
+    await expect(
+      resolveBrainReaderContext(audienceDb, {
+        workspaceId: WS,
+        mode: "managed",
+        user: user({ role: "platform_admin" }),
+      }),
+    ).rejects.toBeInstanceOf(BrainRoleUnresolvedError);
   });
 
   it("keeps the member role of a platform_admin who IS a member of this workspace", async () => {

@@ -44,6 +44,27 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 const log = createLogger("auth:effective-role");
 
 /**
+ * The deepest `cause` in an error chain.
+ *
+ * Depth matters and is not fixed: a brain read wraps twice
+ * (`BrainRoleUnresolvedError` → `MemberRoleLookupError` → driver error), the
+ * resolver below wraps once. A hard-coded `err.cause` logs the WRAPPER's
+ * message from the two-deep site — which only restates ids the payload already
+ * carries — so the driver text that says what actually broke never lands
+ * anywhere. Walk instead of guessing the depth.
+ */
+export function rootCause(err: unknown): unknown {
+  let current = err;
+  // Bounded: `cause` chains are built by this codebase, but a cycle would spin
+  // forever and a log helper must not be able to hang a request.
+  for (let depth = 0; depth < 8; depth++) {
+    if (!(current instanceof Error) || current.cause === undefined) return current;
+    current = current.cause;
+  }
+  return current;
+}
+
+/**
  * A member-table lookup failed. Thrown only by
  * {@link resolveEffectiveRoleStrict}; `resolveEffectiveRole` catches it and
  * degrades to least privilege, which is correct for its own callers and
@@ -115,7 +136,17 @@ export async function resolveEffectiveRoleStrict(
 
   // member.role is the single source of truth for tenant admin-ness.
   const parsed = parseRole(rows[0].role);
-  return parsed ? { role: parsed, fromMemberRow: true } : { role: userRole, fromMemberRow: false };
+  if (parsed) return { role: parsed, fromMemberRow: true };
+  // A member row EXISTS but its role is outside the vocabulary — drift on the
+  // role column itself. Logged here because this is the only place that can
+  // see it: the caller receives `fromMemberRow: false`, indistinguishable from
+  // "no member row", and for a grant-deriving reader that means every `role:`
+  // token silently disappears with nothing anywhere saying why.
+  log.warn(
+    { userId, orgId: activeOrganizationId, storedRole: rows[0].role },
+    "Org member row carries a role outside the vocabulary — treating the reader as having no org role",
+  );
+  return { role: userRole, fromMemberRow: false };
 }
 
 export async function resolveEffectiveRole(
@@ -129,14 +160,21 @@ export async function resolveEffectiveRole(
     // log.error (not warn): a member-table read failure on the hot auth path
     // is a real production signal, and it down-privileges an org admin.
     //
-    // Unwrap to the CAUSE. `resolveEffectiveRoleStrict` wraps the driver error
-    // in `MemberRoleLookupError`, whose own message only restates the userId and
-    // orgId already in this payload — logging it would leave an operator able to
-    // see that the lookup broke but not whether it was a pool exhaustion, a
-    // statement timeout, a reset connection, or a missing relation.
-    const cause = err instanceof MemberRoleLookupError ? err.cause : err;
+    // Unwrap to the ROOT cause. `resolveEffectiveRoleStrict` wraps the driver
+    // error in `MemberRoleLookupError`, whose own message only restates the
+    // userId and orgId already in this payload — logging it would leave an
+    // operator able to see that the lookup broke but not whether it was a pool
+    // exhaustion, a statement timeout, a reset connection, or a missing
+    // relation.
+    const cause = rootCause(err);
     log.error(
-      { err: cause instanceof Error ? cause.message : String(cause), userId, orgId: activeOrganizationId },
+      {
+        // `?? err` so a driver that rejects with a bare `undefined` logs the
+        // wrapper rather than the literal string "undefined".
+        err: cause instanceof Error ? cause.message : String(cause ?? err),
+        userId,
+        orgId: activeOrganizationId,
+      },
       "Failed to look up org member role — failing closed to least privilege (org admins down-privileged)",
     );
     // Intrinsic fail-closed: the member lookup was ATTEMPTED (we have an active

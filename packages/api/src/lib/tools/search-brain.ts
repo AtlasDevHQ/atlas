@@ -65,6 +65,7 @@ import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { getInternalDB, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
+import { rootCause } from "@atlas/api/lib/auth/effective-role";
 import { searchBrainCore, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT } from "@atlas/api/lib/brain/search";
 import {
   BrainReaderIdentityError,
@@ -96,6 +97,19 @@ export const BRAIN_TOOL_REASONS = {
 } as const;
 
 export type BrainToolReason = (typeof BRAIN_TOOL_REASONS)[keyof typeof BRAIN_TOOL_REASONS];
+
+/**
+ * Compile error if `BrainSearchUnavailable` ever widens past this vocabulary.
+ *
+ * The two lists are duplicated because `@useatlas/types` cannot import from
+ * `@atlas/api`. Today the only thing holding them together is the
+ * `emptyResponse(BRAIN_TOOL_REASONS.noWorkspace)` call site; this makes the
+ * relation itself the pin, so a new `unavailable` value fails HERE rather than
+ * at whichever call site eventually tries to use it.
+ */
+type _UnavailableIsReason = BrainSearchUnavailable extends BrainToolReason ? true : never;
+const _unavailableIsReason: _UnavailableIsReason = true;
+void _unavailableIsReason;
 
 /**
  * Prose for the identity refusal.
@@ -148,6 +162,11 @@ Use the searchBrain tool for decisions, rationale, ownership, policy, and histor
  * operator grepping blind — the server-side `log.error` is the only other
  * trace, and nothing correlates the two without this.
  */
+function causeMessage(err: Error): string | undefined {
+  const cause = rootCause(err);
+  return cause instanceof Error && cause !== err ? cause.message : undefined;
+}
+
 function withRequestId(message: string, requestId: string | undefined): string {
   return requestId ? `${message} (request ${requestId})` : message;
 }
@@ -301,10 +320,12 @@ export const searchBrain = tool({
           {
             err: err.message,
             errorName: err.name,
-            // The wrapper's message names the workspace and the user, both
-            // already in this payload; the driver error underneath is the only
-            // text that says WHAT broke.
-            cause: err.cause instanceof Error ? err.cause.message : undefined,
+            // The ROOT cause, not `err.cause`. This chain is two deep
+            // (`BrainRoleUnresolvedError` → `MemberRoleLookupError` → driver
+            // error), and the middle link's message only restates the workspace
+            // and user already in this payload — so a single unwrap logs
+            // nothing new and the driver text never surfaces.
+            cause: causeMessage(err),
             workspaceId,
             requestId,
           },

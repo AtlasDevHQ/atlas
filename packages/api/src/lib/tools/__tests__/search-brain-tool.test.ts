@@ -279,7 +279,10 @@ describe("searchBrain tool.execute", () => {
     const results = res.results as Array<Record<string, unknown>>;
     expect(results).toHaveLength(2);
     // Shape-enforced labeling: every row carries a tier and its trust tier.
-    expect(results.map((r) => r.tier).sort()).toEqual(["fact", "raw-episode"]);
+    // Sorted to make the assertion order-independent — the FUSED order is
+    // pinned separately in `lib/brain/__tests__/search.test.ts`.
+    const tiers = [...results.map((r) => r.tier)].sort((a, b) => String(a).localeCompare(String(b)));
+    expect(tiers).toEqual(["fact", "raw-episode"]);
     const fact = results.find((r) => r.tier === "fact")!;
     expect(fact.trustTier).toBe(2);
     expect(fact.corroborationCount).toBe(2);

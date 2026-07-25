@@ -410,6 +410,178 @@ describe("runDatasource — publish (#4126)", () => {
     expect(text).toContain("12 knowledge documents");
   });
 
+  it("names brain facts in the summary (#4769)", async () => {
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 0,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 1,
+      },
+      deleted: { entities: 0 },
+    });
+    const { io, out } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    const text = out.join("\n");
+    expect(text).not.toContain("Nothing to publish");
+    // Singular, and named — an admin who published one reviewed fact should be
+    // told that is what happened.
+    expect(text).toContain("1 brain fact");
+  });
+
+  it("surfaces refused drafts on stderr — a partial publish is never silent (#4769)", async () => {
+    // The publish committed (exit 0 is right), but some drafts did NOT go live.
+    // `0 brain facts` in the success sentence is indistinguishable from "this
+    // workspace has no facts", so without this the partial publish is invisible.
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 1,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      },
+      deleted: { entities: 0 },
+      refusedDrafts: [
+        {
+          id: "fact-1",
+          surface: "brain_facts",
+          reasons: ["GRANT_UNUSABLE"],
+          detail: '"acme uses postgres" (fact-1) was not published because its grant has no usable principal.',
+        },
+      ],
+    });
+    const { io, out, err } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    const errText = err.join("\n");
+    expect(errText).toContain("1 draft was NOT published");
+    // The API's actionable sentence is relayed verbatim.
+    expect(errText).toContain("acme uses postgres");
+    expect(errText).toContain("still drafts");
+    // The success line stays on stdout — the two streams say different things.
+    expect(out.join("\n")).toContain("1 datasource");
+  });
+
+  it("prints the TRUE refusal count, not the capped list length (#4769)", async () => {
+    // The API caps `refusedDrafts` at 100 and carries the real count in
+    // `refusedDraftTotal`. Counting the list would under-report exactly when the
+    // backlog is worst — the defect that survived two fix rounds because no test
+    // pinned what the renderers print on truncation.
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 0,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      },
+      deleted: { entities: 0 },
+      refusedDrafts: Array.from({ length: 100 }, (_, i) => ({
+        id: `f${i}`,
+        surface: "brain_facts",
+        reasons: ["GRANT_UNUSABLE"],
+        detail: `detail ${i}`,
+      })),
+      refusedDraftTotal: 250,
+    });
+    const { io, err } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    const errText = err.join("\n");
+    expect(errText).toContain("250 drafts were NOT published");
+    expect(errText).not.toContain("100 drafts were NOT published");
+    // And it says the list is partial rather than implying it is everything.
+    expect(errText).toContain("150 more");
+  });
+
+  it("falls back to the list length when an older API omits the total", async () => {
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 0,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      },
+      deleted: { entities: 0 },
+      refusedDrafts: [
+        { id: "f1", surface: "brain_facts", reasons: ["GRANT_UNUSABLE"], detail: "d" },
+      ],
+    });
+    const { io, err } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    expect(err.join("\n")).toContain("1 draft was NOT published");
+  });
+
+  it("never reports 'Nothing to publish' when drafts were REFUSED (#4769)", async () => {
+    // An all-refused publish has every promoted count at 0, so the
+    // nothing-to-publish early return fired and printed "no pending drafts in
+    // this workspace" over a backlog of blocked ones — the single most
+    // misleading line this command could emit, and the exact shape a buggy
+    // extraction fiber produces.
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 0,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      },
+      deleted: { entities: 0 },
+      refusedDrafts: [
+        { id: "f1", surface: "brain_facts", reasons: ["GRANT_UNUSABLE"], detail: "bad grant" },
+      ],
+      refusedDraftTotal: 1,
+    });
+    const { io, out, err } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    expect(out.join("\n")).not.toContain("Nothing to publish");
+    expect(err.join("\n")).toContain("1 draft was NOT published");
+  });
+
+  it("says nothing about refusals when there were none", async () => {
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 1,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      },
+      deleted: { entities: 0 },
+    });
+    const { io, err } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    expect(err.join("\n")).not.toContain("NOT published");
+  });
+
+  it("counts a segment this build has never heard of toward 'something happened'", async () => {
+    // Reverse deploy-overlap: a NEWER API promotes a surface this CLI predates.
+    // The total must still be non-zero — reporting "Nothing to publish" for a
+    // publish that promoted rows is the milestone-#81 under-report, inverted.
+    const { fetchImpl } = stubFetch(200, {
+      promoted: {
+        connections: 0,
+        entities: 0,
+        prompts: 0,
+        starterPrompts: 0,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+        somethingNewer: 4,
+      },
+      deleted: { entities: 0 },
+    });
+    const { io, out } = capture();
+    expect(await runDatasource(["datasource", "publish"], deps(fetchImpl), io)).toBe(0);
+    expect(out.join("\n")).not.toContain("Nothing to publish");
+  });
+
   it("--json emits the publish response with the validated core normalized", async () => {
     // A realistic REST response from an OLDER API (no `knowledgeDocuments`) —
     // the client validates + overlays the parsed core, so `--json` emits the
@@ -425,7 +597,7 @@ describe("runDatasource — publish (#4126)", () => {
     expect(code).toBe(0);
     expect(JSON.parse(out.join("\n"))).toEqual({
       ...body,
-      promoted: { ...body.promoted, knowledgeDocuments: 0 },
+      promoted: { ...body.promoted, knowledgeDocuments: 0, brainFacts: 0 },
     });
   });
 

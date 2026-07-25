@@ -29,7 +29,9 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
+import { Effect } from "effect";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
+import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import {
   USER_PREFIX,
@@ -504,11 +506,17 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
     "composes as one of four AND-ed gates — each is independently load-bearing",
     async () => {
       // ADR-0036: residency-invariant (by construction — the process IS the
-      // region) AND org/group reach AND content mode AND the grant. The status
-      // clause is written literally here because `brain_facts` joins the
-      // content-mode registry in #4769; when it does, this becomes
-      // `resolveStatusClause("brain_facts", mode, "f")` and must keep meaning
-      // exactly this.
+      // region) AND org/group reach AND content mode AND the grant.
+      //
+      // The content-mode gate now comes from the REGISTRY (#4769) rather than a
+      // literal `f.status = 'published'`. `brain_facts` registered as an EXOTIC
+      // entry — its promotion can refuse an individual fact, which a simple
+      // entry's blanket UPDATE cannot — so the seam is
+      // `ContentModeRegistry.readFilter`, not `resolveStatusClause` (which
+      // throws for exotic entries by design). Either way this is a live check
+      // that the registration landed: an unregistered table fails with
+      // `UnknownTableError` instead of silently serving rows. The emitted text
+      // must still mean exactly what the literal meant.
       const wsC = `${WS}-compose`;
       const otherC = `${WS}-compose-other`;
       const epC = await seedEpisode(wsC, "compose", ["org"]);
@@ -518,6 +526,11 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
       await seedFact({ workspaceId: wsC, episodeId: epC, subject: "fails-mode", visibleTo: ["org"], status: "draft" });
       await seedFact({ workspaceId: wsC, episodeId: epC, subject: "fails-grant", visibleTo: ["audience:exec"] });
       await seedFact({ workspaceId: otherC, episodeId: epOther, subject: "fails-reach", visibleTo: ["org"] });
+
+      const modeClause = await Effect.runPromise(
+        makeService(CONTENT_MODE_TABLES).readFilter("brain_facts", "published", "f"),
+      );
+      expect(modeClause).toBe("f.status = 'published'");
 
       const reader = ctx({ workspaceId: wsC, role: "member" });
       // The caller's own reach param is $1; the ACL clause starts after it.
@@ -530,7 +543,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
         `SELECT f.subject
            FROM brain_facts f
           WHERE f.workspace_id = $1
-            AND f.status = 'published'
+            AND ${modeClause}
             AND ${clause.sql}
           ORDER BY f.subject COLLATE "C"`,
         [wsC, ...clause.params],
@@ -550,7 +563,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
       // residency is invariant by construction and has no clause at all.
       const withoutAcl = await pool.query<{ subject: string }>(
         `SELECT f.subject FROM brain_facts f
-          WHERE f.workspace_id = $1 AND f.status = 'published' ORDER BY f.subject COLLATE "C"`,
+          WHERE f.workspace_id = $1 AND ${modeClause} ORDER BY f.subject COLLATE "C"`,
         [wsC],
       );
       expect(withoutAcl.rows.map((r) => r.subject)).toEqual(["all-gates-pass", "fails-grant"]);
@@ -567,7 +580,7 @@ describeIfPg("brain ACL visibility predicate (real Postgres)", () => {
         paramIndex: 1,
       });
       const withoutReach = await pool.query<{ subject: string }>(
-        `SELECT f.subject FROM brain_facts f WHERE f.status = 'published' AND ${soloClause.sql} ORDER BY f.subject COLLATE "C"`,
+        `SELECT f.subject FROM brain_facts f WHERE ${modeClause} AND ${soloClause.sql} ORDER BY f.subject COLLATE "C"`,
         [...soloClause.params],
       );
       expect(withoutReach.rows.map((r) => r.subject)).toEqual(["all-gates-pass"]);

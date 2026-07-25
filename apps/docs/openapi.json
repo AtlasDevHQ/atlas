@@ -12161,6 +12161,10 @@
                         "knowledgeDocuments": {
                           "type": "integer",
                           "minimum": 0
+                        },
+                        "brainFacts": {
+                          "type": "integer",
+                          "minimum": 0
                         }
                       },
                       "required": [
@@ -12170,7 +12174,8 @@
                         "entityDeletes",
                         "prompts",
                         "starterPrompts",
-                        "knowledgeDocuments"
+                        "knowledgeDocuments",
+                        "brainFacts"
                       ]
                     },
                     "draftActivity": {
@@ -12283,6 +12288,21 @@
                           "required": [
                             "lastEditedAt"
                           ]
+                        },
+                        "brainFacts": {
+                          "type": "object",
+                          "properties": {
+                            "lastEditedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time"
+                            }
+                          },
+                          "required": [
+                            "lastEditedAt"
+                          ]
                         }
                       },
                       "required": [
@@ -12292,7 +12312,8 @@
                         "entityDeletes",
                         "prompts",
                         "starterPrompts",
-                        "knowledgeDocuments"
+                        "knowledgeDocuments",
+                        "brainFacts"
                       ]
                     }
                   },
@@ -58087,7 +58108,7 @@
           "Admin — Mode"
         ],
         "summary": "Publish all drafts",
-        "description": "Atomically promote every `draft` and apply every `draft_delete` tombstone for the active org, optionally archiving the specified connections. After a successful response, no draft or tombstone rows remain for the org.",
+        "description": "Atomically promote every `draft` and apply every `draft_delete` tombstone for the active org, optionally archiving the specified connections. After a successful response, no draft or tombstone rows remain for the org — EXCEPT any listed in `refusedDrafts`, which the review gate declined to promote (a company-brain fact missing provenance or a usable grant). Those stay `draft`, stay in `draftCounts`, and are re-offered on the next publish.",
         "requestBody": {
           "required": true,
           "content": {
@@ -58137,6 +58158,10 @@
                         "knowledgeDocuments": {
                           "type": "integer",
                           "minimum": 0
+                        },
+                        "brainFacts": {
+                          "type": "integer",
+                          "minimum": 0
                         }
                       },
                       "required": [
@@ -58144,7 +58169,8 @@
                         "entities",
                         "prompts",
                         "starterPrompts",
-                        "knowledgeDocuments"
+                        "knowledgeDocuments",
+                        "brainFacts"
                       ]
                     },
                     "deleted": {
@@ -58234,6 +58260,39 @@
                       "required": [
                         "incompleteLayers"
                       ]
+                    },
+                    "refusedDrafts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "surface": {
+                            "type": "string"
+                          },
+                          "reasons": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "detail": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "surface",
+                          "reasons",
+                          "detail"
+                        ]
+                      }
+                    },
+                    "refusedDraftTotal": {
+                      "type": "integer",
+                      "minimum": 0
                     }
                   },
                   "required": [
@@ -58543,6 +58602,29 @@
                           "updatedAt"
                         ]
                       }
+                    },
+                    "brainFacts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "updatedAt"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -58552,7 +58634,8 @@
                     "entityDeletes",
                     "prompts",
                     "starterPrompts",
-                    "knowledgeDocuments"
+                    "knowledgeDocuments",
+                    "brainFacts"
                   ]
                 }
               }

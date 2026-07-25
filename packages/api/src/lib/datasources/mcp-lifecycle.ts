@@ -31,6 +31,7 @@ import type { PublishResult, WorkspaceId } from "@useatlas/types";
 import {
   CONTENT_MODE_TABLES,
   makeService,
+  collectRefusals,
   promotedCountsFromReports,
 } from "@atlas/api/lib/content-mode";
 import { connections } from "@atlas/api/lib/db/connection";
@@ -287,12 +288,38 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
     // surface can never be silently dropped from this result (the hand-listed
     // fan-out layout this replaces is what let knowledge ship under-reported).
     const entitiesReport = reports.find((r) => r.table === "semantic_entities");
+    // Drafts the review gate declined to promote (#4769). Swept with the SAME
+    // helper `admin-publish.ts` uses: this seam and the REST route run the
+    // identical `runPublishPhases`, so a refusal reported by one and dropped by
+    // the other would let an MCP caller read `published: true` over facts that
+    // are still drafts.
+    const refusals = collectRefusals(reports);
     const result: PublishWorkspaceDraftsResult = {
       promoted: promotedCountsFromReports(CONTENT_MODE_TABLES, reports),
       // #4156 — `deleted.entities` (shared shape), NOT the old flat
       // `deletedEntities`; mirrors the REST route's `deleted: { entities }`.
       deleted: { entities: entitiesReport?.tombstonesApplied ?? 0 },
+      // Omitted, not `[]`, when nothing was refused — matches the REST route so
+      // a client can branch on presence identically on both surfaces.
+      ...(refusals.total > 0
+        ? { refusedDrafts: refusals.reported, refusedDraftTotal: refusals.total }
+        : {}),
     };
+
+    if (refusals.total > 0) {
+      log.warn(
+        {
+          orgId,
+          refusedCount: refusals.total,
+          refused: refusals.reported.map((r) => ({
+            id: r.id,
+            surface: r.surface,
+            reasons: r.reasons,
+          })),
+        },
+        "Publish committed, but the review gate refused to promote one or more drafts — they remain drafts",
+      );
+    }
 
     // Best-effort hot-register into the live ConnectionRegistry — same
     // posture as admin-publish.ts (#3856): a transient failure here must

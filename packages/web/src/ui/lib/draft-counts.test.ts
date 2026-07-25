@@ -17,23 +17,24 @@ const FULL: ModeDraftCounts = {
   prompts: 5,
   starterPrompts: 6,
   knowledgeDocuments: 7,
+  brainFacts: 8,
 };
 
 describe("totalDraftCount", () => {
   it("sums every segment of a complete counts object", () => {
-    expect(totalDraftCount(FULL)).toBe(28);
+    expect(totalDraftCount(FULL)).toBe(36);
   });
 
   it("stays a finite sum of the present fields when an older API omits a segment", () => {
     const { knowledgeDocuments: _kd, ...older } = FULL;
     const total = totalDraftCount(older as unknown as ModeDraftCounts);
-    expect(total).toBe(21);
+    expect(total).toBe(29);
     expect(Number.isFinite(total)).toBe(true);
   });
 
   it("ignores a non-numeric segment instead of poisoning the total", () => {
     const poisoned = { ...FULL, entities: undefined } as unknown as ModeDraftCounts;
-    expect(totalDraftCount(poisoned)).toBe(26);
+    expect(totalDraftCount(poisoned)).toBe(34);
   });
 
   it("returns 0 for an all-zero object (the hide-guard case)", () => {

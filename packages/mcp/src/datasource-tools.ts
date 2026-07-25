@@ -961,6 +961,19 @@ export function registerDatasourceTools(
             published: true,
             promoted: result.promoted,
             deleted: { entities: result.deleted.entities },
+            // #4769 — drafts the review gate declined to promote. An agent that
+            // reads `published: true` and reports success to a human MUST see
+            // these, or it will claim facts went live that are still drafts.
+            // Omitted (not `[]`) when nothing was refused, matching REST.
+            ...(result.refusedDrafts && result.refusedDrafts.length > 0
+              ? {
+                  refusedDrafts: result.refusedDrafts,
+                  // The list is capped at 100; this is not. An agent relaying a
+                  // count to a human must use this one.
+                  refusedDraftTotal:
+                    result.refusedDraftTotal ?? result.refusedDrafts.length,
+                }
+              : {}),
           };
           return {
             content: [

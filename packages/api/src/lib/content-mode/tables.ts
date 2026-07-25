@@ -19,6 +19,12 @@
 import type { ContentModeEntry } from "./port";
 import { matchScopeAcrossAliases } from "@atlas/api/lib/db/with-group-scope";
 import { promoteSemanticEntities } from "./adapters/semantic-entities";
+// Function DECLARATIONS only — see `BRAIN_FACTS_TABLE`'s comment in the
+// adapter. The `port → tables → adapters → port` ESM cycle means this module
+// evaluates while the adapter is still initializing, so a `const` import would
+// be in its temporal dead zone at tuple-construction time; hoisted functions
+// are not.
+import { brainFactStatusClause, brainFactsCountSql, promoteBrainFacts } from "./adapters/brain-facts";
 
 // `as const` is load-bearing: preserves key + kind literals for
 // InferDraftCounts; `satisfies` enforces the port shape without widening.
@@ -92,5 +98,32 @@ export const CONTENT_MODE_TABLES = [
       },
     ],
     promote: promoteSemanticEntities,
+  },
+  // #4769 / ADR-0036 — the company brain's tier-2 fact class. Exotic for its
+  // WRITE only: reads are plain status semantics (see the adapter's
+  // `readFilter`), but promotion must be able to refuse an individual fact and
+  // name it, which a blanket UPDATE cannot. Scoped by `workspace_id`, like
+  // `knowledge_documents` and `connections`.
+  //
+  // `brain_episodes` is deliberately NOT registered: episodes are append-only
+  // evidence with no `status` column at all (migration 0180), and evidence is
+  // not review-gated — only the CLAIMS drawn from it are. `brain_edges` is
+  // derived structure whose visibility follows its endpoints, so it is
+  // content-mode-exempt for the same reason `knowledge_links` is.
+  {
+    kind: "exotic",
+    // Literal, matching `BRAIN_FACTS_TABLE` — see the import note above.
+    key: "brain_facts",
+    promotedKey: "brainFacts",
+    countSegments: [{ key: "brainFacts", sql: brainFactsCountSql }],
+    promote: promoteBrainFacts,
+    // Plain status semantics, no overlay CTE. Present because an exotic entry
+    // without a `readFilter` makes `ContentModeRegistry.readFilter` fail with
+    // `ExoticReadFilterUnavailableError` — the alternative to which would be a
+    // silent fallback that serves draft facts to the agent.
+    readFilter: {
+      published: (alias: string) => brainFactStatusClause("published", alias),
+      developerOverlay: (alias: string) => brainFactStatusClause("developer", alias),
+    },
   },
 ] as const satisfies ReadonlyArray<ContentModeEntry>;

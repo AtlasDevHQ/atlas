@@ -66,6 +66,7 @@ const DraftCountsSchema = z.object({
   prompts: z.number().int().nonnegative(),
   starterPrompts: z.number().int().nonnegative(),
   knowledgeDocuments: z.number().int().nonnegative(),
+  brainFacts: z.number().int().nonnegative(),
 });
 
 const DraftSurfaceActivitySchema = z.object({
@@ -80,6 +81,7 @@ const DraftActivitySchema = z.object({
   prompts: DraftSurfaceActivitySchema,
   starterPrompts: DraftSurfaceActivitySchema,
   knowledgeDocuments: DraftSurfaceActivitySchema,
+  brainFacts: DraftSurfaceActivitySchema,
 });
 
 const ModeStatusSchema = z.object({
@@ -127,15 +129,21 @@ const getModeRoute = createRoute({
 // `queryEffect` so failures land in the Effect error channel.
 const DEMO_ACTIVE_SQL = demoInstallActiveSql(["published"]);
 
+/**
+ * Total drafts across every segment `countAllDrafts` returned.
+ *
+ * Sums `Object.values` rather than a hand-listed field chain. `counts` is
+ * derived from the registry tuple via `InferDraftCounts`, so a newly-registered
+ * surface widens it automatically — and a hand-listed sum would silently omit
+ * the new segment, leaving `hasDrafts: false` (no banner, no publish button)
+ * for a workspace whose ONLY drafts are on the new surface. Every value is a
+ * number by construction; the guard is for a driver returning a numeric as a
+ * string, which would otherwise concatenate.
+ */
 function totalDrafts(counts: ModeDraftCounts): number {
-  return (
-    counts.connections +
-    counts.entities +
-    counts.entityEdits +
-    counts.entityDeletes +
-    counts.prompts +
-    counts.starterPrompts +
-    counts.knowledgeDocuments
+  return Object.values(counts).reduce<number>(
+    (sum, v) => sum + (typeof v === "number" && Number.isFinite(v) ? v : 0),
+    0,
   );
 }
 
@@ -175,7 +183,17 @@ const DRAFT_ACTIVITY_SQL = `
   UNION ALL
   SELECT 'knowledgeDocuments' AS key, MAX(updated_at) AS at FROM knowledge_documents
    WHERE workspace_id = $1 AND status = 'draft'
+  UNION ALL
+  SELECT 'brainFacts' AS key, MAX(updated_at) AS at FROM brain_facts
+   WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL
 `;
+
+// `invalidated_at IS NULL` above is NOT optional polish: `brainFactsCountSql`,
+// the publish preview, and the promote UPDATE all exclude retracted facts
+// (#4769), so omitting it here would make a workspace whose only remaining
+// drafts are retracted report `brainFacts: 0` with a real `lastEditedAt` —
+// the two halves of one display surface (`content-surfaces.ts` folds them into
+// a single descriptor) disagreeing about whether anything is pending.
 
 /**
  * Coerce a pg `timestamptz` value to an ISO-8601 string. `pg` returns
@@ -203,19 +221,44 @@ const ACTIVITY_SURFACE_KEYS = [
   "prompts",
   "starterPrompts",
   "knowledgeDocuments",
+  "brainFacts",
 ] as const satisfies ReadonlyArray<keyof ModeDraftActivity>;
+
+// `satisfies` alone catches a TYPO but permits an OMISSION — a subset still
+// satisfies `ReadonlyArray<keyof …>`. Hono does not validate responses, so a
+// forgotten key would ship a missing required field with every test green.
+// This gate makes the omission a compile error, mirroring `_AllCountKeysClaimed`
+// in `web/src/ui/lib/content-surfaces.ts`.
+//
+// What it does NOT prove: that `DRAFT_ACTIVITY_SQL` emits a UNION arm per key.
+// Add a key here and to the type but forget the SQL and you ship a well-formed
+// response whose `lastEditedAt` is permanently null — quieter than a missing
+// field, not louder. That half is covered by the per-segment route tests in
+// `__tests__/mode.test.ts`, which assert the arm's table and scope column.
+type _AllActivityKeysCovered = [keyof ModeDraftActivity] extends [
+  (typeof ACTIVITY_SURFACE_KEYS)[number],
+]
+  ? true
+  : never;
+const _allActivityKeysCovered: _AllActivityKeysCovered = true;
+void _allActivityKeysCovered;
 
 function buildDraftActivity(
   rows: ReadonlyArray<{ key: string; at: unknown }>,
 ): ModeDraftActivity {
-  const result: Record<string, { lastEditedAt: string | null }> = {};
+  // Keyed by the surface union rather than `string`, so the single cast on the
+  // return is a widening of a fully-populated record — not the `as unknown as`
+  // double cast this replaced, which erased whatever `_AllActivityKeysCovered`
+  // above had just proved.
+  type ActivityKey = (typeof ACTIVITY_SURFACE_KEYS)[number];
+  const result = {} as Record<ActivityKey, { lastEditedAt: string | null }>;
   for (const k of ACTIVITY_SURFACE_KEYS) result[k] = { lastEditedAt: null };
   const allowed = new Set<string>(ACTIVITY_SURFACE_KEYS);
   for (const row of rows) {
     if (!allowed.has(row.key)) continue;
-    result[row.key] = { lastEditedAt: toIsoOrNull(row.at) };
+    result[row.key as ActivityKey] = { lastEditedAt: toIsoOrNull(row.at) };
   }
-  return result as unknown as ModeDraftActivity;
+  return result;
 }
 
 // ---------------------------------------------------------------------------

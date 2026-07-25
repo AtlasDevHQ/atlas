@@ -838,6 +838,25 @@ describe("publishWorkspaceDrafts (#4126)", () => {
       if (/UPDATE\s+knowledge_documents\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
         return { rows: [], rowCount: 5 };
       }
+      // Brain facts promote NON-ZERO for the same reason knowledge does: a
+      // broken `promotedKey` mapping would also read 0, so a zero fixture
+      // cannot tell success from the bug it is meant to catch.
+      if (/FROM\s+brain_facts/i.test(sql)) {
+        return {
+          rows: [
+            {
+              id: "f1",
+              subject: "acme",
+              predicate: "uses",
+              object: "postgres",
+              source_episode_id: "ep-1",
+              provenance: { actor: "test" },
+              visible_to: ["org"],
+            },
+          ],
+        };
+      }
+      if (/UPDATE\s+brain_facts/i.test(sql)) return { rows: [], rowCount: 1 };
       return { rows: [] };
     };
 
@@ -847,7 +866,14 @@ describe("publishWorkspaceDrafts (#4126)", () => {
     // old flat `deletedEntities`. The non-zero knowledgeDocuments pins the
     // "knowledge_documents" report lookup — a table-name typo would read 0 here.
     expect(result).toEqual({
-      promoted: { connections: 1, entities: 2, prompts: 0, starterPrompts: 3, knowledgeDocuments: 5 },
+      promoted: {
+        connections: 1,
+        entities: 2,
+        prompts: 0,
+        starterPrompts: 3,
+        knowledgeDocuments: 5,
+        brainFacts: 1,
+      },
       deleted: { entities: 1 },
     });
     const sqlLog = publishClientQueries.map((q) => q.sql.trim().toUpperCase());
@@ -858,6 +884,62 @@ describe("publishWorkspaceDrafts (#4126)", () => {
     expect(publishClientReleaseArg).toBeUndefined();
     // Best-effort hot-register runs post-commit (#3856 parity).
     expect(reconcileCalls).toEqual(["org_1"]);
+  });
+
+  it("reports refused drafts so the MCP tool cannot claim a false success (#4769)", async () => {
+    // This seam runs the SAME `runPublishPhases` as the REST route. Before
+    // #4769's fix it built its result from promoted counts alone, so a refused
+    // fact reached the server log and nothing else — an agent publishing over
+    // MCP read `published: true` over claims that were still drafts.
+    publishQueryHandler = async (sql) => {
+      if (/FROM\s+brain_facts/i.test(sql)) {
+        return {
+          rows: [
+            {
+              id: "fact-ok",
+              subject: "acme",
+              predicate: "uses",
+              object: "postgres",
+              source_episode_id: "ep-1",
+              provenance: { actor: "test" },
+              visible_to: ["org"],
+            },
+            {
+              id: "fact-bad",
+              subject: "acme",
+              predicate: "prefers",
+              object: "mysql",
+              source_episode_id: "ep-1",
+              provenance: { actor: "test" },
+              visible_to: ["everyone"],
+            },
+          ],
+        };
+      }
+      if (/UPDATE\s+brain_facts/i.test(sql)) return { rows: [], rowCount: 1 };
+      return { rows: [] };
+    };
+
+    const result = await publishWorkspaceDrafts("org_1");
+
+    expect(result.promoted.brainFacts).toBe(1);
+    expect(result.refusedDrafts).toEqual([
+      {
+        id: "fact-bad",
+        surface: "brain_facts",
+        reasons: ["GRANT_UNUSABLE"],
+        detail: expect.stringContaining("acme prefers mysql"),
+      },
+    ]);
+    // Still COMMITS — the refusal quarantines the row, not the publish.
+    expect(publishClientQueries.map((q) => q.sql.trim().toUpperCase())).toContain("COMMIT");
+  });
+
+  it("omits refusedDrafts when nothing was refused", async () => {
+    // Omitted, not `[]`, matching REST so a client branches on presence
+    // identically on both surfaces.
+    const result = await publishWorkspaceDrafts("org_1");
+    expect(result).not.toHaveProperty("refusedDrafts");
   });
 
   it("rolls back, rethrows, and skips the reconcile on a phase failure", async () => {
@@ -886,6 +968,7 @@ describe("publishWorkspaceDrafts (#4126)", () => {
       prompts: 0,
       starterPrompts: 0,
       knowledgeDocuments: 0,
+      brainFacts: 0,
     });
   });
 });

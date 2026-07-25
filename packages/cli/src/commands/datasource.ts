@@ -559,6 +559,28 @@ async function runCreate(
 }
 
 /**
+ * How each promoted-count segment is spelled in the publish summary, in
+ * publish-dependency order. Mirrors `PublishPromotedCounts` in
+ * `@useatlas/types`, which the content-mode registry derives — so a segment
+ * added there wants a line added here. Forgetting only costs the noun: the
+ * "did anything happen?" total sums whatever the API actually sent.
+ */
+const PUBLISH_SURFACES: ReadonlyArray<{
+  readonly key: string;
+  readonly singular: string;
+  readonly plural: string;
+}> = [
+  { key: "connections", singular: "datasource", plural: "datasources" },
+  { key: "entities", singular: "entity", plural: "entities" },
+  { key: "prompts", singular: "prompt collection", plural: "prompt collections" },
+  { key: "starterPrompts", singular: "starter prompt", plural: "starter prompts" },
+  { key: "knowledgeDocuments", singular: "knowledge document", plural: "knowledge documents" },
+  // #4769 / ADR-0036. Counts only facts that PASSED the review gate's
+  // structural refusals; a refused fact stays a draft.
+  { key: "brainFacts", singular: "brain fact", plural: "brain facts" },
+];
+
+/**
  * `atlas datasource publish [id]` — promote every pending draft in the
  * workspace (#4126). The `id` positional is OPTIONAL and purely cosmetic: it
  * tailors the confirmation line, but `POST /api/v1/admin/publish` is atomic
@@ -579,14 +601,11 @@ async function runPublish(
       return 0;
     }
     const promoted = asRecord(result.promoted);
-    const counts = {
-      connections: typeof promoted.connections === "number" ? promoted.connections : 0,
-      entities: typeof promoted.entities === "number" ? promoted.entities : 0,
-      prompts: typeof promoted.prompts === "number" ? promoted.prompts : 0,
-      starterPrompts: typeof promoted.starterPrompts === "number" ? promoted.starterPrompts : 0,
-      // v0.0.41 surface; an older API omits it (the typeof guard reads 0).
-      knowledgeDocuments:
-        typeof promoted.knowledgeDocuments === "number" ? promoted.knowledgeDocuments : 0,
+    const at = (key: string): number => {
+      // Bind once: `promoted[key]` twice makes the narrowing invisible to the
+      // reader and forces a cast the compiler doesn't actually need.
+      const value = promoted[key];
+      return typeof value === "number" ? value : 0;
     };
     // The publish also tombstones stale entities superseded by the promotion
     // (`deleted.entities`). Count it toward "did anything happen?" so a
@@ -595,29 +614,75 @@ async function runPublish(
       typeof asRecord(result.deleted).entities === "number"
         ? (asRecord(result.deleted).entities as number)
         : 0;
-    const promotedTotal =
-      counts.connections +
-      counts.entities +
-      counts.prompts +
-      counts.starterPrompts +
-      counts.knowledgeDocuments;
-    if (promotedTotal === 0 && deletedEntities === 0) {
+    // Sum EVERY numeric field the API sent, not just the surfaces named below.
+    // The reverse deploy-overlap (newer API, older CLI) hands us a segment this
+    // build has never heard of, and a hand-listed sum would print "Nothing to
+    // publish" for a publish that actually promoted rows — the same
+    // under-report that let knowledge documents ship missing in milestone #81.
+    const promotedTotal = Object.values(promoted).reduce<number>(
+      (sum, v) => sum + (typeof v === "number" && Number.isFinite(v) ? v : 0),
+      0,
+    );
+    // #4769 — drafts the review gate REFUSED to promote. Read BEFORE the
+    // nothing-to-publish guard: a publish where every draft was refused has
+    // `promotedTotal === 0`, and the early return would have said "no pending
+    // drafts in this workspace" over a backlog of blocked ones. That is the
+    // most misleading thing this command could print, and it is the shape a
+    // buggy extraction fiber produces.
+    const refused = Array.isArray(asRecord(result).refusedDrafts)
+      ? (asRecord(result).refusedDrafts as ReadonlyArray<unknown>)
+      : [];
+    // The LIST is capped at 100 by the API; the TOTAL is not. Counting the list
+    // would under-report exactly when the backlog is worst.
+    const refusedTotal =
+      typeof asRecord(result).refusedDraftTotal === "number"
+        ? (asRecord(result).refusedDraftTotal as number)
+        : refused.length;
+
+    if (promotedTotal === 0 && deletedEntities === 0 && refusedTotal === 0) {
       io.out("Nothing to publish — no pending drafts in this workspace.");
       return 0;
     }
     if (promotedTotal > 0) {
-      io.out(
-        `Published ${counts.connections} datasource${counts.connections === 1 ? "" : "s"}, ` +
-          `${counts.entities} entit${counts.entities === 1 ? "y" : "ies"}, ${counts.prompts} prompt ` +
-          `collection${counts.prompts === 1 ? "" : "s"}, ${counts.starterPrompts} starter ` +
-          `prompt${counts.starterPrompts === 1 ? "" : "s"}, and ${counts.knowledgeDocuments} knowledge ` +
-          `document${counts.knowledgeDocuments === 1 ? "" : "s"}.`,
-      );
+      // Named surfaces, in publish-dependency order. Unknown segments still
+      // count toward `promotedTotal` above; they just have no phrasing here,
+      // which is the right failure mode (an accurate "something happened" beats
+      // a confident wrong noun).
+      const clauses = PUBLISH_SURFACES.map((s) => {
+        const n = at(s.key);
+        return `${n} ${n === 1 ? s.singular : s.plural}`;
+      });
+      // `PUBLISH_SURFACES` is a non-empty literal, but its `ReadonlyArray<>`
+      // annotation erases that — so read the last element by index rather than
+      // asserting `pop()!` is defined.
+      const last = clauses[clauses.length - 1] ?? "";
+      io.out(`Published ${clauses.slice(0, -1).join(", ")}, and ${last}.`);
     }
     if (deletedEntities > 0) {
       io.out(
         `Pruned ${deletedEntities} stale entit${deletedEntities === 1 ? "y" : "ies"} superseded by this publish.`,
       );
+    }
+    // On `io.err`, not `io.out`: the publish committed (exit 0 is correct), but
+    // this is the one part of the outcome the operator has to act on, and a
+    // `0 brain facts` in the success sentence above is indistinguishable from
+    // "this workspace has no facts".
+    if (refusedTotal > 0) {
+      io.err(
+        `\n${refusedTotal} draft${refusedTotal === 1 ? " was" : "s were"} NOT published — the review gate held ${refusedTotal === 1 ? "it" : "them"} back:`,
+      );
+      for (const entry of refused) {
+        const detail = asRecord(entry).detail;
+        // `detail` is the API's actionable sentence; fall back to the id so a
+        // shape change degrades to "something was refused", never to silence.
+        io.err(
+          `  - ${typeof detail === "string" && detail ? detail : `refused draft ${String(asRecord(entry).id ?? "(unknown id)")}`}`,
+        );
+      }
+      if (refusedTotal > refused.length) {
+        io.err(`  … and ${refusedTotal - refused.length} more (see the server logs).`);
+      }
+      io.err("  Fix or retract them and publish again — they are still drafts.");
     }
     io.out("  This is atomic and workspace-wide — every pending draft just went live, not only");
     io.out(`  ${id ? `"${id}"` : "the datasource you may have had in mind"}.`);

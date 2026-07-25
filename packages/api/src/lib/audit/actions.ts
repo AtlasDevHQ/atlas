@@ -980,6 +980,23 @@ export const ADMIN_ACTIONS = {
     capabilityRevoke: "agent.capability.revoke",
     capabilityExecute: "agent.capability.execute",
   },
+  /**
+   * Company-brain fact review (#4772, ADR-0036).
+   *
+   * `retract` is the review gate's NEGATIVE verb, and the only fact-lifecycle
+   * event with a durable audit row of its own. There is deliberately no
+   * `brainFact.approve` here: approval is the atomic publish endpoint, which
+   * already records its own action for the whole publish — a second "approved"
+   * row per fact would claim a decision the publish transaction, not this
+   * surface, actually made.
+   *
+   * `metadata.invalidatedAt` is the tombstone timestamp. A retraction is never
+   * a delete (ADR-0036: supersession is not deletion), so the row it points at
+   * is still there to be read as-of.
+   */
+  brainFact: {
+    retract: "brain_fact.retract",
+  },
 } as const;
 
 /** Union of all admin action type string values. */

@@ -56,6 +56,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { href: "/admin/model-config", label: "AI Provider" },
       { href: "/admin/learned-patterns", label: "Learned Patterns" },
+      { href: "/admin/brain-facts", label: "Brain Facts" },
       { href: "/admin/prompts", label: "Prompt Library" },
       { href: "/admin/starter-prompts", label: "Starter Prompts" },
       { href: "/admin/actions", label: "Actions" },

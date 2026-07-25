@@ -46,6 +46,13 @@ const ABUSE_RESTORE_STATUSES = [
   "load_failed",
 ] as const satisfies readonly AbuseRestoreStatus[];
 export {
+  BRAIN_FACT_STATUS_FILTERS,
+  isBrainFactStatusFilter,
+  type BrainFactStatusFilter,
+  BrainFactCandidateSchema,
+  BrainFactCandidateListResponseSchema,
+  BrainFactCandidateSummarySchema,
+  BrainFactRetractResponseSchema,
   AbuseStatusSchema,
   AbuseThresholdConfigSchema,
   AbuseDetailSchema,

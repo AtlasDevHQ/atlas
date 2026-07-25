@@ -31,6 +31,7 @@ export const FEATURE_NAMES = [
   "Backups",
   "Billing",
   "Billing Portal",
+  "Brain Facts",
   "Branding",
   "BYOT",
   "Cache",

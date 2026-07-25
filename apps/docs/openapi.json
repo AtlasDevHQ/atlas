@@ -24309,6 +24309,983 @@
         "operationId": "postAdminLearnedPatternsBulk"
       }
     },
+    "/api/v1/admin/brain-facts": {
+      "get": {
+        "tags": [
+          "Admin — Brain Facts"
+        ],
+        "summary": "List fact candidates awaiting review",
+        "description": "Returns a paginated page of company-brain fact candidates with everything the reconcile stage attached: the SPO claim, the provenance chain back to its episode, the derived grant, the corroboration count (distinct provenance edges), provisional-entity flags, and advisory in-tension-with hints. Results are gated by the reviewer's own fail-closed visibility predicate; the provenance episode is gated INDEPENDENTLY, so evidence a reviewer is not entitled to is reported as withheld rather than omitted. Block-class extraction failures (no provenance, no usable grant, unattributable actor, malformed claim) never appear here — they were refused upstream. Retracted facts are excluded.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "draft (default), published, archived, or all"
+            },
+            "required": false,
+            "description": "draft (default), published, archived, or all",
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Set to 'true' to show only provisional-entity candidates — the quality queue"
+            },
+            "required": false,
+            "description": "Set to 'true' to show only provisional-entity candidates — the quality queue",
+            "name": "provisional",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Set to 'true' to show only candidates carrying an advisory in-tension-with edge"
+            },
+            "required": false,
+            "description": "Set to 'true' to show only candidates carrying an advisory in-tension-with edge",
+            "name": "tension",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Case-insensitive substring match across subject, predicate, and object"
+            },
+            "required": false,
+            "description": "Case-insensitive substring match across subject, predicate, and object",
+            "name": "q",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Maximum results (default 50, max 200)"
+            },
+            "required": false,
+            "description": "Maximum results (default 50, max 200)",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Pagination offset (default 0)"
+            },
+            "required": false,
+            "description": "Pagination offset (default 0)",
+            "name": "offset",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated fact candidates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "candidates": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "subject": {
+                            "type": "string"
+                          },
+                          "predicate": {
+                            "type": "string"
+                          },
+                          "object": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "draft",
+                              "published",
+                              "archived"
+                            ]
+                          },
+                          "predicateCardinality": {
+                            "type": "string",
+                            "enum": [
+                              "single",
+                              "multi"
+                            ]
+                          },
+                          "visibleTo": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "malformedGrantIndices": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          },
+                          "grantReadable": {
+                            "type": "boolean"
+                          },
+                          "corroborationCount": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "provenance": {
+                            "type": "object",
+                            "properties": {
+                              "source": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "sourceId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "episodeId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "actor": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "producer": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "occurredAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "extractedAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "reconciledAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "provisional": {
+                                "type": "boolean"
+                              },
+                              "unresolved": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "subject",
+                                    "object"
+                                  ]
+                                }
+                              },
+                              "payloadComplete": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "source",
+                              "sourceId",
+                              "episodeId",
+                              "actor",
+                              "producer",
+                              "occurredAt",
+                              "extractedAt",
+                              "reconciledAt",
+                              "provisional",
+                              "unresolved",
+                              "payloadComplete"
+                            ]
+                          },
+                          "episode": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "visible": {
+                                    "type": "boolean",
+                                    "enum": [
+                                      true
+                                    ]
+                                  },
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "source": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "sourceId": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "sourceActor": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "body": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "bodyTruncated": {
+                                    "type": "boolean"
+                                  },
+                                  "locator": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "occurredAt": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "ingestedAt": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "visible",
+                                  "id",
+                                  "source",
+                                  "sourceId",
+                                  "sourceActor",
+                                  "body",
+                                  "bodyTruncated",
+                                  "locator",
+                                  "occurredAt",
+                                  "ingestedAt"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "visible": {
+                                    "type": "boolean",
+                                    "enum": [
+                                      false
+                                    ]
+                                  },
+                                  "id": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "visible",
+                                  "id"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "tensions": {
+                            "type": "array",
+                            "items": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "visible": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        true
+                                      ]
+                                    },
+                                    "factId": {
+                                      "type": "string"
+                                    },
+                                    "edgeDirection": {
+                                      "type": "string",
+                                      "enum": [
+                                        "from",
+                                        "to"
+                                      ]
+                                    },
+                                    "subject": {
+                                      "type": "string"
+                                    },
+                                    "predicate": {
+                                      "type": "string"
+                                    },
+                                    "object": {
+                                      "type": "string"
+                                    },
+                                    "status": {
+                                      "type": "string",
+                                      "enum": [
+                                        "draft",
+                                        "published",
+                                        "archived"
+                                      ]
+                                    },
+                                    "validFrom": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "ingestedAt": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "invalidatedAt": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "corroborationCount": {
+                                      "type": "integer",
+                                      "minimum": 0
+                                    },
+                                    "provenance": {
+                                      "type": "object",
+                                      "properties": {
+                                        "source": {
+                                          "type": [
+                                            "string",
+                                            "null"
+                                          ]
+                                        },
+                                        "sourceId": {
+                                          "type": [
+                                            "string",
+                                            "null"
+                                          ]
+                                        },
+                                        "episodeId": {
+                                          "type": [
+                                            "string",
+                                            "null"
+                                          ]
+                                        },
+                                        "actor": {
+                                          "type": [
+                                            "string",
+                                            "null"
+                                          ]
+                                        },
+                                        "producer": {
+                                          "type": [
+                                            "string",
+                                            "null"
+                                          ]
+                                        },
+                                        "occurredAt": {
+                                          "type": [
+                                            "string",
+                                            "null"
+                                          ]
+                                        },
+                                        "extractedAt": {
+                                          "type": [
+                                            "string",
+                                            "null"
+                                          ]
+                                        },
+                                        "reconciledAt": {
+                                          "type": [
+                                            "string",
+                                            "null"
+                                          ]
+                                        },
+                                        "provisional": {
+                                          "type": "boolean"
+                                        },
+                                        "unresolved": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "enum": [
+                                              "subject",
+                                              "object"
+                                            ]
+                                          }
+                                        },
+                                        "payloadComplete": {
+                                          "type": "boolean"
+                                        }
+                                      },
+                                      "required": [
+                                        "source",
+                                        "sourceId",
+                                        "episodeId",
+                                        "actor",
+                                        "producer",
+                                        "occurredAt",
+                                        "extractedAt",
+                                        "reconciledAt",
+                                        "provisional",
+                                        "unresolved",
+                                        "payloadComplete"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "visible",
+                                    "factId",
+                                    "edgeDirection",
+                                    "subject",
+                                    "predicate",
+                                    "object",
+                                    "status",
+                                    "validFrom",
+                                    "ingestedAt",
+                                    "invalidatedAt",
+                                    "corroborationCount",
+                                    "provenance"
+                                  ]
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "visible": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        false
+                                      ]
+                                    },
+                                    "factId": {
+                                      "type": "string"
+                                    },
+                                    "edgeDirection": {
+                                      "type": "string",
+                                      "enum": [
+                                        "from",
+                                        "to"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "visible",
+                                    "factId",
+                                    "edgeDirection"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          },
+                          "promotionBlock": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "reasons": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "detail": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "reasons",
+                              "detail"
+                            ]
+                          },
+                          "validFrom": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "validTo": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "extractedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "ingestedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "updatedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "subject",
+                          "predicate",
+                          "object",
+                          "status",
+                          "predicateCardinality",
+                          "visibleTo",
+                          "malformedGrantIndices",
+                          "grantReadable",
+                          "corroborationCount",
+                          "provenance",
+                          "episode",
+                          "tensions",
+                          "promotionBlock",
+                          "validFrom",
+                          "validTo",
+                          "extractedAt",
+                          "ingestedAt",
+                          "updatedAt"
+                        ]
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "tensionsTruncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "candidates",
+                    "total",
+                    "tensionsTruncated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — bad filter value or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminBrainFacts"
+      }
+    },
+    "/api/v1/admin/brain-facts/summary": {
+      "get": {
+        "tags": [
+          "Admin — Brain Facts"
+        ],
+        "summary": "Fact review queue vitals",
+        "description": "Counts for the review queue's stats bar, scoped to what this reviewer can see. `draftTotal` may therefore be smaller than `/api/v1/mode` draftCounts.brainFacts, which counts every draft in the workspace regardless of reader.",
+        "responses": {
+          "200": {
+            "description": "Queue vitals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "draftTotal": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "provisionalTotal": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "inTensionTotal": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "publishedTotal": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "draftTotal",
+                    "provisionalTotal",
+                    "inTensionTotal",
+                    "publishedTotal"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — bad filter value or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminBrainFactsSummary"
+      }
+    },
+    "/api/v1/admin/brain-facts/{id}/retract": {
+      "post": {
+        "tags": [
+          "Admin — Brain Facts"
+        ],
+        "summary": "Reject a fact candidate",
+        "description": "Rejects a candidate by stamping `invalidated_at` — the review gate's negative verb. It never writes `status`: `brain_facts.status` has exactly one writer (the atomic publish endpoint), and ADR-0036 makes withdrawal a tombstone rather than a demotion, so the claim stays readable to an as-of query while leaving the review queue, the publish preview, and draftCounts. Approval is `/api/v1/admin/publish`; there is no per-fact approve verb.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Fact id"
+            },
+            "required": true,
+            "description": "Fact id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The candidate was retracted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "invalidatedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "invalidatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — bad filter value or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such fact, already retracted, or not visible to this reviewer — deliberately indistinguishable, so the response cannot confirm the existence of a fact the reader may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainFactsByIdRetract"
+      }
+    },
     "/api/v1/admin/sessions": {
       "get": {
         "tags": [
@@ -83598,6 +84575,9 @@
     },
     {
       "name": "Admin — Audit Retention"
+    },
+    {
+      "name": "Admin — Brain Facts"
     },
     {
       "name": "Admin — Branding"

@@ -13,6 +13,11 @@ export {
   DB_TYPES,
 } from "@useatlas/types";
 export type {
+  BrainFactCandidate,
+  BrainFactReviewStatus,
+  BrainFactEpisodeView,
+  BrainFactProvenanceView,
+  BrainFactTensionView,
   AdminRole,
   AtlasMode,
   AuthMode,

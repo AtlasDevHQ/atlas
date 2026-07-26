@@ -131,6 +131,28 @@ let _sidecarFailed = false;
 
 export type ExploreBackendType = SandboxBackendName | "plugin";
 
+/**
+ * Isolation posture of each backend, so operator-facing surfaces don't have to
+ * re-derive "does this one actually isolate?" from a string equality check.
+ *
+ * `satisfies Record<ExploreBackendType, …>` is the point: adding a backend to
+ * `SANDBOX_BACKEND_NAMES` without classifying it here is a compile error, so a
+ * future unsandboxed backend can never silently inherit the reassuring branch
+ * of a caller's `=== "just-bash"` test. That fail-open default is what let the
+ * boot log assert the wrong isolation posture in #4824.
+ *
+ * `plugin` is `plugin-declared`: the plugin supplies its own security metadata
+ * (surfaced by `logSandboxPlugins()` and `/api/health`'s `isolationVerified`),
+ * so this table must not claim isolation on its behalf.
+ */
+export const BACKEND_ISOLATION = {
+  "vercel-sandbox": "isolated",
+  nsjail: "isolated",
+  sidecar: "isolated",
+  "just-bash": "unsandboxed",
+  plugin: "plugin-declared",
+} as const satisfies Record<ExploreBackendType, "isolated" | "unsandboxed" | "plugin-declared">;
+
 /** Name of the active sandbox plugin (if any). Set during backend init. */
 let _activeSandboxPluginId: string | null = null;
 
@@ -366,6 +388,21 @@ export function invalidateOrgExploreBackends(orgId: string): void {
       closeCachedBackend(cached, key);
     }
   }
+}
+
+/**
+ * Clear the process-lifetime backend degradation flags. Testing only.
+ *
+ * `_nsjailFailed` / `_sidecarFailed` are deliberately monotonic in production —
+ * a backend that failed once must not be retried into the request path. That
+ * makes them leak across cases in a test file, so a suite exercising several
+ * env shapes would otherwise depend on test ORDER to stay honest, and the
+ * failure mode is a still-passing test that no longer proves what it claims.
+ */
+export function _resetSandboxFailureFlagsForTest(): void {
+  _nsjailFailed = false;
+  _sidecarFailed = false;
+  _nsjailAvailable = null;
 }
 
 /** Permanently mark nsjail as failed and clear the backend cache.

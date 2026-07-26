@@ -51,12 +51,28 @@ void mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({
 let mockMarkNsjailFailedCalled = false;
 let mockMarkSidecarFailedCalled = false;
 
+// The backend the pre-flight will name. These cases assert on
+// getStartupWarnings() rather than on the terminal log line, so the default is
+// just a plausible value — the naming behaviour itself is covered by
+// startup-sandbox-preflight.test.ts against the REAL explore module.
+let mockExploreBackend: "just-bash" | "vercel-sandbox" | "nsjail" | "sidecar" = "just-bash";
+
 void mock.module("@atlas/api/lib/tools/explore", () => ({
   markNsjailFailed: () => { mockMarkNsjailFailedCalled = true; },
   markSidecarFailed: () => { mockMarkSidecarFailedCalled = true; },
-  getExploreBackendType: () => "just-bash",
+  getExploreBackendType: () => mockExploreBackend,
+  // Required by logResolvedExploreBackend(); omitting it sends the pre-flight
+  // down its "could not resolve" branch and silently voids these assertions.
+  BACKEND_ISOLATION: {
+    "vercel-sandbox": "isolated",
+    nsjail: "isolated",
+    sidecar: "isolated",
+    "just-bash": "unsandboxed",
+    plugin: "plugin-declared",
+  },
   getActiveSandboxPluginId: () => null,
   invalidateExploreBackend: () => {},
+  _resetSandboxFailureFlagsForTest: () => {},
 }));
 
 const { validateEnvironment, getStartupWarnings, resetStartupCache } =
@@ -389,6 +405,7 @@ describe("sandbox diagnostics", () => {
     delete process.env.ATLAS_SANDBOX;
     delete process.env.ATLAS_RUNTIME;
     delete process.env.VERCEL;
+    mockExploreBackend = "just-bash";
   });
 
   it("no sandbox warning when nsjail found and capabilities pass", async () => {
@@ -411,8 +428,8 @@ describe("sandbox diagnostics", () => {
     expect(
       // #4824: the fallback is named as "the next backend in the priority
       // chain", not hardcoded to just-bash — on a Vercel-Sandbox-credentialed
-      // host the next backend is vercel-sandbox, and claiming just-bash there
-      // is the same false-isolation claim this issue fixed.
+      // host a higher-priority backend (vercel-sandbox) handles execution, so
+      // claiming just-bash there is the same false-isolation claim this fixed.
       warnings.some(
         (w) =>
           w.includes("namespace creation failed") &&
@@ -449,6 +466,7 @@ describe("sandbox diagnostics", () => {
   it("no sandbox warning on Vercel runtime", async () => {
     process.env.VERCEL = "1";
     mockNsjailBinaryPath = null; // no nsjail on Vercel
+    mockExploreBackend = "vercel-sandbox";
 
     await validateEnvironment();
     const warnings = getStartupWarnings();

@@ -838,45 +838,56 @@ async function checkSandboxPreFlight(): Promise<void> {
     }
   }
 
-  // Probe whichever backend this env shape points at. Every probe is
-  // load-bearing beyond its own logging: a failed nsjail namespace test or an
-  // unreachable sidecar calls markNsjailFailed()/markSidecarFailed(), and those
-  // flags are what make getExploreBackendType() — and therefore /api/health —
-  // report a degraded chain. So the probes run for their side effects even when
-  // the backend that ultimately wins is something else entirely (#4824).
+  // This dispatch picks WHICH LOCAL RESOURCE IS WORTH PROBING — it does not
+  // decide which backend is active. Those were the same question until #2383
+  // added off-Vercel Vercel Sandbox support, where a non-Vercel host (Railway)
+  // reaches Vercel Sandbox with VERCEL_TOKEN plus a team/project id from either
+  // env or `sandbox.vercel` in atlas.config.ts. That shape sets none of the
+  // host-detection vars and has nothing local to probe, so it lands on the
+  // auto-detect arm — and naming the backend from this dispatch is what made
+  // boot log "no process isolation" on every Railway deploy while /api/health
+  // correctly reported `vercel-sandbox` (#4824).
   //
-  // NOTE: this dispatch asks "which local resource is worth probing", NOT
-  // "which backend is active". Those were the same question until #3706 let a
-  // non-Vercel host (Railway) reach Vercel Sandbox via VERCEL_TEAM_ID /
-  // VERCEL_PROJECT_ID / VERCEL_TOKEN — a shape that has nothing local to probe
-  // yet falls through to the auto-detect arm. Naming the backend from this
-  // dispatch is what made boot log "no process isolation" on every Railway
-  // deploy while health correctly reported `vercel-sandbox`.
+  // The probes are also load-bearing beyond their logging: a failed nsjail
+  // namespace test, a missing pinned binary, or an unreachable sidecar calls
+  // markNsjailFailed()/markSidecarFailed(), and those flags are what make
+  // getExploreBackendType() — and therefore /api/health — report a degraded
+  // chain. They run for those side effects even when a different backend wins.
   const isVercelHost = process.env.ATLAS_RUNTIME === "vercel" || !!process.env.VERCEL;
-  if (isVercelHost) {
-    // Nothing local to probe — Vercel Sandbox needs no binary and no sidecar.
-  } else if (process.env.ATLAS_SANDBOX === "nsjail") {
-    await checkExplicitNsjail();
-  } else if (process.env.ATLAS_SANDBOX_URL) {
-    await checkSidecarHealth();
-  } else {
-    await autoDetectNsjail();
+  if (!isVercelHost) {
+    // On a Vercel host there is nothing local to probe — Vercel Sandbox needs
+    // no binary and no sidecar — so every arm below is skipped.
+    if (process.env.ATLAS_SANDBOX === "nsjail") {
+      await checkExplicitNsjail();
+    } else if (process.env.ATLAS_SANDBOX_URL) {
+      await checkSidecarHealth();
+    } else {
+      await autoDetectNsjail();
+    }
   }
 
-  // ONE terminal line naming the active backend, resolved AFTER every probe so
-  // the failure flags they just set are reflected. Sourcing it from the same
-  // getExploreBackendType() that /api/health reads is what makes it impossible
-  // for boot and health to name different backends for the same process.
   await logResolvedExploreBackend();
 }
 
 /**
- * Log the explore backend the process will actually use, read from the single
- * source of truth `/api/health` reads (`getExploreBackendType()`).
+ * Emit the ONE line naming the explore backend this process will actually use,
+ * read from the same `getExploreBackendType()` that `/api/health` reports.
  *
- * Must be called AFTER the pre-flight probes: `getExploreBackendType()` consults
- * `_nsjailFailed` / `_sidecarFailed`, so resolving before the probes would
- * report a degraded chain optimistically.
+ * Two ordering dependencies, both real:
+ *
+ * 1. **After the probes.** `getExploreBackendType()` consults `_nsjailFailed` /
+ *    `_sidecarFailed`, so resolving first would report a degraded chain
+ *    optimistically.
+ * 2. **After `checkConfigFile()`.** It reads `getConfig()?.sandbox?.priority`;
+ *    an unresolved config silently yields a different chain. Holds today
+ *    because `checkConfigFile()` is step 5.5 of `validateEnvironment()` and the
+ *    pre-flight is step 10 — sequential awaits in the same function.
+ *
+ * Sharing the resolver means boot and health cannot disagree *about the same
+ * inputs*. They can still differ later in the process's life, legitimately:
+ * sandbox-plugin detection is lazy (`_activeSandboxPluginId` is unset until the
+ * first explore call, so a plugin-isolated deploy is not named `plugin` here),
+ * and a backend can be marked failed at request time.
  *
  * The "no process isolation" warning is deliberately preserved for a genuine
  * `just-bash` deployment — that deployment really has no isolation and the line
@@ -885,11 +896,13 @@ async function checkSandboxPreFlight(): Promise<void> {
  */
 async function logResolvedExploreBackend(): Promise<void> {
   try {
-    const { getExploreBackendType } = await import(
+    const { getExploreBackendType, BACKEND_ISOLATION } = await import(
       "@atlas/api/lib/tools/explore"
     );
     const backend = getExploreBackendType();
-    if (backend === "just-bash") {
+    // Table lookup rather than `=== "just-bash"` so a future backend must
+    // declare its posture instead of defaulting into the reassuring branch.
+    if (BACKEND_ISOLATION[backend] === "unsandboxed") {
       log.info(
         { backend },
         "Explore tool: just-bash (no process isolation). Install nsjail or configure ATLAS_SANDBOX_URL for sandboxed execution.",
@@ -900,11 +913,15 @@ async function logResolvedExploreBackend(): Promise<void> {
   } catch (err) {
     // Deliberately does NOT fall back to the just-bash line: asserting "no
     // process isolation" when we simply failed to resolve the backend is
-    // exactly the false claim #4824 was filed about.
-    log.warn(
-      { err: errorMessage(err) },
-      "Could not resolve the active explore backend for the startup log",
-    );
+    // exactly the false claim #4824 was filed about. Surfaced as a startup
+    // warning because the same throw breaks /api/health's own reporting, so
+    // the isolation posture of this process is genuinely unknown.
+    const msg =
+      `Could not resolve the active explore backend: ${errorMessage(err)}. ` +
+      "The sandbox isolation posture of this process is UNKNOWN and /api/health " +
+      "will fail to report it. Check sandbox.priority in atlas.config.ts.";
+    log.error(msg);
+    if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
   }
 }
 
@@ -921,8 +938,6 @@ async function checkExplicitNsjail(): Promise<void> {
       const semanticRoot = getDefaultSemanticRoot();
       const capResult = await testNsjailCapabilities(nsjailPath, semanticRoot);
       if (capResult.ok) {
-        // Probe result only — the active backend is named once, by
-        // logResolvedExploreBackend(), after every probe has run (#4824).
         log.info("nsjail namespace capabilities verified");
       } else {
         markNsjailFailed();
@@ -934,6 +949,12 @@ async function checkExplicitNsjail(): Promise<void> {
         if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
       }
     } else {
+      // isBackendAvailable("nsjail") is `ATLAS_SANDBOX === "nsjail" ||
+      // useNsjail()`, so the env pin ALONE reports nsjail as available even with
+      // no binary on the box — and both the boot log and /api/health would then
+      // name a backend that hard-fails on the first explore call. Marking it
+      // failed here is what keeps the pin from advertising itself (#4824).
+      markNsjailFailed();
       const msg =
         "ATLAS_SANDBOX=nsjail is set but nsjail binary was not found. " +
         "Install nsjail or set ATLAS_NSJAIL_PATH to the binary location.";
@@ -956,8 +977,6 @@ async function checkSidecarHealth(): Promise<void> {
     const healthUrl = new URL("/health", sidecarUrl).toString();
     const resp = await fetch(healthUrl, { signal: AbortSignal.timeout(5000) });
     if (resp.ok) {
-      // Probe result only — the active backend is named once, by
-      // logResolvedExploreBackend(), after every probe has run (#4824).
       log.info({ url: sidecarUrl }, "Sandbox sidecar healthy at %s", sidecarUrl);
     } else {
       markSidecarFailed();
@@ -981,13 +1000,15 @@ async function checkSidecarHealth(): Promise<void> {
 /**
  * Auto-detect branch of the sandbox pre-flight.
  *
- * This probe is load-bearing beyond its own logging: a failed namespace test
- * calls `markNsjailFailed()`, which is what makes `isBackendAvailable("nsjail")`
- * — and therefore `/api/health` — report nsjail as unusable. So it ALWAYS runs,
- * even when the backend that wins is something else entirely. Short-circuiting
- * it (the tempting "we already know the backend, skip the probe" fix) would
- * leave `_nsjailFailed` unset and make health advertise nsjail as available
- * when it demonstrably is not (#4824).
+ * The probe runs whenever this arm is reached, regardless of which backend
+ * ultimately wins, because it is load-bearing beyond its own logging: a failed
+ * namespace test calls `markNsjailFailed()`, and that flag gates
+ * `tryCreateBackend("nsjail")` (`lib/tools/explore.ts`) as well as
+ * `isBackendAvailable("nsjail")`. Short-circuiting it — the tempting "we
+ * already know the backend, skip the probe" fix — would leave `_nsjailFailed`
+ * unset, so a host whose winning backend fails to construct at request time
+ * would fall through to a known-broken nsjail instead of skipping it, and
+ * `/api/health` would name nsjail on a box where it cannot start (#4824).
  */
 async function autoDetectNsjail(): Promise<void> {
   try {

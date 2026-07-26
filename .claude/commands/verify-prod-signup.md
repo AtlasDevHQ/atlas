@@ -1,5 +1,5 @@
 ---
-description: "Verify a real end-to-end signup through each production data-residency region (us, eu, apac) with the Playwright MCP browser, confirming the region step, residency routing, and the cold-start demo first answer. Prod only — the region step needs a multi-region deploy."
+description: "Verify end-to-end signup through each prod residency region (us/eu/apac) with the Playwright browser, confirming region routing and the cold-start demo answer. Prod only — needs a multi-region deploy."
 ---
 
 # Verify Prod Signup (3-Region Residency)

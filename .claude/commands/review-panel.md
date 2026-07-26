@@ -1,5 +1,5 @@
 ---
-description: "Run the four tuned specialist reviewers over the current diff in parallel with fresh context. This is the shared review primitive that /ship-issue and /ship-milestone call before a PR opens."
+description: "Run the four specialist reviewers over the current diff in parallel with fresh context. The shared primitive /ship-issue and /ship-milestone call before a PR opens."
 ---
 
 Run the internal review panel on the current diff — the four tuned specialist reviewers, fan-out in parallel, fresh context.

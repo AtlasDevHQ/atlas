@@ -1,5 +1,5 @@
 ---
-description: "Ship the top N ready-for-agent issues from the current milestone by dispatching one /ship-issue worker each. Bounded batch, hard-capped at 5, with no heartbeat, auto-refill, or closeout. The middle ground between /ship-issue (one) and /ship-milestone (all)."
+description: "Ship the top N ready-for-agent issues by dispatching one /ship-issue worker each. Bounded, hard-capped at 5, no heartbeat or refill. Between /ship-issue (one) and /ship-milestone (all)."
 ---
 
 Middle ground between `/ship-issue` (one) and `/ship-milestone` (the whole thing on a heartbeat): pick the top N `ready-for-agent` issues from the current milestone — the way `/next` does — and dispatch a `/ship-issue` worker for each. Bounded batch: no heartbeat, no auto-refill, no closeout/release.

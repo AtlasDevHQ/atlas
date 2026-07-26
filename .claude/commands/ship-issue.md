@@ -1,5 +1,5 @@
 ---
-description: "L0 inner ship loop — take ONE issue from nothing to a merged PR autonomously, halting only at the human boundaries. Usage: /ship-issue 1234, optionally followed by a base branch."
+description: "L0 inner loop — take ONE issue from nothing to a merged PR autonomously, halting only at human boundaries. Usage: /ship-issue 1234 [base-branch]."
 ---
 
 L0 — the inner ship loop. Take ONE issue from nothing to a merged PR, autonomously, halting only at the human boundaries. This is the unit `/ship-milestone` runs per issue.

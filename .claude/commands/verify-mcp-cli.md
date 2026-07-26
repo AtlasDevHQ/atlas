@@ -1,5 +1,5 @@
 ---
-description: "Verify the two non-web front doors end-to-end on staging — MCP start_trial provisioning, the account claim, then CLI device-flow login and a REST-backed command. Run after a release touching MCP onboarding, the CLI, the device-flow seam, or API-key minting."
+description: "Verify the two non-web front doors on staging — MCP start_trial provisioning, account claim, CLI device-flow login, a REST command. After a release touching MCP onboarding, the CLI, or API-key minting."
 ---
 
 # Verify MCP + CLI Signup (Staging-First)

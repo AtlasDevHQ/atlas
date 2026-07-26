@@ -1,5 +1,5 @@
 ---
-description: "Write a new apps/www blog post from a rough idea, or run an editorial de-AI and voice polish pass over an existing one. Use for anything touching apps/www/blog — the founder-voice public surface with its multi-file route/index/sitemap anatomy."
+description: "Write a new apps/www blog post from an idea, or run an editorial de-AI/voice polish over an existing one. Founder-voice public surface; multi-file route/index/sitemap anatomy."
 ---
 
 # Blog Post — Write & Polish

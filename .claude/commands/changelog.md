@@ -1,5 +1,5 @@
 ---
-description: "Draft a Keep-a-Changelog entry from recent commits, grouped Added/Changed/Fixed with PR and issue links. Run at the end of a milestone or before a version bump. Note that /release owns the per-tag docs changelog."
+description: "Draft a Keep-a-Changelog entry from recent commits (Added/Changed/Fixed, PR links). End of a milestone or before a version bump. /release owns the per-tag docs changelog."
 ---
 
 # Changelog

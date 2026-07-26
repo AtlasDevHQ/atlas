@@ -1,5 +1,5 @@
 ---
-description: "Bring Atlas local dev up in a chosen deploy mode, handling the harness gotchas — deploy-mode auto-detect, SaaS fail-closed guards, cookie-prefix mismatch, Turbopack cache. Usage: /dev [self-host|saas] [clean] [stop]."
+description: "Bring local dev up in a chosen deploy mode, handling the harness gotchas (deploy-mode detect, SaaS guards, cookie prefix, Turbopack cache). Usage: /dev [self-host|saas] [clean] [stop]."
 ---
 
 Bring Atlas local dev up reliably in a chosen deploy mode, handling every harness gotcha that normally makes this painful. Usage: `/dev [self-host|saas] [clean] [stop]`.

@@ -1,5 +1,5 @@
 ---
-description: "Tag the current main SHA for a prod deploy — bundles /ci, the per-tag docs changelog entry, an annotated tag, the prod-branch fast-forward, and a GitHub Release. Usage: /release v0.0.1, or /release to auto-bump the patch position."
+description: "Tag the current main SHA for a prod deploy — /ci + docs changelog entry + annotated tag + prod-branch fast-forward + GitHub Release. Usage: /release v0.0.1, or bare to auto-bump patch."
 ---
 
 Tag the current `main` SHA for a prod deploy. Bundles `/ci` + annotated tag + push + `prod`-branch fast-forward + GitHub Release. Usage: `/release v0.0.1` (explicit) or `/release` (auto-bump patch from last tag).

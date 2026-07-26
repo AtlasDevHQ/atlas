@@ -1,5 +1,5 @@
 ---
-description: "Audit the running system against code, deployed config, and observed runtime behavior for graceful-degradation gaps, observability blind spots, missing boot-time guards, and migration/rollback risk. Run before scaling rollouts, after large infra changes, or as a periodic hosted-SaaS sweep."
+description: "Audit the running system against code, deployed config, and runtime behavior for degradation gaps, observability blind spots, missing boot guards, migration risk. Before scaling or after infra changes."
 ---
 
 # Production Readiness Audit

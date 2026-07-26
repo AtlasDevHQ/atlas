@@ -1,5 +1,5 @@
 ---
-description: "Research an untracked bug, tech-debt item, rough edge, or idea, file a GitHub issue for it, and decide whether to fix now or park it. For one-issue-sized findings; use /elevate for a whole surface and /to-prd for milestone-sized direction."
+description: "Research an untracked bug, tech-debt item, or idea, file a GitHub issue, decide fix-now vs park. One-issue-sized only — /elevate for a whole surface, /to-prd for a milestone."
 ---
 
 Investigate something you've noticed — a bug, tech debt, rough edge, or idea — that isn't tracked anywhere. Research it, file a GH issue, and decide whether to fix it now or park it.

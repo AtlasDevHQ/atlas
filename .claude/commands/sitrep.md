@@ -1,5 +1,5 @@
 ---
-description: "Quick strategic orientation on where the project stands right now — open issues, milestones, recent commits, deploy state. Read-only, no actions. Run at the start of a session or when switching context."
+description: "Strategic orientation — open issues, milestones, recent commits, deploy state. Read-only. At session start or when switching context."
 ---
 
 # Atlas Sitrep

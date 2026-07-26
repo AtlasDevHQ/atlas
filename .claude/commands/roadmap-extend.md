@@ -1,5 +1,5 @@
 ---
-description: "Research and propose the next milestone from the codebase, competitive landscape, and user needs. Run when there are zero open issues and the next body of work needs planning."
+description: "Research and propose the next milestone from the codebase, competitive landscape, and user needs. Run when there are zero open issues."
 ---
 
 # Roadmap Extension

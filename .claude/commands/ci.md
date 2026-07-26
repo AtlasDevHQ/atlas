@@ -1,5 +1,5 @@
 ---
-description: "Run the full pre-PR gate — scripts/ci-local.sh, ~27 gates, compact PASS/FAIL table. Must pass before opening a PR. For the fast iteration loop use test-isolated.ts --affected instead."
+description: "Run the pre-PR gate — scripts/ci-local.sh, 32 gates, PASS/FAIL table. Mandatory before a PR. Iterate with test-isolated.ts --affected instead."
 ---
 
 Run the same checks CI runs. This must pass before opening a PR.

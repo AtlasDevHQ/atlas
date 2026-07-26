@@ -1,5 +1,5 @@
 ---
-description: "Open a pull request for the current branch's work — branch if needed, commit, push, and create the PR with its linked issue."
+description: "Open a PR for the current branch — branch if needed, commit, push, create with the linked issue."
 ---
 
 Open a PR for the current branch's work. Branch, commit, push, create PR.

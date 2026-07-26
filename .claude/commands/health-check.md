@@ -1,5 +1,5 @@
 ---
-description: "Audit the codebase against CLAUDE.md rules and established patterns across ten dimensions — security, auth, error handling, types, architecture, agent tools, deploy, semantic layer, observability, docs sync. Read-only. Run roughly every 10 PRs to catch drift."
+description: "Audit the codebase against CLAUDE.md rules across 10 dimensions — security, auth, errors, types, architecture, tools, deploy, semantic, observability, docs. Read-only, ~every 10 PRs."
 ---
 
 # Atlas Codebase Health Check

@@ -1,5 +1,5 @@
 ---
-description: "L2 milestone loop — grind an entire milestone of ready-for-agent issues to merged, dispatching one /ship-issue per issue in its own worktree. The wake-up-to-merged-PRs loop. Requires issues already planned and labeled; never run it on a milestone containing fork contributions."
+description: "L2 loop — grind a whole milestone of ready-for-agent issues to merged, one /ship-issue per issue in its own worktree. Needs issues already planned; never run on a milestone with fork contributions."
 ---
 
 L2 — the milestone loop. Grind an entire milestone of `ready-for-agent` issues to merged, over and over until complete, dispatching one `/ship-issue` (L0) per issue in its own worktree. The "wake up to merged PRs" loop.

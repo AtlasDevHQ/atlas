@@ -1,5 +1,5 @@
 ---
-description: "Audit a whole shipped product surface (dashboards, chat, onboarding, semantic-layer) across parallel dimensions and produce a ranked findings briefing that feeds a downstream grill, PRD, and issue slicing. Not for one-issue-sized findings (/investigate) or a purely presentational pass (/revamp)."
+description: "Audit a whole shipped surface (dashboards, chat, onboarding) in parallel dimensions into a ranked findings briefing for a downstream grill/PRD. Not one-issue findings (/investigate) or a visual pass (/revamp)."
 ---
 
 # Elevate

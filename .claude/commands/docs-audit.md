@@ -1,5 +1,5 @@
 ---
-description: "Cross-reference the apps/docs content tree against source code to find stale, missing, or incorrect documentation. Run before releases or after large feature work."
+description: "Cross-reference apps/docs against source code for stale, missing, or wrong documentation. Before releases or after large feature work."
 ---
 
 # Docs Accuracy Audit

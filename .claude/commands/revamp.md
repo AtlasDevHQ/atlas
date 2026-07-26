@@ -1,5 +1,5 @@
 ---
-description: "Revamp a cluttered admin or SaaS page with the impeccable toolkit — progressive disclosure over wall-of-cards or wall-of-forms. Presentational pass only; use /elevate when the surface's behavior, data model, or agent path is the real problem."
+description: "Revamp a cluttered admin or SaaS page with the impeccable toolkit — progressive disclosure over wall-of-forms. Presentational only; /elevate if behavior or data model is the problem."
 ---
 
 # Page Revamp

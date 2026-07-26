@@ -1,5 +1,5 @@
 ---
-description: "Decide what to work on next — read open issues, recent commits, and ROADMAP, then recommend prioritized work with full ready-to-run prompts."
+description: "Decide what to work on next from open issues, recent commits, and ROADMAP. Outputs prioritized work with full ready-to-run prompts."
 ---
 
 You are helping decide what to work on next in Atlas.

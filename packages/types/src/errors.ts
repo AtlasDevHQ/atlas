@@ -30,8 +30,9 @@ export const CHAT_ERROR_CODES = [
   "no_datasource",
   // #4826 — the workspace-bound counterpart of `no_datasource`. `no_datasource`
   // means "no analytics datasource URL resolved": chat/query emit it as a 400 on
-  // the UNBOUND (self-hosted single-tenant) path, and the SQL pipeline emits it
-  // as a 503 from dashboards/metrics/execute-sql. `no_capability` means "this
+  // the UNBOUND path (no bound workspace — normally self-hosted single-tenant),
+  // `/demo` emits it as a 400 unconditionally, and the SQL pipeline emits it as
+  // a 503 from dashboards/metrics/execute-sql. `no_capability` means "this
   // WORKSPACE has no datasource AND no knowledge collections AND no brain
   // content" — the only shape that genuinely has nothing for the agent to serve
   // — and is only ever a 400 from the workspace-bound chat gate. Kept distinct

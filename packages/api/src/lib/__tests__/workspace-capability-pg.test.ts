@@ -6,7 +6,7 @@
  * and its org-scoping assertions are string matches against the module's own
  * SQL constant — that proves the constant contains the text it contains. It
  * cannot prove the statement parses, that `workspace_plugins.pillar`,
- * `brain_facts.status`, and `brain_episodes.workspace_id` exist under that
+ * `workspace_plugins.status`, and `brain_episodes.workspace_id` exist under that
  * spelling, or that `EXISTS` comes back as a JS boolean rather than `"t"`.
  *
  * That gap matters more here than usual because **every SQL fault in this probe

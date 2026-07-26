@@ -230,11 +230,12 @@ Use the createDashboard tool when the user wants a dashboard, not just a single 
  * `executePython`), both resolvable synchronously with no I/O. A per-workspace
  * surface is different in kind — it would mean threading a workspace id through
  * the builders and paying a DB probe on every turn to decide the tool list. It
- * would also strand the common path: chat only calls `buildRegistry` when
- * `ATLAS_ACTIONS_ENABLED=true`, and otherwise uses the frozen module-load
- * `defaultRegistry` / `nonDashboardRegistry` singletons directly, which cannot
- * express a per-workspace answer at all. That is a registry refactor, not a
- * release fix.
+ * would also strand the frozen singletons, which cannot express a per-workspace
+ * answer at all and are still on live paths: the web chat route builds a
+ * registry only when `ATLAS_ACTIONS_ENABLED=true` and otherwise rides
+ * `defaultRegistry`, while `executeAgentQuery` (SDK / Slack / MCP / scheduler)
+ * always builds but falls back to `nonDashboardRegistry`. That is a registry
+ * refactor, not a release fix.
  */
 function registerCoreTools(
   registry: ToolRegistry,

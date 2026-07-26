@@ -14,8 +14,9 @@
  *     `ATLAS_DATASOURCE_URL` (which counts for every workspace probed — see the
  *     note in `probeWorkspaceCapabilities`, not just single-tenant deployments)
  *   - `knowledge`  — at least one installed Knowledge Base collection (ADR-0028)
- *   - `brain`      — at least one brain episode, and so at least one fact
- *     (ADR-0036)
+ *   - `brain`      — at least one brain episode. Every fact necessarily has one
+ *     (composite FK), so episodes subsume facts; the converse does NOT hold —
+ *     an unextracted episode has no facts at all (ADR-0036)
  *
  * **This is not an authorization boundary.** The probe returns booleans about
  * *existence*, never the content itself, and deliberately ignores `visible_to`
@@ -28,10 +29,12 @@
  * One consequence of ignoring content mode: a workspace whose only install is a
  * `draft` datasource or collection passes the gate, then meets an agent that in
  * published mode sees nothing — the "agent flailed" outcome the gate exists to
- * prevent. Threading the request's `atlasMode` through would fix it and is the
- * escape hatch if this ever bites; it was not worth the extra parameter for a
- * gate that is an affordance, and narrowing on mode would refuse the turn for an
- * admin who is mid-setup in developer mode.
+ * prevent. Threading the request's `atlasMode` through is the escape hatch if
+ * this ever bites — and note it is specifically a MODE-AWARE narrowing that
+ * works: filtering to `status = 'published'` unconditionally would refuse an
+ * admin mid-setup in developer mode, whereas the developer-mode overlay admits
+ * `('draft','published')` and would not. It was simply not worth the extra
+ * parameter for a gate that is an affordance.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -82,8 +85,13 @@ export const PROCESS_DATASOURCE_DIAGNOSTICS: ReadonlySet<DiagnosticCode> = new S
  * code is deliberate. The earlier revision curated an "absence-shaped" subset,
  * which was wrong: `MISSING_SEMANTIC_LAYER` also carries a read-failure variant
  * ("Could not read semantic layer directory … check file permissions"), so an
- * EACCES on the semantic root would have been swallowed for a self-hosted
- * workspace that genuinely reads that directory.
+ * EACCES on the semantic root would have been swallowed even for a workspace
+ * whose datasource — and therefore whose on-disk entities — genuinely exist.
+ * Unlike the connectivity codes this one is NOT self-enforcing:
+ * `checkSemanticLayerPresence` runs unconditionally, so an EACCES on a
+ * deployment with no analytics URL is still dropped. That is the right call —
+ * such a workspace resolves its whitelist from the DB — but it is a trade, not
+ * an impossibility.
  *
  * Note the condition is self-enforcing for the two connectivity codes:
  * `validateEnvironment` runs `checkDatasourceConnectivity` only when a URL
@@ -111,8 +119,12 @@ export function diagnosticsForBoundWorkspace(
     else kept.push(d);
   }
   if (dropped.length > 0) {
-    // A discarded diagnostic is still a discarded signal — leave a trace so an
-    // operator debugging "why did chat not tell me X" can see the suppression.
+    // `debug`, not `warn`: this fires on every bound request for the steady
+    // state it exists to serve, so it would drown the log at any higher level.
+    // Nothing is lost by that — the diagnostic was already `log.error`'d at
+    // emission (`startup.ts`) and stays visible on `/health`; this line only
+    // records that CHAT chose not to surface it, for someone who has already
+    // raised the level to ask why.
     log.debug({ dropped }, "Suppressed process-datasource diagnostics for a workspace-bound request");
   }
   return kept;
@@ -165,6 +177,10 @@ export const CAPABILITY_SQL = `
       SELECT 1 FROM workspace_plugins
        WHERE workspace_id = $1 AND pillar = 'knowledge' AND status <> 'archived'
     ) AS has_knowledge,
+    -- Note both install predicates ignore the enabled flag and exclude only
+    -- archived rows. That errs permissive, which is the safe direction for an
+    -- affordance gate: it can never produce the false refusal this module
+    -- exists to prevent.
     -- Episodes alone decide the brain pillar, and that is not an oversight:
     -- brain_facts.source_episode_id is NOT NULL with a COMPOSITE foreign key on
     -- (workspace_id, source_episode_id), so a fact cannot exist without an
@@ -229,8 +245,10 @@ export async function probeWorkspaceCapabilities(workspaceId: string): Promise<C
   // Be clear about the failure direction, because it is NOT covered by the
   // fail-open branches above: a driver that ever returned the strings `"t"`/
   // `"f"` would produce no throw, a non-empty row, and three `false` flags —
-  // a `resolved` empty set, refusing EVERY bound workspace fleet-wide. That is
-  // precisely the #4826 bug it would recreate, which is why
+  // a `resolved` empty set, refusing every bound workspace on any deployment
+  // without a process-level `ATLAS_DATASOURCE_URL`: i.e. the whole SaaS fleet,
+  // and every knowledge-only or brain-only self-host. That is precisely the
+  // #4826 bug it would recreate, which is why
   // `workspace-capability-pg.test.ts` pins `typeof === "boolean"` against a
   // real driver rather than trusting this comment.
   if (row.has_datasource === true) capabilities.add("datasource");

@@ -231,7 +231,7 @@ describe("probeWorkspaceCapabilities — org scoping", () => {
     expect(capturedQueries).toHaveLength(1);
     const { sql, params } = capturedQueries[0]!;
 
-    // One bind param, used for all four EXISTS predicates.
+    // One bind param, shared by all three EXISTS predicates.
     expect(params).toEqual(["ws-scoped"]);
 
     // Every table the probe touches must be workspace-scoped — an unscoped

@@ -840,28 +840,24 @@ async function checkSandboxPreFlight(): Promise<void> {
 
   // This dispatch picks WHICH LOCAL RESOURCE IS WORTH PROBING — it does not
   // decide which backend is active. Those were the same question until #2383
-  // added off-Vercel Vercel Sandbox support, where a non-Vercel host (Railway)
-  // reaches Vercel Sandbox with VERCEL_TOKEN plus a team/project id from either
-  // env or `sandbox.vercel` in atlas.config.ts. That shape sets none of the
-  // host-detection vars and has nothing local to probe, so it lands on the
-  // auto-detect arm — and naming the backend from this dispatch is what made
-  // boot log "no process isolation" on every Railway deploy while /api/health
-  // correctly reported `vercel-sandbox` (#4824).
+  // added off-Vercel Vercel Sandbox support (VERCEL_TOKEN plus a team/project
+  // id from env — or, since #3706, from `sandbox.vercel` in atlas.config.ts).
+  // That shape sets none of the host-detection vars and has nothing local to
+  // probe, so a Railway deploy lands on the auto-detect arm — and naming the
+  // backend from this dispatch is what made boot log "no process isolation"
+  // there while /api/health correctly reported `vercel-sandbox` (#4824).
   //
-  // The probes are also load-bearing beyond their logging: a failed nsjail
-  // namespace test, a missing pinned binary, or an unreachable sidecar calls
-  // markNsjailFailed()/markSidecarFailed(), and those flags are what make
-  // getExploreBackendType() — and therefore /api/health — report a degraded
-  // chain. They run for those side effects even when a different backend wins.
+  // Each probe is also load-bearing beyond its logging; see autoDetectNsjail().
   const isVercelHost = process.env.ATLAS_RUNTIME === "vercel" || !!process.env.VERCEL;
-  let pinnedNsjailUsable = true;
+  let pinnedNsjail: PinnedNsjailOutcome = "usable";
   if (!isVercelHost) {
     // On a Vercel host the default chain always resolves vercel-sandbox, so
-    // there is nothing local worth probing. (A Vercel host that ALSO pins a
-    // sidecar or nsjail skips that probe — pre-existing, and the one hole in
-    // the paragraph above.)
+    // there is nothing local worth probing. Two pre-existing holes: a Vercel
+    // host that ALSO sets ATLAS_SANDBOX / ATLAS_SANDBOX_URL, or one pinned via
+    // `sandbox.priority`, skips that backend's probe entirely — so health can
+    // name a backend nothing verified.
     if (process.env.ATLAS_SANDBOX === "nsjail") {
-      pinnedNsjailUsable = await checkExplicitNsjail();
+      pinnedNsjail = await checkExplicitNsjail();
     } else if (process.env.ATLAS_SANDBOX_URL) {
       await checkSidecarHealth();
     } else {
@@ -869,16 +865,30 @@ async function checkSandboxPreFlight(): Promise<void> {
     }
   }
 
-  if (pinnedNsjailUsable) {
-    await logResolvedExploreBackend();
-  } else {
-    // Naming a backend here would be wrong in BOTH directions: "nsjail active"
-    // (it isn't) and "just-bash" (the pin refuses to degrade). Say what is
-    // actually true — explore will not run at all until the pin is satisfiable.
-    log.error(
-      "Explore tool: unavailable — ATLAS_SANDBOX=nsjail is pinned but nsjail is not usable. " +
-        "Explore will fail on every request until nsjail is installed or the pin is removed.",
-    );
+  switch (pinnedNsjail) {
+    case "usable":
+    case "degraded":
+      // "degraded" already tripped markNsjailFailed(), so the resolver now
+      // reports just-bash — which is the truth, and matches /api/health. Naming
+      // it here is the "no process isolation" warning doing its job.
+      await logResolvedExploreBackend();
+      break;
+    case "hard-fail":
+      // Naming a backend would be wrong in both directions: "nsjail active" is
+      // false, and "just-bash" is not what the pin resolves to at boot. Say
+      // nothing about per-request behaviour — tryCreateBackend sets
+      // _nsjailFailed on its first failure, after which the chain degrades.
+      log.error(
+        "Explore tool: unavailable — ATLAS_SANDBOX=nsjail is pinned but the nsjail binary was not found. " +
+          "Install nsjail or set ATLAS_NSJAIL_PATH; until then explore cannot start under the pin.",
+      );
+      break;
+    case "unverified":
+      log.error(
+        "Explore tool: isolation UNVERIFIED — the pinned nsjail probe could not complete. " +
+          "The pin is still armed, so explore will attempt nsjail and fail if it cannot initialize.",
+      );
+      break;
   }
 }
 
@@ -915,8 +925,6 @@ async function logResolvedExploreBackend(): Promise<void> {
       "@atlas/api/lib/tools/backends/selection"
     );
     const backend = getExploreBackendType();
-    // Table lookup rather than `=== "just-bash"` so a future backend must
-    // declare its posture instead of defaulting into the reassuring branch.
     if (BACKEND_ISOLATION[backend] === "unsandboxed") {
       log.info(
         { backend },
@@ -942,12 +950,27 @@ async function logResolvedExploreBackend(): Promise<void> {
 }
 
 /**
- * Probe the explicitly pinned nsjail backend. Returns false when the pin cannot
- * be satisfied — `ATLAS_SANDBOX=nsjail` is hard-fail by contract, so explore
- * refuses to run rather than degrading, and the caller must not name a backend.
+ * Outcome of probing the explicitly pinned nsjail backend. A boolean collapsed
+ * three states whose operator advice differs — and, worse, made boot claim
+ * "explore will fail" on the one path where it actually degrades and runs.
  */
-async function checkExplicitNsjail(): Promise<boolean> {
-  let pinnedNsjailUsable = true;
+type PinnedNsjailOutcome =
+  /** Namespaces verified; the pin holds. */
+  | "usable"
+  /** Binary absent. `_nsjailFailed` untouched, so the hard-fail step survives. */
+  | "hard-fail"
+  /**
+   * Namespaces broken. `markNsjailFailed()` has already run, which deletes the
+   * hard-fail step from `planSandboxSelection` — so the pin does NOT hold and
+   * explore degrades to unsandboxed just-bash. Tracked as #4829.
+   */
+  | "degraded"
+  /** The probe itself threw; isolation is neither confirmed nor refuted. */
+  | "unverified";
+
+/** Probe the explicitly pinned nsjail backend (`ATLAS_SANDBOX=nsjail`). */
+async function checkExplicitNsjail(): Promise<PinnedNsjailOutcome> {
+  let outcome: PinnedNsjailOutcome = "usable";
   try {
     const { findNsjailBinary, testNsjailCapabilities } = await import(
       "@atlas/api/lib/tools/explore-nsjail"
@@ -960,10 +983,16 @@ async function checkExplicitNsjail(): Promise<boolean> {
       const semanticRoot = getDefaultSemanticRoot();
       const capResult = await testNsjailCapabilities(nsjailPath, semanticRoot);
       if (capResult.ok) {
+        // Probe result only. Must NOT start with "Explore tool:" —
+        // logResolvedExploreBackend() owns that prefix, and the tests read it.
         log.info("nsjail namespace capabilities verified");
       } else {
+        // Pre-existing (#4829): this call clears the pin's hard-fail step, so
+        // the deployment silently degrades to unsandboxed just-bash rather than
+        // refusing to run. Reporting it as "degraded" is what stops boot from
+        // claiming a fail-closed posture the process does not have.
         markNsjailFailed();
-        pinnedNsjailUsable = false;
+        outcome = "degraded";
         const msg =
           `nsjail explicitly requested (ATLAS_SANDBOX=nsjail) but namespace creation failed: ${capResult.error}. ` +
           "This platform may not support Linux namespaces. " +
@@ -974,10 +1003,9 @@ async function checkExplicitNsjail(): Promise<boolean> {
     } else {
       // Deliberately does NOT call markNsjailFailed(): planSandboxSelection only
       // emits the hard-fail step while `!nsjailFailed`, so setting the flag here
-      // would DELETE the pin's hard-fail contract and silently degrade the
-      // deployment to unsandboxed just-bash. The pin means "refuse to run
-      // without nsjail"; the caller suppresses the backend line instead.
-      pinnedNsjailUsable = false;
+      // would delete the pin's hard-fail contract at boot and degrade the
+      // deployment to unsandboxed just-bash before a single request arrives.
+      outcome = "hard-fail";
       const msg =
         "ATLAS_SANDBOX=nsjail is set but nsjail binary was not found. " +
         "Install nsjail or set ATLAS_NSJAIL_PATH to the binary location.";
@@ -985,17 +1013,17 @@ async function checkExplicitNsjail(): Promise<boolean> {
       if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
     }
   } catch (err) {
-    // The pin's isolation is UNVERIFIED, not merely unlogged: without a
-    // completed probe, isBackendAvailable("nsjail") still reports the pin as
-    // available, so naming a backend would assert isolation nobody confirmed.
+    // Isolation is UNVERIFIED, not refuted: `_nsjailFailed` is untouched, so
+    // isBackendAvailable("nsjail") still reports the pin as available and naming
+    // a backend would assert isolation nobody confirmed.
     const msg =
       `Could not verify the pinned nsjail sandbox (ATLAS_SANDBOX=nsjail): ${errorMessage(err)}. ` +
       "Isolation is UNVERIFIED. Check the nsjail installation or set ATLAS_NSJAIL_PATH.";
     log.error(msg);
     if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
-    pinnedNsjailUsable = false;
+    outcome = "unverified";
   }
-  return pinnedNsjailUsable;
+  return outcome;
 }
 
 async function checkSidecarHealth(): Promise<void> {
@@ -1008,6 +1036,7 @@ async function checkSidecarHealth(): Promise<void> {
     const healthUrl = new URL("/health", sidecarUrl).toString();
     const resp = await fetch(healthUrl, { signal: AbortSignal.timeout(5000) });
     if (resp.ok) {
+      // Probe result only — see the "Explore tool:" prefix note above.
       log.info({ url: sidecarUrl }, "Sandbox sidecar healthy at %s", sidecarUrl);
     } else {
       markSidecarFailed();
@@ -1038,8 +1067,7 @@ async function checkSidecarHealth(): Promise<void> {
  * `isBackendAvailable("nsjail")`. Short-circuiting it — the tempting "we
  * already know the backend, skip the probe" fix — would leave `_nsjailFailed`
  * unset, so a host whose winning backend fails to construct at request time
- * would fall through to a known-broken nsjail instead of skipping it, and
- * `/api/health` would name nsjail on a box where it cannot start (#4824).
+ * would fall through to a known-broken nsjail instead of skipping it (#4824).
  */
 async function autoDetectNsjail(): Promise<void> {
   try {

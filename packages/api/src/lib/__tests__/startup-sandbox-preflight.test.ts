@@ -108,8 +108,9 @@ void mock.module("@atlas/api/lib/providers", () => ({
 
 // The nsjail binary probe the pre-flight drives, controlled per-test. This is a
 // SEPARATE seam from explore's own `useNsjail()` detection, which stays real and
-// resolves false via the empty PATH — so a test can hand the pre-flight a binary
-// without also convincing explore that nsjail is available.
+// resolves false because the mocked accessSync throws for every candidate (see
+// the fs mock above) — so a test can hand the pre-flight a binary without also
+// convincing explore that nsjail is available.
 let mockNsjailBinaryPath: string | null = null;
 let mockCapabilityResult: { ok: boolean; error?: string } = { ok: true };
 let nsjailProbeRan = false;
@@ -319,6 +320,29 @@ describe("startup sandbox pre-flight names the resolved backend (#4824)", () => 
     ).toBe(true);
     // The hard-fail step must survive — this is the security-critical assertion.
     expect(snapshotExploreSandboxEnv().nsjailFailed).toBe(false);
+  });
+
+  it("admits no isolation when the nsjail pin degrades on broken namespaces", async () => {
+    // The sibling of the case above, and the realistic container shape: the
+    // binary is present but CLONE_NEWUSER is denied. checkExplicitNsjail() calls
+    // markNsjailFailed() here (pre-existing, #4829), which DELETES the pin's
+    // hard-fail step — so the pin does NOT hold and explore runs unsandboxed.
+    //
+    // Boot must therefore say "no process isolation" and name just-bash, exactly
+    // as /api/health does. Claiming the deployment is fail-closed here would be
+    // #4824's false claim at inverted polarity: reassuring an operator that
+    // explore refuses to run while it is executing agent shell on the host.
+    process.env.ATLAS_SANDBOX = "nsjail";
+    mockNsjailBinaryPath = "/usr/local/bin/nsjail";
+    mockCapabilityResult = { ok: false, error: "clone failed: EPERM" };
+
+    await runPreFlight();
+
+    expect(nsjailProbeRan).toBe(true);
+    expect(snapshotExploreSandboxEnv().nsjailFailed).toBe(true);
+    expect(loggedBackend()).toBe("just-bash");
+    expect(getExploreBackendType()).toBe("just-bash");
+    expect(claimedNoIsolation()).toBe(true);
   });
 
   // ── AC4 — boot and /api/health cannot disagree ────────────────────────────

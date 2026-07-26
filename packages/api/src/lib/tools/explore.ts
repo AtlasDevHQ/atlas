@@ -131,7 +131,6 @@ let _sidecarFailed = false;
 
 export type ExploreBackendType = SandboxBackendName | "plugin";
 
-
 /** Name of the active sandbox plugin (if any). Set during backend init. */
 let _activeSandboxPluginId: string | null = null;
 

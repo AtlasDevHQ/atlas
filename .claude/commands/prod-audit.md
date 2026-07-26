@@ -1,3 +1,7 @@
+---
+description: "Audit the running system against code, deployed config, and runtime behavior for degradation gaps, observability blind spots, missing boot guards, migration risk. Before scaling or after infra changes."
+---
+
 # Production Readiness Audit
 
 Cross-reference the running-system surface against code reality, deployed config, and observed runtime behaviour to find graceful-degradation gaps, observability blind spots, boot-time guards that aren't there yet, and migration/rollback risks. Run before scaling rollouts, after large infra changes, or as a periodic sweep on hosted SaaS deployments.

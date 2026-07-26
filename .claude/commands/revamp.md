@@ -1,3 +1,7 @@
+---
+description: "Revamp a cluttered admin or SaaS page with the impeccable toolkit — progressive disclosure over wall-of-forms. Presentational only; /elevate if behavior or data model is the problem."
+---
+
 # Page Revamp
 
 Revamp a cluttered admin or SaaS page using the `.impeccable.md` toolkit — the same workflow that turned `/admin/integrations` from a wall of ten open forms into a clean progressive-disclosure surface.

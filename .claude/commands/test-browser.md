@@ -1,3 +1,7 @@
+---
+description: "Run the Playwright browser e2e suite, skipping @llm-tagged tests so there are no LLM costs. Needs the dev server running."
+---
+
 # Browser Tests
 
 Run the Playwright browser e2e test suite. No LLM costs — skips `@llm`-tagged tests (charts, conversations).

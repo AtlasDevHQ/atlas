@@ -1,0 +1,16 @@
+---
+paths:
+  - "packages/api/src/lib/db/**"
+  - "packages/api/src/lib/integrations/**"
+  - "packages/api/src/lib/tools/backends/**"
+  - "ee/src/**"
+---
+
+# Credential handling and sandbox isolation
+
+- [ ] **Explore is read-only by isolation, not a path jail** — Each explore backend is read-only *structurally* (ephemeral microVM / read-only bind mounts / in-memory overlay): shell writes and `..` traversal may succeed *inside* the sandbox but never touch host files, and there is no command allowlist or `semantic/`-scoped path check. See the fuller "read-only by isolation, not command validation" note under **Agent Tools**; don't lean on a path-traversal guard that isn't enforced (#4781)
+- [ ] **No secrets in responses** — Never expose connection strings, API keys, or stack traces to the user or agent
+- [ ] **Readonly DB connections** — PostgreSQL via validation; MySQL via read-only session variable; ClickHouse via `readonly: 1`
+- [ ] **Encrypted at rest** — New integration + datasource credentials use `encryptSecret` / `decryptSecret` from `db/secret-encryption.ts` (versioned AES-256-GCM). New credential table = one-line add to `INTEGRATION_TABLES` in `db/integration-tables.ts` + an `_encrypted` column. Datasource URLs use selective-field encryption (`encryptSecretFields`) keyed on the `config_schema` `secret: true` flag. The legacy `db/internal.ts` passthrough is frozen to two columns — no new call sites. See [ADR-0005](docs/adr/0005-integration-credentials-table.md), [ADR-0007](docs/adr/0007-unified-install-pipeline.md)
+- [ ] **Explore/python tool isolation** — One backend-selection module for both tools: `lib/tools/backends/selection.ts`. Default priority: plugin/BYOC > Vercel sandbox > nsjail explicit > sidecar > nsjail auto-detect > just-bash (dev). Override via `sandbox.priority` or `ATLAS_SANDBOX_PRIORITY`; `ATLAS_SANDBOX=nsjail` is hard-fail (API won't boot if init fails). **SaaS pins `["vercel-sandbox"]`** in `deploy/api/atlas.config.ts` (deny-all egress, fail-closed on exhaustion — no `just-bash` fallback). Vercel team/project IDs are non-secret config in `atlas.config.ts` (`sandbox.vercel`); only `VERCEL_TOKEN` stays a **per-service** env secret (Railway shared vars don't auto-inherit)
+- [ ] **Per-tenant plugin creds never fall back to operator env vars** — `resolveWorkspaceCredentials` is DB-only in both deploy modes. `TWENTY_API_KEY` belongs to Atlas's own lead-capture pipeline (`ee/src/saas-crm/`) via `resolveOperatorCredentials`. No plugin install (customer or Atlas's own team workspace) ever reads from env — installs go through `atlas.config.ts` or Admin → Integrations. `scripts/check-twenty-resolver-imports.sh` keeps the seam tight. See #2850

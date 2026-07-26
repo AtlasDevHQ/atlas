@@ -1,3 +1,7 @@
+---
+description: "Diff committed contract surfaces against the last release tag, classify breaking/additive/internal. Produces the semver evidence for the next tag. Run before /release."
+---
+
 # Contracts Audit (semver evidence for /release)
 
 Diff every **committed contract surface** against the last release tag, classify each change as breaking / additive / internal, and output the evidence that drives the next tag's semver position. Run before `/release` at the end of a code cycle.

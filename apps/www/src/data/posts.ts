@@ -26,6 +26,16 @@ export const POSTS: Post[] = [
     tag: "How it works",
   },
   {
+    slug: "atlas-is-public",
+    title: "Atlas is public",
+    description:
+      "The AI data analyst you can run anywhere is live. Plain-English answers over SQL warehouses and REST APIs, governed by a semantic layer you author, on infrastructure you control. Here's the whole surface, and what each day this week goes deep on.",
+    isoDate: "2026-07-27",
+    dateLabel: "July 27, 2026",
+    readingTime: "5 min read",
+    tag: "Road to launch",
+  },
+  {
     slug: "the-last-mile",
     title: "The last mile",
     description:

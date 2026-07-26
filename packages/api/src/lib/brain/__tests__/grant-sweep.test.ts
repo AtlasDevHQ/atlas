@@ -22,10 +22,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { ACL_GATED_TABLES } from "@atlas/api/lib/brain/acl";
+import { ACL_GATED_TABLES, type AclGatedTable } from "@atlas/api/lib/brain/acl";
 import {
   DEFAULT_GRANT_SWEEP_INTERVAL_HOURS,
   GRANT_SWEEP_ROW_CAP,
+  MAX_TIMER_DELAY_MS,
   getGrantSweepIntervalMs,
   grantScanSql,
   runGrantSweepCycle,
@@ -34,12 +35,12 @@ import {
 
 const WORKSPACE = "ws-1";
 
-interface Row {
+type Row = {
   readonly workspace_id: string;
   readonly id: string;
   readonly visible_to: readonly unknown[];
   readonly status: string | null;
-}
+};
 
 const row = (id: string, visibleTo: readonly unknown[], overrides: Partial<Row> = {}): Row => ({
   workspace_id: WORKSPACE,
@@ -64,20 +65,25 @@ function withDatabaseUrl<T>(fn: () => Promise<T>): Promise<T> {
  * that only cares about facts still exercises the real two-table iteration.
  */
 function harness(
-  byTable: Partial<Record<string, readonly Row[]>>,
+  byTable: Partial<Record<AclGatedTable, readonly Row[]>>,
   extra: Omit<GrantSweepDeps, "query"> = {},
 ) {
   const scans: string[] = [];
+  const bindings: (unknown[] | undefined)[] = [];
   const deps: GrantSweepDeps = {
     ...extra,
-    query: (<T>(sql: string) => {
+    query: (sql: string, params?: unknown[]) => {
       const table = ACL_GATED_TABLES.find((t) => sql.includes(`FROM ${t}`));
       if (!table) throw new Error(`scan SQL named no gated table: ${sql}`);
+      // The cap must reach `$1`. Unbound, this is a Postgres bind error that
+      // only the -pg suite sees — and that suite is skipped without
+      // TEST_DATABASE_URL, so a local gate would go green on a broken scan.
+      bindings.push(params);
       scans.push(table);
-      return Promise.resolve((byTable[table] ?? []) as unknown as T[]);
-    }) as GrantSweepDeps["query"],
+      return Promise.resolve(byTable[table] ?? []);
+    },
   };
-  return { deps, scans };
+  return { deps, scans, bindings };
 }
 
 describe("runGrantSweepCycle — what counts as malformed", () => {
@@ -135,9 +141,13 @@ describe("runGrantSweepCycle — what counts as malformed", () => {
 
     expect(result.malformedRows).toBe(0);
     expect(result.sample).toEqual([]);
+    // Non-vacuity: `toBe(0)` also holds when the harness served NOTHING (a
+    // typo'd fixture key used to do exactly that). Pin the rows actually
+    // examined so this test can only pass by parsing them.
+    expect(result.rowsScanned).toBe(3);
   });
 
-  it("flags a grant of only NULL/'' elements — legal at rest, usable by nobody", async () => {
+  it("flags `['', 'everyone']` — legal at rest, usable by nobody", async () => {
     // 0180's CHECK admits `[NULL, '']`? No — it requires one non-NULL non-empty
     // element. But `['', 'everyone']` IS admitted, and parses to zero
     // principals. The CHECK is a cardinality test; this is a grammar test, and
@@ -183,6 +193,25 @@ describe("runGrantSweepCycle — scope", () => {
     ]);
   });
 
+  it("does NOT flag a grammatical grant that happens to match nobody", async () => {
+    // The other invisible-to-everyone class, and deliberately out of scope.
+    // `audience: eng` (leading space) and `user:deleted-id` PARSE — `acl.ts`
+    // accepts any non-empty remainder, because it has no business assuming a
+    // shape for Better Auth ids or source-derived audience ids. They may still
+    // match no reader token, but deciding that needs existence checks against
+    // `user` / `fact_audience_member` — a per-row cross-table read this sweep
+    // must not acquire. "Parses to a principal" is the whole boundary.
+    const { deps } = harness({
+      brain_facts: [row("f_1", ["audience: eng"]), row("f_2", ["user:deleted-id"])],
+      brain_episodes: [row("e_1", ["audience:archived-channel"])],
+    });
+
+    const result = await withDatabaseUrl(() => runGrantSweepCycle(deps));
+
+    expect(result.malformedRows).toBe(0);
+    expect(result.rowsScanned).toBe(3);
+  });
+
   it("counts distinct workspaces, not rows", async () => {
     const { deps } = harness({
       brain_facts: [
@@ -205,7 +234,9 @@ describe("runGrantSweepCycle — scope", () => {
       const { deps, scans } = harness({ brain_facts: [row("f_1", ["everyone"])] });
       const result = await runGrantSweepCycle(deps);
 
-      expect(result.status).toBe("success");
+      // `skipped`, not `success`: nothing ran. `success` here would pair an
+      // all-clear status with all-null ("we do not know") counters.
+      expect(result.status).toBe("skipped");
       // `null`, not 0 — the sweep did not run, and 0 would read as all-clear.
       expect(result.malformedRows).toBeNull();
       expect(scans).toEqual([]);
@@ -219,7 +250,13 @@ describe("runGrantSweepCycle — the scan SQL", () => {
   it("narrows on the exact `org` token and nothing else", () => {
     for (const table of ACL_GATED_TABLES) {
       const sql = grantScanSql(table);
-      expect(sql).toContain("NOT ('org' = ANY(visible_to))");
+      expect(sql).toContain("NOT (visible_to @> ARRAY['org'])");
+      // `= ANY` is the NULL-UNSAFE spelling of the same idea and reads as a
+      // synonym: over an array with a NULL element and no match it yields NULL,
+      // `NOT NULL` is NULL, and `WHERE NULL` drops the row — so every
+      // entirely-malformed grant carrying a NULL element went unreported. The
+      // pg cross-check proves the behaviour; this stops the text coming back.
+      expect(sql).not.toContain("= ANY(");
       // The grammar-duplication guard. A predicate mentioning any
       // PARAMETERISED arm is a second derivation of `parsePrincipal`, and the
       // obvious version of it ("no element has a known prefix") silently drops
@@ -250,10 +287,10 @@ describe("runGrantSweepCycle — the scan SQL", () => {
 describe("runGrantSweepCycle — degradation is visible", () => {
   it("reports a partial scan as `degraded`, keeping the counters it has", async () => {
     const deps: GrantSweepDeps = {
-      query: (<T>(sql: string) => {
+      query: (sql: string) => {
         if (sql.includes("FROM brain_episodes")) return Promise.reject(new Error("relation gone"));
-        return Promise.resolve([row("f_1", ["everyone"])] as unknown as T[]);
-      }) as GrantSweepDeps["query"],
+        return Promise.resolve([row("f_1", ["everyone"])]);
+      },
     };
 
     const result = await withDatabaseUrl(() => runGrantSweepCycle(deps));
@@ -276,6 +313,20 @@ describe("runGrantSweepCycle — degradation is visible", () => {
     expect(result.rowsScanned).toBeNull();
   });
 
+  it("keeps the FIRST error when both tables fail", async () => {
+    // `firstError ??=` — the earlier fault is usually the cause and the later
+    // one the consequence. With one failing table this arm is unreachable.
+    const deps: GrantSweepDeps = {
+      query: (sql: string) =>
+        Promise.reject(new Error(sql.includes("FROM brain_facts") ? "facts-gone" : "episodes-gone")),
+    };
+
+    const result = await withDatabaseUrl(() => runGrantSweepCycle(deps));
+
+    expect(result.status).toBe("failure");
+    expect(result.error).toContain("facts-gone");
+  });
+
   it("never throws — a rejected scan is a result, not an exception", async () => {
     const deps: GrantSweepDeps = { query: () => Promise.reject(new Error("boom")) };
     // The fiber routes this through `Effect.tryPromise`, but the contract the
@@ -290,7 +341,7 @@ describe("runGrantSweepCycle — degradation is visible", () => {
 
     const result = await withDatabaseUrl(() => runGrantSweepCycle(deps));
 
-    expect(result.scanTruncated).toBe(true);
+    expect(result.countIsFloor).toBe(true);
     // The count is a FLOOR — reported, not silently presented as a total.
     expect(result.malformedRows).toBe(1);
   });
@@ -300,7 +351,7 @@ describe("runGrantSweepCycle — degradation is visible", () => {
 
     const result = await withDatabaseUrl(() => runGrantSweepCycle(deps));
 
-    expect(result.scanTruncated).toBe(false);
+    expect(result.countIsFloor).toBe(false);
   });
 
   it("neither clears nor flags a row whose shape it cannot read", async () => {
@@ -319,6 +370,12 @@ describe("runGrantSweepCycle — degradation is visible", () => {
     expect(result.malformedRows).toBe(1);
     expect(result.sample.map((s) => s.rowId)).toEqual(["f_2"]);
     expect(result.rowsScanned).toBe(2);
+    expect(result.unreadableRows).toBe(1);
+    // A row that could not be READ is not a row the sweep cleared, so the
+    // cycle's count is unverified rather than clean. Reporting `success` here
+    // is how a projection change that made EVERY row unreadable would have
+    // shown up as a healthy deployment.
+    expect(result.status).toBe("degraded");
   });
 });
 
@@ -363,7 +420,25 @@ describe("getGrantSweepIntervalMs", () => {
     }
   });
 
-  it("keeps a generous default row cap", () => {
-    expect(GRANT_SWEEP_ROW_CAP).toBeGreaterThanOrEqual(10_000);
+  it("clamps an over-large interval instead of letting the fiber stop ticking", () => {
+    // Past MAX_TIMER_DELAY_MS Effect's clock treats the duration as INFINITE:
+    // `Schedule.spaced` runs one boot tick and never re-arms. 600h is a
+    // plausible "dial this way down" keystroke, and unclamped it would produce
+    // permanent silence indistinguishable from a dead fiber — the exact
+    // outcome the fiber registration comment says it exists to avoid.
+    expect(withInterval("600", getGrantSweepIntervalMs)).toBe(MAX_TIMER_DELAY_MS);
+    expect(600 * 3_600_000).toBeGreaterThan(MAX_TIMER_DELAY_MS);
+    // Just under the bound is honoured, so the clamp is not swallowing sane values.
+    expect(withInterval("500", getGrantSweepIntervalMs)).toBe(500 * 3_600_000);
+  });
+
+  it("binds the DEFAULT row cap when no override is injected", async () => {
+    // Every truncation test injects `rowCap`, so the production default was
+    // exercised only by the -pg suite — which is skipped without a database.
+    const { deps, bindings } = harness({ brain_facts: [row("f_1", ["org"])] });
+    await withDatabaseUrl(() => runGrantSweepCycle(deps));
+
+    expect(bindings).toHaveLength(ACL_GATED_TABLES.length);
+    expect(bindings.every((b) => b?.[0] === GRANT_SWEEP_ROW_CAP)).toBe(true);
   });
 });

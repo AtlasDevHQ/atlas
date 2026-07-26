@@ -17,8 +17,9 @@
  *
  * This is the seam that can. It is a SWEEP and not a write-time hook because a
  * write-time hook cannot close the acceptance criterion: a region-migration
- * import bundle carries grants that `grantProblem` legally admits, on a route
- * #4771's deriver does not own. A sweep is indifferent to how the row arrived.
+ * import bundle carries grants that `grantProblem` legally admits, on a route the
+ * ingest-time grant deriver (#4770, inherited onto facts by #4771's reconcile)
+ * does not own. A sweep is indifferent to how the row arrived.
  *
  * ## An OBSERVER, never a gate
  *
@@ -42,7 +43,7 @@
  * them is an alert. The COUNT on the span is a gauge: it wants continuous
  * re-emission, because that is what makes it alertable on a threshold and what
  * makes it visibly return to zero when someone fixes the rows. Emitting it once
- * — the per-row stamp column considered and rejected on #4797 — converts it
+ * — which a per-row "already reported" stamp column would do — converts it
  * into an edge-triggered event that goes silent WHILE THE DEFECT PERSISTS, so a
  * report landing during a log rotation is lost forever. The LOG LINE is not the
  * alert; it is the fix list read after the gauge fires, and its cost is bounded
@@ -85,7 +86,8 @@ const log = createLogger("brain.grant-sweep");
 export const DEFAULT_GRANT_SWEEP_INTERVAL_HOURS = 24;
 
 /**
- * Rows examined per table per cycle.
+ * Rows examined per table per cycle, AFTER the `org` narrow — the public
+ * majority never reaches it, so this is not a fraction of the table's row count.
  *
  * A bound, not a policy — but a bound that is REPORTED rather than silent, via
  * `scanTruncated`. A sweep that quietly stopped at the cap would read as
@@ -116,16 +118,39 @@ const MALFORMED_SAMPLE_CAP = 20;
  * pre-filter must never exclude a row TS would call malformed, which rules out
  * every predicate that reasons about the PARAMETERISED arms.
  *
- * `NOT ('org' = ANY(visible_to))` is safe because `org` is a single exact
+ * `NOT (visible_to @> ARRAY['org'])` is safe because `org` is a single exact
  * token, not a grammar: a row containing it demonstrably has a valid principal,
  * so excluding it can never hide a finding, and the rule survives any change to
  * the `role:`/`user:`/`audience:` arms because it does not mention them.
  * ADR-0036's "the public majority carries an explicit `[org]`" is what makes it
  * worth having — it should shed most of the table.
  *
- * It is a heap FILTER, not an index scan: the GIN index on `visible_to` cannot
- * serve a negation. What it buys is rows-not-sent-over-the-wire, which is the
- * cost that actually scales here, since the parse must happen in TS.
+ * ## Why `@>` and NOT `'org' = ANY(visible_to)`
+ *
+ * The two read as synonyms and are not. `= ANY` is a scalar comparison folded
+ * over the elements, so it inherits SQL's three-valued logic: over an array
+ * containing a NULL element with no match it evaluates to NULL, not FALSE.
+ * `NOT NULL` is NULL, and `WHERE NULL` DROPS THE ROW.
+ *
+ * `['everyone', NULL]` and `['role:bogus', NULL]` are legal at rest — 0180's
+ * CHECK counts non-NULL non-empty elements and one survivor is enough — parse
+ * to zero principals, and are exactly what this sweep exists to find. Under
+ * `= ANY` all of them were silently excluded by the pre-filter, and the cycle
+ * reported `malformed_rows: 0, status: success`: a fabricated all-clear on the
+ * module's only signal, in the under-reporting direction, on rows an import
+ * bundle can carry today (`grantProblem` admits `["everyone", null]`).
+ *
+ * `@>` is array containment, which is two-valued over element NULLs: it answers
+ * FALSE, `NOT` answers TRUE, and the row is examined. It also matches the GIN
+ * index's own operator class, so the shape stays legible next to
+ * `idx_brain_*_visible_to`. This is a correctness fix, not a style preference —
+ * do not "simplify" it back to `= ANY`.
+ *
+ * It is still a heap FILTER, not an index scan — a NEGATED containment is not
+ * an index-scannable predicate, whichever operator sits inside it. (`= ANY(col)`
+ * would not have been GIN-servable in either polarity either; `array_ops` serves
+ * `&&`, `@>`, `<@`, `=`.) What the narrow buys is rows-not-sent-over-the-wire,
+ * which is the cost that actually scales here, since the parse must be in TS.
  *
  * `ORDER BY workspace_id, id` makes the capped prefix stable across cycles
  * rather than whatever the heap happened to return, so a truncated sweep
@@ -139,7 +164,7 @@ export function grantScanSql(table: AclGatedTable): string {
   return `
   SELECT workspace_id, id, visible_to, ${status}
     FROM ${table}
-   WHERE NOT ('org' = ANY(visible_to))
+   WHERE NOT (visible_to @> ARRAY['org'])
    ORDER BY workspace_id, id
    LIMIT $1`;
 }
@@ -163,39 +188,75 @@ export interface MalformedGrantRow {
  * span, and would hide exactly the number this module exists to show.
  */
 export interface GrantSweepResult {
-  readonly status: "success" | "degraded" | "failure";
+  /**
+   * `skipped` is a FOURTH state, not a flavour of success: there is no internal
+   * DB, so nothing ran. Without it the no-DB path returned `success` with
+   * all-null counters — the one combination this type's doc calls impossible.
+   */
+  readonly status: "success" | "degraded" | "failure" | "skipped";
   readonly malformedRows: number | null;
   readonly malformedWorkspaces: number | null;
   readonly rowsScanned: number | null;
-  /** A table hit {@link GRANT_SWEEP_ROW_CAP}; the count is a floor, not a total. */
-  readonly scanTruncated: boolean;
+  /**
+   * Rows the scan returned whose SHAPE could not be read (query drift, not a
+   * data defect — see {@link readScanRow}). Non-zero forces `degraded`, because
+   * a row that could not be read is one this sweep did not clear: without that,
+   * a projection change that made EVERY row unreadable reported
+   * `success / malformedRows: 0`, a fabricated all-clear on the module's only
+   * signal.
+   */
+  readonly unreadableRows: number | null;
+  /**
+   * `malformedRows` is a FLOOR rather than a total — the scan hit
+   * {@link GRANT_SWEEP_ROW_CAP}, or a table's scan failed. Both causes are
+   * folded here so an alert can read one field; `status` and `error` say which.
+   */
+  readonly countIsFloor: boolean;
   readonly sample: readonly MalformedGrantRow[];
+  /** {@link sample} was clipped to its cap; more rows are in the log line. */
+  readonly sampleTruncated: boolean;
   readonly error?: string;
 }
 
-const NO_RESULT: Omit<GrantSweepResult, "status"> = {
+/**
+ * Frozen, not merely `readonly`. `readonly` is compile-time only, and this
+ * object (and its `sample` array) is shared by reference across every no-result
+ * return in the process — a type-violating `push` would poison every subsequent
+ * cycle's report. `acl.ts`'s `DENY_ALL` is frozen for the same reason.
+ */
+const NO_RESULT: Omit<GrantSweepResult, "status"> = Object.freeze({
   malformedRows: null,
   malformedWorkspaces: null,
   rowsScanned: null,
-  scanTruncated: false,
-  sample: [],
-};
+  unreadableRows: null,
+  countIsFloor: false,
+  sample: Object.freeze([]) as readonly MalformedGrantRow[],
+  sampleTruncated: false,
+});
 
 /**
  * The query surface this module needs — injectable, so tests pass a literal
  * rather than mocking a module. Shaped as `internalQuery`'s rows-array return
  * (not `pg`'s `{ rows }`), matching `AudienceSyncDeps.query`.
  */
-export type GrantSweepQuery = <T extends Record<string, unknown>>(
+export type GrantSweepQuery = (
   sql: string,
   params?: unknown[],
-) => Promise<T[]>;
+) => Promise<readonly Record<string, unknown>[]>;
 
 export interface GrantSweepDeps {
   readonly query?: GrantSweepQuery;
   /** Row cap per table. Injectable so a test can drive truncation cheaply. */
   readonly rowCap?: number;
 }
+
+/**
+ * Effect's clock treats any duration above this as INFINITE — `unsafeSchedule`
+ * returns without arming a timer, so `Schedule.spaced` runs its first tick and
+ * then never ticks again. Shared bound with
+ * `scheduler/knowledge-bundle-sync.ts`'s `MAX_TIMER_DELAY_MS` (#4236).
+ */
+export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 /**
  * How often the sweep runs, in milliseconds.
@@ -205,6 +266,13 @@ export interface GrantSweepDeps {
  * observer of a permanent defect class — and unlike the staleness bound, there
  * is no enforcement here to escape from, so "0 disables" would buy nothing but
  * a way to lose the signal by accident.
+ *
+ * Over-large values are CLAMPED for the same reason, and the reason is not
+ * cosmetic: past `MAX_TIMER_DELAY_MS` (~596.5h) Effect never re-arms the timer,
+ * so `…_HOURS=600` — a plausible "dial this way down" keystroke — yields one
+ * boot tick and then permanent silence. That is indistinguishable from a dead
+ * fiber, and "nothing to notice but an ABSENCE of spans" is precisely the
+ * outcome this fiber's registration comment says it exists to avoid.
  */
 export function getGrantSweepIntervalMs(): number {
   const raw = getSettingAuto("ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS");
@@ -217,7 +285,15 @@ export function getGrantSweepIntervalMs(): number {
     );
     return DEFAULT_GRANT_SWEEP_INTERVAL_HOURS * 3_600_000;
   }
-  return hours * 3_600_000;
+  const ms = hours * 3_600_000;
+  if (ms > MAX_TIMER_DELAY_MS) {
+    log.warn(
+      { raw, maxHours: MAX_TIMER_DELAY_MS / 3_600_000 },
+      "ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS exceeds the max timer delay — clamping, since a larger value would stop the fiber ticking entirely",
+    );
+    return MAX_TIMER_DELAY_MS;
+  }
+  return ms;
 }
 
 /** Narrow one scanned row, or `null` if its shape is unreadable. */
@@ -249,20 +325,24 @@ function readScanRow(
  * Scan one gated table. Never throws — a per-table failure degrades the cycle
  * rather than taking the other table down with it.
  */
+type TableScan =
+  | {
+      readonly ok: true;
+      readonly scanned: number;
+      readonly truncated: boolean;
+      readonly unreadable: number;
+      readonly malformed: readonly MalformedGrantRow[];
+    }
+  /** `error` is non-optional exactly where it is guaranteed. */
+  | { readonly ok: false; readonly error: string };
+
 async function sweepTable(
   query: GrantSweepQuery,
   table: AclGatedTable,
   rowCap: number,
-): Promise<{
-  ok: boolean;
-  scanned: number;
-  truncated: boolean;
-  unreadable: number;
-  malformed: MalformedGrantRow[];
-  error?: string;
-}> {
+): Promise<TableScan> {
   try {
-    const rows = await query<Record<string, unknown>>(grantScanSql(table), [rowCap]);
+    const rows = await query(grantScanSql(table), [rowCap]);
     const malformed: MalformedGrantRow[] = [];
     let unreadable = 0;
     for (const raw of rows) {
@@ -285,20 +365,25 @@ async function sweepTable(
         grant: row.grant,
       });
     }
-    return {
-      ok: true,
-      scanned: rows.length,
-      truncated: rows.length >= rowCap,
-      unreadable,
-      malformed,
-    };
+    if (unreadable > 0) {
+      // Logged HERE, not in the cycle, because `table` is in scope only here —
+      // and the two projections deliberately differ (`status` vs `NULL::text AS
+      // status`), so "the scan query's projection changed" is useless without
+      // saying which one. The per-table catch below carries `table` for the
+      // same reason.
+      log.warn(
+        { table, unreadable, scanned: rows.length },
+        "brain grant sweep: scanned rows had an unreadable shape — this table's scan projection changed; these rows were neither cleared nor flagged",
+      );
+    }
+    return { ok: true, scanned: rows.length, truncated: rows.length >= rowCap, unreadable, malformed };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     log.warn(
       { table, err: error },
       "brain grant sweep: scan failed — this table's malformed-grant count is unavailable this cycle",
     );
-    return { ok: false, scanned: 0, truncated: false, unreadable: 0, malformed: [], error };
+    return { ok: false, error };
   }
 }
 
@@ -311,7 +396,10 @@ async function sweepTable(
  * because half a floor is still more useful than none.
  */
 export async function runGrantSweepCycle(deps: GrantSweepDeps = {}): Promise<GrantSweepResult> {
-  if (!hasInternalDB()) return { status: "success", ...NO_RESULT };
+  // `skipped`, not `success` — nothing ran, and the counters are null to say
+  // so. Reporting `success` here was the one state {@link GrantSweepResult}
+  // documents as impossible: an all-clear status over "we do not know".
+  if (!hasInternalDB()) return { status: "skipped", ...NO_RESULT };
 
   const query = deps.query ?? internalQuery;
   const rowCap = deps.rowCap ?? GRANT_SWEEP_ROW_CAP;
@@ -346,13 +434,10 @@ export async function runGrantSweepCycle(deps: GrantSweepDeps = {}): Promise<Gra
     return { status: "failure", ...NO_RESULT, ...(firstError ? { error: firstError } : {}) };
   }
 
-  if (unreadable > 0) {
-    // Separate from the malformed count on purpose — see {@link readScanRow}.
-    log.warn(
-      { unreadable, scanned },
-      "brain grant sweep: scanned rows had an unreadable shape — the scan query's projection changed; these rows were neither cleared nor flagged",
-    );
-  }
+  // Both causes of an incomplete count, folded into one field an alert can read:
+  // the row cap, and a table whose scan failed. `scanTruncated` alone would have
+  // read a half-scan (one table errored) as a complete one.
+  const countIsFloor = truncated || failures > 0;
 
   if (truncated) {
     // The "no silent caps" half of the contract. A capped sweep reports a
@@ -376,7 +461,7 @@ export async function runGrantSweepCycle(deps: GrantSweepDeps = {}): Promise<Gra
         malformedRows: malformed.length,
         malformedWorkspaces: workspaces.size,
         rowsScanned: scanned,
-        scanTruncated: truncated,
+        countIsFloor,
         sample: malformed.slice(0, MALFORMED_SAMPLE_CAP),
         sampleTruncated: malformed.length > MALFORMED_SAMPLE_CAP,
       },
@@ -385,17 +470,22 @@ export async function runGrantSweepCycle(deps: GrantSweepDeps = {}): Promise<Gra
   }
 
   return {
-    // `degraded` means one table's scan failed, so the counters are a partial
-    // floor. It is deliberately NOT set by findings: malformed rows are a
+    // `degraded` means the counters are a partial or unverified floor — one
+    // table's scan failed, or rows came back in a shape this module could not
+    // read. It is deliberately NOT set by FINDINGS: malformed rows are a
     // steady-state defect, and folding them in would make `degraded` permanent
     // on any deployment that has one — and therefore ignorable, which is the
-    // failure this whole module is shaped around avoiding.
-    status: failures > 0 ? "degraded" : "success",
+    // failure this whole module is shaped around avoiding. An unreadable row is
+    // the opposite kind of thing: a code defect that gets fixed, so it cannot
+    // pin the status.
+    status: failures > 0 || unreadable > 0 ? "degraded" : "success",
     malformedRows: malformed.length,
     malformedWorkspaces: workspaces.size,
     rowsScanned: scanned,
-    scanTruncated: truncated,
+    unreadableRows: unreadable,
+    countIsFloor,
     sample: malformed.slice(0, MALFORMED_SAMPLE_CAP),
+    sampleTruncated: malformed.length > MALFORMED_SAMPLE_CAP,
     ...(firstError ? { error: firstError } : {}),
   };
 }

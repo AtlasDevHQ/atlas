@@ -52,12 +52,14 @@
  * `['role:bogus']`): that row is correctly invisible to every reader, so no
  * caller ever holds it, so no read-time seam can log it.
  *
- * That half is closed by `lib/brain/grant-sweep.ts` (#4797) — the
+ * That half is observed by `lib/brain/grant-sweep.ts` (#4797) — the
  * `brain_grant_sweep` periodic fiber, which scans both gated tables through
- * THIS module's `parseGrant` and reports a count on its span plus one bounded
- * warn line per cycle. It is a SWEEP and not a write-time hook because a
+ * THIS module's `parseGrant` and reports a count on its span plus a bounded
+ * warn line naming the rows. The count is a FLOOR, not a proof of absence: the
+ * scan is capped per cycle and a failed table degrades it, both of which the
+ * result reports. It is a SWEEP and not a write-time hook because a
  * region-migration import bundle carries grants `grantProblem` legally admits
- * on a route #4771's deriver does not own. It observes only: it adds no
+ * on a route the ingest-time deriver does not own. It observes only: it adds no
  * write-side rejection, and must not acquire one (see below).
  *
  * ## The one thing that must never become stricter

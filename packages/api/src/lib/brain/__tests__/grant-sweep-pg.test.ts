@@ -71,6 +71,17 @@ const GRANTS: ReadonlyArray<{
   // prefix and does not parse, so any pre-filter reasoning about the
   // parameterised arms silently under-reports exactly here.
   { label: "role-bogus", visibleTo: ["role:bogus"], malformed: true },
+  // The NULL-element arm. These are the rows an `'org' = ANY(visible_to)`
+  // narrow SILENTLY DROPPED: `= ANY` is three-valued, so over an array with a
+  // NULL element and no match it yields NULL, `NOT NULL` is NULL, and `WHERE
+  // NULL` excludes the row. Both are legal at rest (0180's CHECK counts
+  // non-NULL non-empty elements; one survivor is enough), both parse to zero
+  // principals, and `grantProblem` admits `["everyone", null]` from an import
+  // bundle today. Without these two fixtures the cross-check below passes
+  // vacuously — the only other NULL fixture, `padded-org`, carries `org` and is
+  // shed for the right reason.
+  { label: "malformed-with-null", visibleTo: ["everyone", null], malformed: true },
+  { label: "role-bogus-with-null", visibleTo: ["role:bogus", null], malformed: true },
   { label: "role-platform-admin", visibleTo: ["role:platform_admin"], malformed: true },
   { label: "bare-prefixes", visibleTo: ["user:", "audience:"], malformed: true },
   { label: "case-variant-audience", visibleTo: ["Audience:eng"], malformed: true },
@@ -129,22 +140,35 @@ describeIfPg("brain malformed-grant sweep (real Postgres)", () => {
     );
   }
 
-  /** The sweep's own query, run for real. Returns the rows it would parse. */
-  async function narrowedScan(table: AclGatedTable) {
-    const { rows } = await pool.query(grantScanSql(table), [10_000]);
-    return rows as Array<{ id: string; visible_to: unknown[]; status: string | null }>;
+  /**
+   * The sweep's own query, run for real, scoped to one workspace.
+   *
+   * Scoped deliberately: `grantScanSql` is deployment-wide, but these
+   * assertions label rows from a WS-only map, so an unscoped scan made the
+   * result depend on whether the `WS_B` fixture had been seeded yet — a test
+   * that passes on ordering and fails with a message pointing nowhere near the
+   * cause. The narrow itself is unaffected; only the row set is.
+   */
+  async function narrowedScan(table: AclGatedTable, workspaceId = WS) {
+    const { rows } = await pool.query<{ id: string; visible_to: unknown[]; status: string | null }>(
+      `SELECT * FROM (${grantScanSql(table)}) s WHERE workspace_id = $2`,
+      [10_000, workspaceId],
+    );
+    return rows;
   }
 
   /**
    * The same projection WITHOUT the narrow — the control arm. Anything this
    * flags and {@link narrowedScan} does not is a row the optimisation dropped.
    */
-  async function unnarrowedScan(table: AclGatedTable) {
+  async function unnarrowedScan(table: AclGatedTable, workspaceId = WS) {
     const status = table === "brain_facts" ? "status" : "NULL::text AS status";
-    const { rows } = await pool.query(
-      `SELECT workspace_id, id, visible_to, ${status} FROM ${table} ORDER BY workspace_id, id`,
+    const { rows } = await pool.query<{ id: string; visible_to: unknown[]; status: string | null }>(
+      `SELECT workspace_id, id, visible_to, ${status} FROM ${table}
+        WHERE workspace_id = $1 ORDER BY workspace_id, id`,
+      [workspaceId],
     );
-    return rows as Array<{ id: string; visible_to: unknown[]; status: string | null }>;
+    return rows;
   }
 
   const flagged = (rows: Array<{ visible_to: unknown[] }>, key: (i: number) => string) =>
@@ -241,7 +265,10 @@ describeIfPg("brain malformed-grant sweep (real Postgres)", () => {
       `SELECT id FROM brain_facts WHERE workspace_id = $1 AND subject = 'role-bogus'`,
       [WS],
     );
-    expect(rows.some((r) => r.id === labelled[0]!.id)).toBe(true);
+    // Asserted before the index, so a seed/label drift fails legibly here
+    // rather than as a TypeError from a non-null assertion.
+    expect(labelled).toHaveLength(1);
+    expect(rows.some((r) => r.id === labelled[0]?.id)).toBe(true);
   });
 
   it("counts rows and distinct workspaces across both tables", async () => {
@@ -265,14 +292,24 @@ describeIfPg("brain malformed-grant sweep (real Postgres)", () => {
     expect(result.status).toBe("success");
     expect(result.malformedRows).toBe(perTable * 2 + 1);
     expect(result.malformedWorkspaces).toBe(2);
-    expect(result.scanTruncated).toBe(false);
+    expect(result.countIsFloor).toBe(false);
 
-    // The draft is in the flagged set — invisible to the review queue as well
-    // as to every reader, so it is the row least likely to surface any other
-    // way. It also proves `status` survives the projection into the log sample.
-    expect(result.sample.some((s) => s.status === "draft" && s.workspaceId === WS_B)).toBe(true);
+    // The sample is CAPPED, so membership assertions over it would depend on
+    // how many fixtures happen to precede the row of interest — a test that
+    // silently inverts when someone adds a fixture. Assert the cap's own
+    // contract instead, and prove the draft row via the full count.
+    expect(result.sample).toHaveLength(20);
+    expect(result.sampleTruncated).toBe(true);
+
+    // The draft in WS_B is invisible to the review queue as well as to every
+    // reader, so it is the row least likely to surface any other way. Counted
+    // via a direct scan rather than the capped sample.
+    const wsBRows = await narrowedScan("brain_facts", WS_B);
+    expect(wsBRows).toHaveLength(1);
+    expect(wsBRows[0]?.status).toBe("draft");
     // Episodes carry a NULL status; facts never do.
-    expect(result.sample.some((s) => s.table === "brain_episodes" && s.status === null)).toBe(true);
+    const episodeRows = await narrowedScan("brain_episodes");
+    expect(episodeRows.every((r) => r.status === null)).toBe(true);
   });
 
   it("respects the row cap and reports the truncation", async () => {
@@ -283,7 +320,7 @@ describeIfPg("brain malformed-grant sweep (real Postgres)", () => {
       }),
     );
 
-    expect(result.scanTruncated).toBe(true);
+    expect(result.countIsFloor).toBe(true);
     expect(result.rowsScanned).toBe(4); // 2 per table, both capped
   });
 });

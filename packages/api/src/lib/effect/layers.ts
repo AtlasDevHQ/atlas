@@ -2513,7 +2513,9 @@ export function makeSchedulerLive(
             // `tryPromise`, NOT `promise` — the same reasoning as
             // `brain_audience_sync` above. `runGrantSweepCycle` documents "never
             // throws" and catches its own per-table faults, but `hasInternalDB()`
-            // and the settings read sit outside that net. `Effect.promise` routes
+            // sits outside that net (unlike the sibling, this cycle performs no
+            // settings read — the interval is resolved in the `intervalMs` thunk
+            // at registration, outside the tick). `Effect.promise` routes
             // a rejection to the DEFECT channel, which `registerPeriodicFiber`'s
             // `catchAll` recovery does not catch — so one unforeseen throw would
             // kill this fiber for the life of the process, and the signal would
@@ -2533,9 +2535,15 @@ export function makeSchedulerLive(
           "atlas.brain.grant_sweep.malformed_rows": result.malformedRows ?? -1,
           "atlas.brain.grant_sweep.malformed_workspaces": result.malformedWorkspaces ?? -1,
           "atlas.brain.grant_sweep.rows_scanned": result.rowsScanned ?? -1,
+          // Rows the scan returned but could not READ. Non-zero means the
+          // malformed count is unverified rather than clean — it forces
+          // `degraded`, so this and `status` move together.
+          "atlas.brain.grant_sweep.unreadable_rows": result.unreadableRows ?? -1,
           // Whether `malformed_rows` is a total or a floor. Alerting on the
-          // count without this would read a capped scan as a complete one.
-          "atlas.brain.grant_sweep.scan_truncated": result.scanTruncated,
+          // count without this would read a capped scan — or a cycle where one
+          // table's scan failed — as a complete one. Both causes are folded in,
+          // so an alert reads one field rather than joining two.
+          "atlas.brain.grant_sweep.count_is_floor": result.countIsFloor,
         }),
         onTickFailure: {
           level: "warn",

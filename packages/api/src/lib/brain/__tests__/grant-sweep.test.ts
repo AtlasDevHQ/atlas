@@ -33,6 +33,7 @@ import {
   grantScanSql,
   runGrantSweepCycle,
   type GrantSweepDeps,
+  type GrantSweepResult,
 } from "../grant-sweep";
 
 const WORKSPACE = "ws-1";
@@ -373,6 +374,44 @@ describe("runGrantSweepCycle — degradation is visible", () => {
     expect(result.malformedRows).toBe(MALFORMED_SAMPLE_CAP + 5);
     expect(result.sample).toHaveLength(MALFORMED_SAMPLE_CAP);
     expect(result.sampleTruncated).toBe(true);
+  });
+
+  it("keeps `scanTruncated ⇒ countIsFloor` on every return path", async () => {
+    // A cross-field invariant that no single test above covers: the cap is one
+    // of the fold's three causes, so the unfolded flag can never be the more
+    // optimistic of the two. Drift here would let an alert reading
+    // `countIsFloor` miss a capped scan — the exact case the fold exists for.
+    const cases: GrantSweepResult[] = [
+      // skipped — nothing ran
+      await (async () => {
+        const prior = process.env.DATABASE_URL;
+        delete process.env.DATABASE_URL;
+        try {
+          return await runGrantSweepCycle(harness({}).deps);
+        } finally {
+          if (prior !== undefined) process.env.DATABASE_URL = prior;
+        }
+      })(),
+      // failure — every table's scan threw
+      await withDatabaseUrl(() =>
+        runGrantSweepCycle({ query: () => Promise.reject(new Error("down")) }),
+      ),
+      // success, capped
+      await withDatabaseUrl(() =>
+        runGrantSweepCycle(harness({ brain_facts: [row("f_1", ["everyone"])] }, { rowCap: 1 }).deps),
+      ),
+      // success, clean
+      await withDatabaseUrl(() =>
+        runGrantSweepCycle(harness({ brain_facts: [row("f_1", ["org"])] }).deps),
+      ),
+    ];
+
+    for (const result of cases) {
+      if (result.scanTruncated) expect(result.countIsFloor).toBe(true);
+    }
+    // Non-vacuity: at least one case must actually have been truncated, or the
+    // implication above is satisfied by an empty antecedent every time.
+    expect(cases.some((r) => r.scanTruncated)).toBe(true);
   });
 
   it("does not flag truncation on a short scan", async () => {

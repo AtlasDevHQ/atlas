@@ -27,7 +27,11 @@ import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { resolvePrincipalContext, type BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { chatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
-import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
+import {
+  SLACK_HISTORY_CATALOG_ID,
+  SLACK_HISTORY_SOURCE,
+} from "@atlas/api/lib/brain/ingest/slack/config";
+import { AUDIENCE_SYNC_INSTALLS_SQL } from "../sync";
 import { reconcileAudienceMembership, type MembershipExecutor } from "../membership";
 import { resolvePrincipals } from "../resolver";
 
@@ -207,6 +211,70 @@ describeIfPg("brain audience membership (real Postgres)", () => {
     );
     expect(rows).toHaveLength(1);
   }, PG_TEST_TIMEOUT_MS);
+
+  describe("the install scan against the live schema", () => {
+    // The one statement in this feature that touches `workspace_plugins`'
+    // `pillar` / `enabled` / `status` / `config` columns. Its doc-comment claims
+    // it is run here; before this block that claim was false, and a column
+    // rename would have silently returned zero installs — a cycle that reports
+    // success forever while reconciling nothing, which is the "revocation
+    // stopped and nobody noticed" failure with no signal at all.
+    const seedInstall = (id: string, over: Record<string, unknown> = {}) => {
+      const row = {
+        workspace_id: WORKSPACE,
+        catalog_id: SLACK_HISTORY_CATALOG_ID,
+        install_id: id,
+        pillar: "knowledge",
+        enabled: true,
+        status: "published",
+        config: { channels: [CHANNEL] },
+        ...over,
+      };
+      return pool.query(
+        `INSERT INTO workspace_plugins
+           (id, workspace_id, catalog_id, install_id, pillar, enabled, status, config)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+        [
+          `wp-${id}`,
+          row.workspace_id,
+          row.catalog_id,
+          row.install_id,
+          row.pillar,
+          row.enabled,
+          row.status,
+          JSON.stringify(row.config),
+        ],
+      );
+    };
+
+    it("returns enabled non-archived installs and excludes the rest", async () => {
+      // `workspace_plugins.catalog_id` is FK-constrained to this table.
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, slug, name, type, pillar)
+         VALUES ($1, 'slack-history', 'Slack history', 'context', 'knowledge')
+         ON CONFLICT (id) DO NOTHING`,
+        [SLACK_HISTORY_CATALOG_ID],
+      );
+      await seedInstall("live");
+      await seedInstall("off", { enabled: false });
+      await seedInstall("archived", { status: "archived" });
+      // `draft` is admitted by the predicate (`status <> 'archived'`), matching
+      // the ingest cycle's filter exactly — an install being edited must not
+      // stop having its membership reconciled.
+      await seedInstall("draft", { status: "draft" });
+
+      const rows = await query<{ install_id: string; config: Record<string, unknown> }>(
+        AUDIENCE_SYNC_INSTALLS_SQL,
+        [SLACK_HISTORY_CATALOG_ID],
+      );
+      expect(rows.map((r) => r.install_id)).toEqual(["draft", "live"]);
+      // The `config` column has to come back as parsed JSON, or
+      // `parseSlackHistoryConfig` refuses every install with "no channel list".
+      expect(rows[0]?.config).toEqual({ channels: [CHANNEL] });
+
+      await pool.query(`DELETE FROM workspace_plugins WHERE workspace_id = $1`, [WORKSPACE]);
+    }, PG_TEST_TIMEOUT_MS);
+  });
 
   describe("resolvePrincipals against the live schema", () => {
     it("resolves an email to the workspace member and skips a user in another org", async () => {

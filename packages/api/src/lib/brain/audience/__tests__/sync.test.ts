@@ -18,8 +18,11 @@ import { AUDIENCE_PREFIX, parseGrant } from "@atlas/api/lib/brain/acl";
 import { deriveChatChannelGrant } from "@atlas/api/lib/brain/ingest/grant";
 import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
 import {
+  DEFAULT_AUDIENCE_SYNC_INTERVAL_MS,
   MAX_DIRECTORY_PAGES,
   MAX_ROSTER_PAGES,
+  getAudienceSyncIntervalMs,
+  isAudienceSyncEnabled,
   runAudienceSyncCycle,
   type AudienceSyncDeps,
 } from "../sync";
@@ -150,7 +153,9 @@ describe("runAudienceSyncCycle", () => {
     // which would revoke the entire audience.
     expect(reconciled).toHaveLength(0);
     expect(result.audiencesFailed).toBe(1);
-    expect(result.status).toBe("success");
+    // `degraded`, not `success`: an operator alerting on `status` must be able
+    // to fire on "a workspace's membership silently stopped being reconciled".
+    expect(result.status).toBe("degraded");
   });
 
   it("does NOT reconcile when the roster exceeds the page cap", async () => {
@@ -297,19 +302,72 @@ describe("runAudienceSyncCycle", () => {
     // email tripwire could not fire on an empty set, so every roster member
     // missed the lookup, resolved to nobody, and the reconcile deleted the
     // entire audience — reported as success.
+    let resolveCalls = 0;
     const { deps, reconciled } = harness({
       fetchUsersListPage: () => ok({ users: [], nextCursor: null, dropped: 0 }),
     });
-    const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        resolve: (_ws, principals) => {
+          resolveCalls++;
+          return Promise.resolve({ resolved: new Map(), unresolvedCount: principals.length });
+        },
+      }),
+    );
 
     expect(reconciled).toHaveLength(0);
     expect(result.workspacesFailed).toBe(1);
+    expect(resolveCalls).toBe(0);
+  });
+
+  it("treats a directory with no LIVE HUMANS as a read failure", async () => {
+    // The same mass revocation as the empty-directory case, through a third
+    // door — and the one an earlier cut left open, because every guard was
+    // keyed on `byId.size` or gated on `humans.length > 0`. A directory of only
+    // bots and deactivated accounts has size > 0, so it passed all of them,
+    // resolved nobody, and wiped every audience while reporting success.
+    //
+    // The realistic trigger is not "a workspace of only bots": it is any drift
+    // in the `deleted`/`is_bot` mapping in `slack/api.ts`. The parser tests pin
+    // that mapping per entry; this pins its directory-wide consequence.
+    let resolveCalls = 0;
+    const { deps, reconciled } = harness({
+      fetchUsersListPage: () =>
+        ok({
+          users: [
+            { id: "U_BOT", email: null, deleted: false, isBot: true },
+            { id: "U_GONE", email: "gone@corp.test", deleted: true, isBot: false },
+          ],
+          nextCursor: null,
+          dropped: 0,
+        }),
+    });
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        resolve: (_ws, principals) => {
+          resolveCalls++;
+          return Promise.resolve({ resolved: new Map(), unresolvedCount: principals.length });
+        },
+      }),
+    );
+
+    expect(reconciled).toHaveLength(0);
+    expect(result.workspacesFailed).toBe(1);
+    expect(result.membersRevoked).toBe(0);
+    // Asserted on the CALL COUNT, not just the outcome. `syncInstall`'s
+    // collapse check would reach the same verdict one step later, so a bare
+    // `workspacesFailed` assertion passes with this guard deleted — it would be
+    // a test that proves the backstop, while claiming to prove the guard.
+    expect(resolveCalls).toBe(0);
   });
 
   it("does not let a bot's email mask an otherwise email-less directory", async () => {
     // The tripwire is computed over the population resolution CONSUMES. Counted
     // over every entry, one app user with an address would wave a full
     // revocation through on a token missing users:read.email.
+    let resolveCalls = 0;
     const { deps, reconciled } = harness({
       fetchUsersListPage: () =>
         ok({
@@ -321,10 +379,21 @@ describe("runAudienceSyncCycle", () => {
           dropped: 0,
         }),
     });
-    const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        resolve: (_ws, principals) => {
+          resolveCalls++;
+          return Promise.resolve({ resolved: new Map(), unresolvedCount: principals.length });
+        },
+      }),
+    );
 
     expect(reconciled).toHaveLength(0);
     expect(result.workspacesFailed).toBe(1);
+    // Same reasoning as the no-live-humans case: the count is what pins the
+    // early exit rather than the downstream collapse check.
+    expect(resolveCalls).toBe(0);
   });
 
   it("skips the WORKSPACE when nobody in the directory resolves — resolution collapse", async () => {
@@ -473,5 +542,43 @@ describe("runAudienceSyncCycle", () => {
     } finally {
       if (prior !== undefined) process.env.DATABASE_URL = prior;
     }
+  });
+});
+
+describe("gating and cadence", () => {
+  it("skips a workspace that opted out, without reading Slack at all", async () => {
+    // The tenant consent switch. An inverted predicate or a typo'd key fails in
+    // the PERMISSIVE direction — Atlas reads the directory of a workspace that
+    // said no, and the cycle reports success — so nothing else here would catch
+    // it.
+    let slackReads = 0;
+    const { deps, reconciled } = harness({
+      fetchUsersListPage: () => {
+        slackReads++;
+        return ok({ users: DIRECTORY, nextCursor: null, dropped: 0 });
+      },
+    });
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({ ...deps, isEnabled: () => false }),
+    );
+
+    expect(result.workspacesSkippedDisabled).toBe(1);
+    expect(result.workspacesInspected).toBe(0);
+    expect(reconciled).toHaveLength(0);
+    expect(slackReads).toBe(0);
+    // A skip is not a failure — it is the workspace's decision, honoured.
+    expect(result.status).toBe("success");
+  });
+
+  it("is enabled by default and disabled only by an explicit 'false'", async () => {
+    // Deliberately `!== "false"`, unlike the sibling extraction knob's
+    // `=== "true"` — this one defaults ON. The asymmetry is intentional and
+    // documented, and this is what stops someone "normalising" the two.
+    expect(isAudienceSyncEnabled("ws-unset")).toBe(true);
+  });
+
+  it("falls back to the default interval on a non-positive or unparseable value", () => {
+    // The setting's user-facing description promises this fallback.
+    expect(getAudienceSyncIntervalMs()).toBe(DEFAULT_AUDIENCE_SYNC_INTERVAL_MS);
   });
 });

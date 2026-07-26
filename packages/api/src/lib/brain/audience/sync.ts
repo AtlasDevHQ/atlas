@@ -89,6 +89,27 @@ export const MAX_DIRECTORY_PAGES = 200;
 /** Hard bound on roster pages per channel per cycle (~40k members). */
 export const MAX_ROSTER_PAGES = 200;
 
+/**
+ * The directory members resolution actually consumes.
+ *
+ * ONE definition, because every completeness guard in this module keys off it
+ * and their agreement is load-bearing. Written twice, it produced exactly the
+ * failure this module argues against elsewhere: the first cut inlined
+ * `!deleted && !isBot` in two places and gated its guards on
+ * `humans.length > 0`, so a directory of only bots and deactivated accounts
+ * slipped past all of them and reconciled every audience to empty — the same
+ * mass revocation, through a third door.
+ *
+ * A bot has no Atlas account to resolve to, and a deactivated Slack user is
+ * someone the workspace already revoked at the source; carrying either into an
+ * audience would make Atlas the one system that kept their access.
+ */
+function liveHumans(
+  directory: ReadonlyMap<string, SlackDirectoryUser>,
+): readonly SlackDirectoryUser[] {
+  return [...directory.values()].filter((u) => !u.deleted && !u.isBot);
+}
+
 /** Scopes the directory read needs — new in #4801, so the likeliest failure. */
 const DIRECTORY_SCOPES = "users:read / users:read.email";
 
@@ -152,9 +173,18 @@ interface InstallRow extends Record<string, unknown> {
   readonly config: Record<string, unknown> | null;
 }
 
-/** Per-cycle counters. Every arm is counted; nothing is a silent skip. */
+/**
+ * Per-cycle counters. Every arm is counted; nothing is a silent skip.
+ *
+ * `status` has three arms, not two. `failure` means the cycle did no work (the
+ * install scan itself threw); `degraded` means it ran and something in it
+ * failed. Collapsing degraded into `success` made the span self-contradictory —
+ * `status: "success"` alongside `workspacesFailed: 3` — and left an operator
+ * alerting on `status` unable to fire on the condition that matters here, which
+ * is a workspace whose membership silently stopped being reconciled.
+ */
 export interface AudienceSyncCycleResult {
-  readonly status: "success" | "failure";
+  readonly status: "success" | "degraded" | "failure";
   readonly workspacesInspected: number;
   readonly workspacesSkippedDisabled: number;
   readonly workspacesFailed: number;
@@ -188,6 +218,16 @@ export interface AudienceSyncApi {
 
 export interface AudienceSyncDeps {
   readonly api?: AudienceSyncApi;
+  /**
+   * Per-workspace enablement, injectable so the tenant opt-out is testable.
+   *
+   * It is a CONSENT decision ("may Atlas match our Slack members' emails to
+   * Atlas accounts?"), which makes it the one gate here worth pinning against
+   * an inverted predicate or a typo'd key — neither of which any other
+   * assertion in this module would catch, since both fail in the permissive
+   * direction and the cycle then reports success.
+   */
+  readonly isEnabled?: (workspaceId: string) => boolean;
   readonly query?: <T extends Record<string, unknown>>(
     sql: string,
     params?: unknown[],
@@ -221,6 +261,12 @@ function describeSlackError(err: SlackReadError, scopes: string): string {
       return "the Atlas bot is not in this channel — re-invite it";
     case "channel_not_found":
       return "Slack does not recognise this channel id";
+    case "malformed_members_page":
+    case "malformed_users_page":
+      // Named explicitly because the generic arm renders an opaque code for the
+      // one failure class an operator most needs to read as a REFUSAL rather
+      // than as a small result.
+      return "Slack returned a structurally invalid page — refused rather than read as an empty result; see the slack.api log for the entry counts";
     default:
       return `Slack read failed (${err.error})`;
   }
@@ -229,16 +275,34 @@ function describeSlackError(err: SlackReadError, scopes: string): string {
 /**
  * Read the workspace's whole Slack directory, or fail.
  *
- * Returns `null` on ANY fault — including hitting the page cap, which is a
- * truncation and therefore indistinguishable from a directory that ends there.
- * The caller skips the workspace; see the module header for why a partial
- * directory must never reach resolution.
+ * Fails on ANY fault — including hitting the page cap, which is a truncation
+ * and therefore indistinguishable from a directory that ends there. The caller
+ * skips the workspace; see the module header for why a partial directory must
+ * never reach resolution.
+ *
+ * NOTE what is and is not load-bearing here. The truncation/lossy-page arms are
+ * the real protection — nothing downstream can reconstruct what they dropped.
+ * The unresolvable-directory arm below is NOT: `syncInstall`'s workspace-level
+ * collapse check catches the same inputs, because a directory nobody can be
+ * resolved from resolves to nobody. It is kept as an EARLY exit with a precise
+ * diagnostic (and one fewer DB round trip), not as the guard. Mutating it away
+ * changes the log line, not the outcome — which is exactly what the tests
+ * assert, via the resolve call count rather than a bare `workspacesFailed`.
+ *
+ * The failure arm carries the operator-actionable `reason` rather than only
+ * logging it, so the workspace-failure line the caller emits is self-contained.
+ * A bare `null` put "reconnect Slack to grant users:read.email" and "Slack
+ * directory unavailable" on two lines an operator had to correlate by hand.
  */
+type DirectoryResult =
+  | { readonly ok: true; readonly directory: Map<string, SlackDirectoryUser> }
+  | { readonly ok: false; readonly reason: string };
+
 async function loadDirectory(
   api: AudienceSyncApi,
   token: string,
   workspaceId: string,
-): Promise<Map<string, SlackDirectoryUser> | null> {
+): Promise<DirectoryResult> {
   const byId = new Map<string, SlackDirectoryUser>();
   let cursor: string | undefined;
   for (let page = 0; page < MAX_DIRECTORY_PAGES; page++) {
@@ -251,7 +315,7 @@ async function loadDirectory(
         { workspaceId, reason: describeSlackError(result, DIRECTORY_SCOPES) },
         "brain audience: could not read the Slack directory — skipping this workspace, membership unchanged",
       );
-      return null;
+      return { ok: false, reason: describeSlackError(result, DIRECTORY_SCOPES) };
     }
     // An entry Slack sent that Atlas could not identify is a roster member it
     // will fail to resolve — and an unresolved member is REVOKED. So a lossy
@@ -262,42 +326,56 @@ async function loadDirectory(
         { workspaceId, dropped: result.dropped },
         "brain audience: Slack directory page had entries with no usable identity — skipping this workspace rather than revoking the members it could not identify",
       );
-      return null;
+      return { ok: false, reason: "Slack returned directory entries Atlas could not identify" };
     }
     for (const user of result.users) byId.set(user.id, user);
     if (result.nextCursor === null) {
-      // An EMPTY directory is not a workspace with no people — it is a read
-      // that returned nothing usable, and it is the most dangerous shape in
-      // this module: every roster member misses the lookup, resolves to
-      // nobody, and the reconcile deletes the entire audience while the cycle
-      // reports success. Checked BEFORE the email tripwire below, which cannot
-      // fire on an empty set.
-      if (byId.size === 0) {
-        log.warn(
-          { workspaceId },
-          "brain audience: Slack returned an empty directory — treating as a read failure, not as a workspace with no members. Skipping this workspace, membership unchanged",
-        );
-        return null;
-      }
-      // A token with `users:read` but NOT `users:read.email` returns 200 with
-      // every email absent. That is a scope problem wearing the costume of an
-      // empty result: resolution would match nobody, the reconcile would revoke
-      // every audience, and the cycle would report success. Detected here, and
-      // treated as a read failure rather than as a directory of nulls.
+      // A directory with no LIVE HUMANS in it is not a workspace nobody works
+      // at — it is a read that returned nothing resolution can use, and it is
+      // the most dangerous shape in this module: every roster member misses the
+      // lookup, resolves to nobody, and the reconcile deletes every audience
+      // while the cycle reports success.
       //
-      // Computed over the population resolution actually CONSUMES — bots and
-      // deactivated accounts are discarded before resolution, so counting them
-      // would let one app user's address mask an otherwise email-less
-      // directory and wave the mass revocation through.
-      const humans = [...byId.values()].filter((u) => !u.deleted && !u.isBot);
-      if (humans.length > 0 && humans.every((u) => u.email === null)) {
+      // Keyed on `liveHumans`, NOT on `byId.size`, and that distinction is the
+      // whole finding. A size check passes a directory of only bots and
+      // deactivated accounts — which is the same catastrophe, reachable from
+      // any drift in the `deleted`/`is_bot` mapping in `slack/api.ts`. Checked
+      // BEFORE the email tripwire, which cannot fire on an empty set.
+      // ONE condition, TWO diagnostics: no directory member can be resolved,
+      // either because there are no live humans in it or because none of them
+      // carries an address.
+      //
+      // Both are read failures, and the fused test is deliberate. Written as
+      // two sequential guards, the emptiness arm is dead — `[].every(…)` is
+      // vacuously true, so the email arm already catches it — and a dead guard
+      // that looks load-bearing is worse than none: the next person to touch
+      // this reads a protection that isn't there. What the split genuinely buys
+      // is the MESSAGE, so that is all it decides.
+      //
+      // Why either shape is a fault rather than a small directory: every roster
+      // member then misses the lookup, resolves to nobody, and the reconcile
+      // deletes every audience in the workspace while the cycle reports
+      // success. The all-null-email case is a `users:read` token WITHOUT
+      // `users:read.email` — Slack returns 200 with the field simply absent,
+      // a scope problem wearing the costume of an empty result. The no-humans
+      // case is reachable from any drift in the `deleted`/`is_bot` mapping in
+      // `slack/api.ts`.
+      //
+      // Computed over `liveHumans` — the population resolution CONSUMES — so
+      // one app user's address cannot mask an otherwise email-less directory.
+      const humans = liveHumans(byId);
+      if (humans.length === 0 || humans.every((u) => u.email === null)) {
+        const reason =
+          humans.length === 0
+            ? "Slack returned a directory with no live human members"
+            : `the workspace's Slack token lacks ${DIRECTORY_SCOPES} — reconnect Slack under Admin → Integrations`;
         log.warn(
           { workspaceId, directorySize: byId.size, humans: humans.length },
-          "brain audience: Slack returned a directory with no email on any active member — the token is missing users:read.email; reconnect Slack under Admin → Integrations. Skipping this workspace, membership unchanged",
+          `brain audience: no directory member can be resolved (${reason}) — treating as a read failure. Skipping this workspace, membership unchanged`,
         );
-        return null;
+        return { ok: false, reason };
       }
-      return byId;
+      return { ok: true, directory: byId };
     }
     cursor = result.nextCursor;
   }
@@ -305,7 +383,7 @@ async function loadDirectory(
     { workspaceId, pages: MAX_DIRECTORY_PAGES, directorySize: byId.size },
     "brain audience: Slack directory exceeded the page cap — skipping this workspace rather than resolving against a partial directory",
   );
-  return null;
+  return { ok: false, reason: `the Slack directory exceeded ${MAX_DIRECTORY_PAGES} pages` };
 }
 
 /**
@@ -424,8 +502,9 @@ async function syncInstall(
   }
 
   const token = await deps.resolveToken(workspaceId);
-  const directory = await loadDirectory(deps.api, token, workspaceId);
-  if (directory === null) throw new Error("Slack directory unavailable");
+  const loaded = await loadDirectory(deps.api, token, workspaceId);
+  if (!loaded.ok) throw new Error(`Slack directory unavailable — ${loaded.reason}`);
+  const directory = loaded.directory;
 
   // Resolve the WHOLE directory once, then intersect each roster against the
   // result. Two reasons, and the second is the load-bearing one:
@@ -444,12 +523,16 @@ async function syncInstall(
   //      stored as `@acme.com`, or an SSO provider added AFTER membership was
   //      populated — an unrelated admin action that would otherwise revoke
   //      every audience in the workspace on the next cycle.
-  const humans = [...directory.values()].filter((u) => !u.deleted && !u.isBot);
+  // `liveHumans` is non-empty by `loadDirectory`'s contract — it refuses a
+  // directory without one — so the collapse check below needs no emptiness
+  // guard of its own. That was the bug in the first cut: guarding it on
+  // `humans.length > 0` made a bot-only directory skip the check entirely.
+  const humans = liveHumans(directory);
   const resolution = await deps.resolve(
     workspaceId,
     humans.map((u) => ({ id: u.id, email: u.email })),
   );
-  if (humans.length > 0 && resolution.resolved.size === 0) {
+  if (resolution.resolved.size === 0) {
     throw new Error(
       "no Slack workspace member resolved to an Atlas user — check the workspace's verified SSO domain against member email domains, or invite these people to Atlas",
     );
@@ -572,6 +655,7 @@ export async function runAudienceSyncCycle(
     reconcile: deps.reconcile ?? reconcileAudienceMembership,
     resolve: deps.resolve ?? resolvePrincipals,
   };
+  const isEnabled = deps.isEnabled ?? isAudienceSyncEnabled;
 
   let installs: InstallRow[];
   try {
@@ -584,7 +668,7 @@ export async function runAudienceSyncCycle(
 
   let result = { ...ZERO };
   for (const row of installs) {
-    if (!isAudienceSyncEnabled(row.workspace_id)) {
+    if (!isEnabled(row.workspace_id)) {
       result = { ...result, workspacesSkippedDisabled: result.workspacesSkippedDisabled + 1 };
       continue;
     }
@@ -616,5 +700,6 @@ export async function runAudienceSyncCycle(
   if (installs.length > 0) {
     log.info({ ...result }, "brain audience: membership sync cycle complete");
   }
-  return { status: "success", ...result };
+  const degraded = result.workspacesFailed > 0 || result.audiencesFailed > 0;
+  return { status: degraded ? "degraded" : "success", ...result };
 }

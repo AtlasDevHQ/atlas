@@ -314,6 +314,12 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   // adding AND revoking. Its `members_revoked` attribute is the alertable one:
   // a spike is either a real offboarding or a resolver that stopped resolving.
   brain_audience_sync: "atlas.scheduler.brain_audience_sync",
+  // #4797 — the entirely-malformed-grant sweep (ADR-0036). The one observer of
+  // a row whose `visible_to` names no principal: invisible to every reader by
+  // construction, therefore never held by a caller, therefore logged by nobody
+  // at read time. DAILY by default — the defect is permanent, so its count is a
+  // gauge and its log line is a digest, not an event stream.
+  brain_grant_sweep: "atlas.scheduler.brain_grant_sweep",
   // #4457 — internal-DB scheduled backups. The tick claims the current
   // cadence window atomically (partial UNIQUE index on
   // `backups.scheduled_window`), then create→verify→purge through the
@@ -2464,6 +2470,78 @@ export function makeSchedulerLive(
           message: "Company-brain audience sync tick failed — will retry next interval",
         },
         startLog: "Company-brain audience sync scheduler started",
+      });
+
+      // ── Periodic fiber: malformed-grant sweep (#4797, ADR-0036) ──────────
+      // Closes the deny+log gap `acl.ts`'s header discloses: a row whose
+      // `visible_to` parses to NO principal is invisible to every reader by
+      // construction, so no caller ever holds it and `logGrantAnomalies` never
+      // fires on it. A sweep is the only seam that can see it — and it must be
+      // a sweep rather than a write-time hook, because a region-migration
+      // import bundle carries grants `grantProblem` legally admits on a route
+      // #4771's deriver does not own.
+      //
+      // Gated on the internal DB ALONE — no feature flag. An operator should
+      // not have to opt in to learning that their data is broken, and unlike
+      // the audience sync this needs no chat install to be useful. The
+      // `yield* Migration` barrier above sequences it after `MigrationLive`, so
+      // the eager boot tick cannot race 0180 creating the tables.
+      yield* registerPeriodicFiber({
+        name: "brain_grant_sweep",
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval synchronously at fiber-registration time (same pattern as brain_audience_sync). NOTE the knob is hot-reloadable in the registry but is read ONCE here, so a change takes effect at restart.
+          const { getGrantSweepIntervalMs } = require("@atlas/api/lib/brain/grant-sweep") as {
+            getGrantSweepIntervalMs: () => number;
+          };
+          return getGrantSweepIntervalMs();
+        },
+        gate: {
+          check: () => {
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            return hasInternalDB();
+          },
+          skipLog: "Company-brain grant sweep not started — needs an internal database",
+        },
+        tick: Effect.tryPromise({
+          try: () => import("@atlas/api/lib/brain/grant-sweep"),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.flatMap((m) =>
+            // `tryPromise`, NOT `promise` — the same reasoning as
+            // `brain_audience_sync` above. `runGrantSweepCycle` documents "never
+            // throws" and catches its own per-table faults, but `hasInternalDB()`
+            // and the settings read sit outside that net. `Effect.promise` routes
+            // a rejection to the DEFECT channel, which `registerPeriodicFiber`'s
+            // `catchAll` recovery does not catch — so one unforeseen throw would
+            // kill this fiber for the life of the process, and the signal would
+            // revert to exactly the silence #4797 exists to end, with nothing to
+            // notice but an ABSENCE of spans.
+            Effect.tryPromise({
+              try: () => m.runGrantSweepCycle(),
+              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+            }),
+          ),
+        ),
+        spanResultAttributes: (result) => ({
+          "atlas.brain.grant_sweep.status": result.status,
+          // `-1` encodes "the sweep could not run" — span attributes have no
+          // null, and reporting 0 would be indistinguishable from all-clear,
+          // which is precisely the silence this fiber exists to remove.
+          "atlas.brain.grant_sweep.malformed_rows": result.malformedRows ?? -1,
+          "atlas.brain.grant_sweep.malformed_workspaces": result.malformedWorkspaces ?? -1,
+          "atlas.brain.grant_sweep.rows_scanned": result.rowsScanned ?? -1,
+          // Whether `malformed_rows` is a total or a floor. Alerting on the
+          // count without this would read a capped scan as a complete one.
+          "atlas.brain.grant_sweep.scan_truncated": result.scanTruncated,
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Company-brain grant sweep tick failed — will retry next interval",
+        },
+        startLog: "Company-brain grant sweep scheduler started",
       });
 
       // ── Periodic fiber: shared OpenAPI spec refresh (#2970, Tier-1; #4195) ──

@@ -1,3 +1,7 @@
+---
+description: "Publish @useatlas/* packages to npm — bump versions, push release tags, verify the publish workflow ran, and confirm the packages landed on the registry."
+---
+
 # Publish
 
 Publish `@useatlas/*` packages to npm. Bump versions, push tags, verify workflow runs, and confirm packages landed.

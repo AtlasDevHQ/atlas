@@ -1,3 +1,7 @@
+---
+description: "Cross-reference the apps/www marketing site against source code, vendor reality, and the docs site for stale claims, legal-copy drift, and compliance overstatements. Run before public launches, after pricing or legal changes, or as a periodic sweep."
+---
+
 # www Accuracy Audit
 
 Cross-reference the marketing site (`apps/www/`) against source code, vendor reality, and the docs site to find stale claims, legal-copy drift, and compliance overstatements. Run before public launches, after pricing/legal changes, or as a periodic sweep.

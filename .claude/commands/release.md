@@ -1,3 +1,7 @@
+---
+description: "Tag the current main SHA for a prod deploy — bundles /ci, the per-tag docs changelog entry, an annotated tag, the prod-branch fast-forward, and a GitHub Release. Usage: /release v0.0.1, or /release to auto-bump the patch position."
+---
+
 Tag the current `main` SHA for a prod deploy. Bundles `/ci` + annotated tag + push + `prod`-branch fast-forward + GitHub Release. Usage: `/release v0.0.1` (explicit) or `/release` (auto-bump patch from last tag).
 
 See [docs/development/release-process.md](../../docs/development/release-process.md) for the operational flow and [ADR-0008](../../docs/adr/0008-versioning-and-release-tags.md) for the versioning rules this skill enforces.

@@ -1,3 +1,7 @@
+---
+description: "Check Railway deploy health across staging and production, tail logs, diagnose failures, and trigger redeploys. Run after a merge to verify staging landed, after /release to verify the prod promote, or when investigating a live issue."
+---
+
 # Deploy Status
 
 Check deployment health across all Railway services — staging and production. Diagnose issues, tail logs, and trigger redeploys.

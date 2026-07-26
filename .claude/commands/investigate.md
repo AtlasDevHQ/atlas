@@ -1,3 +1,7 @@
+---
+description: "Research an untracked bug, tech-debt item, rough edge, or idea, file a GitHub issue for it, and decide whether to fix now or park it. For one-issue-sized findings; use /elevate for a whole surface and /to-prd for milestone-sized direction."
+---
+
 Investigate something you've noticed — a bug, tech debt, rough edge, or idea — that isn't tracked anywhere. Research it, file a GH issue, and decide whether to fix it now or park it.
 
 **Input:** $ARGUMENTS (describe what you noticed — e.g., "the explore tool doesn't handle symlinks", "sql validation lets UNION through", "we should add retry logic to sidecar calls")

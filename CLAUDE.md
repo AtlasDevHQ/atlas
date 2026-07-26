@@ -4,7 +4,9 @@ Guidance for Claude Code when working in this repository.
 
 ## Core Rules Checklist
 
-**ALWAYS follow these rules when writing code:**
+Most of these are **subsystem-conditional** — read the group that matches what you're touching, not all of them. The groups marked ⚠️ are unconditional: they hold regardless of what you're working on.
+
+Where a rule names a `scripts/check-*.sh` guard, that guard is the enforcement — the rule is here so you don't waste a cycle discovering it in CI, not because prose is the gate.
 
 ### Security (SQL)
 - [ ] **SELECT only** — SQL validation blocks all DML/DDL. Never INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER, etc.
@@ -97,21 +99,21 @@ Schema requirements, mode-resolution middleware, the atomic publish endpoint, an
 ### Enterprise & SaaS Gating (`/ee`)
 Full rationale, enforcement mechanics, and the `Tag.available` membership list: [docs/development/enterprise-gating.md](docs/development/enterprise-gating.md).
 - [ ] **SaaS-specific features go in `/ee`** — Anything that exists specifically to make Atlas a hosted SaaS (deploy-mode detection, marketplace, residency, masking, SSO/SCIM, approvals, backups, white-labeling) lives in `ee/src/` under the commercial license
-- [ ] **Self-hosted is always free; the inversion is enforced** — Core AGPL never depends on `/ee`. In `packages/api/src` exactly one file (`lib/effect/enterprise-layer.ts`) may import `@atlas/ee`; `scripts/check-ee-imports.sh` + `ee-stub-build` enforce it. The guard also scans `packages/mcp/src`, where the `@atlas/ee` coupling is **formally SaaS-coupled** and confined to two audited seam files (`onboarding.ts` trial-provisioning + `actor.ts` approval probe; `MCP_ALLOWED_FILES`) — any new MCP importer fails the guard. Every subsystem is reachable via a `Context.Tag` in `lib/effect/services.ts`
-- [ ] **Read the enterprise flag through a Tag** — `yield* TheTag` and let the `NoopXxxLayer` short-circuit. Never import `isEnterpriseEnabled` from `@atlas/ee` in core; value-level checks use the core mirror in `lib/effect/enterprise-config.ts`
-- [ ] **Enterprise errors use `EnterpriseError`** — from `@atlas/api/lib/effect/errors`. Use `instanceof`, never string matching. Routes map it to 403
-- [ ] **`Tag.available` is for the 404 / shaped-success branch only** — Omit by default; add only when a consumer needs a different response shape than the 403 envelope. Membership is documented in the gating doc and pinned by the fail-closed consumer contract test (`consumer-fail-closed.test.ts`)
-- [ ] **Deploy mode is enterprise-gated** — `ATLAS_DEPLOY_MODE=saas` requires `/ee`; otherwise resolves to `self-hosted`. The commercial license prohibits using `/ee` in a competing product
-- [ ] **SaaS-first configuration: env is for secrets + pre-DB boot inputs ONLY** — A SaaS operator or workspace admin must never have to redeploy to change configuration. The default home for a new knob is the **settings registry** (`lib/settings.ts`, runtime-controllable via Admin console, precedence `workspace > platform > env > default`, ~30s hot-reload) — platform-scoped for operator knobs, workspace-scoped for tenant knobs. A **new env var** is the exception, justified only by (a) secrecy or (b) the process needing the value before the internal DB exists (boot guards / region identity / auth bootstrap). Non-secret constants that are the same across regions go in `atlas.config.ts` or the `ATLAS_DEPLOY_ENV` [env-profile](packages/api/src/lib/env-profile.ts), never stamped per-service. The SaaS boot contract is the enumerated `SAAS_ENV_KEYS` in [lib/effect/saas-env.ts](packages/api/src/lib/effect/saas-env.ts); boot-guard-dependent keys are locked from runtime mutation via `SAAS_IMMUTABLE_KEYS`. Full audit + reduction backlog: [docs/development/saas-env-audit.md](docs/development/saas-env-audit.md); operator surface: [apps/docs/content/docs/platform-ops/saas-environment-variables.mdx](apps/docs/content/docs/platform-ops/saas-environment-variables.mdx)
+- [ ] **Never let core AGPL depend on `/ee`** — in `packages/api/src` exactly one file (`lib/effect/enterprise-layer.ts`) may import `@atlas/ee`; in `packages/mcp/src` only two audited seam files (`MCP_ALLOWED_FILES`). `scripts/check-ee-imports.sh` + `ee-stub-build` enforce it, so a violation is a CI failure, not a review catch
+- [ ] **Never import `isEnterpriseEnabled` from `@atlas/ee` in core** — `yield* TheTag` and let the `NoopXxxLayer` short-circuit; value-level checks use the core mirror in `lib/effect/enterprise-config.ts`
+- [ ] **Enterprise errors use `EnterpriseError`** — `instanceof`, never string matching. Routes map it to 403. `Tag.available` is for the 404 / shaped-success branch only — omit by default
+- [ ] **Deploy mode is enterprise-gated** — `ATLAS_DEPLOY_MODE=saas` requires `/ee`. The commercial license prohibits using `/ee` in a competing product
+- [ ] **SaaS-first configuration: env is for secrets + pre-DB boot inputs ONLY** — an operator or workspace admin must never redeploy to change config. A new knob's default home is the **settings registry** (`lib/settings.ts`; precedence `workspace > platform > env > default`, ~30s hot-reload). A new env var needs one of two justifications: it's secret, or the process needs it before the internal DB exists. Non-secret cross-region constants go in `atlas.config.ts` or the [env-profile](packages/api/src/lib/env-profile.ts). Boot contract: `SAAS_ENV_KEYS` in [saas-env.ts](packages/api/src/lib/effect/saas-env.ts); audit + backlog: [saas-env-audit.md](docs/development/saas-env-audit.md)
 
 ### Merge discipline
 Full rationale + override rules: [docs/development/branch-protection.md](docs/development/branch-protection.md).
-- [ ] **Branch protection is on for `main`** — Required checks: `ci`, `api-tests (1/4)`–`(4/4)`, `Deploy Validation`, `Analyze (javascript-typescript)`, `Symlink Stub Build`, `fork-pr-gate`. `strict: true`, force-push/deletion blocked, `enforce_admins: false`
-- [ ] **Fork PRs are never agent-mergeable — they require a human** — A PR whose head repo ≠ `AtlasDevHQ/atlas` (i.e. **from a fork**, `headRepositoryOwner.login != "AtlasDevHQ"` / `isCrossRepository: true`) is the code of an **external contributor**, not us. An agent must **never** merge one — not even with all checks green. It requires explicit in-session human confirmation **and** a recorded security diff review (read the full diff for exfiltration/obfuscation/new deps/CI-or-secret changes; note the verdict in the merge commit). The `fork-pr-gate` check stays red until a maintainer applies the `external-approved` label by hand — that label application **is** the human sign-off. Before merging, surface provenance: `gh pr view <PR> --json headRepositoryOwner,author,isCrossRepository,reviews`. See #3772 (an unreviewed fork PR that reached `main` because the agent treated the structurally-missing CodeQL gate as a broken-gate override)
-- [ ] **`prod` is a Railway-tracking artifact, not an integration branch** — Advanced only by `/release` (`git push origin <tag-sha>^{}:prod --force-with-lease`). No PRs target `prod`. See [ADR-0008 § Release branches](docs/adr/0008-versioning-and-release-tags.md#release-branches-none)
-- [ ] **`milestone/**` branches ARE integration branches — the one exception** — A multi-issue arc that shouldn't reach `main` half-built accumulates on a long-running `milestone/<tag>-<slug>` branch (first: `milestone/v0.2.0-brain-m1`) and lands as one reviewed merge. `ci.yml` + `deploy-validation.yml` are branch-filtered to `[main, "milestone/**"]` so stacked PRs get the real checks — but **branch protection is `main`-only, so nothing blocks a bad merge into a milestone branch**: green `gh pr checks --watch` before merging is enforced by discipline, not by GitHub. `Analyze (javascript-typescript)` (CodeQL default setup) cannot be branch-filtered and is **deferred to the milestone branch's PR into `main`** — deferred, not waived. Run via `/ship-issue <N> milestone/<branch>`
-- [ ] **Wait for the gate; `--admin` is for a broken gate, not a slow one** — Merge only after `gh pr checks <PR> --watch` is green on the head SHA. The only legitimate `--admin` is a genuinely broken required check (verify the run isn't merely stuck first); document the reason in the merge commit. "Tests are slow"/"I'm impatient" don't qualify (#2206). **A required check that *structurally cannot run* on a class of PR is NOT a broken gate** — e.g. CodeQL default setup never runs on fork PRs and `fork-pr-gate` is red by design until a human approves. A missing-by-design gate is a **stop sign**, not an override invitation; admin-merging past it is forbidden for agents (#3772)
-- [ ] **Required reviews are intentionally off** — Solo dev + parallel-claude workflow. Don't enable without rethinking the model
+The required-check list, `strict`/`enforce_admins` settings, and the full override rules live in that doc. The prohibitions that must never be looked up:
+
+- [ ] **NEVER merge a fork PR** — head repo ≠ `AtlasDevHQ/atlas` (`isCrossRepository: true`) is an external contributor's code. An agent must never merge one, not even fully green. Needs in-session human confirmation **and** a recorded security diff review; the `external-approved` label applied by hand **is** the sign-off. Surface provenance first: `gh pr view <PR> --json headRepositoryOwner,author,isCrossRepository,reviews`. See #3772
+- [ ] **`--admin` is for a broken gate, not a slow one** — merge only after `gh pr checks <PR> --watch` is green on the head SHA. "Tests are slow" doesn't qualify (#2206). **A check that *structurally cannot run* on a class of PR is a stop sign, not an override invitation** — CodeQL never runs on fork PRs and `fork-pr-gate` is red by design. Admin-merging past a missing-by-design gate is forbidden for agents (#3772)
+- [ ] **Never target `prod` with a PR** — it's a Railway-tracking artifact advanced only by `/release`
+- [ ] **`milestone/**` is the one integration-branch exception** — but branch protection is `main`-only, so **nothing blocks a bad merge into a milestone branch**; green checks there are discipline, not enforcement. CodeQL is deferred to the milestone→`main` PR — deferred, not waived
+- [ ] **Required reviews are intentionally off** — solo dev + parallel-claude workflow. Don't enable without rethinking the model
 
 ---
 
@@ -123,37 +125,23 @@ The product surface (each subsystem's design lives in its ADR): web chat + embed
 
 ### Versioning & releases
 
-Three independent version trains, none coordinate. See [ADR-0008](docs/adr/0008-versioning-and-release-tags.md) + [docs/development/release-process.md](docs/development/release-process.md):
+Three independent version trains that **never coordinate** — git tags, GitHub milestones, and per-package npm semver. Rules, semver policy, and the release flow: [ADR-0008](docs/adr/0008-versioning-and-release-tags.md) + [release-process.md](docs/development/release-process.md); milestone naming: [ADR-0009](docs/adr/0009-tag-organized-roadmap.md).
 
-- **Git tags** (`v0.0.1`, `v0.0.2`, …) — gate prod deploys. Semver: contract break → major (reserved for `v1.0.0`), customer-visible change → minor, bug/perf/docs → patch, hotfix → tag immediately. Annotated only (`git tag -a`). The train starts at `v0.0.1` (pre-launch dev train; patch position banks dev milestones); `v0.1.0` is **reserved for the public launch** (July 2026, #2919)
-- **GitHub milestones** — tag-named (`v0.0.2 — REST Datasources`). One non-tag milestone persists (`Architecture Backlog`). See [ADR-0009](docs/adr/0009-tag-organized-roadmap.md)
-- **`@useatlas/*` npm packages** — independent semver per package. `0.0.x` exact-pin rule (`^0.0.2` ≠ `0.0.3`) — see *Publishing* below
+Two things that trip people up:
 
-The shipped internal milestone `1.0.0 — SaaS Launch` (#24) is **not** the future git tag `v1.0.0` — call it "internal milestone 1.0.0". `v1.0.0` is reserved for when REST + MCP + plugin SDK contracts freeze.
-
-`/release` bundles `/ci` + a per-tag docs-changelog entry (`apps/docs/src/components/changelog-data.ts` `releases[]`) + annotated tag + push + `gh release create`. The changelog is a per-tag feed, **not** banked for `v0.1.0` ([ADR-0008 amendment](docs/adr/0008-versioning-and-release-tags.md)). Stability commitments: [apps/docs/content/shared/reference/stability.mdx](apps/docs/content/shared/reference/stability.mdx).
+- The shipped internal milestone `1.0.0 — SaaS Launch` (#24) is **not** the future git tag `v1.0.0` — say "internal milestone 1.0.0". `v1.0.0` is reserved for when REST + MCP + plugin SDK contracts freeze.
+- The docs changelog is a **per-tag feed**, not banked for `v0.1.0` ([ADR-0008 amendment](docs/adr/0008-versioning-and-release-tags.md)). `/release` owns writing it.
 
 **Operational rule:** when adding a new integration (chat platform, action target, datasource), create the staging app/credentials first — staging is the soak environment. Don't OAuth-register a new platform straight against prod.
 
 ## Commands
 
+Run `bun run` for the script list — `dev`, `build`, `lint`, `type`, `test*`, `db:*` are all there and do what their names say. Only the non-obvious invocations are worth stating:
+
 ```bash
-bun install              # Install dependencies
-bun run dev              # Containers + Hono API (:3001) + Next.js (:3000)
-bun run dev:api          # Standalone Hono API
-bun run dev:web          # Standalone Next.js  (also: dev:www, dev:docs, dev:mcp)
-bun run build            # Production build
-bun run lint             # oxlint
-bun run type             # Builds published packages, then tsgo --noEmit (+ web/www type)
-bun run test             # Full suite — @atlas/api then all other packages (isolated per-file)
-bun run test:api         # Just @atlas/api tests (serial, full)
-bun run test:others      # All other workspace test suites  (also: test:e2e*, test:browser*)
 # Fast local feedback loop — only tests whose source graph your branch touched:
 cd packages/api && bun run scripts/test-isolated.ts --affected
 cd packages/api && bun run scripts/test-isolated.ts --since HEAD~3     # last 3 commits
-bun run db:up            # Start Postgres + sandbox sidecar
-bun run db:down          # Stop containers
-bun run db:reset         # Nuke volume + restart  (also: db:nuke, db:multi-env:{up,down,reset,seed})
 bun run atlas -- init    # Profile DB, generate semantic layer
 bun run atlas -- diff    # Compare DB schema vs semantic layer
 ```
@@ -164,57 +152,21 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 
 ### Operator subcommands (destructive) — the `atlas-operator` binary
 
-The tenant-data operator surface (promoted from the gitignored `internal/` in #2635) lives in its **own binary, `atlas-operator`** — split out of the published `atlas` CLI so the workspace-facing binary never ships tenant-destructive direct-DB tooling (ADR-0025 step 4, #4045). Run it with `bun run atlas-operator -- <command>` (root or `packages/cli` script). The published `atlas` CLI no longer dispatches these — it prints a redirect pointing here. Tenant-data subcommands target the tenant DB at `ATLAS_TEAM_PG_URL` (falling back to `DATABASE_URL`); `export` (portable workspace migration bundle) and `learn` read the **internal** DB via `DATABASE_URL` instead.
+Tenant-destructive direct-DB tooling lives in its **own binary, `atlas-operator`** (`bun run atlas-operator -- <command>`), deliberately split out of the published `atlas` CLI (ADR-0025 step 4, #4045). Command list, per-command DB targets, and gate details: the **`operator-commands`** skill.
 
-```bash
-bun run atlas-operator -- proactive enable --workspace <id|slug> --channels <c1,c2>
-bun run atlas-operator -- proactive disable --workspace <id|slug>
-bun run atlas-operator -- seed prompts --workspace <id|slug> --library ./prompts/library.yml
-bun run atlas-operator -- seed workspace --workspace <id|slug> --group prod \
-  --connections us-prod=US_DB_URL:postgres:primary,eu-prod=EU_DB_URL:postgres
-# DESTRUCTIVE — TRUNCATE every public table (excluding migration bookkeeping):
-ATLAS_WIPE_OK=1 bun run atlas-operator -- ops wipe --confirm [--database-url <url>]
-# One-shot: enqueue every demo_leads row into crm_outbox for dispatch to Twenty:
-bun run atlas-operator -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source demo]
-# E2E check of the demo→Twenty lead pipeline (below Turnstile, via the outbox);
-# run ad-hoc by an operator AND as the post-deploy staging-smoke gate:
-bun run atlas-operator -- ops smoke-crm --personas <path> [--wipe-twenty] [--twenty-base-url <url>] \
-  [--twenty-api-key <key>] [--timeout-seconds 60] [--database-url <url>]
-# Surgically tear down throwaway /verify-prod-signup accounts (user+org+Stripe customer)
-# from ONE region's internal DB. DRY RUN by default; EXECUTE = ATLAS_TEARDOWN_OK=1 + --confirm:
-ATLAS_TEARDOWN_OK=1 bun run atlas-operator -- ops teardown-verify-accounts \
-  --region <us|eu|apac> --email <addr[,addr]> --confirm [--dry-run] [--force]
-```
-
-`ops wipe` is the only subcommand that wipes the tenant DB: requires **both** `ATLAS_WIPE_OK=1` **and** `--confirm` (intentional double-gate). No backup is taken — wrap with `pg_dump` yourself. Operates on one DB per invocation. `ops smoke-crm` is an end-to-end verification of the demo→Twenty lead-capture pipeline — run ad-hoc by an operator and as the post-deploy Staging Smoke gate (`.github/workflows/staging-smoke.yml`), though not per-PR CI; its optional `--wipe-twenty` phase clears the Twenty workspace and is double-gated by `ATLAS_SMOKE_WIPE_OK=1`. `ops teardown-verify-accounts` is the only subcommand that targets a **region's internal DB** (resolved from `ATLAS_REGION_<R>_DB_URL` via `--region`, or an explicit `--database-url`) rather than the tenant DB — there is **no `DATABASE_URL` fallback** (so you can't tear down the wrong DB by forgetting the flag); DRY RUN by default, EXECUTE double-gated by `ATLAS_TEARDOWN_OK=1` + `--confirm`, with a 12-workspace blast-radius cap and a plus-addressing guard (`--force` to override). One-shot migration backfills live next to their migration in `db/migrations/scripts/`.
+⚠️ **`ops wipe` TRUNCATEs every public table and takes no backup** — double-gated by `ATLAS_WIPE_OK=1` **and** `--confirm`. Wrap with `pg_dump` yourself.
+⚠️ **`ops teardown-verify-accounts` targets a region's internal DB, not the tenant DB** — no `DATABASE_URL` fallback by design; DRY RUN unless `ATLAS_TEARDOWN_OK=1` + `--confirm`.
 
 ## Architecture
 
 ### Packages
 
-| Package | Name | Description |
-|---------|------|-------------|
-| `packages/types` | `@useatlas/types` | Shared TypeScript types (wire format) across API, web, SDK, react |
-| `packages/schemas` | `@useatlas/schemas` | Shared Zod schemas (wire format) — SSOT for API route validation + web response parsing |
-| `packages/api` | `@atlas/api` | Hono API server, agent loop, tools, auth, DB |
-| `packages/web` | `@atlas/web` | Next.js frontend, chat UI (exports `./ui/context`, `./ui/components/atlas-chat`) |
-| `packages/cli` | `@atlas/cli` | CLI: profiler, schema diff, enrichment, query; ships `atlas` + `atlas-operator` binaries |
-| `packages/mcp` | `@atlas/mcp` | MCP server (stdio + Streamable HTTP transport) |
-| `packages/oauth-helper` | `@atlas/oauth-helper` | Internal OAuth 2.1 + DCR + PKCE primitives shared by sdk + mcp (not published) |
-| `packages/sandbox-sidecar` | `@atlas/sandbox-sidecar` | Isolated explore/python sidecar |
-| `packages/webhook-publisher` | `@useatlas/webhook-publisher` | Shared outbound webhook sender — HMAC signing + bounded retry + per-attempt timeout |
-| `packages/sdk` | `@useatlas/sdk` | TypeScript SDK for Atlas API |
-| `packages/react` | `@useatlas/react` | Embeddable React chat component + headless hooks |
-| `packages/plugin-sdk` | `@useatlas/plugin-sdk` | Plugin type definitions + `definePlugin()` |
-| `apps/www` | `@atlas/www` | Landing page (useatlas.dev) |
-| `apps/docs` | `@atlas/docs` | Documentation site (Fumadocs) |
-| `examples/docker` | — | Self-hosted Docker deploy + optional nsjail |
-| `examples/nextjs-standalone` | — | Pure Next.js + embedded Hono API (Vercel) |
-| `examples/embedded-mcp-onboarding` | — | Embedded Atlas MCP onboarding flow example |
-| `create-atlas` | `create-atlas-agent` | Scaffolding CLI (`bun create atlas-agent`) |
-| `create-atlas-plugin` | `create-atlas-plugin` | Plugin scaffolding CLI (`bun create atlas-plugin`) |
-| `ee/` | `@atlas/ee` | Enterprise features — source-available, commercial license |
-| `plugins/` | — | 25 Atlas plugins: datasources, sandbox runtimes, chat adapters, action targets |
+`ls packages/ apps/ examples/ plugins/` is the authoritative inventory; each package's `package.json` `name` + `description` says what it is. Only the facts you can't read off disk:
+
+- **Published to npm** (`@useatlas/*`, independent semver, see *Publishing* below): `types`, `schemas`, `sdk`, `react`, `plugin-sdk`, `webhook-publisher`. Everything under `@atlas/*` is internal and never published — including `oauth-helper`, which looks publishable but is deliberately not.
+- **`@useatlas/schemas` is the one exception** — internal-only despite the public scope; it never publishes to npm.
+- **`ee/`** is `@atlas/ee`: source-available under a commercial license, not AGPL. See *Enterprise & SaaS Gating*.
+- **`plugins/`** — datasources, sandbox runtimes, chat adapters, action targets. The count is pinned by `scripts/check-plugin-count.sh`; don't hand-maintain it here.
 
 **Import conventions:**
 - `@atlas/api` uses its own name: `@atlas/api/lib/agent`, `@atlas/api/lib/auth/types`
@@ -344,15 +296,11 @@ const form = useConfigForm<WireConfig, FormValues>({
 
 ### Publishing `@useatlas/*` packages
 
-For `0.0.x` semver, `^0.0.2` pins EXACTLY to `0.0.2`. When bumping a published package, **sequence the ref bump after publish** or Deploy Validation scaffolds fail (`npm install` hits the registry):
+Full sequence, guards, and rationale: the **`publish-package`** skill.
 
-1. **Feature PR** — bump `version` in the package's own `package.json`, but **keep** dependency refs in `sdk`/`react`/templates at the old version
-2. **After merge** — tag the release (`git tag types-v0.0.4 && git push origin types-v0.0.4`); wait for the publish workflow
-3. **Then** push a follow-up bumping refs in `packages/sdk`, `packages/react`, `create-atlas/templates/*/package.json`
+⚠️ **Never push more than 3 release tags in one `git push`** — GitHub fires NO `push` event for tags when >3 land in a single push, so `publish.yml` runs for none of them: the tags land on the remote and nothing publishes, silently. Groups of ≤3, or one at a time. (Caught 2026-06-15 backfilling 6 tags — published nothing.)
 
-⚠️ **Never push more than 3 release tags in one `git push`** — GitHub silently fires NO `push` event for tags when >3 land in a single push, so `publish.yml` runs for none of them (the tags land on the remote, nothing publishes). Push release tags in groups of ≤3, or one at a time. (Caught 2026-06-15 backfilling 6 tags — published nothing.)
-
-Two guards keep this honest: `scripts/check-published-symbols.ts` catches "added a new export and used it before publishing" (diffs braced **value** imports from `@useatlas/*` in scaffold-bound source against the pinned published version; type-only imports skipped). `scripts/check-unpublished-versions.ts` (in the `drift` CI job) fails when a publishable package's version is on `main` but not on npm and the current change didn't introduce the bump — i.e. a merged version bump whose post-merge publish was forgotten (npm is the oracle; the bumping PR is exempt so it stays green). `publish.yml` publishes via `scripts/npm-publish-if-new.sh`, which skips when `name@version` is already on npm, so re-tagging an already-published version is a green no-op rather than a 403.
+⚠️ **Sequence ref bumps AFTER the publish lands** — for `0.0.x`, `^0.0.2` pins exactly to `0.0.2`, so bumping refs first makes Deploy Validation scaffolds fail on `npm install`.
 
 ## Environment Variables
 

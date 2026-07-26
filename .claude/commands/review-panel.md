@@ -1,3 +1,7 @@
+---
+description: "Run the four tuned specialist reviewers over the current diff in parallel with fresh context. This is the shared review primitive that /ship-issue and /ship-milestone call before a PR opens."
+---
+
 Run the internal review panel on the current diff — the four tuned specialist reviewers, fan-out in parallel, fresh context.
 
 **Input:** `$ARGUMENTS` — optional base ref to diff against. Default: `origin/main`. (Inside a PR, diff the PR branch against its base.)

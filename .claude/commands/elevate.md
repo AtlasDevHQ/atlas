@@ -1,3 +1,7 @@
+---
+description: "Audit a whole shipped product surface (dashboards, chat, onboarding, semantic-layer) across parallel dimensions and produce a ranked findings briefing that feeds a downstream grill, PRD, and issue slicing. Not for one-issue-sized findings (/investigate) or a purely presentational pass (/revamp)."
+---
+
 # Elevate
 
 Run the audit phase of a **feature elevation cycle**: a shipped surface works, but it's beneath its potential. Audit it in parallel dimensions, collate a ranked findings doc into `.claude/research/`, and hand off to a `/grill-with-docs` session. This command produces a **briefing, not a plan** — the grill, PRD, and issue slicing happen downstream with the user in the loop.

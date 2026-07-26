@@ -1,3 +1,7 @@
+---
+description: "Run the full pre-PR gate — scripts/ci-local.sh, ~27 gates, compact PASS/FAIL table. Must pass before opening a PR. For the fast iteration loop use test-isolated.ts --affected instead."
+---
+
 Run the same checks CI runs. This must pass before opening a PR.
 
 `/ci` is the pre-PR gate, not an iteration loop. For iteration use

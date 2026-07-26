@@ -1,3 +1,7 @@
+---
+description: "Draft a Keep-a-Changelog entry from recent commits, grouped Added/Changed/Fixed with PR and issue links. Run at the end of a milestone or before a version bump. Note that /release owns the per-tag docs changelog."
+---
+
 # Changelog
 
 Generate a changelog entry for recent work. Groups commits by type (Added, Changed, Fixed), links PRs/issues, and follows Keep a Changelog format.

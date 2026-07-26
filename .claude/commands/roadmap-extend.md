@@ -1,3 +1,7 @@
+---
+description: "Research and propose the next milestone from the codebase, competitive landscape, and user needs. Run when there are zero open issues and the next body of work needs planning."
+---
+
 # Roadmap Extension
 
 Research and propose the next milestone. Analyze the codebase, competitive landscape, and user needs to draft what comes next.

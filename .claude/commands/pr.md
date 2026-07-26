@@ -1,3 +1,7 @@
+---
+description: "Open a pull request for the current branch's work — branch if needed, commit, push, and create the PR with its linked issue."
+---
+
 Open a PR for the current branch's work. Branch, commit, push, create PR.
 
 **Step 1: Understand what's being shipped**

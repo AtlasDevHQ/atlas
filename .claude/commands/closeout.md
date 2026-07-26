@@ -1,3 +1,7 @@
+---
+description: "Close out a completed milestone — verify everything shipped, docs are current, and tracking is clean. Run after the last issue in a milestone merges."
+---
+
 # Milestone Closeout
 
 Final review and closeout for a completed milestone. Verify everything shipped, docs are current, changelog is updated, and tracking is clean.

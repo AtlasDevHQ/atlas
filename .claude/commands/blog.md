@@ -1,3 +1,7 @@
+---
+description: "Write a new apps/www blog post from a rough idea, or run an editorial de-AI and voice polish pass over an existing one. Use for anything touching apps/www/blog — the founder-voice public surface with its multi-file route/index/sitemap anatomy."
+---
+
 # Blog Post — Write & Polish
 
 Turn a rough idea into a finished `apps/www` blog post, or run an editorial polish pass over an existing one. The `new` mode is a **collaboration, not a one-shot generator**: you bring an idea, it mines the repo (git history, ROADMAP, changelog, code, ADRs, sibling posts) for real truths and concrete material, riffs on the angle with you in a back-and-forth, then drafts it. Both modes bake in the house voice (plainspoken founder voice, no AI tells), the prose-component structure, and the multi-file anatomy (route + index + sitemap + metadata + byline) so nothing drifts out of sync.

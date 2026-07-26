@@ -1,3 +1,7 @@
+---
+description: "Reconcile recent commits and PRs against GitHub issues and ROADMAP — fix drift, close gaps, clean up stale items. Run after a burst of merged work."
+---
+
 # Project Tidy
 
 Reconcile recent work (commits, PRs) against GitHub issues and ROADMAP. Fix drift, close gaps, clean up stale items.

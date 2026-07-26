@@ -1,3 +1,7 @@
+---
+description: "Sweep npm dependency updates across the monorepo (Renovate is Docker-only here, so npm deps drift until a manual pass). Group A is every minor/patch in one PR; Group B is one PR per major."
+---
+
 Refresh npm dependencies across the monorepo. Renovate is **Docker-only** (`renovate.json` → `enabledManagers: ["dockerfile"]`), so npm deps drift until a manual sweep. This command does the sweep the way it actually works in this repo — including the gotchas that only CI (not local type/test) catches. Ships as a **patch-rollup tag** (`v0.0.x`, no milestone — like v0.0.5), per [ADR-0008](../../docs/adr/0008-versioning-and-release-tags.md).
 
 Two-group model — split by **version axis, not by package** (never mix in one PR):

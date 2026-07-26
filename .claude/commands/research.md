@@ -1,3 +1,7 @@
+---
+description: "Research the Atlas codebase to answer a question or plan a change, starting from ROADMAP, the competitive-landscape doc, and a module map of the main subsystems."
+---
+
 You are researching the Atlas codebase to answer a question or plan a change.
 
 **Start with these for high-level context:**

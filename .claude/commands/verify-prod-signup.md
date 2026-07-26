@@ -1,3 +1,7 @@
+---
+description: "Verify a real end-to-end signup through each production data-residency region (us, eu, apac) with the Playwright MCP browser, confirming the region step, residency routing, and the cold-start demo first answer. Prod only — the region step needs a multi-region deploy."
+---
+
 # Verify Prod Signup (3-Region Residency)
 
 Human-in-the-loop verification that a **real, end-to-end signup works through each data-residency region in PRODUCTION** — `us` / `eu` / `apac` — confirming the region step, residency routing, and the cold-start demo first-answer for a brand-new user. Drive it with the Playwright MCP browser; a human reads the email OTP at each region's OTP step.

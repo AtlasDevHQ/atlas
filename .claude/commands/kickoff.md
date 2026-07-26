@@ -1,3 +1,7 @@
+---
+description: "Start a new milestone — create GitHub issues from ROADMAP line items, label them, and assign the milestone. For a PRD-anchored milestone run /to-issues against the PRD first, then come back here."
+---
+
 # Milestone Kickoff
 
 Spin up a new milestone: create GitHub issues from planned work, label them, and assign milestones.

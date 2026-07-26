@@ -49,6 +49,13 @@
     "changed_at": "2026-01-15"
   },
   {
+    "name": "Slack",
+    "purpose": "Chat delivery — the Atlas Slack app posts answers and query results into Customer’s Slack workspace and receives questions from it; per-workspace bot tokens are stored encrypted by Atlas",
+    "region": "Customer’s own Slack workspace — data location determined by Customer’s agreement with Slack",
+    "since": "2026-03",
+    "changed_at": "2026-07-26"
+  },
+  {
     "name": "Cloudflare",
     "purpose": "Bot mitigation (Turnstile on signup / abuse-sensitive endpoints) + CDN/edge proxy; receives end-user IP address",
     "region": "Global (edge)",

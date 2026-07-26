@@ -135,13 +135,13 @@ const SECTIONS: LegalSectionData[] = [
     id: "share",
     title: "Who we share with",
     legal: [
-      "Sub-processors: a small set of vendors that help us run the Service (cloud infrastructure, uptime monitoring, payment processing, bot mitigation, and CRM for sales follow-up). The current list is published at useatlas.dev/dpa and customers receive 30 days’ notice of additions.",
+      "Sub-processors: a small set of vendors that help us run the Service (cloud infrastructure, uptime monitoring, payment processing, bot mitigation, CRM for sales follow-up, and chat delivery where Customer connects a chat platform). The current list is published at useatlas.dev/dpa and customers receive 30 days’ notice of additions.",
       "Model providers: when Customer uses Atlas’s hosted models, prompts are routed through Vercel AI Gateway, which forwards them to the upstream model provider configured for that Customer (e.g. Anthropic, OpenAI). Vercel acts as a sub-processor for routing, observability, and fallback. Where Customer uses BYO model keys, traffic is sent directly to the provider Customer specifies and does not transit Vercel.",
       "Legal: we may disclose information when required by law, court order, or to protect our rights, with notice to Customer where legally permitted.",
       "Successors: in a merger or sale of substantially all assets, the acquirer takes on the same obligations under this Policy.",
     ],
     plain:
-      "A short list of operational vendors (cloud infra, uptime monitoring, payments, bot mitigation, CRM), the model provider you select, and disclosures required by valid legal process.",
+      "A short list of operational vendors (cloud infra, uptime monitoring, payments, bot mitigation, CRM, and the chat platform you connect), the model provider you select, and disclosures required by valid legal process.",
   },
   {
     id: "rights",
@@ -171,20 +171,20 @@ const SECTIONS: LegalSectionData[] = [
       "Account data: retained for the duration of the account plus 90 days after closure.",
       "Audit logs: 365 days by default; configurable per-workspace with a 7-day floor and a hard-delete delay for compliance export.",
       "Telemetry: 30 days, then aggregated and de-identified.",
-      "Backups: production data is retained in encrypted backups for up to 90 days.",
+      "Backups: after deletion from production, data persists in encrypted backups for up to a further 90 days as those backups rotate — the same additional-90-day window stated in the Data Processing Addendum.",
     ],
     plain:
-      "Account data: term + 90 days. Audit logs: 365 days by default, configurable per-workspace (7-day floor). Telemetry: 30 days then aggregated. Encrypted backups: up to 90 days.",
+      "Account data: term + 90 days. Audit logs: 365 days by default, configurable per-workspace (7-day floor). Telemetry: 30 days then aggregated. Encrypted backups: a further 90 days after deletion, matching the DPA.",
   },
   {
     id: "security",
     title: "Security",
     legal: [
-      "Atlas maintains a security program aligned with ISO 27001 and SOC 2 Type II controls. Highlights: TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM, encrypted internal-database storage of all integration credentials and connection strings, automated vulnerability scanning of container images and dependencies, and TOTP two-factor authentication required for every administrator account on managed-mode sessions. Per-customer KMS keys are on the public roadmap and negotiable on enterprise contracts. Atlas does not currently hold a SOC 2 Type II report or ISO 27001 certificate; formal certification is on the roadmap.",
+      "Atlas maintains a security program aligned with ISO 27001 and SOC 2 Type II controls. Highlights: TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, encrypted internal-database storage of all integration credentials and connection strings, automated dependency vulnerability scanning, static application security testing on every change, secret scanning with push protection, and two-factor authentication (TOTP or passkey) required for every administrator account on managed-mode sessions. Per-customer KMS keys are on the public roadmap and negotiable on enterprise contracts. Atlas does not currently hold a SOC 2 Type II report or ISO 27001 certificate and does not maintain a formally documented ISMS today; formal certification is on the roadmap, as are container-image vulnerability scanning, a documented incident-response runbook, and third-party penetration testing.",
       "Suspected security incidents may be reported to security@useatlas.dev. Our disclosure policy is published at useatlas.dev/.well-known/security.txt (RFC 9116). Encrypted reports may use the PGP key at useatlas.dev/.well-known/atlas-security.asc (fingerprint: B00E 2A64 12E9 3CDF 9624 29CF 3970 0A61 1481 92C7).",
     ],
     plain:
-      "TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, least-privilege IAM, TOTP two-factor required for admin accounts. We do not hold SOC 2 Type II or ISO 27001 certification today; formal certification is on the roadmap. Report suspected issues to security@useatlas.dev (PGP key at useatlas.dev/.well-known/atlas-security.asc).",
+      "TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation, two-factor (TOTP or passkey) required for admin accounts. We do not hold SOC 2 Type II or ISO 27001 certification today, and we don’t claim controls we haven’t built — certification, container-image scanning, a documented incident-response runbook, and third-party penetration testing are all on the roadmap, not in place. Report suspected issues to security@useatlas.dev (PGP key at useatlas.dev/.well-known/atlas-security.asc).",
   },
   {
     id: "cookies",

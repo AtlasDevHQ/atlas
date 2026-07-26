@@ -273,3 +273,34 @@ export function formatSandboxPriorityFailure(
 
   return `All backends in sandbox.priority (${priority.join(", ")}) failed to initialize.${summary} ${guidance.join(" ")}`;
 }
+
+/** Isolation posture of a sandbox backend. */
+export type SandboxIsolationPosture = "isolated" | "unsandboxed" | "plugin-declared";
+
+/**
+ * Isolation posture of each backend, so operator-facing surfaces don't have to
+ * re-derive "does this one actually isolate?" from a string equality check.
+ *
+ * `satisfies Record<…>` is the point: adding a backend to
+ * `SANDBOX_BACKEND_NAMES` without classifying it here is a compile error, so a
+ * future unsandboxed backend can never silently inherit the reassuring branch
+ * of a caller's `=== "just-bash"` test — the same fail-open shape that let the
+ * #4824 boot dispatch assert the wrong isolation posture.
+ *
+ * `plugin` is `plugin-declared`: the plugin supplies its own security metadata
+ * (surfaced by `logSandboxPlugins()`), and `/api/health` reports
+ * `isolationVerified: false` for it because Atlas has not verified that claim.
+ * This table must not claim isolation on the plugin's behalf.
+ *
+ * Lives here rather than beside `ExploreBackendType` in `lib/tools/explore.ts`
+ * deliberately: explore is the most-mocked module in the package (a dozen-plus
+ * partial `mock.module` sites), so a new VALUE export there breaks every static
+ * importer under those mocks. This module is pure policy and is not mocked.
+ */
+export const BACKEND_ISOLATION = {
+  "vercel-sandbox": "isolated",
+  nsjail: "isolated",
+  sidecar: "isolated",
+  "just-bash": "unsandboxed",
+  plugin: "plugin-declared",
+} as const satisfies Record<SandboxBackendName | "plugin", SandboxIsolationPosture>;

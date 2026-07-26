@@ -8,8 +8,10 @@
  * RESOLVE the backend is not evidence that the deployment is unsandboxed, and
  * that string is what a security review greps for.
  *
- * Its own file because it needs `lib/tools/explore` to throw on import, which
- * is incompatible with the sibling suites that drive the real module.
+ * Its own file because it needs `lib/tools/explore`'s exports to throw on
+ * ACCESS, which the sibling suite driving the real module cannot tolerate in the
+ * same process — this `mock.module` would leak into it. The isolated per-file
+ * runner is what keeps them apart.
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { createConnectionMock } from "@atlas/api/testing/connection";
@@ -72,20 +74,22 @@ void mock.module("@atlas/api/lib/tools/explore-nsjail", () => ({
   },
 }));
 
-// The resolution seam itself fails — e.g. a malformed sandbox.priority, or a
-// module-init failure anywhere in explore's transitive graph.
+// The resolution seam itself fails — e.g. a module-init failure anywhere in
+// explore's transitive graph. (sandbox.priority cannot cause this: it is
+// zod-validated at config load and planSandboxSelection has no throw path.)
 void mock.module("@atlas/api/lib/tools/explore", () => ({
   get getExploreBackendType(): never {
-    throw new Error("explore module failed to initialize");
-  },
-  get BACKEND_ISOLATION(): never {
     throw new Error("explore module failed to initialize");
   },
   markNsjailFailed: () => {},
   markSidecarFailed: () => {},
   getActiveSandboxPluginId: () => null,
   invalidateExploreBackend: () => {},
+  invalidateOrgExploreBackends: () => {},
   snapshotExploreSandboxEnv: () => ({}),
+  _resetSandboxFailureFlagsForTest: () => {},
+  _formatSandboxPriorityFailureForTest: () => "",
+  explore: {},
 }));
 
 const { validateEnvironment, resetStartupCache, getStartupWarnings } = await import(

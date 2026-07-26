@@ -131,27 +131,6 @@ let _sidecarFailed = false;
 
 export type ExploreBackendType = SandboxBackendName | "plugin";
 
-/**
- * Isolation posture of each backend, so operator-facing surfaces don't have to
- * re-derive "does this one actually isolate?" from a string equality check.
- *
- * `satisfies Record<ExploreBackendType, …>` is the point: adding a backend to
- * `SANDBOX_BACKEND_NAMES` without classifying it here is a compile error, so a
- * future unsandboxed backend can never silently inherit the reassuring branch
- * of a caller's `=== "just-bash"` test. That fail-open default is what let the
- * boot log assert the wrong isolation posture in #4824.
- *
- * `plugin` is `plugin-declared`: the plugin supplies its own security metadata
- * (surfaced by `logSandboxPlugins()` and `/api/health`'s `isolationVerified`),
- * so this table must not claim isolation on its behalf.
- */
-export const BACKEND_ISOLATION = {
-  "vercel-sandbox": "isolated",
-  nsjail: "isolated",
-  sidecar: "isolated",
-  "just-bash": "unsandboxed",
-  plugin: "plugin-declared",
-} as const satisfies Record<ExploreBackendType, "isolated" | "unsandboxed" | "plugin-declared">;
 
 /** Name of the active sandbox plugin (if any). Set during backend init. */
 let _activeSandboxPluginId: string | null = null;
@@ -398,6 +377,12 @@ export function invalidateOrgExploreBackends(orgId: string): void {
  * makes them leak across cases in a test file, so a suite exercising several
  * env shapes would otherwise depend on test ORDER to stay honest, and the
  * failure mode is a still-passing test that no longer proves what it claims.
+ *
+ * Also clears the `_nsjailAvailable` binary-detection memo (`useNsjail()`'s
+ * cache) — not a failure flag, but cached on first read, so a suite that varies
+ * `PATH` / `ATLAS_NSJAIL_PATH` between cases needs it dropped too. Does NOT
+ * clear `_activeSandboxPluginId` or `backendCache`; a suite that exercises a
+ * plugin backend must handle those itself.
  */
 export function _resetSandboxFailureFlagsForTest(): void {
   _nsjailFailed = false;

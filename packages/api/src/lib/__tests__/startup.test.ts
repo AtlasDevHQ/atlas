@@ -61,18 +61,8 @@ void mock.module("@atlas/api/lib/tools/explore", () => ({
   markNsjailFailed: () => { mockMarkNsjailFailedCalled = true; },
   markSidecarFailed: () => { mockMarkSidecarFailedCalled = true; },
   getExploreBackendType: () => mockExploreBackend,
-  // Required by logResolvedExploreBackend(); omitting it sends the pre-flight
-  // down its "could not resolve" branch and silently voids these assertions.
-  BACKEND_ISOLATION: {
-    "vercel-sandbox": "isolated",
-    nsjail: "isolated",
-    sidecar: "isolated",
-    "just-bash": "unsandboxed",
-    plugin: "plugin-declared",
-  },
   getActiveSandboxPluginId: () => null,
   invalidateExploreBackend: () => {},
-  _resetSandboxFailureFlagsForTest: () => {},
 }));
 
 const { validateEnvironment, getStartupWarnings, resetStartupCache } =

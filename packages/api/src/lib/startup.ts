@@ -854,11 +854,14 @@ async function checkSandboxPreFlight(): Promise<void> {
   // getExploreBackendType() — and therefore /api/health — report a degraded
   // chain. They run for those side effects even when a different backend wins.
   const isVercelHost = process.env.ATLAS_RUNTIME === "vercel" || !!process.env.VERCEL;
+  let pinnedNsjailUsable = true;
   if (!isVercelHost) {
-    // On a Vercel host there is nothing local to probe — Vercel Sandbox needs
-    // no binary and no sidecar — so every arm below is skipped.
+    // On a Vercel host the default chain always resolves vercel-sandbox, so
+    // there is nothing local worth probing. (A Vercel host that ALSO pins a
+    // sidecar or nsjail skips that probe — pre-existing, and the one hole in
+    // the paragraph above.)
     if (process.env.ATLAS_SANDBOX === "nsjail") {
-      await checkExplicitNsjail();
+      pinnedNsjailUsable = await checkExplicitNsjail();
     } else if (process.env.ATLAS_SANDBOX_URL) {
       await checkSidecarHealth();
     } else {
@@ -866,7 +869,17 @@ async function checkSandboxPreFlight(): Promise<void> {
     }
   }
 
-  await logResolvedExploreBackend();
+  if (pinnedNsjailUsable) {
+    await logResolvedExploreBackend();
+  } else {
+    // Naming a backend here would be wrong in BOTH directions: "nsjail active"
+    // (it isn't) and "just-bash" (the pin refuses to degrade). Say what is
+    // actually true — explore will not run at all until the pin is satisfiable.
+    log.error(
+      "Explore tool: unavailable — ATLAS_SANDBOX=nsjail is pinned but nsjail is not usable. " +
+        "Explore will fail on every request until nsjail is installed or the pin is removed.",
+    );
+  }
 }
 
 /**
@@ -878,7 +891,8 @@ async function checkSandboxPreFlight(): Promise<void> {
  * 1. **After the probes.** `getExploreBackendType()` consults `_nsjailFailed` /
  *    `_sidecarFailed`, so resolving first would report a degraded chain
  *    optimistically.
- * 2. **After `checkConfigFile()`.** It reads `getConfig()?.sandbox?.priority`;
+ * 2. **After `checkConfigFile()`.** `snapshotExploreSandboxEnv()` reads
+ *    `getConfig()?.sandbox?.priority`;
  *    an unresolved config silently yields a different chain. Holds today
  *    because `checkConfigFile()` is step 5.5 of `validateEnvironment()` and the
  *    pre-flight is step 10 — sequential awaits in the same function.
@@ -896,8 +910,9 @@ async function checkSandboxPreFlight(): Promise<void> {
  */
 async function logResolvedExploreBackend(): Promise<void> {
   try {
-    const { getExploreBackendType, BACKEND_ISOLATION } = await import(
-      "@atlas/api/lib/tools/explore"
+    const { getExploreBackendType } = await import("@atlas/api/lib/tools/explore");
+    const { BACKEND_ISOLATION } = await import(
+      "@atlas/api/lib/tools/backends/selection"
     );
     const backend = getExploreBackendType();
     // Table lookup rather than `=== "just-bash"` so a future backend must
@@ -905,7 +920,8 @@ async function logResolvedExploreBackend(): Promise<void> {
     if (BACKEND_ISOLATION[backend] === "unsandboxed") {
       log.info(
         { backend },
-        "Explore tool: just-bash (no process isolation). Install nsjail or configure ATLAS_SANDBOX_URL for sandboxed execution.",
+        "Explore tool: %s (no process isolation). Install nsjail or configure ATLAS_SANDBOX_URL for sandboxed execution.",
+        backend,
       );
     } else {
       log.info({ backend }, "Explore tool: %s active", backend);
@@ -925,7 +941,13 @@ async function logResolvedExploreBackend(): Promise<void> {
   }
 }
 
-async function checkExplicitNsjail(): Promise<void> {
+/**
+ * Probe the explicitly pinned nsjail backend. Returns false when the pin cannot
+ * be satisfied — `ATLAS_SANDBOX=nsjail` is hard-fail by contract, so explore
+ * refuses to run rather than degrading, and the caller must not name a backend.
+ */
+async function checkExplicitNsjail(): Promise<boolean> {
+  let pinnedNsjailUsable = true;
   try {
     const { findNsjailBinary, testNsjailCapabilities } = await import(
       "@atlas/api/lib/tools/explore-nsjail"
@@ -941,6 +963,7 @@ async function checkExplicitNsjail(): Promise<void> {
         log.info("nsjail namespace capabilities verified");
       } else {
         markNsjailFailed();
+        pinnedNsjailUsable = false;
         const msg =
           `nsjail explicitly requested (ATLAS_SANDBOX=nsjail) but namespace creation failed: ${capResult.error}. ` +
           "This platform may not support Linux namespaces. " +
@@ -949,12 +972,12 @@ async function checkExplicitNsjail(): Promise<void> {
         if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
       }
     } else {
-      // isBackendAvailable("nsjail") is `ATLAS_SANDBOX === "nsjail" ||
-      // useNsjail()`, so the env pin ALONE reports nsjail as available even with
-      // no binary on the box — and both the boot log and /api/health would then
-      // name a backend that hard-fails on the first explore call. Marking it
-      // failed here is what keeps the pin from advertising itself (#4824).
-      markNsjailFailed();
+      // Deliberately does NOT call markNsjailFailed(): planSandboxSelection only
+      // emits the hard-fail step while `!nsjailFailed`, so setting the flag here
+      // would DELETE the pin's hard-fail contract and silently degrade the
+      // deployment to unsandboxed just-bash. The pin means "refuse to run
+      // without nsjail"; the caller suppresses the backend line instead.
+      pinnedNsjailUsable = false;
       const msg =
         "ATLAS_SANDBOX=nsjail is set but nsjail binary was not found. " +
         "Install nsjail or set ATLAS_NSJAIL_PATH to the binary location.";
@@ -962,9 +985,17 @@ async function checkExplicitNsjail(): Promise<void> {
       if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
     }
   } catch (err) {
-    const detail = errorMessage(err);
-    log.warn({ err: detail }, "Sandbox pre-flight check skipped");
+    // The pin's isolation is UNVERIFIED, not merely unlogged: without a
+    // completed probe, isBackendAvailable("nsjail") still reports the pin as
+    // available, so naming a backend would assert isolation nobody confirmed.
+    const msg =
+      `Could not verify the pinned nsjail sandbox (ATLAS_SANDBOX=nsjail): ${errorMessage(err)}. ` +
+      "Isolation is UNVERIFIED. Check the nsjail installation or set ATLAS_NSJAIL_PATH.";
+    log.error(msg);
+    if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+    pinnedNsjailUsable = false;
   }
+  return pinnedNsjailUsable;
 }
 
 async function checkSidecarHealth(): Promise<void> {

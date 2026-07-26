@@ -26,6 +26,26 @@ export const POSTS: Post[] = [
     tag: "How it works",
   },
   {
+    slug: "grounded-in-your-context",
+    title: "Grounded in your context",
+    description:
+      "Ask two tools what revenue was last quarter and you can get two different numbers. Atlas reads your definitions first: a YAML semantic layer you author, a Knowledge Base mirroring your own docs through ten vendor connectors, and the query patterns it keeps as people approve them.",
+    isoDate: "2026-07-28",
+    dateLabel: "July 28, 2026",
+    readingTime: "6 min read",
+    tag: "How it works",
+  },
+  {
+    slug: "atlas-is-public",
+    title: "Atlas is public",
+    description:
+      "The AI data analyst you can run anywhere is live. Plain-English answers over SQL warehouses and REST APIs, governed by a semantic layer you author, on infrastructure you control. Here's the whole surface, and what each day this week goes deep on.",
+    isoDate: "2026-07-27",
+    dateLabel: "July 27, 2026",
+    readingTime: "5 min read",
+    tag: "Road to launch",
+  },
+  {
     slug: "the-last-mile",
     title: "The last mile",
     description:

@@ -1936,7 +1936,7 @@ export const knowledgeDocuments = pgTable(
     atlasIngestedAt: timestamp("atlas_ingested_at", { withTimezone: true }),
     // Content-mode lifecycle — defaults `draft` (the review gate).
     status: text("status").notNull().default("draft"),
-    // Stored generated FTS vector for the searchKnowledge lexical tier
+    // Stored generated FTS vector for the document-store lexical tier
     // (#4222, migration 0167). Weighted title A / description B / body D;
     // STORED (not VIRTUAL — PG 18's bare default) so the GIN index below
     // can be built on it. Expression mirrors 0167 (same tokens — keep the
@@ -3129,5 +3129,369 @@ export const connectionGroupDescriptions = pgTable(
   (t) => [
     primaryKey({ columns: [t.orgId, t.groupId] }),
     check("chk_connection_group_descriptions_source", sql`source IN ('auto', 'manual')`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Company brain substrate (0180 — #4767, ADR-0036)
+// ---------------------------------------------------------------------------
+//
+// A fact/edge/episode substrate with its OWN trust identity, reusing the
+// Knowledge Base's lifecycle (review gate, per-org mirror, ingest seam) but
+// NOT extending ADR-0028's descriptive-document model — the fact class breaks
+// ADR-0028's flat "descriptive-only" line, and that break is deliberate.
+//
+// Trust tiers, in the vocabulary reserved by the ADR-0036 re-aim guide:
+// tier-1 warehouse facts are authoritative by construction and are NOT stored
+// here (they resolve live through the semantic layer, gated by warehouse RLS);
+// tier-2 reviewed facts (`brainFacts`) are authoritative for their class and
+// yield to the warehouse in any overlap; tier-3 raw episodes (`brainEpisodes`)
+// are source-of-truth for what was *said*, never for what is *true*.
+//
+// Mirrors migration 0180.
+
+// brain_episodes — tier-3. Immutable, append-only, deduped by stable
+// source-id. Note the absence of `updatedAt`: an episode is evidence, and
+// evidence that can be edited cannot back a provenance claim. Re-ingesting the
+// same source record is a no-op, never an upsert.
+export const brainEpisodes = pgTable(
+  "brain_episodes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // Better-Auth organization id — workspace-global, TEXT/no-FK like the
+    // other org-scoped Atlas tables.
+    workspaceId: text("workspace_id").notNull(),
+    // Connector class/vendor ('slack', 'warehouse', 'human').
+    source: text("source").notNull(),
+    // The source's own stable id — the dedupe key. Per-connector obligation:
+    // stable across BOTH the webhook fast-path and the polling path.
+    sourceId: text("source_id").notNull(),
+    // Source-side author principal; feeds grant derivation + entity
+    // resolution. NULL when the source has no meaningful author.
+    sourceActor: text("source_actor"),
+    // Body XOR locator (CHECK below). By-reference for warehouse/KB-derived
+    // content that already has an authoritative home; by-value for chat, where
+    // the source can delete the message and the evidence must survive.
+    body: text("body"),
+    locator: text("locator"),
+    // Event time at the source, distinct from `ingestedAt` (when Atlas learned
+    // of it). The gap is the freshness lag the high-water mark chases.
+    occurredAt: timestamp("occurred_at", { withTimezone: true }),
+    ingestedAt: timestamp("ingested_at", { withTimezone: true }).notNull().defaultNow(),
+    // Extraction work-queue marker — the fiber (#4771) drains
+    // `extracted_at IS NULL`. Nullable timestamp, not a boolean, so a stuck
+    // backlog is visible rather than silent.
+    extractedAt: timestamp("extracted_at", { withTimezone: true }),
+    // ACL grant (grammar documented on `brainFacts.visibleTo`). Tiers 2 AND 3
+    // are gated — raw episodes are often *more* sensitive than their facts.
+    visibleTo: text("visible_to").array().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Stored generated FTS vector for the `searchBrain` tier-3 lexical read
+    // (#4773, migration 0181). Locator B / body D; `source_actor` is
+    // deliberately absent (opaque source principals dilute ranking without
+    // contributing matchable language). STORED — not PG 18's bare VIRTUAL
+    // default — so the GIN index below can be built on it. Expression mirrors
+    // 0181; keep the two in lockstep.
+    fts: tsvector("fts")
+      .notNull()
+      .generatedAlwaysAs(
+        sql`setweight(to_tsvector('english', coalesce(locator, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(body, '')), 'D')`,
+      ),
+  },
+  (t) => [
+    // Dedupe key — makes re-ingest a no-op. Scoped per workspace + source
+    // because two connectors can mint the same opaque source id.
+    uniqueIndex("uq_brain_episodes_source_id").on(t.workspaceId, t.source, t.sourceId),
+    // Referent for the composite FKs from brain_facts / brain_edges. Adds no
+    // new uniqueness (id is the PK) — it exists so `(workspace_id, id)` has a
+    // unique index to point at, which is what lets those FKs prove that an
+    // episode and the rows referencing it share a workspace.
+    uniqueIndex("uq_brain_episodes_workspace_id").on(t.workspaceId, t.id),
+    // Extraction drain, PARTIAL so the index holds only the backlog.
+    index("idx_brain_episodes_extraction_queue")
+      .on(t.workspaceId, t.ingestedAt)
+      .where(sql`extracted_at IS NULL`),
+    index("idx_brain_episodes_source").on(t.workspaceId, t.source, t.occurredAt),
+    // Array-overlap lookups for the fail-closed push-down predicate (#4768).
+    index("idx_brain_episodes_visible_to").using("gin", t.visibleTo),
+    // Lexical tier-3 retrieval (#4773, migration 0181).
+    index("idx_brain_episodes_fts").using("gin", t.fts),
+    // An empty string is refused outright rather than treated as absent:
+    // evidence that is '' backs a provenance claim with nothing, and
+    // "'' means absent" would leave `body='x', locator=''` legal at rest.
+    check(
+      "chk_brain_episodes_body_xor_locator",
+      sql`num_nonnulls(body, locator) = 1
+      AND coalesce(body, 'x') <> ''
+      AND coalesce(locator, 'x') <> ''`,
+    ),
+    // No-grant-no-promotion, tier-3 half. NULL/'' elements are refused too:
+    // they pass a bare cardinality test while granting access to nobody.
+    check(
+      "chk_brain_episodes_grant_nonempty",
+      sql`cardinality(array_remove(array_remove(visible_to, NULL::text), '')) > 0`,
+    ),
+  ],
+);
+
+// brain_facts — tier-2. SPO claims, bi-temporal, review-gated,
+// invalidate-never-delete.
+export const brainFacts = pgTable(
+  "brain_facts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    // SPO. Plain text: entity resolution happens at the reconcile stage
+    // (#4771), and a failed subject/object resolution flags the candidate
+    // provisional rather than blocking it — so these must hold an unresolved
+    // surface form.
+    subject: text("subject").notNull(),
+    predicate: text("predicate").notNull(),
+    object: text("object").notNull(),
+    // Bi-temporal, invalidate-never-delete. `validFrom`/`validTo` are VALID
+    // time (when the claim held in the world); `validTo` is stamped by a HUMAN
+    // promotion — there is no autonomous supersession, and staleness decay
+    // only surfaces a fact for review. `ingestedAt` is transaction time.
+    // `invalidatedAt` is the tombstone: supersession is not deletion, so
+    // "what we believed on Monday" still answers correctly. Nothing DELETEs.
+    validFrom: timestamp("valid_from", { withTimezone: true }),
+    validTo: timestamp("valid_to", { withTimezone: true }),
+    ingestedAt: timestamp("ingested_at", { withTimezone: true }).notNull().defaultNow(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    // When the extraction pass that produced this candidate ran — dates the
+    // CLAIM, distinct from the episode's queue marker of the same name, so a
+    // re-extraction is distinguishable from the original pass. NULL for
+    // human-authored facts, which are not extracted from anything.
+    extractedAt: timestamp("extracted_at", { withTimezone: true }),
+    // The evidence. NOT NULL is "no-provenance-no-promotion" made structural:
+    // every entry point onto the reconcile stage has an episode (connector
+    // record, warehouse SQL+snapshot pin, human correction, lazily
+    // materialized session episode). The FK is COMPOSITE with workspaceId (see
+    // the table extras below) so the episode must be in the same workspace,
+    // and RESTRICT so deleting evidence under a live fact fails loudly.
+    sourceEpisodeId: uuid("source_episode_id").notNull(),
+    // Actor, source pointer, and for warehouse-derived facts the PINNED SQL +
+    // data snapshot (pinned, not a live view). Forks are recorded as
+    // `derives-from` edges rather than by rewriting this.
+    provenance: jsonb("provenance").notNull(),
+    // Content-mode lifecycle — DEFAULTS to `draft`, promoted by the atomic
+    // publish endpoint. Registered with the content-mode registry in #4769.
+    // A default, not an enforcement: human corrections land authoritative
+    // immediately, and a region import preserves the source's review status
+    // rather than demoting reviewed facts back to draft.
+    status: text("status").notNull().default("draft"),
+    // Self-contained principal set, derived at ingest, evaluated read-time
+    // local. Grammar (parser in #4768):
+    //   org | role:{owner,admin,member} | user:<id> | audience:<source-derived>
+    // Per-version IMMUTABLE — a column rather than a join to a policy table,
+    // because a policy table would retroactively rewrite who could see history.
+    visibleTo: text("visible_to").array().notNull(),
+    // The supersede-vs-coexist switch M2 needs, landing now so M2 adds an
+    // engine and not a column. `single` supersedes, `multi` coexists +
+    // corroborates. Defaults to the conservative arm: coexisting is
+    // recoverable, wrongly superseding destroys a belief.
+    predicateCardinality: text("predicate_cardinality").notNull().default("multi"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // Stored generated FTS vector for the `searchBrain` tier-2 lexical read
+    // (#4773, migration 0181). Subject/object A (the entities a retrieval
+    // query is usually about), predicate B. No underscore handling: the
+    // default parser emits `_` as a blank, so a snake_case predicate already
+    // tokenizes to the same lexemes as its spaced spelling — see 0181 for why
+    // indexing it twice was actively harmful. STORED, not PG 18's bare VIRTUAL
+    // default. Expression mirrors 0181; keep the two in lockstep.
+    fts: tsvector("fts")
+      .notNull()
+      .generatedAlwaysAs(
+        sql`setweight(to_tsvector('english', coalesce(subject, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(object, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(predicate, '')), 'B')`,
+      ),
+  },
+  (t) => [
+    index("idx_brain_facts_status").on(t.workspaceId, t.status),
+    // The retrieval read (#4773) — PARTIAL on the live set, since almost every
+    // read wants current belief and tombstones would grow the index forever.
+    index("idx_brain_facts_subject")
+      .on(t.workspaceId, t.subject, t.predicate)
+      .where(sql`invalidated_at IS NULL`),
+    index("idx_brain_facts_valid_from").on(t.workspaceId, t.validFrom),
+    index("idx_brain_facts_source_episode").on(t.sourceEpisodeId),
+    index("idx_brain_facts_visible_to").using("gin", t.visibleTo),
+    // Lexical tier-2 retrieval (#4773, migration 0181).
+    index("idx_brain_facts_fts").using("gin", t.fts),
+    check("chk_brain_facts_status", sql`status IN ('draft', 'published', 'archived')`),
+    check(
+      "chk_brain_facts_predicate_cardinality",
+      sql`predicate_cardinality IN ('single', 'multi')`,
+    ),
+    // No-grant-no-promotion. The public majority carries an explicit `org` —
+    // "visible to everyone" is a stated grant, never an omission, so a
+    // forgotten grant can never read as public.
+    check(
+      "chk_brain_facts_grant_nonempty",
+      sql`cardinality(array_remove(array_remove(visible_to, NULL::text), '')) > 0`,
+    ),
+    // NOT NULL alone would admit `'{}'::jsonb` — an empty claim wearing the
+    // shape of a real one.
+    check(
+      "chk_brain_facts_provenance_nonempty",
+      sql`jsonb_typeof(provenance) = 'object' AND provenance <> '{}'::jsonb`,
+    ),
+    check(
+      "chk_brain_facts_valid_interval",
+      sql`valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from`,
+    ),
+    // Composite FK — the episode must live in the SAME workspace as the fact,
+    // so a cross-tenant claim is unrepresentable rather than merely unlikely.
+    foreignKey({
+      name: "fk_brain_facts_episode",
+      columns: [t.workspaceId, t.sourceEpisodeId],
+      foreignColumns: [brainEpisodes.workspaceId, brainEpisodes.id],
+    }).onDelete("restrict"),
+    // Referent for brain_edges' composite endpoint FKs.
+    uniqueIndex("uq_brain_facts_workspace_id").on(t.workspaceId, t.id),
+  ],
+);
+
+// brain_edges — the typed graph, enum pinned to ADR-0036's committed set.
+// Endpoints are fact-or-episode on both sides via two nullable FKs + an
+// exactly-one CHECK, rather than a polymorphic (kind, id) pair: the
+// polymorphic shape is shorter but discards referential integrity, and an edge
+// whose endpoint silently vanished is exactly the corruption a provenance
+// graph must not tolerate.
+//
+// Endpoint KINDS are constrained per type, not merely documented: an
+// episode→episode `provenance` edge would satisfy a bare exactly-one-per-side
+// rule while being meaningless, and M2's walker assumes the shapes.
+//
+// Endpoint FKs CASCADE, deliberately asymmetric with the RESTRICT on
+// `brainFacts.sourceEpisodeId`. A fact's episode is its EVIDENCE and must not
+// be deletable under a live claim; an edge is a derived assertion ABOUT facts
+// and episodes, so once an endpoint is gone it is dangling structure and
+// should vanish with it. That asymmetry also keeps the #4458 cleanup sweep
+// sound: its column phase assumes CASCADE between in-scope tables, and
+// `brain_facts` — the one exception — is handled by phase instead (a `parent`
+// rule in cleanup.ts orders its delete ahead of brain_episodes).
+export const brainEdges = pgTable(
+  "brain_edges",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    // supersedes (fact→fact, the M2 arbitration outcome) · in-tension-with
+    // (fact→fact, genuine conflict — SURFACED with both provenances, never
+    // ranked) · derives-from (fact→fact|episode, fork lineage) · provenance
+    // (fact→episode, the evidence pointer).
+    edgeType: text("edge_type").notNull(),
+    // Every committed type originates at a fact, so `fromEpisodeId` is
+    // currently always NULL. The column keeps the two sides symmetric for a
+    // future episode-rooted type; the endpoint-kinds CHECK is what stops one
+    // appearing by accident meanwhile.
+    fromFactId: uuid("from_fact_id"),
+    fromEpisodeId: uuid("from_episode_id"),
+    toFactId: uuid("to_fact_id"),
+    toEpisodeId: uuid("to_episode_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_brain_edges_from_fact")
+      .on(t.fromFactId, t.edgeType)
+      .where(sql`from_fact_id IS NOT NULL`),
+    index("idx_brain_edges_to_fact")
+      .on(t.toFactId, t.edgeType)
+      .where(sql`to_fact_id IS NOT NULL`),
+    index("idx_brain_edges_to_episode")
+      .on(t.toEpisodeId, t.edgeType)
+      .where(sql`to_episode_id IS NOT NULL`),
+    index("idx_brain_edges_workspace_type").on(t.workspaceId, t.edgeType),
+    // The four committed types. M2 extends the ENGINE, not this list.
+    check(
+      "chk_brain_edges_type",
+      sql`edge_type IN ('supersedes', 'in-tension-with', 'derives-from', 'provenance')`,
+    ),
+    check(
+      "chk_brain_edges_from_endpoint",
+      sql`num_nonnulls(from_fact_id, from_episode_id) = 1`,
+    ),
+    check("chk_brain_edges_to_endpoint", sql`num_nonnulls(to_fact_id, to_episode_id) = 1`),
+    // The per-type endpoint kinds documented above.
+    check(
+      "chk_brain_edges_endpoint_kinds",
+      sql`from_fact_id IS NOT NULL
+    AND CASE edge_type
+          WHEN 'provenance' THEN to_episode_id IS NOT NULL
+          WHEN 'derives-from' THEN TRUE
+          ELSE to_fact_id IS NOT NULL
+        END`,
+    ),
+    // Composite endpoint FKs — an edge can only join rows in its OWN
+    // workspace. Postgres's default MATCH SIMPLE skips the check when any
+    // referencing column is NULL, which is exactly right here: the unused side
+    // of each pair is simply not constrained.
+    foreignKey({
+      name: "fk_brain_edges_from_fact",
+      columns: [t.workspaceId, t.fromFactId],
+      foreignColumns: [brainFacts.workspaceId, brainFacts.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "fk_brain_edges_from_episode",
+      columns: [t.workspaceId, t.fromEpisodeId],
+      foreignColumns: [brainEpisodes.workspaceId, brainEpisodes.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "fk_brain_edges_to_fact",
+      columns: [t.workspaceId, t.toFactId],
+      foreignColumns: [brainFacts.workspaceId, brainFacts.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "fk_brain_edges_to_episode",
+      columns: [t.workspaceId, t.toEpisodeId],
+      foreignColumns: [brainEpisodes.workspaceId, brainEpisodes.id],
+    }).onDelete("cascade"),
+  ],
+);
+
+// fact_audience_member — Atlas-owned audience membership, backing the
+// `audience:<name>` arm of the grant grammar.
+//
+// ADR-0036 accepted a real cost in choosing derive-at-ingest grants: source
+// membership changes do NOT propagate to already-ingested facts. This table is
+// the escape hatch — a sensitive fact grants to an `audience:`, membership is
+// synced here, and revocation therefore flows through LIVE without re-ingest.
+//
+// Deliberately NOT Better Auth teams: Atlas has none, and "group" in this
+// codebase means a connection-group (datasources), not a set of people.
+// Populated by #4771; consumed by #4768's visibility predicate.
+export const factAudienceMember = pgTable(
+  "fact_audience_member",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    // Source-derived audience id, WITHOUT the `audience:` prefix — the prefix
+    // belongs to the grant grammar, not to the identity.
+    audienceId: text("audience_id").notNull(),
+    userId: text("user_id").notNull(),
+    // Which connector derived this membership. An audience belongs to exactly
+    // one source by construction, so this is not part of the key — it scopes a
+    // re-sync's reconciliation and answers "why can this person see that?".
+    source: text("source").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // When this membership was last VERIFIED against the source — not when the
+    // row was last touched (0182, #4808). Stamped on every successful
+    // reconcile INCLUDING the no-op case, and left alone on every abort path,
+    // so a permanently-failing roster read ages visibly instead of looking
+    // identical to one reconciled seconds ago. Read-time enforcement is in
+    // `lib/brain/acl.ts`; see the migration for why the default backfills as
+    // fresh rather than expired.
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.audienceId, t.userId] }),
+    // "Which audiences is this user in?" — the per-request principal expansion
+    // the visibility predicate performs before it can push anything down.
+    index("idx_fact_audience_member_user").on(t.workspaceId, t.userId),
+    // "Which audiences here have not been verified lately?" — the per-cycle
+    // staleness sweep behind the `brain_audience_sync` span attributes.
+    index("idx_fact_audience_member_stale").on(t.workspaceId, t.syncedAt),
   ],
 );

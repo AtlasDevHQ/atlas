@@ -71,6 +71,7 @@ describe("PublishResultSchema (#4156)", () => {
       prompts: 0,
       starterPrompts: 2,
       knowledgeDocuments: 4,
+      brainFacts: 6,
     },
     deleted: { entities: 3 },
   };
@@ -81,12 +82,19 @@ describe("PublishResultSchema (#4156)", () => {
     if (r.success) expect(r.data).toEqual(ok);
   });
 
-  test("defaults knowledgeDocuments to 0 for an older API's response (deploy overlap)", () => {
-    const { knowledgeDocuments: _kd, ...olderPromoted } = ok.promoted;
+  test("defaults newer promoted segments to 0 for an older API's response (deploy overlap)", () => {
+    // Both segments that joined after the shape shipped: knowledgeDocuments
+    // (v0.0.41) and brainFacts (#4769). An older API omits them and the CLI
+    // parse must read "promoted nothing there", never fail.
+    const { knowledgeDocuments: _kd, brainFacts: _bf, ...olderPromoted } = ok.promoted;
     const r = PublishResultSchema.safeParse({ ...ok, promoted: olderPromoted });
     expect(r.success).toBe(true);
     if (r.success) {
-      expect(r.data.promoted).toEqual({ ...olderPromoted, knowledgeDocuments: 0 });
+      expect(r.data.promoted).toEqual({
+        ...olderPromoted,
+        knowledgeDocuments: 0,
+        brainFacts: 0,
+      });
     }
   });
 

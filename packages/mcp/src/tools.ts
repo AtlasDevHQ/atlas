@@ -27,11 +27,15 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { explore } from "@atlas/api/lib/tools/explore";
 import { executeSQL } from "@atlas/api/lib/tools/sql";
+import { BRAIN_TOOL_REASONS, searchBrain } from "@atlas/api/lib/tools/search-brain";
+import { DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT } from "@atlas/api/lib/brain/search";
 import {
   EXECUTE_SQL_ERROR_CODES,
   EXPLORE_ERROR_CODES,
+  SEARCH_BRAIN_ERROR_CODES,
   withErrorContract,
 } from "@atlas/api/lib/tools/descriptions";
+import { BRAIN_RESULT_TIERS } from "@useatlas/schemas";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { getConfig } from "@atlas/api/lib/config";
 import { writeScopeDenied } from "@atlas/api/lib/mcp/dispatch-gate-contract";
@@ -330,6 +334,119 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
               { type: "text" as const, text: JSON.stringify(structured, null, 2) },
             ],
             structuredContent: structured,
+          };
+        },
+      ),
+  );
+
+  // --- searchBrain ---
+  //
+  // #4773 — ADDITIVE on this surface. Its predecessor `searchKnowledge` was
+  // only ever an agent-registry tool and was never exposed over MCP, so nothing
+  // is removed here and the frozen-tool-name rule in
+  // `shared/reference/stability.mdx` is untouched: this is a new tool, which
+  // that contract explicitly permits within `v0.x`.
+  server.registerTool(
+    "searchBrain",
+    {
+      title: "Search the Company Brain",
+      description: withErrorContract(searchBrain.description ?? "", SEARCH_BRAIN_ERROR_CODES),
+      inputSchema: {
+        query: z
+          .string()
+          .optional()
+          .describe(
+            "Free-text search across reviewed claims, raw source records, and knowledge documents. Omit to browse the most recent entries.",
+          ),
+        include: z
+          .array(z.enum(BRAIN_RESULT_TIERS))
+          .optional()
+          .describe(
+            `Restrict to specific result classes (${BRAIN_RESULT_TIERS.join(", ")}). Omit to search all three.`,
+          ),
+        type: z.string().optional().describe("Documents only: one OKF document type, e.g. 'Runbook'."),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe("Documents only: documents carrying ALL of these OKF tags."),
+        collection: z
+          .string()
+          .optional()
+          .describe("Documents only: a single knowledge collection (install slug)."),
+        since: z
+          .string()
+          .optional()
+          .describe("Documents only: ISO-8601 date; documents at or after this timestamp."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_SEARCH_LIMIT)
+          .optional()
+          .describe(`Max fused results (default ${DEFAULT_SEARCH_LIMIT}, max ${MAX_SEARCH_LIMIT}).`),
+        expand: z
+          .boolean()
+          .optional()
+          .describe("Include 1-hop linked neighbors of matched documents (default true)."),
+      },
+      // Reads the INTERNAL database only — no writes anywhere, and no reach
+      // outside this deployment, so the world is closed. Same posture as
+      // `explore`, and deliberately narrower than `executeSQL`, which does
+      // touch an external datasource.
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input): Promise<CallToolResult> =>
+      dispatch(
+        "searchBrain",
+        // Internal-DB read: no datasource, so no gate-0 billing. Member-callable
+        // and read-only, so no `mcp:write`. Per-fact ACL is enforced INSIDE the
+        // tool against the bound actor's principal set — the dispatch gate's
+        // `minRole` is workspace admission, not row visibility, and the two must
+        // not be confused for each other.
+        //
+        // `requiresBoundOrg: false` matches the sibling reads, but note the
+        // consequence, which is specific to this tool: an unbound trusted-
+        // transport actor (`system:mcp`, no `activeOrganizationId`) reaches the
+        // body and the body has no workspace to search. It answers with
+        // `unavailable: "no_workspace"` rather than a bare empty page — see the
+        // degraded-path table on `search-brain.ts` — so the caller can tell
+        // "cannot search" from "searched, found nothing".
+        { requiresWrite: false, requiresBoundOrg: false, minRole: "member" },
+        async (requestId) => {
+          const result = await searchBrain.execute!(input, {
+            toolCallId: "mcp-searchBrain",
+            messages: [],
+          });
+
+          // The tool returns `{ error, reason }` for its degraded paths rather
+          // than throwing (the AI SDK surface wants a value the agent can read).
+          // Lift that into the typed envelope here so an MCP agent branches on
+          // `code` instead of scraping the sentence — and so an identity refusal
+          // reaches it as `forbidden`, never as an empty page.
+          //
+          // Branching on `reason`, NOT on the prose: an earlier cut prefix-
+          // matched the English message across this package boundary, so a copy
+          // edit to user-facing text would have silently demoted every ACL
+          // refusal to `internal_error` with nothing catching it.
+          const obj = result as Record<string, unknown>;
+          if (typeof obj.error === "string") {
+            // `reader_unresolved` is the ACL boundary; everything else is an
+            // Atlas-side fault. `request_id` rides on BOTH — the refusal is
+            // documented as an upstream defect deserving log correlation, and
+            // dropping the id there would leave an operator with nothing to
+            // grep for the one failure this surface most wants reported.
+            const refused = obj.reason === BRAIN_TOOL_REASONS.readerUnresolved;
+            return toEnvelopeResult(
+              envelope(refused ? "forbidden" : "internal_error", obj.error, {
+                request_id: requestId,
+              }),
+            );
+          }
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
           };
         },
       ),

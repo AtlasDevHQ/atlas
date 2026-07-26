@@ -297,6 +297,45 @@ describe("cleanup scope tripwire (#4458 ↔ #4460 lockstep)", () => {
     expect(columnsOf("chat_cache")).not.toContain("org_id");
   });
 
+  it("brain_facts is parent-scoped for PHASE, not for scoping (#4767)", () => {
+    // brain_facts carries its own workspace_id, so a `column` rule would scope
+    // it correctly — and would still be a bug. `brain_facts.source_episode_id`
+    // is the one RESTRICT FK between in-scope tables, so the facts must be
+    // deleted before the column phase reaches brain_episodes or the whole
+    // sweep fails on any workspace that actually has a brain.
+    //
+    // Demoting this to `{ kind: "column", column: "workspace_id" }` currently
+    // *happens* to still work, because declaration order puts brain_facts
+    // ahead of brain_episodes in the column phase. That is an invisible,
+    // unasserted property of literal ordering — this test is what makes the
+    // decision explicit instead.
+    expect(CLEANUP_TABLE_RULES.brain_facts).toEqual({
+      kind: "parent",
+      fkColumn: "source_episode_id",
+      parentTable: "brain_episodes",
+      parentColumn: "workspace_id",
+    });
+    // Non-vacuous: the column really does exist, so the parent rule is a
+    // deliberate choice rather than the only option.
+    expect(columnsOf("brain_facts")).toContain("workspace_id");
+  });
+
+  it("every parent-scoped delete precedes its parent table's delete", () => {
+    // The general form of the rule above: a parent rule's subquery needs the
+    // parent rows to still exist, and (for RESTRICT FKs) the child rows must
+    // be gone before the parent is deleted. Either way the child statement
+    // has to come first.
+    const statements = buildCleanupStatements();
+    const indexOf = (table: string) => statements.findIndex((s) => s.table === table);
+    for (const [table, rule] of Object.entries(CLEANUP_TABLE_RULES)) {
+      if (rule.kind !== "parent") continue;
+      const parentIdx = indexOf(rule.parentTable);
+      if (parentIdx === -1) continue; // parent has no delete of its own
+      expect(indexOf(table), `${table} must be deleted before ${rule.parentTable}`)
+        .toBeLessThan(parentIdx);
+    }
+  });
+
   it("orders parent/expression-scoped deletes before the direct-column phase", () => {
     const statements = buildCleanupStatements();
     const kindOf = (table: string) => ruleFor[table]?.kind;

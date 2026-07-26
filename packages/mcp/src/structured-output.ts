@@ -257,8 +257,28 @@ export const publishDatasourcesOutputShape = {
     prompts: z.number().int().nonnegative(),
     starterPrompts: z.number().int().nonnegative(),
     knowledgeDocuments: z.number().int().nonnegative(),
+    brainFacts: z.number().int().nonnegative(),
   }),
   deleted: z.object({ entities: z.number().int().nonnegative() }),
+  /**
+   * Drafts the review gate REFUSED to promote (#4769, ADR-0036) — a
+   * company-brain fact missing provenance or a usable grant. Optional because
+   * the overwhelmingly common publish refuses nothing; PRESENT means the
+   * caller must not report an unqualified success. `detail` is written for a
+   * human and is safe to relay verbatim.
+   */
+  refusedDrafts: z
+    .array(
+      z.object({
+        id: z.string(),
+        surface: z.string(),
+        reasons: z.array(z.string()),
+        detail: z.string(),
+      }),
+    )
+    .optional(),
+  /** Uncapped refusal count — the list above is capped at 100. Count off this. */
+  refusedDraftTotal: z.number().int().nonnegative().optional(),
 } as const;
 
 /** Zod objects for validating a result against the declared output schema. */

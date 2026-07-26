@@ -46,6 +46,13 @@ const ABUSE_RESTORE_STATUSES = [
   "load_failed",
 ] as const satisfies readonly AbuseRestoreStatus[];
 export {
+  BRAIN_FACT_STATUS_FILTERS,
+  isBrainFactStatusFilter,
+  type BrainFactStatusFilter,
+  BrainFactCandidateSchema,
+  BrainFactCandidateListResponseSchema,
+  BrainFactCandidateSummarySchema,
+  BrainFactRetractResponseSchema,
   AbuseStatusSchema,
   AbuseThresholdConfigSchema,
   AbuseDetailSchema,
@@ -677,11 +684,24 @@ const KnowledgeCollectionSyncStatusSchema = z.object({
   lastSyncAt: z.string(),
   status: z.enum(["success", "error"]),
   error: z.string().nullable(),
+  /**
+   * Last sync succeeded but knowingly deferred part of its window (#4770).
+   *
+   * `.default(false)`: added in v0.2.0 — an older API omits it during an
+   * api↔web deploy-overlap window, and `useAdminFetch` THROWS on a parse
+   * failure, so a required field here would error the whole Knowledge page for
+   * every workspace with a sync row until both services land. Same rule as
+   * `skippedNonMarkdown`'s `.default(0)` below. Tighten in a later release once
+   * no deployed API can omit it.
+   */
+  coverageIncomplete: z.boolean().default(false),
+  /** Why, when `coverageIncomplete`. `.default(null)` for the same reason. */
+  coverageDetail: z.string().nullable().default(null),
 });
 
 export const KnowledgeCollectionSchema = z.object({
   slug: z.string(),
-  source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "intercom", "front", "helpscout", "freshdesk"]),
+  source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "intercom", "front", "helpscout", "freshdesk", "slack-history"]),
   description: z.string().nullable(),
   installedAt: z.string().nullable(),
   endpointUrl: z.string().nullable(),

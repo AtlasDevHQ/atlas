@@ -50,6 +50,13 @@ export interface KnowledgeDocumentCounts {
  *     Help Scout Docs API via a single Docs API key; one collection per Docs
  *     site, one document per published article).
  *
+ *   - `slack-history` — the #4770 company-brain CHAT SOURCE (ADR-0036). The one
+ *     member that does not mirror DOCUMENTS: it reads Slack channel history
+ *     into `brain_episodes` as immutable tier-3 evidence, so its collection
+ *     always reports zero documents. It is listed here because it installs and
+ *     syncs through the same knowledge-pillar spine; the brain's own review
+ *     surface is #4772.
+ *
  * Every value except `upload` is a "synced" collection: its content is owned by
  * an external source, it has last-sync bookkeeping, and it can be re-pulled with
  * "Sync now". Only `bundle-sync` additionally exposes an `endpointUrl` /
@@ -70,7 +77,8 @@ export type KnowledgeCollectionSource =
   | "intercom"
   | "front"
   | "helpscout"
-  | "freshdesk";
+  | "freshdesk"
+  | "slack-history";
 
 /**
  * Bundle-endpoint auth schemes for `bundle-sync` collections — the one wire
@@ -89,6 +97,26 @@ export interface KnowledgeCollectionSyncStatus {
   readonly status: "success" | "error";
   /** Actionable failure message when the last attempt errored. */
   readonly error: string | null;
+  /**
+   * True when the last attempt SUCCEEDED but knowingly left part of its window
+   * uncovered — a per-sync budget ran out, a sub-source was unreadable, a
+   * vendor enumeration was partial (#4770). A green row with deferred work is
+   * how a source that is achieving nothing goes unnoticed, so the deferral is
+   * reported rather than left in the state row's JSONB report.
+   */
+  readonly coverageIncomplete: boolean;
+  /**
+   * Why the last sync deferred work, when it did — the first of the engine's
+   * warnings ("channel C2 was not read this cycle", "Atlas is not a member of
+   * C3", "the Slack connection is missing the history scopes"). `null` on a
+   * clean sync.
+   *
+   * A flag with no reason is a flag an operator cannot act on: "the record
+   * budget ran out", "the bot was removed from a channel" and "Slack returned
+   * unidentifiable messages" need different fixes and would otherwise be
+   * indistinguishable.
+   */
+  readonly coverageDetail: string | null;
 }
 
 /**

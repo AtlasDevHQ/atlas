@@ -329,6 +329,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "front",
       "helpscout",
       "freshdesk",
+      "slack-history",
     ]);
   });
 
@@ -361,6 +362,7 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "front",
       "helpscout",
       "freshdesk",
+      "slack-history",
     ]);
     // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).
     const reboot = await seedBuiltinKnowledgeCatalog(captureDb(false).db);

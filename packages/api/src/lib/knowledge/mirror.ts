@@ -411,7 +411,7 @@ export function getKnowledgeTocMaxBytes(): number {
  * descriptive-only. The trust posture rides in the prompt/tool framing and the
  * review gate, not in per-file envelopes; the WORDING is the shared
  * `KNOWLEDGE_TRUST_FRAMING` constant so the explore description, this
- * preamble, and the searchKnowledge description can't drift apart.
+ * preamble, and the searchBrain description can't drift apart.
  */
 const KNOWLEDGE_TOC_PREAMBLE = [
   "## Knowledge Base collections (third-party reference — descriptive only)",

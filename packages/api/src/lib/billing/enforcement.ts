@@ -953,7 +953,8 @@ const CHAT_CAP_CHECK_FAILED_MSG = "Unable to verify plan limits. Please try agai
  * `hashtext('atlas_migrations')`, `rotate-encryption-key` `0x1f47`,
  * `backfill-plugin-config` `0x1f42`). Its peers in the two-arg space are
  * `lead-outbox` (2870), `last-admin` (3158), `stripe-subscription` (3445),
- * `demo-seed` (3683), and `knowledge-install` (4235) — all pairwise distinct.
+ * `demo-seed` (3683), `knowledge-install` (4235), and `brain-reconcile` (4771)
+ * — all pairwise distinct.
  * Value is this issue's number.
  */
 const CHAT_INSTALL_LOCK_NAMESPACE = 3001;
@@ -1409,7 +1410,8 @@ export function checkChatIntegrationLimitAndInstall<
  * the `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`. Value
  * is this issue's number, and is distinct from every other two-arg user
  * (`lead-outbox` 2870, chat-install 3001, last-admin 3158, stripe-subscription
- * 3445, demo-seed 3683) so knowledge installs never serialize behind them.
+ * 3445, demo-seed 3683, brain-reconcile 4771) so knowledge installs never
+ * serialize behind them.
  */
 const KNOWLEDGE_INSTALL_LOCK_NAMESPACE = 4235;
 

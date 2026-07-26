@@ -106,12 +106,44 @@ export type ExoticModeAdapter = {
 
 export type ContentModeEntry = SimpleModeTable | ExoticModeAdapter;
 
+/**
+ * A draft row an adapter DECLINED to promote, and why (#4769).
+ *
+ * The review gate's refusal vocabulary. A refused row is left at
+ * `status='draft'` — it is quarantined, NOT the workspace: one malformed row
+ * must never wedge a tenant's entire publish, which is what failing the shared
+ * transaction would do. It therefore stays in `draftCounts`, stays in the
+ * publish preview, and is re-offered on the next publish, so the refusal is a
+ * visible backlog rather than a silent drop.
+ *
+ * Only an exotic adapter can produce these: a simple entry's promote is one
+ * blanket UPDATE with no per-row opinion.
+ */
+export interface PromotionRefusal {
+  /** Primary key of the refused row, so an operator can go look at it. */
+  readonly rowId: string;
+  /**
+   * Machine-readable refusal codes, one per failed rule. A row can break more
+   * than one rule and an admin needs to fix all of them, so this is a list
+   * rather than a first-failure.
+   */
+  readonly reasons: readonly string[];
+  /** Human-readable, actionable explanation. Surfaced to the admin verbatim. */
+  readonly detail: string;
+}
+
 /** Result of promoting drafts for a single table. */
 export interface PromotionReport {
   readonly table: string;
   readonly promoted: number;
   readonly deleted?: number;
   readonly tombstonesApplied?: number;
+  /**
+   * Rows this adapter refused to promote. Absent (not `[]`) for adapters that
+   * cannot refuse, so "this table has no refusal concept" and "this table
+   * refused nothing today" stay distinguishable.
+   */
+  readonly refused?: readonly PromotionRefusal[];
 }
 
 /**

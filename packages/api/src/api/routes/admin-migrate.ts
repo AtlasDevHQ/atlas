@@ -11,11 +11,67 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/internal";
 import { computeNextRun } from "@atlas/api/lib/scheduled-tasks";
+import { BRAIN_EDGE_TYPES, type BrainEdgeType } from "@atlas/api/lib/brain/types";
 import type { ExportBundle, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-migrate");
+
+/**
+ * Why a grant is unacceptable, or `null` if it is fine (#4767).
+ *
+ * Deliberately mirrors `chk_brain_{facts,episodes}_grant_nonempty` EXACTLY —
+ * at least one non-NULL, non-empty principal. Not looser (an empty grant
+ * would abort the whole import transaction on the CHECK), and critically not
+ * stricter either: anything Postgres stores must remain migratable, so an
+ * importer that rejected a grant the source region legally holds would leave
+ * that workspace permanently stuck in its current region.
+ *
+ * The matched pair is THIS function ↔ 0180's `chk_*_grant_nonempty`; they must
+ * stay exactly as permissive as each other.
+ *
+ * Grammar validity (`org` vs `everyone`) is NOT checked here, and must never
+ * be added. That belongs to `lib/brain/acl.ts`'s parser (#4768), which is
+ * deliberately STRICTER than both and whose failure mode is deny+log at READ
+ * time: a malformed token matches no reader principal, so it grants nobody
+ * anything without ever making the row unimportable. Hoisting that parser to
+ * import time would reject a legally-stored `['everyone']` bundle and leave
+ * that workspace permanently stuck in its current region — a failure that
+ * surfaces at cutover, not here.
+ */
+function grantProblem(value: unknown): string | null {
+  if (!Array.isArray(value)) {
+    return "must be an array of principals (no-grant-no-promotion).";
+  }
+  const usable = value.filter((p) => typeof p === "string" && p.length > 0);
+  if (usable.length === 0) {
+    return "must contain at least one non-empty principal (no-grant-no-promotion).";
+  }
+  return null;
+}
+
+/**
+ * The first missing NOT NULL timestamp among `keys`, as an error fragment, or
+ * `null` (#4767).
+ *
+ * node-pg binds `undefined` as NULL, and an explicit NULL OVERRIDES a column
+ * default — so a producer that omitted `ingestedAt` doesn't get `now()`, it
+ * gets a 23502 that rolls back the whole import. An unparseable string is the
+ * same class of late failure (pg 22007), so it is caught here too.
+ */
+function missingTimestamps(row: Record<string, unknown>, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value !== "string" || value.length === 0) {
+      return `${key}: is required (a NOT NULL timestamp; an absent value binds as NULL and aborts the import).`;
+    }
+    if (Number.isNaN(Date.parse(value))) {
+      return `${key}: '${value}' is not a parseable timestamp (it would abort the import at INSERT time).`;
+    }
+  }
+  return null;
+}
 
 /**
  * The pre-#4460 bundle version — four sections only (conversations, semantic
@@ -212,6 +268,180 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
     }
   }
 
+  // Company brain (#4767, ADR-0036). Deliberately NOT added to the v2
+  // required-section list above: a source region still running pre-#4767 code
+  // produces a valid v2 bundle with no brain sections, and requiring them
+  // would turn every mid-rollout migration into a hard failure. Optional on
+  // the wire, imported whenever present.
+  //
+  // The shape guards below exist because the brain tables enforce their
+  // invariants with CHECK/NOT NULL constraints. A malformed bundle reaching
+  // the INSERT aborts the WHOLE import transaction with a raw pg error, after
+  // every earlier pillar has already been written; caught here it is an
+  // actionable message naming the offending array position.
+  //
+  // Note what these guards do NOT claim: a non-empty but malformed grant
+  // (`['everyone']`) is the #4768 parser's deny+log problem, not this
+  // function's. What is checked here is exactly what the DB would refuse.
+  const episodeIds = new Set<string>();
+  const factIds = new Set<string>();
+
+  if ("brainEpisodes" in obj && obj.brainEpisodes !== undefined) {
+    if (!Array.isArray(obj.brainEpisodes)) {
+      return { ok: false, error: "Invalid 'brainEpisodes' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainEpisodes.length; i++) {
+      const e = obj.brainEpisodes[i] as Record<string, unknown> | null;
+      if (!e || typeof e !== "object" || typeof e.id !== "string" || typeof e.source !== "string" || typeof e.sourceId !== "string" || !Array.isArray(e.facts)) {
+        return { ok: false, error: `brainEpisodes[${i}]: must have 'id', 'source', 'sourceId' (strings) and 'facts' (array).` };
+      }
+      // Body XOR locator — guards chk_brain_episodes_body_xor_locator. Tests
+      // presence, not `typeof === "string"`: a non-string body would read as
+      // "absent" here and still be bound at the INSERT, so the guard has to
+      // reject the wrong TYPE rather than route around it.
+      const bodyPresent = e.body !== undefined && e.body !== null;
+      const locatorPresent = e.locator !== undefined && e.locator !== null;
+      if (bodyPresent === locatorPresent) {
+        return { ok: false, error: `brainEpisodes[${i}]: must carry exactly one of 'body' or 'locator'.` };
+      }
+      if (bodyPresent && (typeof e.body !== "string" || e.body.length === 0)) {
+        return { ok: false, error: `brainEpisodes[${i}].body: must be a non-empty string.` };
+      }
+      if (locatorPresent && (typeof e.locator !== "string" || e.locator.length === 0)) {
+        return { ok: false, error: `brainEpisodes[${i}].locator: must be a non-empty string.` };
+      }
+      const grantError = grantProblem(e.visibleTo);
+      if (grantError) {
+        return { ok: false, error: `brainEpisodes[${i}].visibleTo: ${grantError}` };
+      }
+      const tsError = missingTimestamps(e, ["ingestedAt", "createdAt"]);
+      if (tsError) return { ok: false, error: `brainEpisodes[${i}].${tsError}` };
+      episodeIds.add(e.id);
+
+      for (let j = 0; j < e.facts.length; j++) {
+        const f = e.facts[j] as Record<string, unknown> | null;
+        const at = `brainEpisodes[${i}].facts[${j}]`;
+        if (!f || typeof f !== "object" || typeof f.id !== "string" || typeof f.subject !== "string" || typeof f.predicate !== "string" || typeof f.object !== "string") {
+          return { ok: false, error: `${at}: must have 'id', 'subject', 'predicate', and 'object' (strings).` };
+        }
+        if (f.status !== "draft" && f.status !== "published" && f.status !== "archived") {
+          return { ok: false, error: `${at}.status: must be 'draft', 'published', or 'archived'.` };
+        }
+        if (f.predicateCardinality !== "single" && f.predicateCardinality !== "multi") {
+          return { ok: false, error: `${at}.predicateCardinality: must be 'single' or 'multi'.` };
+        }
+        const factGrantError = grantProblem(f.visibleTo);
+        if (factGrantError) return { ok: false, error: `${at}.visibleTo: ${factGrantError}` };
+        // No-provenance-no-promotion. `{}` is rejected at rest by the table,
+        // so reject it here rather than aborting the transaction on it.
+        if (!f.provenance || typeof f.provenance !== "object" || Array.isArray(f.provenance) || Object.keys(f.provenance).length === 0) {
+          return { ok: false, error: `${at}.provenance: must be a non-empty object (no-provenance-no-promotion).` };
+        }
+        const factTsError = missingTimestamps(f, ["ingestedAt", "createdAt", "updatedAt"]);
+        if (factTsError) return { ok: false, error: `${at}.${factTsError}` };
+        // chk_brain_facts_valid_interval — a closed interval running backwards.
+        if (typeof f.validFrom === "string" && typeof f.validTo === "string" && f.validTo < f.validFrom) {
+          return { ok: false, error: `${at}: 'validTo' (${f.validTo}) precedes 'validFrom' (${f.validFrom}).` };
+        }
+        factIds.add(f.id);
+      }
+    }
+  }
+
+  if ("brainEdges" in obj && obj.brainEdges !== undefined) {
+    if (!Array.isArray(obj.brainEdges)) {
+      return { ok: false, error: "Invalid 'brainEdges' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainEdges.length; i++) {
+      const e = obj.brainEdges[i] as Record<string, unknown> | null;
+      if (!e || typeof e !== "object") {
+        return { ok: false, error: `brainEdges[${i}]: must be an object.` };
+      }
+      if (!(BRAIN_EDGE_TYPES as readonly string[]).includes(e.edgeType as string)) {
+        return { ok: false, error: `brainEdges[${i}].edgeType: must be one of ${BRAIN_EDGE_TYPES.join(", ")}.` };
+      }
+      // A wrong-TYPED endpoint must be rejected, not counted as absent: the
+      // XOR below would score `{fromFactId: "…", fromEpisodeId: 5}` as valid,
+      // and the 5 would still be bound into a uuid column at the INSERT — a
+      // 22P02 aborting the whole transaction at the last import step. Same
+      // class as the episode body guard above.
+      for (const key of ["fromFactId", "fromEpisodeId", "toFactId", "toEpisodeId"] as const) {
+        const endpoint = e[key];
+        if (endpoint !== undefined && endpoint !== null && typeof endpoint !== "string") {
+          return { ok: false, error: `brainEdges[${i}].${key}: must be a string id or absent (a non-string endpoint aborts the import at INSERT time).` };
+        }
+      }
+      // Exactly one endpoint per side — guards chk_brain_edges_{from,to}_endpoint.
+      const fromCount = Number(typeof e.fromFactId === "string") + Number(typeof e.fromEpisodeId === "string");
+      const toCount = Number(typeof e.toFactId === "string") + Number(typeof e.toEpisodeId === "string");
+      if (fromCount !== 1 || toCount !== 1) {
+        return { ok: false, error: `brainEdges[${i}]: each side must have exactly one endpoint ('fromFactId' XOR 'fromEpisodeId', 'toFactId' XOR 'toEpisodeId').` };
+      }
+      // Per-type endpoint kinds — guards chk_brain_edges_endpoint_kinds.
+      if (typeof e.fromFactId !== "string") {
+        return { ok: false, error: `brainEdges[${i}]: every committed edge type originates at a fact, so 'fromFactId' is required.` };
+      }
+      // Exhaustive on purpose: adding a fifth type to BRAIN_EDGE_TYPES and the
+      // CHECK without deciding its endpoint kind here would let the importer
+      // accept a shape Postgres refuses — a raw 23514 aborting the whole
+      // transaction, which is the failure this whole block exists to move
+      // earlier. `satisfies never` makes that a compile error instead.
+      const edgeType: BrainEdgeType = e.edgeType as BrainEdgeType;
+      switch (edgeType) {
+        case "provenance":
+          if (typeof e.toEpisodeId !== "string") {
+            return { ok: false, error: `brainEdges[${i}]: a 'provenance' edge is the evidence pointer and must point at an episode ('toEpisodeId').` };
+          }
+          break;
+        case "supersedes":
+        case "in-tension-with":
+          if (typeof e.toFactId !== "string") {
+            return { ok: false, error: `brainEdges[${i}]: a '${edgeType}' edge compares claims and must point at a fact ('toFactId').` };
+          }
+          break;
+        case "derives-from":
+          // Fork lineage — legitimately reaches either kind.
+          break;
+        default:
+          edgeType satisfies never;
+          break;
+      }
+      const edgeTsError = missingTimestamps(e, ["createdAt"]);
+      if (edgeTsError) return { ok: false, error: `brainEdges[${i}].${edgeTsError}` };
+      // Referential pre-flight. Edges import LAST, so a dangling endpoint
+      // would otherwise abort the transaction after every other pillar has
+      // been written — the most expensive possible moment to discover it.
+      //
+      // A bundle must be self-contained: the exporter always emits the whole
+      // workspace, so an endpoint the bundle doesn't carry is a malformed
+      // bundle, not a reference to target-resident state. (Gating this on
+      // "only check when we have some ids" would make rejection depend on
+      // whether an UNRELATED section happened to be non-empty.)
+      const missing = ([
+        ["fromFactId", e.fromFactId, factIds],
+        ["toFactId", e.toFactId, factIds],
+        ["toEpisodeId", e.toEpisodeId, episodeIds],
+      ] as const).find(([, id, known]) => typeof id === "string" && !known.has(id));
+      if (missing) {
+        return { ok: false, error: `brainEdges[${i}].${missing[0]}: '${String(missing[1])}' is not carried by this bundle.` };
+      }
+    }
+  }
+
+  if ("factAudienceMembers" in obj && obj.factAudienceMembers !== undefined) {
+    if (!Array.isArray(obj.factAudienceMembers)) {
+      return { ok: false, error: "Invalid 'factAudienceMembers' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.factAudienceMembers.length; i++) {
+      const m = obj.factAudienceMembers[i] as Record<string, unknown> | null;
+      if (!m || typeof m !== "object" || typeof m.audienceId !== "string" || typeof m.userId !== "string" || typeof m.source !== "string") {
+        return { ok: false, error: `factAudienceMembers[${i}]: must have 'audienceId', 'userId', and 'source' (strings).` };
+      }
+      const tsError = missingTimestamps(m, ["createdAt"]);
+      if (tsError) return { ok: false, error: `factAudienceMembers[${i}].${tsError}` };
+    }
+  }
+
   return { ok: true, bundle: obj as unknown as ExportBundle };
 }
 
@@ -228,6 +458,10 @@ const ImportResultSchema = z.object({
   knowledgeDocuments: z.object({ imported: z.number(), skipped: z.number() }),
   scheduledTasks: z.object({ imported: z.number(), skipped: z.number() }),
   agentSessionMemory: z.object({ imported: z.number(), skipped: z.number() }),
+  brainEpisodes: z.object({ imported: z.number(), skipped: z.number() }),
+  brainFacts: z.object({ imported: z.number(), skipped: z.number() }),
+  brainEdges: z.object({ imported: z.number(), skipped: z.number() }),
+  factAudienceMembers: z.object({ imported: z.number(), skipped: z.number() }),
 });
 
 const importRoute = createRoute({
@@ -266,6 +500,10 @@ const importRoute = createRoute({
                 knowledgeLinks: z.number().optional(),
                 scheduledTasks: z.number().optional(),
                 agentSessionMemory: z.number().optional(),
+                brainEpisodes: z.number().optional(),
+                brainFacts: z.number().optional(),
+                brainEdges: z.number().optional(),
+                factAudienceMembers: z.number().optional(),
               }),
             }),
             conversations: z.array(z.unknown()),
@@ -278,6 +516,12 @@ const importRoute = createRoute({
             knowledgeDocuments: z.array(z.unknown()).optional(),
             scheduledTasks: z.array(z.unknown()).optional(),
             agentSessionMemory: z.array(z.unknown()).optional(),
+            // Company brain (#4767). Same reason as above — an undeclared
+            // section is stripped by zod before the importer ever sees it,
+            // which would strand the whole brain silently.
+            brainEpisodes: z.array(z.unknown()).optional(),
+            brainEdges: z.array(z.unknown()).optional(),
+            factAudienceMembers: z.array(z.unknown()).optional(),
           }),
         },
       },
@@ -325,6 +569,10 @@ export async function importBundle(
     knowledgeDocuments: { imported: 0, skipped: 0 },
     scheduledTasks: { imported: 0, skipped: 0 },
     agentSessionMemory: { imported: 0, skipped: 0 },
+    brainEpisodes: { imported: 0, skipped: 0 },
+    brainFacts: { imported: 0, skipped: 0 },
+    brainEdges: { imported: 0, skipped: 0 },
+    factAudienceMembers: { imported: 0, skipped: 0 },
   };
 
   // --- 1. Conversations + Messages ---
@@ -692,6 +940,201 @@ export async function importBundle(
     );
 
     result.agentSessionMemory.imported++;
+  }
+
+  // --- 9. Company brain (#4767, ADR-0036) — facts ride inside their episode ---
+  // Ordering is load-bearing, and it is the reason facts are NESTED rather
+  // than a sibling array: episode → its facts → (later) edges. A fact's
+  // `source_episode_id` is NOT NULL, so writing facts before episodes would
+  // fail the FK; writing edges before both would fail theirs.
+  //
+  // Everything that makes a fact trustworthy is carried verbatim — provenance,
+  // grant, review status, all four temporal columns. Nothing is defaulted: a
+  // permissive fallback here would manufacture the very rows the table's
+  // CHECKs exist to refuse, and would do it while claiming a successful
+  // migration.
+  // bundle episode id → the id it actually resolved to in the target. Only
+  // populated on the adoption path (same source record, different uuid);
+  // empty in the ordinary case. Edges must be rewritten through this or they
+  // reference a uuid that was never inserted, and fail their endpoint FK at
+  // the very last import step.
+  const adoptedEpisodes = new Map<string, string>();
+
+  for (const episode of bundle.brainEpisodes ?? []) {
+    // Two ways the target can already know this episode, and they need
+    // different answers:
+    //   * same UUID  — a re-import of the same bundle. Skip.
+    //   * same (source, source_id) under a DIFFERENT UUID — the target's own
+    //     connector ingested the same source record, which is routine after
+    //     cutover. A bare INSERT would hit uq_brain_episodes_source_id and
+    //     abort the ENTIRE import transaction, so adopt the existing row's id
+    //     and hang this bundle's facts off it instead.
+    const existing = await client.query(
+      `SELECT id FROM brain_episodes
+        WHERE workspace_id = $1 AND (id = $2 OR (source = $3 AND source_id = $4))
+        ORDER BY (id = $2) DESC
+        LIMIT 1`,
+      [orgId, episode.id, episode.source, episode.sourceId],
+    );
+    const existingId = existing.rows[0]?.id;
+
+    // The id facts must point at — the existing row's when one was found, so a
+    // fact is never orphaned by an id the target resolved differently.
+    let episodeId = episode.id;
+
+    if (typeof existingId === "string") {
+      episodeId = existingId;
+      if (existingId !== episode.id) {
+        // ADOPTION: the target holds this source record under a different
+        // uuid. Every later reference to the bundle's id must be rewritten,
+        // because that id is never inserted here — see `adoptedEpisodes`.
+        adoptedEpisodes.set(episode.id, existingId);
+        // Adoption keeps the TARGET's episode row, so the bundle's grant,
+        // body, actor and extraction stamp are discarded. That can WIDEN
+        // visibility of raw source content (tier-3 is gated precisely because
+        // it is often more sensitive than the facts drawn from it), and the
+        // `skipped` counter reports it identically to a benign re-import — so
+        // it must not pass silently.
+        log.warn(
+          {
+            orgId,
+            bundleEpisodeId: episode.id,
+            targetEpisodeId: existingId,
+            source: episode.source,
+            sourceId: episode.sourceId,
+            bundleGrant: episode.visibleTo,
+          },
+          "Adopted an existing target episode under a different id — the bundle's episode row (body, grant, extractedAt) was discarded in favour of the target's",
+        );
+      }
+      result.brainEpisodes.skipped++;
+    } else {
+      await client.query(
+        `INSERT INTO brain_episodes (id, workspace_id, source, source_id, source_actor, body, locator, occurred_at, ingested_at, extracted_at, visible_to, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          episode.id,
+          orgId,
+          episode.source,
+          episode.sourceId,
+          episode.sourceActor ?? null,
+          episode.body ?? null,
+          episode.locator ?? null,
+          episode.occurredAt ?? null,
+          episode.ingestedAt,
+          // Preserved: re-extracting in the target would re-queue episodes a
+          // human has already reviewed.
+          episode.extractedAt ?? null,
+          episode.visibleTo,
+          episode.createdAt,
+        ],
+      );
+      result.brainEpisodes.imported++;
+    }
+
+    // Facts are deduped on their OWN key, not on their episode's. An episode
+    // is immutable but its fact set GROWS — re-extraction and human
+    // corrections add claims to an episode the target already has. Skipping
+    // facts wholesale because their episode existed would strand every such
+    // claim while reporting it as "skipped", i.e. as already present.
+    for (const fact of episode.facts) {
+      const existingFact = await client.query(
+        "SELECT id FROM brain_facts WHERE id = $1 AND workspace_id = $2",
+        [fact.id, orgId],
+      );
+
+      if (existingFact.rows.length > 0) {
+        result.brainFacts.skipped++;
+        continue;
+      }
+
+      await client.query(
+        `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from, valid_to, ingested_at, invalidated_at, extracted_at, source_episode_id, provenance, status, visible_to, predicate_cardinality, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+        [
+          fact.id,
+          orgId,
+          fact.subject,
+          fact.predicate,
+          fact.object,
+          fact.validFrom ?? null,
+          fact.validTo ?? null,
+          fact.ingestedAt,
+          fact.invalidatedAt ?? null,
+          fact.extractedAt ?? null,
+          episodeId,
+          JSON.stringify(fact.provenance),
+          fact.status,
+          fact.visibleTo,
+          fact.predicateCardinality,
+          fact.createdAt,
+          fact.updatedAt,
+        ],
+      );
+      result.brainFacts.imported++;
+    }
+  }
+
+  // Edges LAST — an endpoint can be a fact or an episode on either side, so
+  // this is the only point at which every endpoint exists. `validateBundle`
+  // has already refused edges pointing at ids the bundle doesn't carry, and
+  // any episode id the target resolved differently is rewritten below, so an
+  // FK error here means the target lost a row mid-import: genuinely
+  // exceptional, and it surfaces rather than being papered over.
+  //
+  // Episode endpoints go through the adoption map. Skipping this is not a
+  // subtle bug: the adopted bundle id is never inserted, so a `provenance`
+  // edge — the most common type, fact→episode — fails its endpoint FK and
+  // rolls back the ENTIRE import, in exactly the scenario adoption exists to
+  // rescue.
+  const resolveEpisode = (id: string | null | undefined): string | null =>
+    id == null ? null : (adoptedEpisodes.get(id) ?? id);
+
+  for (const edge of bundle.brainEdges ?? []) {
+    const endpoints = [
+      edge.fromFactId ?? null,
+      resolveEpisode(edge.fromEpisodeId),
+      edge.toFactId ?? null,
+      resolveEpisode(edge.toEpisodeId),
+    ];
+
+    const existing = await client.query(
+      `SELECT id FROM brain_edges
+        WHERE workspace_id = $1 AND edge_type = $2
+          AND from_fact_id IS NOT DISTINCT FROM $3
+          AND from_episode_id IS NOT DISTINCT FROM $4
+          AND to_fact_id IS NOT DISTINCT FROM $5
+          AND to_episode_id IS NOT DISTINCT FROM $6`,
+      [orgId, edge.edgeType, ...endpoints],
+    );
+
+    if (existing.rows.length > 0) {
+      result.brainEdges.skipped++;
+      continue;
+    }
+
+    await client.query(
+      `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, from_episode_id, to_fact_id, to_episode_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [orgId, edge.edgeType, ...endpoints, edge.createdAt],
+    );
+
+    result.brainEdges.imported++;
+  }
+
+  // Audience membership. Without it every `audience:` grant denies everyone in
+  // the target region — a total loss of access that surfaces as "the brain
+  // forgot everything" rather than as an error.
+  for (const member of bundle.factAudienceMembers ?? []) {
+    const inserted = await client.query(
+      `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source, created_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (workspace_id, audience_id, user_id) DO NOTHING`,
+      [orgId, member.audienceId, member.userId, member.source, member.createdAt],
+    );
+
+    if (inserted.rowCount === 0) result.factAudienceMembers.skipped++;
+    else result.factAudienceMembers.imported++;
   }
 
   return result;

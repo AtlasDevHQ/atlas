@@ -160,7 +160,16 @@ function isoOrNull(value: Date | string | null): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-async function readConnectorSyncState(
+/**
+ * Read one collection's connector bookkeeping.
+ *
+ * Exported because the brain episode engine (`lib/brain/ingest/episode-sync.ts`,
+ * #4770) reuses this bookkeeping VERBATIM — ADR-0036 forks the ingest core, not
+ * the engine, and a second high-water-mark store would be exactly the
+ * per-vendor duplication ADR-0030 §"Per-vendor backoff / scheduling (rejected)"
+ * exists to prevent.
+ */
+export async function readConnectorSyncState(
   workspaceId: string,
   collectionSlug: string,
 ): Promise<ConnectorSyncState> {
@@ -599,11 +608,52 @@ async function runConnectorAttempt(
   }
 }
 
+/** One attempt's bookkeeping, as {@link upsertConnectorSyncState} binds it. */
+export interface ConnectorSyncStateWrite {
+  readonly status: "success" | "error";
+  readonly error: string | null;
+  /** Persisted verbatim as the state row's JSONB `report`. */
+  readonly report: unknown;
+  /** Non-null ONLY on success — an error attempt COALESCEs the old one forward. */
+  readonly highWaterMark: string | null;
+  readonly cursor: string | null;
+  readonly reconciledAt: string | null;
+}
+
 /**
- * Upsert the per-collection connector bookkeeping row. Never throws — a
- * state-write failure must not fail a sync that already committed (logged at
- * error so a persistently broken state table is visible).
+ * Upsert one collection's bookkeeping row. Never throws — a state-write
+ * failure must not fail a sync that already committed (logged at error so a
+ * persistently broken state table is visible).
+ *
+ * Exported alongside {@link readConnectorSyncState} for the brain episode
+ * engine (#4770); see that function's comment for why the bookkeeping is
+ * shared rather than forked.
  */
+export async function upsertConnectorSyncState(
+  workspaceId: string,
+  collectionSlug: string,
+  write: ConnectorSyncStateWrite,
+): Promise<void> {
+  try {
+    await internalQuery(CONNECTOR_SYNC_STATE_UPSERT_SQL, [
+      workspaceId,
+      collectionSlug,
+      write.status,
+      write.error,
+      JSON.stringify(write.report),
+      write.highWaterMark,
+      write.cursor,
+      write.reconciledAt,
+    ]);
+  } catch (err) {
+    log.error(
+      { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
+      "Failed to record knowledge connector sync state — the sync outcome itself is unaffected",
+    );
+  }
+}
+
+/** Shape this engine's report, then hand it to the shared upsert. */
 async function recordConnectorSyncState(
   workspaceId: string,
   collectionSlug: string,
@@ -624,21 +674,12 @@ async function recordConnectorSyncState(
       : outcome.rejected.length > 0
         ? { mode: outcome.mode, rejected: outcome.rejected.slice(0, REPORT_REJECTED_CAP) }
         : { mode: outcome.mode };
-  try {
-    await internalQuery(CONNECTOR_SYNC_STATE_UPSERT_SQL, [
-      workspaceId,
-      collectionSlug,
-      outcome.status,
-      outcome.error,
-      JSON.stringify(report),
-      outcome.highWaterMark,
-      bookkeeping.cursor,
-      bookkeeping.reconciledAt,
-    ]);
-  } catch (err) {
-    log.error(
-      { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
-      "Failed to record knowledge connector sync state — the sync outcome itself is unaffected",
-    );
-  }
+  await upsertConnectorSyncState(workspaceId, collectionSlug, {
+    status: outcome.status,
+    error: outcome.error,
+    report,
+    highWaterMark: outcome.highWaterMark,
+    cursor: bookkeeping.cursor,
+    reconciledAt: bookkeeping.reconciledAt,
+  });
 }

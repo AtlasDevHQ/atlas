@@ -23,6 +23,7 @@ export {
   type ContentModeEntry,
   type SimpleModeTable,
   type ExoticModeAdapter,
+  type PromotionRefusal,
   type PromotionReport,
   ExoticReadFilterUnavailableError,
   PublishPhaseError,
@@ -32,4 +33,8 @@ export {
 
 export { CONTENT_MODE_TABLES } from "./tables";
 export type { InferDraftCounts, InferPromotedCounts } from "./infer";
-export { promotedCountsFromReports } from "./promoted";
+export {
+  collectRefusals,
+  promotedCountsFromReports,
+  type RefusalSweep,
+} from "./promoted";

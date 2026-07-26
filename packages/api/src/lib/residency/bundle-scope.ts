@@ -51,6 +51,10 @@ export const BUNDLE_TABLE_DECISIONS = {
   knowledge_links: { decision: "exported", reason: "Link graph rides inline with its source document (no re-derive step needed at import)." },
   scheduled_tasks: { decision: "exported", reason: "Task definitions move; next_run_at recomputed at import so the target scheduler re-plans. Group/plugin refs dangle until re-install." },
   agent_session_memory: { decision: "exported", reason: "Long-lived durable working memory (ADR-0020); FK resolves against the bundle's conversations." },
+  brain_episodes: { decision: "exported", reason: "Company brain tier-3 (ADR-0036) — raw evidence, UUIDs preserved so fact/edge references survive. extracted_at rides along so the target doesn't re-queue episodes a human already reviewed." },
+  brain_facts: { decision: "exported", reason: "Company brain tier-2 (ADR-0036) — the workspace's reviewed knowledge, same asset class as the KB. Provenance, grant, review status and all four temporal columns travel with the claim; a fact stripped of any of them would land unprovenanced and ungated." },
+  brain_edges: { decision: "exported", reason: "The typed provenance/conflict graph (ADR-0036). Imported last, once every fact/episode endpoint exists." },
+  fact_audience_member: { decision: "exported", reason: "Audience membership backing the `audience:` grant arm (ADR-0036). Without it every audience-granted fact denies everyone in the target — a silent total loss of access, not a visible error." },
 
   // ── Stays: caches, derived data, history, region-bound state ───────────────
   // (Deleted from the source region by the #4458 cleanup after the grace period.)

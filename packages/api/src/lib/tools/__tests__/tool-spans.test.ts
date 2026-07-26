@@ -159,7 +159,7 @@ function call(
 
 describe("toolSpanName", () => {
   it("prefixes the tool name with the atlas.* seam prefix", () => {
-    expect(toolSpanName("searchKnowledge")).toBe("atlas.tool.searchKnowledge");
+    expect(toolSpanName("searchBrain")).toBe("atlas.tool.searchBrain");
     expect(TOOL_SPAN_PREFIX).toBe("atlas.tool.");
   });
 });
@@ -259,13 +259,13 @@ describe("withToolSpans — pass-through semantics", () => {
 
 describe("withToolSpans — span lifecycle", () => {
   it("emits one atlas.tool.<name> span per call, named and attributed", async () => {
-    const wrapped = withToolSpans({ searchKnowledge: makeTool(async () => "ok") });
+    const wrapped = withToolSpans({ searchBrain: makeTool(async () => "ok") });
 
-    await call(wrapped.searchKnowledge, {}, { toolCallId: "call-7" });
+    await call(wrapped.searchBrain, {}, { toolCallId: "call-7" });
 
     expect(recorded).toHaveLength(1);
-    const span = spanFor("searchKnowledge");
-    expect(span.attributes["atlas.tool.name"]).toBe("searchKnowledge");
+    const span = spanFor("searchBrain");
+    expect(span.attributes["atlas.tool.name"]).toBe("searchBrain");
     expect(span.attributes["atlas.tool.call_id"]).toBe("call-7");
     expect(span.statusCode).toBe(SpanStatusCode.OK);
     expect(span.endCount).toBe(1);

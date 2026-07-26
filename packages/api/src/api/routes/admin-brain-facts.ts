@@ -1,0 +1,374 @@
+/**
+ * Admin fact-review routes — the human end of the company-brain wedge
+ * (#4772, ADR-0036).
+ *
+ * Mounted under `/api/v1/admin/brain-facts`. Three verbs and no fourth:
+ *
+ *   GET  /          — the review queue, paginated and filterable
+ *   GET  /summary   — queue vitals for the stats bar
+ *   POST /:id/retract — reject a candidate
+ *
+ * ## There is no approve verb here, and that is the design
+ *
+ * Approval is `/api/v1/admin/publish`. `brain_facts.status` has exactly one
+ * writer — the atomic publish endpoint's exotic content-mode adapter — and
+ * `scripts/check-brain-fact-promotion.sh` refuses every other status-writing
+ * shape in the repository. A per-fact "approve" button that stamped `published`
+ * would be a second gate writer, bypassing no-provenance-no-promotion and
+ * no-grant-no-promotion for the row it touched.
+ *
+ * So the reviewer's loop is: retract what you do not trust, then publish. What
+ * survives the queue is what gets promoted, inside the publish transaction,
+ * with the same refusals applied. The web surface says this in as many words
+ * and opens the shared publish modal — which already renders `refusedDrafts[]`
+ * with their prose `detail`, so a publish that half-worked is never reported as
+ * an unqualified success.
+ *
+ * ## Reads are per-reviewer, not per-admin
+ *
+ * Every read composes the fail-closed ACL predicate against the REVIEWER's own
+ * principal set. The audit override in `aclVisibilityClause` is deliberately
+ * NOT wired up here: it is a workspace-wide grant bypass, and a review queue
+ * that silently granted one would show an admin evidence from private channels
+ * as a matter of routine. An admin who needs that has to invoke the override
+ * through a surface that records a reason.
+ */
+
+import { Effect } from "effect";
+import { createRoute, z } from "@hono/zod-openapi";
+import { createLogger } from "@atlas/api/lib/logger";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
+import { getInternalDB } from "@atlas/api/lib/db/internal";
+import { resolveBrainReaderContext } from "@atlas/api/lib/brain/reader-context";
+import {
+  CANDIDATE_PAGE_MAX,
+  loadFactCandidateSummary,
+  loadFactCandidates,
+  retractFactCandidate,
+} from "@atlas/api/lib/brain/candidates";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import type { AtlasUser } from "@atlas/api/lib/auth/types";
+import type { AuthMode } from "@useatlas/types";
+import {
+  BRAIN_FACT_STATUS_FILTERS,
+  BrainFactCandidateListResponseSchema,
+  BrainFactCandidateSummarySchema,
+  BrainFactRetractResponseSchema,
+  isBrainFactStatusFilter,
+} from "@useatlas/schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
+import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
+
+const log = createLogger("admin-brain-facts");
+
+const DEFAULT_LIMIT = 50;
+
+/** Longest `?q=` honoured. See the call site. */
+const MAX_SEARCH_CHARS = 200;
+
+/**
+ * A fact id is a `uuid` at rest. Validated at the seam so a typo is a 400
+ * rather than a Postgres `invalid input syntax for type uuid` surfacing as a
+ * 500 — which would put ordinary client error in the same log bucket as pool
+ * exhaustion, and hand the reviewer "Failed to process request" for what is
+ * simply a bad link. Rejecting it here also cannot leak: a malformed id can
+ * never name a real fact, so a distinct answer confirms nothing.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Every response is parsed through its own wire schema before it goes out.
+ *
+ * Not ceremony, and not only about types. Hono does not validate responses, so
+ * without this the shared schema is a promise the API makes to the browser and
+ * never checks — and the browser is where it fails, as a `schema_mismatch` that
+ * blanks the whole queue with no server-side trace. Parsing here turns a
+ * MISSING or MISTYPED field into a 500 with a requestId, which is the correct
+ * place to notice that Atlas produced a response it cannot stand behind. An
+ * EXTRA field is stripped rather than refused (the envelope schemas are
+ * `z.object`), so this catches drift in one direction only.
+ *
+ * It also makes the withheld-episode / withheld-counterpart arms enforceable
+ * rather than conventional: both are `z.strictObject`, so a future producer
+ * that attached a body to a `visible: false` variant fails HERE — at the ACL
+ * boundary — instead of shipping the payload it was supposed to withhold.
+ */
+function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown): T {
+  return schema.parse(payload);
+}
+
+/**
+ * Resolve the reviewer's principal context for one request.
+ *
+ * The resolution itself lives in `lib/brain/reader-context.ts` (#4773), shared
+ * with `searchBrain`: it re-resolves the role against the workspace being read
+ * (`member.role` is per-org, #2890), and it THROWS rather than degrading when a
+ * session that carries a role cannot have it re-resolved — the silent partial
+ * ACL narrowing that would otherwise render as a smaller, entirely plausible
+ * backlog with a publish button above it. That module's header has the full
+ * reasoning; duplicating it in two route files is how the two would drift into
+ * handling it differently.
+ *
+ * All this wrapper adds is the Effect boundary: the thrown error becomes a
+ * typed failure `runEffect` maps to a 500 with a requestId.
+ */
+function reviewerContext(
+  mode: AuthMode,
+  user: AtlasUser | undefined,
+  orgId: string,
+  requestId: string,
+) {
+  return Effect.tryPromise({
+    try: () =>
+      resolveBrainReaderContext(getInternalDB(), { workspaceId: orgId, mode, user, requestId }),
+    catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const commonResponses = {
+  400: {
+    description: "Invalid request — bad filter value or no active organization",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  401: {
+    description: "Authentication required",
+    content: { "application/json": { schema: AuthErrorSchema } },
+  },
+  403: {
+    description: "Forbidden — admin role required",
+    content: { "application/json": { schema: AuthErrorSchema } },
+  },
+  404: {
+    description: "Internal database not configured",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  500: {
+    description: "Internal server error",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+};
+
+const listRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Admin — Brain Facts"],
+  summary: "List fact candidates awaiting review",
+  description:
+    "Returns a paginated page of company-brain fact candidates with everything the reconcile stage attached: the SPO claim, the provenance chain back to its episode, the derived grant, the corroboration count (distinct provenance edges), provisional-entity flags, and advisory in-tension-with hints. " +
+    "Results are gated by the reviewer's own fail-closed visibility predicate; the provenance episode is gated INDEPENDENTLY, so evidence a reviewer is not entitled to is reported as withheld rather than omitted. " +
+    "Block-class extraction failures (no provenance, no usable grant, unattributable actor, malformed claim) never appear here — they were refused upstream. Retracted facts are excluded.",
+  request: {
+    query: z.object({
+      status: z
+        .string()
+        .optional()
+        .openapi({ description: "draft (default), published, archived, or all" }),
+      provisional: z
+        .string()
+        .optional()
+        .openapi({ description: "Set to 'true' to show only provisional-entity candidates — the quality queue" }),
+      tension: z
+        .string()
+        .optional()
+        .openapi({ description: "Set to 'true' to show only candidates carrying an advisory in-tension-with edge" }),
+      q: z
+        .string()
+        .optional()
+        .openapi({ description: "Case-insensitive substring match across subject, predicate, and object" }),
+      limit: z.string().optional().openapi({ description: `Maximum results (default ${DEFAULT_LIMIT}, max ${CANDIDATE_PAGE_MAX})` }),
+      offset: z.string().optional().openapi({ description: "Pagination offset (default 0)" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated fact candidates",
+      content: { "application/json": { schema: BrainFactCandidateListResponseSchema } },
+    },
+    ...commonResponses,
+  },
+});
+
+const summaryRoute = createRoute({
+  method: "get",
+  path: "/summary",
+  tags: ["Admin — Brain Facts"],
+  summary: "Fact review queue vitals",
+  description:
+    "Counts for the review queue's stats bar, scoped to what this reviewer can see. `draftTotal` may therefore be smaller than `/api/v1/mode` draftCounts.brainFacts, which counts every draft in the workspace regardless of reader.",
+  responses: {
+    200: {
+      description: "Queue vitals",
+      content: { "application/json": { schema: BrainFactCandidateSummarySchema } },
+    },
+    ...commonResponses,
+  },
+});
+
+const retractRoute = createRoute({
+  method: "post",
+  path: "/{id}/retract",
+  tags: ["Admin — Brain Facts"],
+  summary: "Reject a fact candidate",
+  description:
+    "Rejects a candidate by stamping `invalidated_at` — the review gate's negative verb. It never writes `status`: `brain_facts.status` has exactly one writer (the atomic publish endpoint), and ADR-0036 makes withdrawal a tombstone rather than a demotion, so the claim stays readable to an as-of query while leaving the review queue, the publish preview, and draftCounts. Approval is `/api/v1/admin/publish`; there is no per-fact approve verb.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ description: "Fact id" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "The candidate was retracted",
+      content: { "application/json": { schema: BrainFactRetractResponseSchema } },
+    },
+    // Spread FIRST so the specific 404 copy below overrides the shared
+    // "internal database not configured" one rather than being overwritten
+    // by it.
+    ...commonResponses,
+    404: {
+      description:
+        "No such fact, already retracted, or not visible to this reviewer — deliberately indistinguishable, so the response cannot confirm the existence of a fact the reader may not see",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const adminBrainFacts = createAdminRouter();
+
+adminBrainFacts.use(requireOrgContext());
+
+adminBrainFacts.openapi(listRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      // `requireOrgContext` already 400s an org-less request; this keeps the
+      // read from ever running without a tenant boundary if that guard moves.
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const url = new URL(c.req.raw.url);
+      const rawStatus = url.searchParams.get("status");
+      if (rawStatus !== null && !isBrainFactStatusFilter(rawStatus)) {
+        return c.json(
+          {
+            error: "bad_request",
+            message: `Invalid status filter. Must be one of: ${BRAIN_FACT_STATUS_FILTERS.join(", ")}.`,
+          },
+          400,
+        );
+      }
+      const { limit, offset } = parsePagination(c);
+
+      const ctx = yield* reviewerContext(mode, user, orgId, requestId);
+      const page = yield* Effect.tryPromise({
+        try: () =>
+          loadFactCandidates(getInternalDB(), {
+            ctx,
+            status: rawStatus ?? "draft",
+            provisionalOnly: url.searchParams.get("provisional") === "true",
+            inTensionOnly: url.searchParams.get("tension") === "true",
+            // Bounded like every other input at this seam (`limit`, `offset`,
+            // `:id`). It reaches three ILIKE predicates; admin-authenticated,
+            // so this is uniformity rather than a live risk.
+            search: url.searchParams.get("q")?.slice(0, MAX_SEARCH_CHARS) ?? undefined,
+            limit: Math.min(limit || DEFAULT_LIMIT, CANDIDATE_PAGE_MAX),
+            offset,
+            requestId,
+          }),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      return c.json(checked(BrainFactCandidateListResponseSchema, page), 200);
+    }),
+    { label: "list brain fact candidates" },
+  );
+});
+
+adminBrainFacts.openapi(summaryRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const ctx = yield* reviewerContext(mode, user, orgId, requestId);
+      const summary = yield* Effect.tryPromise({
+        try: () => loadFactCandidateSummary(getInternalDB(), ctx, requestId),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      return c.json(checked(BrainFactCandidateSummarySchema, summary), 200);
+    }),
+    { label: "load brain fact review vitals" },
+  );
+});
+
+adminBrainFacts.openapi(retractRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const factId = c.req.param("id");
+      if (!UUID_RE.test(factId)) {
+        return c.json(
+          { error: "bad_request", message: "That is not a valid fact id.", requestId },
+          400,
+        );
+      }
+      const ctx = yield* reviewerContext(mode, user, orgId, requestId);
+
+      const retracted = yield* Effect.tryPromise({
+        try: () => retractFactCandidate(getInternalDB(), { ctx, factId, requestId }),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      if (!retracted) {
+        // One message for three causes on purpose — see the route's 404 copy.
+        log.info(
+          { workspaceId: orgId, factId, userId: user?.id, requestId },
+          "brain review: retract matched no row — absent, already retracted, or not visible to this reviewer",
+        );
+        return c.json(
+          {
+            error: "not_found",
+            message:
+              "That fact could not be retracted. It may not exist, may already be retracted, or may not be visible to you.",
+            requestId,
+          },
+          404,
+        );
+      }
+
+      // Durable record of a human trust decision. The `log.info` inside
+      // `retractFactCandidate` is operational; this is the forensic trail.
+      // `logAdminAction` is fire-and-forget by design and handles its own
+      // failures — a lost audit row must never roll back a retraction that
+      // already committed, since the caller would then retract again.
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.brainFact.retract,
+        targetType: "brainFact",
+        targetId: factId,
+        metadata: { invalidatedAt: retracted.invalidatedAt, workspaceId: orgId },
+      });
+
+      return c.json(checked(BrainFactRetractResponseSchema, retracted), 200);
+    }),
+    { label: "retract brain fact candidate" },
+  );
+});
+
+export { adminBrainFacts };

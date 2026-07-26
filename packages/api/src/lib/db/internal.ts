@@ -3211,9 +3211,10 @@ export async function setWorkspaceRegion(
  * keeps the single-arg `pg_advisory_lock(bigint)` and two-arg `(int4, int4)`
  * lock spaces fully disjoint, so this can never collide with any single-arg
  * user. The two-arg peers are the chat-install gate (`3001`), `lead-outbox`
- * (`2870`), the Stripe webhook lock (`3445`), the demo seed (`3683`), and the
- * knowledge-collection install gate (`4235`); all six namespaces are pairwise
- * distinct. Value is this guard's issue number (#3158).
+ * (`2870`), the Stripe webhook lock (`3445`), the demo seed (`3683`), the
+ * knowledge-collection install gate (`4235`), and the brain reconcile stage
+ * (`4771`); all seven namespaces are pairwise distinct. Value is this guard's
+ * issue number (#3158).
  */
 const LAST_ADMIN_LOCK_NAMESPACE = 3158;
 
@@ -3346,8 +3347,9 @@ export async function withWorkspaceAdminLock<T>(
 /**
  * Numeric namespace for the per-workspace demo-seed advisory lock — the
  * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`. Distinct
- * from the last-admin (`3158`), chat-install (`3001`), lead-outbox (`2870`) and
- * Stripe webhook (`3445`) two-arg namespaces; pairwise distinct so a demo seed
+ * from the last-admin (`3158`), chat-install (`3001`), lead-outbox (`2870`),
+ * Stripe webhook (`3445`), knowledge-install (`4235`) and brain-reconcile
+ * (`4771`) two-arg namespaces; pairwise distinct so a demo seed
  * never serializes against an unrelated guard on the same workspace. Value is
  * this guard's issue number (#3683).
  */
@@ -3427,9 +3429,10 @@ export async function withDemoSeedLock<T>(
 /**
  * Numeric namespace for the per-subscription Stripe webhook lock — the
  * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`.
- * Distinct from the last-admin (`3158`), chat-install (`3001`) and
- * lead-outbox (`2870`) two-arg namespaces. Value is this guard's issue
- * number (#3445).
+ * Distinct from the last-admin (`3158`), chat-install (`3001`), lead-outbox
+ * (`2870`), demo-seed (`3683`), knowledge-install (`4235`) and brain-reconcile
+ * (`4771`) two-arg namespaces; all seven are pairwise distinct. Value is this
+ * guard's issue number (#3445).
  */
 const STRIPE_SUBSCRIPTION_LOCK_NAMESPACE = 3445;
 

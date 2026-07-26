@@ -1648,7 +1648,16 @@ export async function applyDatasources(
  * Validate that the tool names in the config match registered tools in the
  * default registry. Throws if any tool names are unrecognized.
  *
- * @param config - The resolved configuration.
+ * Renamed tools are normalized IN PLACE first (#4773). This function is where
+ * that belongs: it is the only consumer of `config.tools` — nothing downstream
+ * filters the registry by it — so rewriting the array here changes exactly one
+ * thing, whether boot succeeds. It has to be handled at all because this
+ * function THROWS on an unknown name, which would turn a rename inside Atlas
+ * into a failed boot in a self-hoster's deployment on a patch upgrade. The
+ * accepted spelling is warned about, not silently honoured, so the operator has
+ * a reason to fix their config before the window closes.
+ *
+ * @param config - The resolved configuration. `tools` may be rewritten.
  * @param registry - The ToolRegistry to validate against. When omitted,
  *   uses the default registry from `./tools/registry`.
  * @throws {Error} When config references tool names not in the registry.
@@ -1657,7 +1666,28 @@ export async function validateToolConfig(
   config: ResolvedConfig,
   registry?: ToolRegistry,
 ): Promise<void> {
-  const toolRegistry = registry ?? (await import("./tools/registry")).defaultRegistry;
+  const { defaultRegistry, RENAMED_TOOLS } = await import("./tools/registry");
+  const toolRegistry = registry ?? defaultRegistry;
+
+  for (let i = 0; i < config.tools.length; i++) {
+    // `Object.hasOwn` rather than a bare index: `RENAMED_TOOLS` is an object
+    // literal, so a config listing `"constructor"` would otherwise reach
+    // `Object.prototype` and yield a truthy non-string.
+    const renamedTo = Object.hasOwn(RENAMED_TOOLS, config.tools[i])
+      ? RENAMED_TOOLS[config.tools[i]]
+      : undefined;
+    // Only accept the old spelling when the NEW one actually resolves — a stale
+    // rename entry pointing at a tool that no longer exists must surface as the
+    // ordinary unknown-tool error naming the available set, not as a silent
+    // substitution of one missing name for another.
+    if (renamedTo && toolRegistry.get(renamedTo)) {
+      log.warn(
+        { from: config.tools[i], to: renamedTo },
+        `Config lists the renamed tool "${config.tools[i]}"; it is now "${renamedTo}". Accepted for now — update atlas.config.ts, as the old name will stop resolving.`,
+      );
+      config.tools[i] = renamedTo;
+    }
+  }
 
   const unknownTools: string[] = [];
   for (const toolName of config.tools) {

@@ -13,9 +13,10 @@
  *
  * Scope follows the content-mode registry: connections, prompt_collections,
  * query_suggestions (starter prompts), knowledge_documents (hosted-OKF
- * drafts, ADR-0028), and semantic_entities (drafts, draft-edits, and
- * tombstoned deletes). Adding a new mode-tracked surface means widening the
- * response schema below in lockstep with `CONTENT_MODE_TABLES`.
+ * drafts, ADR-0028), brain_facts (company-brain tier-2 claims, ADR-0036), and
+ * semantic_entities (drafts, draft-edits, and tombstoned deletes). Adding a new
+ * mode-tracked surface means widening the response schema below in lockstep
+ * with `CONTENT_MODE_TABLES`.
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -68,6 +69,14 @@ const PublishPreviewSchema = z.object({
   starterPrompts: z.array(DraftRowSchema),
   /** Draft hosted-OKF knowledge documents (ADR-0028). Label = title or path. */
   knowledgeDocuments: z.array(DraftRowSchema),
+  /**
+   * Draft company-brain facts (#4769 / ADR-0036). Label = the SPO claim.
+   * Includes facts the publish endpoint will REFUSE to promote — the preview
+   * lists what publish will CONSIDER, and a refused fact is still considered
+   * (and still a draft afterwards). The refusal itself is reported by the
+   * publish response, which is where the verdict is actually reached.
+   */
+  brainFacts: z.array(DraftRowSchema),
 });
 
 export type PublishPreview = z.infer<typeof PublishPreviewSchema>;
@@ -152,6 +161,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       promptRows,
       starterPromptRows,
       knowledgeRows,
+      brainFactRows,
     ] = await Promise.all([
       internalQuery<DbRow>(
         `SELECT install_id AS id, install_id AS label, updated_at
@@ -235,6 +245,19 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
           ORDER BY updated_at DESC`,
         [orgId],
       ),
+      // Brain facts label on the SPO claim itself — a fact has no name, and
+      // "subject predicate object" is how a reviewer recognises the claim they
+      // are about to publish. Served by `idx_brain_facts_status`
+      // (workspace_id, status).
+      internalQuery<DbRow>(
+        `SELECT id::text AS id,
+                subject || ' ' || predicate || ' ' || object AS label,
+                updated_at
+           FROM brain_facts
+          WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL
+          ORDER BY updated_at DESC`,
+        [orgId],
+      ),
     ]);
 
     const response: PublishPreview = {
@@ -270,6 +293,11 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
         updatedAt: toIso(r.updated_at),
       })),
       knowledgeDocuments: knowledgeRows.map((r) => ({
+        id: r.id,
+        label: r.label,
+        updatedAt: toIso(r.updated_at),
+      })),
+      brainFacts: brainFactRows.map((r) => ({
         id: r.id,
         label: r.label,
         updatedAt: toIso(r.updated_at),

@@ -2,6 +2,7 @@ import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { useState } from "react";
 import { render, cleanup, screen } from "@testing-library/react";
 import type { KnowledgeCollection, KnowledgeCollectionListResponse } from "@/ui/lib/types";
+import { KnowledgeCollectionSchema } from "@/ui/lib/admin-schemas";
 
 // --- Mocks (declared before importing the page so it binds to them) --------
 
@@ -54,7 +55,7 @@ function syncedCollection(partial: Partial<KnowledgeCollection> = {}): Knowledge
     slug: "synced-docs",
     source: "bundle-sync",
     endpointUrl: "https://kb.example.com/bundle.tar.gz",
-    sync: { lastSyncAt: "2026-07-02T01:00:00.000Z", status: "success", error: null },
+    sync: { lastSyncAt: "2026-07-02T01:00:00.000Z", status: "success", error: null, coverageIncomplete: false, coverageDetail: null },
     ...partial,
   });
 }
@@ -66,7 +67,7 @@ function connectorCollection(partial: Partial<KnowledgeCollection> = {}): Knowle
     // Connectors carry no bundle endpoint / auth scheme.
     endpointUrl: null,
     authScheme: null,
-    sync: { lastSyncAt: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+    sync: { lastSyncAt: "2026-07-02T02:00:00.000Z", status: "success", error: null, coverageIncomplete: false, coverageDetail: null },
     ...partial,
   });
 }
@@ -135,6 +136,7 @@ describe("KnowledgePage", () => {
               lastSyncAt: "2026-07-02T01:00:00.000Z",
               status: "error",
               error: 'Bundle endpoint "kb.example.com" responded HTTP 403',
+              coverageIncomplete: false, coverageDetail: null,
             },
           }),
         ],
@@ -158,7 +160,7 @@ describe("KnowledgePage", () => {
       data: {
         collections: [
           connectorCollection({
-            sync: { lastSyncAt: "2026-07-02T02:00:00.000Z", status: "success", error: null },
+            sync: { lastSyncAt: "2026-07-02T02:00:00.000Z", status: "success", error: null, coverageIncomplete: false, coverageDetail: null },
           }),
         ],
       },
@@ -187,7 +189,7 @@ describe("describeSync", () => {
     expect(
       describeSync(
         syncedCollection({
-          sync: { lastSyncAt: "2026-07-02T01:00:00.000Z", status: "error", error: "boom" },
+          sync: { lastSyncAt: "2026-07-02T01:00:00.000Z", status: "error", error: "boom", coverageIncomplete: false, coverageDetail: null },
         }),
       ),
     ).toBe("sync-failed");
@@ -195,5 +197,78 @@ describe("describeSync", () => {
   test("classifies connector collections too (#4377)", () => {
     expect(describeSync(connectorCollection())).toBe("synced");
     expect(describeSync(connectorCollection({ sync: null }))).toBe("never-synced");
+  });
+});
+
+describe("a partially-covered sync is visibly different from a clean one (#4770)", () => {
+  test("describeSync distinguishes deferred work from a clean success", () => {
+    // The whole point of the API-side coverage plumbing. Collapsing this to
+    // "synced" makes a source quietly achieving nothing — a channel the bot was
+    // removed from, a budget that never clears — indistinguishable from one
+    // that is working, which is how a broken ingest goes unnoticed for weeks.
+    const clean = syncedCollection({
+      sync: {
+        lastSyncAt: "2026-07-02T02:00:00.000Z",
+        status: "success",
+        error: null,
+        coverageIncomplete: false, coverageDetail: null,
+      },
+    });
+    const partial = syncedCollection({
+      sync: {
+        lastSyncAt: "2026-07-02T02:00:00.000Z",
+        status: "success",
+        error: null,
+        coverageIncomplete: true,
+        coverageDetail: "Channel C2 was not read this cycle — the per-sync record budget (250) was reached first. It resumes next cycle.",
+      },
+    });
+    expect(describeSync(clean)).toBe("synced");
+    expect(describeSync(partial)).toBe("partially-synced");
+  });
+
+  test("the card renders the partial state rather than a plain green tick", () => {
+    fetchState = {
+      data: {
+        collections: [
+          syncedCollection({
+            sync: {
+              lastSyncAt: "2026-07-02T02:00:00.000Z",
+              status: "success",
+              error: null,
+              coverageIncomplete: true,
+        coverageDetail: "Channel C2 was not read this cycle — the per-sync record budget (250) was reached first. It resumes next cycle.",
+            },
+          }),
+        ],
+      },
+      loading: false,
+      error: null,
+    };
+    render(<KnowledgePage />);
+    expect(screen.getByText(/Partially synced/)).toBeDefined();
+  });
+});
+
+describe("the collection schema tolerates an older API (#4770)", () => {
+  test("a sync object without coverageIncomplete parses, defaulting to false", () => {
+    // `useAdminFetch` THROWS on a parse failure, so a required field here would
+    // error the whole Knowledge page for every workspace with a sync row during
+    // an api↔web deploy-overlap window.
+    const parsed = KnowledgeCollectionSchema.parse({
+      slug: "docs",
+      source: "bundle-sync",
+      description: null,
+      installedAt: null,
+      endpointUrl: null,
+      authScheme: null,
+      sync: {
+        lastSyncAt: "2026-07-02T02:00:00.000Z",
+        status: "success",
+        error: null,
+      },
+      documents: { draft: 0, published: 0, archived: 0 },
+    });
+    expect(parsed.sync?.coverageIncomplete).toBe(false);
   });
 });

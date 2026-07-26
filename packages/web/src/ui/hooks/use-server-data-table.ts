@@ -139,7 +139,7 @@ export interface ServerDataTableBinding<TData> {
   sortDesc?: boolean;
 }
 
-export interface UseServerDataTableResult<TData>
+export interface UseServerDataTableResult<TData, TResponse = unknown>
   extends ServerDataTableBinding<TData> {
   /**
    * The `useDataTable` instance — pass to `ServerDataTable`, and read here for
@@ -156,6 +156,17 @@ export interface UseServerDataTableResult<TData>
   loading: boolean;
   /** Fetch error (list-load failures), or null. */
   error: FetchError | null;
+  /**
+   * The whole response, for the envelope fields `select` drops — validated when
+   * the caller passed a `schema`, otherwise as-fetched.
+   *
+   * `select` narrows to rows + total because that is all the table needs — but
+   * a list endpoint may carry page-level facts the page must render, e.g. the
+   * brain review queue's `tensionsTruncated`, where silently dropping the flag
+   * would let a truncated page read as complete. `null` until the first
+   * successful fetch.
+   */
+  data: TResponse | null;
   /** Re-run the current fetch. */
   refetch: () => void;
 }
@@ -163,9 +174,26 @@ export interface UseServerDataTableResult<TData>
 /** Stable empty-rows reference so an unresolved fetch doesn't churn the table. */
 const EMPTY_ROWS: never[] = [];
 
+/**
+ * Two overloads, so `data`'s type can never outrun its validation.
+ *
+ * `UnvalidatedServerDataTableOptions` deliberately forces `select: (response:
+ * unknown) => …` to keep a "typed but never validated" config from compiling.
+ * Exposing `data: TResponse` on a single signature would have reopened exactly
+ * that: `useServerDataTable<Row, MyResponse>({ … })` with no `schema` would
+ * hand back `MyResponse | null` derived from unparsed JSON. The unvalidated arm
+ * returns `unknown` instead, so a caller who wants a typed envelope has to pass
+ * a schema.
+ */
+export function useServerDataTable<TData, TResponse>(
+  opts: ValidatedServerDataTableOptions<TData, TResponse>,
+): UseServerDataTableResult<TData, TResponse>;
+export function useServerDataTable<TData>(
+  opts: UnvalidatedServerDataTableOptions<TData>,
+): UseServerDataTableResult<TData, unknown>;
 export function useServerDataTable<TData, TResponse = unknown>(
   opts: UseServerDataTableOptions<TData, TResponse>,
-): UseServerDataTableResult<TData> {
+): UseServerDataTableResult<TData, TResponse> {
   const { columns, defaultPerPage, defaultSorting } = opts;
 
   // Derive the sortable-id set from the columns — the same set `useDataTable`
@@ -255,6 +283,7 @@ export function useServerDataTable<TData, TResponse = unknown>(
     rows,
     total,
     pageCount,
+    data: fetchState.data,
     loading: fetchState.loading,
     error: fetchState.error,
     refetch: fetchState.refetch,

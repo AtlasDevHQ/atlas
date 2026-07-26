@@ -304,13 +304,23 @@ export function describeArchive(collection: KnowledgeCollection): string {
  * Classify a synced collection's footer state (the card renders the actual
  * line): `null` for upload collections, `"never-synced"` before the first
  * attempt, else the last attempt's outcome. Exported for tests.
+ *
+ * `"partially-synced"` (#4770) is a SUCCESS that knowingly deferred part of its
+ * window — a per-sync budget that ran out, a chat channel the bot was removed
+ * from, a vendor enumeration that came back partial. It is distinguished from
+ * `"synced"` because a source quietly achieving nothing and a source working
+ * correctly must not render the same; that indistinguishability is how a
+ * broken ingest goes unnoticed for weeks.
  */
-export function describeSync(collection: KnowledgeCollection): "synced" | "sync-failed" | "never-synced" | null {
+export function describeSync(
+  collection: KnowledgeCollection,
+): "synced" | "partially-synced" | "sync-failed" | "never-synced" | null {
   // Every non-upload source is synced (endpoint or connector) and carries
   // last-sync bookkeeping; only upload collections have no sync footer.
   if (collection.source === "upload") return null;
   if (!collection.sync) return "never-synced";
-  return collection.sync.status === "success" ? "synced" : "sync-failed";
+  if (collection.sync.status !== "success") return "sync-failed";
+  return collection.sync.coverageIncomplete ? "partially-synced" : "synced";
 }
 
 function CollectionCard({
@@ -367,6 +377,18 @@ function CollectionCard({
             <>
               Synced <RelativeTimestamp iso={collection.sync.lastSyncAt} />
             </>
+          ) : syncState === "partially-synced" && collection.sync ? (
+            // Amber, not green and not red: the attempt succeeded, but it left
+            // work undone and will keep doing so until someone looks.
+            <span
+              className="text-amber-600 dark:text-amber-500"
+              title={
+                collection.sync.coverageDetail ??
+                "The last sync succeeded but did not cover its whole window."
+              }
+            >
+              Partially synced <RelativeTimestamp iso={collection.sync.lastSyncAt} />
+            </span>
           ) : syncState === "sync-failed" && collection.sync ? (
             <span
               className="text-destructive"

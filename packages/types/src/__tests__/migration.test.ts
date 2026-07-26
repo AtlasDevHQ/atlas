@@ -182,11 +182,17 @@ describe("migration types", () => {
       knowledgeDocuments: { imported: 6, skipped: 1 },
       scheduledTasks: { imported: 1, skipped: 0 },
       agentSessionMemory: { imported: 3, skipped: 0 },
+      brainEpisodes: { imported: 4, skipped: 1 },
+      brainFacts: { imported: 8, skipped: 2 },
+      brainEdges: { imported: 5, skipped: 0 },
+      factAudienceMembers: { imported: 3, skipped: 1 },
     };
 
     expect(result.conversations.imported + result.conversations.skipped).toBe(7);
     expect(result.dashboards.imported).toBe(2);
     expect(result.knowledgeDocuments.skipped).toBe(1);
+    expect(result.brainFacts.imported).toBe(8);
+    expect(result.factAudienceMembers.skipped).toBe(1);
   });
 
   it("ExportManifest includes optional apiUrl", () => {

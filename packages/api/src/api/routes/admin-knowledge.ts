@@ -63,6 +63,9 @@ import { CONFLUENCE_DC_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/co
 import { GITBOOK_CATALOG_ID } from "@atlas/api/lib/knowledge/gitbook/config";
 import { ZENDESK_CATALOG_ID } from "@atlas/api/lib/knowledge/zendesk/config";
 import { SALESFORCE_KNOWLEDGE_CATALOG_ID } from "@atlas/api/lib/knowledge/salesforce/config";
+import { SLACK_HISTORY_CATALOG_ID } from "@atlas/api/lib/brain/ingest/slack/config";
+import { getBrainSourceConnector } from "@atlas/api/lib/brain/ingest/types";
+import { syncBrainEpisodeSource } from "@atlas/api/lib/brain/ingest/episode-sync";
 import { INTERCOM_CATALOG_ID } from "@atlas/api/lib/knowledge/intercom/config";
 import { FRONT_CATALOG_ID } from "@atlas/api/lib/knowledge/front/config";
 import { HELPSCOUT_CATALOG_ID } from "@atlas/api/lib/knowledge/helpscout/config";
@@ -140,6 +143,7 @@ function sourceOf(catalogId: string): KnowledgeSource {
   if (catalogId === FRONT_CATALOG_ID) return "front";
   if (catalogId === HELPSCOUT_CATALOG_ID) return "helpscout";
   if (catalogId === FRESHDESK_CATALOG_ID) return "freshdesk";
+  if (catalogId === SLACK_HISTORY_CATALOG_ID) return "slack-history";
   return "unknown";
 }
 
@@ -156,7 +160,11 @@ function isSyncedSource(source: KnowledgeSource): boolean {
     source === "intercom" ||
     source === "front" ||
     source === "helpscout" ||
-    source === "freshdesk"
+    source === "freshdesk" ||
+    // #4770: a brain source has no documents, but it DOES have sync
+    // bookkeeping in the same `knowledge_sync_state` row, so the list's sync
+    // column and "Sync now" apply to it unchanged.
+    source === "slack-history"
   );
 }
 
@@ -171,13 +179,24 @@ const CollectionSyncStatusSchema = z.object({
   lastSyncAt: z.string(),
   status: z.enum(["success", "error"]),
   error: z.string().nullable(),
+  /**
+   * True when the last sync SUCCEEDED but knowingly left part of its window
+   * uncovered — a per-cycle budget ran out, a channel was unreadable, a vendor
+   * enumeration was partial. Both CONNECTOR engines persist this in the state
+   * row's JSONB `report` (bundle-sync has no coverage concept and reads as
+   * `false`); carrying it on the wire is what lets a caller tell a clean sync
+   * from one that is quietly achieving nothing.
+   */
+  coverageIncomplete: z.boolean(),
+  /** Why, when `coverageIncomplete` — the first of the engine's warnings. */
+  coverageDetail: z.string().nullable(),
 });
 
 const CollectionListResponseSchema = z.object({
   collections: z.array(
     z.object({
       slug: z.string(),
-      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "intercom", "front", "helpscout", "freshdesk"]),
+      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "intercom", "front", "helpscout", "freshdesk", "slack-history"]),
       description: z.string().nullable(),
       installedAt: z.string().nullable(),
       endpointUrl: z.string().nullable(),
@@ -444,11 +463,26 @@ adminKnowledge.openapi(listRoute, async (c) =>
         countsQuery.text,
         countsQuery.params,
       ),
-      internalQuery<{ collection_id: string; last_sync_at: string; status: string; error: string | null }>(
+      internalQuery<{
+        collection_id: string;
+        last_sync_at: string;
+        status: string;
+        error: string | null;
+        coverage_incomplete: boolean | null;
+        coverage_detail: string | null;
+      }>(
         `SELECT collection_id,
                 to_char(last_sync_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_sync_at,
                 status,
-                error
+                error,
+                -- Compared IN JSON SPACE rather than cast to boolean. The
+                -- report column is free-form JSONB written by more than one
+                -- engine, and a ->>'k'::boolean cast raises on any value
+                -- outside Postgres's boolean vocabulary, faulting the ENTIRE
+                -- collection list for the workspace off one malformed row with
+                -- no per-row isolation. This degrades to false instead.
+                (report -> 'coverageIncomplete') = 'true'::jsonb AS coverage_incomplete,
+                report -> 'warnings' ->> 0                        AS coverage_detail
            FROM knowledge_sync_state
           WHERE workspace_id = $1`,
         [orgId],
@@ -466,11 +500,24 @@ adminKnowledge.openapi(listRoute, async (c) =>
 
     const syncBySlug = new Map<
       string,
-      { lastSyncAt: string; status: "success" | "error"; error: string | null }
+      {
+        lastSyncAt: string;
+        status: "success" | "error";
+        error: string | null;
+        coverageIncomplete: boolean;
+        coverageDetail: string | null;
+      }
     >();
     for (const row of syncStates) {
       syncBySlug.set(row.collection_id, {
         lastSyncAt: row.last_sync_at,
+        // Three cases read as `false`, and it is the honest answer for all
+        // three: a report predating this field, an error attempt (whose report
+        // carries no coverage field), and a bundle-sync row (that engine has
+        // no partial-coverage concept). "No evidence of deferred work" —
+        // never "we checked and there is none".
+        coverageIncomplete: row.coverage_incomplete === true,
+        coverageDetail: row.coverage_detail,
         // The table CHECK pins success|error; if something unexpected slips
         // through, fail toward "error" — never report a sync healthy on a
         // value we don't recognize.
@@ -833,6 +880,7 @@ adminKnowledge.openapi(syncRoute, async (c) =>
     // schema's inferred (mutable) shape; the module-level producer-drift guard
     // keeps it assignable to `KnowledgeSyncRunResponse`.
     let wire: z.infer<typeof SyncRunResponseSchema>;
+    const brainSource = getBrainSourceConnector(collection.catalog_id);
     if (source === "bundle-sync") {
       const outcome = await syncCollection({
         workspaceId: orgId,
@@ -849,6 +897,33 @@ adminKnowledge.openapi(syncRoute, async (c) =>
         archivedAbsent: outcome.archivedAbsent,
         linksWritten: outcome.linksWritten,
         rejected: [...outcome.rejected],
+      };
+    } else if (brainSource !== undefined) {
+      // A brain SOURCE (#4770): same install spine and same sync bookkeeping,
+      // different ingest target — so "Sync now" has to route to the episode
+      // engine. Without this arm the knowledge-connector lookup below misses
+      // (brain sources register in their own registry), and a perfectly
+      // healthy install answers 500 "contact your operator".
+      const outcome = await syncBrainEpisodeSource({
+        connector: brainSource,
+        workspaceId: orgId,
+        installId: collectionSlug,
+        config: collection.config,
+      });
+      wire = {
+        collection: outcome.installId,
+        status: outcome.status,
+        syncedAt: outcome.syncedAt,
+        error: outcome.error,
+        format: null,
+        // A brain source writes episodes, not knowledge documents. The
+        // document counters stay null rather than reporting episode counts in
+        // a field the UI labels "documents" — the episode report lives in the
+        // sync state row until #4772 gives the brain its own surface.
+        documents: null,
+        archivedAbsent: null,
+        linksWritten: null,
+        rejected: [],
       };
     } else {
       const connector = getKnowledgeSyncConnector(collection.catalog_id);

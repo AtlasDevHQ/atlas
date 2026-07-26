@@ -237,7 +237,16 @@ describe("runMigrations", () => {
     //   Plus 0179 (drop conversations.notebook_state — notebook retirement
     //   phase 2 of the two-phase drop, readers/writers removed by #4587 in
     //   v0.0.47, ADR-0035, #4588) = 180.
-    expect(count).toBe(180);
+    //   Plus 0180 (brain substrate — brain_episodes / brain_facts /
+    //   brain_edges / fact_audience_member, the first net-new company-brain
+    //   code, ADR-0036, #4767) = 181.
+    //   Plus 0181 (brain_facts.fts / brain_episodes.fts stored generated
+    //   tsvectors + GIN indexes for the `searchBrain` lexical tier, ADR-0036,
+    //   #4773) = 182.
+    //   Plus 0182 (fact_audience_member.synced_at + its staleness index — the
+    //   "last VERIFIED" clock that bounds how long a permanently-failing
+    //   roster read can keep granting access, #4808) = 183.
+    expect(count).toBe(183);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -446,6 +455,9 @@ describe("runMigrations", () => {
         "0177_backups_scheduled_window.sql",
         "0178_region_migrations_source_cleaned_at.sql",
         "0179_drop_conversations_notebook_state.sql",
+        "0180_brain_substrate.sql",
+        "0181_brain_fts.sql",
+        "0182_audience_member_synced_at.sql",
       ],
     });
 

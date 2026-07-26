@@ -16,6 +16,56 @@ export interface Post {
 
 export const POSTS: Post[] = [
   {
+    slug: "the-process-is-the-region",
+    title: "Yours, anywhere: the process is the region",
+    description:
+      "Self-hosted Atlas is free and your data never leaves. On Atlas Cloud, residency is enforced by topology rather than by a filter: each region is its own deployment holding no route to any other, so a cross-region query is unexpressible rather than blocked. Plus the carve-out I couldn't engineer away.",
+    isoDate: "2026-07-31",
+    dateLabel: "July 31, 2026",
+    readingTime: "5 min read",
+    tag: "How it works",
+  },
+  {
+    slug: "a-strangers-agent",
+    title: "Hand a stranger's agent your data",
+    description:
+      "An AI client I've never seen can discover Atlas, provision itself a workspace, and be querying inside a minute with no human in the loop. Here's the model that makes that defensible: two endpoints, one tool versus sixteen, and the same validation pipeline a person gets.",
+    isoDate: "2026-07-30",
+    dateLabel: "July 30, 2026",
+    readingTime: "6 min read",
+    tag: "How it works",
+  },
+  {
+    slug: "the-live-security-pass",
+    title: "A security pass against the running product",
+    description:
+      "The last blocker before launch was an adversarial pass aimed at a deployed system rather than a source tree. It found an egress guard that validated hostnames while the request used the resolved address, and a containment claim on my own security page that didn't match how the sandbox actually works.",
+    isoDate: "2026-07-29",
+    dateLabel: "July 29, 2026",
+    readingTime: "6 min read",
+    tag: "How it works",
+  },
+  {
+    slug: "grounded-in-your-context",
+    title: "Grounded in your context",
+    description:
+      "Ask two tools what revenue was last quarter and you can get two different numbers. Atlas reads your definitions first: a YAML semantic layer you author, a Knowledge Base mirroring your own docs through ten vendor connectors, and the query patterns it keeps as people approve them.",
+    isoDate: "2026-07-28",
+    dateLabel: "July 28, 2026",
+    readingTime: "6 min read",
+    tag: "How it works",
+  },
+  {
+    slug: "atlas-is-public",
+    title: "Atlas is public",
+    description:
+      "The AI data analyst you can run anywhere is live. Plain-English answers over SQL warehouses and REST APIs, governed by a semantic layer you author, on infrastructure you control. Here's the whole surface, and what each day this week goes deep on.",
+    isoDate: "2026-07-27",
+    dateLabel: "July 27, 2026",
+    readingTime: "5 min read",
+    tag: "Road to launch",
+  },
+  {
     slug: "the-last-mile",
     title: "The last mile",
     description:

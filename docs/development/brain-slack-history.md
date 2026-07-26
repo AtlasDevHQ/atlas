@@ -294,8 +294,17 @@ contractors, anyone without an Atlas account); the per-cycle log breaks it into
 no-email / outside-verified-domain / no-Atlas-account, because those three need
 three different operator actions.
 
-**Installing.** Admin → Integrations → *Company Brain (Slack history)*. It
-collects channel IDs and no secret: the connector reuses the workspace's
+**Installing.** Admin → **Knowledge Base → New collection** →
+*Company Brain (Slack history)* — **not** Admin → Integrations, which buckets
+only the `chat` and `action` pillars (`catalog-section.tsx`; `datasource` is
+dropped explicitly and `knowledge` falls through both branches), so no
+knowledge-pillar row ever renders there. The picker is data-driven from
+`/api/v1/integrations/catalog?pillar=knowledge`; this source is pinned last in
+`KNOWLEDGE_DISPLAY_ORDER` and its tile shows the full catalog name, because
+`shortConnectorLabel` only strips a `Knowledge Base (…)` prefix and this row is
+a `Company Brain (…)`.
+
+It collects channel IDs and no secret: the connector reuses the workspace's
 existing Slack OAuth install (`chat_cache`), exactly as `salesforce-knowledge`
 reuses the Salesforce one (ADR-0030 amendment #4397).
 

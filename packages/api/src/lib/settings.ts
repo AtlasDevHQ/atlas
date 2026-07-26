@@ -1814,6 +1814,28 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+  {
+    // Cadence of the malformed-grant sweep (#4797). DAILY by default, and the
+    // gap from the audience sync's 30 minutes is the point: a malformed grant
+    // is a PERMANENT data defect, so the sweep re-reports the same rows every
+    // cycle forever. The count on the span is a gauge and wants that; the log
+    // line is the fix list and does not. Cadence is what keeps the second one
+    // a digest rather than noise — see `lib/brain/grant-sweep.ts`'s header.
+    //
+    // Platform-scoped: this observes a data-integrity defect in the operator's
+    // deployment, and a workspace admin turning down the rate at which their
+    // own broken rows get reported is the self-serving direction.
+    key: "ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS",
+    section: "Knowledge Base",
+    label: "Company Brain Grant Sweep Interval",
+    description:
+      "How often Atlas scans company-brain facts and episodes for access grants that name nobody, in hours (default 24). Such rows are invisible to every reader and to the review queue, and nothing repairs them automatically — the sweep only counts and logs them, and never rejects or changes anything. Applies at restart; non-positive or unparseable values fall back to the default, values below 0.05 hours (3 minutes) are clamped up, and values above ~596 hours are clamped down to the maximum timer delay.",
+    type: "number",
+    default: "24",
+    envVar: "ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS",
+    scope: "platform",
+    saasVisible: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------

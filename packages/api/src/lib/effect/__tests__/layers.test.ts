@@ -474,6 +474,11 @@ describe("makeSchedulerLive", () => {
         // its extraction sibling this is gated ON by default: it grants no
         // model budget, and off would leave private-channel facts invisible.
         "brain_audience_sync",
+        // #4797 — company-brain malformed-grant sweep (ADR-0036). Gated on the
+        // internal DB alone: it is an integrity observer, not a feature, and a
+        // flag would let a deployment opt out of hearing that its rows are
+        // invisible.
+        "brain_grant_sweep",
       ],
     },
   ] as const;

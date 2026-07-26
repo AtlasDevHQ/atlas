@@ -45,14 +45,22 @@
  * `principalTokens` guards its `user:`/`audience:` arms. It also means the
  * parser can be permissive without being unsafe.
  *
- * Stored-side anomalies are logged only where a caller invokes
+ * Stored-side anomalies are logged at read time only where a caller invokes
  * `logGrantAnomalies` on rows it already holds — see that function's comment
  * for why that is the only honest read-time seam a push-down predicate leaves
- * open. NOTE THE RESIDUAL GAP: a grant that is ENTIRELY malformed
- * (`['everyone']`) is correctly invisible and is logged by nobody, because no
- * reader ever holds the row. Closing that needs a write-time or sweep-time
- * observer (#4771's deriver, or a `registerPeriodicFiber` scan) and is
- * deliberately out of this slice — tracked on #4797.
+ * open. It cannot reach the grant that is ENTIRELY malformed (`['everyone']`,
+ * `['role:bogus']`): that row is correctly invisible to every reader, so no
+ * caller ever holds it, so no read-time seam can log it.
+ *
+ * That half is observed by `lib/brain/grant-sweep.ts` (#4797) — the
+ * `brain_grant_sweep` periodic fiber, which scans both gated tables through
+ * THIS module's `parseGrant` and reports a count on its span plus a bounded
+ * warn line naming the rows. The count is a FLOOR, not a proof of absence: the
+ * scan is capped per cycle and a failed table degrades it, both of which the
+ * result reports. It is a SWEEP and not a write-time hook because a
+ * region-migration import bundle carries grants `grantProblem` legally admits
+ * on a route the ingest-time deriver does not own. It observes only: it adds no
+ * write-side rejection, and must not acquire one (see below).
  *
  * ## The one thing that must never become stricter
  *

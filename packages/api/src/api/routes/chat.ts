@@ -850,8 +850,9 @@ chat.openapi(chatRoute, async (c) => {
         // --- Serviceability gate (#4826) ---
         // Two different questions, depending on tenancy:
         //
-        //  - UNBOUND (self-hosted single-tenant): the process-level
-        //    `ATLAS_DATASOURCE_URL` is the only thing that can serve a turn —
+        //  - UNBOUND (no bound workspace — normally self-hosted single-tenant):
+        //    the process-level `ATLAS_DATASOURCE_URL` is the only thing that
+        //    can serve a turn —
         //    knowledge collections and brain facts are both workspace-scoped and
         //    unreachable without an org. The env-level checks are exactly right.
         //

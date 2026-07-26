@@ -10,24 +10,28 @@
  *
  * A workspace is servable when it has **any** of the three agent-facing
  * pillars:
- *   - `datasource` — a registered analytics datasource (or, for a self-hosted
- *     single-tenant deployment, a process-level `ATLAS_DATASOURCE_URL`)
+ *   - `datasource` — a registered analytics datasource, or a process-level
+ *     `ATLAS_DATASOURCE_URL` (which counts for every workspace probed — see the
+ *     note in `probeWorkspaceCapabilities`, not just single-tenant deployments)
  *   - `knowledge`  — at least one installed Knowledge Base collection (ADR-0028)
- *   - `brain`      — at least one brain fact or episode (ADR-0036)
+ *   - `brain`      — at least one brain episode, and so at least one fact
+ *     (ADR-0036)
  *
  * **This is not an authorization boundary.** The probe returns booleans about
- * *configuration*, never content, and deliberately ignores `visible_to` ACL
- * grants and draft/published content mode — per-user reach is enforced inside
- * `searchBrain` and the SQL pipeline, which is where it belongs. Widening this
- * probe to consider ACLs would leak nothing but would turn a cheap gate into a
- * per-user query for no benefit; narrowing the gate on ACLs would let a reach
- * miss masquerade as "this workspace is empty".
+ * *existence*, never the content itself, and deliberately ignores `visible_to`
+ * ACL grants and draft/published content mode — per-user reach is enforced
+ * inside `searchBrain` and the SQL pipeline, which is where it belongs. Widening
+ * this probe to consider ACLs would leak nothing but would turn a cheap gate
+ * into a per-user query for no benefit; narrowing the gate on ACLs would let a
+ * reach miss masquerade as "this workspace is empty".
  *
  * One consequence of ignoring content mode: a workspace whose only install is a
  * `draft` datasource or collection passes the gate, then meets an agent that in
  * published mode sees nothing — the "agent flailed" outcome the gate exists to
- * prevent. Accepted, because narrowing on mode would instead refuse the turn for
- * an admin who is mid-setup in developer mode, which is worse.
+ * prevent. Threading the request's `atlasMode` through would fix it and is the
+ * escape hatch if this ever bites; it was not worth the extra parameter for a
+ * gate that is an affordance, and narrowing on mode would refuse the turn for an
+ * admin who is mid-setup in developer mode.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -41,47 +45,65 @@ import type { DiagnosticCode, DiagnosticError } from "@atlas/api/lib/startup";
 const log = createLogger("workspace-capability");
 
 /**
- * Diagnostics that report the **absence** of the process-level analytics
- * datasource, or of the on-disk semantic layer generated from it.
+ * Every diagnostic scoped to the **process-level** analytics datasource — the
+ * `ATLAS_DATASOURCE_URL` connection and the base-root semantic layer generated
+ * from it (`checkDatasourceUrlPresence`, `checkSemanticLayerPresence`,
+ * `checkDatasourceConnectivity` in `lib/startup.ts`).
  *
- * A bound workspace resolves its whitelist per tenant from the DB
- * (`resolveAllowedTables` never widens to disk), and gets its datasource from
- * `workspace_plugins` — so neither absence describes anything it depends on.
- * Reporting them anyway is how a knowledge-only or brain-only deployment got
- * told to "set ATLAS_DATASOURCE_URL": every deployment with an internal
- * `DATABASE_URL` and no analytics URL raises `MISSING_DATASOURCE_URL` (see
- * `checkDatasourceUrlPresence` in `lib/startup.ts`), which is the steady state
- * for the very deployments this filter unblocks (#4826).
- *
- * **Absence only — never ill health.** `DB_UNREACHABLE` and `INVALID_SCHEMA`
- * are deliberately NOT here. `validateEnvironment` runs
- * `checkDatasourceConnectivity` only when a process datasource URL actually
- * resolved, and when one has, `probeWorkspaceCapabilities` counts it as this
- * workspace's `datasource` capability — so those two diagnostics describe a
- * connection a bound workspace may genuinely be about to use. Filtering them
- * would trade an actionable "your analytics DB is unreachable" 400 for a turn
- * that burns tokens and dies inside the agent loop.
- *
- * Everything else — provider keys, internal DB reachability, auth
- * prerequisites, action credentials — blocks chat for *every* tenancy shape and
- * is likewise still reported.
+ * Membership says only "this describes the process datasource". Whether it is
+ * *relevant* is a separate question, answered per request — see
+ * `diagnosticsForBoundWorkspace`.
  */
 export const PROCESS_DATASOURCE_DIAGNOSTICS: ReadonlySet<DiagnosticCode> = new Set<DiagnosticCode>([
   "MISSING_DATASOURCE_URL",
   "MISSING_SEMANTIC_LAYER",
+  "DB_UNREACHABLE",
+  "INVALID_SCHEMA",
 ]);
 
 /**
- * Drop the process-level analytics-datasource *absence* diagnostics, keeping
- * every diagnostic that still describes something a bound workspace depends on.
+ * Report a bound workspace only the diagnostics that describe something it
+ * actually depends on.
  *
- * For workspace-bound requests only; an unbound (self-hosted single-tenant)
- * request has nothing *but* the process-level datasource, so it must keep
- * seeing the full set.
+ * **One rule: the process datasource is relevant exactly when it exists.**
+ * `probeWorkspaceCapabilities` counts a resolved `ATLAS_DATASOURCE_URL` as this
+ * workspace's `datasource` pillar, so when one is configured every diagnostic
+ * about it — unreachable, bad schema, missing semantic layer — describes a
+ * connection this turn may genuinely be about to use, and must still block.
+ * When none is configured, the workspace is served entirely from the DB
+ * (`resolveAllowedTables` never widens to disk; the datasource comes from
+ * `workspace_plugins`) and none of them describe anything it depends on.
+ *
+ * That single condition is what unblocks #4826: a knowledge-only or brain-only
+ * deployment sets `DATABASE_URL` and no analytics URL, which raises
+ * `MISSING_DATASOURCE_URL` permanently and used to 400 every chat turn.
+ *
+ * Deriving the behaviour from one predicate rather than hand-classifying each
+ * code is deliberate. The earlier revision curated an "absence-shaped" subset,
+ * which was wrong: `MISSING_SEMANTIC_LAYER` also carries a read-failure variant
+ * ("Could not read semantic layer directory … check file permissions"), so an
+ * EACCES on the semantic root would have been swallowed for a self-hosted
+ * workspace that genuinely reads that directory.
+ *
+ * Note the condition is self-enforcing for the two connectivity codes:
+ * `validateEnvironment` runs `checkDatasourceConnectivity` only when a URL
+ * resolved, so `DB_UNREACHABLE` / `INVALID_SCHEMA` can only be emitted in the
+ * state where this function keeps them. Likewise `MISSING_DATASOURCE_URL` is
+ * emitted only when the URL is absent — the state where it is dropped.
+ *
+ * Everything outside the set — provider keys, internal DB reachability, auth
+ * prerequisites, action credentials — blocks chat for *every* tenancy shape and
+ * is never filtered.
+ *
+ * For workspace-bound requests only; an unbound request has nothing *but* the
+ * process-level datasource, so it must keep seeing the full set.
  */
 export function diagnosticsForBoundWorkspace(
   diagnostics: readonly DiagnosticError[],
 ): DiagnosticError[] {
+  const processDatasourceInPlay = Boolean(resolveDatasourceUrl());
+  if (processDatasourceInPlay) return [...diagnostics];
+
   const kept: DiagnosticError[] = [];
   const dropped: DiagnosticCode[] = [];
   for (const d of diagnostics) {
@@ -122,13 +144,12 @@ interface CapabilityRow extends Record<string, unknown> {
 }
 
 /**
- * One round-trip against the internal DB. Each `EXISTS` is scoped by a
- * leading-`workspace_id` index (`idx_workspace_plugins_status`,
- * `idx_brain_facts_status`, `idx_brain_episodes_source`), so each is a bounded
- * index probe rather than a table scan — cheap enough for the chat hot path,
- * which already awaits the billing gate and the migration write-lock. (`pillar`
- * is carried by no index, so it is a heap-side recheck; fine at the row counts
- * a single workspace's install list reaches.)
+ * One round-trip against the internal DB. Every predicate leads with
+ * `workspace_id`, and each table carries at least one leading-`workspace_id`
+ * index, so no `EXISTS` degenerates into a table scan — cheap enough for the
+ * chat hot path, which already awaits the billing gate and the migration
+ * write-lock. (`pillar`, and the `<>` on `status`, are filters rather than index
+ * bounds; fine at the row counts one workspace's install list reaches.)
  *
  * Deliberately uncached: a cache would make the first minute after a user
  * connects their first datasource — the exact onboarding moment this gate is
@@ -144,13 +165,15 @@ export const CAPABILITY_SQL = `
       SELECT 1 FROM workspace_plugins
        WHERE workspace_id = $1 AND pillar = 'knowledge' AND status <> 'archived'
     ) AS has_knowledge,
-    (
-      EXISTS (SELECT 1 FROM brain_facts WHERE workspace_id = $1 AND status <> 'archived')
-      -- brain_episodes carries no status column (tier 3 is append-only and not
-      -- content-mode managed), so there is nothing to exclude here. Do not
-      -- "fix" the asymmetry — adding a status predicate is a runtime error.
-      OR EXISTS (SELECT 1 FROM brain_episodes WHERE workspace_id = $1)
-    ) AS has_brain
+    -- Episodes alone decide the brain pillar, and that is not an oversight:
+    -- brain_facts.source_episode_id is NOT NULL with a COMPOSITE foreign key on
+    -- (workspace_id, source_episode_id), so a fact cannot exist without an
+    -- episode in the same workspace. An additional EXISTS over brain_facts
+    -- could never change the answer — it would just be a second index probe on
+    -- the hot path. (brain_episodes also carries no status column: tier 3 is
+    -- append-only and not content-mode managed, so there is nothing to exclude.
+    -- Adding a status predicate here is a runtime error, not a tidy-up.)
+    EXISTS (SELECT 1 FROM brain_episodes WHERE workspace_id = $1) AS has_brain
 `;
 
 /**
@@ -201,9 +224,15 @@ export async function probeWorkspaceCapabilities(workspaceId: string): Promise<C
   }
 
   // `=== true` rather than truthiness: `EXISTS` is NULL-free and node-pg parses
-  // OID 16 to a JS boolean, so this is the honest read of the contract. If a
-  // driver ever handed back `"t"`, an explicit compare fails safe toward
-  // "no capability" only in combination with the fail-open branches above.
+  // OID 16 to a JS boolean, so this is the honest read of the contract.
+  //
+  // Be clear about the failure direction, because it is NOT covered by the
+  // fail-open branches above: a driver that ever returned the strings `"t"`/
+  // `"f"` would produce no throw, a non-empty row, and three `false` flags —
+  // a `resolved` empty set, refusing EVERY bound workspace fleet-wide. That is
+  // precisely the #4826 bug it would recreate, which is why
+  // `workspace-capability-pg.test.ts` pins `typeof === "boolean"` against a
+  // real driver rather than trusting this comment.
   if (row.has_datasource === true) capabilities.add("datasource");
   if (row.has_knowledge === true) capabilities.add("knowledge");
   if (row.has_brain === true) capabilities.add("brain");

@@ -10,10 +10,11 @@
  * spelling, or that `EXISTS` comes back as a JS boolean rather than `"t"`.
  *
  * That gap matters more here than usual because **every SQL fault in this probe
- * is silent**: a throw lands in the `catch`, returns `{ kind: "unknown" }`, and
- * fails OPEN. A column rename would not raise an alarm or fail a mocked test —
- * the gate would simply stop firing, and the empty-workspace refusal this issue
- * added would quietly stop existing while the whole suite stayed green.
+ * is silent to callers and to the mocked suite**: a throw lands in the `catch`,
+ * is logged, and returns `{ kind: "unknown" }`, which fails OPEN. A column
+ * rename would fail no mocked test — the gate would simply stop firing, and the
+ * empty-workspace refusal this issue added would quietly stop existing while the
+ * whole suite stayed green.
  *
  * The claims that need a live database:
  *
@@ -27,9 +28,10 @@
  *      still reports all-false.
  *   4. **Does `status <> 'archived'` actually exclude?** The negative — an
  *      archived-only install must NOT count as a capability.
- *   5. **Do episodes alone satisfy the brain pillar?** `brain_episodes` has no
- *      `status` column, so the two halves of `has_brain` are asymmetric by
- *      necessity; both need to work.
+ *   5. **Is `has_brain` right to consult only `brain_episodes`?** The probe
+ *      deliberately omits `brain_facts`, on the premise that the composite FK
+ *      makes an episode mandatory for every fact. That premise is a schema
+ *      claim, so it is asserted here rather than assumed.
  *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
@@ -52,7 +54,11 @@ interface CapabilityRow {
 }
 
 describeIfPg("CAPABILITY_SQL against real Postgres", () => {
-  const schemaName = `wscap_${Date.now()}`;
+  // Entropy beyond the timestamp, matching the other `-pg` suites: a collision
+  // here is destructive rather than flaky, since `afterAll` DROPs the schema
+  // CASCADE and this repo routinely runs concurrent `-pg` suites from several
+  // worktrees against one local Postgres.
+  const schemaName = `wscap_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   let pool: Pool;
 
   beforeAll(async () => {
@@ -137,8 +143,11 @@ describeIfPg("CAPABILITY_SQL against real Postgres", () => {
     const row = await probe("ws-cap-empty");
 
     expect(row).toEqual({ has_datasource: false, has_knowledge: false, has_brain: false });
-    // Not `toBeTruthy`/`toBeFalsy`: the production code compares `=== true`, so
-    // a driver handing back "f" would break it while a truthiness check passed.
+    // Not `toBeTruthy`/`toBeFalsy`: production compares `=== true`, so a driver
+    // returning the strings "t"/"f" would silently under-report every capability
+    // and refuse every bound workspace — while a truthiness assertion stayed
+    // green, since "f" is truthy. Pinning `typeof` catches the type, not the
+    // value, which is the thing that can actually drift.
     expect(typeof row.has_datasource).toBe("boolean");
   });
 
@@ -175,12 +184,22 @@ describeIfPg("CAPABILITY_SQL against real Postgres", () => {
     });
   });
 
-  it("reports brain for a workspace with a published fact", async () => {
+  it("reports brain for a workspace with facts — via the FK that makes an episode mandatory", async () => {
+    // `has_brain` deliberately tests only `brain_episodes`. This asserts the
+    // premise that makes that safe: a fact CANNOT exist without an episode in
+    // the same workspace, because `brain_facts.source_episode_id` is NOT NULL
+    // with a composite FK on (workspace_id, source_episode_id). If that FK were
+    // ever relaxed, a facts-only workspace would become possible and the probe
+    // would start under-reporting — so pin the constraint, not just the result.
     const episodeId = await seedEpisode("ws-cap-fact", "msg-2");
     await seedFact("ws-cap-fact", episodeId);
 
-    const row = await probe("ws-cap-fact");
-    expect(row.has_brain).toBe(true);
+    expect((await probe("ws-cap-fact")).has_brain).toBe(true);
+
+    // The negative: a fact referencing an episode from ANOTHER workspace must be
+    // rejected outright, which is what forecloses the facts-without-episodes case.
+    const foreignEpisodeId = await seedEpisode("ws-cap-fact-other", "msg-2b");
+    await expect(seedFact("ws-cap-fact", foreignEpisodeId)).rejects.toThrow();
   });
 
   it("does NOT count an archived-only install", async () => {

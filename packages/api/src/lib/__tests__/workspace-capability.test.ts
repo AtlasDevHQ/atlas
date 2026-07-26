@@ -236,10 +236,13 @@ describe("probeWorkspaceCapabilities — org scoping", () => {
 
     // Every table the probe touches must be workspace-scoped — an unscoped
     // EXISTS would let one tenant's data unlock another tenant's chat.
-    for (const table of ["workspace_plugins", "brain_facts", "brain_episodes"]) {
+    // (`brain_facts` is deliberately absent: the composite FK makes an episode
+    // mandatory for every fact, so the episodes EXISTS already subsumes it.)
+    for (const table of ["workspace_plugins", "brain_episodes"]) {
       const clause = new RegExp(`FROM ${table}\\s+WHERE workspace_id = \\$1`);
       expect(sql).toMatch(clause);
     }
+    expect(sql).not.toMatch(/FROM brain_facts/);
   });
 
   it("excludes archived installs from the datasource and knowledge pillars", async () => {
@@ -273,18 +276,36 @@ describe("diagnosticsForBoundWorkspace", () => {
     expect(filtered).toEqual([]);
   });
 
-  it("KEEPS the connectivity diagnostics — they describe a datasource the workspace may actually use", async () => {
-    // The over-filter risk. `validateEnvironment` runs the connectivity checks
-    // ONLY when a process datasource URL resolved, and when one has,
-    // `probeWorkspaceCapabilities` counts it as this workspace's datasource.
-    // Filtering these would trade an actionable "your analytics DB is
-    // unreachable" 400 for a turn that burns tokens and dies in the agent loop.
+  it("KEEPS everything once a process datasource is configured — it is then THIS workspace's datasource", async () => {
+    // The over-filter risk, and the one rule the whole function turns on.
+    // `validateEnvironment` runs the connectivity checks ONLY when a datasource
+    // URL resolved, and when one has, `probeWorkspaceCapabilities` counts it as
+    // this workspace's `datasource` pillar. Filtering then would trade an
+    // actionable "your analytics DB is unreachable" 400 for a turn that burns
+    // tokens and dies inside the agent loop.
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://u:p@localhost:5432/analytics";
+
     const unreachable = { code: "DB_UNREACHABLE", message: "Cannot connect to the analytics database." } as const;
     const badSchema = { code: "INVALID_SCHEMA", message: "Schema mismatch." } as const;
+    const noSemantic = { code: "MISSING_SEMANTIC_LAYER", message: "No semantic layer found." } as const;
 
-    const filtered = diagnosticsForBoundWorkspace([unreachable, badSchema]);
+    const filtered = diagnosticsForBoundWorkspace([unreachable, badSchema, noSemantic]);
 
-    expect(filtered).toEqual([unreachable, badSchema]);
+    expect(filtered).toEqual([unreachable, badSchema, noSemantic]);
+  });
+
+  it("keeps MISSING_SEMANTIC_LAYER's read-failure variant for a workspace that reads that directory", async () => {
+    // Why the rule is a predicate rather than a curated "absence-shaped" list:
+    // MISSING_SEMANTIC_LAYER doubles as an EACCES report, so blanket-dropping it
+    // would swallow a real filesystem fault for a self-hosted workspace whose
+    // datasource — and therefore whose on-disk entities — genuinely exist.
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://u:p@localhost:5432/analytics";
+    const eacces = {
+      code: "MISSING_SEMANTIC_LAYER",
+      message: "Could not read semantic layer directory: EACCES. Check file permissions.",
+    } as const;
+
+    expect(diagnosticsForBoundWorkspace([eacces])).toEqual([eacces]);
   });
 
   it("KEEPS diagnostics that block chat for every tenancy shape", async () => {
@@ -312,11 +333,14 @@ describe("diagnosticsForBoundWorkspace", () => {
     expect(filtered).toEqual([apiKey]);
   });
 
-  it("filters ABSENCE diagnostics only — the set must never grow to swallow a real blocker", () => {
-    // Both members report that something is NOT CONFIGURED, which is genuinely
-    // inapplicable to a bound workspace. Anything reporting ill HEALTH belongs
-    // outside this set; adding one here is how the #4826 bug class returns.
+  it("scopes the set to the process datasource — it must never grow to swallow a universal blocker", () => {
+    // Membership means "describes the process datasource", nothing more; the
+    // relevance question is the `resolveDatasourceUrl()` predicate above. Adding
+    // a code that blocks EVERY tenancy shape (a provider key, the internal DB)
+    // is how the #4826 bug class returns.
     expect([...PROCESS_DATASOURCE_DIAGNOSTICS].sort()).toEqual([
+      "DB_UNREACHABLE",
+      "INVALID_SCHEMA",
       "MISSING_DATASOURCE_URL",
       "MISSING_SEMANTIC_LAYER",
     ]);

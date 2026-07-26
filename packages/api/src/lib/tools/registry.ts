@@ -229,10 +229,12 @@ Use the createDashboard tool when the user wants a dashboard, not just a single 
  * (`dashboardUrlResolver`) and by *process env* (`querySalesforce`,
  * `executePython`), both resolvable synchronously with no I/O. A per-workspace
  * surface is different in kind — it would mean threading a workspace id through
- * `buildRegistry` and paying a DB probe on every turn to decide the tool list,
- * and it would make `defaultRegistry` / `nonDashboardRegistry` (the two frozen
- * module-load singletons) unrepresentative of what the agent actually sees.
- * That is a registry refactor, not a release fix.
+ * the builders and paying a DB probe on every turn to decide the tool list. It
+ * would also strand the common path: chat only calls `buildRegistry` when
+ * `ATLAS_ACTIONS_ENABLED=true`, and otherwise uses the frozen module-load
+ * `defaultRegistry` / `nonDashboardRegistry` singletons directly, which cannot
+ * express a per-workspace answer at all. That is a registry refactor, not a
+ * release fix.
  */
 function registerCoreTools(
   registry: ToolRegistry,

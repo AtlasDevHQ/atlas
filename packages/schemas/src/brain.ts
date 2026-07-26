@@ -296,46 +296,105 @@ type _BrainOversightPoliciesCovered = [
 const _brainOversightPoliciesCovered: _BrainOversightPoliciesCovered = true;
 void _brainOversightPoliciesCovered;
 
+/** The five state counters, spelled once — mirrors the type's own `extends`. */
+const OVERSIGHT_COUNTER_FIELDS = {
+  awaitingReview: z.number().int().nonnegative(),
+  published: z.number().int().nonnegative(),
+  retracted: z.number().int().nonnegative(),
+  provisional: z.number().int().nonnegative(),
+  inTension: z.number().int().nonnegative(),
+} as const;
+
+export const BrainFactOversightTotalsSchema = z.strictObject({
+  ...OVERSIGHT_COUNTER_FIELDS,
+}) satisfies z.ZodType<BrainFactOversightTotals, unknown>;
+
 /**
- * `z.strictObject`, and that is the enforcement rather than a convention.
+ * A DISCRIMINATED UNION on `labelPolicy`, and that is the enforcement rather
+ * than a convention — exactly the treatment {@link BrainFactEpisodeViewSchema}
+ * gets, for exactly the same reason.
  *
- * This is the surface whose whole contract is COUNTS AND NO CONTENT. The
- * envelope schemas elsewhere in this file are `z.object`, which STRIPS an extra
- * key — so a future producer that helpfully attached `subject` to a bucket
- * would ship a response that quietly dropped it in one direction and, the day
- * somebody widened the type, carried it. Strict makes that a 500 at the route's
- * `checked()` call — i.e. it fails AT the confidentiality boundary, loudly,
- * instead of at whichever consumer noticed first.
+ * This is the surface whose whole contract is COUNTS AND NO CONTENT, and the
+ * `discovered` arm is an ACL boundary: it is `z.strictObject` with NO `label`
+ * key, so a producer that attached the withheld channel id fails HERE — at the
+ * boundary, in both directions, since the route runs every response through
+ * `checked()` and the browser parses it again on arrival. The first cut typed
+ * this as a flat `label: string | null`, under which
+ * `{ kind: "user", labelPolicy: "configured", label: "user:usr_abc" }`
+ * type-checked, parsed, and rendered.
  *
- * `label` is `string | null` and is the ONE free-text field here. It carries a
- * grant token (`org`, `audience:chat-channel:slack:C0…`) and never a claim: the
- * producer nulls it whenever the label policy is `discovered`. The
+ * Both arms are strict, so an extra key is REFUSED rather than stripped. The
+ * envelope schemas elsewhere in this file are `z.object`, which strips — that
+ * would ship a response quietly dropping an attached `subject` in one direction
+ * and carrying it the day somebody widened the type.
+ *
+ * `key` and `label` are the TWO free-text fields, and on the disclosable arms
+ * they carry the same value — the grant token (`org`,
+ * `audience:chat-channel:slack:C0…`). On the withheld arm `label` is gone and
+ * `key` is a positional handle (`discovered-1`). Saying "label is the only one"
+ * would send an auditor to check one field and miss the one that stays a plain
+ * string in both arms. Everything else here is a number or a closed enum. The
  * no-content property is pinned by test, because a schema cannot tell a channel
  * id from a sentence.
  */
-export const BrainFactOversightBucketSchema = z.strictObject({
-  key: z.string(),
-  kind: z.enum(BRAIN_FACT_OVERSIGHT_BUCKET_KINDS),
-  label: z.string().nullable(),
-  labelPolicy: z.enum(BRAIN_FACT_OVERSIGHT_LABEL_POLICIES),
-  awaitingReview: z.number().int().nonnegative(),
-  published: z.number().int().nonnegative(),
-  retracted: z.number().int().nonnegative(),
-  provisional: z.number().int().nonnegative(),
-  inTension: z.number().int().nonnegative(),
-}) satisfies z.ZodType<BrainFactOversightBucket, unknown>;
+export const BrainFactOversightBucketSchema = z.discriminatedUnion("labelPolicy", [
+  z.strictObject({
+    labelPolicy: z.literal("intrinsic"),
+    key: z.string(),
+    kind: z.enum(BRAIN_FACT_OVERSIGHT_BUCKET_KINDS),
+    label: z.string(),
+    ...OVERSIGHT_COUNTER_FIELDS,
+  }),
+  z.strictObject({
+    labelPolicy: z.literal("configured"),
+    key: z.string(),
+    kind: z.enum(BRAIN_FACT_OVERSIGHT_BUCKET_KINDS),
+    label: z.string(),
+    ...OVERSIGHT_COUNTER_FIELDS,
+  }),
+  z.strictObject({
+    labelPolicy: z.literal("discovered"),
+    key: z.string(),
+    kind: z.enum(BRAIN_FACT_OVERSIGHT_BUCKET_KINDS),
+    ...OVERSIGHT_COUNTER_FIELDS,
+  }),
+]) satisfies z.ZodType<BrainFactOversightBucket, unknown>;
 
-export const BrainFactOversightTotalsSchema = z.strictObject({
-  awaitingReview: z.number().int().nonnegative(),
-  published: z.number().int().nonnegative(),
-  retracted: z.number().int().nonnegative(),
-  provisional: z.number().int().nonnegative(),
-  inTension: z.number().int().nonnegative(),
-}) satisfies z.ZodType<BrainFactOversightTotals, unknown>;
-
+/**
+ * The strict server-side contract. `admin-brain-facts.ts` parses every response
+ * through this before it goes out, so a producer that broke the no-content rule
+ * gets a 500 with a requestId instead of shipping.
+ */
 export const BrainFactOversightSchema = z.strictObject({
   buckets: z.array(BrainFactOversightBucketSchema),
   workspaceTotals: BrainFactOversightTotalsSchema,
   reviewableAwaitingReview: z.number().int().nonnegative(),
+  countsConsistent: z.boolean(),
+  distinctAudiences: z.number().int().nonnegative(),
+  bucketsTruncated: z.boolean(),
+}) satisfies z.ZodType<BrainFactOversight, unknown>;
+
+/**
+ * The BROWSER's parser. Same fields, additive-tolerant at the envelope.
+ *
+ * Strict is right on the server, where a violation must be a 500. On the client
+ * it would turn any ADDITIVE API field into a total panel failure during an
+ * api/web deploy skew — and the thing that disappears is the hidden-backlog
+ * alert itself, so failing closed for confidentiality would mean failing OPEN
+ * for the disclosure. `useAdminFetch` hard-throws `schema_mismatch` on a parse
+ * failure, so this is not theoretical.
+ *
+ * The BUCKETS stay strict. A bucket arm is the ACL boundary, and a browser that
+ * passed an unexpected `subject` through to the DOM is the leak; an admin
+ * losing the breakdown during a deploy window is not. Different failure costs,
+ * different postures — the same reason `publish-modal.tsx` types
+ * `brainFactsWithheld` optional.
+ */
+export const BrainFactOversightClientSchema = z.object({
+  buckets: z.array(BrainFactOversightBucketSchema),
+  workspaceTotals: BrainFactOversightTotalsSchema,
+  reviewableAwaitingReview: z.number().int().nonnegative(),
+  countsConsistent: z.boolean(),
+  distinctAudiences: z.number().int().nonnegative(),
   bucketsTruncated: z.boolean(),
 }) satisfies z.ZodType<BrainFactOversight, unknown>;

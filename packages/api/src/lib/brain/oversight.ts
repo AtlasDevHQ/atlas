@@ -33,18 +33,30 @@
  * would destroy the surface: the reader's own subset is what
  * `/admin/brain-facts/summary` already reports, and a view that agreed with it
  * would say "your queue is your workspace" — which is exactly the false
- * all-clear an admin currently gets. The unscoped count IS the escape hatch
- * ADR-0036 admits. It is safe because a count cannot be read back into a claim:
+ * all-clear an admin currently gets.
+ *
+ * Be precise about the authority for that, because the tempting shorthand is
+ * wrong. ADR-0036 admits exactly ONE bypass: a reason-gated, owner/admin-only,
+ * logged audit override over CONTENT, implemented in `aclVisibilityClause` and
+ * region-scoped. This is not that, and deliberately does not use it — there is
+ * no `AclAuditOverride` here, no reason, no audit row. It is a narrower thing
+ * decided in #4825: an unscoped COUNT carrying no content and no override
+ * machinery. The decision lives in `docs/development/brain-slack-history.md`
+ * § Publish scope, not in the ADR; do not read this module as standing licence
+ * for unscoped reads.
+ *
+ * It is safe because a count cannot be read back into a claim:
  * `role:platform_admin` stays refused by the grant grammar, and a platform role
  * still confers no brain grant.
  *
  * `reviewableAwaitingReview` is the one scoped number, carried here rather than
- * fetched separately so both halves of the disclosure come from one snapshot —
- * see {@link BrainFactOversight}.
+ * fetched separately so both halves of the disclosure come from one REQUEST —
+ * see {@link loadFactOversight} on why that is not the same as one snapshot.
  */
 
 import { createHash } from "node:crypto";
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
   aclVisibilityClause,
   parsePrincipal,
@@ -74,6 +86,12 @@ const log = createLogger("brain-oversight");
 
 /** Surface tag on this module's `BrainReaderUnresolvedError` throws. */
 const OVERSIGHT_SURFACE = "oversight";
+
+/** Tenant + correlation context carried on this module's degradation logs. */
+interface CountMeta {
+  readonly workspaceId: string;
+  readonly requestId?: string;
+}
 
 /**
  * Most buckets one response carries.
@@ -109,13 +127,18 @@ export type ConfiguredChannels = ReadonlyMap<string, ReadonlySet<string>>;
  * Every Slack chat-history install's stored config, regardless of enabled or
  * archived state.
  *
- * DELIBERATELY WIDER than `AUDIENCE_SYNC_INSTALLS_SQL`, which filters on
- * `enabled = true AND status <> 'archived'` because it answers a different
- * question — "which installs should be syncing right now". This one answers
- * "which channels has an admin of this workspace ever named", and disabling a
- * source does not un-name them. Reusing the sync predicate would make a label
- * silently flip to opaque the moment somebody toggled the install off, which
- * reads as Atlas hiding something at exactly the wrong moment.
+ * DELIBERATELY WIDER than `AUDIENCE_SYNC_INSTALLS_SQL` ON THE ENABLED/ARCHIVED
+ * AXIS: that statement filters `enabled = true AND status <> 'archived'`
+ * because it answers a different question — "which installs should be syncing
+ * right now". This one answers "which channels has an admin of this workspace
+ * ever named", and disabling a source does not un-name them. Reusing the sync
+ * predicate would make a label silently flip to opaque the moment somebody
+ * toggled the install off, which reads as Atlas hiding something at exactly the
+ * wrong moment.
+ *
+ * It also drops that statement's `pillar = 'knowledge'`, which is not a
+ * widening in practice: `catalog_id` already pins a single catalog row, and
+ * `pillar` is denormalized FROM that row, so the predicate is implied.
  */
 export const OVERSIGHT_INSTALL_CONFIGS_SQL = `SELECT config
          FROM workspace_plugins
@@ -145,18 +168,20 @@ export async function loadConfiguredChannels(
     ]);
     rows = result.rows;
   } catch (err) {
+    // `errorMessage`, not a raw ternary: this wraps a bare `db.query`, which is
+    // the pg failure class whose message can echo the connection string. The
+    // scrubber strips `scheme://user:pass@host` userinfo and truncates. `err` is
+    // the key the brain subsystem uses everywhere else, and the one pino's
+    // serializer keys on.
     log.warn(
-      {
-        workspaceId,
-        requestId,
-        error: err instanceof Error ? err.message : String(err),
-      },
+      { workspaceId, requestId, err: errorMessage(err) },
       "brain oversight: could not read install configs — every audience will be reported with an opaque handle. Counts are unaffected",
     );
     return bySource;
   }
 
   const channels = new Set<string>();
+  let unparseableConfigs = 0;
   for (const raw of rows) {
     const config =
       typeof raw === "object" && raw !== null
@@ -167,12 +192,23 @@ export async function loadConfiguredChannels(
         ? (config as Record<string, unknown>)
         : null,
     );
-    // A config this workspace cannot parse is already surfaced as an actionable
-    // sync error by the connector. Here it means only that those channels
-    // cannot be shown to have been configured, which withholds a label — the
-    // safe outcome, and not worth a second warn line per cycle.
-    if (!parsed.ok) continue;
+    // intentionally ignored: an unparseable config is already surfaced as an
+    // actionable sync error by the connector and the audience sync, which both
+    // `throw new Error(parsed.error)` on it. Here it only means those channels
+    // cannot be shown to have been configured, so their label is withheld —
+    // the fail-closed outcome. Counted below so "why is every label opaque?" is
+    // a log line rather than an inference.
+    if (!parsed.ok) {
+      unparseableConfigs++;
+      continue;
+    }
     for (const channelId of parsed.channels) channels.add(channelId);
+  }
+  if (unparseableConfigs > 0) {
+    log.debug(
+      { workspaceId, requestId, unparseableConfigs, configuredChannels: channels.size },
+      "brain oversight: some install configs did not parse — their channels cannot be shown as configured, so those audiences report an opaque handle",
+    );
   }
   if (channels.size > 0) bySource.set(SLACK_HISTORY_SOURCE, channels);
   return bySource;
@@ -218,9 +254,26 @@ interface TokenClass {
  * Note a `malformed` bucket does NOT mean "invisible to everyone": one bucket
  * is one TOKEN, and a fact can carry a usable token alongside a junk one. The
  * entirely-unusable class is `lib/brain/grant-sweep.ts`'s remit (#4797).
+ *
+ * ## Case sensitivity, stated because it is load-bearing and invisible
+ *
+ * `parseSlackHistoryConfig` upper-cases channel ids at parse
+ * (`.trim().toUpperCase()`); `deriveChatChannelGrant` only trims, and the
+ * comparison below is a case-SENSITIVE `Set.has`. Slack ids are uppercase, so
+ * the two agree today. A vendor whose ids are not would fall through to
+ * `discovered` — fail-closed, and undiagnosable from the UI, so a source that
+ * adds one owns normalising both sides.
  */
-export function classifyToken(token: string, configured: ConfiguredChannels): TokenClass {
+export function classifyToken(
+  token: string,
+  configured: ConfiguredChannels,
+  meta?: CountMeta,
+): TokenClass {
   const principal = parsePrincipal(token);
+  // Outside the grammar. `discovered` here means WITHHELD rather than
+  // "Atlas discovered it" — a junk token was neither configured nor
+  // discovered, and inventing a fourth policy value for it would put a word on
+  // the wire that only ever means "not the other two".
   if (!principal) return { kind: "malformed", labelPolicy: "discovered" };
 
   switch (principal.kind) {
@@ -243,7 +296,7 @@ export function classifyToken(token: string, configured: ConfiguredChannels): To
       // reading, and it is loud rather than a silent fall-through.
       const unexpected: never = principal;
       log.warn(
-        { kind: (unexpected as { kind?: unknown }).kind },
+        { ...meta, kind: (unexpected as { kind?: unknown }).kind },
         "brain oversight: unrecognised principal kind — withholding its label",
       );
       return { kind: "malformed", labelPolicy: "discovered" };
@@ -317,22 +370,59 @@ export const OVERSIGHT_TOTALS_SQL = `SELECT ${STATE_COUNTERS}
     FROM brain_facts f
    WHERE f.workspace_id = $1`;
 
+/**
+ * How many distinct grant tokens the workspace holds — the TRUE audience
+ * cardinality, with no cap.
+ *
+ * Run only when {@link OVERSIGHT_BUCKETS_SQL} was clipped. `buckets.length`
+ * reads as this number and stops being it under truncation, and "across 200
+ * audiences" presented as fact is the clipped-breakdown-reads-as-complete
+ * failure the cap's own comment forbids.
+ *
+ * Mirrors the bucket query's lateral exactly, `SELECT DISTINCT` included, so
+ * the two cannot disagree about what one token is.
+ */
+export const OVERSIGHT_DISTINCT_TOKENS_SQL = `SELECT COUNT(DISTINCT g.token)::int AS n
+    FROM brain_facts f
+    CROSS JOIN LATERAL (
+           SELECT DISTINCT COALESCE(t, '') AS token FROM unnest(f.visible_to) AS t
+         ) g
+   WHERE f.workspace_id = $1`;
+
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
 
-function count(value: unknown): number {
+/**
+ * A counter off `pg`, or 0 — and LOUDLY 0.
+ *
+ * Every column here is `::int` over a `COUNT(*)`, so a value that will not read
+ * back as a non-negative number is query drift, not data. The fallback direction
+ * matters more than usual: 0 is the REASSURING answer on this surface, so a
+ * silent coercion would default the whole disclosure to "nothing is hidden"
+ * on any unexpected input — inverting the fail-closed posture the rest of this
+ * module keeps. `loadConfiguredChannels` degrades toward MORE opacity; this must
+ * not degrade toward less alarm without saying so.
+ */
+function count(value: unknown, field: string, meta: CountMeta): number {
   const n = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+  if (!Number.isFinite(n) || n < 0) {
+    log.warn(
+      { ...meta, field, rawType: typeof value },
+      "brain oversight: a counter did not read back as a non-negative number — reporting 0, which UNDERSTATES the workspace; the aggregate's query shape changed",
+    );
+    return 0;
+  }
+  return Math.trunc(n);
 }
 
-function totalsFrom(row: Record<string, unknown> | undefined): BrainFactOversightTotals {
+function totalsFrom(row: Record<string, unknown>, meta: CountMeta): BrainFactOversightTotals {
   return {
-    awaitingReview: count(row?.awaiting_review),
-    published: count(row?.published),
-    retracted: count(row?.retracted),
-    provisional: count(row?.provisional),
-    inTension: count(row?.in_tension),
+    awaitingReview: count(row.awaiting_review, "awaiting_review", meta),
+    published: count(row.published, "published", meta),
+    retracted: count(row.retracted, "retracted", meta),
+    provisional: count(row.provisional, "provisional", meta),
+    inTension: count(row.in_tension, "in_tension", meta),
   };
 }
 
@@ -365,6 +455,18 @@ function orderingKey(workspaceId: string, token: string): string {
  * workspace totals, and the reader's own reviewable count. The install configs
  * are read alongside them — a fourth read that only decides labels, and whose
  * failure costs legibility rather than correctness.
+ *
+ * ## They are ONE REQUEST, not one snapshot
+ *
+ * `db` is a pool and there is no enclosing transaction, so the statements take
+ * up to four connections and read at four different LSNs. What that buys is
+ * real but bounded: the two halves of the disclosure cannot drift between two
+ * CLIENT fetches, which is the flicker a separate `/summary` call would cause.
+ * It does NOT make them transactionally consistent, so a fact ingested between
+ * the totals read and the reviewable read can legitimately produce
+ * `reviewableAwaitingReview > workspaceTotals.awaitingReview`. That is what
+ * `countsConsistent` reports — see below; do not upgrade it to a throw without
+ * first putting all three on one client under `REPEATABLE READ`.
  *
  * @throws {BrainReaderUnresolvedError} when the reader has no usable principals.
  *   The workspace counts would still compute, but serving them to a caller
@@ -412,16 +514,34 @@ export async function loadFactOversight(
     );
   }
 
+  const countMeta: CountMeta = { workspaceId, requestId };
   const raw: RawBucket[] = [];
+  // A drifted row is DROPPED, not coerced — and counted, because a dropped
+  // bucket is an under-report from a surface whose product is a breakdown. The
+  // tempting `?? ""` was here first and was worse than it looks: `''` parses as
+  // malformed, so two unrelated drifted rows would merge into one `malformed`
+  // bucket AND collide on the same `discovered-N` handle, silently rendering as
+  // one row. `COALESCE` in the query makes both arms unreachable from Postgres;
+  // they exist for a driver or adapter that changed shape underneath us.
+  let droppedRows = 0;
   for (const row of truncated ? bucketRows.slice(0, OVERSIGHT_BUCKET_MAX) : bucketRows) {
-    if (typeof row !== "object" || row === null) continue;
+    if (typeof row !== "object" || row === null) {
+      droppedRows++;
+      continue;
+    }
     const r = row as Record<string, unknown>;
-    // `COALESCE` in the query makes a non-string unreachable; a fallback to `''`
-    // would silently merge a drifted row into the malformed bucket, so it is
-    // typed out rather than coerced.
-    const token = typeof r.token === "string" ? r.token : "";
-    const { kind, labelPolicy } = classifyToken(token, configured);
-    raw.push({ token, kind, labelPolicy, ...totalsFrom(r) });
+    if (typeof r.token !== "string") {
+      droppedRows++;
+      continue;
+    }
+    const { kind, labelPolicy } = classifyToken(r.token, configured, countMeta);
+    raw.push({ token: r.token, kind, labelPolicy, ...totalsFrom(r, countMeta) });
+  }
+  if (droppedRows > 0) {
+    log.warn(
+      { workspaceId, requestId, droppedRows, kept: raw.length },
+      "brain oversight: bucket rows came back without a readable `token` — they are missing from the breakdown, which therefore understates the workspace; the aggregate's query shape changed",
+    );
   }
 
   // Ordinals are assigned over a HASH order rather than the display order, so a
@@ -450,39 +570,100 @@ export async function loadFactOversight(
         // alphabetical position of an id this surface just refused to print.
         (handles.get(a.token) ?? a.token).localeCompare(handles.get(b.token) ?? b.token),
     )
-    .map((bucket) => {
-      const withholding = bucket.labelPolicy === "discovered";
-      return {
-        key: withholding ? (handles.get(bucket.token) ?? "discovered") : bucket.token,
+    .map((bucket): BrainFactOversightBucket => {
+      const counters = {
         kind: bucket.kind,
-        label: withholding ? null : bucket.token,
-        labelPolicy: bucket.labelPolicy,
         awaitingReview: bucket.awaitingReview,
         published: bucket.published,
         retracted: bucket.retracted,
         provisional: bucket.provisional,
         inTension: bucket.inTension,
       };
+      if (bucket.labelPolicy === "discovered") {
+        // The withheld arm has no `label` PROPERTY, not a null one — the wire
+        // type is a discriminated union so this object literally cannot carry
+        // the token. `handles` covers every withheld token by construction (it
+        // is built from the same filter), so a miss is a defect; it is asserted
+        // rather than `??`-defaulted, because a shared fallback handle would
+        // collapse two audiences into one row.
+        const key = handles.get(bucket.token);
+        if (!key) {
+          throw new Error(
+            `brain oversight: no display handle was assigned for a withheld bucket in workspace ${workspaceId} — the handle map and the withheld filter disagree`,
+          );
+        }
+        return { ...counters, labelPolicy: "discovered", key };
+      }
+      return { ...counters, labelPolicy: bucket.labelPolicy, key: bucket.token, label: bucket.token };
     });
 
-  const workspaceTotals = totalsFrom(
-    totalsResult.rows[0] as Record<string, unknown> | undefined,
-  );
+  const totalsRow = totalsResult.rows[0];
+  if (typeof totalsRow !== "object" || totalsRow === null) {
+    // An aggregate with no GROUP BY always returns exactly one row, so this is
+    // unreachable from Postgres. It is a THROW rather than an all-zero default
+    // because all-zero renders as "0 awaiting review, nothing hidden from you"
+    // — a complete, confident, false all-clear on the one surface that exists
+    // to prevent one. A 500 with a requestId is the honest answer.
+    throw new Error(
+      `brain oversight: the workspace totals aggregate returned no row for workspace ${workspaceId} — the totals query shape changed`,
+    );
+  }
+  const workspaceTotals = totalsFrom(totalsRow as Record<string, unknown>, countMeta);
   const reviewableAwaitingReview = count(
     (reviewableResult.rows[0] as Record<string, unknown> | undefined)?.n,
+    "reviewable_n",
+    countMeta,
   );
 
-  if (reviewableAwaitingReview > workspaceTotals.awaitingReview) {
-    // The scoped count is a subset of the unscoped one by construction, so this
-    // is impossible unless the two statements disagreed about the workspace —
-    // and it renders as a NEGATIVE hidden backlog, which is worse than no
-    // disclosure. Loud rather than clamped: clamping would restore a plausible
-    // "nothing is hidden" from a state that proves the opposite.
+  // The scoped count is a subset of the unscoped one at any single instant —
+  // but these are separate statements on separate connections (see the header),
+  // so a fact ingested between them that this reader CAN see legitimately
+  // inverts them. It is therefore a race, not proof of a bug, and the log says
+  // so; a persistent or large inversion is the part that means the two
+  // statements disagree about the workspace.
+  //
+  // What must NOT happen is silently clamping the delta to zero: that renders
+  // as "nothing is hidden from you", which is the pre-#4825 defect reproduced
+  // by its own fix. So the condition travels to the client as
+  // `countsConsistent` and the panel says it cannot compute the delta.
+  const countsConsistent = reviewableAwaitingReview <= workspaceTotals.awaitingReview;
+  if (!countsConsistent) {
     log.warn(
       { workspaceId, requestId, reviewableAwaitingReview, workspaceTotals },
-      "brain oversight: the reader-scoped draft count exceeds the workspace draft count — these two statements disagree about the same workspace; the hidden-backlog delta shown to the admin is not trustworthy",
+      "brain oversight: the reader-scoped draft count exceeds the workspace draft count — expected only as a brief race between two non-transactional statements; if it persists, the two statements disagree about the workspace and the hidden-backlog delta is not trustworthy",
     );
   }
 
-  return { buckets, workspaceTotals, reviewableAwaitingReview, bucketsTruncated: truncated };
+  return {
+    buckets,
+    workspaceTotals,
+    reviewableAwaitingReview,
+    countsConsistent,
+    // The TRUE cardinality, uncapped — `buckets.length` stops being it the
+    // moment truncation bites, and the client must never infer one from the
+    // other.
+    distinctAudiences: truncated ? await countDistinctTokens(db, workspaceId, countMeta) : buckets.length,
+    bucketsTruncated: truncated,
+  };
+}
+
+/**
+ * Distinct grant tokens in the workspace, uncapped.
+ *
+ * Only run when the bucket list was actually clipped — on the overwhelmingly
+ * common untruncated path `buckets.length` IS the cardinality, and a second
+ * statement for it would be a round trip every workspace pays so that a handful
+ * never render a wrong number.
+ */
+async function countDistinctTokens(
+  db: BrainCandidateReader,
+  workspaceId: string,
+  meta: CountMeta,
+): Promise<number> {
+  const result = await db.query(OVERSIGHT_DISTINCT_TOKENS_SQL, [workspaceId]);
+  return count(
+    (result.rows[0] as Record<string, unknown> | undefined)?.n,
+    "distinct_tokens",
+    meta,
+  );
 }

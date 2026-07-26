@@ -55,7 +55,17 @@ import type { BrainGrant } from "@atlas/api/lib/brain/types";
  */
 export const CHAT_CHANNEL_AUDIENCE_NAMESPACE = "chat-channel" as const;
 
-/** Build the audience id (WITHOUT the `audience:` prefix — that is grammar). */
+/**
+ * Build the audience id (WITHOUT the `audience:` prefix — that is grammar).
+ *
+ * `source` must contain NO COLON. It is joined on `:` and
+ * {@link parseChatChannelAudienceId} splits at the first one, so a source like
+ * `slack:enterprise` would round-trip to `{ source: "slack", channelId:
+ * "enterprise:C0…" }` — silently, and in the direction that mis-NAMES rather
+ * than withholds. `channelId` may contain colons; the parser takes the whole
+ * remainder. Every source today is a bare vendor token (`slack`), so this is a
+ * constraint on the next one.
+ */
 export function chatChannelAudienceId(source: string, channelId: string): string {
   return `${CHAT_CHANNEL_AUDIENCE_NAMESPACE}:${source}:${channelId}`;
 }

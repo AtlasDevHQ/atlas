@@ -148,10 +148,14 @@ let oversight: Record<string, unknown> = {
     inTension: 1,
   },
   reviewableAwaitingReview: 3,
+  countsConsistent: true,
+  distinctAudiences: 1,
   bucketsTruncated: false,
 };
 /** Withheld brain-fact count the publish preview reports. */
 let withheldFacts = 0;
+/** Whether that count is an Atlas fault rather than an audience boundary. */
+let scopeUnavailable = false;
 
 function mockApi(
   candidates: Array<Record<string, unknown>>,
@@ -201,6 +205,7 @@ function mockApi(
           knowledgeDocuments: [],
           brainFacts: [],
           brainFactsWithheld: withheldFacts,
+          brainFactsScopeUnavailable: scopeUnavailable,
         }),
       );
     }
@@ -215,6 +220,7 @@ beforeEach(() => {
   requested = [];
   retractStatus = 200;
   withheldFacts = 0;
+  scopeUnavailable = false;
   oversight = {
     buckets: [],
     workspaceTotals: {
@@ -225,6 +231,8 @@ beforeEach(() => {
       inTension: 1,
     },
     reviewableAwaitingReview: 3,
+    countsConsistent: true,
+    distinctAudiences: 1,
     bucketsTruncated: false,
   };
   testQueryClient = new QueryClient({
@@ -648,6 +656,13 @@ describe("hidden-backlog disclosure (#4825)", () => {
     // something was hidden would "pass" every test below while telling every
     // admin in every workspace something untrue.
     const view = await renderPage([candidate()]);
+    // Wait for a marker the panel ALWAYS renders once its query resolves.
+    // `renderPage` only waits on the list query, so a bare negative here could
+    // not tell "loaded and correctly silent" from "not mounted yet" — and would
+    // pass with <OversightPanel /> deleted from the page outright.
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("Workspace breakdown"),
+    );
     expect(view.container.textContent ?? "").not.toContain("not in your queue");
   });
 
@@ -675,6 +690,8 @@ describe("hidden-backlog disclosure (#4825)", () => {
         inTension: 0,
       },
       reviewableAwaitingReview: 26,
+      countsConsistent: true,
+      distinctAudiences: 1,
       bucketsTruncated: false,
     };
     const view = await renderPage([candidate()]);
@@ -688,15 +705,16 @@ describe("hidden-backlog disclosure (#4825)", () => {
     expect(view.container.textContent ?? "").toContain("workspace-wide");
   });
 
-  test("never renders an audience the API withheld", async () => {
-    // The API sends `label: null` and no id at all, so the panel has nothing to
-    // leak — this pins that it does not invent one from `key` or from the kind.
+  test("renders a withheld audience as an opaque handle with its counts", async () => {
+    // The well-behaved payload: the API sends no id at all, so the panel has
+    // nothing to leak. This pins that it does not invent one from `key` or from
+    // the kind, and that the COUNTS still get through — an oversight row that
+    // withheld the number as well as the name would disclose nothing at all.
     oversight = {
       buckets: [
         {
           key: "discovered-1",
           kind: "audience",
-          label: null,
           labelPolicy: "discovered",
           awaitingReview: 6,
           published: 0,
@@ -713,6 +731,8 @@ describe("hidden-backlog disclosure (#4825)", () => {
         inTension: 0,
       },
       reviewableAwaitingReview: 3,
+      countsConsistent: true,
+      distinctAudiences: 1,
       bucketsTruncated: false,
     };
     const view = await renderPage([candidate()]);
@@ -722,6 +742,141 @@ describe("hidden-backlog disclosure (#4825)", () => {
     // The counts are there; the channel is not.
     expect(view.container.textContent ?? "").toContain("6");
     expect(view.container.textContent ?? "").not.toContain("chat-channel");
+  });
+
+  test("refuses to render a withheld bucket that smuggles its label", async () => {
+    // The HOSTILE payload — a `discovered` bucket carrying the very id the
+    // policy withheld, i.e. what a producer regressed to a flat
+    // `label: string | null` would emit. The BUCKET schema stays strict on the
+    // client (only the envelope is additive-tolerant) precisely so this fails
+    // closed: the panel drops to its error state and the token never reaches
+    // the DOM. An admin losing a breakdown is recoverable; a leaked private
+    // channel name is not.
+    oversight = {
+      buckets: [
+        {
+          key: "discovered-1",
+          kind: "audience",
+          labelPolicy: "discovered",
+          label: "audience:chat-channel:slack:C0SECRET99",
+          awaitingReview: 6,
+          published: 0,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+        },
+      ],
+      workspaceTotals: {
+        awaitingReview: 9,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 3,
+      countsConsistent: true,
+      distinctAudiences: 1,
+      bucketsTruncated: false,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain(
+        "can't tell you whether drafts exist outside your queue",
+      ),
+    );
+    expect(view.container.textContent ?? "").not.toContain("C0SECRET99");
+    expect(view.container.textContent ?? "").not.toContain("chat-channel");
+  });
+
+  test("tolerates an ADDITIVE envelope field rather than blanking the disclosure", async () => {
+    // The other half of the strict/loose split. During an api/web deploy skew a
+    // new envelope field must not take the hidden-backlog alert down with it —
+    // failing closed for confidentiality there would mean failing OPEN for the
+    // disclosure, which is the thing this whole surface exists to make.
+    oversight = {
+      buckets: [],
+      workspaceTotals: {
+        awaitingReview: 32,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 26,
+      countsConsistent: true,
+      distinctAudiences: 1,
+      bucketsTruncated: false,
+      someFutureField: "added by a newer API",
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain(
+        "6 drafts awaiting review are not in your queue",
+      ),
+    );
+  });
+
+  test("says it cannot compute the delta rather than clamping it to a reassuring zero", async () => {
+    // The producer refuses to clamp; the first cut of the panel undid that with
+    // `Math.max(0, …)` and rendered a clean page out of a state that proves
+    // nothing — #4825's defect reproduced by its own fix.
+    oversight = {
+      buckets: [],
+      workspaceTotals: {
+        awaitingReview: 5,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 9,
+      countsConsistent: false,
+      distinctAudiences: 0,
+      bucketsTruncated: false,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("two counts of the same workspace"),
+    );
+    // And it must NOT quietly claim the all-clear.
+    expect(view.container.textContent ?? "").not.toContain("not in your queue");
+  });
+
+  test("reports the true audience count when the breakdown is clipped", async () => {
+    // `buckets.length` would read "1 audience" over a workspace with 250, with
+    // the correction hidden behind a collapsed disclosure triangle.
+    oversight = {
+      buckets: [
+        {
+          key: "org",
+          kind: "org",
+          label: "org",
+          labelPolicy: "intrinsic",
+          awaitingReview: 1,
+          published: 0,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+        },
+      ],
+      workspaceTotals: {
+        awaitingReview: 1,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 1,
+      countsConsistent: true,
+      distinctAudiences: 250,
+      bucketsTruncated: true,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("250 audiences"));
+    clickButton(view, /Workspace breakdown/i);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("more distinct audiences"),
+    );
   });
 
   test("the publish modal states the withheld count BEFORE the confirm button", async () => {
@@ -734,9 +889,26 @@ describe("hidden-backlog disclosure (#4825)", () => {
       expect(document.body.textContent).toContain("6 brain facts here aren't shown to you"),
     );
     // Folded into the button, so the number the admin confirms is the real one.
+    // Exact, not `toContain("6")`: the button reads "Publish all (0)" without
+    // the fold, and "0" would not match, but neither would a coincidental 6
+    // somewhere else in the label.
     const confirm = Array.from(document.body.querySelectorAll("button")).find((b) =>
       /Publish all/.test(b.textContent ?? ""),
     );
-    expect(confirm?.textContent).toContain("6");
+    expect(confirm?.textContent?.trim()).toBe("Publish all (6)");
+  });
+
+  test("says an Atlas fault is an Atlas fault, not a channel-membership boundary", async () => {
+    // Both causes withhold everything, and only one is about Slack. Printing the
+    // audience explanation over an infrastructure fault tells an admin who can
+    // read every fact in the workspace that none of them are theirs to see.
+    withheldFacts = 4;
+    scopeUnavailable = true;
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Review & publish/i);
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("couldn't work out which of these"),
+    );
+    expect(document.body.textContent).not.toContain("audience you're not part of");
   });
 });

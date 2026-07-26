@@ -25,8 +25,9 @@
  *      `f` inside a `FILTER`?** They were written for a WHERE clause.
  *   5. **Is the 26 / 32 split real?** The one end-to-end claim: the unscoped
  *      count sees a private fact, the reader-scoped one does not, and the
- *      preview's label projection withholds its claim text — the invariant
- *      `docs/development/brain-m1-soak-corpus.md` §D2 checks by hand.
+ *      preview's label projection withholds its claim text. This is the
+ *      2026-07-26 staging soak's reading, as a test — see
+ *      `docs/development/brain-slack-history.md` § Publish scope.
  *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
@@ -38,9 +39,11 @@ import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import {
   OVERSIGHT_BUCKETS_SQL,
-  OVERSIGHT_INSTALL_CONFIGS_SQL,
+  OVERSIGHT_DISTINCT_TOKENS_SQL,
   OVERSIGHT_TOTALS_SQL,
   OVERSIGHT_BUCKET_MAX,
+  classifyToken,
+  loadConfiguredChannels,
 } from "@atlas/api/lib/brain/oversight";
 import {
   brainFactPreviewSql,
@@ -48,7 +51,10 @@ import {
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { aclVisibilityClause, type BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { chatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
-import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
+import {
+  SLACK_HISTORY_CATALOG_ID,
+  SLACK_HISTORY_SOURCE,
+} from "@atlas/api/lib/brain/ingest/slack/config";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -291,20 +297,83 @@ describeIfPg("brain fact oversight aggregate (real Postgres)", () => {
       const rows = await buckets(ws);
       expect(rows.find((r) => r.token === "org")?.awaiting_review).toBe(1);
       expect(rows.find((r) => r.token === PRIVATE_AUDIENCE)?.awaiting_review).toBe(1);
+
+      // (5) THE no-content pin, one layer below the producer. The TS side is
+      //     enforced by `z.strictObject`, but a `SELECT … f.subject AS sample`
+      //     added to the aggregate passes every unit test until somebody also
+      //     wires it through — and the SQL is where the claim text actually is.
+      const { rows: totalRows } = await pool.query(OVERSIGHT_TOTALS_SQL, [ws]);
+      for (const payload of [JSON.stringify(rows), JSON.stringify(totalRows)]) {
+        expect(payload).not.toContain("private-claim");
+        expect(payload).not.toContain("public-claim");
+        expect(payload).not.toContain("Snowflake");
+      }
     },
     PG_TEST_TIMEOUT_MS,
   );
 
   it(
-    "reads install configs with the statement the label rule depends on",
+    "counts distinct tokens uncapped, so a clipped breakdown still reports its size",
     async () => {
-      // Not a formality: if this query drifts, every audience silently becomes
-      // opaque — fail-closed, and undiagnosable from the UI.
-      const { rows } = await pool.query(OVERSIGHT_INSTALL_CONFIGS_SQL, [
-        "ws-oversight-configs",
-        "catalog:slack-history",
-      ]);
-      expect(rows).toEqual([]);
+      const ws = "ws-oversight-cardinality";
+      const ep = await seedEpisode(ws, "cardinality");
+      await seedFact({ workspaceId: ws, episodeId: ep, subject: "a", visibleTo: ["org"] });
+      await seedFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "b",
+        visibleTo: [PRIVATE_AUDIENCE, "role:admin"],
+      });
+
+      const { rows } = await pool.query<{ n: number }>(OVERSIGHT_DISTINCT_TOKENS_SQL, [ws]);
+      // Three distinct tokens across two facts — and this must agree with the
+      // bucket query's own lateral, or the panel's audience count contradicts
+      // its own table.
+      expect(rows[0]!.n).toBe(3);
+      expect((await buckets(ws)).length).toBe(3);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "reads a REAL install row through the whole configured-⇒-nameable chain",
+    async () => {
+      // Against an empty table this proves only that the columns exist. The
+      // thing that actually breaks is the CONFIG SHAPE: if what the installer
+      // persists differs from what `parseSlackHistoryConfig` expects, every
+      // audience goes opaque — fail-closed, and per the module's own comment
+      // undiagnosable from the UI. So insert the row and walk the whole chain.
+      const ws = "ws-oversight-configs";
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, slug, name, type, pillar)
+         VALUES ($1, 'slack-history', 'Company Brain (Slack history)', 'context', 'knowledge')
+         ON CONFLICT (id) DO NOTHING`,
+        [SLACK_HISTORY_CATALOG_ID],
+      );
+      await pool.query(
+        `INSERT INTO workspace_plugins
+           (id, workspace_id, catalog_id, install_id, pillar, config)
+         VALUES ($1, $2, $3, $1, 'knowledge', $4::jsonb)`,
+        [
+          `wp-${ws}`,
+          ws,
+          SLACK_HISTORY_CATALOG_ID,
+          JSON.stringify({ channels: ["C0PRIVATE1"] }),
+        ],
+      );
+
+      const configured = await loadConfiguredChannels({ query: (sql, params) => pool.query(sql, params) }, ws);
+      expect(configured.get(SLACK_HISTORY_SOURCE)).toEqual(new Set(["C0PRIVATE1"]));
+
+      // …and the classification that hangs off it.
+      expect(classifyToken(PRIVATE_AUDIENCE, configured).labelPolicy).toBe("configured");
+      const otherWorkspace = await loadConfiguredChannels(
+        { query: (sql, params) => pool.query(sql, params) },
+        "ws-oversight-configs-other",
+      );
+      // Non-vacuity, and the tenant boundary: another workspace's install must
+      // not name this one's channel.
+      expect(classifyToken(PRIVATE_AUDIENCE, otherWorkspace).labelPolicy).toBe("discovered");
     },
     PG_TEST_TIMEOUT_MS,
   );

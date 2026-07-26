@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, EyeOff, Info, Lock, ShieldAlert } from "lucide-react";
+import { AlertTriangle, ChevronDown, EyeOff, Info, Lock, ShieldAlert } from "lucide-react";
 import type { BrainFactOversight, BrainFactOversightBucket } from "@/ui/lib/types";
-import { BrainFactOversightSchema } from "@/ui/lib/admin-schemas";
+import { BrainFactOversightClientSchema } from "@/ui/lib/admin-schemas";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -52,43 +52,74 @@ import {
  */
 export function OversightPanel() {
   const [open, setOpen] = useState(false);
-  const { data, error } = useAdminFetch<BrainFactOversight>(
+  const { data, error, refetch } = useAdminFetch<BrainFactOversight>(
     "/api/v1/admin/brain-facts/oversight",
-    { schema: BrainFactOversightSchema },
+    { schema: BrainFactOversightClientSchema },
   );
 
   if (error) {
+    // States the CONSEQUENCE, not just the failure. "Couldn't load a breakdown"
+    // reads as cosmetic next to an enabled publish button; what the admin
+    // actually needs to know is that the all-clear they are not seeing is
+    // absent because Atlas could not check, not because there is nothing to
+    // report.
     return (
-      <p role="alert" className="text-sm text-destructive">
-        Couldn&apos;t load the workspace fact breakdown: {friendlyError(error)}
-      </p>
+      <Alert role="alert" variant="destructive">
+        <AlertTriangle className="size-4" aria-hidden />
+        <AlertDescription className="space-y-1">
+          <p>
+            Couldn&apos;t load the workspace fact breakdown, so Atlas can&apos;t tell you
+            whether drafts exist outside your queue. Publishing is still workspace-wide.
+          </p>
+          <p className="text-xs opacity-90">{friendlyError(error)}</p>
+          <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => refetch()}>
+            Try again
+          </Button>
+        </AlertDescription>
+      </Alert>
     );
   }
   if (!data) return null;
 
-  const hidden = Math.max(0, data.workspaceTotals.awaitingReview - data.reviewableAwaitingReview);
+  const hidden = data.workspaceTotals.awaitingReview - data.reviewableAwaitingReview;
 
   return (
     <div className="space-y-3">
-      {hidden > 0 && (
-        // `role="alert"` deliberately: this is the finding, not decoration. An
-        // admin reaching the publish button without having read it is the exact
-        // failure #4825 recorded.
+      {!data.countsConsistent ? (
+        // NOT clamped to a reassuring zero. The producer refuses to clamp for
+        // exactly this reason, and the first cut of this panel undid that with
+        // `Math.max(0, …)` — rendering "nothing is hidden from you" out of a
+        // state that proves no such thing, which is #4825's defect reproduced
+        // by its own fix.
         <Alert role="alert">
-          <Lock className="size-4" aria-hidden />
+          <AlertTriangle className="size-4" aria-hidden />
           <AlertDescription>
-            <span className="font-medium">
-              {hidden === 1
-                ? "1 draft awaiting review is not in your queue."
-                : `${hidden.toLocaleString()} drafts awaiting review are not in your queue.`}
-            </span>{" "}
-            They came from channels you are not a member of, so Atlas will not
-            show you what they say — reviewing them is federated to those
-            channels&apos; members. Publishing promotes them anyway: it is
-            workspace-wide and always has been. The breakdown below says where
-            they sit, in counts.
+            Atlas can&apos;t work out right now how much of this workspace&apos;s backlog
+            sits outside your queue — two counts of the same workspace disagreed. Treat
+            publishing as workspace-wide and check back in a moment.
           </AlertDescription>
         </Alert>
+      ) : (
+        hidden > 0 && (
+          // `role="alert"` deliberately: this is the finding, not decoration. An
+          // admin reaching the publish button without having read it is the exact
+          // failure #4825 recorded.
+          <Alert role="alert">
+            <Lock className="size-4" aria-hidden />
+            <AlertDescription>
+              <span className="font-medium">
+                {hidden === 1
+                  ? "1 draft awaiting review is not in your queue."
+                  : `${hidden.toLocaleString()} drafts awaiting review are not in your queue.`}
+              </span>{" "}
+              They belong to audiences you are not part of — usually private channels — so
+              Atlas will not show you what they say, and reviewing them is federated to
+              those audiences&apos; members. Publishing promotes them anyway: it is
+              workspace-wide and always has been. The breakdown below says where they sit,
+              in counts.
+            </AlertDescription>
+          </Alert>
+        )
       )}
 
       <Collapsible open={open} onOpenChange={setOpen}>
@@ -99,10 +130,14 @@ export function OversightPanel() {
               aria-hidden
             />
             Workspace breakdown
+            {/* `distinctAudiences`, never `buckets.length`: the array is capped
+                and stops being the cardinality the moment truncation bites, and
+                the correction lives inside the collapsed content where nobody
+                would read it. */}
             <span className="ml-1.5 text-xs">
               ({data.workspaceTotals.awaitingReview.toLocaleString()} awaiting review across{" "}
-              {data.buckets.length.toLocaleString()}{" "}
-              {data.buckets.length === 1 ? "audience" : "audiences"})
+              {data.distinctAudiences.toLocaleString()}{" "}
+              {data.distinctAudiences === 1 ? "audience" : "audiences"})
             </span>
           </Button>
         </CollapsibleTrigger>
@@ -114,7 +149,7 @@ export function OversightPanel() {
               <AlertDescription>
                 This workspace has more distinct audiences than Atlas shows at once, so
                 the rows below are a subset. The totals are not — they are counted per
-                fact, so the numbers above stay exact.
+                fact, and the audience count above is uncapped, so both stay exact.
               </AlertDescription>
             </Alert>
           )}
@@ -179,15 +214,18 @@ export function OversightPanel() {
 /**
  * One audience's row.
  *
- * The label is whatever the API sent, or an explanation of why it sent none —
- * never a reconstruction. `label === null` is the ONLY signal this component
- * has, and it is sufficient: the withheld id is not in the payload at all.
+ * Branches on `labelPolicy`, the wire type's DISCRIMINANT — not on
+ * `label === null`. The two are equivalent today and only one stays that way:
+ * `BrainFactOversightBucket`'s withheld arm has no `label` property at all, so
+ * `bucket.label` does not typecheck in this branch, and a payload that smuggled
+ * one cannot be rendered by accident. The label is whatever the API sent or an
+ * explanation of why it sent none — never a reconstruction.
  */
 function BucketRow({ bucket }: { bucket: BrainFactOversightBucket }) {
   return (
     <TableRow>
       <TableCell className="max-w-xs">
-        {bucket.label === null ? (
+        {bucket.labelPolicy === "discovered" ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="inline-flex items-center gap-1.5 text-muted-foreground">

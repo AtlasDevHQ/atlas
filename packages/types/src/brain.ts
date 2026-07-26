@@ -329,22 +329,15 @@ export type BrainFactOversightBucketKind = "org" | "audience" | "role" | "user" 
  */
 export type BrainFactOversightLabelPolicy = "intrinsic" | "configured" | "discovered";
 
-/** One audience's fact counts. Counts only — see {@link BrainFactOversight}. */
-export interface BrainFactOversightBucket {
-  /**
-   * Display identity, stable for as long as the bucket set is.
-   *
-   * Equal to {@link label} when there is one; otherwise a positional handle
-   * (`discovered-1`). It is NOT derived from the withheld token in any
-   * recoverable way — an ordinal cannot be reversed, where a hash of a
-   * ten-character Slack channel id salted with a workspace id the admin already
-   * holds could be brute-forced.
-   */
-  readonly key: string;
-  readonly kind: BrainFactOversightBucketKind;
-  /** The grant token verbatim, or `null` when the label policy withholds it. */
-  readonly label: string | null;
-  readonly labelPolicy: BrainFactOversightLabelPolicy;
+/**
+ * The five state counters, declared ONCE.
+ *
+ * {@link BrainFactOversightBucket} extends this rather than restating the
+ * fields, so a sixth counter cannot be added to the workspace totals and
+ * forgotten on the per-audience breakdown — which would render as a column the
+ * totals row has and the buckets do not.
+ */
+export interface BrainFactOversightTotals {
   /** Live drafts — `status = 'draft'`, not retracted. */
   readonly awaitingReview: number;
   readonly published: number;
@@ -356,14 +349,52 @@ export interface BrainFactOversightBucket {
   readonly inTension: number;
 }
 
-/** Workspace-wide fact counts, deduplicated by fact. */
-export interface BrainFactOversightTotals {
-  readonly awaitingReview: number;
-  readonly published: number;
-  readonly retracted: number;
-  readonly provisional: number;
-  readonly inTension: number;
+/** Fields every bucket carries whether or not its token may be named. */
+interface BrainFactOversightBucketBase extends BrainFactOversightTotals {
+  /**
+   * Display identity, stable for as long as the bucket set is.
+   *
+   * Equal to `label` when there is one; otherwise a positional handle
+   * (`discovered-1`). It is NOT derived from the withheld token in any
+   * recoverable way — an ordinal cannot be reversed, where a hash of a
+   * ten-character Slack channel id salted with a workspace id the admin already
+   * holds could be brute-forced.
+   */
+  readonly key: string;
+  readonly kind: BrainFactOversightBucketKind;
 }
+
+/**
+ * One audience's fact counts. Counts only — see {@link BrainFactOversight}.
+ *
+ * ## A DISCRIMINATED UNION, for the same reason `BrainFactEpisodeView` is one
+ *
+ * This is an ACL boundary, so the withheld arm must be structurally incapable
+ * of carrying the withheld value: the `discovered` arm has **no `label` field
+ * at all**, rather than a `label: null` a producer could forget to null. The
+ * flat shape made `{ kind: "user", labelPolicy: "configured", label:
+ * "user:usr_abc" }` constructible — a resolved person's id, type-checking,
+ * schema-parsing, and rendering straight through.
+ *
+ * The counter-argument is that the withheld arm drops one field here where the
+ * episode view drops eight. That is the wrong measure: the value of the union
+ * is proportional to the CONSEQUENCE of forgetting, and forgetting here
+ * discloses the existence of a private channel — precisely what #4825 says the
+ * counts alone must not do.
+ *
+ * `kind` is deliberately NOT folded into the discriminant. It would buy
+ * "`user` implies withheld" at the cost of five arms and a chunkier client
+ * switch; that implication is pinned by test instead.
+ */
+export type BrainFactOversightBucket =
+  | (BrainFactOversightBucketBase & {
+      readonly labelPolicy: Exclude<BrainFactOversightLabelPolicy, "discovered">;
+      /** The grant token verbatim. */
+      readonly label: string;
+    })
+  | (BrainFactOversightBucketBase & {
+      readonly labelPolicy: "discovered";
+    });
 
 /**
  * The admin oversight view: where a workspace's facts really stand, as numbers,
@@ -388,28 +419,54 @@ export interface BrainFactOversightTotals {
  *
  * {@link reviewableAwaitingReview} is the same quantity as
  * `/api/v1/admin/brain-facts/summary`'s `draftTotal`, restated here so the two
- * halves of the disclosure come from ONE snapshot. Fetched separately they can
- * disagree under concurrent ingest, and a delta that flickers is worse than no
- * delta at all — this surface's entire content is
- * `workspaceTotals.awaitingReview - reviewableAwaitingReview`.
+ * halves of the disclosure come from ONE REQUEST — deliberately not "one
+ * snapshot": the three statements run through a pool with no enclosing
+ * transaction, so they land on different connections at different LSNs. That
+ * narrows the window in which the two halves disagree; it does not close it,
+ * which is exactly why {@link countsConsistent} exists.
  */
 export interface BrainFactOversight {
   readonly buckets: readonly BrainFactOversightBucket[];
   readonly workspaceTotals: BrainFactOversightTotals;
   /**
    * Live drafts THIS reader may open at `/admin/brain-facts` — reader-scoped.
-   * Never larger than `workspaceTotals.awaitingReview`; the difference is the
-   * backlog federated to somebody else.
+   * Normally no larger than `workspaceTotals.awaitingReview`; the difference is
+   * the backlog federated to somebody else. When it IS larger,
+   * {@link countsConsistent} is false and the difference means nothing.
    */
   readonly reviewableAwaitingReview: number;
   /**
+   * False when the reader-scoped count came back LARGER than the unscoped one.
+   *
+   * The scoped count is a subset of the unscoped one by construction, so this
+   * says two statements disagreed about the same workspace — a `workspace_id`
+   * mismatch, a mis-bound placeholder, a widened ACL clause. It is on the wire
+   * rather than only in the log because the alternative is what the first cut
+   * did: the client clamped the negative delta to zero and rendered "nothing is
+   * hidden from you", which is the pre-#4825 defect reproduced by its own fix.
+   * A surface whose entire content is a delta must be able to say the delta is
+   * not trustworthy.
+   */
+  readonly countsConsistent: boolean;
+  /**
+   * Distinct grant tokens in the workspace — the TRUE audience cardinality,
+   * uncapped, even when {@link buckets} is clipped.
+   *
+   * Carried because `buckets.length` reads as this number and stops being it
+   * the moment truncation bites. The client must never infer cardinality from a
+   * capped array: "across 200 audiences" presented as fact, with the correction
+   * behind a disclosure triangle, is the "a clipped breakdown reads as a
+   * complete account" failure this surface exists to avoid.
+   */
+  readonly distinctAudiences: number;
+  /**
    * True when more distinct grant tokens exist than this response carries.
    *
-   * Never silent: a truncated bucket list renders as a complete account of
-   * where the workspace's facts sit, which is the one thing an oversight
-   * surface must not imply. {@link workspaceTotals} is unaffected — it is
-   * computed per fact, not per bucket, so the top-line disclosure stays exact
-   * even when the breakdown is clipped.
+   * Never silent: a clipped breakdown WOULD read as a complete account of where
+   * the workspace's facts sit, which is the one thing an oversight surface must
+   * not imply. {@link workspaceTotals} and {@link distinctAudiences} are
+   * unaffected — both are computed independently of the cap, so the top-line
+   * disclosure stays exact even when the breakdown is clipped.
    */
   readonly bucketsTruncated: boolean;
 }

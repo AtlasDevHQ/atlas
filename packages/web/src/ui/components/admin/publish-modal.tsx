@@ -116,6 +116,16 @@ interface PublishPreviewData {
    * silence rather than to a wrong count.
    */
   readonly brainFactsWithheld?: number;
+  /**
+   * True when `brainFactsWithheld` means "Atlas couldn't establish what you may
+   * read" rather than "these are outside your audiences" (#4825).
+   *
+   * Two different causes needing two different sentences. Defaulting to `false`
+   * for a deploy-overlap window is the right way round: the audience
+   * explanation is correct in the overwhelmingly common case, and an older API
+   * has no degraded path to describe.
+   */
+  readonly brainFactsScopeUnavailable?: boolean;
 }
 
 /**
@@ -256,7 +266,12 @@ export function PublishModal({
                   from the response. It renders even when `sections` is empty,
                   which is the case where an admin can see nothing at all and
                   would otherwise read "No pending changes" over a real one. */}
-              {withheldFacts > 0 && <WithheldFactsNotice count={withheldFacts} />}
+              {withheldFacts > 0 && (
+                <WithheldFactsNotice
+                  count={withheldFacts}
+                  scopeUnavailable={data?.brainFactsScopeUnavailable ?? false}
+                />
+              )}
               {sections.map((section) => (
                 <PreviewSection key={section.key} section={section} />
               ))}
@@ -335,22 +350,41 @@ export function PublishModal({
  * only identity a fact has — and a placeholder carrying a fact id would
  * disclose which facts exist without disclosing what they say.
  */
-function WithheldFactsNotice({ count }: { count: number }) {
+function WithheldFactsNotice({
+  count,
+  scopeUnavailable,
+}: {
+  count: number;
+  /** The withholding is an Atlas fault, not an audience boundary — see the type. */
+  scopeUnavailable: boolean;
+}) {
+  const one = count === 1;
   return (
     <div className="flex items-start gap-2 rounded-md border bg-muted/40 p-3 text-sm">
       <Lock className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
       <div className="min-w-0 space-y-1">
         <p className="font-medium">
-          {count === 1
+          {one
             ? "1 brain fact here isn't shown to you"
             : `${count.toLocaleString()} brain facts here aren't shown to you`}
         </p>
         <p className="text-muted-foreground">
-          {count === 1 ? "It came" : "They came"} from a channel you&apos;re not a member
-          of, so Atlas won&apos;t show you the claim — reviewing{" "}
-          {count === 1 ? "it" : "them"} belongs to that channel&apos;s members. Publishing
-          promotes {count === 1 ? "it" : "them"} along with everything else, because
-          otherwise {count === 1 ? "it" : "they"} could never be published by anyone.
+          {scopeUnavailable ? (
+            <>
+              Atlas couldn&apos;t work out which of these you&apos;re allowed to see, so
+              it&apos;s showing none of them. This is a fault on our side, not a
+              restriction on you. Publishing still promotes {one ? "it" : "them"}. Close
+              and reopen this dialog to try again.
+            </>
+          ) : (
+            <>
+              {one ? "It belongs" : "They belong"} to an audience you&apos;re not part of
+              — usually a private channel — so Atlas won&apos;t show you the claim, and
+              reviewing {one ? "it" : "them"} belongs to that audience&apos;s members.
+              Publishing promotes {one ? "it" : "them"} along with everything else,
+              because otherwise {one ? "it" : "they"} could never be published by anyone.
+            </>
+          )}
         </p>
       </div>
     </div>

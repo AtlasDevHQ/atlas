@@ -25149,7 +25149,7 @@
           "Admin — Brain Facts"
         ],
         "summary": "Where the workspace's facts stand, as counts",
-        "description": "Counts every fact in the workspace grouped by the grant tokens it carries, regardless of who is asking — the deliberate counterpart to the reader-scoped review queue, so an admin can tell a clean queue from a backlog federated to somebody else. Returns NUMBERS ONLY: no subject, predicate, object, provenance, episode body, or fact id can reach this response. A bucket is labelled with its grant token only when naming it discloses nothing the admin does not already hold — `org` and `role:*` always, an `audience:` for a channel present in this workspace's install config, and never a `user:` or an audience Atlas discovered rather than the admin configured; those carry an opaque handle. `reviewableAwaitingReview` restates this reader's own queue total from the same snapshot, so the hidden-backlog delta cannot flicker between two fetches.",
+        "description": "Counts every fact in the workspace grouped by the grant tokens it carries, regardless of who is asking — the deliberate counterpart to the reader-scoped review queue, so an admin can tell a clean queue from a backlog federated to somebody else. Returns NUMBERS ONLY: no subject, predicate, object, provenance, episode body, or fact id can reach this response. A bucket is labelled with its grant token only when naming it discloses nothing the admin does not already hold — `org` and `role:*` always, an `audience:` for a channel present in this workspace's install config, and never a `user:` or an audience Atlas discovered rather than the admin configured; those carry an opaque handle. `reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped.",
         "responses": {
           "200": {
             "description": "Per-audience counts by state, plus workspace totals",
@@ -25161,68 +25161,181 @@
                     "buckets": {
                       "type": "array",
                       "items": {
-                        "type": "object",
-                        "properties": {
-                          "key": {
-                            "type": "string"
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "labelPolicy": {
+                                "type": "string",
+                                "enum": [
+                                  "intrinsic"
+                                ]
+                              },
+                              "key": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "org",
+                                  "audience",
+                                  "role",
+                                  "user",
+                                  "malformed"
+                                ]
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "awaitingReview": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "published": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "retracted": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "provisional": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inTension": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            },
+                            "required": [
+                              "labelPolicy",
+                              "key",
+                              "kind",
+                              "label",
+                              "awaitingReview",
+                              "published",
+                              "retracted",
+                              "provisional",
+                              "inTension"
+                            ],
+                            "additionalProperties": false
                           },
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "org",
-                              "audience",
-                              "role",
-                              "user",
-                              "malformed"
-                            ]
+                          {
+                            "type": "object",
+                            "properties": {
+                              "labelPolicy": {
+                                "type": "string",
+                                "enum": [
+                                  "configured"
+                                ]
+                              },
+                              "key": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "org",
+                                  "audience",
+                                  "role",
+                                  "user",
+                                  "malformed"
+                                ]
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "awaitingReview": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "published": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "retracted": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "provisional": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inTension": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            },
+                            "required": [
+                              "labelPolicy",
+                              "key",
+                              "kind",
+                              "label",
+                              "awaitingReview",
+                              "published",
+                              "retracted",
+                              "provisional",
+                              "inTension"
+                            ],
+                            "additionalProperties": false
                           },
-                          "label": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
-                          "labelPolicy": {
-                            "type": "string",
-                            "enum": [
-                              "intrinsic",
-                              "configured",
-                              "discovered"
-                            ]
-                          },
-                          "awaitingReview": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "published": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "retracted": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "provisional": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "inTension": {
-                            "type": "integer",
-                            "minimum": 0
+                          {
+                            "type": "object",
+                            "properties": {
+                              "labelPolicy": {
+                                "type": "string",
+                                "enum": [
+                                  "discovered"
+                                ]
+                              },
+                              "key": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "org",
+                                  "audience",
+                                  "role",
+                                  "user",
+                                  "malformed"
+                                ]
+                              },
+                              "awaitingReview": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "published": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "retracted": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "provisional": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "inTension": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            },
+                            "required": [
+                              "labelPolicy",
+                              "key",
+                              "kind",
+                              "awaitingReview",
+                              "published",
+                              "retracted",
+                              "provisional",
+                              "inTension"
+                            ],
+                            "additionalProperties": false
                           }
-                        },
-                        "required": [
-                          "key",
-                          "kind",
-                          "label",
-                          "labelPolicy",
-                          "awaitingReview",
-                          "published",
-                          "retracted",
-                          "provisional",
-                          "inTension"
-                        ],
-                        "additionalProperties": false
+                        ]
                       }
                     },
                     "workspaceTotals": {
@@ -25262,6 +25375,13 @@
                       "type": "integer",
                       "minimum": 0
                     },
+                    "countsConsistent": {
+                      "type": "boolean"
+                    },
+                    "distinctAudiences": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
                     "bucketsTruncated": {
                       "type": "boolean"
                     }
@@ -25270,6 +25390,8 @@
                     "buckets",
                     "workspaceTotals",
                     "reviewableAwaitingReview",
+                    "countsConsistent",
+                    "distinctAudiences",
                     "bucketsTruncated"
                   ],
                   "additionalProperties": false
@@ -59853,6 +59975,9 @@
                     "brainFactsWithheld": {
                       "type": "integer",
                       "minimum": 0
+                    },
+                    "brainFactsScopeUnavailable": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -59864,7 +59989,8 @@
                     "starterPrompts",
                     "knowledgeDocuments",
                     "brainFacts",
-                    "brainFactsWithheld"
+                    "brainFactsWithheld",
+                    "brainFactsScopeUnavailable"
                   ]
                 }
               }

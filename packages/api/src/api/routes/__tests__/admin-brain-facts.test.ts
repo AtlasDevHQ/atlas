@@ -132,10 +132,22 @@ let oversightResponse: Record<string, unknown> = {
   bucketsTruncated: false,
 };
 let oversightCalls = 0;
+/** The principal context the route handed the aggregate — see the test below. */
+let oversightCtx: unknown;
+// EVERY named export, not just the two this route reaches: `mock.module` is
+// file-global, so a partial factory link-fails the moment anything else in the
+// graph imports one of the omitted names.
 void mock.module("@atlas/api/lib/brain/oversight", () => ({
   OVERSIGHT_BUCKET_MAX: 200,
-  loadFactOversight: async () => {
+  OVERSIGHT_INSTALL_CONFIGS_SQL: "SELECT config FROM workspace_plugins",
+  OVERSIGHT_BUCKETS_SQL: "SELECT token FROM brain_facts",
+  OVERSIGHT_TOTALS_SQL: "SELECT 1 FROM brain_facts",
+  OVERSIGHT_DISTINCT_TOKENS_SQL: "SELECT 1 FROM brain_facts",
+  loadConfiguredChannels: async () => new Map(),
+  classifyToken: () => ({ kind: "org", labelPolicy: "intrinsic" }),
+  loadFactOversight: async (_db: unknown, ctx: unknown) => {
     oversightCalls++;
+    oversightCtx = ctx;
     return oversightResponse;
   },
 }));
@@ -199,6 +211,7 @@ beforeEach(() => {
   AUTH_USER = { id: "user-1", role: "member" };
   ORG_ID = CURRENT_ORG;
   oversightCalls = 0;
+  oversightCtx = undefined;
   oversightResponse = {
     buckets: [],
     workspaceTotals: {
@@ -209,6 +222,8 @@ beforeEach(() => {
       inTension: 0,
     },
     reviewableAwaitingReview: 0,
+    countsConsistent: true,
+    distinctAudiences: 0,
     bucketsTruncated: false,
   };
 });
@@ -399,7 +414,6 @@ describe("GET /oversight", () => {
         {
           key: "discovered-1",
           kind: "audience",
-          label: null,
           labelPolicy: "discovered",
           awaitingReview: 6,
           published: 0,
@@ -416,6 +430,8 @@ describe("GET /oversight", () => {
         inTension: 1,
       },
       reviewableAwaitingReview: 26,
+      countsConsistent: true,
+      distinctAudiences: 2,
       bucketsTruncated: false,
     };
 
@@ -427,6 +443,24 @@ describe("GET /oversight", () => {
     // exactly the false all-clear #4825 recorded.
     expect(body.reviewableAwaitingReview).toBe(26);
     expect((body.workspaceTotals as { awaitingReview: number }).awaitingReview).toBe(32);
+  });
+
+  it("hands the aggregate the reviewer's OWN member-table context", async () => {
+    // `reviewableAwaitingReview` is the denominator of the entire disclosure. A
+    // route that passed a fabricated or over-broad context — the session role
+    // instead of the member-table one, or a context carrying an audit override
+    // — would make the scoped count equal the unscoped one and collapse the
+    // delta to zero. Self-consistent, plausible, and the exact defect #4825
+    // records. Same pin the list route carries, for the same reason.
+    await adminBrainFacts.request("/oversight");
+    expect(oversightCtx).toEqual({
+      origin: "authenticated",
+      workspaceId: CURRENT_ORG,
+      userId: "user-1",
+      role: "admin",
+      audienceIds: [],
+    });
+    expect(JSON.stringify(oversightCtx)).not.toContain("override");
   });
 
   it("refuses to serve counts narrowed by a FAILED role lookup", async () => {
@@ -469,6 +503,32 @@ describe("GET /oversight", () => {
     const text = await res.text();
     expect(text).not.toContain("Snowflake");
     expect(text).not.toContain("Acme");
+  });
+
+  it("500s rather than shipping a withheld bucket that carries its label", async () => {
+    // The discriminated union's whole purpose, at the wire. `discovered` means
+    // the token must not travel — a producer that regressed to a flat
+    // `label: string | null` and forgot to null it would disclose the private
+    // channel this surface just refused to name.
+    oversightResponse = {
+      ...oversightResponse,
+      buckets: [
+        {
+          key: "discovered-1",
+          kind: "audience",
+          labelPolicy: "discovered",
+          label: "audience:chat-channel:slack:C0SECRET99",
+          awaitingReview: 6,
+          published: 0,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+        },
+      ],
+    };
+    const res = await adminBrainFacts.request("/oversight");
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain("C0SECRET99");
   });
 });
 

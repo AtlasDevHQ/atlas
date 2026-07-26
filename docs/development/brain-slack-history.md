@@ -106,8 +106,13 @@ deliberate, and the pairing is the decision.**
 ACL clause, so publishing promotes every live draft in the workspace — including
 ones the admin who pressed the button was never shown. `/admin/brain-facts`
 composes `aclVisibilityClause` and shows only what that reader may see. So
-`queue < what publish promotes` is the **correct** state, not a bug; the soak
-corpus checks exactly that (`brain-m1-soak-corpus.md` §D2, the 26 / 32 reading).
+`queue < what publish promotes` is the **correct** state, not a bug.
+
+The 2026-07-26 staging soak read **26 / 32** — 26 reviewable drafts against 32
+in the workspace, the delta being six facts from a private channel the admin was
+not a resolved member of. Each number was right; together they were
+inexplicable from the UI, which is what this section exists to fix.
+`oversight-pg.test.ts` reproduces that split against a live database.
 
 ### Why not reader-scoped publish
 
@@ -139,8 +144,17 @@ reappearing through identity resolution.
   (`lib/brain/oversight.ts`) reports per-audience counts by state — awaiting
   review, published, retracted, provisional, in tension — for the whole
   workspace, unscoped, **with no claim, evidence, provenance, or fact id**. It
-  carries the reader's own reviewable total in the same snapshot, so the hidden
-  backlog is a stable delta rather than two fetches that can disagree.
+  carries the reader's own reviewable total in the same *response*, so the
+  hidden backlog cannot flicker between two client fetches. The statements are
+  not transactionally consistent (a pool, no enclosing transaction), so a brief
+  ingest race can invert them; `countsConsistent: false` says so rather than
+  clamping the delta to a reassuring zero, and `distinctAudiences` carries the
+  true cardinality even when the bucket list is capped.
+
+  Note this is **not** ADR-0036's audit override. That is a reason-gated,
+  owner/admin-only, logged bypass over *content*, and this path deliberately
+  does not use it — no reason, no audit row, no `AclAuditOverride`. It is a
+  narrower thing: an unscoped **count**.
 
 An admin learns that facts exist they cannot see — a number, never content.
 

@@ -232,7 +232,7 @@ const oversightRoute = createRoute({
     "Counts every fact in the workspace grouped by the grant tokens it carries, regardless of who is asking — the deliberate counterpart to the reader-scoped review queue, so an admin can tell a clean queue from a backlog federated to somebody else. " +
     "Returns NUMBERS ONLY: no subject, predicate, object, provenance, episode body, or fact id can reach this response. " +
     "A bucket is labelled with its grant token only when naming it discloses nothing the admin does not already hold — `org` and `role:*` always, an `audience:` for a channel present in this workspace's install config, and never a `user:` or an audience Atlas discovered rather than the admin configured; those carry an opaque handle. " +
-    "`reviewableAwaitingReview` restates this reader's own queue total from the same snapshot, so the hidden-backlog delta cannot flicker between two fetches.",
+    "`reviewableAwaitingReview` restates this reader's own queue total in the same response, so the hidden-backlog delta cannot flicker between two client fetches. The statements are not transactionally consistent, so a brief ingest race can still invert them — `countsConsistent` reports that rather than clamping the delta to a reassuring zero. `distinctAudiences` is the true audience cardinality even when `buckets` is capped.",
   responses: {
     200: {
       description: "Per-audience counts by state, plus workspace totals",
@@ -355,10 +355,11 @@ adminBrainFacts.openapi(oversightRoute, async (c) => {
       const { mode, user, orgId } = yield* AuthContext;
       if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
 
-      // The reader context is resolved even though the counts do not use it.
-      // Two jobs: it produces `reviewableAwaitingReview`, and it makes an
-      // unresolvable identity a 500 rather than a workspace shape served to a
-      // session Atlas could not identify.
+      // The reader context is resolved even though the WORKSPACE counts do not
+      // use it. Two jobs: it produces the one scoped number
+      // (`reviewableAwaitingReview`), and it makes an unresolvable identity a
+      // 500 rather than a workspace shape served to a session Atlas could not
+      // identify.
       const ctx = yield* reviewerContext(mode, user, orgId, requestId);
       const oversight = yield* Effect.tryPromise({
         try: () => loadFactOversight(getInternalDB(), ctx, requestId),

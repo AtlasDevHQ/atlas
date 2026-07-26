@@ -44,7 +44,11 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
 import { matchScopeAcrossAliases } from "@atlas/api/lib/db/with-group-scope";
 import { aclVisibilityClause } from "@atlas/api/lib/brain/acl";
-import { resolveBrainReaderContext } from "@atlas/api/lib/brain/reader-context";
+import {
+  BrainReaderIdentityError,
+  resolveBrainReaderContext,
+} from "@atlas/api/lib/brain/reader-context";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
   brainFactPreviewSql,
   brainFactsCountSql,
@@ -121,6 +125,15 @@ const PublishPreviewSchema = z.object({
    * private-audience facts, which is the common case.
    */
   brainFactsWithheld: z.number().int().nonnegative(),
+  /**
+   * True when `brainFactsWithheld` means "Atlas could not establish what you
+   * may read" rather than "these are outside your audiences" (#4825).
+   *
+   * The two need different copy and only one of them is about Slack
+   * membership. Without this flag an infrastructure fault renders as a
+   * confident, false explanation above the publish button.
+   */
+  brainFactsScopeUnavailable: z.boolean(),
 });
 
 export type PublishPreview = z.infer<typeof PublishPreviewSchema>;
@@ -183,9 +196,20 @@ function toIso(value: Date | string | null | undefined): string {
 }
 
 /** The brain segment: reader-scoped labels plus the withheld remainder. */
-interface BrainFactSegment {
+export interface BrainFactSegment {
   readonly rows: readonly DbRow[];
   readonly withheld: number;
+  /**
+   * True when Atlas could not work out what this reader may see, so `withheld`
+   * is "all of them" for an INFRASTRUCTURE reason rather than an ACL one.
+   *
+   * It exists because the copy differs, and the wrong copy is a lie. Without
+   * it the modal tells an admin who can read every fact in the workspace that
+   * all of them came from channels they are not a member of — a confident,
+   * fabricated explanation, printed directly above the publish button, with no
+   * hint that anything failed.
+   */
+  readonly scopeUnavailable: boolean;
 }
 
 /**
@@ -199,18 +223,29 @@ interface BrainFactSegment {
  * than by two queries that happen to agree, and a drift between them becomes a
  * visible contradiction on one screen instead of a silent one across two.
  *
- * ## Never fails the whole preview
+ * ## An IDENTITY fault never fails the whole preview
  *
- * An identity fault — `resolveBrainReaderContext` throwing, or a `deny-all`
- * clause — degrades this segment to "nothing shown, everything withheld" and
- * logs. That is fail-CLOSED for the confidentiality question (a reader whose
- * grants could not be established is shown no claim at all) while leaving the
- * other seven surfaces intact: an admin must not lose the ability to publish
- * their semantic layer because a brain ACL lookup blipped. The withheld count
- * still reports the real blast radius, which is the number that governs the
- * decision they are about to make.
+ * A reader whose grants cannot be established — `resolveBrainReaderContext`
+ * raising a `BrainReaderIdentityError`, or a `deny-all` clause — degrades this
+ * segment to "nothing shown, everything withheld, scope unavailable" and logs.
+ * Fail-CLOSED for confidentiality, while leaving the other seven surfaces
+ * intact: an admin must not lose the ability to publish their semantic layer
+ * because a brain ACL lookup blipped, and the withheld count still reports the
+ * real blast radius.
+ *
+ * Everything else PROPAGATES, and the whole preview 500s with a requestId like
+ * any other surface here. That includes `aclVisibilityClause`'s own throws
+ * (a bad `paramIndex`, an unsafe alias) — those are defects on constant inputs,
+ * not ACL outcomes, and degrading on them would bury a programming error under
+ * a confidentiality message. A DB fault on either statement propagates too;
+ * this function is not a shield against those.
+ *
+ * Exported for `__tests__/admin-publish-preview.test.ts`: both degraded arms
+ * return the same shape as the happy path, so a refactor that "simplified"
+ * either into `withheld: 0` would restore #4825's defect and pass a suite that
+ * only tested the route end to end.
  */
-async function loadBrainFactSegment(
+export async function loadBrainFactSegment(
   orgId: string,
   mode: AuthMode,
   user: AtlasUser | undefined,
@@ -219,10 +254,22 @@ async function loadBrainFactSegment(
   // Total first: it is unscoped, so it is meaningful even when the scoped half
   // cannot run at all — which is exactly the degraded path below.
   const totalRows = await internalQuery<{ n: number }>(brainFactsCountSql("$1"), [orgId]);
-  const total = Number(totalRows[0]?.n ?? 0);
+  const rawTotal = totalRows[0]?.n;
+  const total = Number(rawTotal);
+  if (!Number.isFinite(total) || total < 0) {
+    // Silently treating this as 0 would drop `WithheldFactsNotice` and put
+    // "Publish all (N)" on a button that promotes more — #4825's defect,
+    // reproduced without a trace, precisely when the count query is
+    // misbehaving. The admin cannot see the scope, so they must not be shown a
+    // confident preview.
+    throw new Error(
+      `publish preview: the brain-fact draft count did not read back as a number for workspace ${orgId} — refusing to report a scope Atlas cannot establish`,
+    );
+  }
   const withheldAll: BrainFactSegment = {
     rows: [],
-    withheld: Number.isFinite(total) && total > 0 ? Math.trunc(total) : 0,
+    withheld: Math.trunc(total),
+    scopeUnavailable: true,
   };
 
   let aclSql: string;
@@ -250,12 +297,11 @@ async function loadBrainFactSegment(
     aclSql = acl.sql;
     aclParams = acl.params;
   } catch (err) {
+    // ONLY an identity failure degrades. Anything else is a defect or an
+    // outage, and laundering it into a confidentiality message would hide it.
+    if (!(err instanceof BrainReaderIdentityError)) throw err;
     log.warn(
-      {
-        workspaceId: orgId,
-        requestId,
-        error: err instanceof Error ? err.message : String(err),
-      },
+      { workspaceId: orgId, requestId, err: errorMessage(err) },
       "publish preview: could not resolve the brain reader's grants — listing no claims rather than risking one this admin may not read",
     );
     return withheldAll;
@@ -263,12 +309,28 @@ async function loadBrainFactSegment(
 
   const rows = await internalQuery<DbRow>(brainFactPreviewSql(aclSql), [...aclParams]);
 
+  if (rows.length > withheldAll.withheld) {
+    // Ordinarily the ingest race below. But the scoped projection derives its
+    // ENTIRE tenant boundary from the interpolated `aclSql`, so this is also
+    // what a regression that dropped `workspace_id` from the `grant-match` arm
+    // would look like — cross-workspace rows arriving here. The clamp would
+    // absorb that silently, so it is logged before it is clamped.
+    log.warn(
+      { workspaceId: orgId, requestId, shown: rows.length, workspaceTotal: withheldAll.withheld },
+      "publish preview: the reader-scoped fact projection returned more rows than the workspace draft count — a brief ingest race, or the scoped statement is reaching outside the workspace; reporting 0 withheld",
+    );
+  }
+
   // `Math.max(0, …)` because the two halves are separate statements and a fact
   // ingested between them would otherwise render as a NEGATIVE withheld count.
   // Clamping is right HERE, unlike in the oversight aggregate: this number is
   // the modal's "and N more you cannot see", where the honest answer under a
   // race is "none extra that we know of" rather than a nonsense figure.
-  return { rows, withheld: Math.max(0, withheldAll.withheld - rows.length) };
+  return {
+    rows,
+    withheld: Math.max(0, withheldAll.withheld - rows.length),
+    scopeUnavailable: false,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +514,7 @@ async function buildPreview(
         updatedAt: toIso(r.updated_at),
       })),
       brainFactsWithheld: brainFactSegment.withheld,
+      brainFactsScopeUnavailable: brainFactSegment.scopeUnavailable,
     };
 
     return response;

@@ -2,12 +2,25 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "milestone/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "milestone/**"]
   # Manual lever: lets an operator/agent re-create required check runs when
   # GitHub drops pull_request event deliveries (observed 2026-06-10 on #3358).
   workflow_dispatch:
+
+# `milestone/**` is the long-running integration-branch namespace (first user:
+# `milestone/v0.2.0-brain-m1`). Without it, a PR stacked onto a milestone branch
+# would run ZERO required checks — branch protection is `main`-only, so nothing
+# else would catch a regression until the whole milestone landed on `main` in one
+# merge. The `push:` half is deliberate too: it gives the milestone branch a
+# post-merge integration signal, which is what catches a semantic conflict
+# between two stacked PRs that were each green in isolation.
+#
+# Caveat, by design: `Analyze (javascript-typescript)` (CodeQL default setup) is
+# `main`-only and cannot be branch-filtered here, so milestone-branch PRs are
+# gated by everything EXCEPT CodeQL. It runs on the milestone branch's own PR
+# into `main`, which is the merge that matters for that gate.
 
 permissions:
   contents: read

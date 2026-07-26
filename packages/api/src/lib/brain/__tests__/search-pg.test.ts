@@ -26,6 +26,20 @@
  *      behavior, and the only thing a fresh deployment returns.
  *   6. **Does content mode actually hide a draft fact?**
  *
+ * ## What the ACL assertions here do NOT prove
+ *
+ * The reader contexts below are HAND-BUILT: `audienceIds` is a literal, and
+ * `searchBrainCore` consumes `ctx.audienceIds` as given — it never re-resolves
+ * membership. So every ACL claim in this file is a statement about the SQL
+ * PREDICATE given a context, not about how that context came to be. Seeding a
+ * `fact_audience_member` row here would be inert; its absence is deliberate.
+ *
+ * The other half — that a real principal resolves to the audience ids assumed
+ * here — is proven in `acl-visibility-pg.test.ts` and `wedge-loop-pg.test.ts`,
+ * which build their contexts through `resolvePrincipalContext(pool, …)`. Read
+ * this file as predicate coverage; do not read it as end-to-end ACL proof, and
+ * if you add a case that turns on membership RESOLUTION, put it there instead.
+ *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
  */

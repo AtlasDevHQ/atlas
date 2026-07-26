@@ -306,7 +306,12 @@ export interface BrainFactCandidateSummary {
  * (warehouse facts resolve live through the semantic layer and are
  * `executeSQL`'s), so it can never appear here.
  *
- * `document` is the class that makes the two axes distinct: a KB document is
+ * (Not to be confused with the "two different axes" of `lib/knowledge/search.ts`,
+ * which names what GATED a row — content-mode alone vs. content-mode + ACL.
+ * That is a third, orthogonal distinction; the pairing here is result class vs.
+ * trust ordering.)
+ *
+ * `document` is the class that separates result class from trust ordering: a KB document is
  * ADR-0028 descriptive prose, not a claim about the world, so it has no
  * position in a truth ordering at all. Its {@link BrainDocumentResult.trustTier}
  * is `null` rather than an invented 4 — a number would imply "less

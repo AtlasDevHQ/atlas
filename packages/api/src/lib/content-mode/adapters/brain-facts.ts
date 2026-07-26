@@ -170,6 +170,44 @@ export function brainFactsCountSql(orgParam: string): string {
 }
 
 /**
+ * The publish preview's label projection — the drafts about to be promoted,
+ * rendered as the SPO claim, GATED BY THE READER'S GRANTS (#4825).
+ *
+ * ## Why it is gated when the promote beside it is not
+ *
+ * The label IS the claim. `DRAFT_FACTS_SQL` above promotes every draft in the
+ * workspace and that is deliberate — a reader-scoped promote would strand a
+ * private channel's facts forever, with no resolvable reviewer to publish them.
+ * But an unscoped LABEL query is a different thing entirely: it hands an admin
+ * the exact claims `/admin/brain-facts` had just refused to show them, one
+ * modal over. That is what this SQL used to be, and it is what `aclVisibilityClause`
+ * on the caller's side now stops.
+ *
+ * The count the preview pairs it with comes from {@link brainFactsCountSql} —
+ * the SAME statement `/api/v1/mode` `draftCounts.brainFacts` uses. Anchoring the
+ * unscoped half there makes the modal's arithmetic (`shown + withheld` equals
+ * the pending badge) true by construction rather than by two queries that
+ * happen to agree.
+ *
+ * `aclSql` must alias the fact table `f` and is interpolated, so callers pass a
+ * clause they built — same contract as `brainFactStatusClause`.
+ *
+ * Lives here rather than in the route so the `-pg` suite runs THIS string
+ * against the live schema. It used to be hand-copied into the test, which is
+ * how a projection with no unit test drifts from the one that ships.
+ */
+export function brainFactPreviewSql(aclSql: string): string {
+  return `SELECT f.id::text AS id,
+                f.subject || ' ' || f.predicate || ' ' || f.object AS label,
+                f.updated_at
+           FROM brain_facts f
+          WHERE ${aclSql}
+            AND f.status = 'draft'
+            AND f.invalidated_at IS NULL
+          ORDER BY f.updated_at DESC`;
+}
+
+/**
  * Narrow one `pg` row to the classifier's input.
  *
  * Returns `null` when the row has no usable `id`, which would make a refusal

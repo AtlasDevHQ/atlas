@@ -17,14 +17,44 @@
  * semantic_entities (drafts, draft-edits, and tombstoned deletes). Adding a new
  * mode-tracked surface means widening the response schema below in lockstep
  * with `CONTENT_MODE_TABLES`.
+ *
+ * ## One surface is ACL-gated on top of content mode: `brain_facts` (#4825)
+ *
+ * Every other surface here is workspace-scoped and that is the whole story —
+ * an entity or a prompt has no audience narrower than the org. A brain fact
+ * does: `visible_to` can name a private channel's audience, and the review
+ * queue at `/admin/brain-facts` refuses to show an admin claims from a channel
+ * they were never in (ADR-0036 — a platform role confers no brain grant).
+ *
+ * This preview used to select `subject || predicate || object` for every draft
+ * in the workspace, which handed that same admin the exact claims the review
+ * queue had just withheld, one modal over. So the brain segment now composes
+ * `aclVisibilityClause` for its LABELS and reports the remainder as
+ * {@link PublishPreview.brainFactsWithheld} — a number, never content. Publish
+ * itself stays workspace-scoped and still promotes all of them; that scope is
+ * exactly what the count exists to state before the click, rather than after it
+ * in a response the admin has no way to interpret.
  */
 
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
-import { internalQuery } from "@atlas/api/lib/db/internal";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
+import { createLogger } from "@atlas/api/lib/logger";
+import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
 import { matchScopeAcrossAliases } from "@atlas/api/lib/db/with-group-scope";
+import { aclVisibilityClause } from "@atlas/api/lib/brain/acl";
+import { resolveBrainReaderContext } from "@atlas/api/lib/brain/reader-context";
+import {
+  brainFactPreviewSql,
+  brainFactsCountSql,
+} from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import type { AtlasUser } from "@atlas/api/lib/auth/types";
+import type { AuthMode } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
+
+const log = createLogger("admin-publish-preview");
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -75,8 +105,22 @@ const PublishPreviewSchema = z.object({
    * lists what publish will CONSIDER, and a refused fact is still considered
    * (and still a draft afterwards). The refusal itself is reported by the
    * publish response, which is where the verdict is actually reached.
+   *
+   * SCOPED TO THIS READER'S GRANTS (#4825), unlike every other array here.
+   * See the module header. `brainFacts.length` is therefore NOT what publish
+   * will promote — that is `brainFacts.length + brainFactsWithheld`.
    */
   brainFacts: z.array(DraftRowSchema),
+  /**
+   * Draft facts publish WILL promote and this reader may NOT read (#4825).
+   *
+   * A separate number rather than padded rows, because there is no honest row
+   * to render: the claim is the only identity a fact has, and a placeholder row
+   * carrying a fact id would disclose which facts exist without disclosing
+   * what they say — the worst of both. Zero for every workspace with no
+   * private-audience facts, which is the common case.
+   */
+  brainFactsWithheld: z.number().int().nonnegative(),
 });
 
 export type PublishPreview = z.infer<typeof PublishPreviewSchema>;
@@ -138,6 +182,95 @@ function toIso(value: Date | string | null | undefined): string {
   return new Date(0).toISOString();
 }
 
+/** The brain segment: reader-scoped labels plus the withheld remainder. */
+interface BrainFactSegment {
+  readonly rows: readonly DbRow[];
+  readonly withheld: number;
+}
+
+/**
+ * Load the brain-fact segment of the preview.
+ *
+ * The labels go through `aclVisibilityClause`; the TOTAL goes through
+ * `brainFactsCountSql` — the same statement that feeds `/api/v1/mode`
+ * `draftCounts.brainFacts`. Anchoring the unscoped half to the count the mode
+ * chip already shows is deliberate: the modal's arithmetic
+ * (`shown + withheld = the pending badge`) is then true by construction rather
+ * than by two queries that happen to agree, and a drift between them becomes a
+ * visible contradiction on one screen instead of a silent one across two.
+ *
+ * ## Never fails the whole preview
+ *
+ * An identity fault — `resolveBrainReaderContext` throwing, or a `deny-all`
+ * clause — degrades this segment to "nothing shown, everything withheld" and
+ * logs. That is fail-CLOSED for the confidentiality question (a reader whose
+ * grants could not be established is shown no claim at all) while leaving the
+ * other seven surfaces intact: an admin must not lose the ability to publish
+ * their semantic layer because a brain ACL lookup blipped. The withheld count
+ * still reports the real blast radius, which is the number that governs the
+ * decision they are about to make.
+ */
+async function loadBrainFactSegment(
+  orgId: string,
+  mode: AuthMode,
+  user: AtlasUser | undefined,
+  requestId: string | undefined,
+): Promise<BrainFactSegment> {
+  // Total first: it is unscoped, so it is meaningful even when the scoped half
+  // cannot run at all — which is exactly the degraded path below.
+  const totalRows = await internalQuery<{ n: number }>(brainFactsCountSql("$1"), [orgId]);
+  const total = Number(totalRows[0]?.n ?? 0);
+  const withheldAll: BrainFactSegment = {
+    rows: [],
+    withheld: Number.isFinite(total) && total > 0 ? Math.trunc(total) : 0,
+  };
+
+  let aclSql: string;
+  let aclParams: readonly unknown[];
+  try {
+    const ctx = await resolveBrainReaderContext(getInternalDB(), {
+      workspaceId: orgId,
+      mode,
+      user,
+      requestId,
+    });
+    const acl = aclVisibilityClause(ctx, {
+      table: "brain_facts",
+      alias: "f",
+      paramIndex: 1,
+      requestId,
+    });
+    if (acl.decision === "deny-all") {
+      log.warn(
+        { workspaceId: orgId, requestId, origin: ctx.origin },
+        "publish preview: brain reader resolved to no principals — listing no claims; the withheld count still reports what publish would promote",
+      );
+      return withheldAll;
+    }
+    aclSql = acl.sql;
+    aclParams = acl.params;
+  } catch (err) {
+    log.warn(
+      {
+        workspaceId: orgId,
+        requestId,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      "publish preview: could not resolve the brain reader's grants — listing no claims rather than risking one this admin may not read",
+    );
+    return withheldAll;
+  }
+
+  const rows = await internalQuery<DbRow>(brainFactPreviewSql(aclSql), [...aclParams]);
+
+  // `Math.max(0, …)` because the two halves are separate statements and a fact
+  // ingested between them would otherwise render as a NEGATIVE withheld count.
+  // Clamping is right HERE, unlike in the oversight aggregate: this number is
+  // the modal's "and N more you cannot see", where the honest answer under a
+  // race is "none extra that we know of" rather than a nonsense figure.
+  return { rows, withheld: Math.max(0, withheldAll.withheld - rows.length) };
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -145,10 +278,34 @@ function toIso(value: Date | string | null | undefined): string {
 const adminPublishPreview = createAdminRouter();
 adminPublishPreview.use(requireOrgContext());
 
+// `runEffect` rather than `runHandler`: the brain segment needs the reader's
+// identity to gate its labels, and `AuthContext` is where that lives. Reading
+// `c.get("authResult")` inside the handler would work and would reintroduce
+// exactly the runtime `c.get()` the context layer exists to replace.
 adminPublishPreview.openapi(previewRoute, async (c) =>
-  runHandler(c, "preview publish", async () => {
-    const { orgId } = c.get("orgContext");
+  runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user } = yield* AuthContext;
+      const { orgId } = c.get("orgContext");
+      const preview = yield* Effect.tryPromise({
+        try: () => buildPreview(orgId, mode, user, requestId),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+      return c.json(preview, 200);
+    }),
+    { label: "preview publish" },
+  ),
+);
 
+async function buildPreview(
+  orgId: string,
+  mode: AuthMode,
+  user: AtlasUser | undefined,
+  requestId: string | undefined,
+): Promise<PublishPreview> {
+  {
     // Fan out one query per surface — runs in parallel via Promise.all.
     // Each query is indexed on `(org_id, status)` (see migration
     // `0044_content_mode_indexes.sql`) so the planner uses an index scan
@@ -161,7 +318,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       promptRows,
       starterPromptRows,
       knowledgeRows,
-      brainFactRows,
+      brainFactSegment,
     ] = await Promise.all([
       internalQuery<DbRow>(
         `SELECT install_id AS id, install_id AS label, updated_at
@@ -247,17 +404,9 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       ),
       // Brain facts label on the SPO claim itself — a fact has no name, and
       // "subject predicate object" is how a reviewer recognises the claim they
-      // are about to publish. Served by `idx_brain_facts_status`
-      // (workspace_id, status).
-      internalQuery<DbRow>(
-        `SELECT id::text AS id,
-                subject || ' ' || predicate || ' ' || object AS label,
-                updated_at
-           FROM brain_facts
-          WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL
-          ORDER BY updated_at DESC`,
-        [orgId],
-      ),
+      // are about to publish. THE ONE ACL-GATED SEGMENT: see the module header
+      // and `loadBrainFactSegment`.
+      loadBrainFactSegment(orgId, mode, user, requestId),
     ]);
 
     const response: PublishPreview = {
@@ -297,15 +446,16 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
         label: r.label,
         updatedAt: toIso(r.updated_at),
       })),
-      brainFacts: brainFactRows.map((r) => ({
+      brainFacts: brainFactSegment.rows.map((r) => ({
         id: r.id,
         label: r.label,
         updatedAt: toIso(r.updated_at),
       })),
+      brainFactsWithheld: brainFactSegment.withheld,
     };
 
-    return c.json(response, 200);
-  }),
-);
+    return response;
+  }
+}
 
 export { adminPublishPreview };

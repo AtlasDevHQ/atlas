@@ -120,6 +120,7 @@ function candidate(overrides: Record<string, unknown> = {}) {
 /** Every URL the page is allowed to touch. */
 const ALLOWED = [
   /\/api\/v1\/admin\/brain-facts\/summary$/,
+  /\/api\/v1\/admin\/brain-facts\/oversight$/,
   /\/api\/v1\/admin\/brain-facts\/[^/]+\/retract$/,
   /\/api\/v1\/admin\/brain-facts(\?|$)/,
   /\/api\/v1\/admin\/publish-preview$/,
@@ -130,6 +131,27 @@ const ALLOWED = [
 let requested: Array<{ url: string; method: string }> = [];
 /** Status the retract POST answers with. */
 let retractStatus = 200;
+
+/**
+ * The oversight payload (#4825). Defaults to "nothing hidden", so the
+ * disclosure's ABSENCE is the baseline every other test in this file renders
+ * against — a panel that shouted at an admin with a fully visible queue would
+ * be as wrong as one that stayed silent on a hidden backlog.
+ */
+let oversight: Record<string, unknown> = {
+  buckets: [],
+  workspaceTotals: {
+    awaitingReview: 3,
+    published: 12,
+    retracted: 0,
+    provisional: 1,
+    inTension: 1,
+  },
+  reviewableAwaitingReview: 3,
+  bucketsTruncated: false,
+};
+/** Withheld brain-fact count the publish preview reports. */
+let withheldFacts = 0;
 
 function mockApi(
   candidates: Array<Record<string, unknown>>,
@@ -153,6 +175,11 @@ function mockApi(
         jsonResponse({ draftTotal: 3, provisionalTotal: 1, inTensionTotal: 1, publishedTotal: 12 }),
       );
     }
+    // BEFORE the bare `/brain-facts` arm: `.includes` would otherwise match the
+    // list endpoint and answer the oversight fetch with a candidate page.
+    if (url.includes("/api/v1/admin/brain-facts/oversight")) {
+      return Promise.resolve(jsonResponse(oversight));
+    }
     if (url.includes("/api/v1/admin/brain-facts")) {
       return Promise.resolve(
         jsonResponse({
@@ -173,6 +200,7 @@ function mockApi(
           starterPrompts: [],
           knowledgeDocuments: [],
           brainFacts: [],
+          brainFactsWithheld: withheldFacts,
         }),
       );
     }
@@ -186,6 +214,19 @@ function mockApi(
 beforeEach(() => {
   requested = [];
   retractStatus = 200;
+  withheldFacts = 0;
+  oversight = {
+    buckets: [],
+    workspaceTotals: {
+      awaitingReview: 3,
+      published: 12,
+      retracted: 0,
+      provisional: 1,
+      inTension: 1,
+    },
+    reviewableAwaitingReview: 3,
+    bucketsTruncated: false,
+  };
   testQueryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } },
   });
@@ -598,5 +639,104 @@ describe("queue vitals", () => {
 
     const view = render(createElement(BrainFactsPage), { wrapper: Wrapper });
     await waitFor(() => expect(view.container.textContent).toContain("Couldn't load queue totals"));
+  });
+});
+
+describe("hidden-backlog disclosure (#4825)", () => {
+  test("stays silent when this reader can review the whole workspace", async () => {
+    // The baseline, and it has to be asserted: a panel that always claimed
+    // something was hidden would "pass" every test below while telling every
+    // admin in every workspace something untrue.
+    const view = await renderPage([candidate()]);
+    expect(view.container.textContent ?? "").not.toContain("not in your queue");
+  });
+
+  test("states the delta when the workspace holds drafts this reader cannot see", async () => {
+    // The 26 / 32 soak reading, at the surface an admin actually looks at.
+    oversight = {
+      buckets: [
+        {
+          key: "org",
+          kind: "org",
+          label: "org",
+          labelPolicy: "intrinsic",
+          awaitingReview: 26,
+          published: 40,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+        },
+      ],
+      workspaceTotals: {
+        awaitingReview: 32,
+        published: 40,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 26,
+      bucketsTruncated: false,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain(
+        "6 drafts awaiting review are not in your queue",
+      ),
+    );
+    // And it says publish reaches them anyway — the half that changes what the
+    // admin does next. A number with no consequence attached is trivia.
+    expect(view.container.textContent ?? "").toContain("workspace-wide");
+  });
+
+  test("never renders an audience the API withheld", async () => {
+    // The API sends `label: null` and no id at all, so the panel has nothing to
+    // leak — this pins that it does not invent one from `key` or from the kind.
+    oversight = {
+      buckets: [
+        {
+          key: "discovered-1",
+          kind: "audience",
+          label: null,
+          labelPolicy: "discovered",
+          awaitingReview: 6,
+          published: 0,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+        },
+      ],
+      workspaceTotals: {
+        awaitingReview: 9,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 3,
+      bucketsTruncated: false,
+    };
+    const view = await renderPage([candidate()]);
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("not in your queue"));
+    clickButton(view, /Workspace breakdown/i);
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("discovered-1"));
+    // The counts are there; the channel is not.
+    expect(view.container.textContent ?? "").toContain("6");
+    expect(view.container.textContent ?? "").not.toContain("chat-channel");
+  });
+
+  test("the publish modal states the withheld count BEFORE the confirm button", async () => {
+    // The acceptance criterion in as many words: an admin must not learn the
+    // blast radius from the response.
+    withheldFacts = 6;
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Review & publish/i);
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("6 brain facts here aren't shown to you"),
+    );
+    // Folded into the button, so the number the admin confirms is the real one.
+    const confirm = Array.from(document.body.querySelectorAll("button")).find((b) =>
+      /Publish all/.test(b.textContent ?? ""),
+    );
+    expect(confirm?.textContent).toContain("6");
   });
 });

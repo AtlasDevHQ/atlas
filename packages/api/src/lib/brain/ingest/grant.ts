@@ -60,6 +60,44 @@ export function chatChannelAudienceId(source: string, channelId: string): string
   return `${CHAT_CHANNEL_AUDIENCE_NAMESPACE}:${source}:${channelId}`;
 }
 
+/** The two halves {@link chatChannelAudienceId} joins. */
+export interface ChatChannelAudienceParts {
+  readonly source: string;
+  readonly channelId: string;
+}
+
+/**
+ * The INVERSE of {@link chatChannelAudienceId} — take an audience id apart
+ * again, or `null` when it does not name a chat channel at all.
+ *
+ * Added for #4825's oversight view, which has to answer "did the admin
+ * configure this audience, or did Atlas discover it?" — and answers it by
+ * testing the channel id against the install config's channel list.
+ *
+ * It reads the id apart rather than re-BUILDING one to compare against, and
+ * that direction is the whole reason it can live here safely. {@link
+ * deriveChatChannelGrant}'s comment warns against calling
+ * `chatChannelAudienceId` from a second place, because a second MINTER can
+ * disagree with the first about which id a channel gets and the disagreement is
+ * silent. A parser cannot: it consumes ids the deriver already produced, and if
+ * the format changed under it, it stops matching and the labels fall back to
+ * opaque — which is the fail-CLOSED direction for a disclosure decision. The
+ * round trip is pinned by test so that fallback is never reached by accident.
+ *
+ * `channelId` takes the REMAINDER after the second separator rather than
+ * splitting on every `:`. A vendor id containing a colon would otherwise be
+ * truncated into a prefix that matches no configured channel — again fail-closed,
+ * but for a reason nobody could find.
+ */
+export function parseChatChannelAudienceId(audienceId: string): ChatChannelAudienceParts | null {
+  const namespacePrefix = `${CHAT_CHANNEL_AUDIENCE_NAMESPACE}:`;
+  if (!audienceId.startsWith(namespacePrefix)) return null;
+  const rest = audienceId.slice(namespacePrefix.length);
+  const separator = rest.indexOf(":");
+  if (separator <= 0 || separator === rest.length - 1) return null;
+  return { source: rest.slice(0, separator), channelId: rest.slice(separator + 1) };
+}
+
 /** The visibility facts a chat channel exposes, normalised across vendors. */
 export interface ChatChannelVisibility {
   /** The connector class (`brain_episodes.source`), e.g. `slack`. */

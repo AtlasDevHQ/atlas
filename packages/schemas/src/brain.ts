@@ -30,6 +30,11 @@ import type {
   BrainFactCandidateListResponse,
   BrainFactCandidateSummary,
   BrainFactEpisodeView,
+  BrainFactOversight,
+  BrainFactOversightBucket,
+  BrainFactOversightBucketKind,
+  BrainFactOversightLabelPolicy,
+  BrainFactOversightTotals,
   BrainFactPromotionBlock,
   BrainFactProvenanceView,
   BrainFactRetractResponse,
@@ -254,3 +259,83 @@ export const BrainFactRetractResponseSchema = z.object({
   id: z.string(),
   invalidatedAt: z.string(),
 }) satisfies z.ZodType<BrainFactRetractResponse, unknown>;
+
+// ---------------------------------------------------------------------------
+// Admin oversight — counts without content (#4825)
+// ---------------------------------------------------------------------------
+
+export const BRAIN_FACT_OVERSIGHT_BUCKET_KINDS = [
+  "org",
+  "audience",
+  "role",
+  "user",
+  "malformed",
+] as const satisfies readonly BrainFactOversightBucketKind[];
+
+/** Compile error if a kind joins the union without joining the tuple. */
+type _BrainOversightKindsCovered = [
+  Exclude<BrainFactOversightBucketKind, (typeof BRAIN_FACT_OVERSIGHT_BUCKET_KINDS)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainOversightKindsCovered: _BrainOversightKindsCovered = true;
+void _brainOversightKindsCovered;
+
+export const BRAIN_FACT_OVERSIGHT_LABEL_POLICIES = [
+  "intrinsic",
+  "configured",
+  "discovered",
+] as const satisfies readonly BrainFactOversightLabelPolicy[];
+
+/** Compile error if a policy joins the union without joining the tuple. */
+type _BrainOversightPoliciesCovered = [
+  Exclude<BrainFactOversightLabelPolicy, (typeof BRAIN_FACT_OVERSIGHT_LABEL_POLICIES)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainOversightPoliciesCovered: _BrainOversightPoliciesCovered = true;
+void _brainOversightPoliciesCovered;
+
+/**
+ * `z.strictObject`, and that is the enforcement rather than a convention.
+ *
+ * This is the surface whose whole contract is COUNTS AND NO CONTENT. The
+ * envelope schemas elsewhere in this file are `z.object`, which STRIPS an extra
+ * key — so a future producer that helpfully attached `subject` to a bucket
+ * would ship a response that quietly dropped it in one direction and, the day
+ * somebody widened the type, carried it. Strict makes that a 500 at the route's
+ * `checked()` call — i.e. it fails AT the confidentiality boundary, loudly,
+ * instead of at whichever consumer noticed first.
+ *
+ * `label` is `string | null` and is the ONE free-text field here. It carries a
+ * grant token (`org`, `audience:chat-channel:slack:C0…`) and never a claim: the
+ * producer nulls it whenever the label policy is `discovered`. The
+ * no-content property is pinned by test, because a schema cannot tell a channel
+ * id from a sentence.
+ */
+export const BrainFactOversightBucketSchema = z.strictObject({
+  key: z.string(),
+  kind: z.enum(BRAIN_FACT_OVERSIGHT_BUCKET_KINDS),
+  label: z.string().nullable(),
+  labelPolicy: z.enum(BRAIN_FACT_OVERSIGHT_LABEL_POLICIES),
+  awaitingReview: z.number().int().nonnegative(),
+  published: z.number().int().nonnegative(),
+  retracted: z.number().int().nonnegative(),
+  provisional: z.number().int().nonnegative(),
+  inTension: z.number().int().nonnegative(),
+}) satisfies z.ZodType<BrainFactOversightBucket, unknown>;
+
+export const BrainFactOversightTotalsSchema = z.strictObject({
+  awaitingReview: z.number().int().nonnegative(),
+  published: z.number().int().nonnegative(),
+  retracted: z.number().int().nonnegative(),
+  provisional: z.number().int().nonnegative(),
+  inTension: z.number().int().nonnegative(),
+}) satisfies z.ZodType<BrainFactOversightTotals, unknown>;
+
+export const BrainFactOversightSchema = z.strictObject({
+  buckets: z.array(BrainFactOversightBucketSchema),
+  workspaceTotals: BrainFactOversightTotalsSchema,
+  reviewableAwaitingReview: z.number().int().nonnegative(),
+  bucketsTruncated: z.boolean(),
+}) satisfies z.ZodType<BrainFactOversight, unknown>;

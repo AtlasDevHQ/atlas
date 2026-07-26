@@ -89,6 +89,11 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
   CANDIDATE_PAGE_MAX: 200,
   EPISODE_BODY_MAX_CHARS: 4000,
   TENSION_FANOUT_CAP: 500,
+  // SQL fragments, not behaviour — but they must be listed all the same:
+  // `mock.module` is file-global, so a partial factory link-fails the moment
+  // anything in the graph imports a name this object omits.
+  PROVISIONAL_PREDICATE: "(TRUE)",
+  TENSION_EXISTS_SELECT: "(TRUE)",
   projectProvenance: () => ({}),
   loadFactCandidates: async (_db: unknown, options: Record<string, unknown>) => {
     listCalls.push(options);
@@ -101,6 +106,38 @@ void mock.module("@atlas/api/lib/brain/candidates", () => ({
     publishedTotal: 7,
   }),
   retractFactCandidate: async () => retractResult,
+}));
+
+/**
+ * The oversight aggregate, stubbed so the ROUTE's own obligations are what these
+ * tests exercise: that it resolves a reader context at all, and that it runs the
+ * payload through `checked()` before it goes out. The aggregate's own rules —
+ * which tokens may be named, the ordinals, the SQL — are pinned in
+ * `lib/brain/__tests__/oversight.test.ts` against the real module.
+ *
+ * Mutable so a test can make the read model emit a payload the wire schema must
+ * refuse; that is the only way to prove `checked()` is load-bearing here rather
+ * than decorative.
+ */
+let oversightResponse: Record<string, unknown> = {
+  buckets: [],
+  workspaceTotals: {
+    awaitingReview: 0,
+    published: 0,
+    retracted: 0,
+    provisional: 0,
+    inTension: 0,
+  },
+  reviewableAwaitingReview: 0,
+  bucketsTruncated: false,
+};
+let oversightCalls = 0;
+void mock.module("@atlas/api/lib/brain/oversight", () => ({
+  OVERSIGHT_BUCKET_MAX: 200,
+  loadFactOversight: async () => {
+    oversightCalls++;
+    return oversightResponse;
+  },
 }));
 
 void mock.module("../admin-router", () => ({
@@ -161,6 +198,19 @@ beforeEach(() => {
   retractResult = { id: "fact-1", invalidatedAt: "2026-07-01T00:00:00.000Z" };
   AUTH_USER = { id: "user-1", role: "member" };
   ORG_ID = CURRENT_ORG;
+  oversightCalls = 0;
+  oversightResponse = {
+    buckets: [],
+    workspaceTotals: {
+      awaitingReview: 0,
+      published: 0,
+      retracted: 0,
+      provisional: 0,
+      inTension: 0,
+    },
+    reviewableAwaitingReview: 0,
+    bucketsTruncated: false,
+  };
 });
 
 const FACT_ID = "11111111-2222-4333-8444-555555555555";
@@ -288,6 +338,7 @@ describe("no active organization", () => {
 
     expect((await adminBrainFacts.request("/")).status).toBe(400);
     expect((await adminBrainFacts.request("/summary")).status).toBe(400);
+    expect((await adminBrainFacts.request("/oversight")).status).toBe(400);
     expect(
       (await adminBrainFacts.request(`/${FACT_ID}/retract`, { method: "POST" })).status,
     ).toBe(400);
@@ -296,6 +347,11 @@ describe("no active organization", () => {
     // withdrawn across a tenant boundary that was never established.
     expect(listCalls).toHaveLength(0);
     expect(auditRows).toHaveLength(0);
+    // `/oversight` counts WITHOUT a reader predicate, so an org-less request
+    // reaching it would count some other tenant's facts — the one verb here
+    // where a missing tenant boundary is a cross-tenant read rather than an
+    // empty one.
+    expect(oversightCalls).toBe(0);
   });
 
   it("uses the canonical org-less body, with the requestId", async () => {
@@ -322,6 +378,97 @@ describe("GET /summary", () => {
       inTensionTotal: 0,
       publishedTotal: 7,
     });
+  });
+});
+
+describe("GET /oversight", () => {
+  it("serves per-audience counts alongside this reader's own reviewable total", async () => {
+    oversightResponse = {
+      buckets: [
+        {
+          key: "org",
+          kind: "org",
+          label: "org",
+          labelPolicy: "intrinsic",
+          awaitingReview: 26,
+          published: 40,
+          retracted: 2,
+          provisional: 3,
+          inTension: 1,
+        },
+        {
+          key: "discovered-1",
+          kind: "audience",
+          label: null,
+          labelPolicy: "discovered",
+          awaitingReview: 6,
+          published: 0,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+        },
+      ],
+      workspaceTotals: {
+        awaitingReview: 32,
+        published: 40,
+        retracted: 2,
+        provisional: 3,
+        inTension: 1,
+      },
+      reviewableAwaitingReview: 26,
+      bucketsTruncated: false,
+    };
+
+    const res = await adminBrainFacts.request("/oversight");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as typeof oversightResponse;
+    // The 26/32 soak reading. The delta IS the disclosure, and it survives the
+    // route: a response that flattened the two into one number would restore
+    // exactly the false all-clear #4825 recorded.
+    expect(body.reviewableAwaitingReview).toBe(26);
+    expect((body.workspaceTotals as { awaitingReview: number }).awaitingReview).toBe(32);
+  });
+
+  it("refuses to serve counts narrowed by a FAILED role lookup", async () => {
+    // Same posture as the queue: a broken member lookup would produce a
+    // plausible `reviewableAwaitingReview` that silently omitted every
+    // `role:`-granted draft, making the hidden-backlog delta overstate itself
+    // for what is really an infrastructure fault.
+    memberLookupFails = true;
+    const res = await adminBrainFacts.request("/oversight");
+    expect(res.status).toBe(500);
+    expect(oversightCalls).toBe(0);
+  });
+
+  it("500s rather than shipping a bucket carrying a claim", async () => {
+    // THE no-content pin at the route seam. `BrainFactOversightSchema` is
+    // `z.strictObject` precisely so an extra key is refused rather than
+    // stripped — stripping would ship a response that silently dropped the
+    // field in one direction and carried it the day somebody widened the type.
+    oversightResponse = {
+      ...oversightResponse,
+      buckets: [
+        {
+          key: "org",
+          kind: "org",
+          label: "org",
+          labelPolicy: "intrinsic",
+          awaitingReview: 1,
+          published: 0,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+          subject: "Acme",
+          predicate: "uses",
+          object: "Snowflake",
+        },
+      ],
+    };
+    const res = await adminBrainFacts.request("/oversight");
+    expect(res.status).toBe(500);
+    const text = await res.text();
+    expect(text).not.toContain("Snowflake");
+    expect(text).not.toContain("Acme");
   });
 });
 

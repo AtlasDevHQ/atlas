@@ -9,6 +9,7 @@ import {
   Trash2,
   AlertCircle,
   AlertTriangle,
+  Lock,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -98,8 +99,23 @@ interface PublishPreviewData {
   readonly starterPrompts: ReadonlyArray<DraftRow>;
   /** Optional: absent from an older API during a deploy-overlap window. */
   readonly knowledgeDocuments?: ReadonlyArray<DraftRow>;
-  /** Optional: absent from an older API during a deploy-overlap window. */
+  /**
+   * Optional: absent from an older API during a deploy-overlap window.
+   *
+   * SCOPED to the reader's brain grants (#4825), unlike every other array here.
+   * So this is what the admin may READ, not what publish will promote — add
+   * {@link PublishPreviewData.brainFactsWithheld} for that.
+   */
   readonly brainFacts?: ReadonlyArray<DraftRow>;
+  /**
+   * Draft facts publish WILL promote and this admin may NOT read (#4825).
+   *
+   * The number that used to be learnable only from the publish RESPONSE, by an
+   * admin who had no way to interpret it. Optional and defaulted to 0 for a
+   * deploy-overlap window; an older API omitting it degrades to the previous
+   * silence rather than to a wrong count.
+   */
+  readonly brainFactsWithheld?: number;
 }
 
 /**
@@ -187,6 +203,11 @@ export function PublishModal({
   /** True once publish committed with something the admin must read first. */
   const hasPostPublishWarning = incompleteLayers.length > 0 || refusedTotal > 0;
 
+  // Facts publish will promote that this admin cannot be shown (#4825). Folded
+  // into `total` so the button's count is the real blast radius: an admin must
+  // not learn it from the response, and "Publish all (26)" that promotes 32 is
+  // the same defect one layer up.
+  const withheldFacts = data?.brainFactsWithheld ?? 0;
   const total = data ? totalRows(data) : 0;
   const sections = data ? buildSections(data) : [];
 
@@ -224,12 +245,18 @@ export function PublishModal({
                 </Button>
               </div>
             </div>
-          ) : sections.length === 0 ? (
+          ) : sections.length === 0 && withheldFacts === 0 ? (
             <div className="py-10 text-center text-sm text-muted-foreground">
               No pending changes to publish.
             </div>
           ) : (
             <div className="space-y-4">
+              {/* BEFORE the click, and above the lists rather than after them:
+                  the whole point is that the blast radius must not be learned
+                  from the response. It renders even when `sections` is empty,
+                  which is the case where an admin can see nothing at all and
+                  would otherwise read "No pending changes" over a real one. */}
+              {withheldFacts > 0 && <WithheldFactsNotice count={withheldFacts} />}
               {sections.map((section) => (
                 <PreviewSection key={section.key} section={section} />
               ))}
@@ -289,6 +316,44 @@ export function PublishModal({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * States, before the click, that this publish reaches facts the admin cannot
+ * read (#4825).
+ *
+ * Not a warning and not styled as one — the behaviour is correct and
+ * deliberate. Reader-scoped publish was considered and rejected: with no
+ * resolvable reviewer those facts would strand PERMANENTLY, keeping the drafts
+ * badge lit forever, which is the unclearable-banner shape #4771 closed for
+ * grants. The defect was that nothing said so. So this is a plain statement of
+ * scope with the reason attached, positioned where a scope statement belongs:
+ * above the confirm button, not in the response.
+ *
+ * A COUNT and never a list. There is no honest row to render — the claim is the
+ * only identity a fact has — and a placeholder carrying a fact id would
+ * disclose which facts exist without disclosing what they say.
+ */
+function WithheldFactsNotice({ count }: { count: number }) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border bg-muted/40 p-3 text-sm">
+      <Lock className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <div className="min-w-0 space-y-1">
+        <p className="font-medium">
+          {count === 1
+            ? "1 brain fact here isn't shown to you"
+            : `${count.toLocaleString()} brain facts here aren't shown to you`}
+        </p>
+        <p className="text-muted-foreground">
+          {count === 1 ? "It came" : "They came"} from a channel you&apos;re not a member
+          of, so Atlas won&apos;t show you the claim — reviewing{" "}
+          {count === 1 ? "it" : "them"} belongs to that channel&apos;s members. Publishing
+          promotes {count === 1 ? "it" : "them"} along with everything else, because
+          otherwise {count === 1 ? "it" : "they"} could never be published by anyone.
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -444,6 +509,15 @@ function IntentIcon({ intent }: { intent: SectionRow["intent"] }) {
   }
 }
 
+/**
+ * Everything this publish will promote — LISTED OR NOT.
+ *
+ * `brainFactsWithheld` is added because the brain segment is the one list here
+ * that is reader-scoped (#4825): its rows are what the admin may read, and the
+ * withheld remainder is promoted just the same. Counting only the rows would
+ * put "Publish all (26)" on a button that promotes 32, which is precisely the
+ * confusion the disclosure exists to end.
+ */
 function totalRows(data: PublishPreviewData): number {
   return (
     data.connections.length +
@@ -453,7 +527,8 @@ function totalRows(data: PublishPreviewData): number {
     data.prompts.length +
     data.starterPrompts.length +
     (data.knowledgeDocuments?.length ?? 0) +
-    (data.brainFacts?.length ?? 0)
+    (data.brainFacts?.length ?? 0) +
+    (data.brainFactsWithheld ?? 0)
   );
 }
 

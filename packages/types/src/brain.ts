@@ -293,6 +293,128 @@ export interface BrainFactCandidateSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Admin oversight — counts without content (#4825, ADR-0036 §Access control)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which arm of the grant grammar an oversight bucket aggregates.
+ *
+ * One bucket is one stored grant TOKEN, so `malformed` names a token outside
+ * the grammar (`everyone`, `ROLE:admin`, a NULL element) rather than a
+ * principal. Such a token grants nobody anything — but a fact can carry a
+ * usable token ALONGSIDE it, so a malformed bucket does NOT mean "invisible to
+ * everyone". The entirely-unusable class is `lib/brain/grant-sweep.ts`'s remit
+ * (#4797) and is not reported here.
+ */
+export type BrainFactOversightBucketKind = "org" | "audience" | "role" | "user" | "malformed";
+
+/**
+ * Whether this bucket's grant token may be shown to the admin, and why.
+ *
+ * THE RULE (#4825): **counts may be labelled with an audience the admin
+ * CONFIGURED; a DISCOVERED audience gets an opaque handle.** An admin who typed
+ * a Slack channel id into the install form learns nothing new from seeing it
+ * back — the install config is already admin-readable. A source that discovers
+ * its audiences instead (auto-join, a directory sync, M3's webhook fast-path)
+ * would be disclosing the existence and activity level of a channel the admin
+ * never named, which the existence of `#project-severance` makes sensitive even
+ * with zero content attached.
+ *
+ * `intrinsic` is the third arm and exists so the rule is not stretched to cover
+ * things it was not written for: `org` and `role:*` name a fixed, public
+ * vocabulary that identifies no channel and no person, so they are neither
+ * configured nor discovered. `user:*` is DISCOVERED — Atlas resolved that
+ * person, the admin did not name them — which is why per-person fact counts
+ * never carry a user id.
+ */
+export type BrainFactOversightLabelPolicy = "intrinsic" | "configured" | "discovered";
+
+/** One audience's fact counts. Counts only — see {@link BrainFactOversight}. */
+export interface BrainFactOversightBucket {
+  /**
+   * Display identity, stable for as long as the bucket set is.
+   *
+   * Equal to {@link label} when there is one; otherwise a positional handle
+   * (`discovered-1`). It is NOT derived from the withheld token in any
+   * recoverable way — an ordinal cannot be reversed, where a hash of a
+   * ten-character Slack channel id salted with a workspace id the admin already
+   * holds could be brute-forced.
+   */
+  readonly key: string;
+  readonly kind: BrainFactOversightBucketKind;
+  /** The grant token verbatim, or `null` when the label policy withholds it. */
+  readonly label: string | null;
+  readonly labelPolicy: BrainFactOversightLabelPolicy;
+  /** Live drafts — `status = 'draft'`, not retracted. */
+  readonly awaitingReview: number;
+  readonly published: number;
+  /** Retracted at any status — the `invalidated_at` tombstone axis. */
+  readonly retracted: number;
+  /** Of the live drafts, those whose entity resolution was provisional. */
+  readonly provisional: number;
+  /** Of the live drafts, those carrying an advisory `in-tension-with` edge. */
+  readonly inTension: number;
+}
+
+/** Workspace-wide fact counts, deduplicated by fact. */
+export interface BrainFactOversightTotals {
+  readonly awaitingReview: number;
+  readonly published: number;
+  readonly retracted: number;
+  readonly provisional: number;
+  readonly inTension: number;
+}
+
+/**
+ * The admin oversight view: where a workspace's facts really stand, as numbers,
+ * with no claim, no evidence, and no provenance attached (#4825).
+ *
+ * ## Why this surface exists
+ *
+ * Publish is workspace-scoped and the review queue is reader-scoped, and both
+ * are correct — see `docs/development/brain-slack-history.md` § Publish scope.
+ * The consequence is that an admin outside a private channel's audience can
+ * hold a clean queue and a hidden backlog and be unable to tell them apart.
+ * This view ends that, WITHOUT widening what they may read: `role:platform_admin`
+ * is refused by the grant grammar and a platform role confers no brain grant, so
+ * Atlas must never become a way to read a Slack channel you were never in.
+ * An admin learns that facts exist they cannot see — a number, never content.
+ *
+ * ## Reading the numbers
+ *
+ * A fact is counted in EVERY bucket its grant names, so the buckets overlap and
+ * their sum is not {@link workspaceTotals}. That is why the totals are carried
+ * rather than left to the client to add up.
+ *
+ * {@link reviewableAwaitingReview} is the same quantity as
+ * `/api/v1/admin/brain-facts/summary`'s `draftTotal`, restated here so the two
+ * halves of the disclosure come from ONE snapshot. Fetched separately they can
+ * disagree under concurrent ingest, and a delta that flickers is worse than no
+ * delta at all — this surface's entire content is
+ * `workspaceTotals.awaitingReview - reviewableAwaitingReview`.
+ */
+export interface BrainFactOversight {
+  readonly buckets: readonly BrainFactOversightBucket[];
+  readonly workspaceTotals: BrainFactOversightTotals;
+  /**
+   * Live drafts THIS reader may open at `/admin/brain-facts` — reader-scoped.
+   * Never larger than `workspaceTotals.awaitingReview`; the difference is the
+   * backlog federated to somebody else.
+   */
+  readonly reviewableAwaitingReview: number;
+  /**
+   * True when more distinct grant tokens exist than this response carries.
+   *
+   * Never silent: a truncated bucket list renders as a complete account of
+   * where the workspace's facts sit, which is the one thing an oversight
+   * surface must not imply. {@link workspaceTotals} is unaffected — it is
+   * computed per fact, not per bucket, so the top-line disclosure stays exact
+   * even when the breakdown is clipped.
+   */
+  readonly bucketsTruncated: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // `searchBrain` — the fused, trust-labeled read (#4773, ADR-0036 §Retrieval)
 // ---------------------------------------------------------------------------
 

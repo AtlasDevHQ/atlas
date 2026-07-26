@@ -442,6 +442,12 @@ export async function runGrantSweepCycle(deps: GrantSweepDeps = {}): Promise<Gra
   // `skipped`, not `success` — nothing ran, and the counters are null to say
   // so. Reporting `success` here was the one state {@link GrantSweepResult}
   // documents as impossible: an all-clear status over "we do not know".
+  //
+  // `countIsFloor` stays FALSE here, unlike the all-tables-failed path below,
+  // and the two are not inconsistent: that path ATTEMPTED a count and could not
+  // complete it, so its zero is a floor. This one never attempted one — there
+  // is no count for a floor to be a floor OF. (`status` already distinguishes
+  // them, and the fiber's gate makes this path near-unreachable in production.)
   if (!hasInternalDB()) return { status: "skipped", ...NO_RESULT };
 
   const query = deps.query ?? internalQuery;
@@ -524,9 +530,13 @@ export async function runGrantSweepCycle(deps: GrantSweepDeps = {}): Promise<Gra
   }
 
   return {
-    // `degraded` means the counters are a partial or unverified floor — one
-    // table's scan failed, or rows came back in a shape this module could not
-    // read. It is deliberately NOT set by FINDINGS: malformed rows are a
+    // `degraded` means the counters are a partial or unverified floor through
+    // a FAULT — one table's scan failed, or rows came back in a shape this
+    // module could not read. A cap hit also makes them a floor and stays
+    // `success` on purpose: the cap is an operator-tunable bound working as
+    // configured, not something going wrong, and `countIsFloor` +
+    // `scan_truncated` already carry it. So the fold has three causes and this
+    // status takes two. It is deliberately NOT set by FINDINGS: malformed rows are a
     // steady-state defect, and folding them in would make `degraded` permanent
     // on any deployment that has one — and therefore ignorable, which is the
     // failure this whole module is shaped around avoiding.

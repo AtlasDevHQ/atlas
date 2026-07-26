@@ -303,6 +303,11 @@ describeIfPg("brain malformed-grant sweep (real Postgres)", () => {
     // silently inverts when someone adds a fixture. Assert the cap's own
     // contract instead, and prove the draft row via the full count.
     const expectedTotal = perTable * 2 + 1;
+    // Non-vacuity: deriving from the fixture count removed the brittle literal
+    // AND the tripwire — drop two malformed fixtures and `sampleTruncated`
+    // silently flips to false, so the cap contract below stops being exercised
+    // with the test still green.
+    expect(expectedTotal).toBeGreaterThan(MALFORMED_SAMPLE_CAP);
     expect(result.sample).toHaveLength(Math.min(expectedTotal, MALFORMED_SAMPLE_CAP));
     expect(result.sampleTruncated).toBe(expectedTotal > MALFORMED_SAMPLE_CAP);
 

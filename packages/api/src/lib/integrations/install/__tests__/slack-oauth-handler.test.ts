@@ -217,7 +217,15 @@ describe("SlackOAuthInstallHandler.startInstall", () => {
     expect(parsed.searchParams.get("state")).toBe(stateToken);
     // Legacy slack.ts scopes (preserved by lift) + the conversation-read pair
     // powering the admin channel picker + the history pair the company-brain
-    // chat source needs (#4770).
+    // chat source needs (#4770) + the directory pair its audience-membership
+    // sync needs (#4801).
+    //
+    // The #4801 pair is requested TOGETHER deliberately. `users:read` alone
+    // still returns 200 from `users.list` with every `profile.email` absent,
+    // which reads downstream as "no member matched an Atlas account" and would
+    // revoke every audience while the sync reported success — so a future edit
+    // that drops `users:read.email` and keeps `users:read` is worse than one
+    // that drops both.
     //
     // Pinned as an EXACT string on purpose: this list IS the `scope=` param, so
     // a scope Atlas does not request here is a scope no workspace can ever
@@ -227,7 +235,7 @@ describe("SlackOAuthInstallHandler.startInstall", () => {
     // must carry the scope first (staging, then every prod region) or Slack
     // rejects the consent screen for the WHOLE install.
     expect(parsed.searchParams.get("scope")).toBe(
-      "commands,chat:write,app_mentions:read,channels:read,groups:read,channels:history,groups:history",
+      "commands,chat:write,app_mentions:read,channels:read,groups:read,channels:history,groups:history,users:read,users:read.email",
     );
     expect(parsed.searchParams.get("redirect_uri")).toBe(SLACK_CONFIG.redirectUri);
   });

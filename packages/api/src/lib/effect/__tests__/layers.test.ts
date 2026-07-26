@@ -470,6 +470,10 @@ describe("makeSchedulerLive", () => {
         // #4771 — company-brain extraction drain (ADR-0036): a fourth
         // `runPeriodicDbCycle` job, gated OFF by default.
         "brain_extraction",
+        // #4801 — company-brain audience-membership sync (ADR-0036). Unlike
+        // its extraction sibling this is gated ON by default: it grants no
+        // model budget, and off would leave private-channel facts invisible.
+        "brain_audience_sync",
       ],
     },
   ] as const;

@@ -416,11 +416,17 @@ CREATE INDEX IF NOT EXISTS idx_brain_edges_workspace_type
 --
 -- Deliberately NOT Better Auth teams: Atlas has none, and "group" in this
 -- codebase means a connection-group (a set of datasources), not a set of
--- people. Consumed by #4768's visibility predicate. Population is #4801's
--- membership sync — #4771 shipped the reconcile stage, which INHERITS an
--- episode's grant rather than deriving one from source membership, so until
--- #4801 lands this table is empty and a private channel's `audience:` resolves
--- to nobody (fail-closed, and repairable by writing rows alone).
+-- people. Consumed by #4768's visibility predicate; populated by #4801's
+-- membership sync (`lib/brain/audience/`), which reconciles rather than
+-- inserts: the DELETE is what makes revocation flow through live, and it is
+-- licensed by a completeness check on the source roster (an incomplete vendor
+-- read would otherwise revoke the members it failed to fetch).
+--
+-- `user_id` is a Better Auth user id resolved from the source principal by
+-- email, narrowed to the workspace's DNS-verified SSO domain where it has one.
+-- A source principal that resolves to no Atlas user is logged and gets no row —
+-- never guessed. See `lib/brain/audience/resolver.ts` for why the join is
+-- workspace-scoped in SQL rather than by caller discipline.
 CREATE TABLE IF NOT EXISTS fact_audience_member (
   workspace_id text NOT NULL,
   -- The source-derived audience identifier, WITHOUT the `audience:` prefix

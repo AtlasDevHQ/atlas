@@ -469,9 +469,10 @@ export async function resolvePrincipalContext(
     // alias, a join) — diff the SQL. A row that has the column but an unusable
     // value is a DATA defect: `audience_id` is `text NOT NULL` but 0180 adds no
     // non-empty CHECK, so `''` is legally storable and points at whatever wrote
-    // the membership row (#4801's sync), not at this query. Reporting both as
-    // "the query changed" would
-    // send that investigation to the wrong file.
+    // the membership row — today that is #4801's sync
+    // (`lib/brain/audience/membership.ts`, which refuses a blank id at the
+    // writer for exactly this reason), not at this query. Reporting both as
+    // "the query changed" would send that investigation to the wrong file.
     //
     // Either way, silently returning fewer memberships would strip a reader's
     // audience grants with no signal — the same silent downgrade this function

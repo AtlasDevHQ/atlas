@@ -91,14 +91,23 @@ export interface ChatChannelVisibility {
  *   so revocation flows through membership live rather than waiting for
  *   re-ingest.
  *
- *   Membership population is #4801's, split out of #4771 (which shipped the
- *   reconcile stage — it INHERITS this grant onto every fact drawn from the
- *   episode and derives nothing further). Until it lands a private channel's
- *   episodes, and the facts drawn from them, are visible to NOBODY. That is the fail-closed direction and it is
- *   REPAIRABLE — populating membership makes existing rows visible with no
- *   rewrite, because the grant names the audience and the membership is the
- *   live half. Contrast the failure this module exists to prevent: a
- *   structurally malformed token is unrepairable without editing every row.
+ *   Membership is populated by #4801's sync (`lib/brain/audience/`), on its own
+ *   periodic fiber. Note it does NOT re-derive the audience id: it calls THIS
+ *   function and reads the id out of `parseGrant`, so the set it syncs is by
+ *   construction the set the facts were granted to. Two independent derivations
+ *   would agree until one changed, and on that day membership would be written
+ *   for an audience no fact names — every private fact silently invisible again
+ *   while the sync reported success. If you add a visibility arm here, the sync
+ *   follows for free; if you ever tempt yourself into calling
+ *   {@link chatChannelAudienceId} from a second place, that property is what
+ *   you are spending.
+ *
+ *   Before that sync existed, a private channel's episodes and the facts drawn
+ *   from them were visible to NOBODY — the fail-closed direction, and REPAIRABLE
+ *   exactly because the grant names the audience and the membership is the live
+ *   half: writing rows made existing facts visible with no rewrite. Contrast the
+ *   failure this module exists to prevent: a structurally malformed token is
+ *   unrepairable without editing every row.
  *
  * Returns `null` when no usable grant can be derived — a blank channel id or a
  * blank source, either of which would make the audience id ambiguous.

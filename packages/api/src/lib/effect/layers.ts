@@ -226,7 +226,9 @@ function withFiberDeathLog<A, E, R>(
 //     the three #4195 DB/refresh jobs `byot_catalog_refresh`,
 //     `openapi_spec_refresh`, `openapi_install_rediscover`,
 //     `scheduled_backup` (#4457 — the internal-DB backup cycle), and
-//     `brain_extraction` (#4771 — the company-brain episode drain). Spanned by
+//     `brain_extraction` (#4771 — the company-brain episode drain), and
+//     `brain_audience_sync` (#4801 — the audience-membership reconcile).
+//     Spanned by
 //     #2987 (+#3423 for billing_reconcile, #3992 for overage_report, #4195
 //     for the DB/refresh trio) — identical rationale and wrap shape.
 //     `unclaimed_grace_reap` (#3796), the three #4195 jobs, and
@@ -306,6 +308,11 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   // NULL`, extract → reconcile → stamp, one episode at a time. Attaches its
   // cycle counts via `spanResultAttributes`.
   brain_extraction: "atlas.scheduler.brain_extraction",
+  // #4801 — the company-brain audience-membership sync (ADR-0036). Reconciles
+  // `fact_audience_member` against each private chat channel's source roster,
+  // adding AND revoking. Its `members_revoked` attribute is the alertable one:
+  // a spike is either a real offboarding or a resolver that stopped resolving.
+  brain_audience_sync: "atlas.scheduler.brain_audience_sync",
   // #4457 — internal-DB scheduled backups. The tick claims the current
   // cadence window atomically (partial UNIQUE index on
   // `backups.scheduled_window`), then create→verify→purge through the
@@ -2365,6 +2372,66 @@ export function makeSchedulerLive(
           message: "Company-brain extraction tick failed — will retry next interval",
         },
         startLog: "Company-brain extraction scheduler started",
+      });
+
+      // ── Periodic fiber: company-brain audience membership (#4801, ADR-0036) ─
+      // Keeps a private chat channel's `audience:` grant resolving to real
+      // people: read the channel roster, resolve each source principal to an
+      // Atlas user, and reconcile `fact_audience_member` — adding AND revoking.
+      // Deliberately its own fiber rather than part of the history pass: a
+      // quiet channel is where a stale roster survives longest, so membership
+      // freshness has to be driven by the clock, not by traffic.
+      yield* registerPeriodicFiber({
+        name: "brain_audience_sync",
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as brain_extraction)
+          const { getAudienceSyncIntervalMs } = require("@atlas/api/lib/brain/audience/sync") as {
+            getAudienceSyncIntervalMs: () => number;
+          };
+          return getAudienceSyncIntervalMs();
+        },
+        gate: {
+          check: () => {
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- same reason
+            const { isAudienceSyncEnabled } = require("@atlas/api/lib/brain/audience/sync") as {
+              isAudienceSyncEnabled: (workspaceId?: string) => boolean;
+            };
+            // No workspace argument: this is the PLATFORM gate (the operator's
+            // process-wide off switch). The per-workspace decision is read
+            // again inside the cycle, per install.
+            return hasInternalDB() && isAudienceSyncEnabled();
+          },
+          skipLog:
+            "Company-brain audience sync not started — needs an internal database and ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",
+        },
+        tick: Effect.tryPromise({
+          try: () => import("@atlas/api/lib/brain/audience/sync"),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(Effect.flatMap((m) => Effect.promise(() => m.runAudienceSyncCycle()))),
+        spanResultAttributes: (result) => ({
+          "atlas.brain.audience.status": result.status,
+          "atlas.brain.audience.workspaces_inspected": result.workspacesInspected,
+          "atlas.brain.audience.workspaces_skipped_disabled": result.workspacesSkippedDisabled,
+          "atlas.brain.audience.workspaces_failed": result.workspacesFailed,
+          "atlas.brain.audience.audiences_reconciled": result.audiencesReconciled,
+          "atlas.brain.audience.audiences_skipped_public": result.audiencesSkippedPublic,
+          "atlas.brain.audience.audiences_failed": result.audiencesFailed,
+          "atlas.brain.audience.members_added": result.membersAdded,
+          // The alertable one: a revocation spike means either a real
+          // offboarding or a resolver that stopped resolving, and the two must
+          // be distinguishable from the span alone.
+          "atlas.brain.audience.members_revoked": result.membersRevoked,
+          "atlas.brain.audience.principals_unresolved": result.principalsUnresolved,
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Company-brain audience sync tick failed — will retry next interval",
+        },
+        startLog: "Company-brain audience sync scheduler started",
       });
 
       // ── Periodic fiber: shared OpenAPI spec refresh (#2970, Tier-1; #4195) ──

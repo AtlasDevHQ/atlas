@@ -187,7 +187,8 @@ clock", that re-walked the same week every cycle and could not converge.
 ## Operating it
 
 **Scopes are a staging-first change.** Reading history needs `channels:history`
-and `groups:history`. Two places must agree:
+and `groups:history`; resolving a private channel's audience (#4801, below) also
+needs `users:read` and `users:read.email`. Two places must agree:
 
 1. `SLACK_SCOPES` in `lib/integrations/install/slack-oauth-handler.ts` — that
    string *is* the OAuth `scope=` param, so without both scopes listed there no
@@ -201,6 +202,55 @@ and `groups:history`. Two places must agree:
 A workspace whose token predates them fails `missing_scope`, surfaced at install
 as a field error and at sync time as the source's error row; reconnecting is
 what grants them.
+
+Note the asymmetry between the two additions. The channel **roster** read
+(`conversations.members`) rides on `channels:read`/`groups:read`, which the chat
+adapter's token already carries — so it costs no re-consent. Only the
+**directory** read (`users.list`, for member emails) needs new scopes, which is
+why the privacy decision #4801 records is narrowly *"may Atlas read Slack member
+emails"* rather than *"may Atlas read Slack"*.
+
+⚠️ **`users:read` without `users:read.email` is the dangerous half-grant.**
+Slack does not error — `users.list` returns 200 with every `profile.email`
+simply absent. Read naively that is "no member matched an Atlas account", which
+reconciles to a **full revocation of every audience** while the cycle reports
+success. `loadDirectory` detects that shape explicitly and skips the workspace,
+but if you are editing scope handling, this is the failure to keep in mind.
+
+## Audience membership (#4801)
+
+A private channel's episodes carry `audience:chat-channel:slack:<id>` rather
+than a principal list, so who can read them is answered *live* out of
+`fact_audience_member` on every request. The `brain_audience_sync` fiber keeps
+that table honest:
+
+- **Cadence** — its own fiber, default every 30 min
+  (`ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES`). That interval **is** the
+  worst-case delay between someone leaving a channel and losing access to facts
+  drawn from it — the number to quote when a workspace asks. Deliberately not
+  folded into the history pass: a quiet channel would then never re-read its
+  roster, and a quiet channel is where a stale roster survives longest.
+- **Switch** — `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED`, workspace-scoped, **default
+  ON** (unlike `ATLAS_BRAIN_EXTRACTION_ENABLED`, which spends model budget and
+  defaults off). Read with no workspace it resolves to the platform value, which
+  is the operator's process-wide off switch.
+- **Identity** — channel members are matched to Atlas users by email, narrowed
+  to the workspace's DNS-verified SSO domain when it has one. Atlas never
+  creates a user, stores an address, or persists the roster; an unmatched member
+  is logged and gets no row. Full rationale: the ADR-0036 §T5 amendment.
+- **Revocation** — the sync reconciles (adds *and* deletes). Dropping a row
+  hides the facts on the reader's next read, with no re-ingest.
+
+**Reading the cycle.** The `atlas.scheduler.brain_audience_sync` span carries
+the counters; `members_revoked` is the alertable one, since a spike is either a
+real offboarding wave or a resolver that stopped resolving. `audiences_failed`
+means a channel's roster could not be read *completely* — the sync then leaves
+that audience's membership untouched rather than revoking the members it failed
+to fetch, so a persistent non-zero count is stale-access risk, not data loss.
+`principals_unresolved` is normal and non-zero in most workspaces (guests,
+contractors, anyone without an Atlas account); the per-cycle log breaks it into
+no-email / outside-verified-domain / no-Atlas-account, because those three need
+three different operator actions.
 
 **Installing.** Admin → Integrations → *Company Brain (Slack history)*. It
 collects channel IDs and no secret: the connector reuses the workspace's

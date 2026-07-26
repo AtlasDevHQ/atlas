@@ -1745,6 +1745,46 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+  {
+    // Audience-membership sync (#4801, ADR-0036 §Access control). WORKSPACE-
+    // scoped and default ON, unlike its extraction sibling above, because the
+    // two knobs answer different questions. Extraction spends model budget, so
+    // it defaults off; this resolves a Slack roster the workspace already
+    // granted Atlas read access to, and defaulting it OFF would mean private-
+    // channel ingest keeps producing facts that are invisible to everyone —
+    // the exact failure #4801 exists to end.
+    //
+    // Workspace-scoped because it encodes a tenant's decision (may Atlas match
+    // our Slack members' emails to Atlas accounts?), not an operator's. The
+    // fiber ALSO reads this key with no workspace, which resolves to the
+    // platform value — so an operator can still stop the cycle process-wide.
+    key: "ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",
+    section: "Knowledge Base",
+    label: "Company Brain Audience Sync",
+    description:
+      "Keep private chat channels' membership in sync so facts drawn from them are visible to the people in the channel — and hidden again when someone leaves. Matches channel members' email addresses against existing Atlas accounts; it never creates accounts and never stores the channel roster. Requires Slack's users:read and users:read.email scopes.",
+    type: "boolean",
+    default: "true",
+    envVar: "ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",
+    scope: "workspace",
+    saasVisible: false,
+  },
+  {
+    // Cadence of the membership sync. A knob rather than a constant because it
+    // is the lever for the revocation-latency question a security-conscious
+    // workspace will ask ("how long after I remove someone can they still read
+    // it?") — the answer is one interval, and this is where it is set.
+    key: "ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES",
+    section: "Knowledge Base",
+    label: "Company Brain Audience Sync Interval",
+    description:
+      "How often private chat channels' membership is re-read from the source, in minutes (default 30). This is also the worst-case delay between someone leaving a channel and losing access to facts drawn from it. Applies at restart; non-positive values fall back to the default.",
+    type: "number",
+    default: "30",
+    envVar: "ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES",
+    scope: "platform",
+    saasVisible: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ export interface LegalStamp {
 
 export const LEGAL_STAMPS: Record<"privacy" | "terms" | "dpa" | "aup", LegalStamp> = {
   privacy: { effective: "2026-06-19", version: "v3.2", lastUpdated: "2026-07-26" },
-  terms: { effective: "2026-06-19", version: "v4.3", lastUpdated: "2026-07-10" },
+  terms: { effective: "2026-06-19", version: "v4.3", lastUpdated: "2026-07-26" },
   dpa: { effective: "2026-05-02", version: "v2.5", lastUpdated: "2026-07-26" },
   aup: { effective: "2026-04-26", version: "v1.0" },
 };

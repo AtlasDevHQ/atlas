@@ -54,6 +54,7 @@ const { runGrantSweepCycle, getGrantSweepIntervalMs, MAX_TIMER_DELAY_MS } = awai
   "@atlas/api/lib/brain/grant-sweep"
 );
 const { ACL_GATED_TABLES } = await import("@atlas/api/lib/brain/acl");
+type AclGatedTable = (typeof ACL_GATED_TABLES)[number];
 
 type Row = {
   readonly workspace_id: string;
@@ -78,7 +79,11 @@ function withDatabaseUrl<T>(fn: () => Promise<T>): Promise<T> {
   });
 }
 
-const sweep = (byTable: Partial<Record<string, readonly Row[]>>, rowCap?: number) =>
+// Keyed on `AclGatedTable`, NOT `string`: a typo'd fixture key would otherwise
+// compile, serve zero rows, and make the silence assertion below pass for the
+// wrong reason. The sibling suite was fixed here first; this file inherited the
+// hole when it was written.
+const sweep = (byTable: Partial<Record<AclGatedTable, readonly Row[]>>, rowCap?: number) =>
   withDatabaseUrl(() =>
     runGrantSweepCycle({
       ...(rowCap !== undefined ? { rowCap } : {}),
@@ -129,8 +134,13 @@ describe("the findings line", () => {
     // The whole "1 line/day/replica is a digest, 48 is noise" argument assumes
     // a healthy deployment says nothing at all. A sweep that logged every cycle
     // regardless would be the alert fatigue the design exists to avoid.
-    await sweep({ brain_facts: [row("f_1", ["org"]), row("f_2", ["user:u1"])] });
+    const result = await sweep({
+      brain_facts: [row("f_1", ["org"]), row("f_2", ["user:u1"])],
+    });
 
+    // Non-vacuity backstop: silence is also what an EMPTY scan produces, so the
+    // claim means nothing without proof that rows were actually examined.
+    expect(result.rowsScanned).toBe(2);
     expect(warns("no parseable principal")).toHaveLength(0);
     expect(logCalls.filter((c) => c.level === "warn")).toHaveLength(0);
   });
@@ -219,7 +229,11 @@ describe("the interval knob's two fallback arms are distinguishable", () => {
     }
   }
 
-  it("stays silent on an UNSET knob but warns on an unparseable one", async () => {
+  it("stays silent on an EMPTY knob but warns on an unparseable one", async () => {
+    // `""`, not undefined: the registry defines `default: "24"`, so
+    // `getSettingAuto` never returns undefined for this key and the empty
+    // string is the reachable "operator cleared the field" arm.
+    //
     // Both return the default, so the return value alone cannot tell them
     // apart — an operator whose typo is being ignored has only this line.
     withInterval("", () => getGrantSweepIntervalMs());

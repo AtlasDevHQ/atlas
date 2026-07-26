@@ -2539,11 +2539,15 @@ export function makeSchedulerLive(
           // malformed count is unverified rather than clean — it forces
           // `degraded`, so this and `status` move together.
           "atlas.brain.grant_sweep.unreadable_rows": result.unreadableRows ?? -1,
-          // Whether `malformed_rows` is a total or a floor. Alerting on the
-          // count without this would read a capped scan — or a cycle where one
-          // table's scan failed — as a complete one. Both causes are folded in,
-          // so an alert reads one field rather than joining two.
+          // Whether `malformed_rows` is a total or a floor — the ONE field an
+          // alert reads. All three causes are folded in (row cap, a failed
+          // table, unreadable rows), so alerting never has to join two fields.
           "atlas.brain.grant_sweep.count_is_floor": result.countIsFloor,
+          // ...and the cause discriminator the fold would otherwise cost. A cap
+          // hit means "raise the cap"; a failed table means "fix the scan".
+          // Folding without this made a permanently-capped deployment
+          // indistinguishable from a broken one on the span alone.
+          "atlas.brain.grant_sweep.scan_truncated": result.scanTruncated,
         }),
         onTickFailure: {
           level: "warn",

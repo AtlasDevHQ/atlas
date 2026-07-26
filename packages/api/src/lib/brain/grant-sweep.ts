@@ -90,15 +90,20 @@ export const DEFAULT_GRANT_SWEEP_INTERVAL_HOURS = 24;
  * majority never reaches it, so this is not a fraction of the table's row count.
  *
  * A bound, not a policy — but a bound that is REPORTED rather than silent, via
- * `scanTruncated`. A sweep that quietly stopped at the cap would read as
+ * `countIsFloor` (and `scan_truncated` on the span, which names this cause
+ * specifically). A sweep that quietly stopped at the cap would read as
  * "nothing more to find" on exactly the deployments too large for it to have
  * looked, which is the failure mode this module exists to remove one instance
  * of. Generous enough that hitting it is itself the finding.
  */
 export const GRANT_SWEEP_ROW_CAP = 50_000;
 
-/** How many malformed rows one log line carries. A bound, not a policy. */
-const MALFORMED_SAMPLE_CAP = 20;
+/**
+ * How many malformed rows one log line (and {@link GrantSweepResult.sample})
+ * carries. A bound, not a policy. Exported so tests assert against it rather
+ * than restating `20` — a literal that silently inverts when fixtures change.
+ */
+export const MALFORMED_SAMPLE_CAP = 20;
 
 /**
  * The scan, per gated table.
@@ -207,11 +212,25 @@ export interface GrantSweepResult {
    */
   readonly unreadableRows: number | null;
   /**
-   * `malformedRows` is a FLOOR rather than a total — the scan hit
-   * {@link GRANT_SWEEP_ROW_CAP}, or a table's scan failed. Both causes are
-   * folded here so an alert can read one field; `status` and `error` say which.
+   * `malformedRows` is a FLOOR rather than a total. THREE causes are folded
+   * here so an alert can read one field: the scan hit
+   * {@link GRANT_SWEEP_ROW_CAP}, a table's scan failed, or rows came back in a
+   * shape this module could not read (a row it could not read is not a row it
+   * cleared). `scan_truncated` on the span discriminates the first — the three
+   * have different remediations and the fold must not cost the cause.
+   *
+   * `true` on the all-tables-failed path too: the cycle that scanned NOTHING is
+   * the strongest case for "this count is not a total", and reporting `false`
+   * there inverted the field's own rule.
    */
   readonly countIsFloor: boolean;
+  /**
+   * The row cap alone — {@link countIsFloor}'s cap arm, unfolded. Kept beside
+   * the fold because the three causes have different remediations, and an
+   * operator seeing only `countIsFloor` cannot tell "raise the cap" from "fix
+   * the scan".
+   */
+  readonly scanTruncated: boolean;
   readonly sample: readonly MalformedGrantRow[];
   /** {@link sample} was clipped to its cap; more rows are in the log line. */
   readonly sampleTruncated: boolean;
@@ -219,10 +238,14 @@ export interface GrantSweepResult {
 }
 
 /**
- * Frozen, not merely `readonly`. `readonly` is compile-time only, and this
- * object (and its `sample` array) is shared by reference across every no-result
- * return in the process — a type-violating `push` would poison every subsequent
- * cycle's report. `acl.ts`'s `DENY_ALL` is frozen for the same reason.
+ * Frozen, not merely `readonly` — `readonly` is compile-time only.
+ *
+ * Both call sites SPREAD this, so each return gets a fresh outer object; it is
+ * the `sample` ARRAY that genuinely escapes by reference into every no-result
+ * report in the process, and a type-violating `push` on it would poison all of
+ * them. That inner freeze is the load-bearing half; the outer one keeps the
+ * constant honest about being a constant. `acl.ts`'s `DENY_ALL` freezes its
+ * `params` for exactly the same reason.
  */
 const NO_RESULT: Omit<GrantSweepResult, "status"> = Object.freeze({
   malformedRows: null,
@@ -230,6 +253,7 @@ const NO_RESULT: Omit<GrantSweepResult, "status"> = Object.freeze({
   rowsScanned: null,
   unreadableRows: null,
   countIsFloor: false,
+  scanTruncated: false,
   sample: Object.freeze([]) as readonly MalformedGrantRow[],
   sampleTruncated: false,
 });
@@ -259,6 +283,18 @@ export interface GrantSweepDeps {
 export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 /**
+ * Floor on the interval (3 minutes).
+ *
+ * The clamp above is not enough on its own: this is the module whose entire
+ * design argument is that CADENCE is the control against alert fatigue, and an
+ * unguarded `…_HOURS=0.0001` runs a full two-table scan roughly three times a
+ * second — with a findings warn line each cycle on any deployment that has a
+ * malformed row. Guarding one end and not the other would leave the knob able
+ * to defeat the property it exists to set.
+ */
+export const MIN_GRANT_SWEEP_INTERVAL_MS = 180_000;
+
+/**
  * How often the sweep runs, in milliseconds.
  *
  * Unparseable or non-positive falls back to the DEFAULT rather than disabling.
@@ -286,6 +322,13 @@ export function getGrantSweepIntervalMs(): number {
     return DEFAULT_GRANT_SWEEP_INTERVAL_HOURS * 3_600_000;
   }
   const ms = hours * 3_600_000;
+  if (ms < MIN_GRANT_SWEEP_INTERVAL_MS) {
+    log.warn(
+      { raw, minMinutes: MIN_GRANT_SWEEP_INTERVAL_MS / 60_000 },
+      "ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS is below the minimum sweep interval — clamping, since a permanent defect does not need re-reporting this often",
+    );
+    return MIN_GRANT_SWEEP_INTERVAL_MS;
+  }
   if (ms > MAX_TIMER_DELAY_MS) {
     log.warn(
       { raw, maxHours: MAX_TIMER_DELAY_MS / 3_600_000 },
@@ -431,13 +474,23 @@ export async function runGrantSweepCycle(deps: GrantSweepDeps = {}): Promise<Gra
   }
 
   if (failures === ACL_GATED_TABLES.length) {
-    return { status: "failure", ...NO_RESULT, ...(firstError ? { error: firstError } : {}) };
+    // `countIsFloor: true` overrides NO_RESULT's `false`: nothing was scanned,
+    // which is the strongest case for "not a total" the field has.
+    return {
+      status: "failure",
+      ...NO_RESULT,
+      countIsFloor: true,
+      ...(firstError ? { error: firstError } : {}),
+    };
   }
 
-  // Both causes of an incomplete count, folded into one field an alert can read:
-  // the row cap, and a table whose scan failed. `scanTruncated` alone would have
-  // read a half-scan (one table errored) as a complete one.
-  const countIsFloor = truncated || failures > 0;
+  // Every cause of an incomplete count, folded into one field an alert can
+  // read. `truncated` alone would have read a half-scan (one table errored) as
+  // a complete one; `truncated || failures` would have read a cycle whose rows
+  // were all UNREADABLE as a complete one — reporting `malformed_rows: 0,
+  // count_is_floor: false` while nothing was actually examined, which is the
+  // fabricated all-clear `unreadableRows` was added to prevent.
+  const countIsFloor = truncated || failures > 0 || unreadable > 0;
 
   if (truncated) {
     // The "no silent caps" half of the contract. A capped sweep reports a
@@ -461,6 +514,7 @@ export async function runGrantSweepCycle(deps: GrantSweepDeps = {}): Promise<Gra
         malformedRows: malformed.length,
         malformedWorkspaces: workspaces.size,
         rowsScanned: scanned,
+        unreadableRows: unreadable,
         countIsFloor,
         sample: malformed.slice(0, MALFORMED_SAMPLE_CAP),
         sampleTruncated: malformed.length > MALFORMED_SAMPLE_CAP,
@@ -475,15 +529,24 @@ export async function runGrantSweepCycle(deps: GrantSweepDeps = {}): Promise<Gra
     // read. It is deliberately NOT set by FINDINGS: malformed rows are a
     // steady-state defect, and folding them in would make `degraded` permanent
     // on any deployment that has one — and therefore ignorable, which is the
-    // failure this whole module is shaped around avoiding. An unreadable row is
-    // the opposite kind of thing: a code defect that gets fixed, so it cannot
-    // pin the status.
+    // failure this whole module is shaped around avoiding.
+    //
+    // The two arms it IS set by are not equally self-limiting, and the
+    // difference is worth stating rather than implying. An unreadable row is a
+    // code defect (`visible_to` is `text[] NOT NULL`, so no DATA can produce
+    // one) and gets fixed, so it cannot pin the status. A failing table CAN pin
+    // it indefinitely — a revoked `SELECT`, or a third entry added to
+    // `ACL_GATED_TABLES` before its migration reaches every region. That is
+    // accepted: a permanently failing scan is an operator action item, not a
+    // steady-state property of the data, and a sweep that cannot read its own
+    // tables should not be reporting `success`.
     status: failures > 0 || unreadable > 0 ? "degraded" : "success",
     malformedRows: malformed.length,
     malformedWorkspaces: workspaces.size,
     rowsScanned: scanned,
     unreadableRows: unreadable,
     countIsFloor,
+    scanTruncated: truncated,
     sample: malformed.slice(0, MALFORMED_SAMPLE_CAP),
     sampleTruncated: malformed.length > MALFORMED_SAMPLE_CAP,
     ...(firstError ? { error: firstError } : {}),

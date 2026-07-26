@@ -34,7 +34,11 @@ import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { ACL_GATED_TABLES, parseGrant, type AclGatedTable } from "@atlas/api/lib/brain/acl";
-import { grantScanSql, runGrantSweepCycle } from "@atlas/api/lib/brain/grant-sweep";
+import {
+  MALFORMED_SAMPLE_CAP,
+  grantScanSql,
+  runGrantSweepCycle,
+} from "@atlas/api/lib/brain/grant-sweep";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -298,8 +302,9 @@ describeIfPg("brain malformed-grant sweep (real Postgres)", () => {
     // how many fixtures happen to precede the row of interest — a test that
     // silently inverts when someone adds a fixture. Assert the cap's own
     // contract instead, and prove the draft row via the full count.
-    expect(result.sample).toHaveLength(20);
-    expect(result.sampleTruncated).toBe(true);
+    const expectedTotal = perTable * 2 + 1;
+    expect(result.sample).toHaveLength(Math.min(expectedTotal, MALFORMED_SAMPLE_CAP));
+    expect(result.sampleTruncated).toBe(expectedTotal > MALFORMED_SAMPLE_CAP);
 
     // The draft in WS_B is invisible to the review queue as well as to every
     // reader, so it is the row least likely to surface any other way. Counted

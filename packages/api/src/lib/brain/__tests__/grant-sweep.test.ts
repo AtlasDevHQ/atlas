@@ -26,7 +26,9 @@ import { ACL_GATED_TABLES, type AclGatedTable } from "@atlas/api/lib/brain/acl";
 import {
   DEFAULT_GRANT_SWEEP_INTERVAL_HOURS,
   GRANT_SWEEP_ROW_CAP,
+  MALFORMED_SAMPLE_CAP,
   MAX_TIMER_DELAY_MS,
+  MIN_GRANT_SWEEP_INTERVAL_MS,
   getGrantSweepIntervalMs,
   grantScanSql,
   runGrantSweepCycle,
@@ -298,6 +300,12 @@ describe("runGrantSweepCycle — degradation is visible", () => {
     expect(result.status).toBe("degraded");
     expect(result.malformedRows).toBe(1);
     expect(result.error).toContain("relation gone");
+    // The whole reason this field is not just `scanTruncated`: a half-scan is
+    // not a complete one. Without this arm the span reports a partial count as
+    // a total, which is the fabricated all-clear the rename exists to remove.
+    expect(result.countIsFloor).toBe(true);
+    // ...and the cap was NOT the cause, which is what the span discriminates.
+    expect(result.scanTruncated).toBe(false);
   });
 
   it("reports all-null counters when EVERY table's scan fails", async () => {
@@ -311,6 +319,8 @@ describe("runGrantSweepCycle — degradation is visible", () => {
     expect(result.malformedRows).toBeNull();
     expect(result.malformedWorkspaces).toBeNull();
     expect(result.rowsScanned).toBeNull();
+    // The cycle that scanned NOTHING is the strongest case for "not a total".
+    expect(result.countIsFloor).toBe(true);
   });
 
   it("keeps the FIRST error when both tables fail", async () => {
@@ -318,13 +328,15 @@ describe("runGrantSweepCycle — degradation is visible", () => {
     // one the consequence. With one failing table this arm is unreachable.
     const deps: GrantSweepDeps = {
       query: (sql: string) =>
-        Promise.reject(new Error(sql.includes("FROM brain_facts") ? "facts-gone" : "episodes-gone")),
+        Promise.reject(new Error(`${ACL_GATED_TABLES.find((t) => sql.includes(`FROM ${t}`))}-gone`)),
     };
 
     const result = await withDatabaseUrl(() => runGrantSweepCycle(deps));
 
     expect(result.status).toBe("failure");
-    expect(result.error).toContain("facts-gone");
+    // Derived from the registry, not hardcoded: a reorder of ACL_GATED_TABLES
+    // must not fail this test while first-wins still holds.
+    expect(result.error).toContain(`${ACL_GATED_TABLES[0]}-gone`);
   });
 
   it("never throws — a rejected scan is a result, not an exception", async () => {
@@ -344,6 +356,23 @@ describe("runGrantSweepCycle — degradation is visible", () => {
     expect(result.countIsFloor).toBe(true);
     // The count is a FLOOR — reported, not silently presented as a total.
     expect(result.malformedRows).toBe(1);
+  });
+
+  it("caps the RESULT's sample, not only the log payload", async () => {
+    // Two independent `.slice` call sites. The logging suite pins the log
+    // payload; without this the returned `sample` could go unbounded and only
+    // the -pg suite would notice — and that suite is silently skipped without
+    // TEST_DATABASE_URL, so every local gate would stay green.
+    const many = Array.from({ length: MALFORMED_SAMPLE_CAP + 5 }, (_, i) =>
+      row(`f_${i}`, ["everyone"]),
+    );
+    const { deps } = harness({ brain_facts: many });
+
+    const result = await withDatabaseUrl(() => runGrantSweepCycle(deps));
+
+    expect(result.malformedRows).toBe(MALFORMED_SAMPLE_CAP + 5);
+    expect(result.sample).toHaveLength(MALFORMED_SAMPLE_CAP);
+    expect(result.sampleTruncated).toBe(true);
   });
 
   it("does not flag truncation on a short scan", async () => {
@@ -430,6 +459,15 @@ describe("getGrantSweepIntervalMs", () => {
     expect(600 * 3_600_000).toBeGreaterThan(MAX_TIMER_DELAY_MS);
     // Just under the bound is honoured, so the clamp is not swallowing sane values.
     expect(withInterval("500", getGrantSweepIntervalMs)).toBe(500 * 3_600_000);
+  });
+
+  it("clamps an interval below the floor — cadence is this module's control", async () => {
+    // The upper clamp alone left the knob able to defeat the property the whole
+    // design rests on: 0.0001h is ~3 full two-table scans per second, each able
+    // to emit a findings line.
+    expect(withInterval("0.0001", getGrantSweepIntervalMs)).toBe(MIN_GRANT_SWEEP_INTERVAL_MS);
+    // Just above the floor is honoured, so the clamp is not eating sane values.
+    expect(withInterval("1", getGrantSweepIntervalMs)).toBe(3_600_000);
   });
 
   it("binds the DEFAULT row cap when no override is injected", async () => {

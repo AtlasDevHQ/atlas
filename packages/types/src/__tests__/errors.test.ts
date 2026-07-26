@@ -484,11 +484,23 @@ describe("parseChatError retryable", () => {
   });
 
   test("retryable is false for all permanent error codes", () => {
-    for (const code of ["auth_error", "session_expired", "configuration_error", "no_datasource", "invalid_request", "provider_model_not_found", "provider_auth_error", "validation_error", "not_found", "forbidden", "forbidden_role", "org_not_found", "plan_limit_exceeded", "trial_expired", "subscription_required", "workspace_suspended", "workspace_deleted"] as const) {
+    for (const code of ["auth_error", "session_expired", "configuration_error", "no_datasource", "no_capability", "invalid_request", "provider_model_not_found", "provider_auth_error", "validation_error", "not_found", "forbidden", "forbidden_role", "org_not_found", "plan_limit_exceeded", "trial_expired", "subscription_required", "workspace_suspended", "workspace_deleted"] as const) {
       const err = new Error(JSON.stringify({ error: code, message: "fail" }));
       const info = parseChatError(err, authMode);
       expect(info.retryable).toBe(false);
     }
+  });
+
+  test("no_capability renders its own title, distinct from no_datasource", () => {
+    // #4826 — the two codes exist precisely so the UI can tell "the operator
+    // must set an env var" apart from "this workspace needs onboarding".
+    const err = new Error(JSON.stringify({ error: "no_capability", message: "nothing connected" }));
+    const info = parseChatError(err, authMode);
+
+    expect(info.code).toBe("no_capability");
+    expect(info.title).toBe("This workspace has no data yet.");
+    expect(info.detail).toBe("nothing connected");
+    expect(info.title).not.toContain("data source configured");
   });
 
   test("retryable is undefined for non-JSON errors", () => {

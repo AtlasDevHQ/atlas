@@ -1262,6 +1262,10 @@ describe("POST /api/v1/chat", () => {
 
       expect(response.status).toBe(200);
       expect(mockRunAgent).toHaveBeenCalled();
+      // The identifier matters as much as the verdict: probing the user id or
+      // the conversation id instead would find no rows for EVERY tenant and
+      // 400 the whole fleet with `no_capability`.
+      expect(mockProbeWorkspaceCapabilities).toHaveBeenCalledWith("org-brain-only");
     });
 
     it("serves a knowledge-only workspace with no analytics datasource", async () => {
@@ -1335,6 +1339,7 @@ describe("POST /api/v1/chat", () => {
       // had deliberately not set.
       expect(body.message).not.toContain("ATLAS_DATASOURCE_URL");
       expect(mockRunAgent).not.toHaveBeenCalled();
+      expect(mockProbeWorkspaceCapabilities).toHaveBeenCalledWith("org-empty");
     });
 
     it("fails open when the capability probe cannot decide", async () => {
@@ -1360,6 +1365,45 @@ describe("POST /api/v1/chat", () => {
 
       expect(response.status).toBe(200);
       expect(mockProbeWorkspaceCapabilities).not.toHaveBeenCalled();
+    });
+
+    it("still reports MISSING_DATASOURCE_URL to an UNBOUND request", async () => {
+      // The filter must stay conditional on tenancy. If it were applied
+      // unconditionally, a self-hosted operator would silently lose the startup
+      // guidance that is their only signal — the mirror image of #4826.
+      mockValidateEnvironment.mockResolvedValueOnce([
+        {
+          code: "MISSING_DATASOURCE_URL",
+          message: "DATABASE_URL is set but ATLAS_DATASOURCE_URL is not.",
+        },
+      ]);
+
+      const response = await app.fetch(makeRequest());
+
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("configuration_error");
+      expect(body.message).toContain("ATLAS_DATASOURCE_URL");
+      expect(mockRunAgent).not.toHaveBeenCalled();
+    });
+
+    it("still blocks a bound workspace when the analytics datasource is unreachable", async () => {
+      // DB_UNREACHABLE is deliberately NOT filtered: it can only be raised when
+      // a process datasource URL resolved, and the probe counts that same URL
+      // as this workspace's datasource. Suppressing it would trade an
+      // actionable 400 for a turn that dies inside the agent loop.
+      bindWorkspace();
+      mockValidateEnvironment.mockResolvedValueOnce([
+        { code: "DB_UNREACHABLE", message: "Cannot connect to the analytics database." },
+      ]);
+
+      const response = await app.fetch(makeRequest());
+
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("configuration_error");
+      expect(body.message).toContain("Cannot connect");
+      expect(mockRunAgent).not.toHaveBeenCalled();
     });
   });
 

@@ -15,12 +15,13 @@ import { withRequestId, resolveMode, type AuthEnv } from "./middleware";
 import { z } from "zod";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
-import { matchError, isRetryableError, type ChatContextWarning } from "@useatlas/types";
+import { matchError, isRetryableError, type ChatContextWarning, type ChatErrorCode } from "@useatlas/types";
 import { runAgent } from "@atlas/api/lib/agent";
 import { corsResponseHeaders } from "@atlas/api/lib/cors";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import {
   probeWorkspaceCapabilities,
+  shouldRefuseTurn,
   diagnosticsForBoundWorkspace,
   NO_CAPABILITY_MESSAGE,
 } from "@atlas/api/lib/workspace-capability";
@@ -516,7 +517,8 @@ const chatRoute = createRoute({
       },
     },
     400: {
-      description: "Bad request (malformed JSON, missing datasource, or invalid configuration)",
+      description:
+        "Bad request (malformed JSON, invalid configuration, or a workspace with no datasource, knowledge collections, or brain content)",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {
@@ -582,7 +584,7 @@ const chatResumeRoute = createRoute({
       description: "SSE stream of the resumed turn (same protocol as POST /chat).",
       content: { "text/event-stream": { schema: z.string() } },
     },
-    400: { description: "No analytics datasource configured", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Workspace has nothing the agent can serve, or no analytics datasource is configured", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: ErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Conversation not found, or nothing to resume", content: { "application/json": { schema: ErrorSchema } } },
@@ -879,16 +881,24 @@ chat.openapi(chatRoute, async (c) => {
 
         if (chatOrgId) {
           const probe = await probeWorkspaceCapabilities(chatOrgId);
-          if (probe.kind === "resolved" && probe.capabilities.size === 0) {
+          if (shouldRefuseTurn(probe)) {
             log.warn({ requestId, orgId: chatOrgId }, "Chat rejected — workspace has no servable capability");
             return c.json(
               {
-                error: "no_capability",
+                error: "no_capability" satisfies ChatErrorCode,
                 message: NO_CAPABILITY_MESSAGE,
                 retryable: false,
                 requestId,
               },
               400,
+            );
+          }
+          if (probe.kind === "unknown") {
+            // Deliberate fail-open. Logged at the route so an operator reading
+            // the gate can tell an undecidable probe from a servable workspace.
+            log.warn(
+              { requestId, orgId: chatOrgId, reason: probe.reason },
+              "Capability probe undecidable — failing open and serving the turn",
             );
           }
         } else {
@@ -2016,11 +2026,17 @@ chat.openapi(chatResumeRoute, async (c) => {
         // would be a back door into the agent loop for an empty workspace.
         if (orgId) {
           const probe = await probeWorkspaceCapabilities(orgId);
-          if (probe.kind === "resolved" && probe.capabilities.size === 0) {
+          if (shouldRefuseTurn(probe)) {
             log.warn({ requestId, orgId }, "Resume rejected — workspace has no servable capability");
             return c.json(
-              { error: "no_capability", message: NO_CAPABILITY_MESSAGE, retryable: false, requestId },
+              { error: "no_capability" satisfies ChatErrorCode, message: NO_CAPABILITY_MESSAGE, retryable: false, requestId },
               400,
+            );
+          }
+          if (probe.kind === "unknown") {
+            log.warn(
+              { requestId, orgId, reason: probe.reason },
+              "Capability probe undecidable — failing open and resuming the turn",
             );
           }
         } else {

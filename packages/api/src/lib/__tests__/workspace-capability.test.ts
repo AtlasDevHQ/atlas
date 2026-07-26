@@ -18,7 +18,11 @@
 
 import { describe, expect, it, beforeEach, afterEach, mock } from "bun:test";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+// Static imports are hoisted, so these bind the REAL modules regardless of where
+// they sit relative to the `mock.module` calls below; spreading each keeps every
+// export intact (mock-all-exports) while only the probed seams are replaced.
 import * as realInternal from "@atlas/api/lib/db/internal";
+import * as realLogger from "@atlas/api/lib/logger";
 
 interface CapabilityRow extends Record<string, unknown> {
   has_datasource: boolean;
@@ -44,14 +48,36 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 
 void mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
 
+/**
+ * Fail-open is only safe if it is OBSERVABLE — the log line is the sole
+ * operator-visible artifact of a turn that bypassed the gate. Spying the logger
+ * means a future refactor cannot delete it and stay green, which is exactly how
+ * a documented fail-open decays into the silent swallow CLAUDE.md forbids.
+ */
+let warnings: { fields: Record<string, unknown>; msg: string }[] = [];
+
+void mock.module("@atlas/api/lib/logger", () => ({
+  ...realLogger,
+  createLogger: () => ({
+    warn: (fields: Record<string, unknown>, msg: string) => {
+      warnings.push({ fields, msg });
+    },
+    debug: () => {},
+    info: () => {},
+    error: () => {},
+    trace: () => {},
+    fatal: () => {},
+  }),
+}));
+
 const {
   probeWorkspaceCapabilities,
+  shouldRefuseTurn,
   diagnosticsForBoundWorkspace,
   PROCESS_DATASOURCE_DIAGNOSTICS,
   NO_CAPABILITY_MESSAGE,
 } = await import("@atlas/api/lib/workspace-capability");
 
-/** Row shape for a workspace with none of the three pillars. */
 const EMPTY_ROW: CapabilityRow = {
   has_datasource: false,
   has_knowledge: false,
@@ -62,6 +88,7 @@ const ORIGINAL_DATASOURCE_URL = process.env.ATLAS_DATASOURCE_URL;
 
 beforeEach(() => {
   capturedQueries = [];
+  warnings = [];
   nextRows = [EMPTY_ROW];
   internalDbPresent = true;
   delete process.env.ATLAS_DATASOURCE_URL;
@@ -106,7 +133,6 @@ describe("probeWorkspaceCapabilities — the deployment shapes that were dead on
     expect(probe.kind).toBe("resolved");
     if (probe.kind !== "resolved") throw new Error("unreachable");
     expect([...probe.capabilities]).toEqual(["datasource"]);
-    expect(process.env.ATLAS_DATASOURCE_URL).toBeUndefined();
   });
 
   it("reports every pillar a workspace actually has", async () => {
@@ -158,6 +184,9 @@ describe("probeWorkspaceCapabilities — undecidable probes fail open", () => {
     expect(probe.kind).toBe("unknown");
     if (probe.kind !== "unknown") throw new Error("unreachable");
     expect(probe.reason).toContain("connection terminated");
+    // A bypassed gate that leaves no trace is a silent swallow.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.fields.workspaceId).toBe("ws-db-blip");
   });
 
   it("returns `unknown` when the query yields no rows", async () => {
@@ -166,6 +195,7 @@ describe("probeWorkspaceCapabilities — undecidable probes fail open", () => {
     const probe = await probeWorkspaceCapabilities("ws-no-rows");
 
     expect(probe.kind).toBe("unknown");
+    expect(warnings).toHaveLength(1);
   });
 
   it("returns `unknown` when there is no internal database and no env datasource", async () => {
@@ -175,6 +205,10 @@ describe("probeWorkspaceCapabilities — undecidable probes fail open", () => {
 
     expect(probe.kind).toBe("unknown");
     expect(capturedQueries).toHaveLength(0);
+    // This branch is near-unreachable (an org implies managed auth implies
+    // DATABASE_URL), which is exactly the state that produces an unexplainable
+    // ticket if it ever fires silently.
+    expect(warnings).toHaveLength(1);
   });
 
   it("resolves without querying when there is no internal database but an env datasource exists", async () => {
@@ -210,6 +244,8 @@ describe("probeWorkspaceCapabilities — org scoping", () => {
 
   it("excludes archived installs from the datasource and knowledge pillars", async () => {
     await probeWorkspaceCapabilities("ws-archived");
+
+    expect(capturedQueries).toHaveLength(1);
     const { sql } = capturedQueries[0]!;
 
     expect(sql).toContain("pillar = 'datasource' AND status <> 'archived'");
@@ -229,14 +265,26 @@ describe("diagnosticsForBoundWorkspace", () => {
     expect(filtered).toEqual([]);
   });
 
-  it("drops the other process-datasource diagnostics a bound workspace does not depend on", async () => {
+  it("drops MISSING_SEMANTIC_LAYER — a bound workspace reads its whitelist from the DB, not disk", async () => {
     const filtered = diagnosticsForBoundWorkspace([
       { code: "MISSING_SEMANTIC_LAYER", message: "No semantic layer found." },
-      { code: "DB_UNREACHABLE", message: "Datasource unreachable." },
-      { code: "INVALID_SCHEMA", message: "Schema mismatch." },
     ]);
 
     expect(filtered).toEqual([]);
+  });
+
+  it("KEEPS the connectivity diagnostics — they describe a datasource the workspace may actually use", async () => {
+    // The over-filter risk. `validateEnvironment` runs the connectivity checks
+    // ONLY when a process datasource URL resolved, and when one has,
+    // `probeWorkspaceCapabilities` counts it as this workspace's datasource.
+    // Filtering these would trade an actionable "your analytics DB is
+    // unreachable" 400 for a turn that burns tokens and dies in the agent loop.
+    const unreachable = { code: "DB_UNREACHABLE", message: "Cannot connect to the analytics database." } as const;
+    const badSchema = { code: "INVALID_SCHEMA", message: "Schema mismatch." } as const;
+
+    const filtered = diagnosticsForBoundWorkspace([unreachable, badSchema]);
+
+    expect(filtered).toEqual([unreachable, badSchema]);
   });
 
   it("KEEPS diagnostics that block chat for every tenancy shape", async () => {
@@ -264,14 +312,36 @@ describe("diagnosticsForBoundWorkspace", () => {
     expect(filtered).toEqual([apiKey]);
   });
 
-  it("does not filter any diagnostic outside the declared process-datasource set", () => {
-    // Guards against the set silently growing to swallow a real blocker.
+  it("filters ABSENCE diagnostics only — the set must never grow to swallow a real blocker", () => {
+    // Both members report that something is NOT CONFIGURED, which is genuinely
+    // inapplicable to a bound workspace. Anything reporting ill HEALTH belongs
+    // outside this set; adding one here is how the #4826 bug class returns.
     expect([...PROCESS_DATASOURCE_DIAGNOSTICS].sort()).toEqual([
-      "DB_UNREACHABLE",
-      "INVALID_SCHEMA",
       "MISSING_DATASOURCE_URL",
       "MISSING_SEMANTIC_LAYER",
     ]);
+  });
+});
+
+describe("shouldRefuseTurn", () => {
+  it("refuses only a resolved-and-empty probe", () => {
+    expect(
+      shouldRefuseTurn({ kind: "resolved", capabilities: new Set() }),
+    ).toBe(true);
+  });
+
+  it("serves a resolved probe with any capability", () => {
+    for (const pillar of ["datasource", "knowledge", "brain"] as const) {
+      expect(
+        shouldRefuseTurn({ kind: "resolved", capabilities: new Set([pillar]) }),
+      ).toBe(false);
+    }
+  });
+
+  it("serves an undecidable probe — fail open, never fail closed", () => {
+    // The inverted form (`kind !== "resolved" || size === 0`) compiles and
+    // silently reintroduces the outage-amplifying behaviour. Pin the direction.
+    expect(shouldRefuseTurn({ kind: "unknown", reason: "db down" })).toBe(false);
   });
 });
 

@@ -222,9 +222,17 @@ Use the createDashboard tool when the user wants a dashboard, not just a single 
  * REGISTERED and fails per call: the pipeline raises `NoDatasourceConfiguredError`,
  * which `lib/tools/sql.ts` maps to a `NoDatasourceError` and then to a clean
  * `{ success: false, error }` tool result the agent can read and route around —
- * never an unhandled throw. De-registering it instead would make the tool surface
- * vary per workspace, which this registry does not model (it is built once at
- * module load and frozen); that is a registry refactor, not a release fix.
+ * never an unhandled throw.
+ *
+ * De-registering it instead would make the surface vary **per workspace**. Note
+ * what that does and does not cost: the surface already varies by *surface*
+ * (`dashboardUrlResolver`) and by *process env* (`querySalesforce`,
+ * `executePython`), both resolvable synchronously with no I/O. A per-workspace
+ * surface is different in kind — it would mean threading a workspace id through
+ * `buildRegistry` and paying a DB probe on every turn to decide the tool list,
+ * and it would make `defaultRegistry` / `nonDashboardRegistry` (the two frozen
+ * module-load singletons) unrepresentative of what the agent actually sees.
+ * That is a registry refactor, not a release fix.
  */
 function registerCoreTools(
   registry: ToolRegistry,

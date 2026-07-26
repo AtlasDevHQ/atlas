@@ -421,6 +421,9 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
 
       expect(res.status).toBe(200);
       expect(mockRunAgent).toHaveBeenCalled();
+      // Probing anything other than the workspace id would find no rows for
+      // every tenant and refuse every resume.
+      expect(mockProbeWorkspaceCapabilities).toHaveBeenCalledWith("org-1");
     });
 
     it("refuses to resume into a genuinely empty workspace, without blaming a datasource", async () => {
@@ -451,6 +454,26 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
 
       expect(res.status).toBe(200);
       expect(mockRunAgent).toHaveBeenCalled();
+    });
+
+    it("keeps the env-level datasource guard for an UNBOUND request", async () => {
+      // Self-hosted single-tenant: no org, so knowledge and brain are both
+      // unreachable and the process datasource really is the only thing that
+      // can serve a resumed turn.
+      mockAuthenticateRequest.mockResolvedValue({
+        authenticated: true as const,
+        mode: "none" as const,
+        user: undefined,
+      });
+      delete process.env.ATLAS_DATASOURCE_URL;
+
+      const res = await app.fetch(resumeRequest());
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("no_datasource");
+      expect(mockProbeWorkspaceCapabilities).not.toHaveBeenCalled();
+      expect(mockRunAgent).not.toHaveBeenCalled();
     });
   });
 });

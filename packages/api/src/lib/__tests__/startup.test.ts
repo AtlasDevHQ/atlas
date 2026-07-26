@@ -409,7 +409,15 @@ describe("sandbox diagnostics", () => {
     await validateEnvironment();
     const warnings = getStartupWarnings();
     expect(
-      warnings.some((w) => w.includes("namespace creation failed") && w.includes("falling back to just-bash")),
+      // #4824: the fallback is named as "the next backend in the priority
+      // chain", not hardcoded to just-bash — on a Vercel-Sandbox-credentialed
+      // host the next backend is vercel-sandbox, and claiming just-bash there
+      // is the same false-isolation claim this issue fixed.
+      warnings.some(
+        (w) =>
+          w.includes("namespace creation failed") &&
+          w.includes("next backend in the sandbox priority chain"),
+      ),
     ).toBe(true);
     expect(mockMarkNsjailFailedCalled).toBe(true);
   });

@@ -233,7 +233,9 @@ export type SlackReadErrorCode =
   | "account_inactive"
   | "malformed_channel"
   | "missing_visibility"
-  | "malformed_history_page";
+  | "malformed_history_page"
+  | "malformed_members_page"
+  | "malformed_users_page";
 
 export interface SlackReadError {
   readonly ok: false;
@@ -477,6 +479,183 @@ export async function fetchConversationHistoryPage(
     );
   }
   return { ok: true, messages, nextCursor, dropped };
+}
+
+// ---------------------------------------------------------------------------
+// Read methods for audience-membership sync (#4801)
+// ---------------------------------------------------------------------------
+
+/** One page of `conversations.members` — Slack user ids. */
+export interface SlackMembersPage {
+  readonly ok: true;
+  readonly memberIds: readonly string[];
+  readonly nextCursor: string | null;
+}
+
+/**
+ * One page of a private channel's roster.
+ *
+ * Gated on `channels:read` / `groups:read` — scopes the workspace ALREADY holds
+ * (they power the admin channel picker). So the roster half of #4801 costs no
+ * re-consent; only the directory read below does.
+ *
+ * A non-array `members` on an `ok:true` response is a PROTOCOL VIOLATION, not
+ * an empty channel, and is refused for the same reason `conversations.history`
+ * refuses one: the caller's completeness check is what licenses it to DELETE
+ * membership rows, and "the roster is empty" would license deleting all of
+ * them. Every roster fault must reach the caller as a fault.
+ */
+export async function fetchConversationMembersPage(
+  token: string,
+  params: { readonly channel: string; readonly cursor?: string; readonly limit: number },
+): Promise<SlackMembersPage | SlackReadError> {
+  const query = new URLSearchParams({
+    channel: params.channel,
+    limit: String(params.limit),
+  });
+  if (params.cursor !== undefined) query.set("cursor", params.cursor);
+
+  const result = await slackReadGet("conversations.members", token, query);
+  if (!result.ok) return result;
+
+  if (!Array.isArray(result.data.members)) {
+    log.error(
+      { method: "conversations.members", channel: params.channel },
+      "Slack returned ok:true with a non-array `members` — refusing to read it as an empty roster",
+    );
+    return { ok: false, error: "malformed_members_page", retryAfterSeconds: null };
+  }
+  const memberIds: string[] = [];
+  for (const entry of result.data.members) {
+    if (typeof entry === "string" && entry !== "") memberIds.push(entry);
+  }
+  // A member id that is not a non-empty string is unusable, and dropping it
+  // silently would understate the roster — which, once the caller reconciles,
+  // REVOKES someone. Refuse the page instead; the caller aborts the audience.
+  if (memberIds.length !== result.data.members.length) {
+    log.error(
+      {
+        method: "conversations.members",
+        channel: params.channel,
+        returned: result.data.members.length,
+        usable: memberIds.length,
+      },
+      "Slack roster page contained unusable member ids — refusing a partial roster",
+    );
+    return { ok: false, error: "malformed_members_page", retryAfterSeconds: null };
+  }
+
+  const meta = result.data.response_metadata as { next_cursor?: unknown } | undefined;
+  const nextCursor =
+    typeof meta?.next_cursor === "string" && meta.next_cursor.length > 0 ? meta.next_cursor : null;
+  return { ok: true, memberIds, nextCursor };
+}
+
+/**
+ * One Slack workspace member, projected to what identity resolution needs.
+ *
+ * `email` is `null` whenever Slack did not supply one — a guest whose profile
+ * has none, or, more importantly, a token WITHOUT `users:read.email`, which
+ * returns the profile with the field simply absent rather than erroring. The
+ * caller must therefore treat "every member has a null email" as a scope
+ * problem to surface, never as "nobody matched".
+ */
+export interface SlackDirectoryUser {
+  readonly id: string;
+  readonly email: string | null;
+  /** Deactivated at Slack. Excluded from audiences — deactivation is revocation. */
+  readonly deleted: boolean;
+  readonly isBot: boolean;
+}
+
+/** One page of `users.list`. */
+export interface SlackUsersPage {
+  readonly ok: true;
+  readonly users: readonly SlackDirectoryUser[];
+  readonly nextCursor: string | null;
+  /**
+   * Entries this page could not identify.
+   *
+   * Carried rather than merely logged — as `SlackHistoryPage` carries its own —
+   * because the caller's completeness judgement is what licenses a DELETE. A
+   * directory entry Atlas dropped is a roster member Atlas cannot resolve, and
+   * an unresolved member is REVOKED. Without this field the caller cannot tell
+   * a small directory from a lossy one, so the loss is structurally invisible
+   * exactly where it is most expensive.
+   */
+  readonly dropped: number;
+}
+
+/**
+ * One page of the workspace's Slack directory.
+ *
+ * Requires `users:read`, and `users:read.email` for `profile.email` — BOTH new
+ * as of #4801, so this is the read that costs a Slack app manifest change and a
+ * re-consent (see `SLACK_SCOPES`). A token holding neither fails
+ * `missing_scope`; a token holding `users:read` alone succeeds with every
+ * `email` null, which is why the caller checks for that shape explicitly
+ * instead of concluding the workspace has no matching users.
+ *
+ * Read once per workspace per cycle and shared across that workspace's
+ * channels: the directory is workspace-scoped, so a per-channel fetch would
+ * multiply the same paginated call by the channel count for identical data.
+ */
+export async function fetchUsersListPage(
+  token: string,
+  params: { readonly cursor?: string; readonly limit: number },
+): Promise<SlackUsersPage | SlackReadError> {
+  const query = new URLSearchParams({ limit: String(params.limit) });
+  if (params.cursor !== undefined) query.set("cursor", params.cursor);
+
+  const result = await slackReadGet("users.list", token, query);
+  if (!result.ok) return result;
+
+  if (!Array.isArray(result.data.members)) {
+    log.error(
+      { method: "users.list" },
+      "Slack returned ok:true with a non-array `members` — refusing to read it as an empty directory",
+    );
+    return { ok: false, error: "malformed_users_page", retryAfterSeconds: null };
+  }
+  const users: SlackDirectoryUser[] = [];
+  let dropped = 0;
+  for (const entry of result.data.members) {
+    if (entry === null || typeof entry !== "object") {
+      dropped++;
+      continue;
+    }
+    const u = entry as Record<string, unknown>;
+    if (typeof u.id !== "string" || u.id === "") {
+      dropped++;
+      continue;
+    }
+    const profile = (u.profile ?? null) as Record<string, unknown> | null;
+    const rawEmail = profile?.email;
+    users.push({
+      id: u.id,
+      email: typeof rawEmail === "string" && rawEmail !== "" ? rawEmail : null,
+      deleted: u.deleted === true,
+      isBot: u.is_bot === true,
+    });
+  }
+  // A dropped directory entry has a SMALLER blast radius than a truncated
+  // roster — it can only fail to resolve the individuals it dropped, not the
+  // whole audience — but it is the same KIND of harm: those individuals are
+  // revoked at the next reconcile. So it is reported to the caller (which
+  // treats it as a read fault), not just logged. The count also separates
+  // "half the directory is malformed" from "half the workspace has no Atlas
+  // account", which otherwise produce identical membership.
+  if (dropped > 0) {
+    log.warn(
+      { method: "users.list", dropped },
+      "Slack directory page contained entries with no usable identity — they cannot resolve to an Atlas user",
+    );
+  }
+
+  const meta = result.data.response_metadata as { next_cursor?: unknown } | undefined;
+  const nextCursor =
+    typeof meta?.next_cursor === "string" && meta.next_cursor.length > 0 ? meta.next_cursor : null;
+  return { ok: true, users, nextCursor, dropped };
 }
 
 /**

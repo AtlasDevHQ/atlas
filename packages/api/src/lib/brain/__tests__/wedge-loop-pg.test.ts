@@ -102,6 +102,14 @@ import { getChatBackfillWindowMs } from "@atlas/api/lib/brain/ingest/slack/conne
 import { SLACK_HISTORY_SOURCE, slackEpisodeSourceId } from "@atlas/api/lib/brain/ingest/slack/config";
 import { chatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
 import {
+  runAudienceSyncCycle,
+  type AudienceSyncCycleResult,
+  type AudienceSyncDeps,
+} from "@atlas/api/lib/brain/audience/sync";
+import { resolvePrincipals } from "@atlas/api/lib/brain/audience/resolver";
+import { reconcileAudienceMembership } from "@atlas/api/lib/brain/audience/membership";
+import type { SlackDirectoryUser } from "@atlas/api/lib/slack/api";
+import {
   AUDIENCE_PREFIX,
   resolvePrincipalContext,
   type BrainPrincipalContext,
@@ -179,6 +187,37 @@ const CHANNEL_HISTORY: Readonly<Record<string, readonly SlackHistoryMessage[]>> 
 };
 
 const PUBLIC_CHANNELS = new Set([PUBLIC_CHANNEL]);
+
+/**
+ * Slack's roster per channel (#4801). `U_ALAN` is the exec channel's one
+ * resolvable human and is what makes `user-exec` the reader who can see the
+ * audience-granted fact — resolved through production code, not asserted.
+ *
+ * MUTABLE, because the revocation test drops a member between two cycles;
+ * `resetRosters()` restores it in `afterEach`.
+ *
+ * The exec channel's other two members are deliberate: `U_BOT` exercises the
+ * bot screen, and `U_GRACE` carries an address matching no Atlas user — the
+ * "logged, never guessed" arm. Both must be in the EXEC channel to be
+ * exercised at all: the sync skips public channels before it ever reads their
+ * roster, so a principal parked in `PUBLIC_CHANNEL` is inert.
+ */
+const DEFAULT_ROSTER: Readonly<Record<string, readonly string[]>> = {
+  [PUBLIC_CHANNEL]: ["U_ADA"],
+  [EXEC_CHANNEL]: ["U_ALAN", "U_BOT", "U_GRACE"],
+};
+let CHANNEL_ROSTER: Record<string, readonly string[]> = { ...DEFAULT_ROSTER };
+function resetRosters(): void {
+  CHANNEL_ROSTER = { ...DEFAULT_ROSTER };
+}
+
+/** Slack's directory. `U_GRACE`'s address matches no Atlas user, by design. */
+const SLACK_DIRECTORY: readonly SlackDirectoryUser[] = [
+  { id: "U_ALAN", email: "exec@wedge.test", deleted: false, isBot: false },
+  { id: "U_ADA", email: "plain@wedge.test", deleted: false, isBot: false },
+  { id: "U_GRACE", email: "nobody@wedge.test", deleted: false, isBot: false },
+  { id: "U_BOT", email: null, deleted: false, isBot: true },
+];
 
 /** The deploy-window claim, restated a day later. 2026-06-26T10:00:00Z. */
 const CORROBORATING = message({ ts: "1782468000.000000", text: BODY.deployAgain, user: "U_GRACE" });
@@ -310,6 +349,41 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
         "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
       )
     `);
+    // `"user"` + `member` are Better Auth's, skipped for the same reason
+    // `organization` is, and stubbed for a new one: #4801's audience sync
+    // resolves a Slack roster to Atlas users by joining these two
+    // (`RESOLVE_PRINCIPAL_EMAILS_SQL`). Columns mirror that query's SELECT and
+    // JOIN — a narrower stub would fault it rather than resolve nobody, which
+    // is a different (and louder) test failure than the one that matters.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS "user" (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS member (
+        id TEXT PRIMARY KEY,
+        "organizationId" TEXT NOT NULL,
+        "userId" TEXT NOT NULL,
+        role TEXT
+      )
+    `);
+    // `sso_providers` IS core schema and the migrations create it, so it needs
+    // no stub — and it stays EMPTY here deliberately. An empty table means no
+    // verified domain, which means no narrowing, which is the self-hosted
+    // default path. The narrowing arm is covered in `audience-sync-pg.test.ts`.
+    await pool.query(
+      `INSERT INTO "user" (id, email) VALUES ($1, $2), ($3, $4)
+       ON CONFLICT (id) DO NOTHING`,
+      ["user-exec", "exec@wedge.test", "user-plain", "plain@wedge.test"],
+    );
+    await pool.query(
+      `INSERT INTO member (id, "organizationId", "userId", role)
+       VALUES ($1, $2, $3, $4), ($5, $2, $6, $4)
+       ON CONFLICT (id) DO NOTHING`,
+      ["m-exec", WORKSPACE, "user-exec", "member", "m-plain", "user-plain"],
+    );
     // The ingest and extraction stages write through the module-level pool, so
     // it has to BE this schema-scoped one. (Stages 3 and 4 take an explicit
     // handle — see `publish()` and `search()`.)
@@ -345,6 +419,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       _resetBrainExtractionFailures();
       modelCalls = [];
       extraMessages = {};
+      resetRosters();
     }
   });
 
@@ -553,12 +628,98 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
   /** A second member, this one a member of the exec channel's audience. */
   const execMember = () => readerFor("user-exec", "member");
 
-  async function joinAudience(userId: string, audienceId: string): Promise<void> {
-    await pool.query(
-      `INSERT INTO fact_audience_member (workspace_id, audience_id, user_id, source) VALUES ($1, $2, $3, $4)`,
-      [WORKSPACE, audienceId, userId, SLACK_HISTORY_SOURCE],
-    );
+  /**
+   * Stage 2b — the real audience-membership sync (#4801).
+   *
+   * Slack's roster + directory come from the same fixture discipline as the
+   * history reads; everything above them is production code, including the
+   * email→Atlas-user resolution and the reconcile that writes
+   * `fact_audience_member`. The DB seams are injected only to reach this
+   * suite's schema-scoped pool — `withMembershipTransaction` and
+   * `internalQuery` both resolve `getInternalDB()`, which honours
+   * `DATABASE_URL` but not the scratch `search_path`.
+   *
+   * `runAudienceSyncCycle` never throws, so the status is asserted here rather
+   * than at each call site — same reasoning as `syncHistory`.
+   */
+  async function syncAudiences(): Promise<AudienceSyncCycleResult> {
+    const result = await runAudienceSyncCycle({
+      api: {
+        getConversationInfo: slackApi.getConversationInfo,
+        fetchConversationMembersPage: (_token, params) => {
+          const roster = CHANNEL_ROSTER[params.channel];
+          if (roster === undefined) {
+            // As strict as Slack, and for a sharper reason than the history
+            // fixture's: an unknown channel returning an empty roster would
+            // REVOKE the whole audience and still report success.
+            return Promise.resolve({
+              ok: false as const,
+              error: "channel_not_found" as const,
+              retryAfterSeconds: null,
+            });
+          }
+          return Promise.resolve({ ok: true as const, memberIds: roster, nextCursor: null });
+        },
+        fetchUsersListPage: () =>
+          Promise.resolve({
+            ok: true as const,
+            users: SLACK_DIRECTORY,
+            nextCursor: null,
+            dropped: 0,
+          }),
+      },
+      // One install row, supplied directly: this suite deliberately persists no
+      // `workspace_plugins` row (see the header), and the scan is not what is
+      // under test here.
+      query: (<T extends Record<string, unknown>>() =>
+        Promise.resolve([
+          { workspace_id: WORKSPACE, install_id: INSTALL_ID, config: { channels: [PUBLIC_CHANNEL, EXEC_CHANNEL] } },
+        ] as unknown as T[])) as AudienceSyncDeps["query"],
+      resolveToken: () => Promise.resolve("xoxb-test"),
+      resolve: (workspaceId, principals) =>
+        resolvePrincipals(workspaceId, principals, { query: poolQuery }),
+      reconcile: (input) =>
+        reconcileAudienceMembership(input, { withTransaction: poolTransaction }),
+    });
+    expect(result.status).toBe("success");
+    return result;
   }
+
+  /** `internalQuery`-shaped adapter over the suite's schema-scoped pool. */
+  const poolQuery = async <T extends Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<T[]> => {
+    const { rows } = await pool.query(sql, params);
+    return rows as T[];
+  };
+
+  /** Single-connection transaction on the suite's pool, for the reconcile. */
+  const poolTransaction = async <T>(
+    fn: (tx: { query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }> }) => Promise<T>,
+  ): Promise<T> => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const out = await fn({
+        query: async (sql, params) => {
+          const res = await client.query(sql, params);
+          return { rows: res.rows as readonly unknown[] };
+        },
+      });
+      await client.query("COMMIT");
+      return out;
+    } catch (err) {
+      await client.query("ROLLBACK").catch((rbErr: unknown) => {
+        // Surfaced, not swallowed: a failed rollback here would otherwise
+        // present as the ORIGINAL error with a silently poisoned connection.
+        console.debug("fixture rollback failed", rbErr);
+      });
+      throw err;
+    } finally {
+      client.release();
+    }
+  };
 
   // ── row helpers ─────────────────────────────────────────────────────────
 
@@ -877,12 +1038,12 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     await extract();
     await publish();
 
-    // Nothing populates `fact_audience_member` yet — that is #4801
-    // (audience-membership sync), split out of #4771 and still open. So the
-    // roster row is written directly; `resolvePrincipalContext` then expands it
-    // into the reader's tokens exactly as it will once the sync lands, which is
-    // what makes this row load-bearing rather than decoration.
-    await joinAudience("user-exec", EXEC_AUDIENCE);
+    const synced = await syncAudiences();
+    // The unresolved arm is on the loop's happy path, not just in a unit test:
+    // `U_GRACE` is in the exec channel with an address matching no Atlas user,
+    // and `U_BOT` is screened before resolution ever sees it.
+    expect(synced.principalsUnresolved).toBe(1);
+    expect(synced.membersAdded).toBe(1);
 
     const execView = await search(await execMember());
     expect(subjectsOf(execView.results)).toEqual(["acquisition target", "deploy window"]);
@@ -891,6 +1052,47 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     expect(bodiesOf(execView.results)).toEqual(
       [BODY.smallTalk, BODY.deploy, BODY.acquisition, BODY.lunch].toSorted(byText),
     );
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("REVOKES on the next read when the source roster drops someone", async () => {
+    // The acceptance criterion #4801 exists for, proven through the WHOLE loop
+    // rather than at the reconcile alone: nothing about the fact or the episode
+    // is touched, no re-ingest happens, and the reader loses the audience-
+    // granted fact on their very next search.
+    //
+    // This is also the assertion that would catch a sync which only ever ADDS.
+    // An insert-only implementation passes every other test in this file.
+    await syncHistory();
+    await extract();
+    await publish();
+    await syncAudiences();
+    expect(subjectsOf((await search(await execMember())).results)).toContain("acquisition target");
+
+    // Alan leaves the exec channel at the source. Nothing else changes.
+    CHANNEL_ROSTER = { ...CHANNEL_ROSTER, [EXEC_CHANNEL]: ["U_BOT", "U_GRACE"] };
+    const second = await syncAudiences();
+    expect(second.membersRevoked).toBe(1);
+
+    const after = await search(await execMember());
+    expect(subjectsOf(after.results)).toEqual(["deploy window"]);
+    // The exec channel's EVIDENCE goes with the fact — episodes are ACL-gated
+    // by the same audience, so a revocation that hid the claim but left the
+    // messages readable would be the leak this indirection exists to prevent.
+    expect(bodiesOf(after.results)).toEqual([BODY.smallTalk, BODY.deploy].toSorted(byText));
+
+    // Revocation HID the fact; it did not destroy it. The row is still
+    // published, still carries its audience grant, and is still
+    // un-invalidated — so re-adding Alan to the channel restores his access on
+    // the next cycle with no re-ingest and no rewrite. That asymmetry is the
+    // whole reason ADR-0036 routes sensitive facts through an `audience:`
+    // instead of baking principals into the grant.
+    const stored = (await facts()).find((f) => f.subject === "acquisition target");
+    expect(stored).toMatchObject({ status: "published", visible_to: [EXEC_GRANT_TOKEN] });
+
+    CHANNEL_ROSTER = { ...CHANNEL_ROSTER, [EXEC_CHANNEL]: ["U_ALAN", "U_BOT", "U_GRACE"] };
+    const third = await syncAudiences();
+    expect(third.membersAdded).toBe(1);
+    expect(subjectsOf((await search(await execMember())).results)).toContain("acquisition target");
   }, PG_TEST_TIMEOUT_MS);
 
   it("surfaces an un-drained episode as `extraction: pending`", async () => {

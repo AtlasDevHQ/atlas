@@ -429,6 +429,9 @@ describe("isRetryableError", () => {
     "session_expired",
     "configuration_error",
     "no_datasource",
+    // #4826 — permanent: an empty workspace stays empty until someone connects
+    // a datasource, a KB collection, or brain content. Retrying cannot help.
+    "no_capability",
     "invalid_request",
     "provider_model_not_found",
     "provider_auth_error",

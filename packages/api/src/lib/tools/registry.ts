@@ -214,6 +214,17 @@ Use the createDashboard tool when the user wants a dashboard, not just a single 
  * (workspace/install/context checks inside `execute`) — except `querySalesforce`,
  * which is additionally env-gated on the Salesforce OAuth config (see its inline
  * note below).
+ *
+ * #4826 — that execute-time posture is a DELIBERATE choice for the SQL tools on
+ * a workspace with no analytics datasource. Now that chat serves knowledge-only
+ * and brain-only workspaces (see `lib/workspace-capability.ts`), `executeSQL`
+ * can be offered to a workspace that has nothing to run it against. It stays
+ * REGISTERED and fails per call: the pipeline raises `NoDatasourceConfiguredError`,
+ * which `lib/tools/sql.ts` maps to a `NoDatasourceError` and then to a clean
+ * `{ success: false, error }` tool result the agent can read and route around —
+ * never an unhandled throw. De-registering it instead would make the tool surface
+ * vary per workspace, which this registry does not model (it is built once at
+ * module load and frozen); that is a registry refactor, not a release fix.
  */
 function registerCoreTools(
   registry: ToolRegistry,

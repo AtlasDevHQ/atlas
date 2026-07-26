@@ -104,10 +104,14 @@ export const MAX_ROSTER_PAGES = 200;
  * someone the workspace already revoked at the source; carrying either into an
  * audience would make Atlas the one system that kept their access.
  */
+function isLiveHuman(user: SlackDirectoryUser): boolean {
+  return !user.deleted && !user.isBot;
+}
+
 function liveHumans(
   directory: ReadonlyMap<string, SlackDirectoryUser>,
 ): readonly SlackDirectoryUser[] {
-  return [...directory.values()].filter((u) => !u.deleted && !u.isBot);
+  return [...directory.values()].filter(isLiveHuman);
 }
 
 /** Scopes the directory read needs — new in #4801, so the likeliest failure. */
@@ -311,11 +315,12 @@ async function loadDirectory(
       ...(cursor !== undefined ? { cursor } : {}),
     });
     if (!result.ok) {
+      const reason = describeSlackError(result, DIRECTORY_SCOPES);
       log.warn(
-        { workspaceId, reason: describeSlackError(result, DIRECTORY_SCOPES) },
+        { workspaceId, reason },
         "brain audience: could not read the Slack directory — skipping this workspace, membership unchanged",
       );
-      return { ok: false, reason: describeSlackError(result, DIRECTORY_SCOPES) };
+      return { ok: false, reason };
     }
     // An entry Slack sent that Atlas could not identify is a roster member it
     // will fail to resolve — and an unresolved member is REVOKED. So a lossy
@@ -601,7 +606,11 @@ async function syncInstall(
           continue;
         }
         const known = directory.get(memberId);
-        if (known !== undefined && (known.deleted || known.isBot)) continue;
+        // `isLiveHuman`, not an inverted copy of it — one definition, per this
+        // module's own argument about duplicated derivations. Drift here could
+        // not revoke anyone (membership comes entirely from `resolution`), but
+        // it would silently miscount `principalsUnresolved`.
+        if (known !== undefined && !isLiveHuman(known)) continue;
         // Either a live human with no Atlas account, or a member absent from
         // the directory entirely — a Slack Connect guest from another
         // workspace, or a race between the two reads. Counted, never guessed.

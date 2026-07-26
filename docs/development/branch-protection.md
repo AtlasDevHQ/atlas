@@ -10,14 +10,22 @@ Two branches carry protection rules — `main` (the integration branch) and `pro
 
 | Setting | Value |
 | --- | --- |
-| Required status checks (strict, must be green on the head SHA being merged) | `ci`, `api-tests (1/4)`, `api-tests (2/4)`, `api-tests (3/4)`, `api-tests (4/4)`, `Deploy Validation`, `Analyze (javascript-typescript)`, `Symlink Stub Build`, `fork-pr-gate` |
-| `strict` (branch must be up to date with `main` before merge) | `true` |
+| Required status checks (must be green on the head SHA being merged) | `ci`, `api-tests (1/4)`, `api-tests (2/4)`, `api-tests (3/4)`, `api-tests (4/4)`, `Deploy Validation`, `Analyze (javascript-typescript)`, `Symlink Stub Build`, `fork-pr-gate` |
+| `strict` (branch must be up to date with `main` before merge) | **`false`** — see the note below |
 | Required pull request reviews | none |
 | Enforce on admins | `false` |
 | Force pushes | blocked |
 | Branch deletion | blocked |
 
-`strict: true` means a PR built against an outdated `main` must rebase or merge `main` and re-run CI before the merge button enables. This catches the "two PRs each green in isolation but conflicting at integration" class of failure.
+Verify against the live config rather than trusting this table — nothing enforces that they agree:
+
+```bash
+gh api repos/AtlasDevHQ/atlas/branches/main/protection --jq '.required_status_checks'
+```
+
+> ⚠️ **`strict` is `false` live, and this doc claimed `true` until 2026-07-26.** `strict: true` would force a PR built against an outdated `main` to rebase and re-run CI before the merge button enables, catching the "two PRs each green in isolation but conflicting at integration" failure class. It is off, which is defensible for the parallel-`/ship-issue` workflow — with several workers in flight, every merge would invalidate every other open PR and serialize the batch. **Left as-is deliberately; revisit if an integration conflict ever reaches `main`.**
+>
+> Two drifts were found together on 2026-07-26: `fork-pr-gate` was documented as required but absent from the live config (restored the same day — it is required again), and `strict` was documented as `true` but live `false` (documented as `false`, config unchanged). The `fork-pr-gate` gap meant the fail-closed backstop below **did not actually block merges** for an unknown period, since a red non-required check does not prevent merging. No CI gate compares this doc to the live config; that is the reason both drifts went unnoticed.
 
 ### The `Deploy Validation` umbrella
 
@@ -88,7 +96,7 @@ The protection was applied via `gh api PUT repos/AtlasDevHQ/atlas/branches/main/
 ```json
 {
   "required_status_checks": {
-    "strict": true,
+    "strict": false,
     "contexts": [
       "ci",
       "api-tests (1/4)",

@@ -1782,10 +1782,35 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Audience Sync Interval",
     description:
-      "How often private chat channels' membership is re-read from the source, in minutes (default 30). This is also the shortest delay between someone leaving a channel and losing access to facts drawn from it — a channel whose roster cannot be read keeps its membership until it can. Applies at restart; non-positive or unparseable values fall back to the default.",
+      "How often private chat channels' membership is re-read from the source, in minutes (default 30). This is also the shortest delay between someone leaving a channel and losing access to facts drawn from it — a channel whose roster cannot be read keeps its membership until it can, up to the staleness limit below. Applies at restart; non-positive or unparseable values fall back to the default.",
     type: "number",
     default: "30",
     envVar: "ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    // The time bound on the interval knob's promise (#4808). Without it, "the
+    // answer is one interval" holds only while the roster reads SUCCEED — a
+    // channel Atlas was removed from fails every cycle forever and keeps
+    // granting access on a roster nobody has been able to verify since.
+    //
+    // Platform-scoped, not workspace: it is a floor the operator sets. A
+    // workspace admin raising their own staleness tolerance is precisely the
+    // self-serving direction, and lowering it is not a decision they have the
+    // signals to make.
+    //
+    // 7 days ≈ 336 default intervals — long enough that a Slack outage, a
+    // token rotation, or a weekend of 429s resolves well inside it, so what
+    // remains at expiry is an abandoned connection, which SHOULD stop granting.
+    key: "ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS",
+    section: "Knowledge Base",
+    label: "Company Brain Audience Staleness Limit",
+    description:
+      "How long a private chat channel's membership stays valid after Atlas last verified it against the source, in hours (default 168 = 7 days). Past this, facts drawn from that channel stop being readable through its membership until a sync succeeds again — so a channel Atlas has lost access to cannot keep granting access indefinitely. Suppressed grants are logged and counted, never dropped silently. Set to 0 to disable the limit and rely on the sync-cycle alerts alone.",
+    type: "number",
+    default: "168",
+    envVar: "ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS",
     scope: "platform",
     saasVisible: false,
   },

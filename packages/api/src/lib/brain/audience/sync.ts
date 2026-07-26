@@ -45,6 +45,20 @@
  * safe direction: it neither grants nor revokes on a fault, and the next cycle
  * retries. ADR-0036 §T6's block-vs-flag asymmetry, applied to membership.
  *
+ * Two later amendments bound how long that can go on for, because "the previous
+ * membership stands" with no time limit means a channel Atlas was removed from
+ * keeps granting access forever:
+ *
+ *   - #4809 gives both reads a bounded `Retry-After` backoff, so a workspace
+ *     large enough to 429 on every cycle can still finish a read. Exhausting
+ *     the retries STILL ABORTS — retrying buys more chances to complete the
+ *     read, never permission to settle for less of one.
+ *   - #4808 stamps `synced_at` on every successful reconcile (including the
+ *     no-op case — "unchanged" is still "verified") and never on an abort, so
+ *     `acl.ts` can stop expanding an audience nobody has verified within
+ *     `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`. Abort is still the safe
+ *     direction; it is simply no longer an indefinite one.
+ *
  * ## Why this is its own fiber
  *
  * Not folded into the history pass, which would only re-read a roster when a
@@ -63,8 +77,14 @@ import {
   type SlackDirectoryUser,
   type SlackReadError,
 } from "@atlas/api/lib/slack/api";
+import { ConnectorRateLimitError } from "@atlas/api/lib/knowledge/connectors";
+import { withRateLimitBackoff } from "@atlas/api/lib/knowledge/connector-sync";
 import { getBotToken, getInstallationByOrg } from "@atlas/api/lib/slack/store";
-import { parseGrant } from "@atlas/api/lib/brain/acl";
+import {
+  DEFAULT_AUDIENCE_MAX_STALENESS_HOURS,
+  getAudienceMaxStalenessSeconds,
+  parseGrant,
+} from "@atlas/api/lib/brain/acl";
 import {
   deriveChatChannelGrant,
   type ChatChannelVisibility,
@@ -112,6 +132,94 @@ function liveHumans(
   directory: ReadonlyMap<string, SlackDirectoryUser>,
 ): readonly SlackDirectoryUser[] {
   return [...directory.values()].filter(isLiveHuman);
+}
+
+// ---------------------------------------------------------------------------
+// Rate-limit backoff (#4809) — an ADAPTER onto the engine's, not a second one
+// ---------------------------------------------------------------------------
+
+/** Injectable sleep, so the backoff tests do not actually wait. */
+export type Sleep = (ms: number) => Promise<void>;
+
+/**
+ * Per-cycle throttle tally.
+ *
+ * Lives at CYCLE level rather than inside `syncInstall`, because the case worth
+ * seeing is the one where the directory read exhausts its retries and
+ * `syncInstall` throws — a tally owned by the frame that dies with it would be
+ * lost in exactly the "this workspace 429s on every cycle and never
+ * reconciles" scenario #4809 is about.
+ *
+ * Mutable by design: it is an accumulator threaded through two paginated loops
+ * and one throw, and the alternative (reshaping three return types to carry
+ * counters through an abort path) buys nothing.
+ */
+interface ThrottleTally {
+  /** Reads that hit at least one 429 and then SUCCEEDED — recovered, not lost. */
+  throttled: number;
+  /** Reads that exhausted the bounded retries and aborted their scope. */
+  exhausted: number;
+}
+
+/**
+ * Run one paginated Slack read under the shared bounded backoff.
+ *
+ * The seam that makes reuse possible: `withRateLimitBackoff` catches a THROWN
+ * {@link ConnectorRateLimitError}, but these two read methods RETURN
+ * `{ ok: false, error: "ratelimited", retryAfterSeconds }` instead. So the
+ * conversion happens here, in the same direction
+ * `brain/ingest/slack/client.ts::toClientError` already converts for the
+ * sibling history reads on this same vendor — one backoff implementation for
+ * the whole codebase, per ADR-0030's rejection of per-vendor scheduling.
+ *
+ * ## Exhaustion still ABORTS
+ *
+ * On exhaustion this hands back the SAME `ratelimited` shape the caller already
+ * had, so every completeness guard downstream is untouched: the directory read
+ * skips the workspace, the roster read skips the audience, and membership is
+ * left alone. That is not a detail — the DELETE in `membership.ts` is licensed
+ * ONLY by a complete read, and a retry loop that ended by proceeding with a
+ * partial page would be the mass revocation this subsystem has already produced
+ * three times. Retrying buys more chances to complete the read; it must never
+ * buy permission to settle for less of one.
+ */
+async function readPageWithBackoff<T extends { readonly ok: true }>(
+  fetchPage: () => Promise<T | SlackReadError>,
+  context: string,
+  tally: ThrottleTally,
+  sleep?: Sleep,
+): Promise<T | SlackReadError> {
+  let throttledHere = false;
+  try {
+    const result = await withRateLimitBackoff(
+      async () => {
+        const page = await fetchPage();
+        if (!page.ok && page.error === "ratelimited") {
+          throttledHere = true;
+          throw new ConnectorRateLimitError(
+            `Slack is rate limiting ${context}`,
+            page.retryAfterSeconds,
+          );
+        }
+        return page;
+      },
+      { ...(sleep !== undefined ? { sleep } : {}) },
+    );
+    // Reached only by a page that did NOT end in `ratelimited`, so a true flag
+    // here means "backed off, then got through".
+    if (throttledHere) tally.throttled++;
+    return result;
+  } catch (err) {
+    if (err instanceof ConnectorRateLimitError) {
+      tally.exhausted++;
+      log.warn(
+        { context, retryAfterSeconds: err.retryAfterSeconds },
+        "brain audience: Slack rate limit survived the bounded backoff — aborting this read rather than reconciling against a partial one",
+      );
+      return { ok: false, error: "ratelimited", retryAfterSeconds: err.retryAfterSeconds };
+    }
+    throw err;
+  }
 }
 
 /** Scopes the directory read needs — new in #4801, so the likeliest failure. */
@@ -198,6 +306,36 @@ export interface AudienceSyncCycleResult {
   readonly membersAdded: number;
   readonly membersRevoked: number;
   readonly principalsUnresolved: number;
+  /**
+   * Paginated reads that hit a 429, backed off, and then SUCCEEDED (#4809).
+   *
+   * The point of separating this from {@link readsThrottleExhausted}: a cycle
+   * that backed off and recovered is healthy — Slack throttled us and the
+   * bounded retry absorbed it — while one that exhausted is the beginning of
+   * "this workspace never reconciles". Before #4809 both looked identical from
+   * the span, because there was no retry and every 429 was simply an abort.
+   */
+  readonly readsThrottled: number;
+  /** Reads that exhausted the bounded retries and aborted their scope. */
+  readonly readsThrottleExhausted: number;
+  /**
+   * Audiences whose membership has not been verified within the staleness
+   * bound (#4808), across every workspace — `null` if the sweep itself failed.
+   *
+   * `null` rather than `0` on failure, deliberately: a sweep that could not run
+   * must not report the all-clear that a healthy deployment reports.
+   */
+  readonly staleAudiences: number | null;
+  /** Distinct workspaces holding at least one stale audience; `null` as above. */
+  readonly staleWorkspaces: number | null;
+  /**
+   * Age of the LEAST recently verified audience in the deployment, in seconds.
+   *
+   * The number that turns "some roster read is failing" into "and it has been
+   * failing for eleven days" — i.e. into a thing with a deadline, since past
+   * the bound those grants stop being served.
+   */
+  readonly oldestVerifiedAgeSeconds: number | null;
   readonly error?: string;
 }
 
@@ -211,7 +349,112 @@ const ZERO: Omit<AudienceSyncCycleResult, "status"> = {
   membersAdded: 0,
   membersRevoked: 0,
   principalsUnresolved: 0,
+  readsThrottled: 0,
+  readsThrottleExhausted: 0,
+  staleAudiences: null,
+  staleWorkspaces: null,
+  oldestVerifiedAgeSeconds: null,
 };
+
+/**
+ * The staleness sweep behind the span's `stale_*` attributes (#4808).
+ *
+ * `min(synced_at)` per audience is the conservative reading — an audience is as
+ * verified as its least recently verified row — and matches what `acl.ts`'s
+ * read-time bound tests, so the alert and the enforcement cannot disagree about
+ * which audiences are stale.
+ *
+ * Deployment-wide rather than per-workspace: span attributes are scalars, and
+ * `workspace_id` is unbounded cardinality. The counts say HOW MUCH and the log
+ * line that follows names the worst offenders.
+ *
+ * Exported so the real-Postgres test runs this exact string against the live
+ * schema — the aggregate shape is easy to get subtly wrong (a `WHERE` on
+ * `synced_at` instead of a `HAVING` on the grouped minimum would silently
+ * count rows rather than audiences).
+ */
+export const AUDIENCE_STALENESS_SQL = `
+  WITH audience AS (
+    SELECT workspace_id, audience_id, min(synced_at) AS verified_at
+      FROM fact_audience_member
+     GROUP BY workspace_id, audience_id
+  )
+  SELECT count(*)::int AS stale_audiences,
+         count(DISTINCT workspace_id)::int AS stale_workspaces,
+         COALESCE(EXTRACT(EPOCH FROM (now() - min(verified_at)))::bigint, 0) AS oldest_age_seconds
+    FROM audience
+   WHERE verified_at < now() - make_interval(secs => $1::double precision)`;
+
+interface StalenessRow extends Record<string, unknown> {
+  readonly stale_audiences: number;
+  readonly stale_workspaces: number;
+  readonly oldest_age_seconds: string | number;
+}
+
+/** What the staleness sweep found. All-`null` means it could not run. */
+interface StalenessReport {
+  readonly staleAudiences: number | null;
+  readonly staleWorkspaces: number | null;
+  readonly oldestVerifiedAgeSeconds: number | null;
+}
+
+const NO_STALENESS_REPORT: StalenessReport = {
+  staleAudiences: null,
+  staleWorkspaces: null,
+  oldestVerifiedAgeSeconds: null,
+};
+
+/**
+ * Count audiences past the staleness bound, for the span.
+ *
+ * Never throws: a failed sweep degrades the OBSERVABILITY of the cycle, and
+ * failing the cycle over it would take the reconcile down with the dashboard.
+ * It reports `null` instead — see {@link AudienceSyncCycleResult.staleAudiences}
+ * for why not `0`.
+ *
+ * When enforcement is switched OFF (`ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`
+ * = 0) the sweep falls back to the DEFAULT bound rather than reporting nothing.
+ * An operator who disabled enforcement to survive an incident is precisely the
+ * one who still needs to see how stale things are getting — losing the alert
+ * along with the enforcement would leave them flying blind on the condition
+ * they just chose to tolerate.
+ */
+async function sweepStaleness(
+  query: <T extends Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>,
+): Promise<StalenessReport> {
+  const configured = getAudienceMaxStalenessSeconds();
+  const boundSeconds = configured > 0 ? configured : DEFAULT_AUDIENCE_MAX_STALENESS_HOURS * 3600;
+  try {
+    const rows = await query<StalenessRow>(AUDIENCE_STALENESS_SQL, [boundSeconds]);
+    const row = rows[0];
+    if (row === undefined) return NO_STALENESS_REPORT;
+    // The counts are VALIDATED, not trusted. An aggregate whose shape drifted
+    // would otherwise put `undefined` on the span, which renders as "no data" —
+    // indistinguishable from a healthy deployment, and hiding precisely the
+    // number this sweep exists to show. `null` + a warn says "we do not know".
+    if (typeof row.stale_audiences !== "number" || typeof row.stale_workspaces !== "number") {
+      log.warn(
+        { row },
+        "brain audience: staleness sweep returned an unexpected row shape — its counters are unavailable",
+      );
+      return NO_STALENESS_REPORT;
+    }
+    // `count(*)` is `::int` so pg hands back a number, but `EXTRACT(...)::bigint`
+    // comes back as a STRING (pg maps int8 to string to preserve precision).
+    const oldest = Number(row.oldest_age_seconds);
+    return {
+      staleAudiences: row.stale_audiences,
+      staleWorkspaces: row.stale_workspaces,
+      oldestVerifiedAgeSeconds: Number.isFinite(oldest) ? oldest : null,
+    };
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "brain audience: staleness sweep failed — the cycle ran, but its staleness counters are unavailable",
+    );
+    return NO_STALENESS_REPORT;
+  }
+}
 
 /** The vendor surface one workspace's sync needs — injectable for tests. */
 export interface AudienceSyncApi {
@@ -239,6 +482,8 @@ export interface AudienceSyncDeps {
   readonly resolveToken?: (workspaceId: string) => Promise<string>;
   readonly reconcile?: typeof reconcileAudienceMembership;
   readonly resolve?: typeof resolvePrincipals;
+  /** Test-only backoff sleep, so the #4809 retry tests do not actually wait. */
+  readonly sleep?: Sleep;
 }
 
 /**
@@ -306,14 +551,22 @@ async function loadDirectory(
   api: AudienceSyncApi,
   token: string,
   workspaceId: string,
+  tally: ThrottleTally,
+  sleep?: Sleep,
 ): Promise<DirectoryResult> {
   const byId = new Map<string, SlackDirectoryUser>();
   let cursor: string | undefined;
   for (let page = 0; page < MAX_DIRECTORY_PAGES; page++) {
-    const result = await api.fetchUsersListPage(token, {
-      limit: PAGE_LIMIT,
-      ...(cursor !== undefined ? { cursor } : {}),
-    });
+    const result = await readPageWithBackoff(
+      () =>
+        api.fetchUsersListPage(token, {
+          limit: PAGE_LIMIT,
+          ...(cursor !== undefined ? { cursor } : {}),
+        }),
+      `the Slack directory for workspace ${workspaceId}`,
+      tally,
+      sleep,
+    );
     if (!result.ok) {
       const reason = describeSlackError(result, DIRECTORY_SCOPES);
       log.warn(
@@ -400,15 +653,23 @@ async function loadRoster(
   token: string,
   workspaceId: string,
   channelId: string,
+  tally: ThrottleTally,
+  sleep?: Sleep,
 ): Promise<string[] | null> {
   const memberIds: string[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < MAX_ROSTER_PAGES; page++) {
-    const result = await api.fetchConversationMembersPage(token, {
-      channel: channelId,
-      limit: PAGE_LIMIT,
-      ...(cursor !== undefined ? { cursor } : {}),
-    });
+    const result = await readPageWithBackoff(
+      () =>
+        api.fetchConversationMembersPage(token, {
+          channel: channelId,
+          limit: PAGE_LIMIT,
+          ...(cursor !== undefined ? { cursor } : {}),
+        }),
+      `the roster of channel ${channelId}`,
+      tally,
+      sleep,
+    );
     if (!result.ok) {
       log.warn(
         { workspaceId, channelId, reason: describeSlackError(result, CHANNEL_SCOPES) },
@@ -495,7 +756,10 @@ const ZERO_WORKSPACE: WorkspaceOutcome = {
  */
 async function syncInstall(
   row: InstallRow,
-  deps: Required<Pick<AudienceSyncDeps, "api" | "resolveToken" | "reconcile" | "resolve">>,
+  deps: Required<Pick<AudienceSyncDeps, "api" | "resolveToken" | "reconcile" | "resolve">> & {
+    readonly sleep?: Sleep;
+  },
+  tally: ThrottleTally,
 ): Promise<WorkspaceOutcome> {
   const workspaceId = row.workspace_id;
   const parsed = parseSlackHistoryConfig(row.config);
@@ -507,7 +771,7 @@ async function syncInstall(
   }
 
   const token = await deps.resolveToken(workspaceId);
-  const loaded = await loadDirectory(deps.api, token, workspaceId);
+  const loaded = await loadDirectory(deps.api, token, workspaceId, tally, deps.sleep);
   if (!loaded.ok) throw new Error(`Slack directory unavailable — ${loaded.reason}`);
   const directory = loaded.directory;
 
@@ -580,7 +844,14 @@ async function syncInstall(
       }
       const audienceId = target.audienceId;
 
-      const roster = await loadRoster(deps.api, token, workspaceId, channelId);
+      const roster = await loadRoster(
+        deps.api,
+        token,
+        workspaceId,
+        channelId,
+        tally,
+        deps.sleep,
+      );
       if (roster === null) {
         out = { ...out, audiencesFailed: out.audiencesFailed + 1 };
         continue;
@@ -663,7 +934,11 @@ export async function runAudienceSyncCycle(
         resolveSlackHistoryToken({ getInstallationByOrg, getBotToken }, workspaceId)),
     reconcile: deps.reconcile ?? reconcileAudienceMembership,
     resolve: deps.resolve ?? resolvePrincipals,
+    ...(deps.sleep !== undefined ? { sleep: deps.sleep } : {}),
   };
+  // One tally for the whole cycle — see {@link ThrottleTally} for why it is not
+  // owned by `syncInstall`, whose frame dies on an exhausted directory read.
+  const tally: ThrottleTally = { throttled: 0, exhausted: 0 };
   const isEnabled = deps.isEnabled ?? isAudienceSyncEnabled;
 
   let installs: InstallRow[];
@@ -683,7 +958,7 @@ export async function runAudienceSyncCycle(
     }
     result = { ...result, workspacesInspected: result.workspacesInspected + 1 };
     try {
-      const out = await syncInstall(row, resolved);
+      const out = await syncInstall(row, resolved, tally);
       result = {
         ...result,
         audiencesReconciled: result.audiencesReconciled + out.audiencesReconciled,
@@ -706,9 +981,33 @@ export async function runAudienceSyncCycle(
     }
   }
 
+  // Swept unconditionally, including when there are no installs left to sync.
+  // An install that was disabled or archived stops being reconciled but its
+  // membership rows stay — and stay stale — so "no installs" is one of the ways
+  // an audience quietly ages past the bound. A sweep gated on `installs.length`
+  // would go silent in exactly that case.
+  const staleness = await sweepStaleness(query);
+  result = {
+    ...result,
+    readsThrottled: tally.throttled,
+    readsThrottleExhausted: tally.exhausted,
+    ...staleness,
+  };
+
   if (installs.length > 0) {
     log.info({ ...result }, "brain audience: membership sync cycle complete");
   }
+  if (staleness.staleAudiences !== null && staleness.staleAudiences > 0) {
+    log.warn(
+      { ...staleness, maxStalenessSeconds: getAudienceMaxStalenessSeconds() },
+      "brain audience: audiences past the staleness bound — their grants are being suppressed at read time until a sync succeeds. Look for a failing roster read or a disabled install in these workspaces",
+    );
+  }
+  // `status` stays a statement about THIS CYCLE's work, so staleness does not
+  // feed it: an audience left behind by an install someone archived last month
+  // is a real condition to alert on, but it is not this cycle failing at
+  // anything, and folding it in would make `degraded` permanent and therefore
+  // ignorable. It gets its own counters and its own log line instead.
   const degraded = result.workspacesFailed > 0 || result.audiencesFailed > 0;
   return { status: degraded ? "degraded" : "success", ...result };
 }

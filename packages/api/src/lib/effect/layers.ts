@@ -2443,6 +2443,21 @@ export function makeSchedulerLive(
           // be distinguishable from the span alone.
           "atlas.brain.audience.members_revoked": result.membersRevoked,
           "atlas.brain.audience.principals_unresolved": result.principalsUnresolved,
+          // #4809: a cycle that backed off and RECOVERED versus one that gave
+          // up. Before the backoff existed both looked like an abort, so
+          // "Slack throttles us occasionally" and "this workspace has not
+          // reconciled in a week" were the same signal.
+          "atlas.brain.audience.reads_throttled": result.readsThrottled,
+          "atlas.brain.audience.reads_throttle_exhausted": result.readsThrottleExhausted,
+          // #4808: the staleness bound made observable. `audiences_failed`
+          // says a roster read is failing; these say for HOW LONG, and how
+          // close it is to the point where `acl.ts` stops serving those grants.
+          // `-1` encodes "the sweep could not run" — span attributes have no
+          // null, and reporting 0 would be indistinguishable from all-clear.
+          "atlas.brain.audience.stale_audiences": result.staleAudiences ?? -1,
+          "atlas.brain.audience.stale_workspaces": result.staleWorkspaces ?? -1,
+          "atlas.brain.audience.oldest_verified_age_seconds":
+            result.oldestVerifiedAgeSeconds ?? -1,
         }),
         onTickFailure: {
           level: "warn",

@@ -29,10 +29,11 @@
  *
  * ## Idempotence
  *
- * Re-running against unchanged source membership writes nothing: the INSERT is
- * `ON CONFLICT DO NOTHING` on the natural key, and the DELETE's `<> ALL` set is
- * the full roster. Both counts come back zero, which is what a steady-state
- * cycle should report.
+ * Re-running against unchanged source membership grants and revokes nothing:
+ * the INSERT is `ON CONFLICT DO NOTHING` on the natural key, and the DELETE's
+ * `<> ALL` set is the full roster. Both counts come back zero, which is what a
+ * steady-state cycle should report — it re-stamps `synced_at` and changes
+ * nothing else.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -85,6 +86,35 @@ export const DELETE_STALE_AUDIENCE_MEMBERS_SQL = `DELETE FROM fact_audience_memb
           AND source = $4
           AND user_id <> ALL($3::text[])
     RETURNING user_id`;
+
+/**
+ * Stamp "verified now" on the surviving roster (#4808).
+ *
+ * A SEPARATE STATEMENT, and that is the whole design. The natural way to
+ * refresh `synced_at` on a re-sync is to turn the INSERT's `ON CONFLICT DO
+ * NOTHING` into `DO UPDATE SET synced_at = now()` — and it is a trap. `DO
+ * UPDATE` makes `RETURNING user_id` emit the WHOLE roster on every cycle, not
+ * just the genuinely-inserted rows, so {@link AudienceReconcileResult.added} —
+ * which is `rows.length` — silently stops meaning "newly granted" and starts
+ * meaning "everyone". The "membership granted" log line then fires every 30
+ * minutes and `atlas.brain.audience.members_added` stops meaning anything.
+ * Nothing errors; every existing assertion still passes. Hence the extra
+ * round trip: `added` keeps its meaning by construction rather than by a
+ * `WHERE xmax = 0` incantation someone later "simplifies" away.
+ *
+ * Runs AFTER the delete, so it stamps exactly the rows that survived
+ * reconciliation and does no work on ones about to be removed. Rows inserted
+ * by this same pass already carry the column default, and `now()` is
+ * transaction time, so all three statements agree on the instant.
+ *
+ * Scoped by `source` like the DELETE: a future second writer into the same
+ * audience must not have its rows marked verified by this one's read.
+ */
+export const TOUCH_AUDIENCE_MEMBERS_SQL = `UPDATE fact_audience_member
+           SET synced_at = now()
+         WHERE workspace_id = $1
+           AND audience_id = $2
+           AND source = $3`;
 
 /** How many revoked user ids a single log line carries. A bound, not a policy. */
 const REVOKED_SAMPLE_CAP = 50;
@@ -197,6 +227,12 @@ export async function reconcileAudienceMembership(
       userIds,
       source,
     ]);
+    // Inside the transaction, so "verified" is committed with the reconcile it
+    // attests to and can never outlive a rolled-back one. Reaching this line at
+    // all is the proof the caller established a COMPLETE roster — every
+    // incomplete read aborts in `sync.ts` without calling this function, which
+    // is what makes the column mean "last verified" rather than "last touched".
+    await tx.query(TOUCH_AUDIENCE_MEMBERS_SQL, [workspaceId, audienceId, source]);
     const result = { added: inserted.rows.length, revoked: deleted.rows.length };
     if (result.revoked > 0) {
       // A revocation is the security-relevant event in this subsystem and must

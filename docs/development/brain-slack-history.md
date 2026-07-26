@@ -230,10 +230,28 @@ that table honest:
 - **Cadence** — its own fiber, default every 30 min
   (`ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES`). That interval is the floor of
   the delay between someone leaving a channel and losing access to facts drawn
-  from it — the number to quote when a workspace asks, assuming the roster reads
-  succeed (see `audiences_failed` below, where the delay is unbounded). Deliberately not
+  from it — the number to quote when a workspace asks. Deliberately not
   folded into the history pass: a quiet channel would then never re-read its
   roster, and a quiet channel is where a stale roster survives longest.
+- **Ceiling** — `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`, platform-scoped,
+  default **168 (7 days)**; `0` disables it. The cadence above is the floor of
+  the revocation delay *when the roster reads succeed*; this is the bound on
+  what happens when they don't. `fact_audience_member.synced_at` records when
+  each membership was last **verified** — stamped on every successful reconcile
+  including the no-op case, and left untouched by every abort — and past this
+  bound `acl.ts` stops expanding those audiences into reader tokens. So a
+  channel Atlas was removed from can no longer keep granting access forever
+  (#4808). Suppressed grants are logged with their audience ids and counted;
+  they are never dropped silently, which is what keeps the bound consistent
+  with that module's refusal to downgrade a reader without saying so.
+
+  ⚠️ The trade is real and points **both** ways. Fail-closed means a workspace
+  whose Slack connection lapses eventually loses its own private-channel facts
+  — a support incident. It was chosen anyway because that failure is *loud and
+  diagnosable* (the counters below name the workspace) while unbounded stale
+  access is *silent*, and because the blast radius is narrow: only `audience:`
+  grants are affected, so `[org]` and per-user grants keep serving. Raise or
+  zero the setting to restore reads without a redeploy — it hot-reloads.
 - **Switch** — `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED`, workspace-scoped, **default
   ON** (unlike `ATLAS_BRAIN_EXTRACTION_ENABLED`, which spends model budget and
   defaults off). Read with no workspace it resolves to the platform value, which
@@ -253,6 +271,24 @@ real offboarding wave or a resolver that stopped resolving. `audiences_failed`
 means a channel's roster could not be read *completely* — the sync then leaves
 that audience's membership untouched rather than revoking the members it failed
 to fetch, so a persistent non-zero count is stale-access risk, not data loss.
+
+That risk is now **bounded and measured**. `stale_audiences` / `stale_workspaces`
+count what has aged past `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`, and
+`oldest_verified_age_seconds` says how far past — which turns "some roster read
+is failing" into "and it has been failing for eleven days", i.e. into a thing
+with a deadline, since past the bound those grants stop being served. All three
+report `-1` when the sweep itself could not run (span attributes have no null,
+and `0` would be indistinguishable from all-clear). They are swept even when
+there are no installs left to sync, because an install someone *disabled* stops
+being reconciled while its membership rows stay.
+
+`reads_throttled` versus `reads_throttle_exhausted` is the #4809 pair: the first
+counts reads that hit a 429, backed off, and **got through** — healthy; the
+second counts reads that gave up and aborted their scope. Before the backoff
+existed every 429 was simply an abort, so "Slack throttles us occasionally" and
+"this workspace has not reconciled in a week" were the same signal. A rising
+`reads_throttle_exhausted` is the early warning for `stale_audiences`.
+
 `principals_unresolved` is normal and non-zero in most workspaces (guests,
 contractors, anyone without an Atlas account); the per-cycle log breaks it into
 no-email / outside-verified-domain / no-Atlas-account, because those three need

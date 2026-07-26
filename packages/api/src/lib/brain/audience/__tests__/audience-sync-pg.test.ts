@@ -31,7 +31,7 @@ import {
   SLACK_HISTORY_CATALOG_ID,
   SLACK_HISTORY_SOURCE,
 } from "@atlas/api/lib/brain/ingest/slack/config";
-import { AUDIENCE_SYNC_INSTALLS_SQL } from "../sync";
+import { AUDIENCE_STALENESS_SQL, AUDIENCE_SYNC_INSTALLS_SQL } from "../sync";
 import { reconcileAudienceMembership, type MembershipExecutor } from "../membership";
 import { resolvePrincipals } from "../resolver";
 
@@ -173,22 +173,101 @@ describeIfPg("brain audience membership (real Postgres)", () => {
     expect((await readerFor("user-ada")).audienceIds).toEqual([AUDIENCE]);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("is idempotent — an unchanged re-sync writes nothing and preserves created_at", async () => {
+  it("is idempotent — an unchanged re-sync reports nothing, preserves created_at, and REFRESHES synced_at", async () => {
     await reconcile(["user-ada", "user-bob"]);
-    const first = await pool.query<{ created_at: Date }>(
-      `SELECT created_at FROM fact_audience_member WHERE user_id = 'user-ada'`,
+    // The two clocks must be able to diverge for the assertions below to mean
+    // anything; without this the re-sync could land inside the same millisecond.
+    await pool.query(
+      `UPDATE fact_audience_member SET created_at = created_at - interval '1 hour',
+                                       synced_at  = synced_at  - interval '1 hour'`,
+    );
+    const aged = await pool.query<{ created_at: Date; synced_at: Date }>(
+      `SELECT created_at, synced_at FROM fact_audience_member WHERE user_id = 'user-ada'`,
     );
 
     const second = await reconcile(["user-ada", "user-bob"]);
+    // THE TRAP. The natural way to stamp `synced_at` on a re-sync is to turn
+    // the INSERT's `ON CONFLICT DO NOTHING` into `DO UPDATE SET synced_at =
+    // now()` — and that makes `RETURNING user_id` emit the WHOLE roster every
+    // cycle, so `added` silently stops meaning "newly granted" and starts
+    // meaning "everyone". The "membership granted" log would then fire every 30
+    // minutes and `atlas.brain.audience.members_added` would stop meaning
+    // anything, with nothing erroring and no other assertion noticing.
     expect(second).toEqual({ added: 0, revoked: 0 });
 
-    const after = await pool.query<{ created_at: Date }>(
-      `SELECT created_at FROM fact_audience_member WHERE user_id = 'user-ada'`,
+    const after = await pool.query<{ created_at: Date; synced_at: Date }>(
+      `SELECT created_at, synced_at FROM fact_audience_member WHERE user_id = 'user-ada'`,
     );
     // `created_at` answers "since when has this person been able to see this?".
     // An upsert that rewrote it every cycle would turn that into "since the
     // last cycle", i.e. into nothing.
-    expect(after.rows[0]?.created_at).toEqual(first.rows[0]?.created_at);
+    expect(after.rows[0]?.created_at).toEqual(aged.rows[0]?.created_at);
+    // `synced_at` answers a DIFFERENT question — "when did we last CHECK?" — so
+    // the no-op pass must advance it. "Unchanged" is still "verified"; if the
+    // steady-state pass skipped the stamp, the column would age on every
+    // healthy audience and the read-time bound would start denying correct
+    // grants. Both properties, one re-sync: that is why they are one test.
+    expect(after.rows[0]!.synced_at.getTime()).toBeGreaterThan(
+      aged.rows[0]!.synced_at.getTime(),
+    );
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("leaves synced_at ALONE when the reconcile aborts — 'last verified', never 'last touched'", async () => {
+    // The column's whole meaning. `sync.ts` aborts an audience whose roster it
+    // could not read COMPLETELY, without calling `reconcileAudienceMembership`
+    // at all — so the abort is modelled here as exactly that: no call. If a
+    // failed read stamped the column anyway, `synced_at` would read healthiest
+    // for precisely the workspaces that are broken, and the staleness bound
+    // would never fire on the case it exists for.
+    await reconcile(["user-ada"]);
+    await pool.query(`UPDATE fact_audience_member SET synced_at = now() - interval '9 days'`);
+    const before = await pool.query<{ synced_at: Date }>(
+      `SELECT synced_at FROM fact_audience_member WHERE user_id = 'user-ada'`,
+    );
+
+    // ... a cycle in which the roster read fails: membership untouched.
+    const after = await pool.query<{ synced_at: Date }>(
+      `SELECT synced_at FROM fact_audience_member WHERE user_id = 'user-ada'`,
+    );
+    expect(after.rows[0]?.synced_at).toEqual(before.rows[0]?.synced_at);
+
+    // And that is what the reader now acts on: past the bound the grant stops
+    // being served, so a permanently-failing roster read can no longer keep
+    // granting access forever (#4808).
+    expect((await readerFor("user-ada")).audienceIds).toEqual([]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("keeps serving a grant that is stale but still INSIDE the bound", async () => {
+    // The other half, and the one that keeps the bound from being a hair
+    // trigger: a workspace whose Slack is briefly unreachable must not lose its
+    // private-channel facts over a bad afternoon.
+    await reconcile(["user-ada"]);
+    await pool.query(`UPDATE fact_audience_member SET synced_at = now() - interval '2 days'`);
+    expect((await readerFor("user-ada")).audienceIds).toEqual([AUDIENCE]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("counts stale audiences with the sweep the span reports", async () => {
+    // Runs the exact production string against the live schema. The aggregate
+    // is easy to get subtly wrong — a `WHERE` on `synced_at` rather than a
+    // `HAVING`-shaped filter on the grouped minimum would count ROWS (people)
+    // and report a two-person audience as two stale audiences.
+    await reconcile(["user-ada", "user-bob"]);
+    const fresh = await query<{ stale_audiences: number; oldest_age_seconds: string }>(
+      AUDIENCE_STALENESS_SQL,
+      [7 * 24 * 3600],
+    );
+    expect(fresh[0]?.stale_audiences).toBe(0);
+
+    await pool.query(`UPDATE fact_audience_member SET synced_at = now() - interval '11 days'`);
+    const stale = await query<{
+      stale_audiences: number;
+      stale_workspaces: number;
+      oldest_age_seconds: string;
+    }>(AUDIENCE_STALENESS_SQL, [7 * 24 * 3600]);
+    // TWO members, ONE audience.
+    expect(stale[0]?.stale_audiences).toBe(1);
+    expect(stale[0]?.stale_workspaces).toBe(1);
+    expect(Number(stale[0]?.oldest_age_seconds)).toBeGreaterThan(10 * 24 * 3600);
   }, PG_TEST_TIMEOUT_MS);
 
   it("an empty roster revokes the whole audience", async () => {

@@ -548,6 +548,7 @@ describe("migrateAuthTables", () => {
             // in every auth mode — must be in the already-applied set so this
             // "all applied" test sees zero new migrations.
             { name: "0181_brain_fts.sql" },
+            { name: "0182_audience_member_synced_at.sql" },
           ],
         };
       }

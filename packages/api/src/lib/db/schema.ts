@@ -3476,11 +3476,22 @@ export const factAudienceMember = pgTable(
     // re-sync's reconciliation and answers "why can this person see that?".
     source: text("source").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // When this membership was last VERIFIED against the source — not when the
+    // row was last touched (0182, #4808). Stamped on every successful
+    // reconcile INCLUDING the no-op case, and left alone on every abort path,
+    // so a permanently-failing roster read ages visibly instead of looking
+    // identical to one reconciled seconds ago. Read-time enforcement is in
+    // `lib/brain/acl.ts`; see the migration for why the default backfills as
+    // fresh rather than expired.
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     primaryKey({ columns: [t.workspaceId, t.audienceId, t.userId] }),
     // "Which audiences is this user in?" — the per-request principal expansion
     // the visibility predicate performs before it can push anything down.
     index("idx_fact_audience_member_user").on(t.workspaceId, t.userId),
+    // "Which audiences here have not been verified lately?" — the per-cycle
+    // staleness sweep behind the `brain_audience_sync` span attributes.
+    index("idx_fact_audience_member_stale").on(t.workspaceId, t.syncedAt),
   ],
 );

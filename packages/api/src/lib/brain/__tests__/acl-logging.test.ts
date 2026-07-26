@@ -240,7 +240,9 @@ describe("resolution-side anomalies are logged (#4768)", () => {
     // query or the row shape changed. Silently returning fewer memberships
     // would strip a reader's audience grants with no signal — the same silent
     // downgrade this function refuses to perform on a DB error.
-    const drifted = { query: async () => ({ rows: [{ aud: "eng" }, { audience_id: "exec" }] }) };
+    const drifted = {
+      query: async () => ({ rows: [{ aud: "eng" }, { audience_id: "exec", fresh: true }] }),
+    };
     const resolved = await resolvePrincipalContext(drifted, {
       workspaceId: WS,
       mode: "managed",

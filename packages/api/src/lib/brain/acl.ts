@@ -74,6 +74,7 @@
 
 import { ORG_ROLES, type AtlasRole, type AuthMode, type OrgRole } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 
 const log = createLogger("brain-acl");
 
@@ -342,16 +343,72 @@ export interface AudienceMembershipReader {
  * OWN tenant's facts — a leak the visibility predicate's workspace containment
  * cannot catch, because the token is being applied inside the right tenant.
  *
- * `DISTINCT` is belt-and-braces: the PK `(workspace_id, audience_id, user_id)`
- * already makes a duplicate row unrepresentable. It survives a future PK
- * relaxation without silently doubling the token list.
+ * `GROUP BY audience_id` does the belt-and-braces the old `DISTINCT` did: the
+ * PK `(workspace_id, audience_id, user_id)` already makes a duplicate row
+ * unrepresentable given both predicates here, and this survives a future PK
+ * relaxation without silently doubling the token list. `min(synced_at)` is the
+ * conservative reading of a set that should hold exactly one row — an audience
+ * is as verified as its LEAST recently verified row, never as its best one.
+ *
+ * ## The freshness flag (#4808)
+ *
+ * `fresh` is computed in SQL rather than by comparing timestamps in TS, so the
+ * comparison happens against the DATABASE's clock on both sides. Reading
+ * `synced_at` out and testing it against the API process's `Date.now()` would
+ * make the bound depend on clock skew between two machines — and skew in the
+ * generous direction extends every grant silently, which is the one direction
+ * this bound exists to close.
+ *
+ * A non-positive `$3` DISABLES the bound (everything is fresh), which is the
+ * operator's hot-reloadable escape hatch — see
+ * `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS`. It is checked FIRST because
+ * `make_interval(secs => 0)` is a zero interval, under which `synced_at >=
+ * now()` is false for every row: the disabled setting would otherwise suppress
+ * every audience in the deployment rather than none of them.
  */
 export const AUDIENCE_MEMBERSHIP_SQL = `
-  SELECT DISTINCT audience_id
+  SELECT audience_id,
+         ($3::double precision <= 0
+          OR min(synced_at) >= now() - make_interval(secs => $3::double precision)) AS fresh
     FROM fact_audience_member
    WHERE workspace_id = $1
      AND user_id = $2
+   GROUP BY audience_id
 ` as const;
+
+/**
+ * How long a membership row stays valid after its last verified sync, in
+ * seconds. `0` (or any non-positive / unparseable value) disables the bound.
+ *
+ * Platform-scoped: this is the operator's floor, not a tenant's preference.
+ * Read per request rather than cached in a module constant so the settings
+ * registry's ~30s hot-reload actually reaches it — an operator raising the
+ * limit mid-incident must not need a redeploy to restore reads.
+ *
+ * Unparseable falls back to the DEFAULT rather than to "disabled". A typo in
+ * an operator's override should not quietly switch the bound off; the shipped
+ * default is the safe interpretation of "they meant to have one".
+ */
+export const DEFAULT_AUDIENCE_MAX_STALENESS_HOURS = 168;
+
+/** How many suppressed audience ids one log line carries. A bound, not a policy. */
+const SUPPRESSED_AUDIENCE_SAMPLE_CAP = 20;
+
+export function getAudienceMaxStalenessSeconds(): number {
+  const raw = getSettingAuto("ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS");
+  if (raw === undefined || raw === "") return DEFAULT_AUDIENCE_MAX_STALENESS_HOURS * 3600;
+  const hours = Number.parseFloat(raw);
+  if (!Number.isFinite(hours)) {
+    log.warn(
+      { raw },
+      "brain ACL: ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS is unparseable — using the default staleness bound",
+    );
+    return DEFAULT_AUDIENCE_MAX_STALENESS_HOURS * 3600;
+  }
+  // A deliberate `0` (or negative) reaches here and disables the bound; that is
+  // the documented escape hatch, distinct from the unparseable case above.
+  return hours <= 0 ? 0 : hours * 3600;
+}
 
 export interface ResolvePrincipalInput {
   readonly workspaceId: string;
@@ -455,31 +512,58 @@ export async function resolvePrincipalContext(
     // grant. Falls through as `null` — deliberately, not by omission.
   }
 
-  const result = await db.query(AUDIENCE_MEMBERSHIP_SQL, [workspaceId, userId]);
-  const audienceIds = result.rows
-    .map((row) =>
-      typeof row === "object" && row !== null && "audience_id" in row
-        ? row.audience_id
-        : undefined,
-    )
-    .filter((id): id is string => typeof id === "string" && id.length > 0);
-  if (audienceIds.length !== result.rows.length) {
-    // Two different faults land here and an operator must be able to tell them
-    // apart. A row with no `audience_id` key at all is QUERY DRIFT (an added
-    // alias, a join) — diff the SQL. A row that has the column but an unusable
-    // value is a DATA defect: `audience_id` is `text NOT NULL` but 0180 adds no
+  const result = await db.query(AUDIENCE_MEMBERSHIP_SQL, [
+    workspaceId,
+    userId,
+    getAudienceMaxStalenessSeconds(),
+  ]);
+
+  const audienceIds: string[] = [];
+  const suppressedStale: string[] = [];
+  let missingColumn = 0;
+  let unusableValue = 0;
+  let unreadableFreshness = 0;
+
+  for (const row of result.rows) {
+    if (!(typeof row === "object" && row !== null && "audience_id" in row)) {
+      missingColumn++;
+      continue;
+    }
+    const id = row.audience_id;
+    if (typeof id !== "string" || id.length === 0) {
+      unusableValue++;
+      continue;
+    }
+    const fresh = "fresh" in row ? row.fresh : undefined;
+    if (fresh === true) {
+      audienceIds.push(id);
+    } else if (fresh === false) {
+      suppressedStale.push(id);
+    } else {
+      // The flag is computed by this module's own SQL over a NOT NULL column,
+      // so a non-boolean here is query drift, not data. Counted as a SUPPRESSED
+      // grant rather than a granted one: "we could not determine whether this
+      // membership is still verified" is not a basis for expanding a token, and
+      // the loud count below is what keeps that from being a silent deny.
+      unreadableFreshness++;
+    }
+  }
+
+  if (missingColumn > 0 || unusableValue > 0 || unreadableFreshness > 0) {
+    // Three faults land here and an operator must be able to tell them apart. A
+    // row with no `audience_id` key at all is QUERY DRIFT (an added alias, a
+    // join) — diff the SQL. A row that has the column but an unusable value is
+    // a DATA defect: `audience_id` is `text NOT NULL` but 0180 adds no
     // non-empty CHECK, so `''` is legally storable and points at whatever wrote
     // the membership row — today that is #4801's sync
     // (`lib/brain/audience/membership.ts`, which refuses a blank id at the
-    // writer for exactly this reason), not at this query. Reporting both as
-    // "the query changed" would send that investigation to the wrong file.
+    // writer for exactly this reason), not at this query. A row missing a
+    // readable `fresh` is 0182's freshness flag having changed shape. Reporting
+    // them alike would send each investigation to the wrong file.
     //
     // Either way, silently returning fewer memberships would strip a reader's
     // audience grants with no signal — the same silent downgrade this function
     // refuses to perform on a DB error.
-    const missingColumn = result.rows.filter(
-      (row) => !(typeof row === "object" && row !== null && "audience_id" in row),
-    ).length;
     log.warn(
       {
         workspaceId,
@@ -488,11 +572,43 @@ export async function resolvePrincipalContext(
         returned: result.rows.length,
         usable: audienceIds.length,
         missingColumn,
-        unusableValue: result.rows.length - audienceIds.length - missingColumn,
+        unusableValue,
+        unreadableFreshness,
       },
       missingColumn > 0
         ? "brain ACL: audience membership rows lack an audience_id column — the membership query shape changed"
-        : "brain ACL: audience membership rows carry an unusable audience_id — the writer stored an empty id",
+        : unreadableFreshness > 0
+          ? "brain ACL: audience membership rows carry no readable freshness flag — the membership query shape changed; these grants are suppressed"
+          : "brain ACL: audience membership rows carry an unusable audience_id — the writer stored an empty id",
+    );
+  }
+
+  if (suppressedStale.length > 0) {
+    // The #4808 event, and the reason the staleness bound is defensible at all.
+    //
+    // This function's contract is that it never downgrades a reader without
+    // saying so — that is why a DB error propagates rather than resolving to
+    // zero audiences. A `synced_at` filter IS such a downgrade, so it has to be
+    // announced with the same force: which audiences, and for how long they
+    // have gone unverified. Without this line the bound would be exactly the
+    // silent denial the module argues against, just with a different cause.
+    //
+    // `warn`, and with the ids: by the time anyone asks "why can't this person
+    // see the channel they are demonstrably in?", the only answer that helps is
+    // "membership for THESE audiences has not been verified since X" — which
+    // points at the failing roster read, not at the reader.
+    log.warn(
+      {
+        workspaceId,
+        userId,
+        requestId,
+        suppressed: suppressedStale.length,
+        granted: audienceIds.length,
+        maxStalenessSeconds: getAudienceMaxStalenessSeconds(),
+        suppressedAudienceIds: suppressedStale.slice(0, SUPPRESSED_AUDIENCE_SAMPLE_CAP),
+        suppressedSampleTruncated: suppressedStale.length > SUPPRESSED_AUDIENCE_SAMPLE_CAP,
+      },
+      "brain ACL: audience grants suppressed as stale — their membership has not been verified within ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS. Check brain_audience_sync for a failing roster read in this workspace",
     );
   }
 

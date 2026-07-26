@@ -17,8 +17,11 @@ import {
   AUDIENCE_PREFIX,
   ORG_PRINCIPAL,
   ROLE_PREFIX,
+  AUDIENCE_MEMBERSHIP_SQL,
+  DEFAULT_AUDIENCE_MAX_STALENESS_HOURS,
   USER_PREFIX,
   aclVisibilityClause,
+  getAudienceMaxStalenessSeconds,
   formatPrincipal,
   impliedRoles,
   isVisibleTo,
@@ -342,13 +345,17 @@ describe("resolvePrincipalContext (#4768)", () => {
     let seenSql: string | undefined;
     let seenParams: unknown[] | undefined;
     const resolved = await resolvePrincipalContext(
-      reader([{ audience_id: "eng" }, { audience_id: "exec" }], (sql, params) => {
+      reader([{ audience_id: "eng", fresh: true }, { audience_id: "exec", fresh: true }], (sql, params) => {
         seenSql = sql;
         seenParams = params;
       }),
       authed,
     );
-    expect(seenParams).toEqual([WS, "user-1"]);
+    // Third param is the staleness bound in seconds (#4808) — the read-time
+    // half of the guarantee that a permanently-failing roster read cannot keep
+    // granting forever.
+    expect(seenParams?.slice(0, 2)).toEqual([WS, "user-1"]);
+    expect(typeof seenParams?.[2]).toBe("number");
     // The workspace predicate is the module's only cross-tenant-sensitive read
     // — a membership row from another tenant hands this reader a token that
     // then matches their OWN tenant's facts, which the predicate's workspace
@@ -363,7 +370,12 @@ describe("resolvePrincipalContext (#4768)", () => {
 
   it("drops non-string / empty audience ids rather than minting a bare prefix", async () => {
     const resolved = await resolvePrincipalContext(
-      reader([{ audience_id: "eng" }, { audience_id: null }, { audience_id: "" }, {}]),
+      reader([
+        { audience_id: "eng", fresh: true },
+        { audience_id: null, fresh: true },
+        { audience_id: "", fresh: true },
+        {},
+      ]),
       authed,
     );
     expect(resolved.audienceIds).toEqual(["eng"]);
@@ -388,7 +400,7 @@ describe("resolvePrincipalContext (#4768)", () => {
 
   it("resolves the other authenticated modes without special-casing them", async () => {
     for (const mode of ["simple-key", "byot"] as const) {
-      const resolved = await resolvePrincipalContext(reader([{ audience_id: "eng" }]), {
+      const resolved = await resolvePrincipalContext(reader([{ audience_id: "eng", fresh: true }]), {
         ...authed,
         mode,
       });
@@ -464,6 +476,75 @@ describe("resolvePrincipalContext (#4768)", () => {
     await expect(resolvePrincipalContext(failing, authed)).rejects.toThrow(
       "connection terminated",
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Staleness bound (#4808)
+  // -------------------------------------------------------------------------
+
+  it("suppresses an audience the sync has not verified within the bound", async () => {
+    // The read-time half of #4808. Without it, a channel Atlas was removed from
+    // fails `loadRoster` on every cycle forever and keeps granting access
+    // indefinitely — the sync's fail-safe abort is correct but has no time
+    // bound, so "revocation latency is one interval" becomes "unbounded".
+    const resolved = await resolvePrincipalContext(
+      reader([
+        { audience_id: "eng", fresh: true },
+        { audience_id: "abandoned", fresh: false },
+      ]),
+      authed,
+    );
+    expect(resolved.audienceIds).toEqual(["eng"]);
+    expect(principalTokens(resolved)).not.toContain(`${AUDIENCE_PREFIX}abandoned`);
+    // And the fact it gated is genuinely invisible, not merely absent from a list.
+    expect(isVisibleTo(row([`${AUDIENCE_PREFIX}abandoned`]), resolved)).toBe(false);
+    expect(isVisibleTo(row([`${AUDIENCE_PREFIX}eng`]), resolved)).toBe(true);
+  });
+
+  it("suppresses a membership row whose freshness flag is unreadable", async () => {
+    // Fails CLOSED on query drift. "We could not determine whether this
+    // membership is still verified" is not a basis for expanding a token — and
+    // the alternative default (treat unknown as fresh) would make the bound
+    // silently unenforced the moment the SELECT list changed.
+    const resolved = await resolvePrincipalContext(
+      reader([{ audience_id: "eng" }, { audience_id: "ops", fresh: "yes" }]),
+      authed,
+    );
+    expect(resolved.audienceIds).toEqual([]);
+  });
+
+  it("passes the configured bound to the query rather than filtering in TS", async () => {
+    // The comparison must happen against the DATABASE's clock on both sides.
+    // Reading `synced_at` out and testing it against the API process's
+    // `Date.now()` would make the bound depend on clock skew between two
+    // machines — and skew in the generous direction silently extends every
+    // grant, which is the one direction this bound exists to close.
+    let seenSql: string | undefined;
+    let seenParams: unknown[] | undefined;
+    await resolvePrincipalContext(
+      reader([{ audience_id: "eng", fresh: true }], (sql, params) => {
+        seenSql = sql;
+        seenParams = params;
+      }),
+      authed,
+    );
+    expect(seenSql).toContain("synced_at");
+    expect(seenSql).toContain("now()");
+    expect(seenParams?.[2]).toBe(DEFAULT_AUDIENCE_MAX_STALENESS_HOURS * 3600);
+  });
+
+  it("treats a non-positive bound as DISABLED, not as 'everything is stale'", async () => {
+    // `make_interval(secs => 0)` is a zero interval, under which
+    // `synced_at >= now()` is false for every row — so a disabled setting read
+    // naively would suppress every audience in the deployment rather than none
+    // of them. The SQL checks the disable arm FIRST for exactly that reason.
+    expect(AUDIENCE_MEMBERSHIP_SQL).toMatch(/\$3::double precision <= 0\s+OR/);
+  });
+
+  it("falls back to the default bound on an unparseable setting, not to disabled", async () => {
+    // A typo in an operator's override must not quietly switch the bound off.
+    // (The `0` escape hatch is deliberate and separate — see the setting copy.)
+    expect(getAudienceMaxStalenessSeconds()).toBe(DEFAULT_AUDIENCE_MAX_STALENESS_HOURS * 3600);
   });
 });
 

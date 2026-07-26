@@ -143,9 +143,15 @@ describe("runAudienceSyncCycle", () => {
   });
 
   it("does NOT reconcile when the roster read fails", async () => {
+    // A NON-retryable failure, deliberately. This test is about the generic
+    // abort — a failed read must never become an empty roster — and since
+    // #4809 the `ratelimited` arm backs off and retries first, which would
+    // make this one wait on a real `Retry-After` to prove a point that has
+    // nothing to do with throttling. The throttle path has its own tests in
+    // "rate-limit backoff (#4809)", including that exhaustion still aborts.
     const { deps, reconciled } = harness({
       fetchConversationMembersPage: () =>
-        Promise.resolve({ ok: false as const, error: "ratelimited", retryAfterSeconds: 30 }),
+        Promise.resolve({ ok: false as const, error: "not_in_channel", retryAfterSeconds: null }),
     });
     const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
 
@@ -580,5 +586,202 @@ describe("gating and cadence", () => {
   it("falls back to the default interval on a non-positive or unparseable value", () => {
     // The setting's user-facing description promises this fallback.
     expect(getAudienceSyncIntervalMs()).toBe(DEFAULT_AUDIENCE_SYNC_INTERVAL_MS);
+  });
+});
+
+describe("rate-limit backoff (#4809)", () => {
+  /** A `sleep` that records what it was asked to wait, and returns instantly. */
+  function fakeSleep() {
+    const waits: number[] = [];
+    return { waits, sleep: (ms: number) => { waits.push(ms); return Promise.resolve(); } };
+  }
+
+  const rateLimited = (retryAfterSeconds: number | null) =>
+    Promise.resolve({ ok: false as const, error: "ratelimited" as const, retryAfterSeconds });
+
+  it("retries a throttled DIRECTORY page and completes the cycle", async () => {
+    // Before #4809 this single 429 aborted the whole workspace. Since the reads
+    // are ~`directoryPages + 3 × channels` per workspace every 30 minutes, a
+    // large workspace could plausibly hit one on EVERY cycle — in which case
+    // membership is never reconciled and revocation silently never happens.
+    const { waits, sleep } = fakeSleep();
+    let calls = 0;
+    const { deps, reconciled } = harness({
+      fetchUsersListPage: () => {
+        calls++;
+        return calls === 1 ? rateLimited(2) : ok({ users: DIRECTORY, nextCursor: null, dropped: 0 });
+      },
+    });
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle({ ...deps, sleep }));
+
+    expect(result.status).toBe("success");
+    expect(result.workspacesFailed).toBe(0);
+    expect(reconciled).toHaveLength(1);
+    // Slack's own `Retry-After` is honoured, not a fixed guess.
+    expect(waits).toEqual([2000]);
+    // The recovery is VISIBLE: "we throttled and got through" must be
+    // distinguishable in the span from "we never throttled", or a workspace
+    // creeping toward permanent throttling looks identical to a healthy one.
+    expect(result.readsThrottled).toBe(1);
+    expect(result.readsThrottleExhausted).toBe(0);
+  });
+
+  it("retries a throttled ROSTER page and still reconciles that audience", async () => {
+    const { waits, sleep } = fakeSleep();
+    let calls = 0;
+    const { deps, reconciled } = harness({
+      fetchConversationMembersPage: () => {
+        calls++;
+        return calls === 1
+          ? rateLimited(1)
+          : ok({ memberIds: ["U_ADA", "U_GONE", "U_BOT"], nextCursor: null });
+      },
+    });
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle({ ...deps, sleep }));
+
+    expect(result.audiencesFailed).toBe(0);
+    expect(reconciled).toHaveLength(1);
+    expect(waits).toEqual([1000]);
+    expect(result.readsThrottled).toBe(1);
+  });
+
+  it("falls back to the default wait when Slack sends no Retry-After", async () => {
+    const { waits, sleep } = fakeSleep();
+    let calls = 0;
+    const { deps } = harness({
+      fetchUsersListPage: () => {
+        calls++;
+        return calls === 1
+          ? rateLimited(null)
+          : ok({ users: DIRECTORY, nextCursor: null, dropped: 0 });
+      },
+    });
+    await withDatabaseUrl(() => runAudienceSyncCycle({ ...deps, sleep }));
+
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toBeGreaterThan(0);
+  });
+
+  it("ABORTS the workspace when the directory read exhausts its retries", async () => {
+    // The contract that licenses the DELETE. A retry loop that ended by
+    // proceeding with a partial read would be the mass revocation this
+    // subsystem has already produced three times — retrying buys more chances
+    // to COMPLETE the read, never permission to settle for less of one.
+    //
+    // Asserted on the RESOLVE CALL COUNT, not only on `workspacesFailed`: the
+    // workspace-level collapse check would report a failure here even with the
+    // abort removed, so a bare `workspacesFailed` assertion can pass while
+    // proving the backstop rather than this guard.
+    const { sleep } = fakeSleep();
+    let resolveCalls = 0;
+    const { deps, reconciled } = harness({ fetchUsersListPage: () => rateLimited(1) });
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        sleep,
+        resolve: (_ws, principals) => {
+          resolveCalls++;
+          return Promise.resolve({ resolved: new Map(), unresolvedCount: principals.length });
+        },
+      }),
+    );
+
+    expect(result.workspacesFailed).toBe(1);
+    expect(reconciled).toHaveLength(0);
+    // Nothing downstream of the directory read ran at all.
+    expect(resolveCalls).toBe(0);
+    expect(result.readsThrottleExhausted).toBeGreaterThan(0);
+    // Exhaustion is NOT counted as a recovery.
+    expect(result.readsThrottled).toBe(0);
+  });
+
+  it("ABORTS a directory whose SECOND page exhausts — a partial directory is the dangerous shape", async () => {
+    // The sibling test above (`fetchUsersListPage` throttled from the very
+    // first page) is BACKSTOPPED: an exhaustion that wrongly returned an empty
+    // page would still be caught by `loadDirectory`'s no-live-humans guard, so
+    // it can pass while proving the backstop rather than the abort. Verified by
+    // mutation — removing the abort left that test green.
+    //
+    // This is the shape with no backstop. Page 1 returns real users and page 2
+    // exhausts: a "proceed with what we have" retry would yield a directory
+    // that is truncated but entirely PLAUSIBLE — non-empty, live humans, real
+    // emails. Every completeness guard passes, resolution succeeds, and then
+    // each roster member missing from the unread pages resolves to nobody and
+    // is REVOKED. That is the mass revocation, reached through a door the other
+    // guards cannot see.
+    const { sleep } = fakeSleep();
+    let resolveCalls = 0;
+    let page = 0;
+    const { deps, reconciled } = harness({
+      fetchUsersListPage: () => {
+        page++;
+        return page === 1
+          ? ok({ users: DIRECTORY, nextCursor: "cursor-2", dropped: 0 })
+          : rateLimited(1);
+      },
+    });
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        sleep,
+        resolve: (_ws, principals) => {
+          resolveCalls++;
+          return Promise.resolve({
+            resolved: new Map(principals.map((p) => [p.id, `user-${p.id}`])),
+            unresolvedCount: 0,
+          });
+        },
+      }),
+    );
+
+    expect(result.workspacesFailed).toBe(1);
+    expect(reconciled).toHaveLength(0);
+    // The load-bearing assertion. `workspacesFailed` alone would NOT prove this
+    // — resolution never even being attempted is what says the partial
+    // directory was refused rather than used.
+    expect(resolveCalls).toBe(0);
+    expect(result.readsThrottleExhausted).toBeGreaterThan(0);
+  });
+
+  it("ABORTS only the audience when the roster read exhausts its retries", async () => {
+    // Per-audience isolation is preserved: the directory succeeded, so the
+    // workspace is fine — but the one channel whose roster could not be read
+    // must not be reconciled against a partial roster.
+    const { sleep } = fakeSleep();
+    const { deps, reconciled } = harness({
+      fetchConversationMembersPage: () => rateLimited(1),
+    });
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle({ ...deps, sleep }));
+
+    expect(result.workspacesFailed).toBe(0);
+    expect(result.audiencesFailed).toBe(1);
+    // The whole point: membership for that audience is left EXACTLY as it was.
+    expect(reconciled).toHaveLength(0);
+    expect(result.readsThrottleExhausted).toBeGreaterThan(0);
+  });
+
+  it("bounds the retries rather than waiting on Slack forever", async () => {
+    // A scheduled fiber that retried indefinitely would hold the cycle open
+    // past its own interval and stack overlapping cycles.
+    const { waits, sleep } = fakeSleep();
+    let calls = 0;
+    const { deps } = harness({
+      fetchUsersListPage: () => {
+        calls++;
+        return rateLimited(1);
+      },
+    });
+    await withDatabaseUrl(() => runAudienceSyncCycle({ ...deps, sleep }));
+
+    expect(calls).toBeLessThanOrEqual(5);
+    expect(waits.length).toBeLessThan(calls);
+  });
+
+  it("reports no throttling for a clean cycle", async () => {
+    const { deps } = harness();
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+    expect(result.readsThrottled).toBe(0);
+    expect(result.readsThrottleExhausted).toBe(0);
   });
 });

@@ -92,22 +92,22 @@ export interface ChatChannelVisibility {
  *   re-ingest.
  *
  *   Membership is populated by #4801's sync (`lib/brain/audience/`), on its own
- *   periodic fiber. Note it does NOT re-derive the audience id: it calls THIS
- *   function and reads the id out of `parseGrant`, so the set it syncs is by
- *   construction the set the facts were granted to. Two independent derivations
+ *   periodic fiber. It does NOT re-derive anything: it passes the source's
+ *   visibility bit to THIS function and reads the answer out of `parseGrant` —
+ *   both the audience id and the public-vs-private branch. So the set it syncs
+ *   is by construction the set the facts were granted to, and **a visibility arm
+ *   added here is followed by the sync for free.** Two independent derivations
  *   would agree until one changed, and on that day membership would be written
  *   for an audience no fact names — every private fact silently invisible again
- *   while the sync reported success. If you add a visibility arm here, the sync
- *   follows for free; if you ever tempt yourself into calling
- *   {@link chatChannelAudienceId} from a second place, that property is what
- *   you are spending.
+ *   while the sync reported success. If you ever tempt yourself into calling
+ *   {@link chatChannelAudienceId} from a second place, or into re-deciding
+ *   `isPrivate` outside this function, that property is what you are spending.
  *
- *   Before that sync existed, a private channel's episodes and the facts drawn
- *   from them were visible to NOBODY — the fail-closed direction, and REPAIRABLE
- *   exactly because the grant names the audience and the membership is the live
- *   half: writing rows made existing facts visible with no rewrite. Contrast the
- *   failure this module exists to prevent: a structurally malformed token is
- *   unrepairable without editing every row.
+ *   The naming is what makes the audience arm SAFE to get wrong-ish: membership
+ *   can be written, rewritten, or repaired at any time without touching a stored
+ *   row, because the grant names a set and the set is resolved live. Contrast
+ *   the failure this module exists to prevent — a structurally malformed token
+ *   is unrepairable without editing every row that carries it.
  *
  * Returns `null` when no usable grant can be derived — a blank channel id or a
  * blank source, either of which would make the audience id ambiguous.

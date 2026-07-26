@@ -85,10 +85,10 @@ Derived at ingest (ADR-0036 §T5), by `lib/brain/ingest/grant.ts`:
 - **private channel → `[audience:chat-channel:slack:<channelId>]`** —
   membership lives in `fact_audience_member` and is the live revocation path.
 
-Membership population is #4771's, so **until it lands, a private channel's
-episodes are visible to nobody.** That is the fail-closed direction and it is
-repairable with no rewrite: the grant names the audience, and filling the
-membership table makes the existing rows visible.
+Membership is populated by #4801's audience sync (see *Audience membership*
+below). The grant names the audience rather than the people, which is what makes
+revocation live: dropping a membership row hides the facts on the next read,
+with no re-ingest and no rewrite of a stored row.
 
 The deriver emits only tokens `parseGrant` finds usable, and `episodes.ts`
 re-checks with `isUsableGrant` before the INSERT. This matters more than it
@@ -193,15 +193,18 @@ needs `users:read` and `users:read.email`. Two places must agree:
 1. `SLACK_SCOPES` in `lib/integrations/install/slack-oauth-handler.ts` — that
    string *is* the OAuth `scope=` param, so without both scopes listed there no
    reconnect could ever grant them and the source would be uninstallable
-   everywhere. #4770 adds them.
+   everywhere. #4770 added the history pair; #4801 added the directory pair.
 2. The **Slack app manifest**, which per CLAUDE.md's operational rule is changed
    on the **staging** app first and soaked there. Until an app's manifest
    carries the scopes, Slack refuses the consent screen for the *whole* install,
    not just this source — so manifest first, then a re-install.
 
-A workspace whose token predates them fails `missing_scope`, surfaced at install
-as a field error and at sync time as the source's error row; reconnecting is
-what grants them.
+A workspace whose token predates them fails `missing_scope`, and the two pairs
+surface in **different places**. The *history* scopes surface at install as a
+field error and at sync time as the source's error row. The *directory* scopes
+surface only in the audience-sync log and its span (`workspaces_failed`) —
+there is no source error row for them, which is itself the argument for the
+alert described under "Reading the cycle" below. Reconnecting grants either.
 
 Note the asymmetry between the two additions. The channel **roster** read
 (`conversations.members`) rides on `channels:read`/`groups:read`, which the chat
@@ -225,9 +228,10 @@ than a principal list, so who can read them is answered *live* out of
 that table honest:
 
 - **Cadence** — its own fiber, default every 30 min
-  (`ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES`). That interval **is** the
-  worst-case delay between someone leaving a channel and losing access to facts
-  drawn from it — the number to quote when a workspace asks. Deliberately not
+  (`ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES`). That interval is the floor of
+  the delay between someone leaving a channel and losing access to facts drawn
+  from it — the number to quote when a workspace asks, assuming the roster reads
+  succeed (see `audiences_failed` below, where the delay is unbounded). Deliberately not
   folded into the history pass: a quiet channel would then never re-read its
   roster, and a quiet channel is where a stale roster survives longest.
 - **Switch** — `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED`, workspace-scoped, **default
@@ -237,12 +241,14 @@ that table honest:
 - **Identity** — channel members are matched to Atlas users by email, narrowed
   to the workspace's DNS-verified SSO domain when it has one. Atlas never
   creates a user, stores an address, or persists the roster; an unmatched member
-  is logged and gets no row. Full rationale: the ADR-0036 §T5 amendment.
+  is reported (counts + a bounded per-reason sample, one line per pass) and
+  gets no row. Full rationale: the ADR-0036 §T5 amendment.
 - **Revocation** — the sync reconciles (adds *and* deletes). Dropping a row
   hides the facts on the reader's next read, with no re-ingest.
 
 **Reading the cycle.** The `atlas.scheduler.brain_audience_sync` span carries
-the counters; `members_revoked` is the alertable one, since a spike is either a
+the counters, each prefixed `atlas.brain.audience.` (so the one to alert on is
+`atlas.brain.audience.members_revoked`); `members_revoked` is the alertable one, since a spike is either a
 real offboarding wave or a resolver that stopped resolving. `audiences_failed`
 means a channel's roster could not be read *completely* — the sync then leaves
 that audience's membership untouched rather than revoking the members it failed

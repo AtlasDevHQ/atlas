@@ -189,24 +189,29 @@ const CHANNEL_HISTORY: Readonly<Record<string, readonly SlackHistoryMessage[]>> 
 const PUBLIC_CHANNELS = new Set([PUBLIC_CHANNEL]);
 
 /**
- * Slack's roster per channel (#4801). `U_ALAN` is the exec channel's only human
- * member and is the one Slack account that maps to an Atlas user in the
- * workspace — which is what makes `user-exec` the reader who can see the
- * audience-granted fact, resolved rather than asserted.
+ * Slack's roster per channel (#4801). `U_ALAN` is the exec channel's one
+ * resolvable human and is what makes `user-exec` the reader who can see the
+ * audience-granted fact — resolved through production code, not asserted.
  *
- * `U_BOT` sits in the exec channel deliberately: it exercises the bot screen,
- * and it would otherwise be an unresolved principal padding the log.
+ * MUTABLE, because the revocation test drops a member between two cycles;
+ * `resetRosters()` restores it in `afterEach`.
+ *
+ * The exec channel's other two members are deliberate: `U_BOT` exercises the
+ * bot screen, and `U_GRACE` carries an address matching no Atlas user — the
+ * "logged, never guessed" arm. Both must be in the EXEC channel to be
+ * exercised at all: the sync skips public channels before it ever reads their
+ * roster, so a principal parked in `PUBLIC_CHANNEL` is inert.
  */
-const CHANNEL_ROSTER: Readonly<Record<string, readonly string[]>> = {
-  [PUBLIC_CHANNEL]: ["U_ADA", "U_GRACE"],
-  [EXEC_CHANNEL]: ["U_ALAN", "U_BOT"],
+const DEFAULT_ROSTER: Readonly<Record<string, readonly string[]>> = {
+  [PUBLIC_CHANNEL]: ["U_ADA"],
+  [EXEC_CHANNEL]: ["U_ALAN", "U_BOT", "U_GRACE"],
 };
+let CHANNEL_ROSTER: Record<string, readonly string[]> = { ...DEFAULT_ROSTER };
+function resetRosters(): void {
+  CHANNEL_ROSTER = { ...DEFAULT_ROSTER };
+}
 
-/**
- * Slack's directory. `U_GRACE` has an address matching NO Atlas user — the
- * "logged, never guessed" arm, present so the resolver's unresolved path is on
- * the loop's happy path rather than only in its own unit test.
- */
+/** Slack's directory. `U_GRACE`'s address matches no Atlas user, by design. */
 const SLACK_DIRECTORY: readonly SlackDirectoryUser[] = [
   { id: "U_ALAN", email: "exec@wedge.test", deleted: false, isBot: false },
   { id: "U_ADA", email: "plain@wedge.test", deleted: false, isBot: false },
@@ -414,6 +419,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       _resetBrainExtractionFailures();
       modelCalls = [];
       extraMessages = {};
+      resetRosters();
     }
   });
 
@@ -655,7 +661,12 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
           return Promise.resolve({ ok: true as const, memberIds: roster, nextCursor: null });
         },
         fetchUsersListPage: () =>
-          Promise.resolve({ ok: true as const, users: SLACK_DIRECTORY, nextCursor: null }),
+          Promise.resolve({
+            ok: true as const,
+            users: SLACK_DIRECTORY,
+            nextCursor: null,
+            dropped: 0,
+          }),
       },
       // One install row, supplied directly: this suite deliberately persists no
       // `workspace_plugins` row (see the header), and the scan is not what is
@@ -1027,7 +1038,12 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     await extract();
     await publish();
 
-    await syncAudiences();
+    const synced = await syncAudiences();
+    // The unresolved arm is on the loop's happy path, not just in a unit test:
+    // `U_GRACE` is in the exec channel with an address matching no Atlas user,
+    // and `U_BOT` is screened before resolution ever sees it.
+    expect(synced.principalsUnresolved).toBe(1);
+    expect(synced.membersAdded).toBe(1);
 
     const execView = await search(await execMember());
     expect(subjectsOf(execView.results)).toEqual(["acquisition target", "deploy window"]);
@@ -1036,6 +1052,47 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     expect(bodiesOf(execView.results)).toEqual(
       [BODY.smallTalk, BODY.deploy, BODY.acquisition, BODY.lunch].toSorted(byText),
     );
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("REVOKES on the next read when the source roster drops someone", async () => {
+    // The acceptance criterion #4801 exists for, proven through the WHOLE loop
+    // rather than at the reconcile alone: nothing about the fact or the episode
+    // is touched, no re-ingest happens, and the reader loses the audience-
+    // granted fact on their very next search.
+    //
+    // This is also the assertion that would catch a sync which only ever ADDS.
+    // An insert-only implementation passes every other test in this file.
+    await syncHistory();
+    await extract();
+    await publish();
+    await syncAudiences();
+    expect(subjectsOf((await search(await execMember())).results)).toContain("acquisition target");
+
+    // Alan leaves the exec channel at the source. Nothing else changes.
+    CHANNEL_ROSTER = { ...CHANNEL_ROSTER, [EXEC_CHANNEL]: ["U_BOT", "U_GRACE"] };
+    const second = await syncAudiences();
+    expect(second.membersRevoked).toBe(1);
+
+    const after = await search(await execMember());
+    expect(subjectsOf(after.results)).toEqual(["deploy window"]);
+    // The exec channel's EVIDENCE goes with the fact — episodes are ACL-gated
+    // by the same audience, so a revocation that hid the claim but left the
+    // messages readable would be the leak this indirection exists to prevent.
+    expect(bodiesOf(after.results)).toEqual([BODY.smallTalk, BODY.deploy].toSorted(byText));
+
+    // Revocation HID the fact; it did not destroy it. The row is still
+    // published, still carries its audience grant, and is still
+    // un-invalidated — so re-adding Alan to the channel restores his access on
+    // the next cycle with no re-ingest and no rewrite. That asymmetry is the
+    // whole reason ADR-0036 routes sensitive facts through an `audience:`
+    // instead of baking principals into the grant.
+    const stored = (await facts()).find((f) => f.subject === "acquisition target");
+    expect(stored).toMatchObject({ status: "published", visible_to: [EXEC_GRANT_TOKEN] });
+
+    CHANNEL_ROSTER = { ...CHANNEL_ROSTER, [EXEC_CHANNEL]: ["U_ALAN", "U_BOT", "U_GRACE"] };
+    const third = await syncAudiences();
+    expect(third.membersAdded).toBe(1);
+    expect(subjectsOf((await search(await execMember())).results)).toContain("acquisition target");
   }, PG_TEST_TIMEOUT_MS);
 
   it("surfaces an un-drained episode as `extraction: pending`", async () => {

@@ -86,6 +86,9 @@ export const DELETE_STALE_AUDIENCE_MEMBERS_SQL = `DELETE FROM fact_audience_memb
           AND user_id <> ALL($3::text[])
     RETURNING user_id`;
 
+/** How many revoked user ids a single log line carries. A bound, not a policy. */
+const REVOKED_SAMPLE_CAP = 50;
+
 /** What one audience's reconcile changed. Zero/zero is a healthy steady state. */
 export interface AudienceReconcileResult {
   readonly added: number;
@@ -129,7 +132,8 @@ export const withMembershipTransaction: MembershipTransactionRunner = async <T>(
     await client.query("ROLLBACK").catch((rbErr: unknown) => {
       rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
       log.warn(
-        // Scrubbed: a pg error can carry a credentialed connection URL.
+        // Only `.message`, never the error object: a pg error can carry a
+        // credentialed connection URL on its properties.
         { err: rollbackErr.message },
         "brain audience: ROLLBACK failed — the client will be destroyed",
       );
@@ -194,13 +198,39 @@ export async function reconcileAudienceMembership(
       source,
     ]);
     const result = { added: inserted.rows.length, revoked: deleted.rows.length };
-    if (result.added > 0 || result.revoked > 0) {
-      // Logged at info, always, both directions. A revocation is the security-
-      // relevant event in this subsystem and must be reconstructible from logs
-      // alone: the row it removed is, by then, gone.
+    if (result.revoked > 0) {
+      // A revocation is the security-relevant event in this subsystem and must
+      // be reconstructible from logs ALONE — by the time anyone asks, the row
+      // it removed is gone. So the ids come with it, not just the count:
+      // "revoked: 3" cannot answer "why did this person lose access?", which is
+      // the only question anybody brings to this log line. Bounded, because a
+      // whole-audience revoke is exactly when the count is largest.
+      //
+      // `warn`, unlike the grant path below: losing access is the direction a
+      // human investigates.
+      log.warn(
+        {
+          workspaceId,
+          audienceId,
+          source,
+          ...result,
+          roster: userIds.length,
+          revokedUserIds: deleted.rows
+            .map((row) =>
+              typeof row === "object" && row !== null && "user_id" in row
+                ? String(row.user_id)
+                : "(unreadable)",
+            )
+            .slice(0, REVOKED_SAMPLE_CAP),
+          revokedSampleTruncated: result.revoked > REVOKED_SAMPLE_CAP,
+        },
+        "brain audience: membership revoked",
+      );
+    }
+    if (result.added > 0) {
       log.info(
         { workspaceId, audienceId, source, ...result, roster: userIds.length },
-        "brain audience: membership reconciled",
+        "brain audience: membership granted",
       );
     }
     return result;

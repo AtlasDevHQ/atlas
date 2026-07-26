@@ -231,9 +231,10 @@ function withFiberDeathLog<A, E, R>(
 //     Spanned by
 //     #2987 (+#3423 for billing_reconcile, #3992 for overage_report, #4195
 //     for the DB/refresh trio) — identical rationale and wrap shape.
-//     `unclaimed_grace_reap` (#3796), the three #4195 jobs, and
-//     `scheduled_backup` attach result attributes (cycle counts / outcome);
-//     the rest carry none.
+//     Which of these attach result attributes is visible at each registration
+//     site (`spanResultAttributes`) rather than enumerated here — the
+//     enumeration that used to live on this line drifted twice, at #4771 and
+//     again at #4801.
 //
 // Two records, not one: "cleanup sweep" vs "background work" is a real
 // distinction (it drives the log wording and the operator's mental model),
@@ -2384,7 +2385,7 @@ export function makeSchedulerLive(
       yield* registerPeriodicFiber({
         name: "brain_audience_sync",
         intervalMs: () => {
-          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as brain_extraction)
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval synchronously at fiber-registration time (same pattern as brain_extraction). NOTE the knob is hot-reloadable in the registry but is read ONCE here, so a change takes effect at restart.
           const { getAudienceSyncIntervalMs } = require("@atlas/api/lib/brain/audience/sync") as {
             getAudienceSyncIntervalMs: () => number;
           };
@@ -2411,7 +2412,23 @@ export function makeSchedulerLive(
         tick: Effect.tryPromise({
           try: () => import("@atlas/api/lib/brain/audience/sync"),
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-        }).pipe(Effect.flatMap((m) => Effect.promise(() => m.runAudienceSyncCycle()))),
+        }).pipe(
+          Effect.flatMap((m) =>
+            // `tryPromise`, NOT `promise`. `runAudienceSyncCycle` documents
+            // "never throws" and catches its own scan + per-workspace faults,
+            // but two calls sit outside that net (`hasInternalDB()` and the
+            // per-install settings read). `Effect.promise` would route such a
+            // rejection to the DEFECT channel, which `registerPeriodicFiber`'s
+            // `catchAll` recovery does not catch — so one unforeseen throw
+            // would kill this fiber for the life of the process, and membership
+            // would silently stop being revoked with no signal but an ABSENCE
+            // of spans.
+            Effect.tryPromise({
+              try: () => m.runAudienceSyncCycle(),
+              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+            }),
+          ),
+        ),
         spanResultAttributes: (result) => ({
           "atlas.brain.audience.status": result.status,
           "atlas.brain.audience.workspaces_inspected": result.workspacesInspected,

@@ -19,6 +19,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   fetchConversationHistoryPage,
+  fetchConversationMembersPage,
+  fetchUsersListPage,
   getConversationInfo,
 } from "@atlas/api/lib/slack/api";
 
@@ -178,5 +180,157 @@ describe("fetchConversationHistoryPage", () => {
     respondWith("nope", { status: 503 });
     const result = await fetchConversationHistoryPage("t", { channel: "C1", limit: 200 });
     expect(result.ok === false && result.error).toBe("HTTP 503");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Audience-membership reads (#4801)
+// ---------------------------------------------------------------------------
+//
+// These two parsers sit upstream of a DELETE. `lib/brain/audience/sync.ts`
+// reconciles `fact_audience_member` against what they return, so a parser that
+// under-reports does not merely lose data — it REVOKES the people it dropped.
+// Everything below is therefore about refusing to under-report, driven by raw
+// Slack JSON rather than by a hand-built page.
+
+describe("fetchConversationMembersPage", () => {
+  it("returns the roster and the cursor", async () => {
+    respondWith({
+      ok: true,
+      members: ["U1", "U2"],
+      response_metadata: { next_cursor: "c2" },
+    });
+    const result = await fetchConversationMembersPage("t", { channel: "C1", limit: 200 });
+    expect(result.ok && result.memberIds).toEqual(["U1", "U2"]);
+    expect(result.ok && result.nextCursor).toBe("c2");
+  });
+
+  it("normalises an empty next_cursor to null", async () => {
+    respondWith({ ok: true, members: [], response_metadata: { next_cursor: "" } });
+    const result = await fetchConversationMembersPage("t", { channel: "C1", limit: 200 });
+    expect(result.ok && result.nextCursor).toBeNull();
+  });
+
+  it("REFUSES a non-array `members` rather than reading it as an empty roster", async () => {
+    // An empty roster is a legal instruction to revoke the whole audience, so a
+    // protocol violation must never wear that costume.
+    respondWith({ ok: true, members: null });
+    const result = await fetchConversationMembersPage("t", { channel: "C1", limit: 200 });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toBe("malformed_members_page");
+  });
+
+  it("REFUSES a page containing any unusable member id", async () => {
+    // Dropping the bad entry and keeping the rest would silently understate the
+    // roster by one person — and understating the roster is revoking someone.
+    respondWith({ ok: true, members: ["U1", 42, ""] });
+    const result = await fetchConversationMembersPage("t", { channel: "C1", limit: 200 });
+    expect(result.ok === false && result.error).toBe("malformed_members_page");
+  });
+
+  it("surfaces missing_scope rather than an empty roster", async () => {
+    respondWith({ ok: false, error: "missing_scope" });
+    const result = await fetchConversationMembersPage("t", { channel: "C1", limit: 200 });
+    expect(result.ok === false && result.error).toBe("missing_scope");
+  });
+
+  it("sends the cursor only when given", async () => {
+    let seen = "";
+    globalThis.fetch = (async (url: string | URL) => {
+      seen = String(url);
+      return new Response(JSON.stringify({ ok: true, members: [] }), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    await fetchConversationMembersPage("t", { channel: "C1", limit: 200 });
+    expect(seen).toContain("channel=C1");
+    expect(seen).not.toContain("cursor=");
+    await fetchConversationMembersPage("t", { channel: "C1", limit: 200, cursor: "c9" });
+    expect(seen).toContain("cursor=c9");
+  });
+});
+
+describe("fetchUsersListPage", () => {
+  it("reads the email from profile.email, not from the top level", async () => {
+    // The field path is the whole join key. Reading `u.email` (which Slack does
+    // not send) would yield a directory of nulls — indistinguishable from a
+    // token missing `users:read.email`, and it would disable every workspace
+    // permanently with a "reconnect Slack" warning that could never fix it.
+    respondWith({
+      ok: true,
+      members: [{ id: "U1", profile: { email: "ada@corp.test" }, email: "wrong@corp.test" }],
+    });
+    const result = await fetchUsersListPage("t", { limit: 200 });
+    expect(result.ok && result.users[0]?.email).toBe("ada@corp.test");
+  });
+
+  it("maps deleted and is_bot from Slack's own field names", async () => {
+    // A mis-keyed `deleted` would let deactivated Slack accounts KEEP audience
+    // access — the acceptance criterion inverted. The downstream filter test
+    // uses hand-built fixtures, so this is the only place the mapping is pinned.
+    respondWith({
+      ok: true,
+      members: [
+        { id: "U_GONE", deleted: true, profile: { email: "gone@corp.test" } },
+        { id: "U_BOT", is_bot: true, profile: {} },
+        { id: "U_OK", profile: { email: "ok@corp.test" } },
+      ],
+    });
+    const result = await fetchUsersListPage("t", { limit: 200 });
+    expect(result.ok && result.users).toEqual([
+      { id: "U_GONE", email: "gone@corp.test", deleted: true, isBot: false },
+      { id: "U_BOT", email: null, deleted: false, isBot: true },
+      { id: "U_OK", email: "ok@corp.test", deleted: false, isBot: false },
+    ]);
+  });
+
+  it("treats a missing, empty, or non-string email as null", async () => {
+    respondWith({
+      ok: true,
+      members: [
+        { id: "U1", profile: {} },
+        { id: "U2", profile: { email: "" } },
+        { id: "U3", profile: { email: 7 } },
+        { id: "U4" },
+      ],
+    });
+    const result = await fetchUsersListPage("t", { limit: 200 });
+    expect(result.ok && result.users.every((u) => u.email === null)).toBe(true);
+  });
+
+  it("COUNTS unidentifiable entries in `dropped` rather than hiding the loss", async () => {
+    // The caller treats `dropped > 0` as a read fault, because a directory entry
+    // Atlas could not identify is a roster member it cannot resolve — and an
+    // unresolved member is revoked. Without the count the loss is invisible.
+    respondWith({ ok: true, members: [{ id: "U1", profile: {} }, null, { profile: {} }, "nope"] });
+    const result = await fetchUsersListPage("t", { limit: 200 });
+    expect(result.ok && result.users).toHaveLength(1);
+    expect(result.ok && result.dropped).toBe(3);
+  });
+
+  it("REFUSES a non-array `members`", async () => {
+    respondWith({ ok: true, members: { U1: {} } });
+    const result = await fetchUsersListPage("t", { limit: 200 });
+    expect(result.ok === false && result.error).toBe("malformed_users_page");
+  });
+
+  it("surfaces missing_scope rather than a directory of nulls", async () => {
+    respondWith({ ok: false, error: "missing_scope" });
+    const result = await fetchUsersListPage("t", { limit: 200 });
+    expect(result.ok === false && result.error).toBe("missing_scope");
+  });
+
+  it("sends the cursor only when given", async () => {
+    let seen = "";
+    globalThis.fetch = (async (url: string | URL) => {
+      seen = String(url);
+      return new Response(JSON.stringify({ ok: true, members: [] }), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    await fetchUsersListPage("t", { limit: 200 });
+    expect(seen).not.toContain("cursor=");
+    await fetchUsersListPage("t", { limit: 200, cursor: "c9" });
+    expect(seen).toContain("cursor=c9");
   });
 });

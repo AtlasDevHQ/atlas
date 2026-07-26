@@ -31,10 +31,12 @@
  * Atlas matches source emails against users it ALREADY has. It never creates a
  * user, never writes an email, never persists the vendor roster, and never
  * renders channel membership as a list of people. A source principal with no
- * Atlas account produces one log line and no row — the acceptance criterion
- * "logged, never guessed", which this module satisfies by having no branch that
- * could guess: {@link resolvePrincipals} returns matches, and non-matches exist
- * only as a count and a sample in the log.
+ * Atlas account gets NO ROW and is reported — the acceptance criterion "logged,
+ * never guessed", which this module satisfies by having no branch that could
+ * guess: {@link resolvePrincipals} returns matches, and non-matches exist only
+ * as counts and bounded per-reason samples in one line per pass. (Per pass, not
+ * per principal — a 5,000-person directory would otherwise be a log flood, and
+ * the counts are what an operator acts on.)
  *
  * So the information gained is exactly *"which of my existing users are in
  * which channel"*, which is the feature. Under the B2B framing Atlas already
@@ -59,6 +61,9 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 
 const log = createLogger("brain.audience.resolver");
+
+/** Ids logged per unresolved-reason bucket. A bound, not a policy. */
+const SAMPLE_CAP_PER_REASON = 10;
 
 /**
  * Email → user id, scoped to the workspace's `member` rows.
@@ -236,7 +241,13 @@ export async function resolvePrincipals(
         outsideVerifiedDomain: outsideVerifiedDomain.length,
         noAtlasAccount: unmatched.length,
         verifiedDomains: verifiedDomains.size,
-        sample: [...noEmail, ...outsideVerifiedDomain, ...unmatched].slice(0, 10),
+        // A sample PER REASON, not one merged list. A concatenated sample is
+        // order-biased: thirty no-email guests would fill the cap and starve
+        // the `noAtlasAccount` bucket entirely — silently defeating the
+        // three-separable-investigations property the counts above exist for.
+        sampleNoEmail: noEmail.slice(0, SAMPLE_CAP_PER_REASON),
+        sampleOutsideVerifiedDomain: outsideVerifiedDomain.slice(0, SAMPLE_CAP_PER_REASON),
+        sampleNoAtlasAccount: unmatched.slice(0, SAMPLE_CAP_PER_REASON),
       },
       "brain audience: source principals did not resolve to an Atlas user — they are excluded from the audience",
     );

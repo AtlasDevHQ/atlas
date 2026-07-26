@@ -1757,7 +1757,11 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // Workspace-scoped because it encodes a tenant's decision (may Atlas match
     // our Slack members' emails to Atlas accounts?), not an operator's. The
     // fiber ALSO reads this key with no workspace, which resolves to the
-    // platform value — so an operator can still stop the cycle process-wide.
+    // platform value — the operator's process-wide off switch, applied at
+    // RESTART (the fiber's gate is evaluated once at registration). Mid-run, a
+    // platform flip takes effect through the per-install re-read inside the
+    // cycle — except for a workspace carrying an explicit `true` override,
+    // since workspace precedence beats platform.
     key: "ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",
     section: "Knowledge Base",
     label: "Company Brain Audience Sync",
@@ -1778,7 +1782,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Knowledge Base",
     label: "Company Brain Audience Sync Interval",
     description:
-      "How often private chat channels' membership is re-read from the source, in minutes (default 30). This is also the worst-case delay between someone leaving a channel and losing access to facts drawn from it. Applies at restart; non-positive values fall back to the default.",
+      "How often private chat channels' membership is re-read from the source, in minutes (default 30). This is also the shortest delay between someone leaving a channel and losing access to facts drawn from it — a channel whose roster cannot be read keeps its membership until it can. Applies at restart; non-positive or unparseable values fall back to the default.",
     type: "number",
     default: "30",
     envVar: "ATLAS_BRAIN_AUDIENCE_SYNC_INTERVAL_MINUTES",

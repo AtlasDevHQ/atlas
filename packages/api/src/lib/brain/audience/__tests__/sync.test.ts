@@ -18,6 +18,7 @@ import { AUDIENCE_PREFIX, parseGrant } from "@atlas/api/lib/brain/acl";
 import { deriveChatChannelGrant } from "@atlas/api/lib/brain/ingest/grant";
 import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
 import {
+  MAX_DIRECTORY_PAGES,
   MAX_ROSTER_PAGES,
   runAudienceSyncCycle,
   type AudienceSyncDeps,
@@ -63,7 +64,7 @@ function harness(overrides: Partial<AudienceSyncDeps["api"]> = {}, channels = [P
         }),
       fetchConversationMembersPage: () =>
         ok({ memberIds: ["U_ADA", "U_GONE", "U_BOT"], nextCursor: null }),
-      fetchUsersListPage: () => ok({ users: DIRECTORY, nextCursor: null }),
+      fetchUsersListPage: () => ok({ users: DIRECTORY, nextCursor: null, dropped: 0 }),
       ...overrides,
     } as NonNullable<AudienceSyncDeps["api"]>,
     query: (<T extends Record<string, unknown>>() =>
@@ -194,6 +195,7 @@ describe("runAudienceSyncCycle", () => {
         ok({
           users: DIRECTORY.map((u) => ({ ...u, email: null })),
           nextCursor: null,
+          dropped: 0,
         }),
     });
     const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
@@ -223,6 +225,233 @@ describe("runAudienceSyncCycle", () => {
     expect(reconciled.map((r) => r.audienceId)).toEqual([
       `chat-channel:${SLACK_HISTORY_SOURCE}:${PRIVATE_CHANNEL}`,
     ]);
+  });
+
+  it("forwards the cursor and concatenates pages on BOTH paginated reads", async () => {
+    // Without this, deleting the cursor spread from either loop is a GREEN
+    // mutation: every page-1 refetch walks to the page cap, the read aborts,
+    // and every workspace over 200 users — i.e. most real ones — is skipped
+    // forever while the cycle reports success.
+    const rosterCursors: (string | undefined)[] = [];
+    const directoryCursors: (string | undefined)[] = [];
+    const { deps, reconciled } = harness({
+      fetchConversationMembersPage: (_t, params) => {
+        rosterCursors.push(params.cursor);
+        return params.cursor === undefined
+          ? ok({ memberIds: ["U_ADA"], nextCursor: "roster-p2" })
+          : ok({ memberIds: ["U_TWO"], nextCursor: null });
+      },
+      fetchUsersListPage: (_t, params) => {
+        directoryCursors.push(params.cursor);
+        return params.cursor === undefined
+          ? ok({ users: [DIRECTORY[0]!], nextCursor: "dir-p2", dropped: 0 })
+          : ok({
+              users: [{ id: "U_TWO", email: "two@corp.test", deleted: false, isBot: false }],
+              nextCursor: null,
+              dropped: 0,
+            });
+      },
+    });
+    await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+    expect(rosterCursors).toEqual([undefined, "roster-p2"]);
+    expect(directoryCursors).toEqual([undefined, "dir-p2"]);
+    // Both members resolve, so both pages of BOTH reads reached the reconcile —
+    // a dropped page would show up as a missing user here, which is a
+    // revocation.
+    expect(reconciled[0]?.userIds.toSorted()).toEqual(["user-U_ADA", "user-U_TWO"]);
+  });
+
+  it("skips the workspace when the directory exceeds the page cap", async () => {
+    // Larger blast radius than the roster cap: every channel's resolution
+    // depends on the directory.
+    let pages = 0;
+    const { deps, reconciled } = harness({
+      fetchUsersListPage: () => {
+        pages++;
+        return ok({ users: DIRECTORY, nextCursor: "more", dropped: 0 });
+      },
+    });
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+    expect(pages).toBe(MAX_DIRECTORY_PAGES);
+    expect(reconciled).toHaveLength(0);
+    expect(result.workspacesFailed).toBe(1);
+  });
+
+  it("skips the workspace when a directory page dropped entries", async () => {
+    // An entry Atlas could not identify is a roster member it cannot resolve,
+    // and an unresolved member is REVOKED — so a lossy page is a read fault,
+    // not a smaller directory.
+    const { deps, reconciled } = harness({
+      fetchUsersListPage: () => ok({ users: DIRECTORY, nextCursor: null, dropped: 2 }),
+    });
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+    expect(reconciled).toHaveLength(0);
+    expect(result.workspacesFailed).toBe(1);
+  });
+
+  it("treats an EMPTY directory as a read failure, not a workspace with no people", async () => {
+    // The sharpest hole the review panel found in the first cut: the all-null-
+    // email tripwire could not fire on an empty set, so every roster member
+    // missed the lookup, resolved to nobody, and the reconcile deleted the
+    // entire audience — reported as success.
+    const { deps, reconciled } = harness({
+      fetchUsersListPage: () => ok({ users: [], nextCursor: null, dropped: 0 }),
+    });
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+    expect(reconciled).toHaveLength(0);
+    expect(result.workspacesFailed).toBe(1);
+  });
+
+  it("does not let a bot's email mask an otherwise email-less directory", async () => {
+    // The tripwire is computed over the population resolution CONSUMES. Counted
+    // over every entry, one app user with an address would wave a full
+    // revocation through on a token missing users:read.email.
+    const { deps, reconciled } = harness({
+      fetchUsersListPage: () =>
+        ok({
+          users: [
+            { id: "U_ADA", email: null, deleted: false, isBot: false },
+            { id: "U_APP", email: "app@corp.test", deleted: false, isBot: true },
+          ],
+          nextCursor: null,
+          dropped: 0,
+        }),
+    });
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+    expect(reconciled).toHaveLength(0);
+    expect(result.workspacesFailed).toBe(1);
+  });
+
+  it("skips the WORKSPACE when nobody in the directory resolves — resolution collapse", async () => {
+    // The realistic cause is a verified SSO domain of `acme.com` against
+    // profile emails at `eng.acme.com`, or an SSO provider added after
+    // membership was populated. Reconciling would delete every audience in the
+    // workspace on the strength of an unrelated admin action.
+    const { deps, reconciled } = harness();
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        resolve: (_ws, principals) =>
+          Promise.resolve({ resolved: new Map(), unresolvedCount: principals.length }),
+      }),
+    );
+
+    expect(reconciled).toHaveLength(0);
+    expect(result.workspacesFailed).toBe(1);
+    expect(result.membersRevoked).toBe(0);
+  });
+
+  it("STILL revokes when the last resolvable member leaves one channel", async () => {
+    // The false positive the collapse check must not have, and the reason it is
+    // workspace-level rather than per-audience. Somebody leaving a channel and
+    // an SSO domain typo look identical from inside one audience — but only the
+    // typo makes the whole DIRECTORY stop resolving. Checking per-audience
+    // would block this legitimate revocation, preserving exactly the stale
+    // access the subsystem exists to drop.
+    const { deps, reconciled } = harness({
+      // The directory still resolves U_ADA; this channel's roster simply no
+      // longer contains anyone resolvable.
+      fetchConversationMembersPage: () => ok({ memberIds: ["U_BOT", "U_GONE"], nextCursor: null }),
+    });
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0]?.userIds).toEqual([]);
+    expect(result.audiencesFailed).toBe(0);
+    expect(result.workspacesFailed).toBe(0);
+  });
+
+  it("does not count bots or deactivated members as unresolved principals", async () => {
+    // `principals_unresolved` is an operator metric meaning "people who could
+    // not be matched". A bot is not a person; counting it would inflate the
+    // number in every channel Atlas is invited to and bury the real signal.
+    const { deps } = harness({
+      fetchConversationMembersPage: () =>
+        ok({ memberIds: ["U_ADA", "U_BOT", "U_GONE"], nextCursor: null }),
+    });
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+    expect(result.principalsUnresolved).toBe(0);
+  });
+
+  it("resolves the directory ONCE per workspace, not once per channel", async () => {
+    // The directory is workspace-scoped, so a per-channel resolve would re-run
+    // the same query for identical data — and, more importantly, would make the
+    // collapse check per-audience, which is the false positive above.
+    let resolveCalls = 0;
+    const { deps } = harness({}, [PRIVATE_CHANNEL, "C0PRIV2", "C0PRIV3"]);
+    await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        resolve: (_ws, principals) => {
+          resolveCalls++;
+          return Promise.resolve({
+            resolved: new Map(
+              principals.filter((p) => p.email !== null).map((p) => [p.id, `user-${p.id}`]),
+            ),
+            unresolvedCount: 0,
+          });
+        },
+      }),
+    );
+    expect(resolveCalls).toBe(1);
+  });
+
+  it("counts a roster member missing from the directory as unresolved, not as absent", async () => {
+    // A Slack Connect guest from another workspace. "Logged, never guessed" has
+    // a counting half — an uncounted exclusion is indistinguishable from a
+    // roster that never contained them.
+    const { deps } = harness({
+      fetchConversationMembersPage: () => ok({ memberIds: ["U_ADA", "U_STRANGER"], nextCursor: null }),
+    });
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+    expect(result.principalsUnresolved).toBe(1);
+    expect(result.audiencesReconciled).toBe(1);
+  });
+
+  it("propagates reconcile counts into the cycle result", async () => {
+    // `members_revoked` is the span attribute an operator alerts on; nothing
+    // else pins that a nonzero reconcile survives the two accumulator spreads.
+    const { deps } = harness();
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        reconcile: () => Promise.resolve({ added: 2, revoked: 3 }),
+      }),
+    );
+    expect(result.membersAdded).toBe(2);
+    expect(result.membersRevoked).toBe(3);
+  });
+
+  it("counts a failed channel-visibility read as a failed audience", async () => {
+    const { deps, reconciled } = harness({
+      getConversationInfo: () =>
+        Promise.resolve({ ok: false as const, error: "channel_not_found", retryAfterSeconds: null }),
+    });
+    const result = await withDatabaseUrl(() => runAudienceSyncCycle(deps));
+
+    expect(reconciled).toHaveLength(0);
+    expect(result.audiencesFailed).toBe(1);
+  });
+
+  it("counts an unusable install config as a workspace failure", async () => {
+    const { deps, reconciled } = harness();
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        query: (<T extends Record<string, unknown>>() =>
+          Promise.resolve([
+            { workspace_id: WORKSPACE, install_id: "i1", config: { channels: [] } },
+          ] as unknown as T[])) as AudienceSyncDeps["query"],
+      }),
+    );
+    expect(reconciled).toHaveLength(0);
+    expect(result.workspacesFailed).toBe(1);
   });
 
   it("reports a scan failure as failure rather than as an empty successful cycle", async () => {

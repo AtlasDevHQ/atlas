@@ -10,21 +10,23 @@
  * gated, and invisible to every reader. Fail-closed, and repairable by writing
  * membership rows alone — which is what this does.
  *
- * ## Why the audience id comes from the GRANT, not from a second derivation
+ * ## Why the audience comes from the GRANT, not from a second derivation
  *
- * The cycle calls `deriveChatChannelGrant` with the same visibility the ingest
- * client passes, then reads the audience id out of `parseGrant`. It does NOT
- * call `chatChannelAudienceId` itself.
+ * The cycle passes `conversations.info`'s visibility bit — the same value
+ * `slack/client.ts` passes at ingest — to `deriveChatChannelGrant`, then reads
+ * the answer out of `parseGrant`. It calls neither `chatChannelAudienceId` nor
+ * any `isPrivate` branch of its own; `resolveChannelAudience` is the whole of
+ * its dealings with visibility.
  *
  * That is the difference between a sync that populates *an* audience and one
  * that populates *the audience the facts were granted to*. Two independent
- * derivations of the same id agree until one of them changes — a namespace
- * edit, a new visibility arm, a vendor whose "private" is conditional — and on
- * that day the sync writes membership for an audience no fact names, so every
- * private fact silently returns to invisible while the cycle reports success.
- * Deriving through the grant makes the two unable to disagree: whatever
- * `deriveChatChannelGrant` decides is what gets synced, including its `null`
- * (block) and its `[org]` (public → no audience → nothing to sync).
+ * derivations agree until one of them changes — a namespace edit, a new
+ * visibility arm, a vendor whose "private" is conditional — and on that day the
+ * sync writes membership for an audience no fact names, so every private fact
+ * silently returns to invisible while the cycle reports success. Routing both
+ * the id AND the public/private decision through the deriver makes the two
+ * unable to disagree: whatever it decides is what gets synced, including its
+ * `null` (blocked) and its `[org]` (public → no audience → nothing to sync).
  *
  * ## Completeness is what licenses the DELETE
  *
@@ -63,7 +65,10 @@ import {
 } from "@atlas/api/lib/slack/api";
 import { getBotToken, getInstallationByOrg } from "@atlas/api/lib/slack/store";
 import { parseGrant } from "@atlas/api/lib/brain/acl";
-import { deriveChatChannelGrant } from "@atlas/api/lib/brain/ingest/grant";
+import {
+  deriveChatChannelGrant,
+  type ChatChannelVisibility,
+} from "@atlas/api/lib/brain/ingest/grant";
 import {
   SLACK_HISTORY_CATALOG_ID,
   SLACK_HISTORY_SOURCE,
@@ -71,7 +76,7 @@ import {
 } from "@atlas/api/lib/brain/ingest/slack/config";
 import { resolveSlackHistoryToken } from "@atlas/api/lib/brain/ingest/slack/connector";
 import { reconcileAudienceMembership } from "./membership";
-import { resolvePrincipals, type SourcePrincipal } from "./resolver";
+import { resolvePrincipals } from "./resolver";
 
 const log = createLogger("brain.audience.sync");
 
@@ -83,6 +88,12 @@ export const MAX_DIRECTORY_PAGES = 200;
 
 /** Hard bound on roster pages per channel per cycle (~40k members). */
 export const MAX_ROSTER_PAGES = 200;
+
+/** Scopes the directory read needs — new in #4801, so the likeliest failure. */
+const DIRECTORY_SCOPES = "users:read / users:read.email";
+
+/** Scopes the channel-visibility and roster reads need — long-held. */
+const CHANNEL_SCOPES = "channels:read / groups:read";
 
 /** Default cadence: every 30 minutes. */
 export const DEFAULT_AUDIENCE_SYNC_INTERVAL_MS = 30 * 60_000;
@@ -122,9 +133,12 @@ export function getAudienceSyncIntervalMs(): number {
 /**
  * Every enabled, non-archived Slack chat-history install.
  *
- * Mirrors `SYNC_CYCLE_INSTALLS_SQL`'s filter (`knowledge` pillar, enabled,
- * non-archived) so this cycle's idea of "an install that should be syncing"
- * cannot drift from the ingest cycle's. Exported for the real-Postgres test.
+ * Deliberately mirrors `SYNC_CYCLE_INSTALLS_SQL`'s filter (`knowledge` pillar,
+ * enabled, non-archived) so this cycle and the ingest cycle agree about which
+ * installs should be syncing. NOTHING ENFORCES THAT AGREEMENT — it is a
+ * hand-kept copy, not a shared constant; if you change that predicate, change
+ * this one. Exported so the real-Postgres test runs this exact string against
+ * the live schema.
  */
 export const AUDIENCE_SYNC_INSTALLS_SQL = `SELECT workspace_id, install_id, config
          FROM workspace_plugins
@@ -183,11 +197,20 @@ export interface AudienceSyncDeps {
   readonly resolve?: typeof resolvePrincipals;
 }
 
-/** Human-readable, operator-actionable rendering of a Slack read failure. */
-function describeSlackError(err: SlackReadError): string {
+/**
+ * Human-readable, operator-actionable rendering of a Slack read failure.
+ *
+ * `scopes` names the pair THIS read needs, because `missing_scope` means
+ * different things at the three call sites: the directory read wants
+ * `users:read`/`users:read.email` (new in #4801), while the channel and roster
+ * reads want `channels:read`/`groups:read` (long-held). A single hardcoded hint
+ * would send an operator hitting a roster failure to re-consent for the wrong
+ * pair and watch it not help.
+ */
+function describeSlackError(err: SlackReadError, scopes: string): string {
   switch (err.error) {
     case "missing_scope":
-      return "the workspace's Slack token lacks users:read / users:read.email — reconnect Slack under Admin → Integrations to grant them";
+      return `the workspace's Slack token lacks ${scopes} — reconnect Slack under Admin → Integrations to grant them`;
     case "invalid_auth":
     case "token_revoked":
     case "account_inactive":
@@ -225,23 +248,52 @@ async function loadDirectory(
     });
     if (!result.ok) {
       log.warn(
-        { workspaceId, reason: describeSlackError(result) },
+        { workspaceId, reason: describeSlackError(result, DIRECTORY_SCOPES) },
         "brain audience: could not read the Slack directory — skipping this workspace, membership unchanged",
+      );
+      return null;
+    }
+    // An entry Slack sent that Atlas could not identify is a roster member it
+    // will fail to resolve — and an unresolved member is REVOKED. So a lossy
+    // page is a read fault, exactly as a lossy roster page is, rather than a
+    // smaller directory.
+    if (result.dropped > 0) {
+      log.warn(
+        { workspaceId, dropped: result.dropped },
+        "brain audience: Slack directory page had entries with no usable identity — skipping this workspace rather than revoking the members it could not identify",
       );
       return null;
     }
     for (const user of result.users) byId.set(user.id, user);
     if (result.nextCursor === null) {
+      // An EMPTY directory is not a workspace with no people — it is a read
+      // that returned nothing usable, and it is the most dangerous shape in
+      // this module: every roster member misses the lookup, resolves to
+      // nobody, and the reconcile deletes the entire audience while the cycle
+      // reports success. Checked BEFORE the email tripwire below, which cannot
+      // fire on an empty set.
+      if (byId.size === 0) {
+        log.warn(
+          { workspaceId },
+          "brain audience: Slack returned an empty directory — treating as a read failure, not as a workspace with no members. Skipping this workspace, membership unchanged",
+        );
+        return null;
+      }
       // A token with `users:read` but NOT `users:read.email` returns 200 with
       // every email absent. That is a scope problem wearing the costume of an
       // empty result: resolution would match nobody, the reconcile would revoke
       // every audience, and the cycle would report success. Detected here, and
       // treated as a read failure rather than as a directory of nulls.
-      const withEmail = [...byId.values()].filter((u) => u.email !== null).length;
-      if (byId.size > 0 && withEmail === 0) {
+      //
+      // Computed over the population resolution actually CONSUMES — bots and
+      // deactivated accounts are discarded before resolution, so counting them
+      // would let one app user's address mask an otherwise email-less
+      // directory and wave the mass revocation through.
+      const humans = [...byId.values()].filter((u) => !u.deleted && !u.isBot);
+      if (humans.length > 0 && humans.every((u) => u.email === null)) {
         log.warn(
-          { workspaceId, directorySize: byId.size },
-          "brain audience: Slack returned a directory with no email on any member — the token is missing users:read.email; reconnect Slack under Admin → Integrations. Skipping this workspace, membership unchanged",
+          { workspaceId, directorySize: byId.size, humans: humans.length },
+          "brain audience: Slack returned a directory with no email on any active member — the token is missing users:read.email; reconnect Slack under Admin → Integrations. Skipping this workspace, membership unchanged",
         );
         return null;
       }
@@ -276,7 +328,7 @@ async function loadRoster(
     });
     if (!result.ok) {
       log.warn(
-        { workspaceId, channelId, reason: describeSlackError(result) },
+        { workspaceId, channelId, reason: describeSlackError(result, CHANNEL_SCOPES) },
         "brain audience: could not read the channel roster — skipping this audience, membership unchanged",
       );
       return null;
@@ -293,22 +345,46 @@ async function loadRoster(
 }
 
 /**
- * The audience id this channel's facts are actually granted to, or `null` when
- * there is nothing to sync.
+ * What this channel's grant says there is to sync.
  *
- * `null` covers two different, both-correct cases: a PUBLIC channel (the grant
- * is `[org]`, which needs no membership) and a channel whose grant derivation
- * blocked. They are distinguished by the caller for counting, via `isPrivate`.
+ * A discriminated union rather than a nullable id, so the caller's two counters
+ * (`audiencesSkippedPublic` vs `audiencesFailed`) are exhaustive by
+ * construction instead of by remembering to branch in the right order.
  */
-function audienceIdForChannel(channelId: string): string | null {
-  const grant = deriveChatChannelGrant({
-    source: SLACK_HISTORY_SOURCE,
-    channelId,
-    isPrivate: true,
-  });
-  if (grant === null) return null;
-  const audience = parseGrant(grant).principals.find((p) => p.kind === "audience");
-  return audience?.audienceId ?? null;
+type ChannelAudience =
+  | { readonly kind: "audience"; readonly audienceId: string }
+  | { readonly kind: "public" }
+  | { readonly kind: "blocked" };
+
+/**
+ * Resolve what to sync for one channel, THROUGH the production grant deriver.
+ *
+ * The visibility bit is passed in from `conversations.info` — the same value
+ * `slack/client.ts` hands `deriveChatChannelGrant` at ingest — rather than
+ * being re-decided here. That is what makes the module header's claim literally
+ * true: this module makes NO visibility judgement of its own, so a new arm in
+ * `deriveChatChannelGrant` (a Slack Connect channel, a "private but
+ * org-readable" case, a vendor whose `isPrivate` is conditional) changes what
+ * the sync does without an edit here. An earlier cut passed `isPrivate: true`
+ * literally and filtered public channels in the caller — which worked, and
+ * quietly duplicated the one decision this module is supposed to delegate.
+ *
+ * `public` means the grant is `[org]`: everyone can read it at the source, so
+ * there is no audience and nothing to reconcile. `blocked` means derivation
+ * refused (a blank source or channel id) or produced no audience principal —
+ * a fault, counted as one.
+ */
+function resolveChannelAudience(visibility: ChatChannelVisibility): ChannelAudience {
+  const grant = deriveChatChannelGrant(visibility);
+  if (grant === null) return { kind: "blocked" };
+  const parsed = parseGrant(grant).principals;
+  const audience = parsed.find((p) => p.kind === "audience");
+  if (audience !== undefined) return { kind: "audience", audienceId: audience.audienceId };
+  // No audience principal. `[org]` is the expected shape here and means public;
+  // anything else parsed to principals but named no audience, which is a
+  // derivation fault rather than a public channel and must not be counted as
+  // one — miscounting it would report a leak-shaped bug as a routine skip.
+  return parsed.some((p) => p.kind === "org") ? { kind: "public" } : { kind: "blocked" };
 }
 
 interface WorkspaceOutcome {
@@ -351,36 +427,70 @@ async function syncInstall(
   const directory = await loadDirectory(deps.api, token, workspaceId);
   if (directory === null) throw new Error("Slack directory unavailable");
 
+  // Resolve the WHOLE directory once, then intersect each roster against the
+  // result. Two reasons, and the second is the load-bearing one:
+  //
+  //   1. Cost. The directory is workspace-scoped, so a per-channel resolve
+  //      would re-run the same query once per configured channel for identical
+  //      data.
+  //   2. RESOLUTION COLLAPSE IS A WORKSPACE-LEVEL CONDITION, and can only be
+  //      detected at workspace level. A per-audience check ("nobody in this
+  //      channel resolved") cannot tell the failure from the legitimate case
+  //      where the last Atlas user simply left a channel — and blocking THAT
+  //      would preserve exactly the stale access this subsystem exists to
+  //      drop. Whereas if not one person in the entire directory resolves,
+  //      that is not an org that stopped using Atlas; it is a verified SSO
+  //      domain of `acme.com` against emails at `eng.acme.com`, a domain row
+  //      stored as `@acme.com`, or an SSO provider added AFTER membership was
+  //      populated — an unrelated admin action that would otherwise revoke
+  //      every audience in the workspace on the next cycle.
+  const humans = [...directory.values()].filter((u) => !u.deleted && !u.isBot);
+  const resolution = await deps.resolve(
+    workspaceId,
+    humans.map((u) => ({ id: u.id, email: u.email })),
+  );
+  if (humans.length > 0 && resolution.resolved.size === 0) {
+    throw new Error(
+      "no Slack workspace member resolved to an Atlas user — check the workspace's verified SSO domain against member email domains, or invite these people to Atlas",
+    );
+  }
+
   let out = { ...ZERO_WORKSPACE };
   for (const channelId of parsed.channels) {
     try {
       const info = await deps.api.getConversationInfo(token, channelId);
       if (!info.ok) {
         log.warn(
-          { workspaceId, channelId, reason: describeSlackError(info) },
+          { workspaceId, channelId, reason: describeSlackError(info, CHANNEL_SCOPES) },
           "brain audience: could not read channel visibility — skipping this audience, membership unchanged",
         );
         out = { ...out, audiencesFailed: out.audiencesFailed + 1 };
         continue;
       }
-      // A public channel's grant is `[org]`: everyone in the workspace can read
-      // it at the source, so there is no audience and nothing to reconcile.
-      // Counted rather than silently passed over, so "12 channels, 0 audiences"
-      // reads as "they are all public" instead of as a broken cycle.
-      if (!info.channel.isPrivate) {
+      // The visibility bit goes to the GRANT DERIVER, which decides. This
+      // module never branches on `isPrivate` itself — see
+      // `resolveChannelAudience`.
+      const target = resolveChannelAudience({
+        source: SLACK_HISTORY_SOURCE,
+        channelId,
+        isPrivate: info.channel.isPrivate,
+      });
+      if (target.kind === "public") {
+        // Counted rather than silently passed over, so "12 channels, 0
+        // audiences" reads as "they are all public" instead of as a broken
+        // cycle.
         out = { ...out, audiencesSkippedPublic: out.audiencesSkippedPublic + 1 };
         continue;
       }
-
-      const audienceId = audienceIdForChannel(channelId);
-      if (audienceId === null) {
+      if (target.kind === "blocked") {
         log.warn(
           { workspaceId, channelId },
-          "brain audience: grant derivation yielded no audience for a private channel — skipping, membership unchanged",
+          "brain audience: grant derivation yielded no audience for this channel — skipping, membership unchanged",
         );
         out = { ...out, audiencesFailed: out.audiencesFailed + 1 };
         continue;
       }
+      const audienceId = target.audienceId;
 
       const roster = await loadRoster(deps.api, token, workspaceId, channelId);
       if (roster === null) {
@@ -388,37 +498,45 @@ async function syncInstall(
         continue;
       }
 
-      // Bots and deactivated accounts never become audience members. A bot has
+      // Intersect the roster with the workspace-wide resolution.
+      //
+      // Bots and deactivated accounts never become audience members: a bot has
       // no Atlas account to resolve to, and a deactivated Slack user is someone
       // the workspace has already revoked at the source — carrying them into
       // the audience would make Atlas the one system that kept their access.
-      const principals: SourcePrincipal[] = [];
+      // Both are absent from `resolution` by construction (they were filtered
+      // out of the directory before it was resolved), so the miss below covers
+      // them, and `unresolvedInChannel` deliberately does NOT count them: a bot
+      // is not an unresolved person, and counting it would inflate the metric
+      // in every channel Atlas is invited to.
+      const userIds: string[] = [];
+      let unresolvedInChannel = 0;
       for (const memberId of roster) {
-        const user = directory.get(memberId);
-        if (user === undefined) {
-          // In the roster but not the directory: a shared-channel member from
-          // another Slack workspace, or a race between the two reads. Not
-          // resolvable, and counted with the rest by `resolvePrincipals`.
-          principals.push({ id: memberId, email: null });
+        const resolvedUserId = resolution.resolved.get(memberId);
+        if (resolvedUserId !== undefined) {
+          userIds.push(resolvedUserId);
           continue;
         }
-        if (user.deleted || user.isBot) continue;
-        principals.push({ id: user.id, email: user.email });
+        const known = directory.get(memberId);
+        if (known !== undefined && (known.deleted || known.isBot)) continue;
+        // Either a live human with no Atlas account, or a member absent from
+        // the directory entirely — a Slack Connect guest from another
+        // workspace, or a race between the two reads. Counted, never guessed.
+        unresolvedInChannel++;
       }
 
-      const resolution = await deps.resolve(workspaceId, principals);
       const changed = await deps.reconcile({
         workspaceId,
         audienceId,
         source: SLACK_HISTORY_SOURCE,
-        userIds: [...resolution.resolved.values()],
+        userIds,
       });
       out = {
         ...out,
         audiencesReconciled: out.audiencesReconciled + 1,
         membersAdded: out.membersAdded + changed.added,
         membersRevoked: out.membersRevoked + changed.revoked,
-        principalsUnresolved: out.principalsUnresolved + resolution.unresolvedCount,
+        principalsUnresolved: out.principalsUnresolved + unresolvedInChannel,
       };
     } catch (err) {
       log.warn(

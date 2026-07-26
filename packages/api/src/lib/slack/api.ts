@@ -485,7 +485,7 @@ export async function fetchConversationHistoryPage(
 // Read methods for audience-membership sync (#4801)
 // ---------------------------------------------------------------------------
 
-/** One page of `conversations.members` — Slack user ids, in Slack's order. */
+/** One page of `conversations.members` — Slack user ids. */
 export interface SlackMembersPage {
   readonly ok: true;
   readonly memberIds: readonly string[];
@@ -573,6 +573,17 @@ export interface SlackUsersPage {
   readonly ok: true;
   readonly users: readonly SlackDirectoryUser[];
   readonly nextCursor: string | null;
+  /**
+   * Entries this page could not identify.
+   *
+   * Carried rather than merely logged — as `SlackHistoryPage` carries its own —
+   * because the caller's completeness judgement is what licenses a DELETE. A
+   * directory entry Atlas dropped is a roster member Atlas cannot resolve, and
+   * an unresolved member is REVOKED. Without this field the caller cannot tell
+   * a small directory from a lossy one, so the loss is structurally invisible
+   * exactly where it is most expensive.
+   */
+  readonly dropped: number;
 }
 
 /**
@@ -627,11 +638,13 @@ export async function fetchUsersListPage(
       isBot: u.is_bot === true,
     });
   }
-  // Unlike the roster, a dropped directory entry cannot over-revoke on its own
-  // — it only fails to RESOLVE somebody, which the caller logs per principal.
-  // Still counted, because "half the directory is malformed" and "half the
-  // workspace has no Atlas account" produce the same membership and must not
-  // produce the same log.
+  // A dropped directory entry has a SMALLER blast radius than a truncated
+  // roster — it can only fail to resolve the individuals it dropped, not the
+  // whole audience — but it is the same KIND of harm: those individuals are
+  // revoked at the next reconcile. So it is reported to the caller (which
+  // treats it as a read fault), not just logged. The count also separates
+  // "half the directory is malformed" from "half the workspace has no Atlas
+  // account", which otherwise produce identical membership.
   if (dropped > 0) {
     log.warn(
       { method: "users.list", dropped },
@@ -642,7 +655,7 @@ export async function fetchUsersListPage(
   const meta = result.data.response_metadata as { next_cursor?: unknown } | undefined;
   const nextCursor =
     typeof meta?.next_cursor === "string" && meta.next_cursor.length > 0 ? meta.next_cursor : null;
-  return { ok: true, users, nextCursor };
+  return { ok: true, users, nextCursor, dropped };
 }
 
 /**

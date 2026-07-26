@@ -153,11 +153,11 @@ const SECTIONS: LegalSectionData[] = [
     title: "Term & Termination",
     legal: [
       "These Terms remain in effect while Customer has an active subscription. Either party may terminate for material breach uncured 30 days after written notice.",
-      "On termination, Atlas will, on request, make Customer Data available for export for 30 days, after which it will be deleted from production systems within 30 days and from backups within 90 days.",
+      "On termination, Atlas will, on request, make Customer Data available for export for 30 days. Atlas will then, at Customer’s election, return or delete all Customer Data within 90 days, except to the extent applicable law requires retention; encrypted backups are deleted within an additional 90 days as part of the standard backup-rotation cycle. These are the same timelines as the Data Processing Addendum at useatlas.dev/dpa.",
       "Sections that by nature should survive termination (Confidentiality, IP, Warranty disclaimers, Liability limits, Indemnification, Governing Law) survive.",
     ],
     plain:
-      "Either party may terminate with notice. On termination, we make your data available for export for 30 days, then delete from production within 30 days and from backups within 90.",
+      "Either party may terminate with notice. On termination, we make your data available for export for 30 days, then return or delete it within 90 days, with encrypted backups cleared within a further 90. Same timelines as the DPA.",
   },
   {
     id: "law",

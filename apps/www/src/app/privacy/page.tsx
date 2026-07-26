@@ -135,13 +135,13 @@ const SECTIONS: LegalSectionData[] = [
     id: "share",
     title: "Who we share with",
     legal: [
-      "Sub-processors: a small set of vendors that help us run the Service (cloud infrastructure, uptime monitoring, payment processing, bot mitigation, and CRM for sales follow-up). The current list is published at useatlas.dev/dpa and customers receive 30 days’ notice of additions.",
+      "Sub-processors: a small set of vendors that help us run the Service (cloud infrastructure, uptime monitoring, payment processing, bot mitigation, CRM for sales follow-up, and chat delivery where Customer connects a chat platform). The current list is published at useatlas.dev/dpa and customers receive 30 days’ notice of additions.",
       "Model providers: when Customer uses Atlas’s hosted models, prompts are routed through Vercel AI Gateway, which forwards them to the upstream model provider configured for that Customer (e.g. Anthropic, OpenAI). Vercel acts as a sub-processor for routing, observability, and fallback. Where Customer uses BYO model keys, traffic is sent directly to the provider Customer specifies and does not transit Vercel.",
       "Legal: we may disclose information when required by law, court order, or to protect our rights, with notice to Customer where legally permitted.",
       "Successors: in a merger or sale of substantially all assets, the acquirer takes on the same obligations under this Policy.",
     ],
     plain:
-      "A short list of operational vendors (cloud infra, uptime monitoring, payments, bot mitigation, CRM), the model provider you select, and disclosures required by valid legal process.",
+      "A short list of operational vendors (cloud infra, uptime monitoring, payments, bot mitigation, CRM, and the chat platform you connect), the model provider you select, and disclosures required by valid legal process.",
   },
   {
     id: "rights",
@@ -171,10 +171,10 @@ const SECTIONS: LegalSectionData[] = [
       "Account data: retained for the duration of the account plus 90 days after closure.",
       "Audit logs: 365 days by default; configurable per-workspace with a 7-day floor and a hard-delete delay for compliance export.",
       "Telemetry: 30 days, then aggregated and de-identified.",
-      "Backups: production data is retained in encrypted backups for up to 90 days.",
+      "Backups: after deletion from production, data persists in encrypted backups for up to a further 90 days as those backups rotate — the same additional-90-day window stated in the Data Processing Addendum.",
     ],
     plain:
-      "Account data: term + 90 days. Audit logs: 365 days by default, configurable per-workspace (7-day floor). Telemetry: 30 days then aggregated. Encrypted backups: up to 90 days.",
+      "Account data: term + 90 days. Audit logs: 365 days by default, configurable per-workspace (7-day floor). Telemetry: 30 days then aggregated. Encrypted backups: a further 90 days after deletion, matching the DPA.",
   },
   {
     id: "security",

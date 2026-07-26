@@ -29,6 +29,19 @@
  *   6. **Does a real page satisfy its own wire schema?** The route parses every
  *      response through it, so a coercion that violated it would be a 500.
  *
+ * ## What the ACL assertions here do NOT prove
+ *
+ * The reader contexts below are HAND-BUILT: `audienceIds` is a literal, and the
+ * candidate reads consume it as given — nothing here re-resolves membership. So
+ * claim 3 above is about the PREDICATE composed into these statements, not about
+ * how a principal came to hold those audience ids. Seeding a
+ * `fact_audience_member` row here would be inert; its absence is deliberate.
+ *
+ * Membership RESOLUTION is proven in `acl-visibility-pg.test.ts` and
+ * `wedge-loop-pg.test.ts`, which build contexts through
+ * `resolvePrincipalContext(pool, …)`. Put any case that turns on resolution
+ * there, not here.
+ *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
  */

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "milestone/**"]
+    branches: [main, "milestone/**", "hotfix/**"]
   pull_request:
     branches: [main, "milestone/**"]
   # Manual lever: lets an operator/agent re-create required check runs when
@@ -21,6 +21,16 @@ on:
 # `main`-only and cannot be branch-filtered here, so milestone-branch PRs are
 # gated by everything EXCEPT CodeQL. It runs on the milestone branch's own PR
 # into `main`, which is the merge that matters for that gate.
+#
+# `hotfix/**` is `push:`-only, and the asymmetry is the point. A hotfix cut when
+# `main` is NOT prod-plus-one-fix branches from the tag `prod` serves, so the SHA
+# that ships is never the SHA a PR tests: `pull_request` checks run against the
+# MERGE result (`main` + the fix, including whatever unreleased arc `main` is
+# carrying), which is a different tree than prod receives. The `push:` trigger is
+# what puts CI on the hotfix commit itself. No `pull_request` entry is needed —
+# a hotfix PR targets `main`, so it already matches the filter above.
+# Runbook: docs/development/release-process.md § When `main` is NOT a safe
+# hotfix source.
 
 permissions:
   contents: read

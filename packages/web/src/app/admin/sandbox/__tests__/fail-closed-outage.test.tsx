@@ -15,7 +15,7 @@
  */
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { render, cleanup } from "@testing-library/react";
+import { render, cleanup, fireEvent } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
@@ -256,6 +256,9 @@ describe("SaasSandboxView — fail-closed region (#4837)", () => {
       }),
     );
     expect(queryAllByText("Use this").length).toBeGreaterThan(0);
+    // Closes the three-way down/live/available loop: "Available" is the label
+    // round 2 stopped rendering on an outage, so it must still render here.
+    expect(queryAllByText("Available").length).toBeGreaterThan(0);
   });
 
   test("a healthy region is unchanged — the managed card still reads Live", () => {
@@ -291,6 +294,34 @@ describe("SaasSandboxView — fail-closed region (#4837)", () => {
     );
     getByText("Down");
     expect(queryAllByText("Use this").length).toBe(0);
+  });
+
+  test("the disconnect confirmation does not promise a fallback that cannot run", async () => {
+    // The most harmful shape of #4837: not a confusing label but an active
+    // reassurance. The live BYOC backend is the ONLY thing keeping this
+    // workspace's explore alive, and the old copy told the operator that
+    // disconnecting it would "fall back to Atlas Cloud Sandbox" — the platform
+    // default that constructs nothing.
+    const { getByText, findByText, queryByText } = renderSaas(
+      failClosedStatus({
+        activeBackend: "e2b-sandbox",
+        workspaceOverride: "e2b-sandbox",
+        connectedProviders: [
+          {
+            provider: "e2b",
+            displayName: "Acme",
+            connectedAt: "2026-06-01T00:00:00.000Z",
+            validatedAt: null,
+            isActive: true,
+          },
+        ],
+      }),
+    );
+
+    fireEvent.click(getByText("Disconnect"));
+
+    await findByText(/leaves this workspace with no working sandbox/);
+    expect(queryByText(/fall back to Atlas Cloud Sandbox/)).toBeNull();
   });
 });
 
@@ -404,17 +435,35 @@ describe("SandboxOutageNotice — remediation (#4837)", () => {
 // `workspaceStillRunning`.
 
 describe("SandboxPage — outage banner wiring (#4837)", () => {
-  test.each(["saas", "self-hosted"] as const)(
-    "renders the outage banner above the %s view",
-    (mode) => {
-      const { getByRole } = renderPage(failClosedStatus(), mode);
+  test.each([
+    ["saas", "Bring your own cloud"],
+    ["self-hosted", "Sandbox backend"],
+  ] as const)("renders the outage banner ABOVE the %s view", (mode, viewMarker) => {
+    const { getByRole, getByText } = renderPage(failClosedStatus(), mode);
 
-      const alert = getByRole("alert");
-      expect(alert.textContent).toContain("every request is refused");
-      // Plumbed from the payload, not re-composed locally.
-      expect(alert.textContent).toContain("VERCEL_TOKEN");
-    },
-  );
+    const alert = getByRole("alert");
+    expect(alert.textContent).toContain("every request is refused");
+    // Plumbed from the payload, not re-composed locally.
+    expect(alert.textContent).toContain("VERCEL_TOKEN");
+
+    // "Above" asserted as document order, not just as co-existence — an outage
+    // banner below the fold of the thing it is warning about is not a warning.
+    const view = getByText(viewMarker);
+    expect(alert.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("renders the outage without a remediation when the block carries an empty one", () => {
+    // The schema deliberately admits `remediation: ""` (a `.min(1)` could only
+    // fail the diagnostic page closed in the browser). `|| null` is the consumer
+    // that makes "empty" mean "absent" — pinned here so that coercion cannot be
+    // dropped silently.
+    const { getByRole, getByText } = renderPage(
+      failClosedStatus({ failClosed: { remediation: "" } }),
+      "saas",
+    );
+    expect(getByRole("alert").textContent).toContain("every request is refused");
+    getByText(/No remediation was reported/);
+  });
 
   test.each(["saas", "self-hosted"] as const)(
     "renders NO banner on a healthy %s deployment",

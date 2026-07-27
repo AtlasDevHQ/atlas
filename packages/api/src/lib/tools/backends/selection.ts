@@ -574,8 +574,32 @@ export async function describeSandboxFailClosed(
       // anywhere, which is where scrubbing belongs anyway: the hazard
       // `error-scrub` exists for (a pg/better-auth error echoing a connection
       // string) lands in a log field, not here.
-      // @atlas-ok-ternary: the catch arm of a function contracted never to throw
-      failureDetail: err instanceof Error ? err.message : String(err),
+      failureDetail: describeThrown(err),
     };
+  }
+}
+
+/**
+ * `err.message` / `String(err)` for the one caller that cannot afford either to
+ * throw: {@link describeSandboxFailClosed}'s catch arm, which is contracted
+ * never to reject.
+ *
+ * Both of those CAN throw — a throwing `message` getter, or a `String()` on a
+ * null-prototype object or a hostile `Symbol.toPrimitive`. Vanishingly unlikely
+ * from that call site's inputs, but "vanishingly unlikely" is not the contract:
+ * `admin-sandbox.ts` runs the caller under `Effect.promise`, where a rejection
+ * becomes a defect and 500s the page an operator opened to diagnose the outage.
+ * The inner catch buys totality for two lines and no imports.
+ *
+ * Returns RAW text — callers scrub at their `log` site (see the caller's doc).
+ */
+function describeThrown(err: unknown): string {
+  try {
+    // @atlas-ok-ternary: raw by design; the caller's log sites apply errorMessage
+    return err instanceof Error ? err.message : String(err);
+  } catch {
+    // intentionally ignored: the thrown value is unrepresentable as a string,
+    // and the whole point here is that this path cannot itself throw.
+    return "<unrepresentable thrown value>";
   }
 }

@@ -443,6 +443,7 @@ export function SaasSandboxView({
                 providerKey={key}
                 connection={provider ?? null}
                 isActive={provider?.isActive ?? false}
+                platformDown={status.platformDefault === null}
                 // Absent field (older API) defaults to available so the page
                 // degrades to its pre-#3370 behavior rather than locking
                 // every card.
@@ -535,6 +536,7 @@ function ProviderRow({
   providerKey,
   connection,
   isActive,
+  platformDown,
   runtimeAvailable,
   needsReconnect,
   onSelect,
@@ -544,6 +546,12 @@ function ProviderRow({
   providerKey: SandboxProviderKey;
   connection: ConnectedProvider | null;
   isActive: boolean;
+  /**
+   * The platform default constructs nothing (#4837). Only the disconnect
+   * confirmation reads it — that is the one place this row makes a promise about
+   * what happens AFTER the workspace stops using this backend.
+   */
+  platformDown: boolean;
   runtimeAvailable: boolean;
   needsReconnect: boolean;
   onSelect: () => Promise<unknown>;
@@ -716,8 +724,17 @@ function ProviderRow({
                   <AlertDialogTitle>Disconnect {info.label}?</AlertDialogTitle>
                   <AlertDialogDescription>
                     This removes your {info.label} credentials.
+                    {/* What execution falls back TO depends on whether the
+                        platform default works. Promising "Atlas Cloud Sandbox"
+                        while the platform is fail-closed is the #4837 bug in its
+                        most harmful form: not a confusing label but an active
+                        reassurance, on the click that drops the workspace into
+                        the outage it is currently escaping via this very
+                        backend. */}
                     {isActive &&
-                      " Since this is your active sandbox, execution will fall back to Atlas Cloud Sandbox."}
+                      (platformDown
+                        ? " This is your active sandbox, and the platform default is currently unavailable — disconnecting leaves this workspace with no working sandbox, and explore will refuse every request."
+                        : " Since this is your active sandbox, execution will fall back to Atlas Cloud Sandbox.")}
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -922,6 +939,17 @@ export function SelfHostedSandboxView({
                   await onReset();
                 }}
                 disabled={saving}
+                // Reset clears the override so the platform default takes over.
+                // When that default constructs nothing, the shortcut silently
+                // drops this workspace into the outage — the same trap as the
+                // managed card's "Use this" and the BYOC disconnect copy. The
+                // Select below still offers "Use platform default (none — fails
+                // closed)", which says what it costs; this button cannot.
+                title={
+                  status.platformDefault === null
+                    ? "The platform default has no usable backend — clearing the override would leave explore refusing every request."
+                    : undefined
+                }
               >
                 <RotateCcw className="mr-1.5 size-3.5" />
                 Reset

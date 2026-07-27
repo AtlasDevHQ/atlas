@@ -98,10 +98,16 @@ void mock.module("@atlas/api/lib/config", () => ({
 
 // --- Key mock: the resolver reports that NO backend will construct ---
 
+// When set, the env snapshot throws — the route's degraded-remediation arm.
+let snapshotThrows: Error | null = null;
+
 void mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "fail-closed",
   getActiveSandboxPluginId: () => null,
-  snapshotExploreSandboxEnv: () => SAAS_PIN_ENV,
+  snapshotExploreSandboxEnv: () => {
+    if (snapshotThrows) throw snapshotThrows;
+    return SAAS_PIN_ENV;
+  },
   explore: { type: "function" },
   invalidateExploreBackend: mock(() => {}),
   invalidateOrgExploreBackends: mock(() => {}),
@@ -244,6 +250,7 @@ afterAll(() => {
 beforeEach(() => {
   mockSettings.clear();
   mockCredentials = [];
+  snapshotThrows = null;
 });
 
 // --- Tests ---
@@ -385,5 +392,36 @@ describe("GET /admin/sandbox/status — fail-closed region (#4837)", () => {
     expect(status.platformDefault).toBeNull();
     expect(status.failClosed).toBeDefined();
     expect(status.connectedProviders.find((p) => p.provider === "vercel")?.isActive).toBe(true);
+  });
+
+  it("still 200s with the outage reported when the remediation cannot be built", async () => {
+    // The route's degraded arm. Three properties, and the first is the one that
+    // matters most: this endpoint must not 500 during the very outage it exists
+    // to report — it runs `describeSandboxFailClosed` under `Effect.promise`,
+    // where a rejection would become a defect.
+    snapshotThrows = new Error(
+      "connect failed: postgres://atlas:hunter2@db.internal:5432/atlas",
+    );
+
+    const status = await getParsedStatus();
+
+    // (1) still an outage, not a 500 and not a downgrade to "healthy".
+    expect(status.activeBackend).toBeNull();
+    expect(status.platformDefault).toBeNull();
+    expect(status.failClosed).toBeDefined();
+
+    // (2) the generic-but-honest wording, never the advice a pin makes
+    //     unactionable (#4828).
+    const remediation = status.failClosed?.remediation ?? "";
+    expect(remediation).toContain("UNAVAILABLE");
+    expect(remediation).toContain("sandbox.priority");
+    expect(remediation).not.toContain("install the binary");
+
+    // (3) the caught error's text never rides out on the response. `message` is
+    //     admin-visible here and ALSO reaches unauthenticated `/api/health` via
+    //     startup warnings, so a connection string in it would be a real leak.
+    expect(remediation).not.toContain("hunter2");
+    expect(remediation).not.toContain("db.internal");
+    expect(JSON.stringify(await getStatus())).not.toContain("hunter2");
   });
 });

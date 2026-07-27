@@ -511,11 +511,13 @@ jobs:
           TEST_DATABASE_URL: postgresql://atlas:atlas@localhost:5432/atlas
         run: bun run scripts/test-isolated.ts --shard ${{ matrix.shard }}/4
     services:
-      # Postgres for the migration smoke test. The other 3 shards see
-      # the same service (matrix shares the `services` block), which is
-      # fine — only one shard at a time runs the migrate-pg test, and
-      # it scopes its writes to a per-test schema so concurrent shards
-      # don't trample each other.
+      # Postgres for the real-Postgres suites. Each matrix leg is its own
+      # runner and gets its own service container — shards do NOT share this
+      # Postgres, so cross-shard interference is not a thing. Contention is
+      # always *within* a shard, between the `-pg` suites the runner happens
+      # to have in flight concurrently; those scope their writes to a private
+      # scratch schema, and the migration advisory lock is keyed to that schema
+      # so they no longer serialize against each other (#4844).
       postgres:
         image: postgres:16-alpine
         env:

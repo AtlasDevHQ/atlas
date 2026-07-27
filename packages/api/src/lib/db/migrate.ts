@@ -54,6 +54,23 @@ export interface RunMigrationsOptions {
 }
 
 /**
+ * Advisory-lock key for the migration runner, evaluated server-side so it
+ * always reflects the session's *effective* schema rather than anything the
+ * caller believes it set.
+ *
+ * `coalesce` matters: `current_schema()` is NULL when the search_path names
+ * only schemas that don't exist, and `pg_advisory_lock(NULL)` is strict — it
+ * returns NULL and takes **no lock at all**. Without the coalesce a broken
+ * search_path would silently run migrations unserialized instead of failing.
+ */
+export const ADVISORY_LOCK_KEY_SQL =
+  "hashtext('atlas_migrations' || CASE WHEN coalesce(current_schema(), 'public') = 'public'" +
+  " THEN '' ELSE ':' || current_schema() END)";
+
+const ADVISORY_LOCK_SQL = `SELECT pg_advisory_lock(${ADVISORY_LOCK_KEY_SQL})`;
+const ADVISORY_UNLOCK_SQL = `SELECT pg_advisory_unlock(${ADVISORY_LOCK_KEY_SQL})`;
+
+/**
  * Run all pending migrations against the given pool.
  *
  * 1. Creates the tracking table if it doesn't exist.
@@ -76,15 +93,29 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
 
   try {
     // Acquire an advisory lock so concurrent server instances don't race.
-    // hashtext('atlas_migrations') produces a stable int4 key.
-    await client.query("SELECT pg_advisory_lock(hashtext('atlas_migrations'))");
+    // hashtext(...) produces a stable int4 key.
+    //
+    // The key is scoped to the schema the migrations actually write into,
+    // because that — specifically its `__atlas_migrations` table — is the
+    // resource being protected. A bare constant key is database-wide, which
+    // made every `-pg` test suite serialize on one lock even though each runs
+    // into its own private scratch schema: 8 concurrent suites took 30.5s wall
+    // versus 0.9s for one, landing exactly on the suites' 30s `beforeAll`
+    // budget and failing a random one per run (#4844).
+    //
+    // `public` deliberately keeps the original bare key rather than
+    // `atlas_migrations:public`. Production only ever migrates `public`, so the
+    // key stays bit-identical and a rolling deploy can't end up with old and
+    // new instances holding *different* keys — which would let them migrate
+    // concurrently, the exact race this lock exists to prevent.
+    await client.query(ADVISORY_LOCK_SQL);
 
     try {
       return await _runMigrationsLocked(client, options.skip ?? [], (err) => {
         rollbackErr = err;
       });
     } finally {
-      await client.query("SELECT pg_advisory_unlock(hashtext('atlas_migrations'))").catch((err: unknown) => {
+      await client.query(ADVISORY_UNLOCK_SQL).catch((err: unknown) => {
         // Unlock may legitimately fail if the connection is broken (in
         // which case the client is about to be destroyed anyway). Debug
         // so a genuine SQL-level failure still leaves a trace.

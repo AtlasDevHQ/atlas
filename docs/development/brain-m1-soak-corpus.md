@@ -8,10 +8,13 @@ Every seed is a message to post **top-level** (never in a thread) in a Slack cha
 
 | Prereq | Why |
 |---|---|
-| Staging Slack manifest carries `channels:history`, `groups:history`, `users:read`, `users:read.email` + re-installed | Without the history pair the connector 400s at install; without `users:read.email` every audience silently revokes |
+| ~~Staging Slack manifest carries `channels:history`, `groups:history`, `users:read`, `users:read.email` + re-installed~~ — **done 2026-07-27** | Without the history pair the connector 400s at install; without `users:read.email` every audience silently revokes |
 | Bot invited to one **public** channel (`#atlas-eng` below) and one **private** (`#atlas-founders`) | The public/private split is what exercises `[org]` vs `audience:chat-channel:slack:<id>` |
 | Two Atlas accounts whose emails match Slack members — **A** in the private channel, **B** not | ACL tests need a reader who should be denied |
 | `ATLAS_BRAIN_EXTRACTION_ENABLED=true` | Set on `api-staging` 2026-07-26 |
+| Staging build carries #4836 + migration `0183` | Confirmed 2026-07-27: staging deployed `cd1eeceae`, which includes `8efdc4e91`. Without 0183 the §C3 attribution rows below cannot pass — `pre_widening_visible_to` would not exist |
+
+> **Staging `/api/health` reads `degraded`, and that is expected — not a soak blocker.** Staging has no default datasource (`MISSING_DATASOURCE_URL`), and an absent datasource promotes the rollup to `degraded` by design (`health.ts`, the `dsNotConfigured` arm). The endpoint still returns 200; nothing about the brain path is affected. Do not spend soak time chasing it.
 
 Interleave the negatives with the positives when posting. A block of 15 clean facts followed by a block of 12 noise messages is not what a real channel looks like, and the ordering is free realism.
 

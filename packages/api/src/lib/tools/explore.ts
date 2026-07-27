@@ -146,14 +146,14 @@ let _sidecarFailed = false;
  * explore throws on every request. See {@link SandboxResolution} for why that is
  * modelled as a distinct value rather than collapsed into `"just-bash"`.
  *
- * Widening this union makes the distinction a compile error at every consumer
- * that indexes `BACKEND_ISOLATION` (three sites: `health.ts`'s `sandbox`
- * component and `checks.explore.isolated`, plus `startup.ts`), because that
- * table is keyed by real backends only. Consumers that treat the value as an
- * opaque string are NOT caught — `api/routes/admin-sandbox.ts` types both
- * `activeBackend` and `platformDefault` as `string` and will surface
- * `"fail-closed"` to the admin UI as though it were a selectable backend id.
- * Truthful, but untreated (#4834); check such consumers by hand.
+ * Widening this union is a compile error at every consumer that indexes
+ * `BACKEND_ISOLATION` (three sites: `health.ts`'s `sandbox` component and
+ * `checks.explore.isolated`, plus `startup.ts`), because that table is keyed by
+ * real backends only — and at `api/routes/admin-sandbox.ts`, which narrows the
+ * non-backend states out and pins the remainder with `satisfies
+ * SandboxBackendName | "plugin"` (#4837). Those four are the enumeration of
+ * consumers that will stop compiling; any NEW consumer treating the value as an
+ * opaque string is still not caught, so give it the same treatment.
  */
 export type ExploreBackendType = SandboxBackendName | "plugin" | "fail-closed";
 

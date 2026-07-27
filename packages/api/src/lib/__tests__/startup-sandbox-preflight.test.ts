@@ -132,8 +132,13 @@ const { validateEnvironment, resetStartupCache, getStartupWarnings } = await imp
 );
 const { getExploreBackendType, snapshotExploreSandboxEnv, _resetSandboxFailureFlagsForTest } =
   await import("@atlas/api/lib/tools/explore");
-const { _setConfigForTest, _resetConfig, configFromEnv } = await import(
+const { _setConfigForTest, _resetConfig, configFromEnv, getConfig } = await import(
   "@atlas/api/lib/config"
+);
+// Real policy module, mocked nowhere — the boot↔admin byte-parity anchor below
+// compares the logged warning against this exact formatter (#4837).
+const { planSandboxSelection, formatSandboxFailClosed } = await import(
+  "@atlas/api/lib/tools/backends/selection"
 );
 
 // ---------------------------------------------------------------------------
@@ -409,6 +414,73 @@ describe("startup sandbox pre-flight names the resolved backend (#4824)", () => 
     expect(
       getStartupWarnings().some((w) => w.includes("Explore tool: UNAVAILABLE")),
     ).toBe(true);
+
+    // Byte-pinned to the SHARED formatter, not just to substrings (#4837).
+    // `/admin/sandbox` composes its remediation from the same
+    // `describeSandboxFailClosed`, and the substring assertions above would all
+    // still pass if boot forked back to its own hand-rolled wording — which is
+    // exactly the drift that made #4828's advice wrong on one surface and right
+    // on another. This is the boot half of that anchor; the admin half lives in
+    // `api/__tests__/admin-sandbox-fail-closed.test.ts`.
+    const env = snapshotExploreSandboxEnv();
+    expect(text).toBe(
+      formatSandboxFailClosed(planSandboxSelection(env), env, getConfig()?.deployMode),
+    );
+  });
+
+  it("degrades to the generic outage message, with a SCRUBBED log detail, if the remediation cannot be built (#4837)", async () => {
+    // The boot half of `describeSandboxFailClosed`'s failure arm. Two properties
+    // that only this test pins:
+    //
+    //  1. Losing the remediation must NOT downgrade the reported state — boot
+    //     still records a fail-closed startup warning, which /api/health echoes.
+    //  2. The seam returns the caught text RAW (its catch arm takes no imports so
+    //     it cannot itself throw), so scrubbing happens HERE, at the log site.
+    //     Without this assertion, deleting the `errorMessage(...)` wrapper in
+    //     `startup.ts` is silent — and a pg/better-auth error echoing a
+    //     connection string lands in a log field verbatim.
+    // `deployMode` is read ONLY inside the thunk (`getAtlasConfig()?.deployMode`),
+    // so a throwing getter here fails exactly that gathering step and nothing
+    // earlier — the resolution is already known to be fail-closed by then.
+    // Chosen over stubbing `snapshotExploreSandboxEnv` because ESM exports are
+    // readonly and `mock.module` is process-global, which would leak into the
+    // other 11 cases in this file. The password proves the scrub end to end.
+    const cfg: Record<string, unknown> = {
+      ...configFromEnv(),
+      sandbox: { priority: ["vercel-sandbox"] },
+    };
+    Object.defineProperty(cfg, "deployMode", {
+      get() {
+        throw new Error("connect failed: postgres://atlas:hunter2@db.internal:5432/atlas");
+      },
+      enumerable: true,
+    });
+    _setConfigForTest(cfg as unknown as Parameters<typeof _setConfigForTest>[0]);
+
+    await runPreFlight();
+
+    // (1) still an outage, with the generic-but-honest wording.
+    const warning = getStartupWarnings().find((w) => w.includes("Explore tool: UNAVAILABLE"));
+    expect(warning).toBeDefined();
+    expect(warning).toContain("see the server log");
+    expect(warning).toContain("sandbox.priority");
+    // Never the misdirecting advice a priority pin makes unactionable (#4828).
+    expect(warning).not.toContain("Install nsjail");
+    // The caught text must not ride along on a surface /api/health echoes.
+    expect(warning).not.toContain("hunter2");
+
+    // (2) the log detail is present but scrubbed.
+    const errored = logCalls.find((c) =>
+      c.args.some(
+        (a) => typeof a === "object" && a !== null && "err" in (a as Record<string, unknown>),
+      ),
+    );
+    const meta = errored?.args.find(
+      (a): a is Record<string, unknown> => typeof a === "object" && a !== null && "err" in a,
+    );
+    expect(String(meta?.err)).toContain("connect failed");
+    expect(String(meta?.err)).not.toContain("hunter2");
+    expect(String(meta?.err)).toContain("***");
   });
 
   // ── AC4 — boot and /api/health cannot disagree ────────────────────────────

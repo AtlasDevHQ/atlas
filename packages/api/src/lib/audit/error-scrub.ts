@@ -23,6 +23,12 @@
  *   - It's an `Effect.tryPromise` catch normalizer that returns an
  *     `Error` instance — the pino `err` serializer handles those with
  *     full stack preservation.
+ *   - The catch belongs to a function contracted NEVER to throw, and calling
+ *     into this module would give that catch a dependency it could trip over
+ *     (this module is `mock.module()`d in several test files, so a partial mock
+ *     makes the import `undefined`). Such a catch returns the raw text and its
+ *     CALLERS scrub at the `log` site instead — see
+ *     `describeSandboxFailClosed` in `lib/tools/backends/selection.ts`.
  *
  * `causeToError` walks an Effect `Cause` and returns the first underlying
  * error — typed failure, defect, or `undefined` for pure-interrupt causes.

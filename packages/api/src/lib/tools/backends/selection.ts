@@ -490,3 +490,116 @@ export const BACKEND_ISOLATION = {
   "just-bash": "unsandboxed",
   plugin: "plugin-declared",
 } as const satisfies Record<SandboxBackendName | "plugin", SandboxIsolationPosture>;
+
+/** The inputs {@link formatSandboxFailClosed} needs, gathered by the caller. */
+export interface SandboxFailClosedInputs {
+  readonly plan: SandboxPlan;
+  readonly env: SandboxSelectionEnv;
+  readonly deployMode: "saas" | "self-hosted" | undefined;
+}
+
+/**
+ * {@link formatSandboxFailClosed}, plus the degraded message for when the inputs
+ * cannot be gathered OR the formatter itself throws — the one place both
+ * fail-closed reporters get their prose.
+ *
+ * Two surfaces must say the same thing about the same outage: the boot warning
+ * (`startup.ts`) and `/admin/sandbox` (`admin-sandbox.ts`). They reach it by
+ * different routes — boot resolves the backend during `validateEnvironment()`,
+ * the admin route on each request — so "share the formatter" was not enough:
+ * each also needed the fallback for a formatter that throws, and two hand-rolled
+ * fallbacks are two messages that drift. #4837 made that concrete by adding the
+ * second caller. `/api/health` is deliberately NOT a third caller: it reports the
+ * same fail-closed STATE from the same resolver but keeps its own, more hedged
+ * message (`health.ts`) and no remediation at all.
+ *
+ * The fallback is deliberately NOT the generic "install nsjail or configure
+ * ATLAS_SANDBOX_URL" advice. Under the SaaS `priority: ["vercel-sandbox"]` pin
+ * that advice is impossible to act on — the pin excludes both — so it would hide
+ * the real cause the same way #4828 did. Naming the two knobs that actually
+ * decide the plan is the honest degradation.
+ *
+ * Losing the remediation must never downgrade the reported STATE: the caller
+ * already knows the resolution is `"fail-closed"`, and this returns a
+ * fail-closed message either way.
+ *
+ * `failureDetail` is set only on the degraded arm and is **log-only** — it is
+ * deliberately NOT interpolated into `message`. `message` reaches an admin HTTP
+ * response body via `failClosed.remediation`, and reaches the UNAUTHENTICATED
+ * `/api/health` through `startup.ts`'s `_startupWarnings`. A caught error's text
+ * is arbitrary (module-resolution paths, config fragments, third-party client
+ * errors echoing URLs or tokens), so putting it there would ship exactly the
+ * "no stack traces / secrets to the user" hazard CLAUDE.md forbids. The caller
+ * logs it instead; nothing is swallowed.
+ *
+ * **Never rejects.** `admin-sandbox.ts` calls this under `Effect.promise`, where
+ * a rejection becomes a defect — a 500 on the very page an operator opened to
+ * diagnose the outage. Both arms return, and the catch arm stays total (no
+ * `await`, no logging, no imported helper) so it cannot itself throw. Keep it
+ * that way if you touch this.
+ *
+ * `resolveInputs` is a thunk rather than three parameters because gathering the
+ * inputs is itself what can throw. `admin-sandbox.ts` reaches
+ * `lib/tools/explore` through a dynamic `import()` inside the thunk — the shared
+ * test factory `packages/api/src/__mocks__/api-test-mocks.ts` partially mocks
+ * that module for every test built on `createApiTestMocks`, so a STATIC import
+ * of a rarely-used export there is a module LINK error in all of them, whether
+ * or not they ever run this branch. (`startup.ts` differs: it imports explore in
+ * its own outer try, where an import failure legitimately means "posture
+ * unknown", and defers only the config read into the thunk.) Either way the
+ * throw lands in this `try` and still produces a fail-closed message.
+ *
+ * Precondition (inherited from {@link formatSandboxFailClosed}): the caller has
+ * already resolved `"fail-closed"`.
+ */
+export async function describeSandboxFailClosed(
+  resolveInputs: () => SandboxFailClosedInputs | PromiseLike<SandboxFailClosedInputs>,
+): Promise<{ readonly message: string; readonly failureDetail?: string }> {
+  try {
+    const { plan, env, deployMode } = await resolveInputs();
+    return { message: formatSandboxFailClosed(plan, env, deployMode) };
+  } catch (err) {
+    return {
+      message:
+        "Explore tool: UNAVAILABLE — no sandbox backend will construct, so every explore " +
+        "request is refused. Detailed remediation could not be built — see the server log " +
+        "for the cause. Check ATLAS_SANDBOX and sandbox.priority in atlas.config.ts.",
+      // Inlined rather than routed through `errorMessage` so this catch stays
+      // total (see "Never rejects" above): `lib/audit/error-scrub` is itself
+      // partially `mock.module()`d in 8 test files, and a mock that omitted the
+      // export would make the error path itself throw.
+      //
+      // This value is therefore RAW — unscrubbed and untruncated. Both callers
+      // run it through `errorMessage` at their `log` call before it goes
+      // anywhere, which is where scrubbing belongs anyway: the hazard
+      // `error-scrub` exists for (a pg/better-auth error echoing a connection
+      // string) lands in a log field, not here.
+      failureDetail: describeThrown(err),
+    };
+  }
+}
+
+/**
+ * `err.message` / `String(err)` for the one caller that cannot afford either to
+ * throw: {@link describeSandboxFailClosed}'s catch arm, which is contracted
+ * never to reject.
+ *
+ * Both of those CAN throw — a throwing `message` getter, or a `String()` on a
+ * null-prototype object or a hostile `Symbol.toPrimitive`. Vanishingly unlikely
+ * from that call site's inputs, but "vanishingly unlikely" is not the contract:
+ * `admin-sandbox.ts` runs the caller under `Effect.promise`, where a rejection
+ * becomes a defect and 500s the page an operator opened to diagnose the outage.
+ * The inner catch buys totality for two lines and no imports.
+ *
+ * Returns RAW text — callers scrub at their `log` site (see the caller's doc).
+ */
+function describeThrown(err: unknown): string {
+  try {
+    // @atlas-ok-ternary: raw by design; the caller's log sites apply errorMessage
+    return err instanceof Error ? err.message : String(err);
+  } catch {
+    // intentionally ignored: the thrown value is unrepresentable as a string,
+    // and the whole point here is that this path cannot itself throw.
+    return "<unrepresentable thrown value>";
+  }
+}

@@ -21,6 +21,13 @@ import {
   getActiveSandboxPluginId,
   invalidateOrgExploreBackends,
 } from "@atlas/api/lib/tools/explore";
+import {
+  planSandboxSelection,
+  describeSandboxFailClosed,
+} from "@atlas/api/lib/tools/backends/selection";
+import type { SandboxBackendName } from "@atlas/api/lib/config";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import type { SandboxFailClosed } from "@useatlas/schemas";
 import { useVercelSandbox, useSidecar } from "@atlas/api/lib/tools/backends/detect";
 import {
   getSandboxCredentials,
@@ -253,8 +260,26 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
         : null;
       const workspaceSidecarUrl = getSetting("ATLAS_SANDBOX_URL", orgId) ?? null;
 
-      // Platform default (the backend that would be used without any workspace override)
-      const platformDefault = getExploreBackendType();
+      // Platform default (the backend that would be used without any workspace
+      // override). `ExploreBackendType` includes `"fail-closed"`, which is NOT a
+      // backend id — split it out here, once, so nothing downstream can leak the
+      // sentinel into a backend-id field (#4837).
+      //
+      // The `satisfies` is the actual guard, and it guards the case that matters.
+      // Nullability alone would NOT: `"fail-closed"` is a string, so assigning
+      // `platformResolution` straight to `string | null` compiles fine — nullable
+      // wire types create an obligation for READERS, not for this writer. What
+      // `satisfies` pins is the next non-backend member: add one to
+      // `ExploreBackendType` (the pinned-but-missing-nsjail case in #4834 is a
+      // live candidate) and this line stops compiling, instead of the new
+      // sentinel silently rendering as an id exactly as `"fail-closed"` did. That
+      // is #4835's `BACKEND_ISOLATION` precedent — make the compiler reject the
+      // unclassified value — applied to the producer.
+      const platformResolution = getExploreBackendType();
+      const platformFailClosed = platformResolution === "fail-closed";
+      const platformDefault: string | null = platformFailClosed
+        ? null
+        : (platformResolution satisfies SandboxBackendName | "plugin");
       const activePluginId = getActiveSandboxPluginId();
       const [allBackends, credentials, runtimeAvailability] = yield* Effect.promise(() =>
         Promise.all([
@@ -279,8 +304,23 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
           .map((cred) => SANDBOX_PROVIDER_BACKEND_IDS[cred.provider]),
       );
 
-      // Resolve the effective active backend
-      let activeBackend: string;
+      // The ONE expression for the platform default that goes on the wire — the
+      // outage block, `activeBackend`, and the response field all read it — so
+      // the schema's "`failClosed` present iff `platformDefault === null`" holds
+      // by construction.
+      //
+      // Deriving them separately instead would make that invariant rest on two
+      // facts about ANOTHER module: that `getExploreBackendType()` returns
+      // `"plugin"` before it can return `"fail-closed"`, and that no `await`
+      // separates the two reads of the lazily-set `_activeSandboxPluginId`. Both
+      // are true today; neither belongs in this invariant's proof.
+      const reportedPlatformDefault = activePluginId ?? platformDefault;
+
+      // Resolve the effective active backend. `null` means this workspace has
+      // none — explore refuses its requests — which is a different question from
+      // whether the PLATFORM failed closed: a usable BYOC override sits ahead of
+      // the platform plan and keeps running through a fail-closed default.
+      let activeBackend: string | null;
       if (workspaceOverride) {
         // The override resolves when it's an available registered backend OR
         // a usable BYOC provider (BYOC backends are built on demand from
@@ -288,9 +328,9 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
         const found = allBackends.find((b) => b.id === workspaceOverride && b.available);
         activeBackend = found || usableByocBackendIds.has(workspaceOverride)
           ? workspaceOverride
-          : platformDefault;
+          : reportedPlatformDefault;
       } else {
-        activeBackend = activePluginId ?? platformDefault;
+        activeBackend = reportedPlatformDefault;
       }
 
       // Build connected providers list. `isActive` requires BOTH the
@@ -323,15 +363,64 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
         };
       });
 
+      // The outage block, built from the SAME formatter the boot warning uses so
+      // the two cannot tell an operator different stories (#4824's parity
+      // invariant, extended to the admin surface). Composed server-side rather
+      // than assembled from parts in the page: the remediation has to name the
+      // pinned backend and its credential, and re-deriving that in the browser is
+      // how the copy drifts.
+      //
+      // A message-building fault degrades the WORDS, never the state —
+      // `describeSandboxFailClosed` always returns a fail-closed message — and
+      // `failureDetail` is log-only, never interpolated into the response.
+      let failClosed: SandboxFailClosed | undefined;
+      if (reportedPlatformDefault === null) {
+        // The inputs are gathered through dynamic imports, inside the seam's own
+        // try: the shared test factory (`__mocks__/api-test-mocks.ts`) partially
+        // mocks `lib/tools/explore` for every test built on it, so a STATIC
+        // import of `snapshotExploreSandboxEnv` here is a module LINK error in
+        // every test that mounts this router — even the ones that never reach
+        // this branch.
+        //
+        // `Effect.promise` (which turns a rejection into a defect) is safe here
+        // because `describeSandboxFailClosed` never rejects: the thunk, its
+        // imports included, runs inside that function's own `try`, and both arms
+        // return a message. That contract is stated at its definition — a
+        // rejection would 500 the page an operator opened to diagnose the outage.
+        const { message, failureDetail } = yield* Effect.promise(() =>
+          describeSandboxFailClosed(async () => {
+            const [{ snapshotExploreSandboxEnv }, { getConfig }] = await Promise.all([
+              import("@atlas/api/lib/tools/explore"),
+              import("@atlas/api/lib/config"),
+            ]);
+            const env = snapshotExploreSandboxEnv();
+            return { plan: planSandboxSelection(env), env, deployMode: getConfig()?.deployMode };
+          }),
+        );
+        if (failureDetail) {
+          // Scrubbed HERE rather than inside the seam, whose catch arm is
+          // contracted never to throw and so takes no imports. This is the log
+          // line an operator greps when the page shows the generic remediation
+          // instead of the specific one; `orgId`/`requestId` tie it back to the
+          // request that produced that payload.
+          log.warn(
+            { err: errorMessage(failureDetail), orgId, requestId: c.get("requestId") },
+            "Sandbox is fail-closed but the detailed remediation could not be built — reporting the generic outage message",
+          );
+        }
+        failClosed = { remediation: message };
+      }
+
       return c.json(
         {
           activeBackend,
-          platformDefault: activePluginId ?? platformDefault,
+          platformDefault: reportedPlatformDefault,
           workspaceOverride,
           workspaceSidecarUrl,
           availableBackends: allBackends,
           connectedProviders,
           providerRuntimeAvailability: runtimeAvailability,
+          ...(failClosed && { failClosed }),
         },
         200,
       );

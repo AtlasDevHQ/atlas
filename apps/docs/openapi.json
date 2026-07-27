@@ -50649,10 +50649,27 @@
                   "type": "object",
                   "properties": {
                     "activeBackend": {
-                      "type": "string"
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "platformDefault": {
-                      "type": "string"
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "failClosed": {
+                      "type": "object",
+                      "properties": {
+                        "remediation": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "remediation"
+                      ]
                     },
                     "workspaceOverride": {
                       "type": [

@@ -108,6 +108,42 @@ describe("SandboxStatusSchema", () => {
     expect(SandboxStatusSchema.safeParse(validStatus).success).toBe(true);
   });
 
+  test("a healthy payload carries no failClosed block", () => {
+    // `failClosed` is optional rather than nullable precisely so the healthy
+    // payload is byte-identical to its pre-#4837 shape — an older web bundle
+    // parsing a newer API must not start failing on a working deployment.
+    const parsed = SandboxStatusSchema.parse(validStatus);
+    expect(parsed.failClosed).toBeUndefined();
+  });
+
+  test("parses the fail-closed payload — null ids plus a remediation", () => {
+    const parsed = SandboxStatusSchema.parse({
+      ...validStatus,
+      activeBackend: null,
+      platformDefault: null,
+      workspaceOverride: null,
+      connectedProviders: [],
+      failClosed: { remediation: "Explore tool: UNAVAILABLE — …" },
+    });
+    expect(parsed.activeBackend).toBeNull();
+    expect(parsed.platformDefault).toBeNull();
+    expect(parsed.failClosed?.remediation).toContain("UNAVAILABLE");
+  });
+
+  test("failClosed requires a remediation — an empty outage block is rejected", () => {
+    // The block exists to carry the operator's fix. An outage announced with no
+    // way to act on it is #4828's failure with extra steps, so the shape must
+    // not admit it.
+    expect(
+      SandboxStatusSchema.safeParse({
+        ...validStatus,
+        activeBackend: null,
+        platformDefault: null,
+        failClosed: {},
+      }).success,
+    ).toBe(false);
+  });
+
   test("rejects a connected provider with a backend-id provider value", () => {
     const result = SandboxConnectedProviderSchema.safeParse({
       ...validStatus.connectedProviders[0],

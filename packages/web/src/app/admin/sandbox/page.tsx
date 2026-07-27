@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -45,6 +46,7 @@ import {
   SANDBOX_PROVIDER_BACKEND_IDS,
   SandboxStatusSchema,
   type SandboxConnectedProvider as ConnectedProvider,
+  type SandboxFailClosed,
   type SandboxProviderKey,
   type SandboxStatus,
 } from "@/ui/lib/admin-schemas";
@@ -58,6 +60,7 @@ import {
   Cloud,
   Cpu,
   Loader2,
+  OctagonX,
   Plus,
   RotateCcw,
   Save,
@@ -149,6 +152,66 @@ function StatusPill({ kind, label }: { kind: StatusKind; label: string }) {
   );
 }
 
+// ── Fail-closed outage ────────────────────────────────────────────
+
+/**
+ * The deployment's sandbox plan constructs nothing, so explore refuses every
+ * request. Presented as an OUTAGE, above both views, because that is what it is
+ * — this is the page an operator opens to diagnose sandboxing, and before #4837
+ * the state arrived here as the string `"fail-closed"` rendered in the same
+ * monospace "Active" slot as `vercel-sandbox`, reading as one more backend id.
+ *
+ * Reachable in SaaS production, not just in theory: `deploy/api/atlas.config.ts`
+ * pins `priority: ["vercel-sandbox"]` with no `just-bash` on staging and all
+ * three prod regions, and `VERCEL_TOKEN` is a per-service Railway secret that
+ * shared vars do not inherit — drop it on one regional service and that region
+ * is here.
+ *
+ * `remediation` is rendered verbatim, never paraphrased or supplemented: the
+ * server composed it from the resolved plan, so it names the pinned backend and
+ * the credential it actually needs. Local copy would either duplicate that
+ * derivation or regress to the generic "install nsjail" advice that a pin
+ * excluding nsjail makes impossible to act on (#4828).
+ *
+ * Exported for `__tests__/fail-closed-outage.test.tsx`, on the same footing as
+ * `SaasSandboxView` below: it renders from the page shell (above BOTH views), so
+ * reaching it through the page would mean mocking the fetch and deploy-mode
+ * hooks to assert copy that has nothing to do with either.
+ */
+export function SandboxOutageNotice({
+  failClosed,
+  workspaceStillRunning,
+}: {
+  failClosed: SandboxFailClosed;
+  /**
+   * A workspace BYOC override resolved despite the platform outage. It sits
+   * ahead of the platform plan, so this workspace's explore still works — the
+   * deployment default is what is down. Saying "every request is refused" here
+   * would be a false alarm, and an operator who dismisses one alarm as noise
+   * dismisses the next one too.
+   */
+  workspaceStillRunning: boolean;
+}) {
+  return (
+    <Alert variant="destructive" role="alert">
+      <OctagonX />
+      <AlertTitle>
+        {workspaceStillRunning
+          ? "Platform sandbox unavailable — this workspace is running on its own backend"
+          : "Explore tool unavailable — every request is refused"}
+      </AlertTitle>
+      <AlertDescription>
+        <p>
+          {workspaceStillRunning
+            ? "No platform sandbox backend can be constructed on this deployment. This workspace's own connected backend still runs, but any workspace falling back to the platform default has no working sandbox."
+            : "No sandbox backend can be constructed on this deployment, and it is configured to refuse rather than run unsandboxed. Explore tool calls fail until this is fixed."}
+        </p>
+        <p className="font-mono text-xs leading-relaxed">{failClosed.remediation}</p>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────
 
 export default function SandboxPage() {
@@ -235,6 +298,15 @@ export default function SandboxPage() {
               onRetry={clearMutationError}
             />
 
+            {/* Above BOTH views: the outage is deploy-mode-independent, and the
+                SaaS view is where it is actually reachable in production. */}
+            {data?.failClosed && (
+              <SandboxOutageNotice
+                failClosed={data.failClosed}
+                workspaceStillRunning={data.activeBackend !== null}
+              />
+            )}
+
             {data &&
               (isSaas ? (
                 <SaasSandboxView
@@ -301,10 +373,17 @@ export function SaasSandboxView({
   saving: boolean;
 }) {
   const connected = status.connectedProviders;
-  // Managed is the active card whenever no BYOC provider row is live —
+  // Managed is the SELECTED card whenever no BYOC provider row is live —
   // `isActive` is server-derived in backend-id vocabulary (#3375), so this
   // can't disagree with the runtime resolution.
-  const isManagedActive = !connected.some((p) => p.isActive);
+  const isManagedSelected = !connected.some((p) => p.isActive);
+  // Selected is not the same as running. "Managed" means *follow the platform
+  // default*, and a null `platformDefault` is the deployment saying it has no
+  // default to follow (#4837). Without this split, the SaaS view — the one that
+  // never rendered `activeBackend` at all, so the issue's `Active: fail-closed`
+  // row could not even warn here — showed "Atlas Cloud Sandbox · Live" on a
+  // region where explore was refusing every request.
+  const isManagedDown = isManagedSelected && status.platformDefault === null;
 
   return (
     <>
@@ -314,7 +393,8 @@ export function SaasSandboxView({
           description="Atlas-hosted sandbox. No setup — always available."
         />
         <ManagedSandboxShell
-          isActive={isManagedActive}
+          isActive={isManagedSelected}
+          isDown={isManagedDown}
           // "Managed" means *follow the platform default* (the SaaS
           // `vercel-sandbox` pin in deploy/api/atlas.config.ts), so it
           // clears the workspace override rather than writing a value —
@@ -364,14 +444,26 @@ export function SaasSandboxView({
 
 function ManagedSandboxShell({
   isActive,
+  isDown,
   onSelect,
   saving,
 }: {
   isActive: boolean;
+  /**
+   * Selected but not running — the platform default failed closed (#4837).
+   * Only meaningful together with `isActive`; the caller derives it that way.
+   * "Live" and "Down" are the two readings this card must never confuse, so the
+   * down state wins over the active state everywhere below.
+   */
+  isDown: boolean;
   onSelect: () => Promise<unknown>;
   saving: boolean;
 }) {
-  const status: StatusKind = isActive ? "connected" : "ready";
+  const status: StatusKind = isDown
+    ? "unavailable"
+    : isActive
+      ? "connected"
+      : "ready";
   return (
     <Shell
       icon={Cloud}
@@ -379,14 +471,18 @@ function ManagedSandboxShell({
       description="Managed Firecracker microVM with network isolation. Recommended for most workspaces."
       status={status}
       trailing={
-        isActive ? (
+        isDown ? (
+          <StatusPill kind="unavailable" label="Down" />
+        ) : isActive ? (
           <StatusPill kind="connected" label="Live" />
         ) : (
           <StatusPill kind="ready" label="Available" />
         )
       }
       actions={
-        !isActive && (
+        // No "Use this" while it is down: selecting the platform default is
+        // exactly what is already in effect and broken.
+        !isActive && !isDown && (
           <Button size="sm" onClick={onSelect} disabled={saving}>
             {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
             Use this
@@ -394,7 +490,13 @@ function ManagedSandboxShell({
         )
       }
     >
-      {isActive ? null : (
+      {isDown ? (
+        <p className="text-xs text-destructive">
+          This deployment has no working sandbox backend — see the outage above.
+          Connect your own cloud below to restore the explore tool for this
+          workspace.
+        </p>
+      ) : isActive ? null : (
         <p className="text-xs text-muted-foreground">
           Switch back here anytime — no credentials required.
         </p>
@@ -735,11 +837,24 @@ function SelfHostedSandboxView({
   if (!status || !fields || !values) return null;
 
   const availableBackends = status.availableBackends.filter((b) => b.available);
+  // `activeBackend` is `string | null`, so a fail-closed deployment can no
+  // longer match a backend id here — the comparison audit AC3 asks for. It was
+  // already correct by accident (`"fail-closed" !== "sidecar"`); it is now
+  // correct by construction, and the same holds for every other id comparison
+  // on this page.
   const showSidecarUrl =
     values.backend === "sidecar" ||
     (!values.backend && status.activeBackend === "sidecar");
   const hasOverride = Boolean(status.workspaceOverride);
-  const shellStatus: StatusKind = hasOverride ? "connected" : "ready";
+  // A null `activeBackend` is this workspace's explore being down, and it must
+  // outrank "Override"/"Default" — those describe which knob is in effect, which
+  // is not the operator's problem when nothing runs.
+  const isDown = status.activeBackend === null;
+  const shellStatus: StatusKind = isDown
+    ? "unavailable"
+    : hasOverride
+      ? "connected"
+      : "ready";
 
   return (
     <section>
@@ -753,13 +868,15 @@ function SelfHostedSandboxView({
         description={
           hasOverride
             ? `This workspace overrides the platform default.`
-            : `Using the platform default (${status.platformDefault}).`
+            : status.platformDefault === null
+              ? `The platform default has no usable backend, so explore requests are refused.`
+              : `Using the platform default (${status.platformDefault}).`
         }
         status={shellStatus}
         trailing={
           <StatusPill
             kind={shellStatus}
-            label={hasOverride ? "Override" : "Default"}
+            label={isDown ? "Down" : hasOverride ? "Override" : "Default"}
           />
         }
         actions={
@@ -809,8 +926,28 @@ function SelfHostedSandboxView({
         }
       >
         <DetailList>
-          <DetailRow label="Active" value={status.activeBackend} mono />
-          <DetailRow label="Platform default" value={status.platformDefault} mono />
+          {/* `mono` is reserved for real backend ids. A null renders as worded
+              destructive text instead, so the outage can never be mistaken for
+              one more id in the same monospace slot — the exact misreading
+              #4837 is about. */}
+          <DetailRow
+            label="Active"
+            value={
+              status.activeBackend ?? (
+                <span className="text-destructive">None — explore refuses every request</span>
+              )
+            }
+            mono={status.activeBackend !== null}
+          />
+          <DetailRow
+            label="Platform default"
+            value={
+              status.platformDefault ?? (
+                <span className="text-destructive">None — fails closed</span>
+              )
+            }
+            mono={status.platformDefault !== null}
+          />
           {status.workspaceSidecarUrl && (
             <DetailRow
               label="Sidecar URL"
@@ -828,7 +965,9 @@ function SelfHostedSandboxView({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="__default__">
-                Use platform default ({status.platformDefault})
+                {status.platformDefault === null
+                  ? "Use platform default (none — fails closed)"
+                  : `Use platform default (${status.platformDefault})`}
               </SelectItem>
               {availableBackends.map((b) => (
                 <SelectItem key={b.id} value={b.id}>

@@ -90,11 +90,62 @@ export const SandboxConnectedProviderSchema = z.object({
 
 export type SandboxConnectedProvider = z.infer<typeof SandboxConnectedProviderSchema>;
 
+/**
+ * The deployment is FAIL-CLOSED: no sandbox backend will construct, so the
+ * explore tool refuses every request.
+ *
+ * A separate object rather than a `"fail-closed"` string in `activeBackend`,
+ * and that is the whole point (#4837). Backend ids are open (`z.string()` —
+ * plugins register their own), so a sentinel living in that field is
+ * indistinguishable AT THE TYPE LEVEL from a selectable backend: consumers
+ * rendered it in the same monospace slot as `vercel-sandbox`, and
+ * `activeBackend === "sidecar"`-style comparisons silently treated an outage as
+ * a selection. #4835 refused to widen `BACKEND_ISOLATION` with this value for
+ * the same reason; hoisting it out of the id field is that precedent applied to
+ * the wire. Presence of this field is now the only way to say it, and the
+ * accompanying `null` ids make every consumer handle it or fail to compile.
+ */
+export const SandboxFailClosedSchema = z.object({
+  /**
+   * Operator-facing remediation naming the ACTUAL cause — the pinned backends
+   * and the credential each one needs (`VERCEL_TOKEN` under the SaaS
+   * `priority: ["vercel-sandbox"]` pin). Server-composed, byte-identical to the
+   * boot warning, so `/admin/sandbox`, `/api/health` and the startup log cannot
+   * give an operator three different stories about one outage.
+   *
+   * Deliberately not a generic "install nsjail / set ATLAS_SANDBOX_URL" line:
+   * a priority pin that excludes those backends makes that advice impossible to
+   * act on and hides the real cause (#4828).
+   */
+  remediation: z.string(),
+});
+
+export type SandboxFailClosed = z.infer<typeof SandboxFailClosedSchema>;
+
 export const SandboxStatusSchema = z.object({
-  /** Currently active backend id for this workspace (after override resolution) */
-  activeBackend: z.string(),
-  /** Platform default backend id (no workspace override) */
-  platformDefault: z.string(),
+  /**
+   * Currently active backend id for this workspace (after override resolution),
+   * or `null` when this workspace's explore is fail-closed — see
+   * {@link SandboxFailClosedSchema}.
+   *
+   * Can be a real backend id while `platformDefault` is `null`: a workspace BYOC
+   * override sits ahead of the platform plan and keeps running when the
+   * platform default has failed closed.
+   */
+  activeBackend: z.string().nullable(),
+  /**
+   * Platform default backend id (no workspace override), or `null` when the
+   * deployment's own plan resolves fail-closed. `null` here is exactly the
+   * condition under which `failClosed` is present.
+   */
+  platformDefault: z.string().nullable(),
+  /**
+   * Present if and only if `platformDefault` is `null` — the deployment's
+   * sandbox plan constructs nothing. Optional (rather than nullable) so a
+   * healthy deployment's payload is unchanged from before #4837 and older web
+   * bundles keep parsing it; only the already-broken fail-closed payload is new.
+   */
+  failClosed: SandboxFailClosedSchema.optional(),
   /**
    * Workspace override backend id (if set). Normalized to backend-id
    * vocabulary — legacy stored provider keys are reported as their

@@ -944,7 +944,7 @@ async function logResolvedExploreBackend(): Promise<void> {
     const { getExploreBackendType, snapshotExploreSandboxEnv } = await import(
       "@atlas/api/lib/tools/explore"
     );
-    const { BACKEND_ISOLATION, planSandboxSelection, formatSandboxFailClosed } = await import(
+    const { BACKEND_ISOLATION, planSandboxSelection, describeSandboxFailClosed } = await import(
       "@atlas/api/lib/tools/backends/selection"
     );
     const backend = getExploreBackendType();
@@ -967,30 +967,24 @@ async function logResolvedExploreBackend(): Promise<void> {
       // reads it (the just-bash escape hatch) is reachable only via
       // `configPriority`, which itself requires a non-null config.
       //
-      // Formatting gets its OWN try: the resolution is already known to be
-      // fail-closed, and letting a message-building throw fall to the outer catch
-      // would downgrade the single most severe state to "posture UNKNOWN" — a
-      // vaguer claim with misdirecting remediation, and one that is simply false
-      // here (health reports fail-closed correctly from the resolver alone; it
-      // never calls this formatter).
-      let msg: string;
-      let failureDetail: string | undefined;
-      try {
+      // Message building keeps its own failure arm, inside
+      // `describeSandboxFailClosed` rather than a local try: the resolution is
+      // already known to be fail-closed, and letting a message-building throw
+      // fall to the outer catch would downgrade the single most severe state to
+      // "posture UNKNOWN" — a vaguer claim with misdirecting remediation, and one
+      // that is simply false here (health reports fail-closed correctly from the
+      // resolver alone; it never calls this formatter). That arm now lives in
+      // `selection.ts` so `/admin/sandbox`, which reports the same outage on the
+      // same inputs, degrades to the same words (#4837).
+      const { message: msg, failureDetail } = await describeSandboxFailClosed(async () => {
         const { getConfig: getAtlasConfig } = await import("@atlas/api/lib/config");
         const env = snapshotExploreSandboxEnv();
-        msg = formatSandboxFailClosed(
-          planSandboxSelection(env),
+        return {
+          plan: planSandboxSelection(env),
           env,
-          getAtlasConfig()?.deployMode,
-        );
-        failureDetail = undefined;
-      } catch (err) {
-        failureDetail = errorMessage(err);
-        msg =
-          "Explore tool: UNAVAILABLE — no sandbox backend will construct, so every explore " +
-          `request is refused. Detailed remediation could not be built: ${failureDetail}. ` +
-          "Check ATLAS_SANDBOX and sandbox.priority in atlas.config.ts.";
-      }
+          deployMode: getAtlasConfig()?.deployMode,
+        };
+      });
       log.error({ backend, ...(failureDetail && { err: failureDetail }) }, msg);
       if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
       return;

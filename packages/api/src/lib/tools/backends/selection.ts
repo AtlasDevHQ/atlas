@@ -22,6 +22,7 @@
  */
 
 import type { SandboxBackendName } from "@atlas/api/lib/config";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 
 /**
  * Immutable snapshot of the environment + config inputs that decide which
@@ -490,3 +491,60 @@ export const BACKEND_ISOLATION = {
   "just-bash": "unsandboxed",
   plugin: "plugin-declared",
 } as const satisfies Record<SandboxBackendName | "plugin", SandboxIsolationPosture>;
+
+/**
+ * {@link formatSandboxFailClosed} plus the degraded message for when its inputs
+ * cannot be gathered — the one place both fail-closed reporters get their prose.
+ *
+ * Two surfaces must say the same thing about the same outage: the boot warning
+ * (`startup.ts`) and `/admin/sandbox` (`admin-sandbox.ts`). They reach it by
+ * different routes — boot resolves the backend during `validateEnvironment()`,
+ * the admin route on each request — so "share the formatter" was not enough:
+ * each also needed the fallback for a formatter that throws, and two hand-rolled
+ * fallbacks are two messages that drift. #4837 made that concrete by adding the
+ * second caller.
+ *
+ * The fallback is deliberately NOT the generic "install nsjail or configure
+ * ATLAS_SANDBOX_URL" advice. Under the SaaS `priority: ["vercel-sandbox"]` pin
+ * that advice is impossible to act on — the pin excludes both — so it would hide
+ * the real cause the same way #4828 did. Naming the two knobs that actually
+ * decide the plan is the honest degradation.
+ *
+ * Losing the remediation must never downgrade the reported STATE: the caller
+ * already knows the resolution is `"fail-closed"`, and this returns a
+ * fail-closed message either way. `failureDetail` is set only on the degraded
+ * arm, so the caller can log why (never swallowed) without the reader of the
+ * message having to care.
+ *
+ * `resolveInputs` is an (optionally async) thunk rather than three parameters
+ * because gathering the inputs is itself what can throw: both callers reach
+ * `lib/tools/explore` through a dynamic `import()` — that module is partially
+ * mocked in ~26 test files, so a static import of a rarely-used export there is
+ * a module LINK error in every one of them regardless of whether they run this
+ * branch. Taking a thunk keeps that import, and the env/config reads after it,
+ * inside this `try` instead of leaving the hazard at each call site.
+ *
+ * Precondition (inherited from {@link formatSandboxFailClosed}): the caller has
+ * already resolved `"fail-closed"`.
+ */
+export async function describeSandboxFailClosed(
+  resolveInputs: () => PromiseLike<{
+    readonly plan: SandboxPlan;
+    readonly env: SandboxSelectionEnv;
+    readonly deployMode: "saas" | "self-hosted" | undefined;
+  }>,
+): Promise<{ readonly message: string; readonly failureDetail?: string }> {
+  try {
+    const { plan, env, deployMode } = await resolveInputs();
+    return { message: formatSandboxFailClosed(plan, env, deployMode) };
+  } catch (err) {
+    const failureDetail = errorMessage(err);
+    return {
+      message:
+        "Explore tool: UNAVAILABLE — no sandbox backend will construct, so every explore " +
+        `request is refused. Detailed remediation could not be built: ${failureDetail}. ` +
+        "Check ATLAS_SANDBOX and sandbox.priority in atlas.config.ts.",
+      failureDetail,
+    };
+  }
+}

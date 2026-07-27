@@ -565,6 +565,7 @@ export {
   SandboxStatusSchema,
   type SandboxProviderKey,
   type SandboxConnectedProvider,
+  type SandboxFailClosed,
   type SandboxStatus,
 } from "@useatlas/schemas";
 

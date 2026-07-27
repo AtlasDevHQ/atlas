@@ -28,7 +28,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { buildInternalDbMockDefaults } from "@atlas/api/__mocks__/api-test-mocks";
+import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 import { brainFactsCountSql } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 
 const WS = "ws-preview-brain";
@@ -45,7 +45,11 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
     internalQuery: async (sql: string, params?: unknown[]) => {
       queries.push({ sql, params: params ?? [] });
       if (sql.includes("COUNT(*)::int AS n")) return [{ key: "brainFacts", n: workspaceDraftCount }];
-      return visibleRows;
+      // Dispatch on the BRAIN projection specifically. Returning `visibleRows`
+      // for every statement made all eight preview surfaces share one fixture,
+      // so a mapping that wired `brainFacts` off the knowledge rows passed.
+      if (sql.includes("f.subject")) return visibleRows;
+      return [];
     },
   }),
   getInternalDB: () => ({ query: async () => ({ rows: [] }) }),

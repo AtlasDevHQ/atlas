@@ -505,6 +505,49 @@ describe("GET /oversight", () => {
     expect(text).not.toContain("Acme");
   });
 
+  it("500s rather than shipping a `countsConsistent` that contradicts its own operands", async () => {
+    // The refinement's probe. Both operands travel beside the flag, and the
+    // panel trusts the FLAG while computing the delta from the NUMBERS — so a
+    // producer that got the flag wrong renders "-4 drafts are not in your
+    // queue". A guard with no probe is one refactor from gone (#4809).
+    oversightResponse = {
+      ...oversightResponse,
+      workspaceTotals: {
+        awaitingReview: 5,
+        published: 0,
+        retracted: 0,
+        provisional: 0,
+        inTension: 0,
+      },
+      reviewableAwaitingReview: 9,
+      countsConsistent: true,
+    };
+    expect((await adminBrainFacts.request("/oversight")).status).toBe(500);
+  });
+
+  it("500s rather than shipping fewer audiences than buckets", async () => {
+    // The other refinement. The buckets ARE a subset of the distinct tokens, so
+    // a smaller cardinality understates a number the client renders as exact.
+    oversightResponse = {
+      ...oversightResponse,
+      buckets: [
+        {
+          key: "org",
+          kind: "org",
+          label: "org",
+          labelPolicy: "intrinsic",
+          awaitingReview: 1,
+          published: 0,
+          retracted: 0,
+          provisional: 0,
+          inTension: 0,
+        },
+      ],
+      distinctAudiences: 0,
+    };
+    expect((await adminBrainFacts.request("/oversight")).status).toBe(500);
+  });
+
   it("500s rather than shipping a withheld bucket that carries its label", async () => {
     // The discriminated union's whole purpose, at the wire. `discovered` means
     // the token must not travel — a producer that regressed to a flat

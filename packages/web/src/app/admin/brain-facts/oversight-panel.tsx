@@ -94,10 +94,20 @@ export function OversightPanel() {
         // by its own fix.
         <Alert role="alert">
           <AlertTriangle className="size-4" aria-hidden />
-          <AlertDescription>
-            Atlas can&apos;t work out right now how much of this workspace&apos;s backlog
-            sits outside your queue — two counts of the same workspace disagreed. Treat
-            publishing as workspace-wide and check back in a moment.
+          <AlertDescription className="space-y-1">
+            <p>
+              Atlas can&apos;t work out right now how much of this workspace&apos;s
+              backlog sits outside your queue — either two counts of the same workspace
+              disagreed, or one of them didn&apos;t read back. Treat publishing as
+              workspace-wide, and treat the counts below as possibly incomplete; Atlas
+              logged the reason.
+            </p>
+            {/* A real button. "Check back in a moment" is inert inside
+                TanStack's 30s staleTime — a reload would replay the identical
+                response during exactly the window a transient fault clears. */}
+            <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => refetch()}>
+              Try again
+            </Button>
           </AlertDescription>
         </Alert>
       ) : (
@@ -149,8 +159,15 @@ export function OversightPanel() {
               <ShieldAlert className="size-4" aria-hidden />
               <AlertDescription>
                 This workspace has more distinct audiences than Atlas shows at once, so
-                the rows below are a subset. The totals are not — they are counted per
-                fact, and the audience count above is uncapped, so both stay exact.
+                the rows below are a subset.
+                {/* The exactness claim is CONDITIONAL. Under a degraded counter
+                    the audience count is floored at the number of rows shipping
+                    — i.e. it is the cap, not the cardinality — so asserting it
+                    stays exact would be the one confident sentence on a screen
+                    that has already said its numbers are not trustworthy. */}
+                {data.countsConsistent
+                  ? " The totals are not — they are counted per fact, and the audience count above is uncapped, so both stay exact."
+                  : " Atlas also couldn't read one of the counts back this time, so the totals and the audience count above may be incomplete too."}
               </AlertDescription>
             </Alert>
           )}
@@ -239,7 +256,13 @@ function BucketRow({ bucket }: { bucket: BrainFactOversightBucket }) {
                 ? "One person's private facts. Atlas resolved them from a source roster rather than you naming them, so the account is not shown."
                 : bucket.kind === "malformed"
                   ? "These facts carry a visibility token Atlas does not recognise, which grants nobody access on its own. The token is stored text and is not rendered here."
-                  : "An audience Atlas discovered rather than one you configured. Naming it would disclose that the channel exists, which the counts alone do not."}
+                  : // Hedged, because `loadConfiguredChannels` degrades to "nothing
+                    // is configured" on a read fault — fail-closed and correct, but it
+                    // makes every configured channel classify as discovered. Asserting
+                    // the cause outright would be a confident fabrication for a
+                    // `workspace_plugins` blip, which is the defect
+                    // `brainFactsScopeUnavailable` exists to prevent one modal over.
+                    "Atlas isn't showing this audience's name — either you didn't configure it, in which case naming it would disclose that the channel exists, or Atlas couldn't read the install config just now."}
             </TooltipContent>
           </Tooltip>
         ) : bucket.kind === "org" ? (

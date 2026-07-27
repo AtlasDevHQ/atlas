@@ -440,7 +440,19 @@ function count(
   meta: CountMeta,
   degraded: DegradedCounters,
 ): number {
-  const n = typeof value === "number" ? value : Number(value);
+  // NOT a bare `Number(value)`. That coerces `null`, `""`, `false` and `[]` all
+  // to 0 — finite and non-negative, so they would sail through this guard as a
+  // confident zero with no log and no `degraded.hit`, which is precisely the
+  // fabrication the docstring above exists to close. `undefined` is already
+  // caught (`Number(undefined)` is NaN); the falsy-but-coercible set is the
+  // hole. A `string` arm stays because `pg` hands back `int8` as text — `::int`
+  // makes that unreachable here, but the cast is one edit away from `::bigint`.
+  const n =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() !== ""
+        ? Number(value)
+        : Number.NaN;
   if (!Number.isFinite(n) || n < 0) {
     degraded.hit = true;
     log.warn(

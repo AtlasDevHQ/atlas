@@ -113,14 +113,40 @@ function reader(options: ReaderOptions): BrainCandidateReader {
         return { rows: (options.configs ?? []).map((config) => ({ config })) };
       }
       if (sql.includes("COUNT(DISTINCT g.token)")) {
-        return { rows: [{ n: options.distinctTokens ?? 0 }] };
+        // `in` rather than `??`: the drift tests pass `null`, and `?? 0` would
+        // launder it into a real zero before the producer ever sees it.
+        return {
+          rows: [{ n: "distinctTokens" in options ? options.distinctTokens : 0 }],
+        };
       }
       if (sql.includes("unnest(f.visible_to)")) {
         if (options.bucketsThrow) throw new Error("bucket query failed");
-        return { rows: options.buckets ?? [] };
+        // ZERO-BASELINED like `totals` below, and for the same reason — this
+        // one was missed first time round and it mattered: a bucket row naming
+        // only `awaiting_review` leaves four counters `undefined`, which the
+        // producer correctly reads as drift, so `countsConsistent` came back
+        // `false` in ~9 tests that had nothing to do with degradation. That
+        // made every `countsConsistent: false` assertion satisfiable by the
+        // FIXTURE rather than by the code — exactly what hid the
+        // `droppedRows ⇒ degraded.hit` link. Drift is exercised deliberately,
+        // never by omission.
+        return {
+          rows: (options.buckets ?? []).map((b) =>
+            typeof b === "object" && b !== null
+              ? {
+                  awaiting_review: 0,
+                  published: 0,
+                  retracted: 0,
+                  provisional: 0,
+                  in_tension: 0,
+                  ...b,
+                }
+              : b,
+          ),
+        };
       }
       if (sql.includes("COUNT(*)::int AS n")) {
-        return { rows: [{ n: options.reviewable ?? 0 }] };
+        return { rows: [{ n: "reviewable" in options ? options.reviewable : 0 }] };
       }
       // MERGED over a complete zero baseline, not substituted for it. A partial
       // `totals` would leave the other four columns `undefined`, which the
@@ -654,6 +680,30 @@ describe("loadFactOversight", () => {
     );
     expect(result.workspaceTotals.awaitingReview).toBe(0);
     expect(result.countsConsistent).toBe(false);
+  });
+
+  it("treats the FALSY-but-coercible values as drift, not as a real zero", async () => {
+    // `Number(null)`, `Number("")`, `Number(false)` and `Number([])` are all 0 —
+    // finite and non-negative — so a bare `Number()` would return a confident
+    // zero with no log and no flag, which is exactly the fabrication `count()`
+    // exists to prevent. `undefined` is already NaN; this set is the hole.
+    for (const drifted of [null, "", false, []]) {
+      const result = await loadFactOversight(
+        reader({ totals: { awaiting_review: 32 }, reviewable: drifted }),
+        ctx(),
+      );
+      expect(result.reviewableAwaitingReview).toBe(0);
+      expect(result.countsConsistent).toBe(false);
+    }
+  });
+
+  it("still reads a genuine zero as a zero", async () => {
+    // Non-vacuity for the test above: a guard that rejected everything falsy
+    // would make an empty workspace permanently "untrustworthy", which is the
+    // most common workspace there is.
+    const result = await loadFactOversight(reader({ reviewable: 0 }), ctx());
+    expect(result.reviewableAwaitingReview).toBe(0);
+    expect(result.countsConsistent).toBe(true);
   });
 
   it("drops a drifted bucket row rather than merging it into `malformed`", async () => {

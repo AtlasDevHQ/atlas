@@ -761,6 +761,7 @@ describe("hidden-backlog disclosure (#4825)", () => {
     });
     oversight = {
       buckets: [
+        bucket({ key: "org", kind: "org", labelPolicy: "intrinsic", label: "org" }),
         bucket({
           key: "audience:chat-channel:slack:C0PRIVATE1",
           kind: "audience",
@@ -771,15 +772,15 @@ describe("hidden-backlog disclosure (#4825)", () => {
         bucket({ key: "discovered-2", kind: "malformed", labelPolicy: "discovered" }),
       ],
       workspaceTotals: {
-        awaitingReview: 3,
+        awaitingReview: 4,
         published: 0,
         retracted: 0,
         provisional: 0,
         inTension: 0,
       },
-      reviewableAwaitingReview: 3,
+      reviewableAwaitingReview: 4,
       countsConsistent: true,
-      distinctAudiences: 3,
+      distinctAudiences: 4,
       bucketsTruncated: false,
     };
     const view = await renderPage([candidate()]);
@@ -795,6 +796,12 @@ describe("hidden-backlog disclosure (#4825)", () => {
     // And the two withheld kinds render their handles, not their tokens.
     expect(view.container.textContent ?? "").toContain("discovered-1");
     expect(view.container.textContent ?? "").toContain("discovered-2");
+    // THE non-vacuity guard. On the disclosable arms `key === label`, so the
+    // assertions above are ALSO satisfied by a component that opaque-handled
+    // everything — the exact regression this test claims to catch. The `org`
+    // arm's prose has no such twin: it renders only when the branch genuinely
+    // took the disclosable path.
+    expect(view.container.textContent ?? "").toContain("Everyone in the workspace");
   });
 
   test("refuses to render a withheld bucket that smuggles its label", async () => {
@@ -949,6 +956,32 @@ describe("hidden-backlog disclosure (#4825)", () => {
       /Publish all/.test(b.textContent ?? ""),
     );
     expect(confirm?.textContent?.trim()).toBe("Publish all (6)");
+  });
+
+  test("offers a retry that actually refetches, not an inert instruction", async () => {
+    // The degraded arm is a 200, so the modal's error-path Retry never renders,
+    // and "close and reopen this dialog" is inert inside TanStack's 30s
+    // staleTime — it replays the identical degraded response during exactly the
+    // window a transient fault would have cleared. So the button has to be real.
+    withheldFacts = 4;
+    scopeUnavailable = true;
+    const view = await renderPage([candidate()]);
+    clickButton(view, /Review & publish/i);
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("couldn't work out which of these"),
+    );
+
+    const before = requested.filter((r) => r.url.includes("publish-preview")).length;
+    const retry = Array.from(document.body.querySelectorAll("button")).find(
+      (b) => /Try again/.test(b.textContent ?? ""),
+    );
+    expect(retry).toBeTruthy();
+    fireEvent.click(retry!);
+    await waitFor(() =>
+      expect(requested.filter((r) => r.url.includes("publish-preview")).length).toBeGreaterThan(
+        before,
+      ),
+    );
   });
 
   test("says an Atlas fault is an Atlas fault, not a channel-membership boundary", async () => {

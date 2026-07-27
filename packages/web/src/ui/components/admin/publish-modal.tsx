@@ -270,6 +270,7 @@ export function PublishModal({
                 <WithheldFactsNotice
                   count={withheldFacts}
                   scopeUnavailable={data?.brainFactsScopeUnavailable ?? false}
+                  onRetry={() => void refetch()}
                 />
               )}
               {sections.map((section) => (
@@ -353,10 +354,20 @@ export function PublishModal({
 function WithheldFactsNotice({
   count,
   scopeUnavailable,
+  onRetry,
 }: {
   count: number;
   /** The withholding is an Atlas fault, not an audience boundary — see the type. */
   scopeUnavailable: boolean;
+  /**
+   * Refetches the preview. A real button, because the obvious instruction is
+   * inert: this arm is a 200, so the modal's error-path Retry never renders,
+   * and "close and reopen the dialog" hits TanStack's 30s `staleTime` and
+   * replays the byte-identical degraded response — so an admin following it
+   * during the exact window a blip would have cleared concludes the fault is
+   * permanent.
+   */
+  onRetry: () => void;
 }) {
   const one = count === 1;
   return (
@@ -373,8 +384,15 @@ function WithheldFactsNotice({
             <>
               Atlas couldn&apos;t work out which of these you&apos;re allowed to see, so
               it&apos;s showing none of them. This is a fault on our side, not a
-              restriction on you. Publishing still promotes {one ? "it" : "them"}. Close
-              and reopen this dialog to try again.
+              restriction on you. Publishing still promotes {one ? "it" : "them"}.{" "}
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-sm"
+                onClick={onRetry}
+              >
+                Try again
+              </Button>
             </>
           ) : (
             <>

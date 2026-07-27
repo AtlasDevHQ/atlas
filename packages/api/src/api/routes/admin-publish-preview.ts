@@ -277,8 +277,14 @@ export async function loadBrainFactSegment(
   // propagates, an identity failure degrades), so they cannot share a `try`,
   // and an un-reified rejection would go unhandled in the window where the
   // count throws first.
+  // `getInternalDB()` is resolved BEFORE the first promise exists. It throws
+  // SYNCHRONOUSLY on a missing `DATABASE_URL` or a failed `pg` require, and a
+  // throw between `countPromise`'s creation and the first handler attaching to
+  // it would orphan that promise into an unhandled rejection — the same hazard
+  // the reification closes, in the other direction.
+  const db = getInternalDB();
   const countPromise = internalQuery<{ n: number }>(brainFactsCountSql("$1"), [orgId]);
-  const readerPromise = resolveBrainReaderContext(getInternalDB(), {
+  const readerPromise = resolveBrainReaderContext(db, {
     workspaceId: orgId,
     mode,
     user,
@@ -297,6 +303,17 @@ export async function loadBrainFactSegment(
   // this is unreachable from Postgres — but 0 is the failure-silencing answer
   // here, and the guard costs one comparison.
   if (rawTotal === null || rawTotal === undefined || !Number.isFinite(total) || total < 0) {
+    if (!reader.ok) {
+      // Two independent faults, one 500. Without this the reader's error is
+      // discarded entirely — an operator debugs the count while a pool
+      // exhaustion that might explain the whole incident leaves no trace. Before
+      // the two reads were parallelised this was unreachable, because the reader
+      // never ran when the count failed.
+      log.warn(
+        { workspaceId: orgId, requestId, err: errorMessage(reader.err) },
+        "publish preview: the brain reader ALSO failed while the draft count was unreadable — the count fault is the one thrown; this one is logged so it is not lost behind it",
+      );
+    }
     // Silently treating this as 0 would drop `WithheldFactsNotice` and put
     // "Publish all (N)" on a button that promotes more — #4825's defect,
     // reproduced without a trace, precisely when the count query is
